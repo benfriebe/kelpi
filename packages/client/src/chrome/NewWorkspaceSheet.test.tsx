@@ -514,3 +514,35 @@ describe('the New Group sheet is the same surface (§WS-082)', () => {
         expect(screen.queryByTestId('new-group-sheet')).toBeNull();
     });
 });
+
+describe('the group sheet’s "Runs on" picker (§1.7 multi-daemon groups)', () => {
+    function openGroupSheet(props: Record<string, unknown> = {}): void {
+        render(<Sidebar {...base()} entries={entries()} onCreateGroup={vi.fn()} {...props} />);
+        fireEvent.click(screen.getByTestId('sidebar-new-menu-toggle'));
+        fireEvent.click(screen.getByRole('menuitem', { name: /^New Group/ }));
+    }
+
+    it('exists only when remote daemons are configured, and defaults to This Mac', () => {
+        openGroupSheet();
+        expect(screen.queryByTestId('new-group-runs-on')).toBeNull();
+        cleanup();
+
+        openGroupSheet({ remoteDaemons: ['werk'] });
+        const picker = screen.getByTestId('new-group-runs-on') as HTMLSelectElement;
+        expect(picker.value).toBe('');
+        expect([...picker.options].map((option) => option.textContent)).toEqual(['This Mac', 'werk']);
+    });
+
+    it('choosing a remote routes the create to onCreateRemoteGroup, never the local path', () => {
+        const onCreateGroup = vi.fn();
+        const onCreateRemoteGroup = vi.fn();
+        openGroupSheet({ remoteDaemons: ['werk'], onCreateGroup, onCreateRemoteGroup });
+        fireEvent.change(screen.getByTestId('new-group-runs-on'), { target: { value: 'werk' } });
+        fireEvent.click(screen.getByTestId('new-group-submit'));
+        expect(onCreateRemoteGroup).toHaveBeenCalledTimes(1);
+        expect(onCreateRemoteGroup.mock.calls[0]?.[0]).toBe('werk');
+        expect(onCreateGroup).not.toHaveBeenCalled();
+        // The sheet closed on the remote path too.
+        expect(screen.queryByTestId('new-group-sheet')).toBeNull();
+    });
+});

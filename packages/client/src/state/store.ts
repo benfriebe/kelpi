@@ -431,6 +431,12 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             }
             return [{ name: entry['name'], env }];
         }),
+        // §1.7 multi-daemon groups: the `remote-daemon` registry. Same drop-don't-guess rule.
+        remoteDaemons: array(raw['remoteDaemons']).flatMap((entry) => {
+            if (!isRecord(entry) || typeof entry['name'] !== 'string' || typeof entry['url'] !== 'string') return [];
+            if (entry['name'] === '' || entry['url'] === '') return [];
+            return [{ name: entry['name'], url: entry['url'] }];
+        }),
         general: {
             focusFollowsMouse: bool(general['focusFollowsMouse'], fallbackGeneral.focusFollowsMouse),
             focusFollowsMouseDelay: Math.max(

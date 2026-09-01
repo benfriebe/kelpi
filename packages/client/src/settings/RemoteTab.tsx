@@ -28,6 +28,12 @@ export interface RemoteTabActions {
     revoke(target: string): Promise<Record<string, unknown>>;
 }
 
+/** One §1.7 `remote-daemon` registry entry, as the settings snapshot carries it. */
+export interface RemoteDaemonRow {
+    readonly name: string;
+    readonly url: string;
+}
+
 interface DeviceRow {
     readonly id: string;
     readonly name: string;
@@ -87,8 +93,30 @@ function shortDate(iso: string): string {
     return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString();
 }
 
-export function RemoteTab(props: { readonly actions: RemoteTabActions }): ReactElement {
+export interface RemoteTabProps {
+    readonly actions: RemoteTabActions;
+    /** §1.7: the configured `remote-daemon` registry — the "Daemons" card's rows. */
+    readonly daemons?: readonly RemoteDaemonRow[] | undefined;
+    /** Full-replacement save (`set-remote-daemons`); absent renders the card read-only. */
+    readonly onSaveDaemons?: ((daemons: readonly RemoteDaemonRow[]) => void) | undefined;
+}
+
+export function RemoteTab(props: RemoteTabProps): ReactElement {
     const { actions } = props;
+    const configuredDaemons = props.daemons ?? [];
+    const [daemonName, setDaemonName] = useState('');
+    const [daemonURL, setDaemonURL] = useState('');
+    const addDaemon = (): void => {
+        const name = daemonName.trim();
+        const url = daemonURL.trim();
+        if (name === '' || url === '' || name.includes(':') || props.onSaveDaemons === undefined) return;
+        props.onSaveDaemons([
+            ...configuredDaemons.filter((daemon) => daemon.name !== name),
+            { name, url }
+        ]);
+        setDaemonName('');
+        setDaemonURL('');
+    };
     const [devices, setDevices] = useState<DeviceRow[]>([]);
     const [tailnet, setTailnet] = useState<TailnetStatus | null>(null);
     const [statusError, setStatusError] = useState<string | null>(null);
@@ -355,6 +383,83 @@ export function RemoteTab(props: { readonly actions: RemoteTabActions }): ReactE
                         </span>
                     </SettingsRow>
                 ))}
+            </SettingsSection>
+
+            <SettingsSection
+                title="Daemons"
+                testID="remote-daemons-registry"
+                hint="Other kelpi daemons this window can attach to. Paste a pairing URL from that machine's own Remote tab; its workspaces then appear as a section in the sidebar, and new groups can be created on it."
+            >
+                {configuredDaemons.length === 0 ? (
+                    <SettingsDetail>
+                        <span data-testid="remote-daemons-empty">No remote daemons configured.</span>
+                    </SettingsDetail>
+                ) : null}
+                {configuredDaemons.map((daemon) => (
+                    <SettingsRow
+                        key={daemon.name}
+                        label={daemon.name}
+                        detail={daemon.url.replace(/([?&]token=)[^&]+/, '$1…')}
+                        testID={`remote-daemon-row-${daemon.name}`}
+                    >
+                        <SettingsButton
+                            testID={`remote-daemon-remove-${daemon.name}`}
+                            tone="danger"
+                            disabled={props.onSaveDaemons === undefined}
+                            onClick={() => {
+                                props.onSaveDaemons?.(
+                                    configuredDaemons.filter((entry) => entry.name !== daemon.name)
+                                );
+                            }}
+                        >
+                            Remove
+                        </SettingsButton>
+                    </SettingsRow>
+                ))}
+                <SettingsRow label="Add a daemon" testID="remote-daemon-add">
+                    <span className="flex items-center gap-2">
+                        <input
+                            data-testid="remote-daemon-add-name"
+                            className="w-28 rounded border px-2 py-1 text-[12px]"
+                            style={{
+                                background: tokens.surfaceBackground,
+                                borderColor: tokens.divider,
+                                color: tokens.textPrimary
+                            }}
+                            placeholder="name"
+                            value={daemonName}
+                            onChange={(event) => setDaemonName(event.target.value)}
+                        />
+                        <input
+                            data-testid="remote-daemon-add-url"
+                            className="w-64 rounded border px-2 py-1 text-[12px]"
+                            style={{
+                                background: tokens.surfaceBackground,
+                                borderColor: tokens.divider,
+                                color: tokens.textPrimary
+                            }}
+                            placeholder="https://host.tailnet.ts.net/?token=kd_…"
+                            value={daemonURL}
+                            onChange={(event) => setDaemonURL(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') addDaemon();
+                            }}
+                        />
+                        <SettingsButton
+                            testID="remote-daemon-add-button"
+                            tone="accent"
+                            disabled={
+                                daemonName.trim() === '' ||
+                                daemonURL.trim() === '' ||
+                                daemonName.includes(':') ||
+                                props.onSaveDaemons === undefined
+                            }
+                            onClick={addDaemon}
+                        >
+                            Add
+                        </SettingsButton>
+                    </span>
+                </SettingsRow>
             </SettingsSection>
         </div>
     );

@@ -128,6 +128,9 @@ import {
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
 import { focusPaneSurface, releaseFocusedPaneCaret } from './app/pane-focus';
+import { useRemoteDaemons } from './app/remote-daemons';
+import { RemoteDaemonSections, type RemoteSelection } from './app/RemoteDaemonSections';
+import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     SEED_TEST_GROUP_COMMAND,
@@ -354,6 +357,23 @@ function Shell(props: AppProps): ReactElement {
     /** §SET-200/§SET-201: the shell's last global-hotkey registration outcome, or null. */
     const hotkeyStatus = kelpi.settings.hotkeyStatus;
 
+    /**
+     * §1.7 multi-daemon groups: one live runtime per configured `remote-daemon`, and which
+     * remote workspace (if any) the workspace area is showing. A LOCAL activation clears the
+     * selection (`activateWorkspaceAndReveal`); a vanished daemon clears it below.
+     */
+    const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons);
+    const [remoteSelection, setRemoteSelection] = useState<RemoteSelection | null>(null);
+    const remoteSelectionRef = useRef(remoteSelection);
+    remoteSelectionRef.current = remoteSelection;
+    const activeRemote =
+        remoteSelection === null ? null : (remoteDaemonRuntimes.get(remoteSelection.daemon) ?? null);
+    useEffect(() => {
+        if (remoteSelection !== null && !remoteDaemonRuntimes.has(remoteSelection.daemon)) {
+            setRemoteSelection(null);
+        }
+    }, [remoteSelection, remoteDaemonRuntimes]);
+
     const [sidebarVisible, setSidebarVisible] = useState(true);
     /**
      * §WS-001: the show/hide SLIDE. `sidebarVisible` is still the one boolean everything writes
@@ -428,6 +448,9 @@ function Shell(props: AppProps): ReactElement {
      */
     const activateWorkspaceAndReveal = useCallback(
         (workspaceID: string): void => {
+            // §1.7: landing on a LOCAL workspace leaves remote mode; the state setter is
+            // identity-stable so the callback's deps are unchanged.
+            setRemoteSelection(null);
             runtime.activateWorkspace(workspaceID);
             setScrollToWorkspaceID(workspaceID);
             setGitRefreshRequest((previous) => ({
@@ -2608,6 +2631,7 @@ function Shell(props: AppProps): ReactElement {
             setGhosttySetting: (key, value) =>
                 void run('Change appearance', commands.setGhosttySetting({ key, value })),
             setProfiles: (profiles) => void run('Save profiles', commands.setProfiles({ profiles })),
+            setRemoteDaemons: (daemons) => void run('Save remote daemons', commands.setRemoteDaemons({ daemons })),
             addLabelPreset: (input) => void run('Add label preset', commands.addLabelPreset(input)),
             updateLabelPreset: (input) => void run('Update label preset', commands.updateLabelPreset(input)),
             removeLabelPreset: (id) => void run('Delete label preset', commands.removeLabelPreset({ id })),
@@ -2850,7 +2874,11 @@ function Shell(props: AppProps): ReactElement {
                 createSheetOpenRef.current,
             // N14's residual: the one chord that guard does NOT hand to the overlay's text field.
             onCloseChordWhileModal: closeModalOverlay,
-            hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null,
+            // §1.7: while a REMOTE workspace fills the area, the local pane keymap stands
+            // down — a ⌘D here must not split the hidden local workspace. The remote grid's
+            // header buttons carry those gestures; chords fall through to the terminal.
+            hasActiveWorkspace: () =>
+                remoteSelectionRef.current === null && selectActiveWorkspace(store.getState()) !== null,
             // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
             // lookup, which is `close_search` by default.
             onEscape: () => sidebarEscapeRef.current?.() ?? false,
@@ -3975,6 +4003,19 @@ function Shell(props: AppProps): ReactElement {
                     >
                 <Sidebar
                     entries={filteredEntries}
+                    remoteDaemons={settings.remoteDaemons.map((daemon) => daemon.name)}
+                    onCreateRemoteGroup={(daemonName, name, color) => {
+                        const held = remoteDaemonRuntimes.get(daemonName);
+                        if (held === undefined) return;
+                        void held.runtime.commands.createGroup({ name, ...(color !== null ? { color } : {}) });
+                    }}
+                    trailingSections={
+                        <RemoteDaemonSections
+                            daemons={[...remoteDaemonRuntimes.values()]}
+                            selection={remoteSelection}
+                            onSelect={setRemoteSelection}
+                        />
+                    }
                     activeWorkspaceID={workspace?.id ?? null}
                     filter={ui.sidebarFilter}
                     onFilterChange={(filter) => store.getState().setSidebarFilter(filter)}
@@ -4085,7 +4126,15 @@ function Shell(props: AppProps): ReactElement {
                       * `ready &&` because a client with no snapshot yet has no workspace either,
                       * and the honest thing to show THERE is the connection splash below.
                       */}
-                    {ready && workspace === null ? (
+                    {remoteSelection !== null && activeRemote !== null ? (
+                        /* §1.7: a REMOTE daemon's workspace fills the area — same grid, that
+                           daemon's mirror, PTY stream and commands (`RemoteWorkspaceView`). */
+                        <RemoteWorkspaceView
+                            daemonName={activeRemote.name}
+                            runtime={activeRemote.runtime}
+                            workspaceID={remoteSelection.workspaceID}
+                        />
+                    ) : ready && workspace === null ? (
                         <NoWorkspaceSelected onCreate={() => act.newWorkspace()} />
                     ) : (
                     <PaneGrid

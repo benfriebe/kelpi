@@ -35,6 +35,7 @@ import {
     useState,
     type CSSProperties,
     type ReactElement,
+    type ReactNode,
     type RefObject
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -1638,6 +1639,16 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly repos?: readonly ChromeRepo[] | undefined;
     /** Config-defined profile names for the form's Profile picker (§SET-214); `default` leads. */
     readonly profiles?: readonly string[] | undefined;
+    /** §1.7: registered remote daemon names — the group sheet's "Runs on" choices. */
+    readonly remoteDaemons?: readonly string[] | undefined;
+    /** §1.7: the sheet chose a remote — create the group on THAT daemon (assembly routes it). */
+    readonly onCreateRemoteGroup?: ((daemonName: string, name: string, color: WorkspaceColor | null) => void) | undefined;
+    /**
+     * §1.7: rendered after the workspace list, inside the scroller — the remote daemons'
+     * sections. A slot rather than data props, so the sidebar knows nothing about remote
+     * stores; assembly hands it fully-formed rows.
+     */
+    readonly trailingSections?: ReactNode;
     /**
      * SET-011's answer for THIS client: the group a new workspace should join when the form is
      * opened without an explicit one (the active workspace's group, when the setting is on).
@@ -4628,6 +4639,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 />
                 {/* The list itself never shrinks; the spacer below takes the slack. */}
                 <div className="shrink-0">{body}</div>
+                {/* §1.7: the remote daemons' sections, after the local list (see the prop). */}
+                {props.trailingSections ?? null}
                 {/*
                  * L14: `Color.clear.frame(minHeight: 40, maxHeight: .infinity)`
                  * (`WorkspaceListView.swift:335-336`) — the right-click target under the last row
@@ -4768,6 +4781,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     repos={props.repos ?? EMPTY_REPOS}
                     groups={groups}
                     profiles={props.profiles ?? EMPTY_PROFILES}
+                    remoteDaemons={props.remoteDaemons ?? []}
                     defaultColor={newFormColor}
                     // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
                     // wins; otherwise SET-011's inherited group, which assembly resolves.
@@ -4784,6 +4798,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     onSubmit={async (draft) => {
                         const members = newForm.workspaceIDs;
                         if (newForm.kind === 'group') {
+                            // §1.7: a group destined for another daemon is created THERE —
+                            // no local row exists; it appears under that daemon's section.
+                            if (draft.remoteDaemon !== null && props.onCreateRemoteGroup !== undefined) {
+                                props.onCreateRemoteGroup(draft.remoteDaemon, draft.name, draft.color);
+                                setNewForm(null);
+                                return null;
+                            }
                             // §WS-058: a group raised from the bulk menu is created AROUND
                             // the selection, in one command, and the selection is released.
                             if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {

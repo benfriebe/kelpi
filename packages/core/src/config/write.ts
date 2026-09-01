@@ -16,6 +16,8 @@ import {
 } from './lines.js';
 import { serializeProfileLines } from './profiles.js';
 import type { Profile } from './profiles.js';
+import { serializeRemoteDaemonLines } from './remote-daemons.js';
+import type { RemoteDaemon } from './remote-daemons.js';
 
 /**
  * Replace (or append) one `key = value` line, keeping every other line byte-for-byte -
@@ -55,6 +57,22 @@ export function writeProfiles(contents: string | null, profiles: readonly Profil
     const output = [...preserved];
     if (profileLines.length > 0 && preserved.length > 0) output.push('');
     output.push(...profileLines);
+    return ensureTrailingNewline(output.join('\n'));
+}
+
+/**
+ * Full-replacement write for the `remote-daemon` registry (§1.7) — `writeProfiles`'s twin:
+ * every unrelated line survives byte-for-byte, the registry block lands at the end.
+ */
+export function writeRemoteDaemons(contents: string | null, daemons: readonly RemoteDaemon[]): string {
+    const preserved = stripTrailingBlankLines(
+        splitConfigLines(contents ?? '').filter((line) => configLineKey(line) !== 'remote-daemon')
+    );
+    const daemonLines = serializeRemoteDaemonLines(daemons);
+    if (preserved.length === 0 && daemonLines.length === 0) return '';
+    const output = [...preserved];
+    if (daemonLines.length > 0 && preserved.length > 0) output.push('');
+    output.push(...daemonLines);
     return ensureTrailingNewline(output.join('\n'));
 }
 

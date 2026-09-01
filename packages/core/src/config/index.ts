@@ -54,8 +54,9 @@ export {
 export type { GeneralSettings } from './general.js';
 export { parseKeybindOverrides } from './keybinds.js';
 export { parseProfiles, serializeProfileLines } from './profiles.js';
+export { parseRemoteDaemons, serializeRemoteDaemonLines, type RemoteDaemon } from './remote-daemons.js';
 export type { ParseProfilesOptions, Profile } from './profiles.js';
-export { setGeneralSetting, writeKeybindings, writeProfiles } from './write.js';
+export { setGeneralSetting, writeKeybindings, writeProfiles, writeRemoteDaemons } from './write.js';
 export {
     DEFAULT_CHROME_SETTINGS,
     SYSTEM_STAT_IDS,

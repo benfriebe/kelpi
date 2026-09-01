@@ -589,3 +589,23 @@ describe('chrome settings in the snapshot', () => {
         );
     });
 });
+
+describe('setRemoteDaemons (§1.7)', () => {
+    it('writes the whole registry, preserves everything else, and the snapshot carries it', () => {
+        const f = fixture({ config: 'keybind = super+d=split_right\n' });
+        const next = f.service.setRemoteDaemons([{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_a' }]);
+        expect(next.remoteDaemons).toEqual([{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_a' }]);
+        const contents = fs.readFileSync(f.configPath, 'utf8');
+        expect(contents).toContain('keybind = super+d=split_right');
+        expect(contents).toContain('remote-daemon = werk:https://werk.taila.ts.net/?token=kd_a');
+        // Full replacement: an empty save clears the registry and nothing else.
+        expect(f.service.setRemoteDaemons([]).remoteDaemons).toEqual([]);
+    });
+
+    it('refuses blank names, blank URLs, and names carrying a colon', () => {
+        const f = fixture();
+        expect(() => f.service.setRemoteDaemons([{ name: ' ', url: 'https://x/' }])).toThrow(SettingsError);
+        expect(() => f.service.setRemoteDaemons([{ name: 'a', url: ' ' }])).toThrow(SettingsError);
+        expect(() => f.service.setRemoteDaemons([{ name: 'a:b', url: 'https://x/' }])).toThrow(SettingsError);
+    });
+});

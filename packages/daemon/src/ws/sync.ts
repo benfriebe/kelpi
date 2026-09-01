@@ -47,6 +47,7 @@ import {
     type WsClientInfo,
     type WsClientKind,
     type WsProfile,
+    type WsRemoteDaemon,
     type WsRejectionCode,
     type WsRejectionReason,
     type WsSettingsCommand,
@@ -1074,6 +1075,25 @@ export interface SettingsChannel {
     setProfiles(profiles: readonly WsProfile[]): WsSettingsSnapshot;
     /** The GHOSTTY file's writer (`WS_WRITABLE_GHOSTTY_KEYS`); `null` removes the key. */
     setGhosttySetting(key: string, value: string | null): WsSettingsSnapshot;
+    /** §1.7's registry, full-replacement like `setProfiles`. */
+    setRemoteDaemons(daemons: readonly WsRemoteDaemon[]): WsSettingsSnapshot;
+}
+
+/**
+ * `set-remote-daemons`'s payload → the writer's input, with `decodeProfilesPayload`'s rule:
+ * a half-understood payload is rejected, never coerced — the write replaces the registry.
+ */
+export function decodeRemoteDaemonsPayload(raw: unknown): readonly WsRemoteDaemon[] | null {
+    if (!Array.isArray(raw)) return null;
+    const daemons: WsRemoteDaemon[] = [];
+    for (const entry of raw) {
+        if (!isRecord(entry)) return null;
+        const name = entry['name'];
+        const url = entry['url'];
+        if (typeof name !== 'string' || typeof url !== 'string') return null;
+        daemons.push({ name, url });
+    }
+    return daemons;
 }
 
 /**
@@ -1130,6 +1150,11 @@ export function handleSettingsCommand(
             const profiles = decodeProfilesPayload(payload['profiles']);
             if (profiles === null) return failure('set-profiles requires profiles: [{name, env}]');
             return { ok: true, settings: settings.setProfiles(profiles) as unknown as JsonObject };
+        }
+        if (command === 'set-remote-daemons') {
+            const daemons = decodeRemoteDaemonsPayload(payload['daemons']);
+            if (daemons === null) return failure('set-remote-daemons requires daemons: [{name, url}]');
+            return { ok: true, settings: settings.setRemoteDaemons(daemons) as unknown as JsonObject };
         }
         if (command === 'set-ghostty-setting') {
             const ghosttyKey = text(payload['key']);

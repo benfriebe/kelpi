@@ -33,6 +33,9 @@ export interface SettingsActions {
     setGhosttySetting(key: string, value: string | null): void;
     /** `set-profiles` — the WHOLE profile set (§1.6's full-replacement write). */
     setProfiles(profiles: readonly WsProfile[]): void;
+    /** `set-remote-daemons` — the WHOLE §1.7 registry (multi-daemon groups). Optional:
+     *  a fixture or older surface without it renders the Daemons card read-only. */
+    setRemoteDaemons?(daemons: readonly { name: string; url: string }[]): void;
     /**
      * `add-label-preset`; `color` is §6.2's one-string encoding (`"blue"` / `"#ff8800"`).
      *

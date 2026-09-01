@@ -88,6 +88,11 @@ export interface NewEntryDraft {
     readonly groupID: string | null;
     /** `null` = the built-in `default` baseline, which the daemon normalizes to "unassigned". */
     readonly profile: string | null;
+    /**
+     * §1.7 multi-daemon groups: which daemon a NEW GROUP is created on. Null = this one.
+     * Group-kind only; the workspace sheet neither shows nor sets it.
+     */
+    readonly remoteDaemon: string | null;
     /** Repo PATHS to associate once the workspace exists (§WS-075's Repositories section). */
     readonly repoPaths: readonly string[];
     readonly worktree?: WorkspaceWorktreeRequest | undefined;
@@ -108,6 +113,8 @@ export interface NewEntrySheetProps {
     readonly groups?: readonly ChromeGroup[] | undefined;
     /** Config-defined profile names. `default` leads the list and is never expected in it. */
     readonly profiles?: readonly string[] | undefined;
+    /** §1.7: registered remote daemon names — the group sheet's "Runs on" choices. */
+    readonly remoteDaemons?: readonly string[] | undefined;
     /** The group the picker opens on: the menu's explicit one, else SET-011's inherited one. */
     readonly defaultGroupID?: string | null | undefined;
     /** The swatch the sheet opens on — `nextCreateColor`, which avoids the neighbour's colour. */
@@ -156,6 +163,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     );
     const [groupID, setGroupID] = useState<string | null>(props.defaultGroupID ?? null);
     const [profile, setProfile] = useState<string>(DEFAULT_PROFILE_NAME);
+    const [remoteDaemon, setRemoteDaemon] = useState<string>('');
     const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [worktree, setWorktree] = useState(false);
@@ -250,6 +258,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             color,
             groupID,
             profile: profile === DEFAULT_PROFILE_NAME ? null : profile,
+            remoteDaemon: remoteDaemon === '' ? null : remoteDaemon,
             repoPaths: chosenRepos.map((entry) => entry.path),
             ...(worktreeOn && repo !== null
                 ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain } }
@@ -600,6 +609,36 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                     DEFAULT_PROFILE_NAME,
                                     ...profiles.filter((name) => name !== DEFAULT_PROFILE_NAME)
                                 ].map((name) => (
+                                    <option key={name} value={name} style={{ color: '#000' }}>
+                                        {name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    ) : null}
+
+                    {!isWorkspace && (props.remoteDaemons?.length ?? 0) > 0 ? (
+                        <label className="flex items-center gap-2">
+                            <span className="shrink-0 text-[11px]" style={{ color: tokens.textSecondary }}>
+                                Runs on
+                            </span>
+                            {/* §1.7: a group may live on another daemon entirely — the group is
+                                created THERE (over that daemon's own connection) and its
+                                workspaces render under its sidebar section. */}
+                            <select
+                                aria-label="Runs on"
+                                data-testid="new-group-runs-on"
+                                className="ml-auto min-w-0 rounded border bg-transparent px-1 py-[3px] text-[11px]"
+                                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                value={remoteDaemon}
+                                onChange={(event) => {
+                                    setRemoteDaemon(event.target.value);
+                                }}
+                            >
+                                <option value="" style={{ color: '#000' }}>
+                                    This Mac
+                                </option>
+                                {(props.remoteDaemons ?? []).map((name) => (
                                     <option key={name} value={name} style={{ color: '#000' }}>
                                         {name}
                                     </option>

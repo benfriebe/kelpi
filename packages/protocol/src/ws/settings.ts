@@ -357,6 +357,19 @@ export interface WsSettingsSnapshot {
      * them on every settings read — a separate verb would be a second source of truth.
      */
     readonly profiles: readonly WsProfile[];
+    /**
+     * The config file's `remote-daemon` lines (config-keybindings.md §1.7): other kelpi
+     * daemons this client may attach to, for multi-daemon groups. Each `url` is the pairing
+     * URL the other daemon's Settings ▸ Remote hands out (origin + `?token=`). Additive: an
+     * older daemon omits the field and the hydrator fills `[]`.
+     */
+    readonly remoteDaemons: readonly WsRemoteDaemon[];
+}
+
+/** One `remote-daemon = name:url` line, parsed. */
+export interface WsRemoteDaemon {
+    readonly name: string;
+    readonly url: string;
 }
 
 /** Matches the web client's `--kelpi-term-bg` fallback and the daemon's content-render default. */
@@ -366,6 +379,7 @@ export const DEFAULT_SETTINGS_BACKGROUND = '#0a0a0c';
 export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
     keybindLines: [],
     profiles: [],
+    remoteDaemons: [],
     chrome: DEFAULT_WS_CHROME_SETTINGS,
     general: {
         focusFollowsMouse: false,
@@ -427,6 +441,9 @@ export const WS_SETTINGS_COMMANDS = [
     'reset-keybindings',
     'set-general-setting',
     'set-profiles',
+    // §1.7's registry, written the way `set-profiles` writes profiles: the WHOLE set,
+    // full-replacement, every unrelated config line preserved byte-for-byte.
+    'set-remote-daemons',
     'set-ghostty-setting'
 ] as const;
 export type WsSettingsCommand = (typeof WS_SETTINGS_COMMANDS)[number];

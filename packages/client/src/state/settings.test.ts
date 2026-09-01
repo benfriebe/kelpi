@@ -15,6 +15,7 @@ import { connectStore } from './bridge';
 import { createKelpiStore, hydrateSettings } from './store';
 
 const SETTINGS: WsSettingsSnapshot = {
+    remoteDaemons: [{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_x' }],
     keybindLines: ['ctrl+alt+t=split_right'],
     // M8 Settings ▸ Profiles: the config file's `profile` lines ride the same snapshot.
     profiles: [{ name: 'work', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }],

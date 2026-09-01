@@ -38,6 +38,7 @@ import {
     parseKeyTrigger,
     parseKeybindOverrides,
     parseProfiles,
+    parseRemoteDaemons,
     removeAllBindings,
     resolveKeyBindings,
     setBinding,
@@ -46,9 +47,11 @@ import {
     triggersForAction,
     writeKeybindings,
     writeProfiles,
+    writeRemoteDaemons,
     type KeyBindingMap,
     type KelpiAction,
-    type Profile
+    type Profile,
+    type RemoteDaemon
 } from '@kelpi/core/config';
 import {
     DEFAULT_WS_SETTINGS,
@@ -56,6 +59,7 @@ import {
     isWsWritableGeneralKey,
     isWsWritableGhosttyKey,
     type WsProfile,
+    type WsRemoteDaemon,
     type WsSettingsSnapshot,
     type WsTerminalThemeResolution
 } from '@kelpi/protocol';
@@ -139,6 +143,12 @@ export interface SettingsService {
      * survive a round-trip (the editor adds it).
      */
     setProfiles(profiles: readonly WsProfile[]): SettingsSnapshot;
+    /**
+     * Replace the file's WHOLE `remote-daemon` registry (§1.7) — `setProfiles`'s twin: full
+     * replacement, every unrelated line preserved. Names must be non-blank and colon-free
+     * (the name is the line's `<name>:` prefix); URLs non-blank.
+     */
+    setRemoteDaemons(daemons: readonly WsRemoteDaemon[]): SettingsSnapshot;
     dispose(): void;
 }
 
@@ -239,6 +249,9 @@ export function buildSettingsSnapshot(
             name: profile.name,
             env: { ...profile.env }
         })),
+        // §1.7: the client's registry of other daemons (multi-daemon groups). Same
+        // parse-on-every-read arrangement as profiles.
+        remoteDaemons: parseRemoteDaemons(kelpiConfig).map((daemon) => ({ ...daemon })),
         // The chrome/status-bar half of the same file (`@kelpi/core/config`'s `chrome.ts`).
         // Additive: every field has a default, so a config that names none of these keys
         // produces exactly the shipped palette and the shipped gauge set.
@@ -546,6 +559,25 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
             // the two writers genuinely differ, and §14 spells out that only the keybinding
             // writer deletes. Passing '' through `commit` keeps that behaviour.
             return commit(writeProfiles(contentsOrNull(configPath), normalized));
+        },
+
+        setRemoteDaemons(daemons) {
+            const normalized: RemoteDaemon[] = [];
+            for (const daemon of daemons) {
+                if (typeof daemon?.name !== 'string' || daemon.name.trim() === '') {
+                    throw new SettingsError('set-remote-daemons requires a name on every daemon');
+                }
+                if (typeof daemon.url !== 'string' || daemon.url.trim() === '') {
+                    throw new SettingsError(`remote daemon '${daemon.name}' needs a URL`);
+                }
+                // The name is the config line's `<name>:` prefix; a colon inside it would
+                // split as a shorter name with the rest leaking into the URL on re-read.
+                if (daemon.name.includes(':')) {
+                    throw new SettingsError(`remote daemon names may not contain ':' ('${daemon.name}')`);
+                }
+                normalized.push({ name: daemon.name.trim(), url: daemon.url.trim() });
+            }
+            return commit(writeRemoteDaemons(contentsOrNull(configPath), normalized));
         },
 
         dispose() {

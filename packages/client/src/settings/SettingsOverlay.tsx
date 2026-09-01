@@ -358,7 +358,15 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             {...(props.web?.path === undefined ? {} : { path: props.web.path })}
                         />
                     ) : null}
-                    {tab === 'remote' ? <RemoteTab actions={props.remote ?? NO_REMOTE_ACTIONS} /> : null}
+                    {tab === 'remote' ? (
+                        <RemoteTab
+                            actions={props.remote ?? NO_REMOTE_ACTIONS}
+                            daemons={props.settings.remoteDaemons}
+                            {...(props.actions.setRemoteDaemons === undefined
+                                ? {}
+                                : { onSaveDaemons: props.actions.setRemoteDaemons.bind(props.actions) })}
+                        />
+                    ) : null}
                 </div>
                 </div>
             </div>

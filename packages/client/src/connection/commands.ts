@@ -1449,6 +1449,19 @@ export class CommandClient {
         );
     }
 
+    /** `set-remote-daemons` — the WHOLE §1.7 registry, `setProfiles`-style full replacement. */
+    setRemoteDaemons(
+        input: { daemons: readonly { name: string; url: string }[] },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-remote-daemons', {
+                daemons: input.daemons.map((daemon) => ({ name: daemon.name, url: daemon.url }))
+            }),
+            options ?? {}
+        );
+    }
+
     // ── content-pane verbs (M5) ────────────────────────────────────────────────────
     //
     // The daemon's `ContentService` behind `daemon/src/ws/sync.ts` `CONTENT_COMMANDS`. A

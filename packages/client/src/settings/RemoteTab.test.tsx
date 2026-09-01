@@ -97,3 +97,41 @@ describe('Settings ▸ Remote', () => {
         await waitFor(() => expect(revoke).toHaveBeenCalledWith('aa11'));
     });
 });
+
+describe('the Daemons registry card (§1.7)', () => {
+    it('lists configured daemons with tokens elided, removes one, and adds one as a full-replacement save', async () => {
+        const onSaveDaemons = vi.fn();
+        render(
+            <RemoteTab
+                actions={actions()}
+                daemons={[{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_secret' }]}
+                onSaveDaemons={onSaveDaemons}
+            />
+        );
+        await waitFor(() => expect(screen.getByTestId('remote-daemon-row-werk')).toBeTruthy());
+        // The credential never renders: the row shows the URL with the token elided.
+        expect(screen.getByTestId('remote-daemon-row-werk').textContent).not.toContain('kd_secret');
+        expect(screen.getByTestId('remote-daemon-row-werk').textContent).toContain('?token=…');
+
+        fireEvent.click(screen.getByTestId('remote-daemon-remove-werk'));
+        expect(onSaveDaemons).toHaveBeenCalledWith([]);
+
+        fireEvent.change(screen.getByTestId('remote-daemon-add-name'), { target: { value: 'studio' } });
+        fireEvent.change(screen.getByTestId('remote-daemon-add-url'), {
+            target: { value: 'https://studio.taila.ts.net/?token=kd_b' }
+        });
+        fireEvent.click(screen.getByTestId('remote-daemon-add-button'));
+        expect(onSaveDaemons).toHaveBeenLastCalledWith([
+            { name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_secret' },
+            { name: 'studio', url: 'https://studio.taila.ts.net/?token=kd_b' }
+        ]);
+    });
+
+    it('renders read-only without a save handler, and refuses a name carrying a colon', async () => {
+        render(<RemoteTab actions={actions()} daemons={[]} />);
+        await waitFor(() => expect(screen.getByTestId('remote-daemons-empty')).toBeTruthy());
+        fireEvent.change(screen.getByTestId('remote-daemon-add-name'), { target: { value: 'a' } });
+        fireEvent.change(screen.getByTestId('remote-daemon-add-url'), { target: { value: 'https://x/' } });
+        expect((screen.getByTestId('remote-daemon-add-button') as HTMLButtonElement).disabled).toBe(true);
+    });
+});

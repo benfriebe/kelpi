@@ -485,3 +485,26 @@ describe('set-ghostty-setting', () => {
         });
     });
 });
+
+describe('set-remote-daemons (§1.7)', () => {
+    it('replaces the whole registry, preserves other lines, and rejects half-understood payloads', () => {
+        const f = fixture({ config: PRESERVED });
+        const client = f.connect();
+        const reply = client.send({
+            command: 'set-remote-daemons',
+            daemons: [{ name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_a' }]
+        });
+        expect(settingsOf(reply).remoteDaemons).toEqual([
+            { name: 'werk', url: 'https://werk.taila.ts.net/?token=kd_a' }
+        ]);
+        expect(f.read() ?? '').toContain('remote-daemon = werk:https://werk.taila.ts.net/?token=kd_a');
+        expect(f.read() ?? '').toContain('# my kelpi config');
+
+        expect(client.send({ command: 'set-remote-daemons', daemons: [{ name: 'x' }] })).toEqual({
+            ok: false,
+            error: 'set-remote-daemons requires daemons: [{name, url}]'
+        });
+        // A refused save leaves the registry as it was.
+        expect(f.read() ?? '').toContain('remote-daemon = werk:');
+    });
+});

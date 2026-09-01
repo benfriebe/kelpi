@@ -2,7 +2,7 @@
  * A MINIMAL `~/.config/ghostty/config` reader (content-panes.md §3.1, §3.8 + port note 9).
  *
  * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
- * no ghostty, so it reads the five keys that actually change how Kelpi draws — and nothing else.
+ * no ghostty, so it reads the seven keys that actually change how Kelpi draws — and nothing else.
  * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/nex/config`,
  * so the line splitter is `@kelpi/core/config`'s: one parser, one set of quirks.
  *
@@ -41,7 +41,7 @@ export interface GhosttyAppearance {
      * `window-padding-x` / `window-padding-y`: whole pixels the terminal pane keeps clear at
      * its edges (x = left/right, y = top; the bottom edge collects the sub-cell remainder —
      * `TerminalPane.tsx` owns that geometry). Null = the key is unset and the client's shipped
-     * default (2, ghostty's own default) applies. Parsed as a non-negative number, rounded,
+     * default (4) applies. Parsed as a non-negative number, rounded,
      * and clamped to 64 — a runaway value must not be able to shrink the measured host to
      * nothing.
      */

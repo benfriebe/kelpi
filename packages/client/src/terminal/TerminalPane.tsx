@@ -75,11 +75,11 @@ export const RESIZE_MAX_WAIT_MS = 100;
  * padding writes that key; the `paddingX` prop carries the configured value here).
  *
  * Two jobs: it keeps the focus ring off the first and last columns (see the pane root's style),
- * and it is the same `window-padding-x = 2` ghostty applies by default, so a terminal here is
- * spaced like a terminal in the Swift app. Applied to the pane root, NOT to the host the
- * geometry is measured from, so cols stay honest.
+ * and it gives the grid breathing room from the pane edge — 4, a step roomier than ghostty's
+ * own `window-padding-x = 2` default, chosen deliberately. Applied to the pane root, NOT to
+ * the host the geometry is measured from, so cols stay honest.
  */
-export const TERMINAL_EDGE_PADDING = 2;
+export const TERMINAL_EDGE_PADDING = 4;
 
 /**
  * Vertical breathing room between the pane's top edge and row 1, in CSS pixels — the DEFAULT
@@ -87,13 +87,13 @@ export const TERMINAL_EDGE_PADDING = 2;
  * {@link TERMINAL_EDGE_PADDING}.
  *
  * Same two jobs, rotated 90°: it keeps the first row's ascenders off the pane edge (and out
- * from under the focus ring), and it matches the top half of ghostty's `window-padding-y = 2`
- * default. Top only — the bottom edge already collects the sub-cell remainder of
- * `floor(height / cellHeight)`, so padding there would double up. Applied to the pane root,
- * NOT to the host the geometry is measured from, so rows stay honest and the bottom row is
- * never clipped.
+ * from under the focus ring) — 4, matching {@link TERMINAL_EDGE_PADDING} rather than the top
+ * half of ghostty's `window-padding-y = 2` default. Top only — the bottom edge already
+ * collects the sub-cell remainder of `floor(height / cellHeight)`, so padding there would
+ * double up. Applied to the pane root, NOT to the host the geometry is measured from, so rows
+ * stay honest and the bottom row is never clipped.
  */
-export const TERMINAL_EDGE_PADDING_TOP = 2;
+export const TERMINAL_EDGE_PADDING_TOP = 4;
 
 /**
  * How many times a pane will build an engine before it gives up and shows the placeholder
@@ -234,7 +234,7 @@ export interface TerminalPaneProps {
     /**
      * Edge padding in CSS pixels, from the ghostty config's `window-padding-x` /
      * `window-padding-y` (Settings ▸ Appearance ▸ Terminal padding). Undefined = the shipped
-     * 2px defaults. x pads left/right, y pads the top; the bottom edge stays the sub-cell
+     * 4px defaults. x pads left/right, y pads the top; the bottom edge stays the sub-cell
      * remainder — see {@link TERMINAL_EDGE_PADDING_TOP}. A change re-styles the pane root, the
      * host's ResizeObserver sees the shrunken/grown box, and the grid re-measures — live, no
      * engine rebuild.

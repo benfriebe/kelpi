@@ -319,7 +319,7 @@ export interface WsAppearanceSettings {
     /**
      * ghostty `window-padding-x` / `window-padding-y`: whole pixels the terminal pane keeps
      * clear at its edges (x = left/right, y = top; the bottom edge collects the sub-cell
-     * remainder). Null = key unset, the client's shipped 2px default applies. Additive: a
+     * remainder). Null = key unset, the client's shipped 4px default applies. Additive: a
      * daemon that predates them omits the fields and the hydrator fills null.
      */
     readonly windowPaddingX: number | null;

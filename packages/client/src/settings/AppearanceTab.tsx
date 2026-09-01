@@ -11,7 +11,7 @@
  *     (`@kelpi/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
  *     our file.
  *   - **ghostty-owned** — background, opacity, font and terminal theme belong to ghostty's
- *     config, written with `set-ghostty-setting`, which touches only the five keys the daemon
+ *     config, written with `set-ghostty-setting`, which touches only the seven keys the daemon
  *     can read back and preserves every other line of a user's file byte-for-byte.
  *
  * Nothing here holds a copy of the settings. Every control renders from the daemon snapshot
@@ -46,6 +46,7 @@ import {
     type ChromeStyleTheme,
     type OverridableChromeKey
 } from '../chrome';
+import { TERMINAL_EDGE_PADDING, TERMINAL_EDGE_PADDING_TOP } from '../terminal';
 import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
 import type { SettingsActions, SettingsPaths } from './types';
 import {
@@ -735,7 +736,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                     label="Padding (horizontal)"
                     testID="terminal-padding-x"
                     detail="Pixels kept clear at the pane's left and right edges — ghostty's window-padding-x."
-                    value={appearance.windowPaddingX ?? 2}
+                    value={appearance.windowPaddingX ?? TERMINAL_EDGE_PADDING}
                     min={0}
                     max={32}
                     step={1}
@@ -748,7 +749,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                     label="Padding (vertical)"
                     testID="terminal-padding-y"
                     detail="Pixels between the pane's top edge and row 1 — ghostty's window-padding-y. The bottom edge keeps the sub-cell remainder."
-                    value={appearance.windowPaddingY ?? 2}
+                    value={appearance.windowPaddingY ?? TERMINAL_EDGE_PADDING_TOP}
                     min={0}
                     max={32}
                     step={1}

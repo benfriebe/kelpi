@@ -2514,7 +2514,7 @@ function Shell(props: AppProps): ReactElement {
             fontFamily: terminalFontStack(settings.appearance.fontFamily),
             fontSize: settings.appearance.fontSize,
             // ghostty `window-padding-x`/`-y` (Settings ▸ Appearance ▸ Terminal padding);
-            // null = the pane's shipped 2px defaults.
+            // null = the pane's shipped 4px defaults.
             paddingX: settings.appearance.windowPaddingX,
             paddingY: settings.appearance.windowPaddingY
         }),

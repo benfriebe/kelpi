@@ -248,18 +248,41 @@ const TILE_BOTTOM: Rgba = [0x04, 0x04, 0x06, 0xff];
 const TILE_EDGE: Rgba = [0x33, 0x33, 0x3b, 0xff];
 const GLYPH: Rgba = [0xff, 0xff, 0xff, 0xff];
 
-/** Everything below is in a 0..1 square, so one description renders at every icon size. */
-const TILE_INSET = 0.055;
-const TILE_RADIUS = 0.215;
+// Everything below is in a 0..1 square, so one description renders at every icon size.
 
 /**
- * The source canvas maps onto this central span of the icon. The drawing frames itself with
- * its own margins inside its square, so this only has to pull it clear of the tile's edge.
+ * Apple's icon grid, as a fraction of the canvas.
+ *
+ * A macOS app icon is not drawn edge to edge. The grid puts a full-bleed rounded rectangle -
+ * which is exactly what this tile is - on the central 824 of 1024 points, with a 185.4pt corner
+ * radius, and leaves the surrounding 100pt empty. The Dock does not normalise that away: it
+ * lays every tile out on the same 1024 box, so an icon that paints into the padding simply
+ * looks bigger than the apps beside it.
+ *
+ * Issue #5 was that. The tile spanned 0.89 of the canvas - 911 of 1024 points, ~10% over the
+ * grid - and Kelpi sat visibly larger than its Dock neighbours. Nothing was wrong with the
+ * drawing; it was on a bigger grid than everyone else.
  */
-const GLYPH_SPAN = 0.84;
+export const APP_ICON_TILE_SPAN = 824 / 1024;
+const TILE_INSET = (1 - APP_ICON_TILE_SPAN) / 2;
+const TILE_RADIUS = 185.4 / 1024;
 
 /**
- * The floor on the stroke's device width. The nominal stroke is ~10px at 1024 and scales down
+ * The source canvas maps onto this fraction of the *tile*. The drawing frames itself with its
+ * own margins inside its square, so this only has to pull it clear of the tile's edge - and
+ * measuring it against the tile rather than the canvas is what keeps the mark's proportions
+ * fixed when the tile moves onto (or off) the grid.
+ *
+ * The value is the ratio the drawing already had (0.84 of canvas over a 0.89 tile), so this
+ * change resizes the icon without redrawing it.
+ */
+const GLYPH_SPAN_OF_TILE = 0.84 / 0.89;
+
+/** The same span against the whole canvas, which is the space `stampKelpie` stamps into. */
+const GLYPH_SPAN = APP_ICON_TILE_SPAN * GLYPH_SPAN_OF_TILE;
+
+/**
+ * The floor on the stroke's device width. The nominal stroke is ~9px at 1024 and scales down
  * linearly, which at the 16px and 32px ICNS variants would leave sub-half-pixel lines that
  * dissolve into grey mush; a one-pixel floor keeps the mark legible in a Finder list instead.
  */

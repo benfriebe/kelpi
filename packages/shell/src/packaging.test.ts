@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    APP_ICON_TILE_SPAN,
     ICNS_VARIANTS,
     MINIMUM_NODE_MAJOR,
     PACKAGED_APP_FILES,
@@ -122,6 +123,60 @@ describe('the app icon', () => {
 
     it('encodes to a PNG', () => {
         expect(appIconPng(32).subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
+    });
+
+    it('sits on the macOS icon grid rather than filling the canvas (#5)', () => {
+        // A full-bleed macOS icon shape is 824 of 1024 points wide, and the Dock lays every
+        // tile out on the same 1024 box. Painting into the 100pt padding is what made Kelpi
+        // read ~10% larger than the apps beside it.
+        expect(APP_ICON_TILE_SPAN).toBeCloseTo(824 / 1024, 6);
+
+        const size = 256;
+        const canvas = appIconPixels(size);
+        const alphaAt = (x: number, y: number): number => canvas.rgba[(y * size + x) * 4 + 3] as number;
+        const middle = size / 2;
+
+        let left = 0;
+        while (left < size && alphaAt(left, middle) < 128) left += 1;
+        let right = size - 1;
+        while (right > left && alphaAt(right, middle) < 128) right -= 1;
+        expect((right - left + 1) / size).toBeCloseTo(APP_ICON_TILE_SPAN, 2);
+
+        // Square and centred: the top edge starts exactly where the left edge does.
+        let top = 0;
+        while (top < size && alphaAt(middle, top) < 128) top += 1;
+        expect(top).toBe(left);
+    });
+
+    it('keeps the mark clear of the tile edge', () => {
+        // The glyph span is measured against the tile, so moving the tile onto the grid has to
+        // move the kelpie with it rather than leaving it bleeding over the corners.
+        const size = 256;
+        const canvas = appIconPixels(size);
+        let minX = size;
+        let maxX = -1;
+        let minY = size;
+        let maxY = -1;
+        for (let y = 0; y < size; y += 1) {
+            for (let x = 0; x < size; x += 1) {
+                const at = (y * size + x) * 4;
+                const white =
+                    (canvas.rgba[at] as number) >= 250 &&
+                    (canvas.rgba[at + 1] as number) >= 250 &&
+                    (canvas.rgba[at + 2] as number) >= 250;
+                if (!white) continue;
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+            }
+        }
+        const tileStart = ((1 - APP_ICON_TILE_SPAN) / 2) * size;
+        const tileEnd = size - tileStart;
+        expect(minX).toBeGreaterThan(tileStart);
+        expect(minY).toBeGreaterThan(tileStart);
+        expect(maxX).toBeLessThan(tileEnd);
+        expect(maxY).toBeLessThan(tileEnd);
     });
 });
 

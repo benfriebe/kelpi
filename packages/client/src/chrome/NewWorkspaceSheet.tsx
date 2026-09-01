@@ -670,7 +670,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                 Repositories
                             </span>
                             <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                                No repositories registered yet — add one in Settings ▸ Repositories, and it
+                                No repositories registered yet - add one in Settings ▸ Repositories, and it
                                 will be offered here.
                             </span>
                         </div>

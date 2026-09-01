@@ -380,7 +380,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                      */
                     <p data-testid={`web-cookie-empty-${paneID}`} style={{ color: tokens.textTertiary }}>
                         {props.isPrivate
-                            ? 'No cookies (private mode — fresh on every launch).'
+                            ? 'No cookies (private mode - fresh on every launch).'
                             : 'No cookies for this data store yet.'}
                     </p>
                 ) : (

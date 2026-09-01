@@ -2025,7 +2025,7 @@ function Shell(props: AppProps): ReactElement {
                     );
                 }
                 const typed = globalThis.prompt?.(
-                    `${OPEN_PANEL_MESSAGE} — type a path on the machine running kelpid`
+                    `${OPEN_PANEL_MESSAGE} - type a path on the machine running kelpid`
                 );
                 const path = typed?.trim() ?? '';
                 if (path === '') return true;
@@ -4656,7 +4656,7 @@ const SPLASH_HINT: Readonly<Record<string, string>> = {
     idle: '',
     connecting: '',
     connected: 'the daemon accepted the handshake; waiting for the first state snapshot',
-    reconnecting: 'the socket dropped — retrying with backoff',
+    reconnecting: 'the socket dropped - retrying with backoff',
     closed: 'nothing is listening; start it with `kelpid start`',
     // A rejection is almost always a missing/stale token, and there is exactly one command that
     // produces a working link — so name it rather than describing the problem in the abstract.
@@ -4816,7 +4816,7 @@ function ConnectionBanner({ status, error, runtime }: ConnectionBannerProps): Re
                 {rejected
                     ? 'The daemon refused this connection'
                     : dead
-                      ? 'Disconnected — the view may be stale'
+                      ? 'Disconnected - the view may be stale'
                       : 'Reconnecting…'}
             </span>
             {error === null ? null : (

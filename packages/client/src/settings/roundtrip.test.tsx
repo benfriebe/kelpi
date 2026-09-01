@@ -234,7 +234,7 @@ describe('a recorded keybinding, end to end', () => {
         });
 
         // Before: `open_diff` ships unbound.
-        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
+        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('-');
 
         act(() => {
             fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
@@ -247,7 +247,7 @@ describe('a recorded keybinding, end to end', () => {
             { command: 'set-keybinding', action: 'open_diff', trigger: 'ctrl+alt+j' }
         ]);
         // Nothing has changed locally — the file is the truth, so the row is still empty.
-        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
+        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('-');
 
         h.push({ keybindLines: ['ctrl+alt+j=open_diff'] });
 

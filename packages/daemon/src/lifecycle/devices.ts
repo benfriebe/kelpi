@@ -130,7 +130,7 @@ export function mintDevice(file: string, name: string, now: () => Date = () => n
     if (trimmed.length > 120) throw new Error('device names are capped at 120 characters');
     const devices = loadDevices(file);
     if (devices.some((device) => device.revokedAt === undefined && device.name === trimmed)) {
-        throw new Error(`a live device is already named "${trimmed}" — revoke it first, or pick another name`);
+        throw new Error(`a live device is already named "${trimmed}" - revoke it first, or pick another name`);
     }
     const token = `${DEVICE_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
     const device: PairedDevice = {
@@ -161,7 +161,7 @@ export function revokeDevice(
     if (match === undefined) {
         const named = devices.filter((device) => device.revokedAt === undefined && device.name === target);
         if (named.length > 1) {
-            throw new Error(`"${target}" names ${String(named.length)} live devices — revoke by id instead`);
+            throw new Error(`"${target}" names ${String(named.length)} live devices - revoke by id instead`);
         }
         match = named[0];
     }

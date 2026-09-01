@@ -202,7 +202,7 @@ describe('KelpiConnection reconnection', () => {
             type: 'rejected',
             code: 'unauthorized',
             reason: 'bad-token',
-            message: "invalid or missing daemon token — open the client via 'kelpid url'",
+            message: "invalid or missing daemon token - open the client via 'kelpid url'",
             protocolVersion: 1
         });
         // A coded close in the app range, NOT the 1006 an aborted upgrade produced.
@@ -211,7 +211,7 @@ describe('KelpiConnection reconnection', () => {
         expect(reasons).toEqual(['bad-token']);
         // The daemon's own words reach the UI unprefixed, and the clean close does not add a
         // spurious "socket closed (1006)" on top of the real explanation.
-        expect(errors).toEqual(["invalid or missing daemon token — open the client via 'kelpid url'"]);
+        expect(errors).toEqual(["invalid or missing daemon token - open the client via 'kelpid url'"]);
         expect(connection.status).toBe('rejected');
     });
 

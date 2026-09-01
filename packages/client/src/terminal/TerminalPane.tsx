@@ -162,7 +162,7 @@ export const TERMINAL_ACCESSIBILITY_HELP = 'Terminal content area';
  */
 export function terminalAccessibilityName(displayName?: string | undefined): string {
     const trimmed = (displayName ?? '').trim();
-    return trimmed === '' ? 'Terminal' : `Terminal — ${trimmed}`;
+    return trimmed === '' ? 'Terminal' : `Terminal - ${trimmed}`;
 }
 
 /** Off-screen but readable by assistive tech — the `aria-describedby` target's style. */
@@ -547,7 +547,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (attempt < TERMINAL_START_ATTEMPTS) {
                 console.info(
                     `[kelpi] terminal renderer ${phase === 'open' ? 'failed to start' : 'died'} for pane ${paneID} ` +
-                        `(attempt ${String(attempt)}/${String(TERMINAL_START_ATTEMPTS)}) — rebuilding on a fresh engine`,
+                        `(attempt ${String(attempt)}/${String(TERMINAL_START_ATTEMPTS)}) - rebuilding on a fresh engine`,
                     error
                 );
                 setStatus('loading');

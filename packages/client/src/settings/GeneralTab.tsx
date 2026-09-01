@@ -65,17 +65,17 @@ export function tcpListenerDetail(
         // step with a listener that is plainly up.
         return configuredPort > 0
             ? `Listening on ${tcp.host}:${String(tcp.bound)}.`
-            : `Listening on ${tcp.host}:${String(tcp.bound)} — this daemon was started with an explicit port, not from this config file.`;
+            : `Listening on ${tcp.host}:${String(tcp.bound)} - this daemon was started with an explicit port, not from this config file.`;
     }
     if (tcp !== null && tcp !== undefined) {
         return `Port ${String(tcp.requested)} unavailable: ${tcp.error ?? 'the listener did not bind'}. Unix-socket clients are unaffected.`;
     }
-    if (configuredPort <= 0) return 'Disabled — the Unix control socket is the only transport.';
+    if (configuredPort <= 0) return 'Disabled - the Unix control socket is the only transport.';
     if (transport === null || transport === undefined) {
         return `Listening on 127.0.0.1:${String(configuredPort)} (as of daemon start).`;
     }
     // The daemon spoke and has no TCP listener at all: the config changed after it started.
-    return `Port ${String(configuredPort)} takes effect on the next daemon start — this daemon started with no TCP listener.`;
+    return `Port ${String(configuredPort)} takes effect on the next daemon start - this daemon started with no TCP listener.`;
 }
 
 /** The port the Swift Network toggle seeds when it is switched on (SET-019). */
@@ -98,7 +98,7 @@ export function tcpBindError(
     // `KELPID_TCP_PORT` fails just as loudly as one asked for by the file, and the user who has to
     // fix it is the same user either way.
     if (tcp === null || tcp === undefined || tcp.bound !== null) return null;
-    return `Port ${String(tcp.requested)} is unavailable${tcp.error === null ? '' : ` — ${tcp.error}`}`;
+    return `Port ${String(tcp.requested)} is unavailable${tcp.error === null ? '' : ` - ${tcp.error}`}`;
 }
 
 const PLACEMENT_OPTIONS = [
@@ -265,7 +265,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         className="text-[11px]"
                         style={{ color: tokens.textTertiary }}
                     >
-                        {`Another Kelpi owns ${props.transport.compat.path}, so plain-terminal kelpi commands reach that app. Panes are unaffected — they route here automatically.`}
+                        {`Another Kelpi owns ${props.transport.compat.path}, so plain-terminal kelpi commands reach that app. Panes are unaffected - they route here automatically.`}
                     </p>
                 )}
             </SettingsSection>
@@ -277,7 +277,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
 
             <SettingsFooterNote>
                 Config: <span className="font-mono">{props.paths.kelpiConfig}</span>. Every value here is a line in
-                that file — edit it by hand and this window follows.
+                that file - edit it by hand and this window follows.
             </SettingsFooterNote>
         </div>
     );

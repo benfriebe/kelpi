@@ -120,11 +120,11 @@ export const WS_CLOSE_CODES = {
 export const DEFAULT_HELLO_TIMEOUT_MS = 10_000;
 
 /** The message a client sees when its hello carries no usable token. */
-export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token — open the client via 'kelpid url'";
+export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token - open the client via 'kelpid url'";
 
 /** The message an OPEN session sees when the paired device it authenticated as is revoked. */
 export const REVOKED_MESSAGE =
-    "this device's access was revoked — ask the daemon's owner for a new pairing ('kelpid pair')";
+    "this device's access was revoked - ask the daemon's owner for a new pairing ('kelpid pair')";
 
 export interface SyncTransport {
     sendJson(message: JsonObject): void;

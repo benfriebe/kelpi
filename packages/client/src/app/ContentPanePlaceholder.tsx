@@ -78,7 +78,7 @@ export function ContentPanePlaceholder(props: ContentPanePlaceholderProps): Reac
                 )}
                 <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
                     {detached
-                        ? 'the process keeps running — focus this pane to re-attach'
+                        ? 'the process keeps running - focus this pane to re-attach'
                         : 'this client has no renderer for this pane type'}
                 </span>
             </div>

@@ -164,7 +164,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
             >
                 {display === null ? (
                     <span data-testid="global-hotkey-empty" className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        —
+                        -
                     </span>
                 ) : (
                     <span className="flex items-center gap-0.5">

@@ -204,7 +204,7 @@ describe('store bridge', () => {
             type: 'rejected',
             code: 'unauthorized',
             reason: 'bad-token',
-            message: "invalid or missing daemon token — open the client via 'kelpid url'",
+            message: "invalid or missing daemon token - open the client via 'kelpid url'",
             protocolVersion: 1
         });
         h.sockets.last().serverClose(4003, 'bad-token');

@@ -923,7 +923,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     strong
                     icon="broadcast"
                     text="SYNC"
-                    title="Synchronise input is on — keystrokes mirror to peer panes"
+                    title="Synchronise input is on - keystrokes mirror to peer panes"
                 />
             ) : null}
             {syncActive && syncExcluded ? (

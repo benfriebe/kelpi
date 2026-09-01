@@ -176,7 +176,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                  */}
                 <SettingsRow
                     label="Let programs write the clipboard"
-                    detail="A program in a terminal pane can put text on your clipboard with OSC 52 — how tmux, vim and remote shells copy. Off by default. Programs can never READ your clipboard: Kelpi refuses those requests whatever this is set to."
+                    detail="A program in a terminal pane can put text on your clipboard with OSC 52 - how tmux, vim and remote shells copy. Off by default. Programs can never READ your clipboard: Kelpi refuses those requests whatever this is set to."
                     testID="clipboard-write-row"
                 >
                     <SettingsToggle

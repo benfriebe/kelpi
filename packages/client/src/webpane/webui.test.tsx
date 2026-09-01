@@ -1031,7 +1031,7 @@ describe('the storage panel', () => {
             <StoragePanel paneID={PANE} isPrivate={true} commands={fake.commands} onClose={() => {}} />
         );
         expect(screen.getByTestId(`web-cookie-empty-${PANE}`).textContent).toBe(
-            'No cookies (private mode — fresh on every launch).'
+            'No cookies (private mode - fresh on every launch).'
         );
     });
 

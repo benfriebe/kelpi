@@ -68,7 +68,7 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                     data-testid={`remote-pane-placeholder-${paneID}`}
                     style={{ color: tokens.textTertiary, background: tokens.surfaceBackground }}
                 >
-                    {pane.type} panes are not supported on remote daemons yet — open them on the
+                    {pane.type} panes are not supported on remote daemons yet - open them on the
                     daemon's own machine.
                 </div>
             );

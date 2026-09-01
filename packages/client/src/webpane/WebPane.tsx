@@ -964,7 +964,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         // private pane is a locked one, and the accent alone said too little.
                         label={
                             props.isPrivate === true
-                                ? 'Private mode — cookies and site data are in-memory'
+                                ? 'Private mode - cookies and site data are in-memory'
                                 : 'Cookies and site data'
                         }
                         glyph={props.isPrivate === true ? 'lock' : 'lock-open'}

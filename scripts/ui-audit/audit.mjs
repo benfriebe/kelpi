@@ -14553,8 +14553,8 @@ function buildFlows(ctx) {
                 recorder.note(`pane header title: ${JSON.stringify(headerTitleNow)}`);
                 recorder.check(
                     'and it is NAMED after the pane — the same string its header shows — never after its uuid',
-                    axName === `Terminal — ${expectedTitle}` && !axName.includes(paneID),
-                    `${JSON.stringify(axName)} vs expected ${JSON.stringify(`Terminal — ${expectedTitle}`)}`
+                    axName === `Terminal - ${expectedTitle}` && !axName.includes(paneID),
+                    `${JSON.stringify(axName)} vs expected ${JSON.stringify(`Terminal - ${expectedTitle}`)}`
                 );
 
                 // ── §TERM-042 / §TERM-035: a real ⌘V, and the bytes it produces ─────

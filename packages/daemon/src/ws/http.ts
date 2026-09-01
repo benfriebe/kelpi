@@ -92,7 +92,7 @@ export function resolveClientDistDir(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 const NOT_BUILT_PAGE = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>kelpid — client not built</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>kelpid - client not built</title></head>
 <body style="font-family: ui-sans-serif, system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; line-height: 1.5">
 <h1>kelpid is running</h1>
 <p>The web client build was not found, so there is nothing to serve here yet.</p>

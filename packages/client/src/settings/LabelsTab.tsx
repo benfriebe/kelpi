@@ -908,7 +908,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                         testID="labels-empty"
                         glyph={<TagGlyph size={28} />}
                         title="No labels yet"
-                        detail="Define reusable labels with colours, then assign them from a workspace's right-click menu — or apply a label from the CLI and adopt it here."
+                        detail="Define reusable labels with colours, then assign them from a workspace's right-click menu - or apply a label from the CLI and adopt it here."
                     />
                 ) : null}
 
@@ -960,7 +960,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                      * above, and that adding them here is what colours them.
                      */
                     title="Labels not defined here"
-                    hint="Applied to a workspace but not in the list above — they render neutral until you add them."
+                    hint="Applied to a workspace but not in the list above - they render neutral until you add them."
                     testID="label-orphans"
                 >
                     <div className="flex flex-wrap items-center gap-2">
@@ -1131,7 +1131,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
             setDraft(preset.name);
             // §N36(2): "…is already a preset" named the internal object at the one moment the
             // user is being told why their edit was refused, which is the worst place for it.
-            props.onRenameRefused(`“${next}” is already a label — the name is unchanged.`);
+            props.onRenameRefused(`“${next}” is already a label - the name is unchanged.`);
             return;
         }
         props.onRenameRefused(null);

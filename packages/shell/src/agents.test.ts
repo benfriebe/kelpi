@@ -205,11 +205,11 @@ describe('derivations', () => {
 
     it('summarises per workspace, waiting first', () => {
         expect(traySummaryLines(counts(0, 0))).toEqual(['All clear']);
-        expect(traySummaryLines(counts(2, 1))).toEqual(['alpha — 1 waiting, 2 running']);
+        expect(traySummaryLines(counts(2, 1))).toEqual(['alpha - 1 waiting, 2 running']);
         expect(traySummaryLines(counts(2, 1), false)).toEqual(['Daemon not reachable']);
-        expect(trayTooltip(counts(2, 1), true)).toBe('Kelpi — 1 waiting, 2 running');
-        expect(trayTooltip(counts(0, 0), true)).toBe('Kelpi — all clear');
-        expect(trayTooltip(counts(0, 0), false)).toBe('Kelpi — daemon not reachable');
+        expect(trayTooltip(counts(2, 1), true)).toBe('Kelpi - 1 waiting, 2 running');
+        expect(trayTooltip(counts(0, 0), true)).toBe('Kelpi - all clear');
+        expect(trayTooltip(counts(0, 0), false)).toBe('Kelpi - daemon not reachable');
     });
 
     it('reports only the panes that newly entered waiting', () => {
@@ -367,8 +367,8 @@ describe('tray menu rows (§AGNT-090…093)', () => {
             'pane'
         ]);
         expect(rows[0]).toMatchObject({ kind: 'workspace', workspaceID: 'w1' });
-        expect(rows[0]?.label).toBe(`${WAITING_GLYPH} alpha — 1 waiting, 1 running`);
-        expect(rows[3]?.label).toBe(`${RUNNING_GLYPH} beta — 1 running`);
+        expect(rows[0]?.label).toBe(`${WAITING_GLYPH} alpha - 1 waiting, 1 running`);
+        expect(rows[3]?.label).toBe(`${RUNNING_GLYPH} beta - 1 running`);
     });
 
     it('gives every pane row its own status glyph and its jump target', () => {

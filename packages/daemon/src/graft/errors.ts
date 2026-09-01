@@ -126,7 +126,7 @@ export function describeSyncError(error: unknown): string {
         const stderr = error.stderr.trim();
         if (stderr.includes('Untracked working tree file')) {
             const firstLine = stderr.split('\n')[0]?.trim() ?? stderr;
-            return `Sync blocked — ${firstLine}`;
+            return `Sync blocked - ${firstLine}`;
         }
         return `Sync failed: ${stderr}`;
     }

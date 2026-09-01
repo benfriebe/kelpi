@@ -168,7 +168,7 @@ export function dropDecision(data: DropData): DropDecision {
             kind: 'reject',
             reason:
                 'a dropped file carries no path in this window (Electron removed File.path and ' +
-                'this shell runs without a preload) — use ⌘O to pick the file instead'
+                'this shell runs without a preload) - use ⌘O to pick the file instead'
         };
     }
     return { kind: 'ignore' };

@@ -372,7 +372,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         // after boot's warm-up (CONT-086/087).
         const resolution = await resolver.resolve();
         if (resolution === null) {
-            return failure('no $VISUAL or $EDITOR is set — set one in your shell profile');
+            return failure('no $VISUAL or $EDITOR is set - set one in your shell profile');
         }
         const command = formatEditorCommand(resolution.editor, filePath, resolution.path);
 

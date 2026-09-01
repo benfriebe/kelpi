@@ -62,7 +62,7 @@ function renderPane(accessibilityName?: string): HTMLElement {
 
 describe('terminalAccessibilityName', () => {
     it('names the pane the way its header does', () => {
-        expect(terminalAccessibilityName('~/code/kelpi')).toBe('Terminal — ~/code/kelpi');
+        expect(terminalAccessibilityName('~/code/kelpi')).toBe('Terminal - ~/code/kelpi');
     });
 
     it('falls back to the bare word rather than to a uuid', () => {
@@ -92,7 +92,7 @@ describe('§TERM-036 — the surface is an accessibility element', () => {
     /** The regression this replaces: a 36-character id read aloud as the pane's name. */
     it('is named after the pane, never after its uuid', () => {
         const named = renderPane('~/code/kelpi');
-        expect(named.getAttribute('aria-label')).toBe('Terminal — ~/code/kelpi');
+        expect(named.getAttribute('aria-label')).toBe('Terminal - ~/code/kelpi');
         expect(named.getAttribute('aria-label')).not.toContain(PANE);
 
         const unnamed = renderPane();

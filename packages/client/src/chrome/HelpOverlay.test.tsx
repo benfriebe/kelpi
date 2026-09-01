@@ -38,10 +38,10 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         );
     });
 
-    it('draws an em dash for an action nothing is bound to', () => {
+    it('draws a dash for an action nothing is bound to', () => {
         renderHelp(['super+d=unbind']);
         const row = document.querySelector('[data-help-action="split_right"]');
-        expect(row?.textContent).toContain('—');
+        expect(row?.textContent).toContain('-');
     });
 
     it('groups rows under the six visible categories', () => {

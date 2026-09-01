@@ -168,7 +168,7 @@ function RemoteDaemonSection(props: {
                     {connection !== 'connected' && entries.length === 0 ? (
                         <span className="px-2 pb-1 pl-6 text-[11px]" style={{ color: tokens.textTertiary }}>
                             {connection === 'rejected'
-                                ? 'connection refused — check the pairing URL'
+                                ? 'connection refused - check the pairing URL'
                                 : 'connecting…'}
                         </span>
                     ) : null}

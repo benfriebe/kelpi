@@ -122,7 +122,7 @@ export function createClipboardWriteHandler(
 
         const writeText = options.writeText === undefined ? defaultWriter() : options.writeText;
         if (writeText === null) {
-            log(`clipboard: pane ${short} wrote ${size} — but this browser exposes no clipboard`);
+            log(`clipboard: pane ${short} wrote ${size} - but this browser exposes no clipboard`);
             options.onResult?.('unavailable', request);
             return 'unavailable';
         }
@@ -137,7 +137,7 @@ export function createClipboardWriteHandler(
                 // own output cannot supply. Reported, never retried, never surfaced as a toast —
                 // a failed paste is a nuisance, a modal about one is worse.
                 log(
-                    `clipboard: pane ${short} wrote ${size} — the browser refused it (${String(error)})`
+                    `clipboard: pane ${short} wrote ${size} - the browser refused it (${String(error)})`
                 );
                 options.onResult?.('refused', request);
             }

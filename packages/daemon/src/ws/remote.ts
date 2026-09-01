@@ -157,7 +157,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                         available: false,
                         serving: false,
                         backend: identity.backend,
-                        reason: 'no MagicDNS name — enable MagicDNS for the tailnet'
+                        reason: 'no MagicDNS name - enable MagicDNS for the tailnet'
                     }
                 };
             }
@@ -199,18 +199,18 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                     ok: true,
                     url: `http://127.0.0.1:${String(port)}/?token=${encodeURIComponent(minted.token)}`,
                     device: wireDevice(minted.device),
-                    notes: ['This URL is loopback-only — it works in a browser on this machine.']
+                    notes: ['This URL is loopback-only - it works in a browser on this machine.']
                 };
             }
             const result = await resolveTailnetURL({ port, token: minted.token, run });
             if (result.kind === 'error') {
                 // Delete, not revoke: the token never left this process (`kelpid pair`'s rule).
-                let rolledBack = `the "${minted.device.name}" device was rolled back — nothing was paired`;
+                let rolledBack = `the "${minted.device.name}" device was rolled back - nothing was paired`;
                 try {
                     removeDevice(devicesFile(), minted.device.id);
                 } catch (rollbackFailure) {
                     rolledBack =
-                        `could not roll back the just-minted "${minted.device.name}" entry — revoke it ` +
+                        `could not roll back the just-minted "${minted.device.name}" entry - revoke it ` +
                         `yourself (${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)})`;
                 }
                 return {

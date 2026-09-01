@@ -243,7 +243,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                             : tailnet === null
                               ? 'checking…'
                               : tailnet.available
-                                ? `${tailnet.dnsName ?? 'on the tailnet'} — ${tailnet.serving ? 'serve is fronting the daemon' : 'serve not configured yet (pairing sets it up)'}`
+                                ? `${tailnet.dnsName ?? 'on the tailnet'} - ${tailnet.serving ? 'serve is fronting the daemon' : 'serve not configured yet (pairing sets it up)'}`
                                 : (tailnet.reason ?? 'unavailable')}
                     </span>
                 </SettingsRow>
@@ -252,7 +252,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
             <SettingsSection
                 title="Pair a device"
                 testID="remote-pair"
-                hint="Mints a per-device token and builds its connect URL. The URL is shown once — the daemon keeps only a hash."
+                hint="Mints a per-device token and builds its connect URL. The URL is shown once - the daemon keeps only a hash."
             >
                 <SettingsRow label="Device name" testID="remote-pair-name">
                     <input
@@ -276,7 +276,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                     detail={
                         tailnet?.available === true
                             ? 'The URL works from any of your tailnet devices. Off: a loopback URL for this machine only.'
-                            : 'Unavailable until tailscale is running — the URL will be loopback-only.'
+                            : 'Unavailable until tailscale is running - the URL will be loopback-only.'
                     }
                     testID="remote-pair-tailnet"
                 >
@@ -302,7 +302,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                     <SettingsDetail>
                         <span data-testid="remote-pair-error" style={{ color: '#E0655C' }}>
                             {pairError.message}
-                            {pairError.repair !== null ? ` — ${pairError.repair}` : ''}
+                            {pairError.repair !== null ? ` - ${pairError.repair}` : ''}
                         </span>
                     </SettingsDetail>
                 ) : null}
@@ -313,7 +313,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                         style={{ borderColor: tokens.divider, background: tokens.surfaceBackground }}
                     >
                         <span style={{ color: tokens.textPrimary }} className="text-[12px] font-semibold">
-                            “{minted.deviceName}” is paired — send this URL to that device, and no one else.
+                            “{minted.deviceName}” is paired - send this URL to that device, and no one else.
                         </span>
                         <span style={{ color: tokens.textTertiary }} className="text-[11px]">
                             It carries the device’s own token and is shown exactly once. Closing this card

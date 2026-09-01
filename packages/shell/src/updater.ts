@@ -178,7 +178,7 @@ export function checkForUpdatesNow(options: ManualUpdateOptions): UpdateCheckRes
     if (options.started !== true || options.backend === undefined) {
         return {
             kind: 'unavailable',
-            message: 'The updater has not finished starting yet — try again in a moment.'
+            message: 'The updater has not finished starting yet - try again in a moment.'
         };
     }
     try {

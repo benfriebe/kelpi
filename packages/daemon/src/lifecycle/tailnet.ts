@@ -266,7 +266,7 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             return {
                 kind: 'error',
                 message:
-                    `tailscale serve already fronts 127.0.0.1:${fronted.join(', 127.0.0.1:')} — another service, ` +
+                    `tailscale serve already fronts 127.0.0.1:${fronted.join(', 127.0.0.1:')} - another service, ` +
                     'left untouched.',
                 repair:
                     `Move it aside yourself if the daemon should own :443: \`tailscale serve --bg ${String(options.port)}\` ` +

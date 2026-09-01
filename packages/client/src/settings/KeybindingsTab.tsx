@@ -287,7 +287,7 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                                 className="text-[11px]"
                                                 style={{ color: tokens.textTertiary }}
                                             >
-                                                —
+                                                -
                                             </span>
                                         ) : (
                                             row.triggers.map((chip) => (

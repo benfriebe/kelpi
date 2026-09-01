@@ -394,7 +394,7 @@ export function installCliSymlink(options: PlanOptions, fsys: CliFs): CliInstall
             return {
                 kind: 'skipped',
                 plan,
-                reason: `${plan.linkPath} already exists and was not installed by Kelpi — remove it first, or install elsewhere`
+                reason: `${plan.linkPath} already exists and was not installed by Kelpi - remove it first, or install elsewhere`
             };
         case 'unavailable':
             return { kind: 'skipped', plan, reason: 'this build carries no CLI payload' };

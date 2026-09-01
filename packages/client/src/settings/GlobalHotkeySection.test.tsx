@@ -36,13 +36,13 @@ function press(init: Partial<KeyboardEventInit> & { code: string }): void {
 afterEach(cleanup);
 
 describe('GlobalHotkeySection', () => {
-    // SET-081: an em-dash when unset, a chip with an ✕ when set.
-    it('shows an em-dash with no hotkey and a clearable chip with one', () => {
+    // SET-081: a dash when unset, a chip with an ✕ when set.
+    it('shows a dash with no hotkey and a clearable chip with one', () => {
         const bound = actions();
         const view = render(
             <GlobalHotkeySection hotkey={null} hideOnRepress bindings={DEFAULT_KEYBINDINGS} actions={bound} />
         );
-        expect(screen.getByTestId('global-hotkey-empty').textContent).toBe('—');
+        expect(screen.getByTestId('global-hotkey-empty').textContent).toBe('-');
         expect(screen.queryByTestId('global-hotkey-clear')).toBeNull();
 
         view.rerender(

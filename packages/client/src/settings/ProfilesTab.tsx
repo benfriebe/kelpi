@@ -323,7 +323,7 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
 
                             {index === 0 ? (
                                 <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                                    Built-in baseline — applies to every workspace without an explicit profile.
+                                    Built-in baseline - applies to every workspace without an explicit profile.
                                 </p>
                             ) : null}
 
@@ -346,7 +346,7 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                     </span>
                                     <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
                                         A profile is a named set of environment variables injected into every
-                                        pane that starts in a workspace assigned to it — one per Claude
+                                        pane that starts in a workspace assigned to it - one per Claude
                                         account is the flagship use.
                                     </span>
                                     <SettingsButton
@@ -390,7 +390,7 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                             <div
                                 data-testid="profile-marker-row"
                                 className="flex items-center gap-1.5"
-                                title="Injected automatically — always matches the profile name"
+                                title="Injected automatically - always matches the profile name"
                             >
                                 <input
                                     readOnly
@@ -506,7 +506,7 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
 
             <SettingsFooterNote>
                 Config: <span className="font-mono">{props.paths.kelpiConfig}</span>. Changes apply to panes opened
-                afterwards — live panes keep the environment they were born with. A workspace with no explicit
+                afterwards - live panes keep the environment they were born with. A workspace with no explicit
                 profile uses <span className="font-mono">{DEFAULT_PROFILE_NAME}</span>.
             </SettingsFooterNote>
         </div>

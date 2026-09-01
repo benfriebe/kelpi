@@ -61,7 +61,7 @@ describe('describeSyncError', () => {
                 'fatal: could not read the index'
         );
         expect(describeSyncError(error)).toBe(
-            "Sync blocked — error: Untracked working tree file 'src/app.ts' would be overwritten by merge."
+            "Sync blocked - error: Untracked working tree file 'src/app.ts' would be overwritten by merge."
         );
     });
 

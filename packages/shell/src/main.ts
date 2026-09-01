@@ -1132,7 +1132,7 @@ function buildMenu(): void {
                             void dialog.showMessageBox({
                                 type: 'info',
                                 message: 'Kelpi Help',
-                                detail: 'The window is still connecting — try again in a moment.'
+                                detail: 'The window is still connecting - try again in a moment.'
                             });
                         }
                     }
@@ -1346,7 +1346,7 @@ async function boot(): Promise<void> {
         reportDaemonUnavailable: (error) => {
             const repair = error instanceof DaemonUnavailableError ? error.repair : '';
             const message = error instanceof Error ? error.message : String(error);
-            logError(`daemon unavailable: ${message}${repair === '' ? '' : ` — ${repair}`}`);
+            logError(`daemon unavailable: ${message}${repair === '' ? '' : ` - ${repair}`}`);
             dialog.showErrorBox('Kelpi cannot reach its daemon', `${message}\n\n${repair}`);
             app.exit(1);
         },
@@ -1488,7 +1488,7 @@ if (!app.requestSingleInstanceLock()) {
          * during boot waits for the launch sequence to make one rather than opening a blank one.
          */
         if (BrowserWindow.getAllWindows().length === 0 && daemon === null) {
-            log('activate: no window and no daemon yet — leaving the launch sequence to it');
+            log('activate: no window and no daemon yet - leaving the launch sequence to it');
         } else {
             showWindow();
         }

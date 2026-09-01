@@ -50,12 +50,12 @@ describe('the keybindings table', () => {
         expect(screen.queryByTestId('keybinding-row-web_back')).toBeNull();
     });
 
-    it('shows every trigger of a multiply-bound action, and “—” for an unbound one', () => {
+    it('shows every trigger of a multiply-bound action, and a dash for an unbound one', () => {
         setup();
         const row = screen.getByTestId('keybinding-row-focus_next_pane');
         expect(row.textContent).toContain('⌥⌘→');
         expect(row.textContent).toContain('⌘]');
-        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
+        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('-');
     });
 
     it('enables Reset only for a row that differs from its default', () => {

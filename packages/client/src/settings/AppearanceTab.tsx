@@ -516,7 +516,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 ))}
                 <div className="flex items-center justify-between gap-3">
                     <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        Editing the {bucket === 'dark' ? 'Dark' : 'Light'} palette — switch Appearance above to edit
+                        Editing the {bucket === 'dark' ? 'Dark' : 'Light'} palette - switch Appearance above to edit
                         the other.
                     </span>
                     <SettingsButton
@@ -666,7 +666,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                     <ColorField
                         label="Background colour"
                         testID="terminal-background"
-                        detail="Painted behind every pane — terminal, markdown, diff, scratchpad."
+                        detail="Painted behind every pane - terminal, markdown, diff, scratchpad."
                         value={appearance.backgroundColor}
                         onChange={(hex) => {
                             const normalized = normalizeHexColor(hex);
@@ -677,7 +677,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 ) : (
                     <SettingsRow
                         label="Background colour"
-                        detail="Hidden while a theme is selected — the theme owns the background. Choose “None (Custom)” to set one."
+                        detail="Hidden while a theme is selected - the theme owns the background. Choose “None (Custom)” to set one."
                         testID="terminal-background-locked"
                     >
                         <span
@@ -735,7 +735,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 <SliderField
                     label="Padding (horizontal)"
                     testID="terminal-padding-x"
-                    detail="Pixels kept clear at the pane's left and right edges — ghostty's window-padding-x."
+                    detail="Pixels kept clear at the pane's left and right edges - ghostty's window-padding-x."
                     value={appearance.windowPaddingX ?? TERMINAL_EDGE_PADDING}
                     min={0}
                     max={32}
@@ -748,7 +748,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 <SliderField
                     label="Padding (vertical)"
                     testID="terminal-padding-y"
-                    detail="Pixels between the pane's top edge and row 1 — ghostty's window-padding-y. The bottom edge keeps the sub-cell remainder."
+                    detail="Pixels between the pane's top edge and row 1 - ghostty's window-padding-y. The bottom edge keeps the sub-cell remainder."
                     value={appearance.windowPaddingY ?? TERMINAL_EDGE_PADDING_TOP}
                     min={0}
                     max={32}
@@ -761,7 +761,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
                 <SettingsRow
                     label="Resolved appearance"
-                    detail="The daemon's luminance verdict on the background — it, not the OS setting, picks light or dark for panes."
+                    detail="The daemon's luminance verdict on the background - it, not the OS setting, picks light or dark for panes."
                     testID="appearance-bucket"
                 >
                     <KeyChip>{appearance.isDark ? 'dark' : 'light'}</KeyChip>
@@ -770,7 +770,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
             <SettingsSection
                 title="Search highlight"
-                hint="What a search match is painted with — the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Kelpi ships the Swift app's colours; these override them."
+                hint="What a search match is painted with - the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Kelpi ships the Swift app's colours; these override them."
                 testID="appearance-search"
             >
                 <ColorField
@@ -981,7 +981,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
             <SettingsFooterNote>
                 Terminal colours and fonts: <span className="font-mono">{props.paths.ghosttyConfig}</span>. Chrome
                 palette, sidebar and status bar: <span className="font-mono">{props.paths.kelpiConfig}</span>. Both are
-                watched — save either file and this window follows.
+                watched - save either file and this window follows.
             </SettingsFooterNote>
         </div>
     );

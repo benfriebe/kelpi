@@ -321,7 +321,7 @@ export function traySummaryLines(counts: AgentCounts, connected = true): readonl
         const parts: string[] = [];
         if (workspace.waiting > 0) parts.push(`${String(workspace.waiting)} waiting`);
         if (workspace.running > 0) parts.push(`${String(workspace.running)} running`);
-        return `${workspace.name} — ${parts.join(', ')}`;
+        return `${workspace.name} - ${parts.join(', ')}`;
     });
 }
 
@@ -399,7 +399,7 @@ export function trayMenuRows(counts: AgentCounts, connected = true): readonly Tr
         rows.push({
             kind: 'workspace',
             workspaceID: workspace.workspaceID,
-            label: `${marker} ${workspace.name} — ${parts.join(', ')}`
+            label: `${marker} ${workspace.name} - ${parts.join(', ')}`
         });
         for (const pane of counts.panes) {
             if (pane.workspaceID !== workspace.workspaceID) continue;
@@ -419,12 +419,12 @@ export function trayMenuRows(counts: AgentCounts, connected = true): readonly Tr
 }
 
 export function trayTooltip(counts: AgentCounts, connected: boolean): string {
-    if (!connected) return 'Kelpi — daemon not reachable';
-    if (counts.waiting === 0 && counts.running === 0) return 'Kelpi — all clear';
+    if (!connected) return 'Kelpi - daemon not reachable';
+    if (counts.waiting === 0 && counts.running === 0) return 'Kelpi - all clear';
     const parts: string[] = [];
     if (counts.waiting > 0) parts.push(`${String(counts.waiting)} waiting`);
     if (counts.running > 0) parts.push(`${String(counts.running)} running`);
-    return `Kelpi — ${parts.join(', ')}`;
+    return `Kelpi - ${parts.join(', ')}`;
 }
 
 /**
@@ -492,7 +492,7 @@ export function quitConfirmDetail(counts: AgentCounts): string {
     if (summary.agents === 0) return 'Your sessions keep running in the background.';
     return (
         `${plural(summary.agents, 'agent')} across ${plural(summary.workspaces, 'workspace')} ` +
-        'are still active. They keep running in the background — quitting only closes this ' +
+        'are still active. They keep running in the background - quitting only closes this ' +
         'window. Reopen Kelpi to attach again.'
     );
 }

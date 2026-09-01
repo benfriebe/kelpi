@@ -186,7 +186,7 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
                                                                 : tokens.textPrimary
                                                     }}
                                                 >
-                                                    {row.shortcut ?? '—'}
+                                                    {row.shortcut ?? '-'}
                                                 </span>
                                             </div>
                                         ))}

@@ -436,7 +436,7 @@ describe('graft-status', () => {
     it('adds error, stash_ref and a second-precision ISO last_sync when set', () => {
         const graft = fakeGraft([
             session({
-                status: { kind: 'error', message: 'Sync blocked — nope' },
+                status: { kind: 'error', message: 'Sync blocked - nope' },
                 stashRef: 'deadbeef42',
                 lastSyncAt: Date.UTC(2026, 7, 18, 9, 30, 12, 456)
             })
@@ -451,7 +451,7 @@ describe('graft-status', () => {
                     parent_repo_root: PARENT,
                     branch: 'feature/x',
                     status: 'error',
-                    error: 'Sync blocked — nope',
+                    error: 'Sync blocked - nope',
                     stash_ref: 'deadbeef42',
                     last_sync: '2026-08-18T09:30:12Z'
                 }

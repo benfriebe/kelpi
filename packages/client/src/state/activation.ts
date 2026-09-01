@@ -61,3 +61,39 @@ export function activationAppliesHere(report: ShellActivationReport, shellWindow
 export function isAppActive(state: { readonly appActive: boolean; readonly documentVisible: boolean }): boolean {
     return state.appActive && state.documentVisible;
 }
+
+// ---------------------------------------------------------------------------
+// The window's maximised state (APP-046b)
+// ---------------------------------------------------------------------------
+
+/** The daemon's relayed message type (protocol `WS_WINDOW_FRAME_STATE_MESSAGE`). */
+export const WINDOW_FRAME_STATE_MESSAGE = 'window-frame-state';
+
+export interface WindowFrameStateReport {
+    readonly maximized: boolean;
+    /** The shell window it is about; null = every client. */
+    readonly windowID: string | null;
+}
+
+/**
+ * Read a `window-frame-state` frame, or null when it is not one (or says nothing usable).
+ *
+ * `parseShellActivation` with a different fact in it, deliberately down to the shape: both are
+ * transient window facts the page cannot observe, both are scoped by window id, and both refuse a
+ * non-boolean rather than defaulting one — a guess here draws the wrong glyph on a real button.
+ */
+export function parseWindowFrameState(message: Record<string, unknown>): WindowFrameStateReport | null {
+    if (message['type'] !== WINDOW_FRAME_STATE_MESSAGE) return null;
+    const maximized = message['maximized'];
+    if (typeof maximized !== 'boolean') return null;
+    return { maximized, windowID: text(message['windowID']) };
+}
+
+/** Whether THIS client should act on it — `activationAppliesHere`'s rule, and the same one. */
+export function frameStateAppliesHere(
+    report: WindowFrameStateReport,
+    shellWindowID: string | null
+): boolean {
+    if (report.windowID === null) return true;
+    return report.windowID === shellWindowID;
+}

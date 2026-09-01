@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
-import { activationAppliesHere, isAppActive, parseShellActivation } from './activation';
+import {
+    activationAppliesHere,
+    frameStateAppliesHere,
+    isAppActive,
+    parseShellActivation,
+    parseWindowFrameState
+} from './activation';
 import { connectStore } from './bridge';
 import { createKelpiStore } from './store';
 
@@ -93,5 +99,37 @@ describe('the bridge applies a relayed activation', () => {
         h.sockets.last().emit({ type: 'shell-activation', active: false } as never);
         expect(h.store.getState().ui.appActive).toBe(false);
         h.dispose();
+    });
+});
+
+describe('the window frame state (§APP-046b)', () => {
+    it('reads a maximise report and the window it is about', () => {
+        expect(parseWindowFrameState({ type: 'window-frame-state', maximized: true, windowID: WINDOW_ID })).toEqual({
+            maximized: true,
+            windowID: WINDOW_ID
+        });
+        expect(parseWindowFrameState({ type: 'window-frame-state', maximized: false })).toEqual({
+            maximized: false,
+            windowID: null
+        });
+    });
+
+    it('refuses anything that is not one, and never defaults the boolean', () => {
+        // A guess here draws the wrong glyph on a real button, and the next true report is
+        // never far away — silence is the safer answer.
+        expect(parseWindowFrameState({ type: 'shell-activation', active: true })).toBeNull();
+        expect(parseWindowFrameState({ type: 'window-frame-state' })).toBeNull();
+        expect(parseWindowFrameState({ type: 'window-frame-state', maximized: 'yes' })).toBeNull();
+        expect(parseWindowFrameState({ type: 'window-frame-state', maximized: 1 })).toBeNull();
+    });
+
+    it('applies to the named window only, and to everyone when unnamed', () => {
+        // Two windows are independently maximised; one being maximised says nothing about the
+        // other's button.
+        expect(frameStateAppliesHere({ maximized: true, windowID: WINDOW_ID }, WINDOW_ID)).toBe(true);
+        expect(frameStateAppliesHere({ maximized: true, windowID: 'other' }, WINDOW_ID)).toBe(false);
+        expect(frameStateAppliesHere({ maximized: true, windowID: WINDOW_ID }, null)).toBe(false);
+        expect(frameStateAppliesHere({ maximized: true, windowID: null }, WINDOW_ID)).toBe(true);
+        expect(frameStateAppliesHere({ maximized: true, windowID: null }, null)).toBe(true);
     });
 });

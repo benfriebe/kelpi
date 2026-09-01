@@ -316,6 +316,70 @@ export interface WsWorkspaceSelectionMessage {
     readonly windowID?: string;
 }
 
+/**
+ * §APP-046b: "minimise / maximise / close this window", from the page that drew the button.
+ *
+ * On Windows and Linux the shell creates its window `titleBarStyle: 'hidden'` and the client's
+ * own 32 px strip draws the three buttons (`titlebar.ts` explains why they are not native ones).
+ * Only the main process can act on them, and the renderer has no bridge to it — the shell runs
+ * with no preload at all, on purpose (`shell/src/main.ts` §"Security posture") — so the request
+ * travels the way every other client→shell fact does: client → daemon → the shell that owns
+ * that window.
+ *
+ * `workspace-selection` is the template, down to the scoping rule: `windowID` names the shell
+ * window the page belongs to, and a request without one is every shell's (the single-window and
+ * automation case). The daemon has no opinion about it and remembers nothing — a window command
+ * is about a window that may already be gone, and a replayed one would minimise a fresh window
+ * because someone clicked a button a minute ago.
+ *
+ * There is no reply. A button that has to wait for an ack before the window moves feels broken,
+ * and there is nothing useful to say when it fails: the shell either owns that window or does
+ * not.
+ */
+export const WS_WINDOW_CONTROL_MESSAGE = 'window-control';
+
+/** What the page is asking for. `maximize` TOGGLES, because one button does both. */
+export const WS_WINDOW_CONTROL_ACTIONS = ['minimize', 'maximize', 'close'] as const;
+export type WsWindowControlAction = (typeof WS_WINDOW_CONTROL_ACTIONS)[number];
+
+export interface WsWindowControlMessage {
+    readonly type: typeof WS_WINDOW_CONTROL_MESSAGE;
+    readonly action: WsWindowControlAction;
+    /** The shell window to act on; absent = whichever shell hears it. */
+    readonly windowID?: string;
+}
+
+/**
+ * §APP-046b's other half: "this window is (or is no longer) maximised".
+ *
+ * The maximise button is the one of the three that has to show state, and the state changes from
+ * outside the app — a WM keyboard shortcut, a tiling rule, a double-click on the strip, someone
+ * dragging the window off a snapped edge. The page cannot observe any of that, so the shell says
+ * so: `shell-activation` with a different fact in it, transient and scoped identically.
+ *
+ * REMEMBERED by the daemon and replayed on `hello`, which is where it parts company with
+ * `shell-activation` — and the difference is in the facts, not the plumbing. Activation
+ * describes a moment that has passed by the time anyone could replay it. Maximisation is a
+ * standing condition: a window that is maximised stays maximised while nobody is looking, so the
+ * last report is still true when the next client attaches.
+ *
+ * That matters because the connection that RELOADS is the page, not the shell. Without the
+ * replay, a client reloaded while its window is maximised draws — and announces to a screen
+ * reader — "Maximise" on a button that restores, until the user toggles it by hand. The window
+ * id is what keeps a remembered entry harmless: a client applies only the report matching its own
+ * `?shellWindow=`, so an entry for a window that has since closed reaches nobody who would act on
+ * it. A client that has heard nothing still assumes "not maximised", which is what a freshly
+ * created window is.
+ */
+export const WS_WINDOW_FRAME_STATE_MESSAGE = 'window-frame-state';
+
+export interface WsWindowFrameStateMessage {
+    readonly type: typeof WS_WINDOW_FRAME_STATE_MESSAGE;
+    readonly maximized: boolean;
+    /** The shell window this is about; absent = every client. */
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -334,7 +398,9 @@ export type WsClientMessage =
     | WsHostEventMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
-    | WsWorkspaceSelectionMessage;
+    | WsWorkspaceSelectionMessage
+    | WsWindowControlMessage
+    | WsWindowFrameStateMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -801,6 +867,8 @@ export type WsServerMessage =
     | WsRevealPaneMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage
-    | WsWorkspaceSelectionMessage;
+    | WsWorkspaceSelectionMessage
+    | WsWindowControlMessage
+    | WsWindowFrameStateMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

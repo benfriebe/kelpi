@@ -28480,14 +28480,25 @@ function buildFlows(ctx) {
                     .reverse()
                     .find((line) => line.includes('titlebar: style='));
                 recorder.note(`shell titlebar line: ${String(titleBarLine)}`);
+                // §APP-046b: all three desktops hide the strip, by two different routes —
+                // `hiddenInset` + AppKit's traffic lights on macOS, `hidden` + a page-drawn
+                // cluster on Windows and Linux. The frame's HEIGHT claim is the same either way
+                // (nothing stacked above the drawn bar); which cluster to look for is not.
+                const pageDrawsControls = typeof titleBarLine === 'string' && titleBarLine.includes('windowControls=client');
                 recorder.check(
                     'the window is created with a HIDDEN title bar (§APP-046)',
-                    typeof titleBarLine === 'string' && titleBarLine.includes('style=hiddenInset'),
+                    typeof titleBarLine === 'string' &&
+                        (titleBarLine.includes('style=hiddenInset') || titleBarLine.includes('style=hidden ')),
                     String(titleBarLine)
                 );
                 recorder.check(
-                    'the traffic lights are positioned by the app, not left at the default',
-                    typeof titleBarLine === 'string' && /trafficLights=\d+,\d+/.test(titleBarLine),
+                    pageDrawsControls
+                        ? 'the page is told to draw the window’s own buttons (§APP-046b)'
+                        : 'the traffic lights are positioned by the app, not left at the default',
+                    typeof titleBarLine === 'string' &&
+                        (pageDrawsControls
+                            ? titleBarLine.includes('gutter=0')
+                            : /trafficLights=\d+,\d+/.test(titleBarLine)),
                     String(titleBarLine)
                 );
                 const chromeHeight = Number(/chromeHeight=(-?\d+)/.exec(String(titleBarLine))?.[1] ?? NaN);
@@ -28522,7 +28533,18 @@ function buildFlows(ctx) {
                                     inset: Number(bar.getAttribute('data-traffic-light-inset')),
                                     drag: bar.getAttribute('data-titlebar-drag'),
                                     firstLeadingControl: controls[0] ?? null,
-                                    firstPaneTop
+                                    firstPaneTop,
+                                    // §APP-046b: the page-drawn cluster, when there is one — how
+                                    // many buttons, and whether it really reaches the window's
+                                    // corner (a dead strip beside × is the tell of a fake bar).
+                                    windowControls: bar.querySelectorAll(
+                                        '[data-testid="window-minimize"], [data-testid="window-maximize"], [data-testid="window-close"]'
+                                    ).length,
+                                    controlsRight: (() => {
+                                        const close = bar.querySelector('[data-testid="window-close"]');
+                                        return close === null ? null : Math.round(close.getBoundingClientRect().right);
+                                    })(),
+                                    barRight: Math.round(rect.right)
                                 });
                             })()`
                         )
@@ -28540,17 +28562,36 @@ function buildFlows(ctx) {
                     strip.height === 32,
                     `height=${String(strip.height)}`
                 );
-                recorder.check(
-                    'it reserves the shell’s traffic-light gutter (§APP-046)',
-                    strip.inset > 0 && strip.paddingLeft === strip.inset,
-                    `inset=${String(strip.inset)} paddingLeft=${String(strip.paddingLeft)}`
-                );
-                recorder.check(
-                    'and the first control really sits BEYOND the gutter, so the buttons cannot land on it',
-                    typeof strip.firstLeadingControl === 'number' &&
-                        strip.firstLeadingControl >= strip.inset,
-                    `first control at x=${String(strip.firstLeadingControl)}, gutter ${String(strip.inset)}`
-                );
+                if (pageDrawsControls) {
+                    // §APP-046b: nothing native to clear, so a gutter here would be 80px of empty
+                    // space invented by a macOS feature — the exact regression `titlebar.ts`
+                    // refuses. The cluster is the page's own and lives at the TRAILING end.
+                    recorder.check(
+                        'it reserves NO leading gutter — there are no native buttons to clear (§APP-046b)',
+                        strip.inset === 0,
+                        `inset=${String(strip.inset)}`
+                    );
+                    recorder.check(
+                        'and it draws the window’s three buttons itself, at the trailing edge',
+                        strip.windowControls === 3 &&
+                            typeof strip.controlsRight === 'number' &&
+                            typeof strip.barRight === 'number' &&
+                            Math.abs(strip.controlsRight - strip.barRight) <= 1,
+                        `buttons=${String(strip.windowControls)} right=${String(strip.controlsRight)} bar=${String(strip.barRight)}`
+                    );
+                } else {
+                    recorder.check(
+                        'it reserves the shell’s traffic-light gutter (§APP-046)',
+                        strip.inset > 0 && strip.paddingLeft === strip.inset,
+                        `inset=${String(strip.inset)} paddingLeft=${String(strip.paddingLeft)}`
+                    );
+                    recorder.check(
+                        'and the first control really sits BEYOND the gutter, so the buttons cannot land on it',
+                        typeof strip.firstLeadingControl === 'number' &&
+                            strip.firstLeadingControl >= strip.inset,
+                        `first control at x=${String(strip.firstLeadingControl)}, gutter ${String(strip.inset)}`
+                    );
+                }
                 recorder.check(
                     'the strip claims the window drag region (shell-ui.md §3: empty bar area drags)',
                     strip.drag === 'true',
@@ -28566,7 +28607,9 @@ function buildFlows(ctx) {
                 // The one thing no DOM read can settle: the buttons are drawn by the OS, OUTSIDE
                 // the page, so a CDP capture cannot photograph them at all.
                 recorder.eyes(
-                    'TRAFFIC LIGHTS — the close/minimise/zoom buttons are drawn by macOS outside the page and cannot appear in a CDP capture. On a real screen: are they vertically centred in the 32px strip, and clear of the sidebar/inspector toggles?'
+                    pageDrawsControls
+                        ? 'WINDOW CONTROLS — the minimise/maximise/close cluster IS in the capture (the page draws it). On a real screen: does the close button reach the window’s top-right corner, does its hover read as the destructive one, and does the maximise glyph become the restore stack when the window is maximised?'
+                        : 'TRAFFIC LIGHTS — the close/minimise/zoom buttons are drawn by macOS outside the page and cannot appear in a CDP capture. On a real screen: are they vertically centred in the 32px strip, and clear of the sidebar/inspector toggles?'
                 );
 
                 // ── §APP-018: ⌘N opens the SHEET, and creates nothing ────────────────

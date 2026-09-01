@@ -123,6 +123,7 @@ import {
     NEW_WEB_PANE_COMMAND,
     SELECT_ALL_WORKSPACES_COMMAND,
     switchWorkspacePosition,
+    windowControlRequest,
     workspaceSelectionReport
 } from './app/file-menu';
 import { useGraft } from './app/graft';
@@ -211,6 +212,7 @@ import {
     parseViewFocusMessage,
     readShellWindowID,
     readTrafficLightInset,
+    readWindowControls,
     readWindowTransparent,
     revealAppliesHere,
     viewFocusAppliesHere,
@@ -645,6 +647,14 @@ function Shell(props: AppProps): ReactElement {
      */
     const trafficLightInset = useMemo(() => readTrafficLightInset(), []);
     /**
+     * §APP-046b: whether this strip must draw the window's own minimise/maximise/close buttons.
+     *
+     * True inside a shell window on Windows and Linux, where the frame is hidden and has no
+     * native cluster to defer to. Read once for `trafficLightInset`'s reason — a window cannot
+     * change its frame without being recreated, and recreating it reloads this page.
+     */
+    const windowControls = useMemo(() => readWindowControls(), []);
+    /**
      * The same value, reachable from `act` without putting it in that memo's dependency list.
      * It cannot change without a reload, so a ref is the honest expression of that.
      */
@@ -678,6 +688,30 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => {
         reportWorkspaceSelection(EMPTY_WORKSPACE_SELECTION);
     }, [reportWorkspaceSelection]);
+
+    /**
+     * §APP-046b: a click on the window's own minimise / maximise / close button.
+     *
+     * Fire-and-forget over the socket, and deliberately with no optimistic local state: the shell
+     * performs it and the window's real `maximize`/`unmaximize` events report back, so the glyph
+     * follows what the WINDOW did rather than what the click intended. A close that the quit gate
+     * stops must not leave the page believing it already happened.
+     */
+    const requestWindowControl = useCallback(
+        (action: 'minimize' | 'maximize' | 'close'): void => {
+            /*
+             * Never QUEUE a window command. `connection.send` holds anything it cannot put on the
+             * wire and flushes it on the next handshake — which for these three verbs means a
+             * click made against a dead socket closes or minimises the window whenever the daemon
+             * comes back, long after the user gave up on it. `TopBar` already dims the cluster
+             * while the connection is down; this is the half that cannot be got wrong by a
+             * component that renders one frame late.
+             */
+            if (runtime.connection.status !== 'connected') return;
+            runtime.connection.send(windowControlRequest(action, shellWindowID));
+        },
+        [runtime, shellWindowID]
+    );
 
     /**
      * One reporter for the whole client: it dedupes and throttles per pane, so a divider drag
@@ -3964,6 +3998,11 @@ function Shell(props: AppProps): ReactElement {
                 // traffic-light row, so the bar clears the buttons and takes the drag.
                 trafficLightInset={trafficLightInset}
                 dragRegion={shellWindowID !== null}
+                // §APP-046b: …and on Windows and Linux it carries the window's buttons too,
+                // because the hidden frame under it has none of its own.
+                windowControls={windowControls}
+                windowMaximized={ui.windowMaximized}
+                onWindowControl={requestWindowControl}
             />
 
             {/*

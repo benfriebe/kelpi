@@ -21,7 +21,7 @@ import type { ConnectionStatus } from '../connection';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
-import { ChromeIcon } from './icons';
+import { ChromeIcon, type ChromeIconName } from './icons';
 import { useOverlayPresence } from './modal-presence';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -82,6 +82,19 @@ export interface TopBarProps {
      * a native one above it", so it is not set where it would be a lie.
      */
     readonly dragRegion?: boolean | undefined;
+    /**
+     * §APP-046b — draw this window's minimise / maximise / close buttons at the trailing end.
+     *
+     * True only inside a shell window on Windows and Linux, where the window has no native
+     * cluster of its own (`?windowControls=1`; `shell/src/titlebar.ts` decides). macOS keeps real
+     * traffic lights — drawn by AppKit over the LEADING end of this same strip, which is what
+     * `trafficLightInset` clears — and a browser tab has the browser's own frame.
+     */
+    readonly windowControls?: boolean | undefined;
+    /** True while the window is maximised, so the middle button shows "restore" instead. */
+    readonly windowMaximized?: boolean | undefined;
+    /** Perform one. The click travels client → daemon → shell; only the shell can act on it. */
+    readonly onWindowControl?: ((action: 'minimize' | 'maximize' | 'close') => void) | undefined;
 }
 
 const CONNECTION_LABEL: Readonly<Record<ConnectionStatus, string>> = {
@@ -121,6 +134,34 @@ const IDENTITY_GUTTER_PX = 12;
 
 /** The reserve used before the first measurement (and wherever `ResizeObserver` is absent). */
 const IDENTITY_FALLBACK_RESERVE_PX = 256;
+
+/**
+ * §APP-046b — the window-control cluster.
+ *
+ * 40px per button against the strip's full 32px height. Windows' own controls are 46×32 and
+ * KDE's are near enough; 40 keeps three of them from crowding the connection pill while staying
+ * well above the ~24px a pointer starts to fight. They are the only buttons in this bar sized by
+ * their BOX rather than by `GLYPH_BUTTON_PAD_PX` around a glyph, because a window control is a
+ * corner target — the user throws the pointer at it — and `self-stretch` is what makes the close
+ * button reach the very top-right pixel of the window.
+ */
+const WINDOW_CONTROL_WIDTH_PX = 40;
+
+/** Every desktop paints a close button's hover red; this is the one in this palette's register. */
+const WINDOW_CLOSE_HOVER = '#C4402F';
+
+/** Why the buttons are dim. Says what still works, because the frame has no controls of its own. */
+const WINDOW_CONTROLS_OFFLINE_TITLE = 'Disconnected from the daemon - use File > Quit (Alt shows the menu)';
+
+const WINDOW_CONTROL_BUTTONS = [
+    { action: 'minimize', icon: 'window-minimize', label: 'Minimise' },
+    { action: 'maximize', icon: 'window-maximize', label: 'Maximise' },
+    { action: 'close', icon: 'window-close', label: 'Close' }
+] as const satisfies readonly {
+    readonly action: 'minimize' | 'maximize' | 'close';
+    readonly icon: ChromeIconName;
+    readonly label: string;
+}[];
 
 /**
  * SPACING-REVIEW S4 — how much room the identity must leave on EACH side.
@@ -232,6 +273,20 @@ export function TopBar(props: TopBarProps): ReactElement {
 
     const trafficLightInset = Math.max(0, props.trafficLightInset ?? 0);
     /*
+     * §APP-046b — the window's buttons only work while the socket does.
+     *
+     * The click is not performed here: it travels client → daemon → shell, because the shell has
+     * no preload bridge. `KelpiConnection.send` QUEUES anything it cannot put on the wire and
+     * flushes the queue on the next handshake, so a click made while the daemon is down would sit
+     * there and then close the window minutes later, unprompted — the same replay the protocol
+     * refuses to let the daemon perform, arriving by the client's own transport instead.
+     *
+     * So the cluster goes dim and inert the moment the connection does. The window is still
+     * closable without us: File ▸ Quit keeps its accelerator in the main process (Alt reveals the
+     * menu bar), as do Alt+F4 and the window manager's own close.
+     */
+    const windowControlsLive = props.connection === 'connected';
+    /*
      * S4 — remeasure whenever anything that changes a cluster's width changes: the traffic-light
      * inset, the ••• button appearing, the layout name, and the sync chip's `sync N` label.
      */
@@ -241,6 +296,9 @@ export function TopBar(props: TopBarProps): ReactElement {
         trailingRef,
         [
             String(trafficLightInset),
+            // S4: the window-control cluster is part of the trailing width, and the maximise
+            // glyph swapping does not change it — but the cluster APPEARING does.
+            String(props.windowControls === true),
             String((props.overflowItems ?? []).length),
             String(props.currentLayout ?? 'custom'),
             String(props.syncInputActive === true ? (props.syncedPaneCount ?? 0) : -1),
@@ -259,6 +317,29 @@ export function TopBar(props: TopBarProps): ReactElement {
                first control beyond, and whether this strip claims the drag region. */
             data-traffic-light-inset={String(trafficLightInset)}
             data-titlebar-drag={props.dragRegion === true ? 'true' : undefined}
+            /*
+             * §APP-046b — double-click the empty strip to maximise, and again to restore.
+             *
+             * Free on macOS: AppKit performs it on a `hiddenInset` window's drag region, and
+             * honours the user's "double-click a window's title bar to" system preference while
+             * doing it. Nothing does it for a `hidden` window on Windows or Linux, so the bar
+             * that stands in for the title bar has to — a title bar that does not respond to the
+             * gesture every desktop has trained the user to make reads as broken.
+             *
+             * Bound only where the page owns the controls, so macOS keeps AppKit's own handling
+             * (and its preference) rather than getting a second, unconditional maximise on top.
+             * Clicks that started on a control are ignored: double-clicking minimise must
+             * minimise twice, not minimise and then maximise.
+             */
+            onDoubleClick={
+                props.windowControls === true && windowControlsLive
+                    ? (event) => {
+                          const target = event.target as HTMLElement | null;
+                          if (target?.closest('button, a, input, select, textarea, [role="menu"]') != null) return;
+                          props.onWindowControl?.('maximize');
+                      }
+                    : undefined
+            }
             className="relative flex h-8 shrink-0 items-center border-b pr-3"
             style={{
                 background: tokens.footerBackground,
@@ -377,7 +458,15 @@ export function TopBar(props: TopBarProps): ReactElement {
                 ) : null}
             </div>
 
-            <div ref={trailingRef} className="ml-auto flex items-center gap-2 text-[11px]">
+            {/*
+             * §APP-046b: `self-stretch` here is load-bearing, not decoration. The bar root is
+             * `items-center`, so without it this container is CONTENT height (~20px, set by the
+             * connection pill) — and the window-control cluster's own `self-stretch` would then
+             * stretch to 20px rather than the bar's 32, leaving a dead band along the window's
+             * top edge exactly where a user throws the pointer to hit close. Everything inside
+             * still centres itself; only the box grows.
+             */}
+            <div ref={trailingRef} className="ml-auto flex items-center gap-2 self-stretch text-[11px]">
                 <div className="relative flex items-center">
                     <button
                         type="button"
@@ -539,7 +628,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                  * end of the bar - the sidebar toggle's mirror image, glyph included
                  * (`sidebar-right` is `sidebar` reflected). Hung last in the trailing cluster it
                  * sits the bar's own `pr-3` from the window edge, the same 12 px the sidebar
-                 * toggle keeps from the leading one.
+                 * toggle keeps from the leading one - except where the page draws the window's
+                 * own buttons (APP-046b), which are always outermost, and which this then sits
+                 * inside exactly as it would sit inside a native cluster.
                  */}
                 {props.onToggleInspector === undefined ? null : (
                     <button
@@ -562,6 +653,75 @@ export function TopBar(props: TopBarProps): ReactElement {
                         <ChromeIcon name="sidebar-right" size={13} />
                     </button>
                 )}
+
+                {/*
+                 * §APP-046b — the window's own buttons.
+                 *
+                 * Trailing, and in minimise / maximise / close order, because that is where and
+                 * how Windows and every mainstream Linux desktop put them; macOS's leading
+                 * cluster is AppKit's and is not drawn here. The negative trailing margin eats
+                 * the bar's own `pr-3` so the close button reaches the window's corner the way a
+                 * real one does — a 12px dead strip beside × is the tell that a title bar is
+                 * drawn rather than native.
+                 *
+                 * `button` is already in `styles.css`'s `no-drag` list, so these stay clickable
+                 * inside the drag region that surrounds them.
+                 */}
+                {props.windowControls === true ? (
+                    <div data-testid="window-controls" className="-mr-3 ml-1 flex items-center self-stretch">
+                        {WINDOW_CONTROL_BUTTONS.map((control) => {
+                            const maximized = props.windowMaximized === true;
+                            const isClose = control.action === 'close';
+                            const label = control.action === 'maximize' && maximized ? 'Restore' : control.label;
+                            const active = hovered === `window:${control.action}` && windowControlsLive;
+                            return (
+                                <button
+                                    key={control.action}
+                                    type="button"
+                                    data-testid={`window-${control.action}`}
+                                    aria-label={label}
+                                    disabled={!windowControlsLive}
+                                    title={windowControlsLive ? label : WINDOW_CONTROLS_OFFLINE_TITLE}
+                                    className="flex h-full items-center justify-center"
+                                    data-hovered={active ? 'true' : 'false'}
+                                    style={{
+                                        width: WINDOW_CONTROL_WIDTH_PX,
+                                        /* Dimmed, not hidden: the buttons are where the user
+                                           expects them and say why they cannot be pressed. */
+                                        opacity: windowControlsLive ? 1 : 0.4,
+                                        cursor: windowControlsLive ? undefined : 'default',
+                                        /* The close button's hover is the one colour in this bar
+                                           that is not a tint of the chrome: every desktop paints
+                                           it red, and a × that highlights like its neighbours
+                                           reads as "another glyph" at exactly the moment the user
+                                           wants to be sure which one they are about to press. */
+                                        color: active
+                                            ? isClose
+                                                ? '#FFFFFF'
+                                                : tokens.textPrimary
+                                            : tokens.textSecondary,
+                                        background: active
+                                            ? isClose
+                                                ? WINDOW_CLOSE_HOVER
+                                                : withAlpha('#E6E6EA', 0.1)
+                                            : 'transparent'
+                                    }}
+                                    {...hover(`window:${control.action}`)}
+                                    onClick={() => props.onWindowControl?.(control.action)}
+                                >
+                                    <ChromeIcon
+                                        name={
+                                            control.action === 'maximize' && maximized
+                                                ? 'window-restore'
+                                                : control.icon
+                                        }
+                                        size={11}
+                                    />
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : null}
             </div>
         </div>
     );

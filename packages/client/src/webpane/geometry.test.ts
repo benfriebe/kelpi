@@ -12,8 +12,10 @@ import { describe, expect, it } from 'vitest';
 import { createGeometryReporter, type GeometryReport } from './geometry';
 import {
     TRAFFIC_LIGHT_INSET_PARAM,
+    WINDOW_CONTROLS_PARAM,
     readShellWindowID,
     readTrafficLightInset,
+    readWindowControls,
     readWindowTransparent,
     SHELL_WINDOW_PARAM,
     WINDOW_TRANSPARENT_PARAM
@@ -229,5 +231,24 @@ describe('readTrafficLightInset', () => {
 
     it('caps a hand-edited URL, which cannot push the title bar off screen', () => {
         expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=99999`)).toBe(200);
+    });
+});
+
+// APP-046b: the fourth, and the only yes/no one — must this strip draw the window's own buttons?
+describe('readWindowControls', () => {
+    it('is true when the shell says the window has none of its own', () => {
+        expect(readWindowControls(`?${WINDOW_CONTROLS_PARAM}=1`)).toBe(true);
+        expect(readWindowControls(`?${WINDOW_CONTROLS_PARAM}=true`)).toBe(true);
+        expect(readWindowControls(`?${SHELL_WINDOW_PARAM}=WIN-1&${WINDOW_CONTROLS_PARAM}=1`)).toBe(true);
+    });
+
+    it('is false for a browser tab, a macOS window, and junk', () => {
+        // Silence means no, and it has to: drawing a close button that nothing acts on is worse
+        // than drawing none, and on macOS it would be a second, fake set beside AppKit's real one.
+        expect(readWindowControls('')).toBe(false);
+        expect(readWindowControls(`?${SHELL_WINDOW_PARAM}=WIN-1`)).toBe(false);
+        expect(readWindowControls(`?${SHELL_WINDOW_PARAM}=WIN-1&${TRAFFIC_LIGHT_INSET_PARAM}=80`)).toBe(false);
+        expect(readWindowControls(`?${WINDOW_CONTROLS_PARAM}=0`)).toBe(false);
+        expect(readWindowControls(`?${WINDOW_CONTROLS_PARAM}=maybe`)).toBe(false);
     });
 });

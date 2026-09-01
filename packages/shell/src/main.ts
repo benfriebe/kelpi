@@ -94,7 +94,7 @@ import {
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { isForwardableOpenPath } from './shell-actions.js';
-import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
+import { titleBarLogLine, titleBarStyleFor, trafficLightQuery, windowControlsQuery } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import { canCheckForUpdates, checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
@@ -380,8 +380,12 @@ function loadDaemonUrl(window: BrowserWindow): void {
         (windowIsTransparent ? '&windowTransparent=1' : '') +
         // APP-046: the same shape of answer for the traffic lights. With `hiddenInset` the page
         // is drawn UNDER them, so it is told how much leading room to keep clear; a browser tab
-        // (and a Linux window) gets no parameter and reserves nothing.
-        trafficLightQuery(TITLE_BAR);
+        // (and a Windows/Linux window, whose buttons are the page's own) gets no parameter and
+        // reserves nothing.
+        trafficLightQuery(TITLE_BAR) +
+        // APP-046b: …and on Windows and Linux, that the page must DRAW the three buttons, because
+        // the window it is in has none. `titlebar.ts` owns which platforms those are.
+        windowControlsQuery(TITLE_BAR);
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -454,6 +458,16 @@ function createWindow(): BrowserWindow {
          * drag region and all. `./titlebar.ts` owns every number in that sentence.
          */
         ...(TITLE_BAR.titleBarStyle === undefined ? {} : { titleBarStyle: TITLE_BAR.titleBarStyle }),
+        /*
+         * APP-046b — and the menu bar folds away with the frame.
+         *
+         * Electron renders the application menu INSIDE the window on Windows and Linux. Leaving
+         * it would stack a menu strip above the client's drawn bar — the very defect the hidden
+         * frame removes — and it is invisible on a KDE session, where the menu is usually
+         * exported to the desktop's global menu instead. Alt reveals it; every accelerator keeps
+         * working, including the File ▸ Quit that is the escape hatch when the daemon is down.
+         */
+        ...(TITLE_BAR.autoHideMenuBar ? { autoHideMenuBar: true } : {}),
         ...(TITLE_BAR.trafficLightPosition === undefined
             ? {}
             : { trafficLightPosition: { ...TITLE_BAR.trafficLightPosition } }),
@@ -568,6 +582,17 @@ function createWindow(): BrowserWindow {
         // badge 600 ms later. Suspended here, re-armed on the next focus.
         status?.reportActivation(false);
     });
+    /*
+     * §APP-046b — the maximise button's glyph, kept true.
+     *
+     * These fire for every route into the state, which is the point: the button the page drew is
+     * one of them, but a WM keyboard shortcut, a tiling rule, a double-click on the drawn strip
+     * and a drag off a snapped edge are all just as real, and none of them is observable from
+     * inside the page. Wired on every platform — the fact is true on macOS too, and a client with
+     * no cluster to draw simply stores a boolean it never reads.
+     */
+    window.on('maximize', () => status?.reportWindowFrameState(true));
+    window.on('unmaximize', () => status?.reportWindowFrameState(false));
     window.on('closed', () => {
         mainWindow = null;
         // Embedded web-pane views outlive the window: back to the host's off-screen holder, or
@@ -1172,6 +1197,13 @@ function startStatusController(): void {
             host: {
                 showWindow,
                 isWindowFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
+                // §APP-046b: the state a reloading page cannot observe for itself. `mainWindow`
+                // rather than "any window", because the answer is about the window whose id this
+                // status socket carries — and a maximised second window says nothing about it.
+                isWindowMaximized: () => {
+                    const window = mainWindow;
+                    return window !== null && !window.isDestroyed() && window.isMaximized();
+                },
                 startDaemon: () => {
                     void startDaemonAndConnect().catch((error: unknown) => {
                         logError('daemon restart failed', error);
@@ -1288,6 +1320,28 @@ function startStatusController(): void {
                  */
                 workspaceSelectionChanged: (selectedCount) => {
                     applyWorkspaceSelectionCount(selectedCount);
+                },
+                /**
+                 * §APP-046b: the window's own buttons, clicked in the page that drew them.
+                 *
+                 * `close` goes through `window.close()` rather than `destroy()` so it is the same
+                 * close the × on a native frame performs: the quit gate still runs, `closed`
+                 * still fires, and the embedded web-pane views still go back to the holder. It
+                 * closes the WINDOW and nothing else — the daemon and its panes outlive it, which
+                 * is the architecture's first rule.
+                 *
+                 * `maximize` toggles, because one button does both, and it asks the window rather
+                 * than tracking a boolean here: the state changes from outside the app often
+                 * enough (WM shortcuts, tiling, a drag off a snapped edge) that anything we
+                 * remembered would go stale.
+                 */
+                windowControlRequested: (action) => {
+                    const window = mainWindow;
+                    if (window === null || window.isDestroyed()) return;
+                    if (action === 'minimize') window.minimize();
+                    else if (action === 'close') window.close();
+                    else if (window.isMaximized()) window.unmaximize();
+                    else window.maximize();
                 }
             }
         });

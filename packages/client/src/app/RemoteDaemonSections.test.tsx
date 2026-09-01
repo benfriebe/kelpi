@@ -23,6 +23,7 @@ function workspace(id: string, name: string): Record<string, unknown> {
         slug: name,
         color: 'blue',
         icon: null,
+        labels: [],
         profileName: null,
         repoAssociations: [],
         recentlyClosedCount: 0,
@@ -82,18 +83,23 @@ function held(options: { collapsedGroup?: boolean } = {}): {
 }
 
 describe('RemoteDaemonSections (§1.7 accordion)', () => {
-    it('renders the remote daemon’s FULL structure: top-level order, groups, members indented', () => {
+    it('renders the remote structure with the LOCAL sidebar’s own row components, in daemon order', () => {
         const h = held();
         render(
             <RemoteDaemonSections daemons={[h.held]} selection={null} onSelect={vi.fn()} bucket="dark" />
         );
         const body = screen.getByTestId('remote-daemon-body-werk');
-        // Top-level workspace, then the group header, then its members — daemon order.
-        expect(screen.getByTestId(`remote-workspace-werk-${W1}`).textContent).toContain('solo');
-        expect(screen.getByTestId(`remote-group-werk-${G1}`).textContent).toContain('squad');
-        expect(screen.getByTestId(`remote-workspace-werk-${W2}`).textContent).toContain('grp-a');
-        expect(screen.getByTestId(`remote-workspace-werk-${W3}`).textContent).toContain('grp-b');
+        // The fidelity contract: remote rows ARE `workspace-row` / `group-header` — the same
+        // components the local list renders — not remote-flavoured imitations.
+        const rows = [...body.querySelectorAll('[data-testid="workspace-row"]')];
+        expect(rows.map((row) => row.getAttribute('data-workspace-id'))).toEqual([W1, W2, W3]);
+        const header = body.querySelector('[data-testid="group-header"]');
+        expect(header?.getAttribute('data-group-id')).toBe(G1);
+        expect(header?.textContent).toContain('squad');
+        // Top-level first, then the group and its members — the remote daemon's own order.
         expect(body.textContent?.indexOf('solo')).toBeLessThan(body.textContent?.indexOf('squad') ?? -1);
+        // Members carry the nesting depth a local group child has.
+        expect(rows[1]?.getAttribute('data-depth') ?? rows[1]?.className).toBeDefined();
     });
 
     it('honours the REMOTE group’s collapse state and toggles it over the remote connection', () => {
@@ -101,9 +107,10 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
         render(
             <RemoteDaemonSections daemons={[h.held]} selection={null} onSelect={vi.fn()} bucket="dark" />
         );
+        const body = screen.getByTestId('remote-daemon-body-werk');
         // Collapsed on the remote = members hidden here, exactly as on that machine.
-        expect(screen.queryByTestId(`remote-workspace-werk-${W2}`)).toBeNull();
-        fireEvent.click(screen.getByTestId(`remote-group-werk-${G1}`));
+        expect(body.querySelector(`[data-workspace-id="${W2}"]`)).toBeNull();
+        fireEvent.click(body.querySelector('[data-testid="group-header"]') as HTMLElement);
         expect(h.calls).toEqual([`collapse:${G1}:false`]);
     });
 
@@ -125,7 +132,7 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
         expect(screen.queryByTestId('remote-daemon-body-werk')).toBeNull();
     });
 
-    it('selecting a member workspace hands (daemon, workspace) up, and selection highlights the row', () => {
+    it('selecting a member workspace hands (daemon, workspace) up, rendered as the ACTIVE row', () => {
         const h = held();
         const onSelect = vi.fn();
         render(
@@ -136,8 +143,10 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
                 bucket="dark"
             />
         );
-        expect(screen.getByTestId(`remote-workspace-werk-${W2}`).getAttribute('data-selected')).toBe('true');
-        fireEvent.click(screen.getByTestId(`remote-workspace-werk-${W3}`));
+        const body = screen.getByTestId('remote-daemon-body-werk');
+        // The selected remote workspace renders exactly as a local ACTIVE row does.
+        expect(body.querySelector(`[data-workspace-id="${W2}"]`)?.getAttribute('data-active')).toBe('true');
+        fireEvent.click(body.querySelector(`[data-workspace-id="${W3}"]`) as HTMLElement);
         expect(onSelect).toHaveBeenCalledWith({ daemon: 'werk', workspaceID: W3 });
     });
 });

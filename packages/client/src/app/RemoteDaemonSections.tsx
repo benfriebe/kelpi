@@ -1,19 +1,20 @@
 /**
  * The sidebar's remote-daemon sections (§1.7 multi-daemon groups) — one ACCORDION per
- * configured `remote-daemon`, rendered through the Sidebar's `trailingSections` slot so the
- * sidebar itself stays ignorant of remote stores.
+ * configured `remote-daemon`, rendered through the Sidebar's `trailingSections` slot.
  *
- * Each accordion header (status dot · name · chevron) collapses the whole host; the state is
- * per-client convenience, so it lives in `localStorage` (guarded — a blocked store just
- * defaults to expanded) rather than in either daemon's config. The BODY is the remote
- * daemon's own sidebar structure, verbatim: `selectSidebarEntries` — the exact selector the
- * local sidebar renders from — applied to the remote store's mirror, so top-level order,
- * groups, group membership and group collapse state all read as they do on that machine.
- * Toggling a remote GROUP goes through the remote daemon's own `set-group-collapsed`, so it
- * is that daemon's persisted state, mirrored back live — never a local imitation of it.
+ * Below the accordion header, remote rows are the LOCAL sidebar's own components —
+ * `WorkspaceRow` and `GroupHeaderRow`, exported from `chrome/Sidebar.tsx` — fed by
+ * `selectSidebarEntries` over the remote store's mirror. A remote workspace or group is
+ * therefore pixel-identical to a local one by construction: same avatars, status dots,
+ * label chips, agent-count badges, group bands, nesting indents and §WS-007 guide rules,
+ * with one implementation to drift from. What a remote row deliberately does NOT wire is
+ * the local list's drag/multi-select/rename/context machinery — those callbacks are inert
+ * (the house rule: an unwired gesture is inert, never half-working).
  *
- * The rows stay plainer than the local sidebar's (no drag, no context menus, no labels):
- * those gestures are staged behind the core loop of seeing and using remote terminals.
+ * The accordion header (status dot · name · chevron) collapses the whole host; that choice
+ * is per-client convenience in `localStorage` (guarded — a blocked store defaults to
+ * expanded). A remote GROUP's chevron, by contrast, toggles `set-group-collapsed` over the
+ * remote daemon's own connection: its persisted state, mirrored back live.
  */
 
 import { useState, type ReactElement } from 'react';
@@ -21,9 +22,10 @@ import { useStore } from 'zustand';
 
 import { hoverFill, hoverText, useHoverKey } from '../chrome/hover';
 import { ChromeIcon } from '../chrome/icons';
-import { workspaceColorHex, type ChromeBucket } from '../chrome/theme';
+import { agentCounts, groupGuideColor, GroupHeaderRow, WorkspaceRow } from '../chrome/Sidebar';
 import { tokens } from '../chrome/tokens';
-import type { ChromeWorkspace } from '../chrome/types';
+import type { ChromeBucket } from '../chrome/theme';
+import type { ChromeLabelPreset, ChromeWorkspace } from '../chrome/types';
 import type { ConnectionStatus } from '../connection';
 import { selectSidebarEntries } from '../state';
 import type { RemoteDaemonRuntime } from './remote-daemons';
@@ -37,7 +39,7 @@ export interface RemoteDaemonSectionsProps {
     readonly daemons: readonly RemoteDaemonRuntime[];
     readonly selection: RemoteSelection | null;
     readonly onSelect: (selection: RemoteSelection) => void;
-    /** The chrome's light/dark bucket, for the same colour dots the local rows carry. */
+    /** The chrome's light/dark bucket — the rows read colours exactly as local ones do. */
     readonly bucket?: ChromeBucket | undefined;
 }
 
@@ -67,45 +69,7 @@ function writeCollapsed(name: string, collapsed: boolean): void {
     }
 }
 
-function RemoteWorkspaceRow(props: {
-    readonly held: RemoteDaemonRuntime;
-    readonly workspace: ChromeWorkspace;
-    readonly indented: boolean;
-    readonly selected: boolean;
-    readonly bucket: ChromeBucket;
-    readonly onSelect: (selection: RemoteSelection) => void;
-}): ReactElement {
-    const [hovered, hover] = useHoverKey();
-    const key = `ws:${props.workspace.id}`;
-    return (
-        <button
-            type="button"
-            data-testid={`remote-workspace-${props.held.name}-${props.workspace.id}`}
-            data-selected={props.selected ? 'true' : 'false'}
-            className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] ${props.indented ? 'pl-6' : ''}`}
-            style={{
-                color: props.selected
-                    ? tokens.textPrimary
-                    : hoverText(hovered === key, tokens.textSecondary),
-                background: props.selected ? tokens.selectionFill : hoverFill(hovered === key)
-            }}
-            {...hover(key)}
-            onClick={() => {
-                props.onSelect({ daemon: props.held.name, workspaceID: props.workspace.id });
-            }}
-        >
-            <span
-                aria-hidden
-                className="h-[7px] w-[7px] shrink-0 rounded-full"
-                style={{ background: workspaceColorHex(props.workspace.color, props.bucket) }}
-            />
-            <span className="truncate">{props.workspace.name}</span>
-            <span className="ml-auto shrink-0 text-[10px]" style={{ color: tokens.textTertiary }}>
-                {props.workspace.panes.length}
-            </span>
-        </button>
-    );
-}
+const noop = (): void => {};
 
 function RemoteDaemonSection(props: {
     readonly held: RemoteDaemonRuntime;
@@ -115,6 +79,7 @@ function RemoteDaemonSection(props: {
 }): ReactElement {
     const { held } = props;
     const entries = useStore(held.runtime.store, selectSidebarEntries);
+    const presets = useStore(held.runtime.store, (state) => state.daemon.state.labelPresets);
     const connection = useStore(held.runtime.store, (state) => state.ui.connection);
     const [collapsed, setCollapsed] = useState(() => readCollapsed(held.name));
     const [hovered, hover] = useHoverKey();
@@ -125,6 +90,49 @@ function RemoteDaemonSection(props: {
             return !current;
         });
     };
+
+    const activate = (workspaceID: string): void => {
+        props.onSelect({ daemon: held.name, workspaceID });
+    };
+
+    const row = (
+        workspace: ChromeWorkspace,
+        options: {
+            depth: 0 | 1;
+            groupID?: string;
+            guideColor?: string;
+            guideExtendUp?: boolean;
+            guideExtendDown?: boolean;
+        }
+    ): ReactElement => (
+        <WorkspaceRow
+            key={workspace.id}
+            workspace={workspace}
+            depth={options.depth}
+            {...(options.groupID === undefined ? {} : { groupID: options.groupID })}
+            active={
+                props.selection !== null &&
+                props.selection.daemon === held.name &&
+                props.selection.workspaceID === workspace.id
+            }
+            selected={false}
+            badgeIndex={-1}
+            bucket={props.bucket}
+            presets={presets as readonly ChromeLabelPreset[]}
+            renaming={false}
+            dragging={false}
+            groupCaption={null}
+            {...(options.guideColor === undefined ? {} : { guideColor: options.guideColor })}
+            {...(options.guideExtendUp === undefined ? {} : { guideExtendUp: options.guideExtendUp })}
+            {...(options.guideExtendDown === undefined ? {} : { guideExtendDown: options.guideExtendDown })}
+            onActivate={activate}
+            onContextMenu={noop}
+            onDragStart={noop}
+            onCommitRename={noop}
+            onCancelRename={noop}
+            registerRow={noop}
+        />
+    );
 
     return (
         <div className="mt-2 flex shrink-0 flex-col" data-testid={`remote-daemon-${held.name}`}>
@@ -166,74 +174,45 @@ function RemoteDaemonSection(props: {
                     ) : null}
                     {entries.map((entry) => {
                         if (entry.kind === 'workspace') {
-                            return (
-                                <RemoteWorkspaceRow
-                                    key={entry.workspace.id}
-                                    held={held}
-                                    workspace={entry.workspace as ChromeWorkspace}
-                                    indented={false}
-                                    bucket={props.bucket}
-                                    selected={
-                                        props.selection !== null &&
-                                        props.selection.daemon === held.name &&
-                                        props.selection.workspaceID === entry.workspace.id
-                                    }
-                                    onSelect={props.onSelect}
-                                />
-                            );
+                            return row(entry.workspace as ChromeWorkspace, { depth: 0 });
                         }
                         const group = entry.group;
+                        const guide = groupGuideColor(group.color, props.bucket);
                         return (
-                            <div key={group.id} className="flex flex-col">
-                                <button
-                                    type="button"
-                                    data-testid={`remote-group-${held.name}-${group.id}`}
-                                    aria-expanded={!group.isCollapsed}
-                                    className="flex w-full items-center gap-1.5 rounded px-2 py-1 pl-4 text-left text-[11px]"
-                                    style={{ color: tokens.textTertiary }}
-                                    onClick={() => {
+                            <div key={group.id} className="flex flex-col" data-testid={`remote-group-${held.name}-${group.id}`}>
+                                <GroupHeaderRow
+                                    group={group}
+                                    collapsed={group.isCollapsed}
+                                    counts={agentCounts(entry.workspaces as readonly ChromeWorkspace[])}
+                                    bucket={props.bucket}
+                                    renaming={false}
+                                    dropPreview={false}
+                                    onToggle={(groupID) => {
                                         // The REMOTE daemon's own persisted collapse state,
-                                        // toggled over its own connection — the mirror echoes
+                                        // toggled over its own connection; the mirror echoes
                                         // it back, exactly as on that machine's sidebar.
                                         void held.runtime.commands.setGroupCollapsed({
-                                            groupID: group.id,
+                                            groupID,
                                             collapsed: !group.isCollapsed
                                         });
                                     }}
-                                >
-                                    <span className="flex shrink-0 items-center">
-                                        <ChromeIcon
-                                            name={group.isCollapsed ? 'chevron-right' : 'chevron-down'}
-                                            size={8}
-                                        />
-                                    </span>
-                                    <span
-                                        aria-hidden
-                                        className="h-[6px] w-[6px] shrink-0 rounded-full"
-                                        style={{ background: workspaceColorHex(group.color, props.bucket) }}
-                                    />
-                                    <span className="truncate font-semibold">{group.name}</span>
-                                    <span className="ml-auto shrink-0 text-[10px]">
-                                        {entry.workspaces.length}
-                                    </span>
-                                </button>
+                                    onContextMenu={noop}
+                                    onDragStart={noop}
+                                    onCommitRename={noop}
+                                    onCancelRename={noop}
+                                    registerRow={noop}
+                                />
                                 {group.isCollapsed
                                     ? null
-                                    : entry.workspaces.map((workspace) => (
-                                          <RemoteWorkspaceRow
-                                              key={workspace.id}
-                                              held={held}
-                                              workspace={workspace as ChromeWorkspace}
-                                              indented
-                                              bucket={props.bucket}
-                                              selected={
-                                                  props.selection !== null &&
-                                                  props.selection.daemon === held.name &&
-                                                  props.selection.workspaceID === workspace.id
-                                              }
-                                              onSelect={props.onSelect}
-                                          />
-                                      ))}
+                                    : entry.workspaces.map((workspace, index) =>
+                                          row(workspace as ChromeWorkspace, {
+                                              depth: 1,
+                                              groupID: group.id,
+                                              guideColor: guide,
+                                              guideExtendUp: index > 0,
+                                              guideExtendDown: index < entry.workspaces.length - 1
+                                          })
+                                      )}
                             </div>
                         );
                     })}

@@ -503,7 +503,16 @@ interface AgentCounts {
     readonly waiting: number;
 }
 
-function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts {
+/**
+ * §WS-007's guide-rule tint — the group's own colour at 0.55, or the theme divider when it
+ * has none. Exported so the remote-daemon sections' nested rows carry the SAME rule.
+ */
+export function groupGuideColor(color: WorkspaceColor | null, bucket: ChromeBucket): string {
+    return color === null ? tokens.divider : withAlpha(workspaceColorHex(color, bucket), 0.55);
+}
+
+/** Exported for the remote-daemon sections (§1.7): identical badges, one implementation. */
+export function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts {
     let running = 0;
     let waiting = 0;
     for (const workspace of workspaces) {
@@ -943,7 +952,7 @@ interface WorkspaceRowProps {
  * opt-out of the gap's inherited invisibility, and both ghost-sanitiser entries that existed
  * only to stop the rule riding the cursor.
  */
-const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
+export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
     // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
     // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
@@ -1305,7 +1314,7 @@ interface GroupHeaderRowProps {
     readonly enterFast?: boolean | undefined;
 }
 
-const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
+export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
     const { group } = props;
     const hex = group.color === null ? tokens.textTertiary : workspaceColorHex(group.color, props.bucket);
     const glyph = iconGlyph(group.icon);
@@ -2105,9 +2114,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (groupID === null) return undefined;
             const group = groups.find((candidate) => candidate.id === groupID);
             if (group === undefined) return undefined;
-            return group.color === null
-                ? tokens.divider
-                : withAlpha(workspaceColorHex(group.color, bucket), 0.55);
+            return groupGuideColor(group.color, bucket);
         },
         [bucket, groups]
     );

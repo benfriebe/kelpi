@@ -309,6 +309,29 @@ export class CommandClient {
         this.connection.send({ type: 'take-size-control' });
     }
 
+    // ── Settings ▸ Remote (`daemon ws/remote.ts`; OWNER-ONLY, WS-only) ──────────────
+
+    /** Registry + tailnet dashboard: paired devices, tailscale identity, serve state. */
+    remoteStatus(options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'remote-status' }, options ?? {});
+    }
+
+    /**
+     * Mint a device and build its pairing URL — the reply's `url` carries the plaintext
+     * token exactly ONCE (the registry stores only the hash). `tailnet` runs the same
+     * `tailscale serve` recipe `kelpid pair --tailnet` does, and MAY configure serve;
+     * a tailnet failure rolls the mint back and the reply says so.
+     */
+    remotePair(name: string, tailnet: boolean, options?: SendOptions): Promise<CommandReply> {
+        // `tailscale serve --bg` on a cold tailnet can take a while; a status read cannot.
+        return this.raw({ command: 'remote-pair', name, tailnet }, options ?? { timeoutMs: 60_000 });
+    }
+
+    /** Revoke by device id (or unambiguous live name). Open sessions are cut by the daemon. */
+    remoteRevoke(target: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'remote-revoke', target }, options ?? {});
+    }
+
     /**
      * Which panes this client actually renders + whether its document is visible. Drives
      * notification suppression and the daemon's "app is active" answer.

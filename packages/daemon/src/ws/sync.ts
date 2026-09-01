@@ -78,6 +78,8 @@ import {
     type PaneLifecycleChannel,
     type PaneLifecycleCommand
 } from './panes.js';
+import { DEVICE_TOKEN_PREFIX } from '../lifecycle/devices.js';
+import { isRemoteCommand, type RemoteChannel, type RemoteCommand } from './remote.js';
 import { handleRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
 import {
     FAVOURITE_COMMANDS,
@@ -175,6 +177,8 @@ export interface SyncHubOptions {
     readonly webPanes?: WebPaneChannel | undefined;
     /** The pane header's restart button; absent = `restart-pane-agent` says "not available". */
     readonly agents?: AgentChannel | undefined;
+    /** Settings ▸ Remote: pair/revoke/status (`ws/remote.ts`). Absent = "not available". */
+    readonly remote?: RemoteChannel | undefined;
     /**
      * M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). Absent =
      * they answer "repo commands are not available", which is what a daemon booted without a
@@ -1956,6 +1960,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.agentCommand(id, payload);
                     return;
                 }
+                if (name !== undefined && isRemoteCommand(name)) {
+                    this.remoteCommand(id, name, payload);
+                    return;
+                }
                 if (name !== undefined && isWsSettingsCommand(name)) {
                     const channel = options.settings;
                     let reply: JsonObject;
@@ -2242,6 +2250,53 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
         private contentReply(id: string, reply: JsonObject): void {
             this.send({ type: 'command-reply', id, reply });
+        }
+
+        /**
+         * The remote-access family (`ws/remote.ts`) — OWNER-ONLY. A session that authenticated
+         * with a paired-device token must not read the registry, mint peers, or revoke the
+         * hand that paired it; the device-token prefix is the classifier (a null credential is
+         * the owner too: the shell's authenticated upgrade, or an anonymous local daemon).
+         */
+        private remoteCommand(id: string, command: RemoteCommand, payload: Record<string, unknown>): void {
+            const channel = options.remote;
+            if (channel === undefined) {
+                this.contentReply(id, failure('remote access is not available'));
+                return;
+            }
+            if (this.credential !== null && this.credential.startsWith(DEVICE_TOKEN_PREFIX)) {
+                this.contentReply(id, failure(`${command} is owner-only`));
+                return;
+            }
+            const settle = (promise: Promise<unknown>): void => {
+                promise.then(
+                    (reply) => this.contentReply(id, reply as JsonObject),
+                    (error: unknown) => this.contentReply(id, failure(toError(error).message))
+                );
+            };
+            switch (command) {
+                case 'remote-status':
+                    settle(channel.status());
+                    return;
+                case 'remote-pair': {
+                    const name = text(payload['name']);
+                    if (name === undefined) {
+                        this.contentReply(id, failure('remote-pair requires name'));
+                        return;
+                    }
+                    settle(channel.pair(name, payload['tailnet'] === true));
+                    return;
+                }
+                case 'remote-revoke': {
+                    const target = text(payload['target']);
+                    if (target === undefined) {
+                        this.contentReply(id, failure('remote-revoke requires target'));
+                        return;
+                    }
+                    settle(channel.revoke(target));
+                    return;
+                }
+            }
         }
 
         /** Release this pane's subscription (if any) and return the new epoch. */

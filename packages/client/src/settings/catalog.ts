@@ -178,7 +178,9 @@ export const SETTINGS_TABS = [
     { id: 'web', label: 'Web', icon: 'globe' },
     // Port-only, and last for that reason. See the note above. Its glyph is chosen, not ported —
     // there is no Swift tab to copy one from.
-    { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' }
+    { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' },
+    // Port-only too: the `kelpid pair`/`devices`/`url --tailnet` flow, in-app (`RemoteTab`).
+    { id: 'remote', label: 'Remote', icon: 'antenna.radiowaves' }
 ] as const;
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]['id'];

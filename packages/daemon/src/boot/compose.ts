@@ -119,6 +119,7 @@ import {
 import {
     createAgentChannel,
     createGraftOrphanRegistry,
+    createRemoteChannel,
     createPaneAssetsRoute,
     createPaneLifecycleChannel,
     createDesktopChannel,
@@ -1354,6 +1355,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // The pane header's restart button: typing a resume command needs the same
                 // TerminalInput (live VT modes, no sync mirroring) the CLI's `pane send` uses.
                 agents: createAgentChannel({ store, pty, input }),
+                // Settings ▸ Remote: the `kelpid pair`/`devices`/`url --tailnet` flow in-app
+                // (`ws/remote.ts`). Owner-only at the sync layer; same registry + tailscale
+                // modules as the CLI, so the two surfaces cannot drift.
+                remote: createRemoteChannel({ env, port: () => port }),
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),

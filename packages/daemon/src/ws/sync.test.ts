@@ -1307,3 +1307,85 @@ describe('size control (terminal-surface.md §5.1)', () => {
         expect(c.resizes).toEqual([{ paneID: f.paneID, cols: 90, rows: 30 }]);
     });
 });
+
+describe('remote-access commands (ws/remote.ts) — owner-only', () => {
+    function remoteHub() {
+        const calls: string[] = [];
+        const hub = createSyncHub({
+            store: storeHarness(seededState()).store,
+            dispatcher: () => {},
+            daemon: DAEMON,
+            // Owner token 'tok'; any `kd_…` is a paired device (the classifier under test).
+            validateToken: (token) => token === 'tok' || token.startsWith('kd_'),
+            remote: {
+                status() {
+                    calls.push('status');
+                    return Promise.resolve({ ok: true, devices: [], tailnet: { available: false, serving: false } });
+                },
+                pair(name, tailnet) {
+                    calls.push(`pair:${name}:${String(tailnet)}`);
+                    return Promise.resolve({ ok: true, url: 'https://x/?token=kd_1', device: { id: 'a', name, created_at: '' }, notes: [] });
+                },
+                revoke(target) {
+                    calls.push(`revoke:${target}`);
+                    return Promise.resolve({ ok: true, device: { id: target, name: 'x', created_at: '' } });
+                }
+            }
+        });
+        return { hub, calls };
+    }
+
+    const replyFor = (transport: RecordedTransport, id: string): Record<string, unknown> | undefined =>
+        transport.json.find((m) => m['type'] === 'command-reply' && m['id'] === id) as
+            | Record<string, unknown>
+            | undefined;
+
+    async function settle(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('routes the family for the OWNER session', async () => {
+        const { hub, calls } = remoteHub();
+        const transport = recordingTransport();
+        const session = hub.createSession(transport);
+        session.handleMessage(hello({ token: 'tok' }));
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'r1', payload: { command: 'remote-status' } }));
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'r2', payload: { command: 'remote-pair', name: 'phone', tailnet: true } })
+        );
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'r3', payload: { command: 'remote-revoke', target: 'a1' } })
+        );
+        await settle();
+        expect(calls).toEqual(['status', 'pair:phone:true', 'revoke:a1']);
+        expect(replyFor(transport, 'r1')?.['reply']).toMatchObject({ ok: true });
+        expect(replyFor(transport, 'r2')?.['reply']).toMatchObject({ ok: true, url: 'https://x/?token=kd_1' });
+    });
+
+    it('refuses a session that authenticated with a PAIRED-DEVICE token', async () => {
+        const { hub, calls } = remoteHub();
+        const transport = recordingTransport();
+        const session = hub.createSession(transport);
+        session.handleMessage(hello({ token: 'kd_guest-token' }));
+        expect(session.ready).toBe(true);
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'g1', payload: { command: 'remote-status' } }));
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'g2', payload: { command: 'remote-revoke', target: 'a1' } })
+        );
+        await settle();
+        // The channel was never reached — the registry, mint and revoke are the owner's.
+        expect(calls).toEqual([]);
+        expect(replyFor(transport, 'g1')?.['reply']).toEqual({ ok: false, error: 'remote-status is owner-only' });
+        expect(replyFor(transport, 'g2')?.['reply']).toEqual({ ok: false, error: 'remote-revoke is owner-only' });
+    });
+
+    it('answers "not available" when no channel is composed', async () => {
+        const hub = createSyncHub({ store: storeHarness(seededState()).store, dispatcher: () => {}, daemon: DAEMON });
+        const transport = recordingTransport();
+        const session = hub.createSession(transport);
+        session.handleMessage(hello());
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'n1', payload: { command: 'remote-status' } }));
+        await settle();
+        expect(replyFor(transport, 'n1')?.['reply']).toEqual({ ok: false, error: 'remote access is not available' });
+    });
+});

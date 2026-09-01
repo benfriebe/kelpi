@@ -85,7 +85,9 @@ describe('the tab list', () => {
             // Joined once favourites grew a daemon home; the URL-bar star deep-links here.
             'web',
             // Port-only: appended so it cannot displace any of the Swift seven.
-            'workspaces'
+            'workspaces',
+            // Port-only too: the pair/devices/tailnet flow (RemoteTab).
+            'remote'
         ]);
     });
 

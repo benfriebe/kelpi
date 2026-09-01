@@ -120,6 +120,16 @@ export {
 } from './sync.js';
 
 export { createAgentChannel, type AgentChannelOptions } from './agents.js';
+export {
+    createRemoteChannel,
+    isRemoteCommand,
+    REMOTE_COMMANDS,
+    type RemoteChannel,
+    type RemoteChannelOptions,
+    type RemoteCommand,
+    type RemoteReply,
+    type WireDevice
+} from './remote.js';
 
 export {
     PANE_LIFECYCLE_COMMANDS,

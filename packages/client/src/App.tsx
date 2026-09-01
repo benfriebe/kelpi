@@ -4351,6 +4351,12 @@ function Shell(props: AppProps): ReactElement {
                         moveFavourite: (from, to) => void webCommands.favouriteMove(from, to)
                     }
                 }}
+                /* Settings ▸ Remote: the pair/devices/tailnet flow (daemon ws/remote.ts). */
+                remote={{
+                    status: () => commands.remoteStatus(),
+                    pair: (name, tailnet) => commands.remotePair(name, tailnet),
+                    revoke: (target) => commands.remoteRevoke(target)
+                }}
                 /*
                  * No `onBrowseForFolder`: the shell's dialog loop is one-way (it answers
                  * `open-file-dialog` by sending the chosen path back to the DAEMON as an `open`

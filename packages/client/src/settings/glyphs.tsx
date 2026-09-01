@@ -180,6 +180,26 @@ export function GridGlyph(props: GlyphProps): ReactElement {
     );
 }
 
+/**
+ * `antenna.radiowaves.left.and.right` — the port-only **Remote** tab (pair devices, tailnet
+ * URLs). Like the Workspaces grid, there is no Swift tab to copy a symbol from: a mast with
+ * a wave arc each side, on the same 12 × 12 grid and stroke convention as its rail siblings.
+ */
+export function AntennaGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <circle cx="6" cy="5.4" r="1.1" />
+                <path d="M6 6.5v4.3" />
+                <path d="M3.4 7.6a3.8 3.8 0 0 1 0-4.9" />
+                <path d="M8.6 2.7a3.8 3.8 0 0 1 0 4.9" />
+                <path d="M1.7 9.2a6.4 6.4 0 0 1 0-8.1" />
+                <path d="M10.3 1.1a6.4 6.4 0 0 1 0 8.1" />
+            </>
+        </Glyph>
+    );
+}
+
 /** `folder.badge.gearshape` — the Repositories toolbar's Scan button (L86). */
 export function FolderBadgeGearGlyph(props: GlyphProps): ReactElement {
     return (

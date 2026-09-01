@@ -30,11 +30,13 @@ import { GeneralTab } from './GeneralTab';
 import { KeybindingsTab } from './KeybindingsTab';
 import { LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
+import { RemoteTab, type RemoteTabActions } from './RemoteTab';
 import { RepositoriesTab, type RepositoryEntry } from './RepositoriesTab';
 import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, type SettingsTabIcon, type SettingsTabID } from './catalog';
 import {
     CommandGlyph,
     ExternalDriveGlyph,
+    AntennaGlyph,
     GearGlyph,
     GlobeGlyph,
     GridGlyph,
@@ -93,6 +95,12 @@ export interface SettingsOverlayProps {
               readonly path?: string | undefined;
           }
         | undefined;
+    /**
+     * Settings ▸ Remote's verbs (daemon `ws/remote.ts`, owner-only). Like `web`, these are
+     * not config-file settings — they are daemon state reached by the `remote-*` commands.
+     * Absent = the tab still renders and each verb answers "not available".
+     */
+    readonly remote?: RemoteTabActions | undefined;
 }
 
 const EMPTY_REPOSITORIES: readonly RepositoryEntry[] = [];
@@ -350,6 +358,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             {...(props.web?.path === undefined ? {} : { path: props.web.path })}
                         />
                     ) : null}
+                    {tab === 'remote' ? <RemoteTab actions={props.remote ?? NO_REMOTE_ACTIONS} /> : null}
                 </div>
                 </div>
             </div>
@@ -375,6 +384,12 @@ interface RailTabProps {
  * structural divergence SET-002 already ledgers), so the glyph sits inline at the rail's own
  * 12 px text — one point up at 13 px so it does not read smaller than the word beside it.
  */
+const NO_REMOTE_ACTIONS: RemoteTabActions = {
+    status: () => Promise.resolve({ ok: false, error: 'remote access is not available' }),
+    pair: () => Promise.resolve({ ok: false, error: 'remote access is not available' }),
+    revoke: () => Promise.resolve({ ok: false, error: 'remote access is not available' })
+};
+
 const RAIL_GLYPH: Readonly<Record<SettingsTabIcon, (props: { readonly size: number }) => ReactElement>> = {
     gear: GearGlyph,
     paintbrush: PaintbrushGlyph,
@@ -383,7 +398,8 @@ const RAIL_GLYPH: Readonly<Record<SettingsTabIcon, (props: { readonly size: numb
     'person.badge.key': PersonBadgeKeyGlyph,
     command: CommandGlyph,
     globe: GlobeGlyph,
-    'square.grid.2x2': GridGlyph
+    'square.grid.2x2': GridGlyph,
+    'antenna.radiowaves': AntennaGlyph
 };
 
 /** The size the note above argues for. */

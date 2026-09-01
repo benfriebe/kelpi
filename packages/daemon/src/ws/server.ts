@@ -39,6 +39,7 @@ import { createTerminalSearchChannel, type TerminalSearchBackend } from './searc
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
 import type { WsTransportStatus } from '@kelpi/protocol';
 
+import { type RemoteChannel } from './remote.js';
 import {
     createSyncHub,
     type AgentChannel,
@@ -96,6 +97,8 @@ export interface WsServerOptions {
     readonly webPanes?: WebPaneChannel | undefined;
     /** The pane header's restart button (`restart-pane-agent`); absent = "not available". */
     readonly agents?: AgentChannel | undefined;
+    /** Settings ▸ Remote: pair/revoke/status (`ws/remote.ts`); absent = "not available". */
+    readonly remote?: RemoteChannel | undefined;
     /** M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). */
     readonly repos?: RepoChannel | undefined;
     /** The inspector's graft toggle + orphan banner verbs (`ws/graft.ts`). */
@@ -230,6 +233,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         settings: options.settings,
         transport: options.transport,
         agents: options.agents,
+        remote: options.remote,
         repos: options.repos,
         graftUi: options.graftUi,
         panes: options.panes,

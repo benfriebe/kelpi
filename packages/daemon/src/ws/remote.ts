@@ -85,7 +85,18 @@ export type RemoteReply =
     | RemoteStatusReply
     | { readonly ok: true; readonly url: string; readonly device: WireDevice; readonly notes: readonly string[] }
     | { readonly ok: true; readonly device: WireDevice }
-    | { readonly ok: false; readonly error: string; readonly repair?: string };
+    | {
+          readonly ok: false;
+          readonly error: string;
+          readonly repair?: string;
+          /**
+           * The repair as ordered actions (`lifecycle/tailnet.ts`). The UI has room the CLI's
+           * one `Repair:` line does not, so a setup step nobody has done yet - serve not
+           * enabled for the tailnet - can be rendered as a checklist with live links instead
+           * of a red paragraph.
+           */
+          readonly steps?: readonly string[];
+      };
 
 export interface RemoteChannelOptions {
     readonly env?: NodeJS.ProcessEnv | undefined;
@@ -216,7 +227,8 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 return {
                     ok: false,
                     error: `${result.message} (${rolledBack})`,
-                    ...(result.repair !== undefined ? { repair: result.repair } : {})
+                    ...(result.repair !== undefined ? { repair: result.repair } : {}),
+                    ...(result.steps !== undefined ? { steps: result.steps } : {})
                 };
             }
             return { ok: true, url: result.url, device: wireDevice(minted.device), notes: result.notes };

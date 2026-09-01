@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    firstLink,
     parseServeProxyPorts,
     parseTailscaleStatus,
     resolveTailnetURL,
@@ -128,6 +129,8 @@ describe('resolveTailnetURL', () => {
         const result = await resolveTailnetURL({ port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('NeedsLogin') });
         expect(result.kind === 'error' && result.repair).toContain('tailscale up');
+        // Every refusal hands back the SAME repair as ordered steps, for a surface with room.
+        expect(result).toMatchObject({ steps: [expect.stringContaining('tailscale up')] });
     });
 
     it('explains a missing MagicDNS name instead of printing an unusable URL', async () => {
@@ -206,7 +209,7 @@ describe('resolveTailnetURL', () => {
         expect(result.kind === 'error' && result.repair).toContain('HTTPS certificates');
     });
 
-    it('defers to tailscale’s repair when its failure already carries an enable link', async () => {
+    it('calls a tailnet without serve enabled a SETUP step, and carries tailscale’s own enable link', async () => {
         const { run } = scripted({
             serveBg: {
                 code: 1,
@@ -214,8 +217,43 @@ describe('resolveTailnetURL', () => {
             }
         });
         const result = await resolveTailnetURL({ port: 61154, token: 't', run });
-        expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('Serve is not enabled') });
-        expect(result.kind === 'error' && result.repair).toContain('Follow the link above');
+        // Plain words, not `tailscale serve --bg 61154` failed: nothing is broken, the tailnet
+        // has simply never had serve switched on.
+        expect(result).toMatchObject({
+            kind: 'error',
+            message: expect.stringContaining('serve is not enabled for this tailnet yet'),
+            steps: [
+                expect.stringContaining('https://login.tailscale.com/f/serve?node=x'),
+                expect.stringContaining('https://login.tailscale.com/admin/dns')
+            ]
+        });
+        // The link is NAMED, never "the link above" - a UI shows no "above" to follow.
+        const repair = result.kind === 'error' ? (result.repair ?? '') : '';
+        expect(repair).toContain('https://login.tailscale.com/f/serve?node=x');
+        expect(repair).not.toContain('link above');
+    });
+
+    it('keeps tailscale’s own words for any OTHER serve failure, with the link it named', async () => {
+        const { run } = scripted({
+            serveBg: { code: 1, stderr: 'foo: see https://login.tailscale.com/admin/machines for details' }
+        });
+        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        expect(result).toMatchObject({
+            kind: 'error',
+            message: expect.stringContaining('foo: see'),
+            steps: [expect.stringContaining('https://login.tailscale.com/admin/machines'), expect.any(String)]
+        });
+        expect(result.kind === 'error' && result.repair).not.toContain('link above');
+    });
+});
+
+describe('firstLink', () => {
+    it('lifts the page tailscale names out of its own sentence, punctuation left behind', () => {
+        expect(firstLink('To enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=x')).toBe(
+            'https://login.tailscale.com/f/serve?node=x'
+        );
+        expect(firstLink('go to https://example.com/a.')).toBe('https://example.com/a');
+        expect(firstLink('exit 1')).toBeUndefined();
     });
 });
 

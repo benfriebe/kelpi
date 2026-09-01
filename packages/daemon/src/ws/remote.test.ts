@@ -130,6 +130,9 @@ describe('remote-pair', () => {
         expect(reply['ok']).toBe(false);
         expect(reply['error']).toContain('tailscaled is not running');
         expect(reply['error']).toContain('rolled back');
+        // The repair rides through as ordered steps too - the UI renders them as a checklist.
+        expect(reply['repair']).toContain('tailscale up');
+        expect(reply['steps']).toEqual([expect.stringContaining('tailscale up')]);
         expect(loadDevices(file)).toEqual([]);
     });
 

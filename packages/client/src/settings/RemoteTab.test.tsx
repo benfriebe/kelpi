@@ -65,6 +65,63 @@ describe('Settings ▸ Remote', () => {
         expect(screen.getByTestId('remote-pair-minted').textContent).toContain('shown exactly once');
     });
 
+    it('renders a serve-not-enabled refusal as numbered SETUP STEPS with a real clickable link', async () => {
+        // The daemon's own words for the commonest first-run stumble (issue #3): serve has
+        // never been switched on for this tailnet, and tailscale names the page that does it.
+        const pair = vi.fn(() =>
+            Promise.resolve({
+                ok: false,
+                error:
+                    'tailscale serve is not enabled for this tailnet yet, so there is no https address to give a device. ' +
+                    '(the "studio" device was rolled back - nothing was paired)',
+                repair: 'Enable serve for the tailnet at https://login.tailscale.com/f/serve?node=x, then try again.',
+                steps: [
+                    'Open https://login.tailscale.com/f/serve?node=x and enable serve for this tailnet.',
+                    'Enable HTTPS certificates too, if they are not on yet: https://login.tailscale.com/admin/dns'
+                ]
+            })
+        );
+        render(<RemoteTab actions={actions({ pair })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'studio' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-error')).toBeTruthy());
+
+        // A setup step, not a failure: the heading says so and the steps are numbered.
+        expect(screen.getByTestId('remote-pair-error-title').textContent).toBe('Pairing needs a setup step');
+        expect(screen.getByTestId('remote-pair-step-1').textContent).toContain('enable serve for this tailnet');
+        expect(screen.getByTestId('remote-pair-step-2').textContent).toContain('HTTPS certificates');
+        expect(screen.getByTestId('remote-pair-retry').textContent).toContain('pair this device again');
+        // The one-line repair is not ALSO rendered - the steps are that repair, unrolled.
+        expect(screen.queryByTestId('remote-pair-repair')).toBeNull();
+
+        // Every URL is an anchor the shell hands to the system browser, not dead text.
+        const links = screen.getAllByTestId('remote-pair-link') as HTMLAnchorElement[];
+        expect(links.map((link) => link.getAttribute('href'))).toEqual([
+            'https://login.tailscale.com/f/serve?node=x',
+            'https://login.tailscale.com/admin/dns'
+        ]);
+        expect(links[0]?.getAttribute('target')).toBe('_blank');
+        expect(links[0]?.getAttribute('rel')).toBe('noreferrer');
+    });
+
+    it('links a URL sitting inside the message, keeping the sentence’s punctuation out of the href', async () => {
+        const pair = vi.fn(() =>
+            Promise.resolve({ ok: false, error: 'serve refused, see https://login.tailscale.com/admin/dns.' })
+        );
+        render(<RemoteTab actions={actions({ pair })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'x' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-error')).toBeTruthy());
+        // No steps: this one really is a failure, and says so.
+        expect(screen.getByTestId('remote-pair-error-title').textContent).toBe('Pairing failed');
+        expect(screen.getByTestId('remote-pair-link').getAttribute('href')).toBe(
+            'https://login.tailscale.com/admin/dns'
+        );
+        expect(screen.getByTestId('remote-pair-error').textContent).toContain('admin/dns.');
+    });
+
     it('surfaces a pairing failure with its repair line, and the owner-only refusal a guest gets', async () => {
         const pair = vi.fn(() =>
             Promise.resolve({ ok: false, error: 'tailscaled is not running (state: Stopped)', repair: 'Run `tailscale up`, then retry.' })
@@ -75,7 +132,8 @@ describe('Settings ▸ Remote', () => {
         fireEvent.click(screen.getByTestId('remote-pair-button'));
         await waitFor(() => expect(screen.getByTestId('remote-pair-error')).toBeTruthy());
         expect(screen.getByTestId('remote-pair-error').textContent).toContain('tailscaled is not running');
-        expect(screen.getByTestId('remote-pair-error').textContent).toContain('Run `tailscale up`');
+        // No steps in the reply: the one-line repair carries the guidance by itself.
+        expect(screen.getByTestId('remote-pair-repair').textContent).toContain('Run `tailscale up`');
 
         cleanup();
         // A paired device opening this tab: the daemon refuses status, the tab says so.

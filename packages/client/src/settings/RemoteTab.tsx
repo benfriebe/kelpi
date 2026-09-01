@@ -10,13 +10,17 @@
  *      exactly ONCE (the registry stores only the hash), so it is shown in a copyable field
  *      with that warning attached, and never rendered again after the card is dismissed.
  *      Over the tailnet the daemon may CONFIGURE `tailscale serve` (same one-command
- *      behaviour the CLI has); its notes are surfaced verbatim.
+ *      behaviour the CLI has); its notes are surfaced verbatim. A failure the daemon can hand
+ *      back STEPS for renders as those steps rather than as a red paragraph: the commonest one
+ *      (`tailscale serve` was never enabled for the tailnet) is a setup task nobody has done
+ *      yet, not a fault, and the admin-console link it names is a real anchor: a link you
+ *      cannot click is not a repair.
  *   3. **Paired devices** — the registry, live entries first, with per-row Revoke. A revoke
  *      cuts the device's open sessions within a debounce (the daemon watches the registry),
  *      so the row flipping to "revoked" is the whole story.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
 import { SettingsButton, SettingsDetail, SettingsRow, SettingsSection } from './ui';
 import { tokens } from '../chrome/tokens';
@@ -48,10 +52,65 @@ interface TailnetStatus {
     readonly reason: string | null;
 }
 
+/**
+ * A pairing that did not happen, as the card renders it.
+ *
+ * `steps` is the daemon's own ordered repair (`lifecycle/tailnet.ts`); when it sent none, the
+ * one-line `repair` is the whole guidance and the card says "failed" rather than "next steps".
+ */
+interface PairFailure {
+    readonly message: string;
+    readonly repair: string | null;
+    readonly steps: readonly string[];
+}
+
 interface MintedPairing {
     readonly url: string;
     readonly deviceName: string;
     readonly notes: readonly string[];
+}
+
+/** The app's destructive/failure red (`chrome/QuitConfirmDialog.tsx`'s DESTRUCTIVE_COLOR). */
+const PAIR_FAILURE_TONE = '#E0655C';
+
+const LINK_PATTERN = /https?:\/\/[^\s<>"'`)\]]+/g;
+
+/**
+ * A daemon message with its URLs as real links.
+ *
+ * The repair steps NAME the page that fixes them - the tailnet's own "enable serve" link,
+ * which carries a node id nobody is going to retype off a screenshot. As text it is a dead
+ * end; as an anchor it is the whole fix, one click away.
+ *
+ * `target="_blank"` rather than a plumbed callback: the shell hands a new-window request to
+ * the system browser (`shell/main.ts` setWindowOpenHandler) and denies the window, and a
+ * remote browser opens a tab - while a same-window navigation would replace the app itself.
+ * Trailing sentence punctuation stays with the sentence: "visit https://x/y." links `y`.
+ */
+function Linked(props: { readonly text: string }): ReactElement {
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+    LINK_PATTERN.lastIndex = 0;
+    for (let match = LINK_PATTERN.exec(props.text); match !== null; match = LINK_PATTERN.exec(props.text)) {
+        const href = match[0].replace(/[.,;:!?]+$/, '');
+        if (href.length === 0) continue;
+        if (match.index > cursor) parts.push(props.text.slice(cursor, match.index));
+        parts.push(
+            <a
+                key={`${String(match.index)}:${href}`}
+                data-testid="remote-pair-link"
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: tokens.accent, textDecoration: 'underline' }}
+            >
+                {href}
+            </a>
+        );
+        cursor = match.index + href.length;
+    }
+    if (cursor < props.text.length) parts.push(props.text.slice(cursor));
+    return <>{parts}</>;
 }
 
 function text(value: unknown): string | null {
@@ -85,6 +144,12 @@ function parseTailnet(raw: unknown): TailnetStatus {
         serving: record['serving'] === true,
         reason: text(record['reason'])
     };
+}
+
+/** The daemon's repair steps, defensively: anything that is not a non-empty string is dropped. */
+function parseSteps(raw: unknown): readonly string[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((step): step is string => typeof step === 'string' && step.trim().length > 0);
 }
 
 /** `2026-09-01T03:12:44.000Z` → the date a management list wants. */
@@ -123,7 +188,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
     const [pairName, setPairName] = useState('');
     const [viaTailnet, setViaTailnet] = useState(true);
     const [pairBusy, setPairBusy] = useState(false);
-    const [pairError, setPairError] = useState<{ message: string; repair: string | null } | null>(null);
+    const [pairError, setPairError] = useState<PairFailure | null>(null);
     const [minted, setMinted] = useState<MintedPairing | null>(null);
     const [copied, setCopied] = useState(false);
     // A reply landing after the tab unmounted must not set state into the void.
@@ -175,13 +240,14 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                 if (reply['ok'] !== true) {
                     setPairError({
                         message: text(reply['error']) ?? 'pairing failed',
-                        repair: text(reply['repair'])
+                        repair: text(reply['repair']),
+                        steps: parseSteps(reply['steps'])
                     });
                     return;
                 }
                 const url = text(reply['url']);
                 if (url === null) {
-                    setPairError({ message: 'the daemon answered without a URL', repair: null });
+                    setPairError({ message: 'the daemon answered without a URL', repair: null, steps: [] });
                     return;
                 }
                 const notes = Array.isArray(reply['notes'])
@@ -194,7 +260,11 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
             (error: unknown) => {
                 if (!alive.current) return;
                 setPairBusy(false);
-                setPairError({ message: error instanceof Error ? error.message : String(error), repair: null });
+                setPairError({
+                    message: error instanceof Error ? error.message : String(error),
+                    repair: null,
+                    steps: []
+                });
             }
         );
     };
@@ -299,12 +369,63 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                     </SettingsButton>
                 </SettingsRow>
                 {pairError !== null ? (
-                    <SettingsDetail>
-                        <span data-testid="remote-pair-error" style={{ color: '#E0655C' }}>
-                            {pairError.message}
-                            {pairError.repair !== null ? ` - ${pairError.repair}` : ''}
+                    <div
+                        data-testid="remote-pair-error"
+                        className="flex flex-col gap-2 rounded border p-3"
+                        style={{
+                            // A setup step wears the attention colour the app already uses for
+                            // "this wants you"; only a real failure gets the destructive red.
+                            borderColor: pairError.steps.length > 0 ? tokens.activeAgent : PAIR_FAILURE_TONE,
+                            background: tokens.surfaceBackground
+                        }}
+                    >
+                        <span
+                            data-testid="remote-pair-error-title"
+                            className="text-[12px] font-semibold"
+                            style={{
+                                color: pairError.steps.length > 0 ? tokens.activeAgent : PAIR_FAILURE_TONE
+                            }}
+                        >
+                            {pairError.steps.length > 0 ? 'Pairing needs a setup step' : 'Pairing failed'}
                         </span>
-                    </SettingsDetail>
+                        <span className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                            <Linked text={pairError.message} />
+                        </span>
+                        {pairError.steps.length > 0 ? (
+                            <ol className="m-0 flex list-none flex-col gap-1 p-0">
+                                {pairError.steps.map((step, index) => (
+                                    <li
+                                        key={`${String(index)}:${step}`}
+                                        data-testid={`remote-pair-step-${String(index + 1)}`}
+                                        className="flex gap-2 text-[11px]"
+                                        style={{ color: tokens.textPrimary }}
+                                    >
+                                        <span style={{ color: tokens.textTertiary }}>{index + 1}.</span>
+                                        <span>
+                                            <Linked text={step} />
+                                        </span>
+                                    </li>
+                                ))}
+                            </ol>
+                        ) : pairError.repair !== null ? (
+                            <span
+                                data-testid="remote-pair-repair"
+                                className="text-[11px]"
+                                style={{ color: tokens.textPrimary }}
+                            >
+                                <Linked text={pairError.repair} />
+                            </span>
+                        ) : null}
+                        {pairError.steps.length > 0 ? (
+                            <span
+                                data-testid="remote-pair-retry"
+                                className="text-[11px]"
+                                style={{ color: tokens.textTertiary }}
+                            >
+                                Then pair this device again.
+                            </span>
+                        ) : null}
+                    </div>
                 ) : null}
                 {minted !== null ? (
                     <div

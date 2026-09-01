@@ -4014,6 +4014,7 @@ function Shell(props: AppProps): ReactElement {
                             daemons={[...remoteDaemonRuntimes.values()]}
                             selection={remoteSelection}
                             onSelect={setRemoteSelection}
+                            bucket={bucket}
                         />
                     }
                     activeWorkspaceID={workspace?.id ?? null}

@@ -79,6 +79,39 @@ export function parseWorkspaceSelection(
 }
 
 // ---------------------------------------------------------------------------
+// The window's own buttons (APP-046b)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three verbs a page-drawn window-control cluster can send. Anything else is ignored.
+ *
+ * Mirrors the protocol's `WS_WINDOW_CONTROL_ACTIONS` and is spelled out again here for the
+ * reason every other decoder in this file is: `status.ts` cannot be unit-tested, so the rule
+ * about what counts as a usable frame lives where it can be.
+ */
+export const WINDOW_CONTROL_ACTIONS = ['minimize', 'maximize', 'close'] as const;
+export type WindowControlAction = (typeof WINDOW_CONTROL_ACTIONS)[number];
+
+export interface WindowControlRequest {
+    readonly action: WindowControlAction;
+    /** Which shell window the page meant; null = whichever shell hears it. */
+    readonly windowID: string | null;
+}
+
+/**
+ * Read a `window-control` frame, or null when it is not one (or names no verb we implement).
+ *
+ * An unknown action is REFUSED rather than defaulted, and the default that is tempting is the
+ * dangerous one: a frame nobody understood must never fall through to `close`.
+ */
+export function parseWindowControl(message: Record<string, unknown>): WindowControlRequest | null {
+    if (message['type'] !== 'window-control') return null;
+    const action = readString(message, 'action');
+    if (action === null || !(WINDOW_CONTROL_ACTIONS as readonly string[]).includes(action)) return null;
+    return { action: action as WindowControlAction, windowID: readString(message, 'windowID') };
+}
+
+// ---------------------------------------------------------------------------
 // Finder "Open With" (CONT-123 / CONT-124)
 // ---------------------------------------------------------------------------
 

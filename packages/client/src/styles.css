@@ -523,9 +523,15 @@ input {
 /*
  * §APP-046 — the drawn title bar IS the window's drag region.
  *
- * The shell creates its window with `titleBarStyle: 'hiddenInset'`, which removes the native
- * strip entirely: what a user grabs to move the window is this page's own 32px bar. shell-ui.md
- * §3: "empty bar area drags the window".
+ * The shell creates its window with a hidden title bar on every desktop it ships to
+ * (`titleBarStyle: 'hiddenInset'` on macOS, `'hidden'` on Windows and Linux, decided by
+ * `shell/src/titlebar.ts`), which removes the native strip entirely: what a user grabs to move
+ * the window is this page's own 32px bar. shell-ui.md §3: "empty bar area drags the window".
+ *
+ * §APP-046b made that load-bearing rather than merely tidy. On Windows and Linux there is no
+ * native strip left to fall back on, so this rule is the ONLY thing that moves the window, and
+ * the exclusion list below is the only thing that keeps the page-drawn minimise / maximise /
+ * close buttons pressable.
  *
  * Every interactive descendant opts back out. `-webkit-app-region: drag` swallows mouse events
  * whole — a button inside a drag region cannot be clicked at all — so the exclusion list is the

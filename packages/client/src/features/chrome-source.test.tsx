@@ -82,6 +82,23 @@ describe('shared toolbar and status feature contracts', () => {
         expect(execute).toHaveBeenCalledWith('kelpi.sidebar.right');
         expect(screen.getByTestId('top-bar').getAttribute('data-traffic-light-inset')).toBe('86');
     });
+    it('passes host window controls through the bundled toolbar', () => {
+        const h = fixture(), onWindowControl = vi.fn();
+        const binding = bindToolbarFeature({
+            model: h.source.snapshot(),
+            presentation: {
+                panes: h.daemon.getState().workspaces[0]!.panes,
+                windowControls: true,
+                windowMaximized: true,
+                onWindowControl
+            },
+            contributions: null,
+            execute: vi.fn()
+        });
+        render(binding.render({ visible: true, trafficLightInset: 0 }));
+        fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+        expect(onWindowControl).toHaveBeenCalledExactlyOnceWith('maximize');
+    });
     it('rechecks item and menu contribution rules before invoking another plugin', () => {
         const h = fixture(), run = vi.fn(() => false);
         h.host.plugins.menu = vi.fn(() => [{ id: 'sample.menu', title: 'Run', enabled: true, run }] as never);

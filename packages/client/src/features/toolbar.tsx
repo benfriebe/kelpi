@@ -34,7 +34,7 @@ export function createToolbarActions(host: ToolbarActionHost) {
 }
 export interface ToolbarFeatureInput {
     readonly model: ChromeSnapshot;
-    readonly presentation: Pick<TopBarProps, 'panes' | 'bucket' | 'connectionError' | 'dragRegion'>;
+    readonly presentation: Pick<TopBarProps, 'panes' | 'bucket' | 'connectionError' | 'dragRegion' | 'windowControls' | 'windowMaximized' | 'onWindowControl'>;
     readonly contributions: ReactNode;
     readonly execute: (id: string) => void;
 }

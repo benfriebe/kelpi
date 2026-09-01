@@ -300,3 +300,153 @@ describe('size control (terminal-surface.md §5.1)', () => {
         expect(screen.queryByTestId('take-size-control')).toBeNull();
     });
 });
+
+describe('the window\u2019s own buttons (\u00a7APP-046b)', () => {
+    it('draws nothing at all unless the shell asked for them', () => {
+        // A browser tab and a macOS window both have real window buttons already; a second,
+        // page-drawn set beside them would be the defect this feature exists to remove.
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" />);
+        expect(screen.queryByTestId('window-controls')).toBeNull();
+
+        cleanup();
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" trafficLightInset={80} />);
+        expect(screen.queryByTestId('window-controls')).toBeNull();
+    });
+
+    it('draws minimise, maximise and close when it does', () => {
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" windowControls />);
+        expect(screen.getByTestId('window-controls')).toBeTruthy();
+        expect((screen.getByTestId('window-close') as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId('window-minimize')).toBeTruthy();
+        expect(screen.getByTestId('window-maximize')).toBeTruthy();
+        expect(screen.getByTestId('window-close')).toBeTruthy();
+    });
+
+    it('reports each click by its verb', () => {
+        const onWindowControl = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                windowControls
+                onWindowControl={onWindowControl}
+            />
+        );
+        fireEvent.click(screen.getByTestId('window-minimize'));
+        fireEvent.click(screen.getByTestId('window-maximize'));
+        fireEvent.click(screen.getByTestId('window-close'));
+        expect(onWindowControl.mock.calls.map((call) => call[0])).toEqual(['minimize', 'maximize', 'close']);
+    });
+
+    it('the middle button says Restore once the window is maximised', () => {
+        // The one button of the three that carries state, and the state arrives on the socket
+        // because a WM shortcut can change it without the button being touched.
+        const view = render(
+            <TopBar workspaceName="alpha" panes={[]} connection="connected" windowControls />
+        );
+        expect(screen.getByTestId('window-maximize').getAttribute('aria-label')).toBe('Maximise');
+        view.rerender(
+            <TopBar workspaceName="alpha" panes={[]} connection="connected" windowControls windowMaximized />
+        );
+        expect(screen.getByTestId('window-maximize').getAttribute('aria-label')).toBe('Restore');
+    });
+
+    it('double-clicking the empty strip maximises, and a control’s own click does not', () => {
+        const onWindowControl = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                windowControls
+                onWindowControl={onWindowControl}
+            />
+        );
+        fireEvent.doubleClick(screen.getByTestId('top-bar'));
+        expect(onWindowControl.mock.calls.map((call) => call[0])).toEqual(['maximize']);
+
+        // Double-clicking minimise must minimise twice, not minimise and then maximise: the
+        // gesture belongs to the strip, and a control is not the strip.
+        onWindowControl.mockClear();
+        fireEvent.doubleClick(screen.getByTestId('window-minimize'));
+        expect(onWindowControl.mock.calls.map((call) => call[0])).not.toContain('maximize');
+    });
+
+    it('leaves the gesture to AppKit where AppKit already performs it', () => {
+        // macOS honours the user's "double-click a window's title bar to" preference on a
+        // hiddenInset drag region. A handler here would be a second, unconditional maximise.
+        const onWindowControl = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                trafficLightInset={80}
+                dragRegion
+                onWindowControl={onWindowControl}
+            />
+        );
+        fireEvent.doubleClick(screen.getByTestId('top-bar'));
+        expect(onWindowControl).not.toHaveBeenCalled();
+    });
+
+    it('goes dim and inert while the socket is down, rather than queueing the click', () => {
+        // The click travels client -> daemon -> shell, and `KelpiConnection.send` QUEUES what it
+        // cannot put on the wire, flushing on the next handshake. A live-looking cluster over a
+        // dead socket therefore closes the window minutes later, unprompted. So it says so.
+        const onWindowControl = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="reconnecting"
+                windowControls
+                onWindowControl={onWindowControl}
+            />
+        );
+        for (const id of ['window-minimize', 'window-maximize', 'window-close']) {
+            const button = screen.getByTestId(id) as HTMLButtonElement;
+            expect(button.disabled).toBe(true);
+            fireEvent.click(button);
+        }
+        expect(onWindowControl).not.toHaveBeenCalled();
+
+        // …and the double-click gesture is inert for the same reason.
+        fireEvent.doubleClick(screen.getByTestId('top-bar'));
+        expect(onWindowControl).not.toHaveBeenCalled();
+    });
+
+    it('says why it is dim, and names something that still closes the window', () => {
+        // The frame has no controls of its own any more, so a dead cluster must not be the end
+        // of the story: File > Quit keeps its accelerator in the main process.
+        render(<TopBar workspaceName="alpha" panes={[]} connection="closed" windowControls />);
+        expect(screen.getByTestId('window-close').getAttribute('title')).toContain('Quit');
+        // …and on the ENCLOSING element too, which is the one that can actually show it.
+        // Chromium dispatches no mouse events for a `disabled` control and renders no tooltip
+        // for one, so a title only on the buttons is invisible in an Electron window - the only
+        // place this cluster is ever drawn. Asserting the button alone would pass while the
+        // user saw nothing.
+        expect(screen.getByTestId('window-controls').getAttribute('title')).toContain('Quit');
+    });
+
+    it('carries no offline explanation while the buttons work', () => {
+        // A permanent tooltip over a live cluster would fire on every pass of the pointer
+        // towards the close button, which is the busiest corner of the window.
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" windowControls />);
+        expect(screen.getByTestId('window-controls').getAttribute('title')).toBeNull();
+        expect(screen.getByTestId('window-close').getAttribute('title')).toBe('Close');
+    });
+
+    it('stays clickable inside the drag region that surrounds it', () => {
+        // `-webkit-app-region: drag` swallows mouse events whole, so a control that is not in
+        // styles.css\u2019s no-drag list is a button nobody can press. `button` is in it \u2014 this
+        // asserts the cluster is made of buttons rather than divs, which is what makes it apply.
+        render(
+            <TopBar workspaceName="alpha" panes={[]} connection="connected" windowControls dragRegion />
+        );
+        for (const id of ['window-minimize', 'window-maximize', 'window-close']) {
+            expect(screen.getByTestId(id).tagName).toBe('BUTTON');
+        }
+    });
+});

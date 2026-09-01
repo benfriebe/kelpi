@@ -5,6 +5,7 @@ import {
     parseTailscaleStatus,
     resolveTailnetURL,
     tailnetClientURL,
+    tailscaleBinaryCandidates,
     type TailscaleRunner
 } from './tailnet.js';
 
@@ -215,5 +216,26 @@ describe('resolveTailnetURL', () => {
         const result = await resolveTailnetURL({ port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('Serve is not enabled') });
         expect(result.kind === 'error' && result.repair).toContain('Follow the link above');
+    });
+});
+
+describe('tailscaleBinaryCandidates', () => {
+    it('an explicit KELPID_TAILSCALE wins alone — a wrong config fails loudly, never falls back', () => {
+        expect(tailscaleBinaryCandidates({ KELPID_TAILSCALE: '/opt/ts/tailscale' }, 'darwin')).toEqual([
+            '/opt/ts/tailscale'
+        ]);
+        expect(tailscaleBinaryCandidates({ KELPID_TAILSCALE: '  ' }, 'linux')).toEqual(['tailscale']);
+    });
+
+    it('macOS probes PATH first, then the App Store bundle CLI (which symlinks nothing)', () => {
+        expect(tailscaleBinaryCandidates({}, 'darwin')).toEqual([
+            'tailscale',
+            '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
+        ]);
+    });
+
+    it('everywhere else PATH is the only candidate', () => {
+        expect(tailscaleBinaryCandidates({}, 'linux')).toEqual(['tailscale']);
+        expect(tailscaleBinaryCandidates({}, 'win32')).toEqual(['tailscale']);
     });
 });

@@ -29,18 +29,53 @@ export interface TailscaleRunner {
     (args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }>;
 }
 
-export function defaultTailscaleRunner(binary = 'tailscale'): TailscaleRunner {
-    return (args) =>
-        new Promise((resolve) => {
-            execFile(binary, [...args], { encoding: 'utf8', timeout: 15_000 }, (error, stdout, stderr) => {
-                if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-                    resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
-                    return;
-                }
-                const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
-                resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr });
-            });
+/** The Mac App Store Tailscale ships its CLI inside the bundle and puts NOTHING on PATH. */
+const MAC_APP_BUNDLE_CLI = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+
+/**
+ * Where to look for the `tailscale` CLI, in order.
+ *
+ * An explicit `KELPID_TAILSCALE` wins ALONE — a configured path that is wrong should fail
+ * loudly, not silently fall back to some other install. Without it: PATH first (standalone
+ * installs and Linux), then — on macOS — the App Store bundle's own binary, which is where
+ * the CLI lives on a machine whose owner installed Tailscale the normal Mac way and never
+ * symlinked it (measured on this repo's own dev machine, 2026-09-01).
+ */
+export function tailscaleBinaryCandidates(
+    env: NodeJS.ProcessEnv = process.env,
+    platform: NodeJS.Platform = process.platform
+): readonly string[] {
+    const override = env['KELPID_TAILSCALE']?.trim();
+    if (override !== undefined && override.length > 0) return [override];
+    return platform === 'darwin' ? ['tailscale', MAC_APP_BUNDLE_CLI] : ['tailscale'];
+}
+
+function execTailscale(
+    binary: string,
+    args: readonly string[]
+): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise((resolve) => {
+        execFile(binary, [...args], { encoding: 'utf8', timeout: 15_000 }, (error, stdout, stderr) => {
+            if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+                resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
+                return;
+            }
+            const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
+            resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr });
         });
+    });
+}
+
+/** Tries each candidate in order; only a missing binary (ENOENT) moves to the next. */
+export function defaultTailscaleRunner(candidates: readonly string[] = tailscaleBinaryCandidates()): TailscaleRunner {
+    return async (args) => {
+        let last = { code: -1, stdout: '', stderr: 'ENOENT' };
+        for (const binary of candidates) {
+            last = await execTailscale(binary, args);
+            if (!(last.code === -1 && last.stderr === 'ENOENT')) return last;
+        }
+        return last;
+    };
 }
 
 // ── parsing ─────────────────────────────────────────────────────────────────────────
@@ -187,8 +222,10 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
     if (status.code === -1 && status.stderr === 'ENOENT') {
         return {
             kind: 'error',
-            message: 'tailscale is not installed (the `tailscale` CLI is not on PATH).',
-            repair: 'Install it from https://tailscale.com/download, then re-run `kelpid url --tailnet`.'
+            message:
+                'tailscale is not installed (no `tailscale` on PATH, and no Mac App Store bundle CLI).',
+            repair:
+                'Install it from https://tailscale.com/download, or point KELPID_TAILSCALE at the CLI binary, then re-run `kelpid url --tailnet`.'
         };
     }
     const identity = parseTailscaleStatus(status.stdout);

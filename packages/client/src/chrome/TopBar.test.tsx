@@ -141,9 +141,56 @@ describe('controls', () => {
         const overflow = screen.getByTestId('titlebar-menu-toggle');
         expect(sidebar.parentElement).toBe(overflow.parentElement);
         const cluster = [...(sidebar.parentElement?.children ?? [])];
-        // Adjacent but for the inspector toggle, which the Swift accessory had no counterpart for.
-        expect(cluster.indexOf(overflow) - cluster.indexOf(sidebar)).toBeLessThanOrEqual(2);
+        // Directly adjacent now that the inspector toggle has moved to the other end (#7); it
+        // used to sit between them, which is why this once allowed a gap of two.
+        expect(cluster.indexOf(overflow) - cluster.indexOf(sidebar)).toBe(1);
         expect(cluster.indexOf(sidebar)).toBe(0);
+        expect(cluster).not.toContain(screen.getByTestId('toggle-inspector'));
+    });
+
+    /**
+     * #7 - the inspector is the panel on the RIGHT, so its toggle is the sidebar toggle's mirror
+     * image: last control in the trailing cluster, hard against the bar's right edge, wearing the
+     * sidebar glyph flipped. Placement IS the change, so both halves are pinned here.
+     */
+    it('hangs the inspector toggle off the trailing edge, mirroring the sidebar toggle', () => {
+        const onToggleInspector = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                onToggleSidebar={vi.fn()}
+                onToggleInspector={onToggleInspector}
+                overflowItems={[{ id: 'settings', label: 'Settings…', onSelect: vi.fn() }]}
+            />
+        );
+        const inspector = screen.getByTestId('toggle-inspector');
+        const trailing = inspector.parentElement as HTMLElement;
+        // The cluster the connection pill lives in - the one pushed right by `ml-auto` - and the
+        // LAST thing in it, so nothing stands between the glyph and the window edge.
+        expect(trailing).toBe(screen.getByTestId('connection-pill').parentElement);
+        expect(trailing.className).toContain('ml-auto');
+        expect(trailing.lastElementChild).toBe(inspector);
+        // The flipped sidebar rectangle, not the old `stack` glyph.
+        expect(inspector.querySelector('svg')?.getAttribute('data-icon')).toBe('sidebar-right');
+    });
+
+    it('toggles the inspector when the host wires it', () => {
+        const onToggleInspector = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                inspectorVisible={false}
+                onToggleInspector={onToggleInspector}
+            />
+        );
+        const button = screen.getByTestId('toggle-inspector');
+        expect(button.getAttribute('aria-pressed')).toBe('false');
+        fireEvent.click(button);
+        expect(onToggleInspector).toHaveBeenCalledOnce();
     });
 
     it('toggles the sidebar when the host wires it', () => {

@@ -91,10 +91,10 @@ describe('S4 — the centred identity reserves room for both clusters', () => {
     });
 });
 
-// ── S22: the leading glyph cluster ──────────────────────────────────────────────────
+// ── S22: the glyph buttons ──────────────────────────────────────────────────────────
 
-describe('S22 — three glyphs 14 px apart, each with a real target', () => {
-    it('spaces the cluster at the Swift’s 14, not Tailwind’s nearest 8', () => {
+describe('S22 — the glyphs sit 14 px apart, each with a real target', () => {
+    it('spaces the leading cluster at the Swift’s 14, not Tailwind’s nearest 8', () => {
         renderBar();
         const cluster = screen.getByLabelText('Toggle sidebar').parentElement as HTMLElement;
         // `HStack(spacing: 14)` — `WindowTitleBar.swift:243`. Measured 8.00 / 8.00 before.
@@ -104,6 +104,8 @@ describe('S22 — three glyphs 14 px apart, each with a real target', () => {
 
     it('gives each 13 px glyph a 3 px inset so the box is 19, not 13', () => {
         renderBar({ overflowItems: [{ id: 'settings', label: 'Settings…' }] });
+        // The inspector toggle keeps the inset after moving to the trailing edge (#7): the
+        // target it needs has nothing to do with which end of the bar it hangs off.
         for (const label of ['Toggle sidebar', 'Toggle inspector', 'More actions']) {
             expect(screen.getByLabelText(label).style.padding).toBe('3px');
         }

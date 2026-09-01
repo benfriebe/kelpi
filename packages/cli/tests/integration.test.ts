@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildCLI, deadPort, runCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
+import { buildCLI, deadPort, runCLI as invokeCLI, scratchHome, startFakeServer, type FakeServer } from './harness.js';
 
 const PANE = '9C2B9A2E-1111-2222-3333-444455556666';
 const OTHER = '0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9';
@@ -37,8 +37,28 @@ afterEach(async () => {
 
 afterAll(() => undefined);
 
-/** The last request the CLI sent. */
-function lastRequest(): Record<string, unknown> {
+/**
+ * Requests already on the server when the current `runCLI` started. A fire-and-forget CLI
+ * flushes its line to the kernel and EXITS; under a loaded suite the child's exit can reach
+ * this process before the fake server's socket delivers the data, so "the CLI resolved"
+ * does not mean "the request is recorded" — this floor plus the poll below is what does
+ * (a battery died on exactly that inversion, 2026-09-01).
+ */
+let requestFloor = 0;
+
+const wrappedRunCLI: typeof invokeCLI = (args, options) => {
+    requestFloor = server.requests.length;
+    return invokeCLI(args, options);
+};
+// Every test in this file goes through the wrapper; the harness import keeps its name out.
+const runCLI = wrappedRunCLI;
+
+/** The last request the CLI sent — awaited past the floor, so a late delivery still lands. */
+async function lastRequest(): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + 5000;
+    while (server.requests.length <= requestFloor && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     const request = server.requests[server.requests.length - 1];
     if (request === undefined) throw new Error('no request reached the server');
     return request;
@@ -96,7 +116,7 @@ describe('request/response', () => {
         expect(result.stdout).toBe(
             `[{"id":"${PANE}","status":"idle","type":"shell","working_directory":"/tmp","workspace_name":"alpha"}]\n`
         );
-        expect(lastRequest()).toEqual({ command: 'pane-list' });
+        expect(await lastRequest()).toEqual({ command: 'pane-list' });
     });
 
     it('renders the table when --json is absent', async () => {
@@ -129,7 +149,7 @@ describe('request/response', () => {
         const ack = await runCLI(['pane', 'split', '--target', PANE, '--name', 'worker-2'], { port: server.port });
         expect(ack.code).toBe(0);
         expect(ack.stdout).toBe(`split pane: ${OTHER} (worker-2) in workspace alpha\n`);
-        expect(lastRequest()).toEqual({ command: 'pane-split', target: PANE, name: 'worker-2' });
+        expect(await lastRequest()).toEqual({ command: 'pane-split', target: PANE, name: 'worker-2' });
 
         const json = await runCLI(['pane', 'split', '--target', PANE, '--json'], { port: server.port });
         expect(JSON.parse(json.stdout)).toEqual({
@@ -157,7 +177,7 @@ describe('request/response', () => {
         });
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('line one\nline two\n');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'pane-capture',
             target: PANE,
             lines: 2,
@@ -179,7 +199,7 @@ describe('request/response', () => {
         const send = await runCLI(['pane', 'send', '--target', PANE, 'echo', 'hi'], { port: server.port });
         expect(send.code).toBe(0);
         expect(send.stdout).toBe('');
-        expect(lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'echo hi', bare: false });
+        expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'echo hi', bare: false });
 
         const key = await runCLI(['pane', 'send-key', '--target', PANE, 'enter'], { port: server.port });
         expect(key.code).toBe(1);
@@ -192,15 +212,15 @@ describe('request/response', () => {
         }));
         const result = await runCLI(['pane', 'resize', '--target', PANE, '--grow'], { port: server.port });
         expect(result.stdout).toBe(`resized ${PANE} to 75% of its split in workspace alpha\n`);
-        expect(lastRequest()).toEqual({ command: 'pane-resize', delta: 0.05, target: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-resize', delta: 0.05, target: PANE });
     });
 
     it('sends --shrink as a negative delta and --ratio as a ratio', async () => {
         server.respond(() => ({ lines: [{ ok: true, pane_id: PANE }] }));
         await runCLI(['pane', 'resize', '--target', PANE, '--shrink', '0.2'], { port: server.port });
-        expect(lastRequest()).toEqual({ command: 'pane-resize', delta: -0.2, target: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-resize', delta: -0.2, target: PANE });
         await runCLI(['pane', 'resize', '--target', PANE, '--ratio', '0.4'], { port: server.port });
-        expect(lastRequest()).toEqual({ command: 'pane-resize', ratio: 0.4, target: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-resize', ratio: 0.4, target: PANE });
     });
 
     it('refuses a ratio outside (0,1) before touching the socket', async () => {
@@ -217,15 +237,15 @@ describe('fire-and-forget', () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('');
         expect(result.stderr).toBe('');
-        expect(lastRequest()).toEqual({ command: 'group-create', name: 'squad', color: 'red' });
+        expect(await lastRequest()).toEqual({ command: 'group-create', name: 'squad', color: 'red' });
     });
 
     it('ships `cascade` as a native boolean and `--top-level` by omitting `group`', async () => {
         await runCLI(['group', 'delete', 'squad'], { port: server.port });
-        expect(lastRequest()).toEqual({ command: 'group-delete', name: 'squad', cascade: false });
+        expect(await lastRequest()).toEqual({ command: 'group-delete', name: 'squad', cascade: false });
 
         await runCLI(['workspace', 'move', 'alpha', '--top-level', '--index', '2'], { port: server.port });
-        expect(lastRequest()).toEqual({ command: 'workspace-move', name: 'alpha', index: 2 });
+        expect(await lastRequest()).toEqual({ command: 'workspace-move', name: 'alpha', index: 2 });
     });
 
     it('keeps `pane move-to-workspace`\'s legacy field names', async () => {
@@ -233,7 +253,7 @@ describe('fire-and-forget', () => {
             port: server.port,
             paneID: PANE
         });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'pane-move-to-workspace',
             pane_id: PANE,
             name: 'beta',
@@ -277,7 +297,7 @@ describe('kelpi event', () => {
         });
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'stop',
             pane_id: PANE,
             session_id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
@@ -293,7 +313,7 @@ describe('kelpi event', () => {
             stdin: payload,
             env: { KELPI_PROFILE: 'work' }
         });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'session-start',
             pane_id: PANE,
             session_id: 'sid-1',
@@ -307,7 +327,7 @@ describe('kelpi event', () => {
             stdin: payload,
             env: { KELPI_PROFILE: 'work' }
         });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'stop',
             pane_id: PANE,
             session_id: 'sid-1',
@@ -322,9 +342,9 @@ describe('kelpi event', () => {
             stdin: payload,
             env: { KELPI_PROFILE: 'work' }
         });
-        expect(lastRequest()).toEqual({ command: 'session-end', pane_id: PANE, session_id: 'sid-1' });
+        expect(await lastRequest()).toEqual({ command: 'session-end', pane_id: PANE, session_id: 'sid-1' });
         await runCLI(['event', 'session-start'], { port: server.port, paneID: PANE, stdin: payload });
-        expect(lastRequest()).toEqual({ command: 'session-start', pane_id: PANE, session_id: 'sid-1' });
+        expect(await lastRequest()).toEqual({ command: 'session-start', pane_id: PANE, session_id: 'sid-1' });
     });
 
     it('omits background_tasks entirely when nothing is in flight', async () => {
@@ -333,7 +353,7 @@ describe('kelpi event', () => {
             paneID: PANE,
             stdin: JSON.stringify({ background_tasks: [{ status: 'completed' }] })
         });
-        expect(lastRequest()).toEqual({ command: 'stop', pane_id: PANE });
+        expect(await lastRequest()).toEqual({ command: 'stop', pane_id: PANE });
     });
 
     it('drops sub-agent start/stop before the socket, but not other events', async () => {
@@ -341,7 +361,7 @@ describe('kelpi event', () => {
         await runCLI(['event', 'start'], { port: server.port, paneID: PANE, stdin: payload });
         expect(server.requests).toHaveLength(0);
         await runCLI(['event', 'session-end'], { port: server.port, paneID: PANE, stdin: payload });
-        expect(lastRequest()).toEqual({ command: 'session-end', pane_id: PANE, session_id: 'sid' });
+        expect(await lastRequest()).toEqual({ command: 'session-end', pane_id: PANE, session_id: 'sid' });
     });
 
     it('composes codex notification defaults from the PermissionRequest payload', async () => {
@@ -350,7 +370,7 @@ describe('kelpi event', () => {
             paneID: PANE,
             stdin: JSON.stringify({ tool_name: 'Bash' })
         });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'notification',
             pane_id: PANE,
             title: 'Codex',
@@ -361,7 +381,7 @@ describe('kelpi event', () => {
 
     it('omits the title for a manual notification with no stdin', async () => {
         await runCLI(['event', 'notification', '--body', 'ping'], { port: server.port, paneID: PANE });
-        expect(lastRequest()).toEqual({ command: 'notification', pane_id: PANE, body: 'ping' });
+        expect(await lastRequest()).toEqual({ command: 'notification', pane_id: PANE, body: 'ping' });
     });
 
     it('exits 0 and sends nothing outside a pane, but exits 1 on a bad --agent', async () => {
@@ -431,7 +451,7 @@ describe('workspace delete', () => {
 
         const forced = await runCLI(['workspace', 'delete', 'agents', '-y'], { port: server.port });
         expect(forced.code).toBe(1); // the fake still refuses; what matters is the flag on the wire
-        expect(lastRequest()).toEqual({ command: 'workspace-delete', name: 'agents', force: true });
+        expect(await lastRequest()).toEqual({ command: 'workspace-delete', name: 'agents', force: true });
     });
 
     it('reports a prune that had no directory to work with', async () => {
@@ -470,7 +490,7 @@ describe('open / md / diff routing', () => {
         const home = scratchHome();
         fs.writeFileSync(path.join(home, 'notes.md'), '# hi\n');
         await runCLI(['open', '--here', 'notes.md'], { port: server.port, cwd: home, paneID: PANE });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'open',
             path: path.join(home, 'notes.md'),
             pane_id: PANE,
@@ -484,7 +504,7 @@ describe('open / md / diff routing', () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toBe(`open ok: ${OTHER} (https://example.com)\n`);
         expect(result.stderr).toContain('--here is ignored for URLs');
-        expect(lastRequest()).toEqual({ command: 'web-open', url: 'example.com' });
+        expect(await lastRequest()).toEqual({ command: 'web-open', url: 'example.com' });
     });
 
     it('routes a local .html file to web-open as a file:// URL', async () => {
@@ -492,7 +512,7 @@ describe('open / md / diff routing', () => {
         fs.writeFileSync(path.join(home, 'page one.html'), '<h1>hi</h1>');
         server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER }] }));
         await runCLI(['open', 'page one.html'], { port: server.port, cwd: home });
-        expect(String(lastRequest()['url']).endsWith('/page%20one.html')).toBe(true);
+        expect(String((await lastRequest())['url']).endsWith('/page%20one.html')).toBe(true);
     });
 
     it('refuses a file type it has no pane for', async () => {
@@ -506,13 +526,13 @@ describe('open / md / diff routing', () => {
     it('forces markdown for any extension with `kelpi md`', async () => {
         const home = scratchHome();
         await runCLI(['md', 'notes.txt'], { port: server.port, cwd: home });
-        expect(lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.txt') });
+        expect(await lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.txt') });
     });
 
     it('always sends the cwd as diff\'s repo_path and resolves the target', async () => {
         const home = scratchHome();
         await runCLI(['diff', 'src'], { port: server.port, cwd: home, paneID: PANE });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'diff',
             repo_path: home,
             target_path: path.join(home, 'src'),
@@ -583,7 +603,7 @@ describe('web', () => {
             port: server.port
         });
         expect(result.code).toBe(0);
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'web-type',
             selector: 'css:#i',
             text: '--submit',
@@ -633,7 +653,7 @@ describe('web', () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('[0] log: before\n[1] warn: live\n[2] error: later\n');
         expect(result.stderr).toContain('(following — press Ctrl-C to stop)');
-        expect(lastRequest()).toEqual({ command: 'web-console', follow: true, target: PANE });
+        expect(await lastRequest()).toEqual({ command: 'web-console', follow: true, target: PANE });
     }, 30_000);
 
     it('exits 128+SIGINT on Ctrl-C, after printing what it already had', async () => {
@@ -721,7 +741,7 @@ describe('web printers', () => {
         expect(
             (await runCLI(['web', 'dom', '--target', PANE, 'css:b', '--max-bytes', '100'], { port: server.port })).stdout
         ).toBe('<b>hi</b>\n');
-        expect(lastRequest()).toEqual({ command: 'web-q-dom', selector: 'css:b', max_bytes: 100, target: PANE });
+        expect(await lastRequest()).toEqual({ command: 'web-q-dom', selector: 'css:b', max_bytes: 100, target: PANE });
     });
 
     it('renders the actuator acks', async () => {
@@ -743,7 +763,7 @@ describe('web printers', () => {
             (await runCLI(['web', 'scroll', '--target', PANE, 'css:#c', '--bottom', '--smooth'], { port: server.port }))
                 .stdout
         ).toBe('scrolled\n');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'web-scroll',
             selector: 'css:#c',
             block: 'end',
@@ -762,7 +782,7 @@ describe('web printers', () => {
             { port: server.port }
         );
         expect(waited.stdout).toBe('matched visible in 250 ms\n');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'web-wait',
             timeout_ms: 2000,
             selector: 'css:#late',
@@ -819,11 +839,11 @@ describe('web printers', () => {
             port: server.port,
             cwd: home
         });
-        expect(String(lastRequest()['url']).endsWith('/local.html')).toBe(true);
-        expect(lastRequest()['make_active']).toBe(false);
+        expect(String((await lastRequest())['url']).endsWith('/local.html')).toBe(true);
+        expect((await lastRequest())['make_active']).toBe(false);
 
         await runCLI(['web', 'tab-new', '--target', PANE, 'example.com'], { port: server.port, cwd: home });
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'web-tab-new',
             url: 'example.com',
             make_active: true,
@@ -852,17 +872,17 @@ describe('caller-pane scoping', () => {
     it('uses the caller pane as the subject when NEX_PANE_ID is set', async () => {
         server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, panes: [], text: '' }] }));
         await runCLI(['pane', 'capture'], { port: server.port, paneID: PANE });
-        expect(lastRequest()).toEqual({ command: 'pane-capture', pane_id: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-capture', pane_id: PANE });
         await runCLI(['pane', 'list', '--current', '--json'], { port: server.port, paneID: PANE });
-        expect(lastRequest()).toEqual({ command: 'pane-list', pane_id: PANE, scope: 'current' });
+        expect(await lastRequest()).toEqual({ command: 'pane-list', pane_id: PANE, scope: 'current' });
         await runCLI(['layout', 'select', 'tiled'], { port: server.port, paneID: PANE });
-        expect(lastRequest()).toEqual({ command: 'layout-select', pane_id: PANE, name: 'tiled' });
+        expect(await lastRequest()).toEqual({ command: 'layout-select', pane_id: PANE, name: 'tiled' });
     });
 
     it('forwards the caller pane only as a label scope for `--target` commands', async () => {
         server.respond(() => ({ lines: [{ ok: true, pane_id: OTHER }] }));
         await runCLI(['pane', 'close', '--target', 'worker-1'], { port: server.port, paneID: PANE });
-        expect(lastRequest()).toEqual({ command: 'pane-close', target: 'worker-1', pane_id: PANE });
+        expect(await lastRequest()).toEqual({ command: 'pane-close', target: 'worker-1', pane_id: PANE });
     });
 
     it('tells the user which flag to pass when there is no caller pane', async () => {
@@ -945,7 +965,7 @@ describe('graft', () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('started feature (assoc-1) at /tmp/wt\n');
         expect(result.stderr).toBe('Partial failure: another graft is already active for /repo\n');
-        expect(lastRequest()).toEqual({ command: 'graft-start', repo: 'repo' });
+        expect(await lastRequest()).toEqual({ command: 'graft-start', repo: 'repo' });
     });
 
     it('exits 1 when a stop reports failures', async () => {
@@ -956,7 +976,7 @@ describe('graft', () => {
         expect(result.code).toBe(1);
         expect(result.stdout).toBe('stopped assoc-1\n');
         expect(result.stderr).toBe('failed assoc-2: dirty\n');
-        expect(lastRequest()).toEqual({ command: 'graft-stop', pane_id: PANE });
+        expect(await lastRequest()).toEqual({ command: 'graft-stop', pane_id: PANE });
     });
 
     it('renders an empty status two ways', async () => {
@@ -984,14 +1004,14 @@ describe('pane sync', () => {
         }));
         const human = await runCLI(['pane', 'sync', 'on', '--workspace', 'alpha'], { port: server.port });
         expect(human.stdout).toBe('workspace: alpha\nsync     : on\nsynced   : 2 panes\nexcluded : w2\n');
-        expect(lastRequest()).toEqual({ command: 'pane-sync', action: 'on', workspace: 'alpha' });
+        expect(await lastRequest()).toEqual({ command: 'pane-sync', action: 'on', workspace: 'alpha' });
 
         const json = await runCLI(['pane', 'sync', 'exclude', '--target', OTHER, '--json'], {
             port: server.port,
             paneID: PANE
         });
         expect(JSON.parse(json.stdout)).not.toHaveProperty('ok');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'pane-sync-exclude',
             target: OTHER,
             excluded: true,
@@ -1046,7 +1066,7 @@ describe('workspace create / label', () => {
         expect(result.stdout).toBe(
             `created workspace Feature (${PANE}) with worktree /tmp/wt/feature on branch feature\n`
         );
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'workspace-create',
             worktree: 'feature',
             update_main: true,
@@ -1062,7 +1082,7 @@ describe('workspace create / label', () => {
             port: server.port
         });
         expect(result.stdout).toBe('alpha labels: a, b\n');
-        expect(lastRequest()).toEqual({
+        expect(await lastRequest()).toEqual({
             command: 'workspace-label',
             name: 'alpha',
             label_op: 'add',

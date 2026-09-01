@@ -61,6 +61,19 @@ function fakeWatch(): FakeWatch {
 
 const tick = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Poll until the condition holds (bounded), then let the assertions that follow read the
+ * state. A fixed `tick(N)` races the watcher's CHAINED timers under a loaded suite: the
+ * reattach timer firing 35 ms late reschedules the debounce past the tick's own deadline,
+ * and the assertion reads a state that was one timer away — this file killed two promote
+ * batteries exactly that way (2026-09-01). Timers are real either way; only the wait is
+ * condition-shaped now.
+ */
+const until = async (condition: () => boolean, deadlineMs = 5000): Promise<void> => {
+    const deadline = Date.now() + deadlineMs;
+    while (!condition() && Date.now() < deadline) await tick(5);
+};
+
 describe('watchConfigFile (injected watcher)', () => {
     const open: ConfigWatcher[] = [];
     const watch = (options: Parameters<typeof watchConfigFile>[0]): ConfigWatcher => {
@@ -125,7 +138,7 @@ describe('watchConfigFile (injected watcher)', () => {
         fake.fire('change');
         fake.fire('change');
         expect(calls).toBe(0);
-        await tick(40);
+        await until(() => calls === 1);
         expect(calls).toBe(1);
     });
 
@@ -146,7 +159,7 @@ describe('watchConfigFile (injected watcher)', () => {
         // The old watch is released immediately; nothing has fired yet.
         expect(fake.open()).toBe(0);
         expect(calls).toBe(0);
-        await tick(50);
+        await until(() => calls === 1);
         expect(fake.attaches).toEqual(['/cfg/config', '/cfg/config']);
         expect(fake.open()).toBe(1);
         expect(calls).toBe(1);
@@ -163,7 +176,7 @@ describe('watchConfigFile (injected watcher)', () => {
             exists: () => true
         });
         fake.error();
-        await tick(50);
+        await until(() => fake.attaches.length === 2);
         expect(fake.attaches).toHaveLength(2);
     });
 
@@ -185,7 +198,7 @@ describe('watchConfigFile (injected watcher)', () => {
         await tick(40);
         expect(calls).toBe(0);
         fake.fire('rename', 'config');
-        await tick(40);
+        await until(() => calls === 1);
         expect(calls).toBe(1);
     });
 

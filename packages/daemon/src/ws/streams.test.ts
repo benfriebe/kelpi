@@ -627,7 +627,16 @@ describe('settled-resize resync', () => {
             h.pty.emit(PANE_A, 'typed-2');
             h.term.service.feed(PANE_A, bytes('typed-2'));
         }, 0);
-        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        // Wait for the replay FRAME, not a fixed interval: a loaded suite can stall this
+        // worker past any constant (a 30 ms sleep here died in a full battery run), while the
+        // interleaving under test — bytes inside the snapshot's await — is fixed by the
+        // timer/check phase ordering above, not by how long the poll takes. A duplicate, if
+        // the suppression broke, is emitted in the SAME synchronous flip that sends the
+        // replay, so exact equality right after the first frame still proves "doubles none".
+        const deadline = Date.now() + 5000;
+        while (h.frames().length === framesBefore && Date.now() < deadline) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        }
 
         expect(h.frames().slice(framesBefore)).toEqual([
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'typed-1typed-2' }

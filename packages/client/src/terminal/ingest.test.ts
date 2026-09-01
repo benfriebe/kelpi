@@ -204,3 +204,115 @@ describe('terminal ingest', () => {
         expect(target.writes[0]).toBe('SNAPSHOT');
     });
 });
+
+/**
+ * The 2026-09-01 lockup class: the engine's `write()` parses its whole payload in one
+ * synchronous WASM call, so a multi-megabyte replay (a resumed 8.8 MB agent session, resized)
+ * wedged the main thread, starved the flow-control acks, and the overflow re-seeds stacked
+ * MORE full-buffer replays until the app read as bricked. Chunked application with
+ * supersession is the fix under test here.
+ */
+describe('chunked replay application', () => {
+    function manualScheduler(): { flush: () => void; pending: () => number } {
+        const queue: (() => void)[] = [];
+        return {
+            schedule(run: () => void): () => void {
+                queue.push(run);
+                return () => {
+                    const index = queue.indexOf(run);
+                    if (index >= 0) queue.splice(index, 1);
+                };
+            },
+            flush(): void {
+                while (queue.length > 0) queue.shift()?.();
+            },
+            pending(): number {
+                return queue.length;
+            }
+        } as { flush: () => void; pending: () => number; schedule: (run: () => void) => () => void };
+    }
+
+    const options = (scheduler: { schedule: (run: () => void) => () => void }) => ({
+        chunkBytes: 4,
+        // A zero budget forces one chunk per tick — the pathological pacing, fully observable.
+        tickBudgetMs: 0,
+        schedule: scheduler.schedule,
+        now: () => 1
+    });
+
+    it('applies a large replay across ticks, in order, holding live bytes until it completes', () => {
+        const scheduler = manualScheduler();
+        const target = recorder();
+        const ingest = createTerminalIngest(target, options(scheduler as never));
+
+        ingest.replay('ABCDEFGHIJ');
+        // First tick ran synchronously: reset + the first chunk are already down.
+        expect(target.resets).toBe(1);
+        expect(target.writes).toEqual(['ABCD']);
+        expect(ingest.awaitingReplay).toBe(true);
+
+        // Live bytes during application are held — they postdate the snapshot's tail.
+        ingest.live('tail');
+        expect(target.writes).toEqual(['ABCD']);
+
+        (scheduler as { flush: () => void }).flush();
+        expect(target.writes).toEqual(['ABCD', 'EFGH', 'IJ', 'tail']);
+        expect(ingest.awaitingReplay).toBe(false);
+    });
+
+    it('a newer replay supersedes an incomplete one: remainder abandoned behind a CAN abort', () => {
+        const scheduler = manualScheduler();
+        const target = recorder();
+        const ingest = createTerminalIngest(target, options(scheduler as never));
+
+        ingest.replay('OLD-SNAPSHOT-1');
+        expect(target.writes).toEqual(['OLD-']);
+        ingest.live('held-behind-old');
+
+        ingest.replay('NEWXY');
+        (scheduler as { flush: () => void }).flush();
+
+        // The cut may have left the parser mid-sequence, so the abort byte precedes the new
+        // application's reset; not one further chunk of the OLD snapshot was written, and the
+        // bytes held behind it went with it (they are inside the new snapshot).
+        expect(target.writes).toEqual(['OLD-', '\x18', 'NEWX', 'Y']);
+        expect(target.resets).toBe(2);
+        expect(ingest.replays).toBe(2);
+    });
+
+    it('a pause mid-application parks the snapshot and resume re-applies it from scratch', () => {
+        const scheduler = manualScheduler();
+        const target = recorder();
+        const ingest = createTerminalIngest(target, options(scheduler as never));
+
+        ingest.replay('SNAPSHOT');
+        expect(target.writes).toEqual(['SNAP']);
+        ingest.pause();
+        ingest.live('after-fault');
+        (scheduler as { flush: () => void }).flush();
+        // Sealed: nothing more reached the (poisoned) target.
+        expect(target.writes).toEqual(['SNAP']);
+
+        ingest.resume();
+        (scheduler as { flush: () => void }).flush();
+        // The rebuilt engine gets the WHOLE snapshot again, then the held tail.
+        expect(target.writes).toEqual(['SNAP', 'SNAP', 'SHOT', 'after-fault']);
+        expect(target.resets).toBe(2);
+    });
+
+    it('never splits a surrogate pair at a string chunk boundary', () => {
+        const scheduler = manualScheduler();
+        const target = recorder();
+        const ingest = createTerminalIngest(target, options(scheduler as never));
+
+        // '🙂' is a surrogate pair; placed so a naive 4-unit cut would land between its halves.
+        ingest.replay('abc🙂def');
+        (scheduler as { flush: () => void }).flush();
+
+        expect(target.writes.join('')).toBe('abc🙂def');
+        for (const write of target.writes) {
+            const last = write.charCodeAt(write.length - 1);
+            expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+        }
+    });
+});

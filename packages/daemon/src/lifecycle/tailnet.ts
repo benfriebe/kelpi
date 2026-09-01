@@ -184,6 +184,25 @@ export function tailnetClientURL(dnsName: string, token: string, listenPort = 44
     return `${origin}/?token=${encodeURIComponent(token)}`;
 }
 
+/**
+ * The first http(s) URL in a blob of tailscale's own output.
+ *
+ * Tailscale's refusals name the exact page that fixes them ("Serve is not enabled on your
+ * tailnet. To enable, visit: https://login.tailscale.com/f/serve?node=..."), and that link IS
+ * the repair - so it is lifted out and handed on by itself, rather than left buried in a
+ * sentence a UI renders as one red paragraph. Trailing sentence punctuation is trimmed: a
+ * message ending "visit https://x/y." must not yield a link ending in a period.
+ */
+export function firstLink(text: string): string | undefined {
+    const match = /https?:\/\/[^\s<>"'`)\]]+/i.exec(text);
+    if (match === null) return undefined;
+    const trimmed = match[0].replace(/[.,;:!?]+$/, '');
+    return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/** Where a tailnet's HTTPS certificates (and MagicDNS) are switched on. */
+const TAILNET_DNS_ADMIN = 'https://login.tailscale.com/admin/dns';
+
 // ── the resolve ─────────────────────────────────────────────────────────────────────
 
 export type TailnetUrlResult =
@@ -196,8 +215,17 @@ export type TailnetUrlResult =
     | {
           readonly kind: 'error';
           readonly message: string;
-          /** The command (or step) that fixes it — always safe to print, never executed. */
+          /** The command (or step) that fixes it - always safe to print, never executed. */
           readonly repair?: string | undefined;
+          /**
+           * The same repair as the ORDERED actions a person takes, so a surface with room can
+           * render a checklist where the CLI prints one `Repair:` line. Two rules make a step
+           * renderable anywhere: it stands alone ("follow the link above" is useless in a UI
+           * that shows no "above"), and any URL is left bare so the renderer can turn it into a
+           * real link. The last step - "then try again" - belongs to the caller, because only
+           * it knows whether that is a re-run or a second click on a button.
+           */
+          readonly steps?: readonly string[] | undefined;
       };
 
 export interface ResolveTailnetOptions {
@@ -225,7 +253,12 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             message:
                 'tailscale is not installed (no `tailscale` on PATH, and no Mac App Store bundle CLI).',
             repair:
-                'Install it from https://tailscale.com/download, or point KELPID_TAILSCALE at the CLI binary, then re-run `kelpid url --tailnet`.'
+                'Install it from https://tailscale.com/download, or point KELPID_TAILSCALE at the CLI binary, then re-run `kelpid url --tailnet`.',
+            steps: [
+                'Install Tailscale from https://tailscale.com/download',
+                'Sign in to your tailnet so this machine joins it.',
+                'Already installed somewhere unusual? Point KELPID_TAILSCALE at its CLI binary instead.'
+            ]
         };
     }
     const identity = parseTailscaleStatus(status.stdout);
@@ -233,14 +266,19 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
         return {
             kind: 'error',
             message: `tailscaled is not running (state: ${identity.backend ?? 'unknown'}).`,
-            repair: 'Run `tailscale up`, then re-run `kelpid url --tailnet`.'
+            repair: 'Run `tailscale up`, then re-run `kelpid url --tailnet`.',
+            steps: ['Start Tailscale on this machine and sign in - `tailscale up` does both.']
         };
     }
     if (identity.dnsName === undefined) {
         return {
             kind: 'error',
             message: 'this machine has no MagicDNS name, so there is no stable https address to print.',
-            repair: 'Enable MagicDNS for the tailnet (https://login.tailscale.com/admin/dns), then re-run.'
+            repair: `Enable MagicDNS for the tailnet (${TAILNET_DNS_ADMIN}), then re-run.`,
+            steps: [
+                `Open ${TAILNET_DNS_ADMIN} and turn MagicDNS on for this tailnet.`,
+                'Enable HTTPS certificates on that same page - serve needs them to answer on https.'
+            ]
         };
     }
 
@@ -253,7 +291,11 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             message: `\`tailscale serve status --json\` failed, so the current serve config cannot be inspected: ${serveStatus.stderr.trim() || serveStatus.stdout.trim() || `exit ${String(serveStatus.code)}`}`,
             repair:
                 'Check `tailscale serve status` yourself; if nothing (or only the daemon) is being served, ' +
-                `run \`tailscale serve --bg ${String(options.port)}\` and re-run \`kelpid url --tailnet\`.`
+                `run \`tailscale serve --bg ${String(options.port)}\` and re-run \`kelpid url --tailnet\`.`,
+            steps: [
+                'Run `tailscale serve status` to see what this tailnet already serves.',
+                `If nothing (or only kelpi) is there, run \`tailscale serve --bg ${String(options.port)}\` yourself.`
+            ]
         };
     }
     const proxies = parseServeProxies(serveStatus.stdout);
@@ -270,20 +312,47 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
                     'left untouched.',
                 repair:
                     `Move it aside yourself if the daemon should own :443: \`tailscale serve --bg ${String(options.port)}\` ` +
-                    '(this REPLACES the current serve config), then re-run `kelpid url --tailnet`.'
+                    '(this REPLACES the current serve config), then re-run `kelpid url --tailnet`.',
+                steps: [
+                    `Something else already answers on :443 (127.0.0.1:${fronted.join(', 127.0.0.1:')}), and kelpi will not take it over.`,
+                    `To hand kelpi :443 anyway, run \`tailscale serve --bg ${String(options.port)}\` yourself - it REPLACES the current serve config.`
+                ]
             };
         }
         const serve = await run(['serve', '--bg', String(options.port)]);
         if (serve.code !== 0) {
             const said = serve.stderr.trim() || serve.stdout.trim() || `exit ${String(serve.code)}`;
+            // tailscale's own message usually names the fix (an admin-console enable link);
+            // only fall back to the certificates page when it did not.
+            const link = firstLink(said);
+            // "Serve is not enabled on your tailnet" is not a FAILURE, it is the setup step
+            // nobody has done yet: a tailnet admin has to switch the feature on, and tailscale
+            // hands back the exact page that does it. Repeated as an error it reads like a bug
+            // in kelpi; said plainly, with the link on its own, it reads like the install step
+            // it is. Every other serve failure keeps tailscale's own words, which name it.
+            if (/serve is not enabled/i.test(said)) {
+                return {
+                    kind: 'error',
+                    message:
+                        'tailscale serve is not enabled for this tailnet yet, so there is no https address to give a device.',
+                    repair: `Enable serve for the tailnet at ${link ?? TAILNET_DNS_ADMIN}, then try again.`,
+                    steps: [
+                        `Open ${link ?? TAILNET_DNS_ADMIN} and enable serve for this tailnet.`,
+                        `Enable HTTPS certificates too, if they are not on yet: ${TAILNET_DNS_ADMIN}`
+                    ]
+                };
+            }
             return {
                 kind: 'error',
                 message: `\`tailscale serve --bg ${String(options.port)}\` failed: ${said}`,
-                // tailscale's own message usually names the fix (an admin-console enable link);
-                // only add ours when it did not.
-                repair: /https?:\/\//.test(said)
-                    ? 'Follow the link above (serve + HTTPS must be enabled for the tailnet), then re-run.'
-                    : 'Enable serve and HTTPS certificates for the tailnet (https://login.tailscale.com/admin/dns), then re-run.'
+                repair:
+                    link !== undefined
+                        ? `Open ${link} (serve + HTTPS must be enabled for the tailnet), then re-run.`
+                        : `Enable serve and HTTPS certificates for the tailnet (${TAILNET_DNS_ADMIN}), then re-run.`,
+                steps: [
+                    `Open ${link ?? TAILNET_DNS_ADMIN} and check that serve and HTTPS certificates are enabled for this tailnet.`,
+                    `If it still refuses, run \`tailscale serve --bg ${String(options.port)}\` yourself to see tailscale's own answer.`
+                ]
             };
         }
         notes.push(`tailscale serve --bg ${String(options.port)}: configured (was not serving anything)`);

@@ -112,4 +112,23 @@ describe('ChromeIcon', () => {
         expect(screen.getByTitle('Git branch')).toBeDefined();
         expect(view.container.querySelector('svg')?.getAttribute('width')).toBe('9');
     });
+
+    /**
+     * #7 - the inspector toggle moved to the trailing edge and took the sidebar glyph with it,
+     * flipped. "Flipped" has to be exact or the two ends of the title bar stop being each other's
+     * mirror: same rectangle, divider reflected through the 12-unit grid's centre.
+     */
+    it('mirrors the sidebar glyph for the trailing inspector toggle', () => {
+        const left = render(<ChromeIcon name="sidebar" />);
+        const right = render(<ChromeIcon name="sidebar-right" />);
+        const frame = (view: typeof left): (string | null | undefined)[] => {
+            const rect = view.container.querySelector('rect');
+            return [rect?.getAttribute('x'), rect?.getAttribute('width')];
+        };
+        expect(frame(left)).toEqual(['1.6', '8.8']);
+        expect(frame(right)).toEqual(frame(left));
+        expect(left.container.querySelector('path')?.getAttribute('d')).toBe('M4.6 2.2v7.6');
+        // 12 - 4.6. Anything else is a similar drawing rather than the same one flipped.
+        expect(right.container.querySelector('path')?.getAttribute('d')).toBe('M7.4 2.2v7.6');
+    });
 });

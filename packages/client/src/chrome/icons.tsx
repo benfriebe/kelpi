@@ -29,6 +29,9 @@ export type ChromeIconName =
     | 'plus'
     | 'branch'
     | 'sidebar'
+    // The `sidebar` rectangle mirrored about its own centre line: the divider falls on the
+    // RIGHT, so the inspector toggle at the trailing edge reads as the sidebar toggle's twin.
+    | 'sidebar-right'
     | 'layout'
     | 'broadcast'
     | 'terminal'
@@ -79,6 +82,14 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         <>
             <rect x="1.6" y="2.2" width="8.8" height="7.6" rx="1.2" />
             <path d="M4.6 2.2v7.6" />
+        </>
+    ),
+    // `4.6` reflected through the 12-unit grid's centre (`12 - 4.6`), so the two glyphs are
+    // the same drawing seen from opposite ends of the bar rather than two similar ones.
+    'sidebar-right': (
+        <>
+            <rect x="1.6" y="2.2" width="8.8" height="7.6" rx="1.2" />
+            <path d="M7.4 2.2v7.6" />
         </>
     ),
     layout: (

@@ -102,7 +102,7 @@ function connectionColor(status: ConnectionStatus): string {
 }
 
 /**
- * SPACING-REVIEW S22 — the inset each leading glyph button takes around its 13 px icon.
+ * SPACING-REVIEW S22 — the inset each glyph button takes around its 13 px icon.
  *
  * The glyph does not move: the padding grows the BOX (13 → 19 px), which is what a pointer
  * has to hit. AppKit gives the shipped pair the same courtesy through the borderless menu /
@@ -132,10 +132,11 @@ const IDENTITY_FALLBACK_RESERVE_PX = 256;
  * rather than two: reserving 80 on the left and 256 on the right would centre the name 88 px
  * left of the window centre, which no version of this bar has ever done.
  *
- * The port's clusters are not the Swift's (this bar carries the sidebar / inspector / ••• trio
- * on the LEADING side, where the shipped app hangs them off a trailing accessory), and both
- * sides change width with the traffic-light inset, the layout name and the sync label — so the
- * number is measured rather than declared.
+ * The port's clusters are not the Swift's (this bar carries the sidebar toggle and the •••
+ * menu on the LEADING side, where the shipped app hangs them off a trailing accessory, and
+ * hangs the inspector toggle off the trailing edge so it mirrors them), and both sides change
+ * width with the traffic-light inset, the layout name and the sync label — so the number is
+ * measured rather than declared.
  */
 export function identityReserve(
     bar: { readonly left: number; readonly right: number },
@@ -271,9 +272,9 @@ export function TopBar(props: TopBarProps): ReactElement {
         >
             {/*
              * S22 — `TitlebarTrailingControls` is `HStack(spacing: 14)` (`WindowTitleBar.swift:
-             * 243`), so the shipped glyphs sit FOURTEEN points apart; three of them 8 px apart
-             * read as one blob. The per-button inset is `GLYPH_BUTTON_PAD_PX` — the glyph does
-             * not move, the target grows 13 → 19 px.
+             * 243`), so the shipped glyphs sit FOURTEEN points apart; a pair 8 px apart reads as
+             * one blob. The per-button inset is `GLYPH_BUTTON_PAD_PX` — the glyph does not move,
+             * the target grows 13 → 19 px.
              */}
             <div ref={leadingRef} className="flex items-center gap-3.5">
                 {props.onToggleSidebar === undefined ? null : (
@@ -288,27 +289,6 @@ export function TopBar(props: TopBarProps): ReactElement {
                         onClick={props.onToggleSidebar}
                     >
                         <ChromeIcon name="sidebar" size={13} />
-                    </button>
-                )}
-                {props.onToggleInspector === undefined ? null : (
-                    <button
-                        type="button"
-                        data-testid="toggle-inspector"
-                        aria-label="Toggle inspector"
-                        aria-pressed={props.inspectorVisible ?? false}
-                        title="Toggle inspector (⌘I)"
-                        data-hovered={hovered === 'inspector' ? 'true' : 'false'}
-                        style={{
-                            padding: GLYPH_BUTTON_PAD_PX,
-                            color: hoverText(
-                                hovered === 'inspector',
-                                props.inspectorVisible === true ? tokens.textPrimary : tokens.textSecondary
-                            )
-                        }}
-                        {...hover('inspector')}
-                        onClick={props.onToggleInspector}
-                    >
-                        <ChromeIcon name="stack" size={13} />
                     </button>
                 )}
                 {overflowItems.length === 0 ? null : (
@@ -553,6 +533,35 @@ export function TopBar(props: TopBarProps): ReactElement {
                     />
                     {CONNECTION_LABEL[props.connection]}
                 </span>
+
+                {/*
+                 * The inspector opens the panel on the RIGHT, so its toggle lives at the right
+                 * end of the bar - the sidebar toggle's mirror image, glyph included
+                 * (`sidebar-right` is `sidebar` reflected). Hung last in the trailing cluster it
+                 * sits the bar's own `pr-3` from the window edge, the same 12 px the sidebar
+                 * toggle keeps from the leading one.
+                 */}
+                {props.onToggleInspector === undefined ? null : (
+                    <button
+                        type="button"
+                        data-testid="toggle-inspector"
+                        aria-label="Toggle inspector"
+                        aria-pressed={props.inspectorVisible ?? false}
+                        title="Toggle inspector (⌘I)"
+                        data-hovered={hovered === 'inspector' ? 'true' : 'false'}
+                        style={{
+                            padding: GLYPH_BUTTON_PAD_PX,
+                            color: hoverText(
+                                hovered === 'inspector',
+                                props.inspectorVisible === true ? tokens.textPrimary : tokens.textSecondary
+                            )
+                        }}
+                        {...hover('inspector')}
+                        onClick={props.onToggleInspector}
+                    >
+                        <ChromeIcon name="sidebar-right" size={13} />
+                    </button>
+                )}
             </div>
         </div>
     );

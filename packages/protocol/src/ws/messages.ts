@@ -72,6 +72,18 @@ export interface WsResizePaneMessage {
 }
 
 /**
+ * Claim size control (terminal-surface.md §5.1). PTY geometry follows exactly ONE client at
+ * a time — the size owner — so two attached UIs with different windows stop fighting over
+ * cols/rows. A newly connecting UI claims ownership on its first `attach-pane` (the
+ * last-connected-wins behaviour users already know); this verb is how an earlier UI takes it
+ * back without reconnecting. The daemon answers with a `size-control` broadcast and applies
+ * the taker's last-reported geometry to every pane it is attached to.
+ */
+export interface WsTakeSizeControlMessage {
+    readonly type: 'take-size-control';
+}
+
+/**
  * Focus is daemon-canonical (last report from any client wins) so focused-pane-dependent
  * commands keep their CLI semantics.
  */
@@ -309,6 +321,7 @@ export type WsClientMessage =
     | WsAttachPaneMessage
     | WsDetachPaneMessage
     | WsResizePaneMessage
+    | WsTakeSizeControlMessage
     | WsFocusReportMessage
     | WsVisibilityReportMessage
     | WsCommandMessage
@@ -753,12 +766,25 @@ export interface WsWebViewFocusMessage {
     readonly windowID?: string;
 }
 
+/**
+ * Broadcast whenever size control moves (terminal-surface.md §5.1): a client's first
+ * `attach-pane` claimed it, a `take-size-control` took it, or the owner disconnected and it
+ * transferred. Each client compares `ownerClientID` against its own welcome `clientID`; a
+ * non-owner shows the take-back affordance, the owner (and a client with no owner known)
+ * shows nothing. Null = no owner right now (nothing attached anywhere).
+ */
+export interface WsSizeControlMessage {
+    readonly type: 'size-control';
+    readonly ownerClientID: string | null;
+}
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
     | WsSnapshotMessage
     | WsDeltaMessage
     | WsCommandReplyMessage
+    | WsSizeControlMessage
     | WsNotificationMessage
     | WsClipboardWriteMessage
     | WsPaneExitMessage

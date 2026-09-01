@@ -41,6 +41,15 @@ export interface TopBarProps {
     readonly syncInputActive?: boolean | undefined;
     /** Size of the broadcast group (`syncedPaneIDs`); < 2 means nothing would mirror. */
     readonly syncedPaneCount?: number | undefined;
+    /**
+     * terminal-surface.md §5.1: PTY geometry currently follows ANOTHER client's window (a UI
+     * on a different machine connected after this one). True renders the take-back chip;
+     * false/absent — this client owns sizing, or nobody is known to — renders nothing, which
+     * is the rule: the affordance only ever shows on a NON-owner.
+     */
+    readonly sizeControlledElsewhere?: boolean | undefined;
+    /** The take-back chip was clicked: claim size control for this client. */
+    readonly onTakeSizeControl?: (() => void) | undefined;
     readonly onToggleSyncInput?: (() => void) | undefined;
     readonly onToggleSidebar?: (() => void) | undefined;
     readonly sidebarVisible?: boolean | undefined;
@@ -234,6 +243,9 @@ export function TopBar(props: TopBarProps): ReactElement {
             String((props.overflowItems ?? []).length),
             String(props.currentLayout ?? 'custom'),
             String(props.syncInputActive === true ? (props.syncedPaneCount ?? 0) : -1),
+            // The take-size-control chip appears and disappears whole — a trailing-cluster
+            // width change like the sync label's.
+            String(props.sizeControlledElsewhere === true),
             props.connection
         ].join('|')
     );
@@ -506,6 +518,26 @@ export function TopBar(props: TopBarProps): ReactElement {
                         {props.syncInputActive === true ? `sync ${props.syncedPaneCount ?? 0}` : 'sync'}
                     </span>
                 </button>
+
+                {props.sizeControlledElsewhere === true ? (
+                    <button
+                        type="button"
+                        data-testid="take-size-control"
+                        aria-label="Take size control"
+                        title="Terminal sizing follows another connected window. Click to size the panes to this one."
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5"
+                        data-hovered={hovered === 'size-control' ? 'true' : 'false'}
+                        style={{
+                            color: hoverText(hovered === 'size-control', tokens.textTertiary),
+                            background: hoverFill(hovered === 'size-control')
+                        }}
+                        {...hover('size-control')}
+                        onClick={props.onTakeSizeControl}
+                    >
+                        <ChromeIcon name="layout" size={11} />
+                        <span>take size control</span>
+                    </button>
+                ) : null}
 
                 <span
                     data-testid="connection-pill"

@@ -11,6 +11,7 @@ import {
     WS_CLOSE_CODES,
     WS_ONLY_COMMANDS,
     type SyncHub,
+    type SyncPaneBridge,
     type SyncSession
 } from './sync.js';
 import { PANE_A, PANE_B, recordingTransport, type RecordedTransport } from './testing.js';
@@ -1191,5 +1192,118 @@ describe('the GUI’s delete-workspace (§WS-156)', () => {
         // decoder does not know, on a message the decoder never builds.
         expect(isWireCommand('delete-workspace')).toBe(false);
         expect(isWireCommand('workspace-delete')).toBe(true);
+    });
+});
+
+describe('size control (terminal-surface.md §5.1)', () => {
+    interface BridgeLog {
+        readonly attaches: { paneID: string; size: { cols: number; rows: number } | undefined }[];
+        readonly resizes: { paneID: string; cols: number; rows: number }[];
+    }
+
+    function paneBridge(): BridgeLog & { bridge: SyncPaneBridge } {
+        const attaches: BridgeLog['attaches'] = [];
+        const resizes: BridgeLog['resizes'] = [];
+        return {
+            attaches,
+            resizes,
+            bridge: {
+                attach(paneID, size) {
+                    attaches.push({ paneID, size });
+                },
+                detach() {},
+                resize(paneID, cols, rows) {
+                    resizes.push({ paneID, cols, rows });
+                },
+                close() {}
+            }
+        };
+    }
+
+    function connectWithBridge(f: ReturnType<typeof fixture>) {
+        const transport = recordingTransport();
+        const log = paneBridge();
+        const session = f.hub.createSession(transport, log.bridge);
+        session.handleMessage(hello());
+        return { session, transport, ...log };
+    }
+
+    const send = (session: SyncSession, message: Record<string, unknown>): void => {
+        session.handleMessage(JSON.stringify(message));
+    };
+
+    const controlMessages = (transport: RecordedTransport): (string | null)[] =>
+        transport.json
+            .filter((m) => m['type'] === 'size-control')
+            .map((m) => m['ownerClientID'] as string | null);
+
+    it("a connection's FIRST attach claims ownership; the next client's first attach takes it over", () => {
+        const f = fixture();
+        const a = connectWithBridge(f);
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        // The claim is broadcast, and the owner attached WITH its measured size.
+        expect(controlMessages(a.transport)).toEqual([a.session.clientID]);
+        expect(a.attaches).toEqual([{ paneID: f.paneID, size: { cols: 120, rows: 40 } }]);
+
+        const b = connectWithBridge(f);
+        // The standing owner is replayed at B's handshake completion.
+        expect(controlMessages(b.transport)).toEqual([a.session.clientID]);
+        send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
+        // B's first attach takes over (last-connected-wins), and everyone hears it.
+        expect(controlMessages(b.transport)).toEqual([a.session.clientID, b.session.clientID]);
+        expect(controlMessages(a.transport)).toEqual([a.session.clientID, b.session.clientID]);
+        expect(b.attaches).toEqual([{ paneID: f.paneID, size: { cols: 80, rows: 24 } }]);
+
+        // A's LATER attaches do not steal ownership back — only take-size-control does.
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        expect(controlMessages(a.transport)).toEqual([a.session.clientID, b.session.clientID]);
+        // …and a non-owner attaches at the pane's CURRENT geometry (no size applied).
+        expect(a.attaches[1]).toEqual({ paneID: f.paneID, size: undefined });
+    });
+
+    it("a non-owner's resize is cached, never applied; take-size-control applies the cache in one step", () => {
+        const f = fixture();
+        const a = connectWithBridge(f);
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        const b = connectWithBridge(f);
+        send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
+
+        // A (non-owner now) resizes: recorded nowhere on the bridge…
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 200, rows: 60 });
+        expect(a.resizes).toEqual([]);
+
+        // …until A takes control, which applies its LAST-reported geometry immediately.
+        send(a.session, { type: 'take-size-control' });
+        expect(a.resizes).toEqual([{ paneID: f.paneID, cols: 200, rows: 60 }]);
+        expect(controlMessages(b.transport).at(-1)).toBe(a.session.clientID);
+
+        // The owner's resizes apply directly.
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 201, rows: 61 });
+        expect(a.resizes).toHaveLength(2);
+        // And the deposed owner's stop applying.
+        send(b.session, { type: 'resize-pane', paneID: f.paneID, cols: 81, rows: 25 });
+        expect(b.resizes).toEqual([]);
+    });
+
+    it('the departing owner hands control to the most recent remaining client, whose cache applies', () => {
+        const f = fixture();
+        const a = connectWithBridge(f);
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        const b = connectWithBridge(f);
+        send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
+
+        b.session.close();
+        // A is promoted and its cached layout applies — panes must not stay frozen at a
+        // window that no longer exists.
+        expect(controlMessages(a.transport).at(-1)).toBe(a.session.clientID);
+        expect(a.resizes).toEqual([{ paneID: f.paneID, cols: 120, rows: 40 }]);
+
+        // With nobody left, the owner clears; the next report from a new client claims.
+        a.session.close();
+        const c = connectWithBridge(f);
+        expect(controlMessages(c.transport)).toEqual([]);
+        send(c.session, { type: 'resize-pane', paneID: f.paneID, cols: 90, rows: 30 });
+        expect(controlMessages(c.transport)).toEqual([c.session.clientID]);
+        expect(c.resizes).toEqual([{ paneID: f.paneID, cols: 90, rows: 30 }]);
     });
 });

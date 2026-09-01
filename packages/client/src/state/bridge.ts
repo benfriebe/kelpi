@@ -96,6 +96,17 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // `size-control` (terminal-surface.md §5.1): whose window PTY geometry follows. A
+        // fire-and-forget standing condition like the two above — the top bar compares it
+        // against this client's own welcome id to decide whether to offer the take-back.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'size-control') return;
+            const owner = message['ownerClientID'];
+            store.getState().setSizeControlOwner(typeof owner === 'string' && owner !== '' ? owner : null);
+        })
+    );
+
+    offs.push(
         // §AGNT-005's live re-bind: the daemon moved (or dropped) a listener while we were
         // attached. Its own message rather than a field on `settings-changed` because the two
         // say different things — the file's request vs what the listener actually did — and

@@ -301,6 +301,15 @@ export class CommandClient {
     }
 
     /**
+     * Take size control (terminal-surface.md §5.1): PTY geometry follows this client's
+     * window from here on. Fire-and-forget — the daemon answers with a `size-control`
+     * broadcast, which is what flips the top-bar affordance off.
+     */
+    takeSizeControl(): void {
+        this.connection.send({ type: 'take-size-control' });
+    }
+
+    /**
      * Which panes this client actually renders + whether its document is visible. Drives
      * notification suppression and the daemon's "app is active" answer.
      */

@@ -229,3 +229,27 @@ describe('the hidden title bar (§APP-046)', () => {
         expect(screen.getByTestId('top-bar').style.paddingLeft).toBe('12px');
     });
 });
+
+describe('size control (terminal-surface.md §5.1)', () => {
+    it('offers the take-back chip ONLY when another client owns sizing', () => {
+        const onTakeSizeControl = vi.fn();
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                sizeControlledElsewhere
+                onTakeSizeControl={onTakeSizeControl}
+            />
+        );
+        const chip = screen.getByTestId('take-size-control');
+        expect(chip.textContent).toContain('take size control');
+        fireEvent.click(chip);
+        expect(onTakeSizeControl).toHaveBeenCalledOnce();
+    });
+
+    it('renders nothing for the owner (and when no owner is known)', () => {
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" />);
+        expect(screen.queryByTestId('take-size-control')).toBeNull();
+    });
+});

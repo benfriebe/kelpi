@@ -121,6 +121,20 @@ describe('store bridge', () => {
         expect(h.store.getState().daemon.state.workspaces[0]?.name).toBe('alpha');
     });
 
+    it('tracks the size-control owner (terminal-surface.md §5.1)', () => {
+        const h = harness();
+        h.connection.connect();
+        completeHandshake(h.sockets.last(), { clientID: 'client-1', state: snapshotState() as never });
+        expect(h.store.getState().daemon.sizeControlOwnerID).toBeNull();
+
+        h.sockets.last().emit({ type: 'size-control', ownerClientID: 'client-2' });
+        expect(h.store.getState().daemon.sizeControlOwnerID).toBe('client-2');
+
+        // Null (or a junk value) means "no owner right now", never a stale claim.
+        h.sockets.last().emit({ type: 'size-control', ownerClientID: null });
+        expect(h.store.getState().daemon.sizeControlOwnerID).toBeNull();
+    });
+
     it('renders daemon notifications through the manager', () => {
         const h = harness();
         h.connection.connect();

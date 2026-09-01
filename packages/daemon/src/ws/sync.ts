@@ -1232,6 +1232,20 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     let seq = 0;
     let closed = false;
     /**
+     * Size control (terminal-surface.md §5.1): PTY geometry follows exactly ONE client — two
+     * attached UIs with different windows must not fight over cols/rows. Ownership is claimed
+     * by a connection's FIRST `attach-pane` (so a newly opened UI sizes the panes, the
+     * behaviour users already know), taken explicitly with `take-size-control`, and handed to
+     * the most recent remaining UI when the owner disconnects. Non-owner geometry reports are
+     * CACHED, never applied — a takeover applies the taker's cache in one step.
+     */
+    let sizeOwnerID: string | null = null;
+    const broadcastSizeControl = (): void => {
+        for (const session of sessions) {
+            if (session.ready) session.send({ type: 'size-control', ownerClientID: sizeOwnerID });
+        }
+    };
+    /**
      * §SET-200/§SET-201: the last `hotkey-status` the shell reported, replayed to every client
      * that attaches afterwards. Null until a shell has registered anything — a browser-only
      * daemon has no registrar, so there is nothing to say and Settings shows no warning.
@@ -1278,6 +1292,34 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          * outside the registry and never revocable through it.
          */
         private credential: string | null = null;
+        /**
+         * Every pane geometry this client has reported (attach + resize), owner or not. The
+         * cache is what makes `take-size-control` instant: the taker's whole layout is known
+         * and applied without a round trip to re-measure.
+         */
+        private readonly paneSizes = new Map<string, { cols: number; rows: number }>();
+        /** Set by the first `attach-pane` — the once-per-connection implicit ownership claim. */
+        private claimedSizeOnAttach = false;
+
+        /** Does PTY geometry currently follow this connection? */
+        private ownsSize(): boolean {
+            return sizeOwnerID === this.clientID;
+        }
+
+        /** Become the size owner and re-apply this client's cached geometry everywhere. */
+        private takeSizeControl(): void {
+            const already = this.ownsSize();
+            sizeOwnerID = this.clientID;
+            if (!already) broadcastSizeControl();
+            this.applyCachedSizes();
+        }
+
+        applyCachedSizes(): void {
+            if (this.panes === undefined) return;
+            for (const [paneID, size] of this.paneSizes) {
+                this.panes.resize(paneID, size.cols, size.rows);
+            }
+        }
 
         constructor(
             private readonly transport: SyncTransport,
@@ -1341,7 +1383,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 case 'detach-pane': {
                     const paneID = text(parsed['paneID']);
-                    if (paneID !== undefined) this.panes?.detach(paneID);
+                    if (paneID !== undefined) {
+                        this.panes?.detach(paneID);
+                        // The size cache mirrors what this client RENDERS: a takeover must
+                        // apply its live layout, not a measurement from a workspace it left.
+                        this.paneSizes.delete(paneID);
+                    }
                     return;
                 }
                 case 'resize-pane': {
@@ -1349,9 +1396,20 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     const cols = count(parsed['cols']);
                     const rows = count(parsed['rows']);
                     if (paneID === undefined || cols === undefined || rows === undefined) return;
-                    this.panes?.resize(paneID, cols, rows);
+                    this.paneSizes.set(paneID, { cols, rows });
+                    // No owner (the previous one left without a successor): the first client
+                    // to breathe geometry claims. Otherwise only the owner's reports land —
+                    // a non-owner's are cached above for its eventual takeover.
+                    if (sizeOwnerID === null) {
+                        sizeOwnerID = this.clientID;
+                        broadcastSizeControl();
+                    }
+                    if (this.ownsSize()) this.panes?.resize(paneID, cols, rows);
                     return;
                 }
+                case 'take-size-control':
+                    this.takeSizeControl();
+                    return;
                 case 'focus-report':
                     this.focusReport(parsed);
                     return;
@@ -1454,6 +1512,19 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.consoleSubs.clear();
             this.panes?.close();
             sessions.delete(this);
+            // The departing owner hands size control to the most recent remaining UI that has
+            // reported any geometry, and that UI's cached layout applies at once — panes must
+            // not stay frozen at a window that no longer exists. No candidate = no owner; the
+            // next geometry report claims (see `resize-pane`).
+            if (sizeOwnerID === this.clientID) {
+                let successor: SessionImpl | null = null;
+                for (const session of sessions) {
+                    if (session.ready && session.paneSizes.size > 0) successor = session;
+                }
+                sizeOwnerID = successor === null ? null : successor.clientID;
+                broadcastSizeControl();
+                successor?.applyCachedSizes();
+            }
         }
 
         // ── web-pane host (M6) ──────────────────────────────────────────────
@@ -1589,6 +1660,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
              * not an event that happened once.
              */
             if (lastHotkeyStatus !== null) this.send(lastHotkeyStatus);
+
+            // terminal-surface.md §5.1: who owns pane sizing is a standing condition too — replayed here so a
+            // client that attaches nothing (a content-only workspace) still knows whose
+            // window the terminals follow. This client's own first attach supersedes it.
+            if (sizeOwnerID !== null) this.send({ type: 'size-control', ownerClientID: sizeOwnerID });
 
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.
@@ -1837,8 +1913,22 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const cols = count(message['cols']);
             const rows = count(message['rows']);
             const size = cols !== undefined && rows !== undefined ? { cols, rows } : undefined;
+            if (size !== undefined) this.paneSizes.set(paneID, size);
+            // The once-per-connection implicit claim (terminal-surface.md §5.1): a UI's FIRST attach takes size
+            // control — a freshly opened window sizes the panes, exactly the last-connected
+            // behaviour that always held. LATER attaches (workspace switches remounting
+            // panes) respect whoever owns; ownership only moves again explicitly
+            // (`take-size-control`) or on the owner's disconnect.
+            if (!this.claimedSizeOnAttach) {
+                this.claimedSizeOnAttach = true;
+                const already = this.ownsSize();
+                sizeOwnerID = this.clientID;
+                if (!already) broadcastSizeControl();
+            }
             try {
-                const result = this.panes.attach(paneID, size);
+                // A non-owner attaches at the pane's CURRENT geometry: its measured size is
+                // cached above, never applied — the replay it gets matches what the owner set.
+                const result = this.panes.attach(paneID, this.ownsSize() ? size : undefined);
                 if (result instanceof Promise) result.catch((error: unknown) => report(error, `attach-pane ${paneID}`));
             } catch (error) {
                 report(error, `attach-pane ${paneID}`);

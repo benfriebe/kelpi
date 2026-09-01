@@ -3901,6 +3901,16 @@ function Shell(props: AppProps): ReactElement {
                 syncInputActive={workspace?.isSyncInputActive ?? false}
                 syncedPaneCount={synced.length}
                 onToggleSyncInput={act.toggleSyncInput}
+                // terminal-surface.md §5.1: the chip renders ONLY on a non-owner — a known owner that is not this
+                // client. The owner (and a client with no owner known) sees nothing.
+                sizeControlledElsewhere={
+                    kelpi.daemon.sizeControlOwnerID !== null &&
+                    kelpi.daemon.clientID !== null &&
+                    kelpi.daemon.sizeControlOwnerID !== kelpi.daemon.clientID
+                }
+                onTakeSizeControl={() => {
+                    commands.takeSizeControl();
+                }}
                 onToggleSidebar={act.toggleSidebar}
                 sidebarVisible={sidebarVisible}
                 onToggleInspector={act.toggleInspector}

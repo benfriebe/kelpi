@@ -145,6 +145,12 @@ export interface DaemonSlice {
     readonly clientID: string | null;
     readonly info: DaemonInfo | null;
     /**
+     * Who owns pane sizing (`size-control` broadcasts; terminal-surface.md §5.1). PTY
+     * geometry follows exactly one client's window; when this names a DIFFERENT client than
+     * `clientID`, the top bar offers "take size control". Null = unknown or nobody.
+     */
+    readonly sizeControlOwnerID: string | null;
+    /**
      * §SET-021: what the daemon's control listeners actually did (`welcome.transport`).
      *
      * `null` = the daemon did not say (an older one, or we have not connected yet), which
@@ -271,6 +277,8 @@ export interface KelpiActions {
         info: DaemonInfo | null,
         transport?: WsTransportStatus | null
     ): void;
+    /** `size-control` broadcast (terminal-surface.md §5.1): who owns pane sizing now. */
+    setSizeControlOwner(ownerClientID: string | null): void;
 
     setConnectionStatus(status: ConnectionStatus, error?: string | null): void;
     setActiveWorkspace(workspaceID: string | null): void;
@@ -308,6 +316,7 @@ function initialDaemonSlice(): DaemonSlice {
         desynced: false,
         clientID: null,
         info: null,
+        sizeControlOwnerID: null,
         transport: null
     };
 }
@@ -741,6 +750,12 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
 
         setDaemonIdentity(clientID, info, transport) {
             set({ daemon: { ...get().daemon, clientID, info, transport: transport ?? null } });
+        },
+
+        setSizeControlOwner(ownerClientID) {
+            const daemon = get().daemon;
+            if (daemon.sizeControlOwnerID === ownerClientID) return;
+            set({ daemon: { ...daemon, sizeControlOwnerID: ownerClientID } });
         },
 
         setConnectionStatus(status, error) {

@@ -692,6 +692,19 @@ export interface SettingsEmptyStateProps {
      * `SettingsView.swift:713`) are a plain `Text` in `.secondary`, which is the default here.
      */
     readonly headline?: boolean | undefined;
+    /**
+     * §N41 (issue #4) - which edge the block reads from. `center` is M45's ported recipe and
+     * stays the default; `start` sets the whole stack flush LEFT, on the same margin as the
+     * section's title and its hint.
+     *
+     * Alignment is a property of the SPACE the empty state stands in, not of the empty state.
+     * `.frame(maxWidth: .infinity, maxHeight: .infinity)` centres a `VStack` in a fill, which is
+     * what Repositories, Profiles and Web give it: a column of its own with nothing else in it.
+     * The Labels list gives it a band between a divider and a hint, in a tab whose every other
+     * line is left-aligned, so centring it there reads as a second, competing margin rather than
+     * as a placeholder floating in empty space.
+     */
+    readonly align?: 'center' | 'start' | undefined;
 }
 
 /**
@@ -707,12 +720,26 @@ export interface SettingsEmptyStateProps {
  *
  * No border: a `VStack` in a fill has no chrome of its own, and the dashed card was the port's
  * invention.
+ *
+ * §N41 (issue #4) qualified the centring, and only the centring: the block centres itself in a
+ * FILL, and the Labels list does not give it one, so that caller asks for `align="start"`. The
+ * glyph, the tones, the 13/11 px pair, the 360 px measure and the missing border are one recipe
+ * for all four still.
  */
 export function SettingsEmptyState(props: SettingsEmptyStateProps): ReactElement {
+    // §N41: the centred variant keeps every measurement M45 gave it. The left one drops the
+    // 24 px inset and the 180 px floor with it, because both exist to hold a block off the
+    // middle of a big empty column: flush left there is no gutter to clear, and the height is
+    // whatever the three lines come to plus the breathing room above and below them.
+    const left = props.align === 'start';
     return (
         <div
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
-            className="flex min-h-[180px] flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+            className={
+                left
+                    ? 'flex flex-1 flex-col items-start justify-center gap-2 py-6 text-left'
+                    : 'flex min-h-[180px] flex-1 flex-col items-center justify-center gap-2 px-6 text-center'
+            }
         >
             <span
                 aria-hidden

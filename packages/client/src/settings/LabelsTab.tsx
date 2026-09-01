@@ -906,6 +906,21 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 {props.presets.length === 0 ? (
                     <SettingsEmptyState
                         testID="labels-empty"
+                        /*
+                         * §N41 (issue #4) - it reads from the LEFT margin, like every other line
+                         * on this tab.
+                         *
+                         * M45 gave all four empty states the Swift's centred `VStack`, and for
+                         * the three that are handed a whole fill that is right. This one is not:
+                         * it stands in the list's own band, under the "Labels" heading and the
+                         * divider and over the section hint, and all three of those start at the
+                         * tab's left margin. Centred between them, the glyph, the headline and
+                         * the caption each began at an x of their own, so an empty Labels tab was
+                         * five lines with two margins - which is the whole of what the owner saw
+                         * and reported. The 28 pt glyph, the tones and the two strings are M45's
+                         * still; only the axis moved.
+                         */
+                        align="start"
                         glyph={<TagGlyph size={28} />}
                         title="No labels yet"
                         detail="Define reusable labels with colours, then assign them from a workspace's right-click menu - or apply a label from the CLI and adopt it here."

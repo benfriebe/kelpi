@@ -11,7 +11,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsButton, SettingsIconButton, SettingsToggle, useHover } from './ui';
+import { SettingsButton, SettingsEmptyState, SettingsIconButton, SettingsToggle, useHover } from './ui';
 
 afterEach(cleanup);
 
@@ -161,5 +161,47 @@ describe('the Settings hover recipe (H11)', () => {
         fireEvent.mouseEnter(probe);
         expect(probe.dataset['hovered']).toBe('true');
         expect(probe.textContent).toBe('over');
+    });
+});
+
+// ── §N41 (issue #4) ─────────────────────────────────────────────────────────────
+
+/**
+ * The empty state has exactly TWO alignments, and which one a tab gets is a property of the
+ * space it hands the block, not of the block. Asserted here, on the shared component, for
+ * ui.test.tsx's standing reason: a per-tab test would pass on four copies that had drifted.
+ */
+describe('the Settings empty state (M45, §N41)', () => {
+    function renderEmpty(align?: 'center' | 'start') {
+        render(
+            <SettingsEmptyState
+                testID="probe-empty"
+                glyph={<svg width="28" height="28" />}
+                title="Nothing yet"
+                detail="A sentence about what would be here."
+                {...(align === undefined ? {} : { align })}
+            />
+        );
+        return screen.getByTestId('probe-empty');
+    }
+
+    // M45: the three tabs that give it a whole fill keep the Swift's centred `VStack`.
+    it('centres itself by default, in the fill, with the 24 px inset and the 180 px floor', () => {
+        const empty = renderEmpty();
+        expect(empty.className).toContain('text-center');
+        expect(empty.className).toContain('items-center');
+        expect(empty.className).toContain('px-6');
+        expect(empty.className).toContain('min-h-[180px]');
+    });
+
+    // §N41: and the one that stands in a list's band reads from that list's left margin.
+    it('reads from the left margin when asked, with no inset of its own to break it', () => {
+        const empty = renderEmpty('start');
+        expect(empty.className).toContain('text-left');
+        expect(empty.className).toContain('items-start');
+        expect(empty.className).not.toContain('text-center');
+        expect(empty.className).not.toContain('items-center');
+        // A left margin the block then indents 24 px off is not a left margin.
+        expect(empty.className).not.toContain('px-6');
     });
 });

@@ -64,14 +64,23 @@ class FakeTab implements TabController {
     focusView(): void {
         this.focuses += 1;
     }
+    /** Every call that touches the page, in order: a viewport pin has to come BEFORE the read. */
+    calls: string[] = [];
     evaluate(expression: string): Promise<EvalOutcome> {
         this.evaluated.push(expression);
+        this.calls.push('evaluate');
         const next = this.outcomes.length > 1 ? this.outcomes.shift() : this.outcomes[0];
         return Promise.resolve(next ?? { ok: true, value: undefined });
     }
     screenshot(): Promise<Uint8Array> {
+        this.calls.push('screenshot');
         if (this.png instanceof Error) return Promise.reject(this.png);
         return Promise.resolve(this.png);
+    }
+    /** The lazy automation viewport (`./viewport-pin.ts`): counted, and ordered against the reads. */
+    pinViewport(): Promise<void> {
+        this.calls.push('pin');
+        return Promise.resolve();
     }
     /** Issue #12: base64 JPEG, `null` for "no on-screen view", or an Error for a failed call. */
     jpeg: string | null | Error = 'AAAA';
@@ -842,5 +851,80 @@ describe('the batch marker verbs (§7.3)', () => {
     it('is a silent no-op for a pane the host has no view for', () => {
         const { dispatcher } = harness();
         expect(() => dispatcher.notify('batch-clear', { paneID: 'gone', tabID: 'gone' })).not.toThrow();
+    });
+});
+
+/**
+ * The lazy automation viewport (`./viewport-pin.ts`).
+ *
+ * A parked view is no longer laid out at 1280×800 the moment it leaves the screen - that reflow
+ * is what moved a sideways-scrolled page 300 px when a header menu closed over it. The reads
+ * §8.4 specifies against that viewport therefore ask for it themselves, and the assertions here
+ * are the contract: WHICH verbs ask, that they ask BEFORE they read, and that nothing else does.
+ */
+describe('the automation viewport (lazy pin)', () => {
+    const pins = (tab: FakeTab): number => tab.calls.filter((call) => call === 'pin').length;
+
+    it('capture pins once before every layout read, and not for meta', async () => {
+        const { dispatcher, tab } = harness();
+        await dispatcher.call('capture', { ...scope, mode: 'meta' });
+        expect(tab.calls).toEqual([]);
+        for (const mode of ['text', 'dom', 'screenshot', 'all']) {
+            tab.calls = [];
+            const reply = await dispatcher.call('capture', { ...scope, mode });
+            expect(reply['ok']).toBe(true);
+            // The pin is the first thing that happens, and the only pin: `all` reads three
+            // things off one layout.
+            expect(tab.calls[0]).toBe('pin');
+            expect(pins(tab)).toBe(1);
+        }
+    });
+
+    it('an unknown capture mode is refused without pinning anything', async () => {
+        const { dispatcher, tab } = harness();
+        const reply = await dispatcher.call('capture', { ...scope, mode: 'nope' });
+        expect(reply['ok']).toBe(false);
+        expect(String(reply['error'])).toContain("unknown capture mode 'nope'");
+        expect(tab.calls).toEqual([]);
+    });
+
+    it('the actuator and exec pin before they evaluate', async () => {
+        const { dispatcher, tab } = harness();
+        await dispatcher.call('actuate', { ...scope, method: 'click', args: ['#go'] });
+        expect(tab.calls).toEqual(['pin', 'evaluate']);
+        tab.calls = [];
+        await dispatcher.call('exec', { ...scope, script: 'document.title' });
+        expect(tab.calls).toEqual(['pin', 'evaluate']);
+    });
+
+    it('a refused actuator or exec call (nothing to run) never pins', async () => {
+        const { dispatcher, tab } = harness();
+        await dispatcher.call('actuate', { ...scope, method: '' });
+        await dispatcher.call('exec', { ...scope, script: '   ' });
+        expect(tab.calls).toEqual([]);
+    });
+
+    it('verbs that are not automation reads leave the viewport alone', async () => {
+        const { dispatcher, tab } = harness();
+        await dispatcher.call('url', scope);
+        await dispatcher.call('navigate', { ...scope, url: 'https://b/' });
+        await dispatcher.call('reload', { ...scope, hard: false });
+        await dispatcher.call('zoom', { ...scope, factor: 1.5 });
+        // The poster is the opposite of a capture: the pane's OWN pixels, at the pane's size.
+        await dispatcher.call('poster', scope);
+        // Find and the picker are the person's tools on the live page, not automation reads.
+        await dispatcher.call('find', { ...scope, action: 'search', needle: 'x' });
+        await dispatcher.call('inspect-arm', { ...scope, nonce: 'n1' });
+        dispatcher.notify('batch-clear', scope);
+        await Promise.resolve();
+        expect(pins(tab)).toBe(0);
+    });
+
+    it('a host without the hook still answers every read', async () => {
+        const { dispatcher, tab } = harness();
+        (tab as { pinViewport?: unknown }).pinViewport = undefined;
+        await expect(dispatcher.call('capture', { ...scope, mode: 'text' })).resolves.toMatchObject({ ok: true });
+        await expect(dispatcher.call('exec', { ...scope, script: 'document.title' })).resolves.toMatchObject({ ok: true });
+        await expect(dispatcher.call('actuate', { ...scope, method: 'click', args: [] })).resolves.toMatchObject({ ok: true });
     });
 });

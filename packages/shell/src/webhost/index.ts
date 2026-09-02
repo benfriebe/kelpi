@@ -361,9 +361,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 window.contentView.addChildView(view);
                 view.setBounds(bounds);
                 tab.setVisible(true);
-                // The pane's rect is the viewport now: drop the pinned automation one, or the
-                // page keeps laying out at 1280×800 and the hole shows its clipped top-left
-                // corner at 1× (run-B L2). `setEmbedded` sequences itself behind CDP readiness.
+                // The pane's rect is the viewport now: a pin left by an automation read while
+                // the view was parked is cleared, or the page keeps laying out at 1280×800 and
+                // the hole shows its clipped top-left corner at 1× (run-B L2). `setEmbedded`
+                // sequences itself behind CDP readiness.
                 tab.setEmbedded(true);
             },
             detach: (tab) => {
@@ -376,10 +377,27 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                         // Already removed (the window is tearing down).
                     }
                 }
-                // Back to the fixed off-screen viewport: every non-visual verb (capture,
-                // element rects, screenshots) is specified against it — both the view's bounds
-                // and the emulated metrics that make the layout deterministic.
-                view.setBounds({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+                /*
+                 * The view keeps the SIZE it had on screen (`./viewport-pin.ts`).
+                 *
+                 * This used to put the view back at the 1280×800 automation viewport, bounds and
+                 * emulated metrics both, on every park - and most parks are a menu. A page
+                 * resized to 1280 px reflows: one wider than the pane loses its sideways scroll,
+                 * media queries flip, resize handlers run; coming back it reflows again and comes
+                 * back scrolled somewhere else. Measured: a 1200 px page scrolled to x=300 came
+                 * back from a header menu at x=0, the whole page 300 px to the right of the still
+                 * frame (issue #12) that had just shown it where it was. The automation viewport
+                 * is now applied by the first automation read on the parked view
+                 * (`HostTab.pinViewport`, from the dispatcher), so `capture` and friends still
+                 * answer against 1280×800 @1× as specified, and a view nobody reads while it is
+                 * parked comes back exactly as it left.
+                 *
+                 * Only the position moves, which does not reflow. The holder is never shown, and
+                 * a child that overhangs it is still laid out at its own size, but keeping every
+                 * parked view inside the holder's box costs nothing.
+                 */
+                const { width, height } = view.getBounds();
+                view.setBounds({ x: 0, y: 0, width, height });
                 tab.setEmbedded(false);
                 holderWindow().contentView.addChildView(view);
             },

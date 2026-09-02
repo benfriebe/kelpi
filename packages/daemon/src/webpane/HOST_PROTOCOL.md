@@ -131,6 +131,14 @@ Rules:
 - **`visible:false` means "put the view back"** — the pane was zoomed away, the workspace
   switched, the tab closed, or the client unmounted it. A zero-area rect is normalised to
   `visible:false` by the daemon so there is exactly one rule to implement.
+- **A parked view keeps its layout.** `visible:false` moves the view off screen; it must not
+  resize it. Most hides are a menu or a popover over the pane (§3.6), and a page reflowed to the
+  automation viewport comes back scrolled and laid out differently: one wider than the pane has
+  no sideways overflow at 1280 px, so its horizontal scroll is lost, and a header menu closing
+  over such a page moved the whole page 300 px. The automation viewport (§8.4's 1280×800 @1×)
+  is applied lazily, by the first automation read (`capture`, `actuate`, `exec`) that reaches a
+  parked view, and cleared again by the next placement - so those verbs still answer against it,
+  and a view nobody reads while it is parked comes back exactly as it left.
 - **CSS px → DIP is the host's job.** `devicePixelRatio` is display scale × page zoom; dividing
   it by the window's own scale factor yields the CSS→DIP factor. Clamp the result to the window's
   content bounds — a pane can be scrolled or dragged partly off-screen, and a view must never be
@@ -172,9 +180,10 @@ menu ends up over a picture of the page rather than over nothing.
 
 Rules, and each of them is load-bearing:
 
-- **On-screen views only.** A tab in the off-screen holder is laid out at the pinned automation
-  viewport (§3.5), so its frame is a picture of a page sized for nobody; painted into the pane's
-  hole it would be a clipped, wrong-aspect corner. A host with the tab parked answers
+- **On-screen views only.** A tab in the off-screen holder is not what the person is looking
+  at - and once an automation read has pinned it (§3.5) it is laid out at 1280×800 for nobody, so
+  its frame is a picture of a page sized for nobody; painted into the pane's hole it would be a
+  clipped, wrong-aspect corner. A host with the tab parked answers
   `{ok:false,error:"no on-screen view to poster"}` — never a frame it knows is wrong.
 - **It is not `capture`.** `capture --mode screenshot` is the automation read: deterministic
   1280×800 @1× PNG, spilled to a temp file above 1 MB, 20 s of budget. A poster is the opposite

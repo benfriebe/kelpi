@@ -9024,6 +9024,51 @@ function buildFlows(ctx) {
                     { ceilingMs: 3000, intervalMs: 80 }
                 );
 
+                /*
+                 * The fixture has to be LOADED in that view before the menu opens, and the hole
+                 * being placed does not say so: the client places the view the moment the pane
+                 * exists, while the host is still bootstrapping the tab (`about:blank` first, then
+                 * the real navigation). Measured with the shell's focus trace at this step's own
+                 * pace: the view was attached 13 ms before the right-click, the fixture's
+                 * navigation STARTED 38 ms after it and committed at 46 ms. A poster capture asked
+                 * for in that window is in flight on the about:blank renderer when the fixture
+                 * commits in a new one, and dies with `target closed while handling command` - a
+                 * real no, so the client cooled the pane and parked without a frame, and every
+                 * assertion below failed with "no frame ever carried a poster". The standalone
+                 * harness (`poster-swap-flicker.mjs`) never hit it because it settles the hole for
+                 * 400 ms first; this step went straight from placement to right-click.
+                 *
+                 * The pane-scoped read is `kelpi web url`: the host answers with the live view's
+                 * own title, which exists only once the fixture's document does (the web-pane step
+                 * reads the same line for the same reason).
+                 */
+                const loaded = await settle(
+                    async () => {
+                        const url = await cli.run(['web', 'url', '--target', paneID], { timeoutMs: 20_000 });
+                        return url.stdout.startsWith(site.url) && url.stdout.includes('Kelpi UI Audit Fixture');
+                    },
+                    { ceilingMs: 15_000, intervalMs: 120 }
+                );
+                recorder.check(
+                    'the fixture is loaded in the pane\'s own view before the menu opens',
+                    loaded,
+                    loaded ? 'kelpi web url reports the fixture title' : 'the live view never reported the fixture title'
+                );
+                if (!loaded) return;
+                // ...and steady: the hole has stopped moving and the shell has finished placing
+                // the view, so the "before" frames the net compares against are settled ones.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
+                              if (el === null) return null;
+                              const r = el.getBoundingClientRect();
+                              return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
+                                      el.getAttribute('data-visible')].join('/'); })()`
+                        ),
+                    { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
+                );
+
                 // The shell's lines, stamped as they arrive: the only observable for "the native
                 // view is being drawn", since a `WebContentsView` never appears in the renderer's
                 // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which

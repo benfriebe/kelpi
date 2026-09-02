@@ -153,17 +153,37 @@ describe('the empty state', () => {
     });
 
     /**
-     * The placeholder centres in the tab's real height: the tab root claims the panel's full
-     * height, and while empty the section fills it so the star block's flex centring works on
-     * the space the user actually sees. With rows the fill is gone - a list reads top-down.
+     * The placeholder centres against the WHOLE tab below the heading, not against the band
+     * above the footer note. The proof is the ui-audit's `settings-empty-centering` step, which
+     * measures the boxes in the driven shell; jsdom has no boxes, so what it pins is the
+     * structure those boxes come out of: the tab root claims the panel's height, the empty
+     * section grows into it and lays the star block out as a balanced column, a flexible spacer
+     * above it and an equal one below carrying the caption AND the footer note. Two rounds of
+     * class-only assertions passed here while the placeholder sat 36px high on screen, which is
+     * why this test reads the neighbours and not just the class names. With rows, the section
+     * is an ordinary top-down list and the footer note is its sibling again.
      */
-    it('centres in the tab while empty, and only while empty', () => {
+    it('centres in the tab while empty, the caption and footer note settled below it', () => {
         setup([]);
         expect(screen.getByTestId('settings-tab-web').className).toContain('min-h-full');
         expect(screen.getByTestId('settings-favourites').className).toContain('flex-1');
+        const empty = screen.getByTestId('settings-favourites-empty');
+        const above = empty.previousElementSibling as HTMLElement;
+        const below = empty.nextElementSibling as HTMLElement;
+        expect(above.getAttribute('data-settings-spacer')).toBe('top');
+        expect(below.getAttribute('data-settings-spacer')).toBe('bottom');
+        for (const spacer of [above, below]) {
+            expect(spacer.className).toContain('flex-1');
+            expect(spacer.className).toContain('basis-0');
+        }
+        expect(below.textContent).toContain("Saved from a web pane's URL bar");
+        expect(below.contains(screen.getByTestId('settings-footer-note'))).toBe(true);
         cleanup();
         setup([favourite('a', 'A', 'https://a.example')]);
-        expect(screen.getByTestId('settings-favourites').className).not.toContain('flex-1');
+        const section = screen.getByTestId('settings-favourites');
+        expect(section.className).not.toContain('flex-1');
+        expect(section.querySelector('[data-settings-spacer]')).toBeNull();
+        expect(section.contains(screen.getByTestId('settings-footer-note'))).toBe(false);
     });
 });
 

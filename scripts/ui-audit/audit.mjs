@@ -9381,6 +9381,202 @@ function buildFlows(ctx) {
                 recorder.eyes(`${tab} tab: alignment, control styling, empty states, truncation`);
             }
         })),
+        /*
+         * The two empty placeholders — Settings ▸ Labels with no presets, Settings ▸ Web with no
+         * favourites — MEASURED against the panel they sit in.
+         *
+         * Two rounds of this fix went green in jsdom and stayed wrong on a screen. jsdom holds
+         * class names, not boxes: `min-h-full` on a tab root satisfies a `className` assertion
+         * whether or not the percentage ever resolves against a height, and 810710a's did not
+         * (see `SettingsOverlay.tsx`'s panel for why). So this step reads the boxes from the
+         * driven shell and holds the placeholder's vertical centre against the centre of the
+         * panel's content area below the tab's own header row. It also records the height every
+         * ancestor between the root and the dialog actually computed to, so the next person to
+         * read a red run can see WHERE the chain went indefinite instead of guessing.
+         *
+         * Under `--only` both tabs start empty. In the accumulated run, every earlier step that
+         * mints a preset or a favourite deletes it again; the clears below are the belt to that
+         * brace, through the rows' own controls, so a leak upstream reads as a note here rather
+         * than as a false centring failure.
+         */
+        {
+            id: 'settings-empty-centering',
+            expect:
+                'With no label presets and no favourites, the Labels and Web empty-state placeholders each sit at the vertical centre of the tab panel below the tab’s own header row (within 16px); the hint copy settles below the placeholder; the tab root reaches the bottom of the panel’s content area; and the panel does not scroll.',
+            needsEyes: true,
+            async run(recorder) {
+                const measure = (rootID, sectionID, emptyID) =>
+                    page.eval(
+                        `(() => {
+                            const box = (el) => {
+                                const r = el.getBoundingClientRect();
+                                return { top: r.top, bottom: r.bottom, height: r.height };
+                            };
+                            const panel = document.querySelector('${PAGE.settingsPanel}');
+                            const root = document.querySelector('[data-testid="${rootID}"]');
+                            const section = document.querySelector('[data-testid="${sectionID}"]');
+                            const empty = document.querySelector('[data-testid="${emptyID}"]');
+                            if (panel === null || root === null || section === null || empty === null) {
+                                return { missing: { panel: panel === null, root: root === null, section: section === null, empty: empty === null } };
+                            }
+                            const ps = getComputedStyle(panel);
+                            const pr = panel.getBoundingClientRect();
+                            const paddingTop = parseFloat(ps.paddingTop) || 0;
+                            const paddingBottom = parseFloat(ps.paddingBottom) || 0;
+                            const visibleTop = pr.top + panel.clientTop;
+                            const visibleBottom = visibleTop + panel.clientHeight;
+                            const header = section.firstElementChild;
+                            // Whatever copy FOLLOWS the placeholder in the tab, wherever the tab
+                            // keeps it: the section's caption, a footer note, an adoption
+                            // section's heading or buttons. Document order, not a fixed slot, so
+                            // the same probe reads the layout before and after the fix.
+                            const trailingTops = Array.from(root.querySelectorAll('p, h3, button'))
+                                .filter((el) => !empty.contains(el) && (empty.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
+                                .map((el) => el.getBoundingClientRect().top);
+                            const chain = [];
+                            for (let el = root; el !== null && el !== document.body; el = el.parentElement) {
+                                const cs = getComputedStyle(el);
+                                chain.push({
+                                    at: el.getAttribute('data-testid') ?? (el.className ? String(el.className).slice(0, 60) : el.tagName),
+                                    height: Math.round(el.getBoundingClientRect().height),
+                                    css: { height: cs.height, minHeight: cs.minHeight, display: cs.display, flex: cs.flex, overflowY: cs.overflowY }
+                                });
+                                if (el.getAttribute('data-testid') === 'settings-window') break;
+                            }
+                            return {
+                                panel: {
+                                    visibleTop, visibleBottom,
+                                    contentTop: visibleTop + paddingTop,
+                                    contentBottom: visibleBottom - paddingBottom,
+                                    contentHeight: panel.clientHeight - paddingTop - paddingBottom,
+                                    clientHeight: panel.clientHeight,
+                                    scrollHeight: panel.scrollHeight,
+                                    scrollTop: panel.scrollTop
+                                },
+                                root: { ...box(root), minHeight: getComputedStyle(root).minHeight },
+                                header: header === null ? null : box(header),
+                                empty: box(empty),
+                                trailingTop: trailingTops.length === 0 ? null : Math.min(...trailingTops),
+                                chain
+                            };
+                        })()`
+                    );
+                const px = (value) => (value === null || value === undefined ? '?' : String(Math.round(value)));
+                const judge = (tab, m) => {
+                    if (m === null || m.missing !== undefined) {
+                        recorder.check(`${tab}: the empty state is on screen`, false, JSON.stringify(m?.missing ?? null));
+                        return;
+                    }
+                    recorder.note(
+                        `${tab}: panel content ${px(m.panel.contentTop)}…${px(m.panel.contentBottom)} (client ${String(m.panel.clientHeight)}, scroll ${String(m.panel.scrollHeight)}); ` +
+                            `root ${px(m.root.top)}…${px(m.root.bottom)} (min-height ${String(m.root.minHeight)}); ` +
+                            `header bottom ${px(m.header?.bottom)}; placeholder ${px(m.empty.top)}…${px(m.empty.bottom)}; trailing top ${px(m.trailingTop)}`
+                    );
+                    recorder.note(`${tab}: height chain root→dialog ${JSON.stringify(m.chain)}`);
+                    const regionTop = m.header?.bottom ?? m.panel.contentTop;
+                    const regionBottom = m.panel.contentBottom;
+                    const regionCentre = (regionTop + regionBottom) / 2;
+                    const emptyCentre = (m.empty.top + m.empty.bottom) / 2;
+                    const offset = emptyCentre - regionCentre;
+                    recorder.check(
+                        `${tab}: the tab root reaches the bottom of the panel’s content area (its percentage height resolved)`,
+                        Math.abs(m.root.bottom - regionBottom) <= 2,
+                        `root bottom ${px(m.root.bottom)} vs content bottom ${px(regionBottom)}; root ${px(m.root.height)}px tall in a ${px(m.panel.contentHeight)}px content box`
+                    );
+                    recorder.check(
+                        `${tab}: the placeholder’s centre sits at the centre of the panel below the header row (±16px)`,
+                        Math.abs(offset) <= 16,
+                        `placeholder centre ${px(emptyCentre)} vs region centre ${px(regionCentre)} → ${offset > 0 ? '+' : ''}${px(offset)}px (region ${px(regionTop)}…${px(regionBottom)})`
+                    );
+                    recorder.check(
+                        `${tab}: the hint copy settles below the placeholder`,
+                        m.trailingTop !== null && m.trailingTop >= m.empty.bottom - 1,
+                        `trailing top ${px(m.trailingTop)} vs placeholder bottom ${px(m.empty.bottom)}`
+                    );
+                    recorder.check(
+                        `${tab}: the panel does not scroll while empty`,
+                        m.panel.scrollHeight <= m.panel.clientHeight + 1,
+                        `scrollHeight ${String(m.panel.scrollHeight)} vs clientHeight ${String(m.panel.clientHeight)}`
+                    );
+                };
+                /** Click every matching control in turn, confirming where a confirmation appears. */
+                const clearRows = async (trashSelector, confirmSelector, label) => {
+                    let cleared = 0;
+                    for (let guard = 0; guard < 12; guard += 1) {
+                        const clicked = await page.eval(
+                            `(() => { const el = document.querySelector('${trashSelector}'); if (el === null) return false; el.click(); return true; })()`
+                        );
+                        if (clicked !== true) break;
+                        await sleep(400);
+                        await page.eval(
+                            `(() => { const yes = document.querySelector('${confirmSelector}'); if (yes !== null) yes.click(); return null; })()`
+                        );
+                        await sleep(500);
+                        cleared += 1;
+                    }
+                    if (cleared > 0) recorder.note(`${label}: cleared ${String(cleared)} row(s)`);
+                };
+
+                // ── Labels ──
+                await openSettingsTab(page, 'labels');
+                await settleDom(page, `document.querySelector('[data-testid="settings-tab-labels"]') !== null`, { ceilingMs: 2000, intervalMs: 60 });
+                await clearRows(
+                    '[data-testid^="label-delete-"]:not([data-testid^="label-delete-confirm"])',
+                    '[data-testid^="label-delete-confirm-yes-"]',
+                    'labels, presets left behind by an earlier step'
+                );
+                await settleDom(page, `document.querySelector('[data-testid="labels-empty"]') !== null`, { ceilingMs: 2000, intervalMs: 60 });
+                await sleep(300);
+                await recorder.shot(page, 'labels');
+                judge('Labels', await measure('settings-tab-labels', 'label-presets', 'labels-empty'));
+
+                /*
+                 * …and once more with the adoption section showing. A workspace wearing a label
+                 * that no preset defines puts "Labels not defined here" under the list (§6.5), and
+                 * that section is the tallest thing that can trail the placeholder. The sandbox
+                 * never has one and a working daemon often does, which is one way a centring
+                 * that held in every audit could still read high on the owner's desk.
+                 *
+                 * Making one takes two moves, because `kelpi workspace label` BACK-FILLS a preset
+                 * (§6.6, the §N32 round trip a later step holds): apply the label over the socket,
+                 * then delete the minted preset through its own trash and confirmation. The label
+                 * stays on the workspace, the list is empty again, and the adoption row appears.
+                 */
+                const orphan = 'audit-orphan';
+                const applied = await cli.run(['workspace', 'label', 'Default', '--set', orphan], { timeoutMs: 40_000 });
+                recorder.note(`workspace label --set ${orphan}: exit ${String(applied.code)} ${applied.stdout.trim()}${applied.stderr.trim()}`);
+                await settleDom(page, `document.querySelector('[data-testid="label-preset-${orphan}"]') !== null`, { ceilingMs: 4000, intervalMs: 80 });
+                await clearRows(
+                    `[data-testid="label-delete-${orphan}"]`,
+                    `[data-testid="label-delete-confirm-yes-${orphan}"]`,
+                    'labels, the back-filled preset'
+                );
+                const adoptionShown = await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="label-adopt-${orphan}"]') !== null && document.querySelector('[data-testid="labels-empty"]') !== null`,
+                    { ceilingMs: 4000, intervalMs: 80 }
+                );
+                recorder.check('a label left on a workspace after its preset is deleted raises the adoption section under the empty list', adoptionShown === true);
+                if (adoptionShown === true) {
+                    await sleep(300);
+                    await recorder.shot(page, 'labels-adoption');
+                    judge('Labels + adoption section', await measure('settings-tab-labels', 'label-presets', 'labels-empty'));
+                }
+                await cli.run(['workspace', 'label', 'Default', '--clear'], { timeoutMs: 40_000 });
+                await settleDom(page, `document.querySelector('[data-testid="label-orphans"]') === null`, { ceilingMs: 4000, intervalMs: 80 });
+
+                // ── Web ──
+                await page.click('[data-testid="settings-tab-button-web"]');
+                await settleDom(page, `document.querySelector('[data-testid="settings-tab-web"]') !== null`, { ceilingMs: 2000, intervalMs: 60 });
+                await clearRows('[data-testid^="settings-favourite-remove-"]', '[data-testid="__none__"]', 'web, favourites left behind by an earlier step');
+                await settleDom(page, `document.querySelector('[data-testid="settings-favourites-empty"]') !== null`, { ceilingMs: 2000, intervalMs: 60 });
+                await sleep(300);
+                await recorder.shot(page, 'web');
+                judge('Web', await measure('settings-tab-web', 'settings-favourites', 'settings-favourites-empty'));
+
+                recorder.eyes('both placeholders read as centred in the tab, with the hint copy at rest below them');
+            }
+        },
         {
             id: 'keybinding-record',
             expect:

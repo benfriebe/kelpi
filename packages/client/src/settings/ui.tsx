@@ -138,14 +138,41 @@ export interface SettingsSectionProps {
      */
     readonly plain?: boolean | undefined;
     /**
-     * The section grows to take the tab's remaining height, handing it on to its children
-     * (plain sections only). This is what lets an empty state centre in the SPACE THE TAB
-     * ACTUALLY HAS rather than in a fixed-height band near the top: the tab root asks for
-     * `min-h-full`, the section asks for `fill`, and the placeholder's own `flex-1` +
-     * `justify-center` does the rest. Callers pass it only while the section is empty, so a
-     * populated list still reads top-down.
+     * The section's empty state, while it is showing (plain sections only): a placeholder that
+     * sits at the vertical CENTRE of the height the tab has below this section's header,
+     * whatever else the tab puts after it.
+     *
+     * Third cut at "centre the placeholder", and the first one measured on a screen. The first
+     * two (a 180px band; then a `min-h-full` root with a `fill`ed section) both passed class
+     * assertions in jsdom and both left the placeholder high in the real overlay, for a reason
+     * no class name can show: a flex item centres its content in ITS OWN box, and that box ends
+     * where the next sibling begins. The caption under the list, the Web tab's footer note and
+     * the Labels tab's adoption section all take their height off the BOTTOM of the
+     * placeholder's box, so the centre it found was the centre of the band above that copy:
+     * 36px high on Web at the audit's window, more on Labels once an adoption section shows.
+     * The root's percentage height was never the problem; it resolves, because the dialog is
+     * a definite `min(620px, 90%)` and the panel is a stretched item of a definite flex row.
+     * (`scripts/ui-audit/audit.mjs` ▸ `settings-empty-centering` holds the boxes.)
+     *
+     * So the section lays an empty state out as a BALANCED column: the children (a lead-in
+     * such as Labels' divider) at the top, a flexible spacer, the placeholder, then a second
+     * spacer of the same flex that carries the caption and `trailing` settled at its foot. Two
+     * equal spacers put the placeholder's centre at the centre of the column however tall the
+     * trailing copy is. When the window is too short for both, the bottom spacer keeps its
+     * content (its minimum is its content) and the top one gives way, so the copy never rides
+     * over the placeholder; shorter still and the tab scrolls, as a populated one would. The
+     * section grows to the tab's remaining height; the tab root asks for `min-h-full`.
+     *
+     * A populated section never passes this and reads top-down as before.
      */
-    readonly fill?: boolean | undefined;
+    readonly empty?: ReactNode | undefined;
+    /**
+     * Copy that follows the caption while `empty` is showing (the Web tab's footer note, the
+     * Labels tab's adoption section), rendered inside the balanced column so it settles at the
+     * bottom of the tab instead of shortening the centred area. Callers render the same node as
+     * a sibling of the section once the list is populated.
+     */
+    readonly trailing?: ReactNode | undefined;
     /**
      * §N36(1) — a control on the header's TRAILING edge, level with the title.
      *
@@ -211,9 +238,16 @@ export const SETTINGS_SECTION_HEADING = 'text-[13px] font-semibold';
  */
 export function SettingsSection(props: SettingsSectionProps): ReactElement {
     const rows = Children.toArray(props.children);
+    const balanced = props.plain === true && props.empty !== undefined;
+    const hint =
+        props.hint === undefined ? null : (
+            <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                {props.hint}
+            </p>
+        );
     return (
         <section
-            className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'flex flex-col gap-1.5'}
+            className={balanced ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'flex flex-col gap-1.5'}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             {props.action === undefined ? (
@@ -234,9 +268,26 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                 </div>
             )}
             {props.plain === true ? (
-                <div className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'}>
-                    {props.children}
-                </div>
+                balanced ? (
+                    /*
+                     * The balanced column (see `empty`). No `gap` here: a gap either side of the
+                     * spacer would sit above the placeholder and not below it, and the tail's own
+                     * top padding is what keeps the caption off the placeholder when the spacers
+                     * have closed to nothing. Both spacers are `flex-1 basis-0` so the free
+                     * height splits evenly; only the top one may shrink to zero.
+                     */
+                    <div className="flex min-h-0 flex-1 flex-col" data-settings-balanced="true">
+                        {props.children}
+                        <div aria-hidden className="min-h-0 flex-1 basis-0" data-settings-spacer="top" />
+                        {props.empty}
+                        <div className="flex flex-1 basis-0 flex-col justify-end gap-4 pt-2" data-settings-spacer="bottom">
+                            {hint}
+                            {props.trailing}
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex flex-col gap-2">{props.children}</div>
+                )
             ) : (
                 <div
                     data-settings-card="true"
@@ -261,11 +312,7 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                     ))}
                 </div>
             )}
-            {props.hint === undefined ? null : (
-                <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                    {props.hint}
-                </p>
-            )}
+            {balanced ? null : hint}
         </section>
     );
 }

@@ -98,6 +98,13 @@ export function WebTab(props: WebTabProps): ReactElement {
         actions.renameFavourite(favourite.id, next);
     };
 
+    const footer = (
+        <SettingsFooterNote>
+            Favourites live with the daemon, beside its database (by default{' '}
+            <code>{props.path ?? DEFAULT_FAVOURITES_PATH}</code>), so every window and the desktop app share one
+            list.
+        </SettingsFooterNote>
+    );
     return (
         <div className="flex min-h-full flex-col gap-4" data-testid="settings-tab-web">
             {/*
@@ -107,29 +114,33 @@ export function WebTab(props: WebTabProps): ReactElement {
             <SettingsSection
                 plain
                 /*
-                 * Empty, the section takes the whole tab so the placeholder centres in the
-                 * space the user actually sees - not in a fixed band near the top with the
-                 * tab's leftover height dead below it. With rows, the list reads top-down.
-                 */
-                fill={favourites.length === 0}
-                title="Favourites"
-                hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
-                testID="settings-favourites"
-            >
-                {/*
                  * M45: `SettingsView.swift:710-720` — `Image(systemName: "star")` at 28 pt in
                  * `.tertiary`, not an 18 px `☆` in favourite-yellow. The Swift empty state's
                  * glyph is the same faint label tone as the other three; the yellow belongs to
                  * the star on a ROW, which is a value rather than an illustration.
-                 */}
-                {favourites.length === 0 ? (
-                    <SettingsEmptyState
-                        testID="settings-favourites-empty"
-                        glyph={<StarGlyph size={28} />}
-                        title="No favourites yet"
-                        detail="Click the star button in a web pane's URL bar to save one."
-                    />
-                ) : (
+                 *
+                 * It is centred against the whole tab below the "Favourites" heading, with the
+                 * caption and the footer note settled under it (`SettingsSection`'s `empty`):
+                 * the footer note is two lines, and left as the section's sibling it took those
+                 * two lines off the bottom of the placeholder's box, which is where the 36px
+                 * the audit measured came from.
+                 */
+                empty={
+                    favourites.length === 0 ? (
+                        <SettingsEmptyState
+                            testID="settings-favourites-empty"
+                            glyph={<StarGlyph size={28} />}
+                            title="No favourites yet"
+                            detail="Click the star button in a web pane's URL bar to save one."
+                        />
+                    ) : undefined
+                }
+                trailing={favourites.length === 0 ? footer : undefined}
+                title="Favourites"
+                hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
+                testID="settings-favourites"
+            >
+                {favourites.length === 0 ? null : (
                     <div className="flex flex-col gap-1" data-testid="settings-favourites-list">
                         {favourites.map((favourite, index) => (
                             <FavouriteRow
@@ -231,11 +242,7 @@ export function WebTab(props: WebTabProps): ReactElement {
                 )}
             </SettingsSection>
 
-            <SettingsFooterNote>
-                Favourites live with the daemon, beside its database (by default{' '}
-                <code>{props.path ?? DEFAULT_FAVOURITES_PATH}</code>), so every window and the desktop app share one
-                list.
-            </SettingsFooterNote>
+            {favourites.length === 0 ? null : footer}
         </div>
     );
 }

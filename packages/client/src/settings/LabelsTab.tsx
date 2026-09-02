@@ -816,6 +816,41 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
         );
     }, [order, props.presets]);
 
+    const empty = props.presets.length === 0;
+    /*
+     * The port-only adoption section (§6.5/§6.6). Populated, it is the tab's second section;
+     * empty, it rides in the list section's balanced column as `trailing`, so it settles at the
+     * foot of the tab instead of pushing the placeholder's centre up by half its own height.
+     */
+    const adoption = orphans.length === 0 ? null : (
+        <SettingsSection
+            plain
+            /*
+             * §N36(2): "without a preset" and "give them one" both named the internal
+             * object. The section is port-only (§6.5/§6.6 — the Swift has no orphan
+             * list), so there is no shipped string to weigh it against; what it has to
+             * say is that these labels are worn somewhere but not DEFINED in the list
+             * above, and that adding them here is what colours them.
+             */
+            title="Labels not defined here"
+            hint="Applied to a workspace but not in the list above - they render neutral until you add them."
+            testID="label-orphans"
+        >
+            <div className="flex flex-wrap items-center gap-2">
+                {orphans.map((label) => (
+                    <SettingsButton
+                        key={label}
+                        testID={`label-adopt-${label}`}
+                        onClick={() => {
+                            props.actions.addLabelPreset({ name: label, color: 'gray' });
+                        }}
+                    >
+                        {`Add “${label}”`}
+                    </SettingsButton>
+                ))}
+            </div>
+        </SettingsSection>
+    );
     return (
         <div className="flex min-h-full flex-col gap-4" data-testid="settings-tab-labels" ref={rootRef}>
             {/*
@@ -827,11 +862,29 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
             <SettingsSection
                 plain
                 /*
-                 * Empty, the list section takes the tab's remaining height so the placeholder
-                 * centres in the space the user actually sees (the adoption section and hints
-                 * settle below it). With presets, the list reads top-down as before.
+                 * M45: `LabelPresetsSettingsView.swift:85-97`'s `Image(systemName: "tag")` at
+                 * 28 pt over a `.secondary` headline and a `.caption`/`.tertiary` explanation,
+                 * centred in the space. The port had an inline `🏷` at body size on one wrapped
+                 * paragraph. It stands BELOW the divider, where the Swift's `if` puts it (the
+                 * section renders `empty` after its children), because it is the list's empty
+                 * state, not the tab's (N32(a)); and it is centred against the whole tab below
+                 * the header, with the caption and the adoption section settled under it
+                 * (`SettingsSection`'s `empty`).
+                 *
+                 * §N36(2): the Swift's own headline is "No label presets yet" (`:88`). The detail
+                 * beneath it was already written in labels, so only the headline moves.
                  */
-                fill={props.presets.length === 0}
+                empty={
+                    empty ? (
+                        <SettingsEmptyState
+                            testID="labels-empty"
+                            glyph={<TagGlyph size={28} />}
+                            title="No labels yet"
+                            detail="Define reusable labels with colours, then assign them from a workspace's right-click menu - or apply a label from the CLI and adopt it here."
+                        />
+                    ) : undefined
+                }
+                trailing={empty ? adoption : undefined}
                 /*
                  * §N36(2) — "Labels", not "Presets".
                  *
@@ -899,25 +952,6 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                     style={{ background: tokens.divider }}
                 />
 
-                {/*
-                 * M45: `LabelPresetsSettingsView.swift:85-97`'s `Image(systemName: "tag")` at
-                 * 28 pt over a `.secondary` headline and a `.caption`/`.tertiary` explanation,
-                 * centred in the space. The port had an inline `🏷` at body size on one wrapped
-                 * paragraph. It stands BELOW the divider, where the Swift's `if` puts it — it is
-                 * the list's empty state, not the tab's (N32(a)).
-                 *
-                 * §N36(2): the Swift's own headline is "No label presets yet" (`:88`). The detail
-                 * beneath it was already written in labels, so only the headline moves.
-                 */}
-                {props.presets.length === 0 ? (
-                    <SettingsEmptyState
-                        testID="labels-empty"
-                        glyph={<TagGlyph size={28} />}
-                        title="No labels yet"
-                        detail="Define reusable labels with colours, then assign them from a workspace's right-click menu - or apply a label from the CLI and adopt it here."
-                    />
-                ) : null}
-
                 {props.presets.map((preset, index) => (
                     <PresetRow
                         /*
@@ -955,35 +989,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 ))}
             </SettingsSection>
 
-            {orphans.length === 0 ? null : (
-                <SettingsSection
-                    plain
-                    /*
-                     * §N36(2): "without a preset" and "give them one" both named the internal
-                     * object. The section is port-only (§6.5/§6.6 — the Swift has no orphan
-                     * list), so there is no shipped string to weigh it against; what it has to
-                     * say is that these labels are worn somewhere but not DEFINED in the list
-                     * above, and that adding them here is what colours them.
-                     */
-                    title="Labels not defined here"
-                    hint="Applied to a workspace but not in the list above - they render neutral until you add them."
-                    testID="label-orphans"
-                >
-                    <div className="flex flex-wrap items-center gap-2">
-                        {orphans.map((label) => (
-                            <SettingsButton
-                                key={label}
-                                testID={`label-adopt-${label}`}
-                                onClick={() => {
-                                    props.actions.addLabelPreset({ name: label, color: 'gray' });
-                                }}
-                            >
-                                {`Add “${label}”`}
-                            </SettingsButton>
-                        ))}
-                    </div>
-                </SettingsSection>
-            )}
+            {empty ? null : adoption}
         </div>
     );
 }

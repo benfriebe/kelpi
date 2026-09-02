@@ -166,20 +166,38 @@ describe('Settings ▸ Labels', () => {
     });
 
     /**
-     * The placeholder centres in the tab's real height, not in a 180px band near the top:
-     * the tab root claims the panel's full height and the empty list section fills it, so
-     * the empty state's own flex centring works on the space the user actually sees. The
-     * fill is conditional - a populated list must read top-down again.
+     * The placeholder centres against the WHOLE tab below the header row, not in a 180px band
+     * and not in the band above the caption. The proof is the ui-audit's
+     * `settings-empty-centering` step, which measures the boxes in the driven shell; jsdom has
+     * no boxes, so what it pins is the structure those boxes come out of: the tab root claims
+     * the panel's height, the empty list section grows into it and lays the placeholder out as
+     * a balanced column, the divider still leading (N32a), a flexible spacer above the
+     * placeholder and an equal one below carrying the caption. Two rounds of class-only
+     * assertions passed here while the placeholder sat high on screen, which is why this test
+     * reads the neighbours and not just the class names. With presets, the section is an
+     * ordinary top-down list again.
      */
-    it('centres the empty state in the tab, not a band', () => {
+    it('centres the empty state against the whole tab, the caption settled below it', () => {
         renderLabels([]);
         expect(screen.getByTestId('settings-tab-labels').className).toContain('min-h-full');
         expect(screen.getByTestId('label-presets').className).toContain('flex-1');
-        expect(screen.getByTestId('labels-empty').className).toContain('flex-1');
-        expect(screen.getByTestId('labels-empty').className).toContain('justify-center');
+        const empty = screen.getByTestId('labels-empty');
+        expect(empty.className).toContain('justify-center');
+        const above = empty.previousElementSibling as HTMLElement;
+        const below = empty.nextElementSibling as HTMLElement;
+        expect(above.getAttribute('data-settings-spacer')).toBe('top');
+        expect(below.getAttribute('data-settings-spacer')).toBe('bottom');
+        for (const spacer of [above, below]) {
+            expect(spacer.className).toContain('flex-1');
+            expect(spacer.className).toContain('basis-0');
+        }
+        expect(above.previousElementSibling?.getAttribute('data-testid')).toBe('label-add-divider');
+        expect(below.textContent).toContain("A workspace's label wears the colors set here");
         cleanup();
         renderLabels();
-        expect(screen.getByTestId('label-presets').className).not.toContain('flex-1');
+        const section = screen.getByTestId('label-presets');
+        expect(section.className).not.toContain('flex-1');
+        expect(section.querySelector('[data-settings-spacer]')).toBeNull();
     });
 });
 

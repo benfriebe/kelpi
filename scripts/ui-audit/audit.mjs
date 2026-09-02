@@ -7838,7 +7838,13 @@ function buildFlows(ctx) {
                             // Issue #12: the still frame a parked pane wears, if it has one.
                             const poster = el.querySelector('[data-testid="web-poster-' + id + '"]');
                             const src = poster === null ? null : (poster.getAttribute('src') ?? '');
+                            // Spelled the way the shell spells a placement, so the two can be
+                            // compared as strings rather than as four numbers with a tolerance.
+                            const pb = poster === null ? null : poster.getBoundingClientRect();
                             return { id,
+                                     posterBox: pb === null ? null :
+                                         Math.round(pb.x) + ',' + Math.round(pb.y) + ' ' +
+                                         Math.round(pb.width) + '×' + Math.round(pb.height),
                                      visible: el.getAttribute('data-visible'),
                                      covered: el.getAttribute('data-overlay-covered'),
                                      poster: src === null ? null : src.slice(0, 22),
@@ -7864,9 +7870,15 @@ function buildFlows(ctx) {
                  */
                 const RING = 2;
                 const expectedPlacement = (hole) => ({ x: hole.x + RING, y: hole.y });
-                const embedOf = (paneID) => {
-                    const lines = (runtime.shell?.lines ?? []).filter((line) =>
-                        line.includes(`web pane ${String(paneID)} view `)
+                /**
+                 * The shell's last placement line for a pane — or, with `match`, the last one of a
+                 * given KIND. Issue #12's geometry check wants the last `owner=main` line (the box
+                 * the view was placed at) while the pane is currently parked, so the plain "last
+                 * line" reading would hand it the `owner=holder` line that has no bounds in it.
+                 */
+                const embedOf = (paneID, match = '') => {
+                    const lines = (runtime.shell?.lines ?? []).filter(
+                        (line) => line.includes(`web pane ${String(paneID)} view `) && line.includes(match)
                     );
                     return lines[lines.length - 1] ?? '(none)';
                 };
@@ -8230,6 +8242,27 @@ function buildFlows(ctx) {
                                     hole.poster.startsWith('data:image/jpeg') &&
                                     hole.posterBytes > 1000,
                                 `${String(hole.poster)}… ${String(hole.posterBytes)} chars`
+                            );
+                            /*
+                             * …and it stands exactly where the view stood. The promoted build's
+                             * flicker report was two defects, and this is the one a still frame
+                             * can catch: the picture was laid out on the pane's own CSS box (and
+                             * then re-sized by Tailwind's `img{max-width:100%;height:auto}` to
+                             * its intrinsic aspect), so on a 2× display it covered
+                             * 528.99×711.38 where the view had been 525×706 and the page
+                             * appeared to grow 0.76% the moment the menu opened. The box now
+                             * comes from the host's own placement, which is the same string the
+                             * shell logs.
+                             */
+                            const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(embedOf(hole.id, 'owner=main'));
+                            const want =
+                                placed === null
+                                    ? null
+                                    : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
+                            recorder.check(
+                                `${name.label}: ${hole.id.slice(0, 8)}'s frame stands on the box the view was placed at`,
+                                want !== null && hole.posterBox === want,
+                                `poster ${String(hole.posterBox)} vs view ${String(want)}`
                             );
                         }
                     }
@@ -8943,6 +8976,185 @@ function buildFlows(ctx) {
                     `![...document.querySelectorAll('[data-testid="workspace-row"]')]
                         .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)})) &&
                      document.querySelector('[data-testid="workspace-row"][data-active="true"]') !== null`,
+                    { ceilingMs: 1500, intervalMs: 60 }
+                );
+            }
+        },
+
+        {
+            /*
+             * Issue #12's TIMING half, as a battery step.
+             *
+             * `web-popup-layering` above proves the settled state — a parked pane is wearing a
+             * still frame of its page, in the box the view was placed at. What no settled
+             * screenshot can see is the SWAP, and that is where the promoted build failed: the
+             * park is a socket message the shell acts on within a millisecond while the `<img>`
+             * that replaces the view cannot appear before the next composited frame, so the pane
+             * blinked its own background for one to two frames on every menu.
+             *
+             * So this step samples per rAF and reads the shell's own placement lines as they
+             * arrive, and asserts the ORDER: the picture is on screen before the view leaves, and
+             * no sampled frame in between is without it. The deeper instrument — the same
+             * measurement with a written timeline, run outside a full audit — is
+             * `scripts/ui-audit/poster-swap-flicker.mjs`, which is 10/10 on this tree and 7/10 on
+             * the one that shipped.
+             */
+            id: 'poster-swap',
+            expect:
+                'Opening a menu over a web pane swaps the live page for a still frame of itself with no gap and no movement: the picture is painted BEFORE the shell takes the view back to the holder, every sampled frame while the pane is parked carries it, and it stands on exactly the box the view was placed at (issue #12).',
+            async run(recorder) {
+                const workspaceName = 'poster-swap';
+                const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
+                recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim());
+                if (created.code !== 0) return;
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
+                        .includes(${JSON.stringify(workspaceName)})`,
+                    { ceilingMs: 1500, intervalMs: 60 }
+                );
+
+                const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+                const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                recorder.check('a web pane is open on the fixture', paneID !== null, String(paneID));
+                if (paneID === null) return;
+                await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="web-page-${paneID}"]')?.getAttribute('data-visible') === 'true'`,
+                    { ceilingMs: 3000, intervalMs: 80 }
+                );
+
+                // The shell's lines, stamped as they arrive: the only observable for "the native
+                // view is being drawn", since a `WebContentsView` never appears in the renderer's
+                // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which
+                // biases every comparison below TOWARDS the fix — see the harness's header.
+                const stamps = [];
+                let consumed = runtime.shell?.lines.length ?? 0;
+                const pump = setInterval(() => {
+                    const lines = runtime.shell?.lines ?? [];
+                    while (consumed < lines.length) {
+                        const line = lines[consumed];
+                        consumed += 1;
+                        if (line.includes(`web pane ${paneID} view owner=`)) stamps.push({ at: Date.now(), line });
+                    }
+                }, 1);
+
+                try {
+                    await page.eval(`(() => {
+                        window.__kelpiPosterNet = { frames: [] };
+                        const tick = () => {
+                            const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
+                            if (hole === null) return;
+                            const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
+                            const box = img === null ? null : img.getBoundingClientRect();
+                            window.__kelpiPosterNet.frames.push({
+                                at: Date.now(),
+                                dpr: window.devicePixelRatio,
+                                visible: hole.getAttribute('data-visible'),
+                                poster: img === null ? null : {
+                                    naturalW: img.naturalWidth, naturalH: img.naturalHeight,
+                                    box: Math.round(box.x) + ',' + Math.round(box.y) + ' ' +
+                                         Math.round(box.width) + '×' + Math.round(box.height),
+                                    w: box.width, h: box.height
+                                }
+                            });
+                            requestAnimationFrame(tick);
+                        };
+                        requestAnimationFrame(tick);
+                        return true;
+                    })()`);
+
+                    await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
+                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') !== null`, {
+                        ceilingMs: 3000,
+                        intervalMs: 50
+                    });
+                    // Long enough for the park, the paint and a few settled frames either side.
+                    await settleStable(
+                        () =>
+                            page.eval(
+                                `(() => { const net = window.__kelpiPosterNet;
+                                  const last = net.frames[net.frames.length - 1];
+                                  return JSON.stringify([last?.visible ?? null, last?.poster?.box ?? null]); })()`
+                            ),
+                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                    );
+                    await page.key('Escape');
+                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') === null`, {
+                        ceilingMs: 2000,
+                        intervalMs: 50
+                    });
+                    await settleStable(
+                        () => Promise.resolve(String(stamps.length)),
+                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                    );
+                } finally {
+                    clearInterval(pump);
+                }
+
+                const net = JSON.parse(
+                    String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
+                );
+                const frames = net.frames ?? [];
+                const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
+                const restored = stamps.find(
+                    (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
+                );
+                recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
+                recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
+                if (parked === undefined || restored === undefined) return;
+
+                const carried = frames.filter((frame) => frame.poster !== null);
+                const first = carried[0] ?? null;
+                recorder.check(
+                    'the still frame is on screen BEFORE the view is handed back (issue #12)',
+                    first !== null && first.at <= parked.at,
+                    first === null
+                        ? '(no frame ever carried a poster)'
+                        : `${String(parked.at - first.at)}ms before the park (negative = the gap the owner saw)`
+                );
+
+                const between = frames.filter((frame) => frame.at >= parked.at && frame.at <= restored.at);
+                const blank = between.filter((frame) => frame.poster === null);
+                recorder.check(
+                    'no sampled frame while the pane is parked shows an empty hole',
+                    between.length > 0 && blank.length === 0,
+                    `${String(between.length - blank.length)}/${String(between.length)} frames carried the picture`
+                );
+
+                // The last placement line the shell logged for this pane. Read here rather than
+                // through `web-popup-layering`'s own `embedOf`, which is local to that step.
+                const placementLine =
+                    (runtime.shell?.lines ?? [])
+                        .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
+                        .at(-1) ?? '';
+                const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
+                const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
+                const sample = between.find((frame) => frame.poster !== null) ?? first;
+                recorder.check(
+                    'the picture stands on the box the view was placed at',
+                    want !== null && sample !== null && sample.poster.box === want,
+                    `poster ${String(sample?.poster?.box)} vs view ${String(want)}`
+                );
+                recorder.check(
+                    'and it is 1:1 in device pixels, not a resampled copy',
+                    sample !== null &&
+                        sample.poster.naturalW === Math.round(sample.poster.w * sample.dpr) &&
+                        sample.poster.naturalH === Math.round(sample.poster.h * sample.dpr),
+                    sample === null
+                        ? '(no sample)'
+                        : `natural ${String(sample.poster.naturalW)}×${String(sample.poster.naturalH)} at dpr ${String(sample.dpr)}`
+                );
+                recorder.note(
+                    `frames=${String(frames.length)} carrying=${String(carried.length)} ` +
+                        `park→restore=${String(restored.at - parked.at)}ms`
+                );
+
+                await cli.run(['workspace', 'delete', '--name', workspaceName, '--force'], { timeoutMs: 40_000 });
+                await settleDom(
+                    page,
+                    `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
                     { ceilingMs: 1500, intervalMs: 60 }
                 );
             }

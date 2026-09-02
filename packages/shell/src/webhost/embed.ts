@@ -76,13 +76,34 @@ export interface EmbedController<V> {
     /** Re-apply the last geometry for every embedded pane (the view set changed). */
     refresh(): void;
     readonly embeddedPaneIDs: readonly string[];
-    placementOf(paneID: string): { view: V; bounds: ViewBounds } | null;
+    /**
+     * Where a pane's view actually IS: the rounded, clamped DIP box the shell placed it at, plus
+     * the client report that produced it. Issue #12's poster hangs off the pair — a still frame
+     * has to be laid out on the box the view occupied, not on the CSS box the client measured,
+     * and only this side knows what the rounding did to it.
+     */
+    placementOf(paneID: string): {
+        view: V;
+        bounds: ViewBounds;
+        geometry: PaneGeometry;
+        scaleFactor: number;
+    } | null;
 }
 
 interface Placement<V> {
     view: V;
     bounds: ViewBounds;
     geometry: PaneGeometry;
+    /**
+     * The display scale the bounds were computed under.
+     *
+     * Kept because the two halves of the CSS↔DIP conversion come from different moments: the
+     * client's `devicePixelRatio` is whatever it last REPORTED, and the window's `scaleFactor` is
+     * read live. Drag a window between a 2× and a 1× display while a menu is open and mixing the
+     * two produces a factor that was never true, so the poster's box is checked against this and
+     * withheld when it no longer holds (issue #12).
+     */
+    scaleFactor: number;
 }
 
 export function createEmbedController<V>(options: EmbedOptions<V>): EmbedController<V> {
@@ -144,7 +165,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             return 'ignored';
         }
         const changed = attached === undefined || !sameBounds(attached.bounds, bounds);
-        placed.set(geometry.paneID, { view, bounds, geometry });
+        placed.set(geometry.paneID, { view, bounds, geometry, scaleFactor: metrics.scaleFactor });
         if (changed) announce(geometry.paneID, 'placed', bounds, attached === undefined ? 'attached' : 'moved');
         return 'placed';
     };
@@ -205,7 +226,14 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
 
         placementOf(paneID) {
             const placement = placed.get(paneID);
-            return placement === undefined ? null : { view: placement.view, bounds: placement.bounds };
+            return placement === undefined
+                ? null
+                : {
+                      view: placement.view,
+                      bounds: placement.bounds,
+                      geometry: placement.geometry,
+                      scaleFactor: placement.scaleFactor
+                  };
         }
     };
 }

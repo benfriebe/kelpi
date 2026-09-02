@@ -49,7 +49,7 @@ import { createWebHostClient, type WebHostClient } from './client.js';
 import { chordCommand } from './keys.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
-import { GEOMETRY_NOTIFY_VERB, parsePaneGeometry, type WindowMetrics } from './geometry.js';
+import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
 import type { KeyboardOwner } from './nav-focus.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
 import { traceFocus } from './view-focus.js';
@@ -406,6 +406,34 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         registry,
         storage: sessions.storage,
         writeScreenshot: spillScreenshot,
+        /**
+         * Issue #12 — where the view actually sits, in the client's own units.
+         *
+         * The poster is a photograph of the placed view, and the client has to lay it out on
+         * exactly that box. `viewBounds` rounded and clamped every edge to get there, so the
+         * client cannot re-derive it from the rect it measured; this hands back the placement
+         * itself plus the factor that turns those DIP numbers back into the CSS pixels the
+         * client laid out in (the inverse of `cssToDipScale`, i.e. of the page zoom).
+         */
+        viewPlacement: (paneID) => {
+            const placed = embed.placementOf(paneID);
+            if (placed === null) return null;
+            const metrics = windowMetrics();
+            if (metrics === null) return null;
+            /*
+             * Both halves of the conversion have to be from the SAME moment. The client's
+             * `devicePixelRatio` is whatever its last report carried; the window's `scaleFactor`
+             * is read now. Drag the window from a retina panel to a 1× one while a menu is open
+             * and multiplying one by the other gives a factor that was never true — so the
+             * placement's own scale factor is compared with the live one and the box is withheld
+             * when they disagree. The client then falls back to the ring gutter, which is right
+             * at any scale.
+             */
+            if (placed.scaleFactor !== metrics.scaleFactor) return null;
+            const scale = cssToDipScale(placed.geometry.devicePixelRatio, metrics.scaleFactor);
+            if (!Number.isFinite(scale) || scale <= 0) return null;
+            return { bounds: placed.bounds, cssScale: 1 / scale };
+        },
         onError
     });
 

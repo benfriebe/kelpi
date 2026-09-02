@@ -173,6 +173,7 @@ export const STEP_MANIFEST = [
     { id: 'web-cookie-panel', lane: 'spine', chain: 'webPane', cost: 9.6, reason: 'reads state.webPane' },
     { id: 'web-console-frames', lane: 'free', chain: null, cost: 11.7, reason: 'opens its own web pane and closes it' },
     { id: 'web-popup-layering', lane: 'spine', chain: null, cost: 52.3, reason: 'provisions its own workspace, panes and popups, and tears them down; not roster-neutral in aggregate and never reproduced in a sharded run; held in the spine until it is' },
+    { id: 'poster-swap', lane: 'spine', chain: null, cost: 18.0, reason: 'issue #12’s timing net: provisions its own workspace and web pane, samples per rAF against the shell’s own placement lines, and tears them down; roster-neutral only if it completes, so it sits beside `web-popup-layering` in the spine' },
     { id: 'settings-open', lane: 'free', chain: null, cost: 2.3, reason: 'opens Settings from the menu; reads nothing accumulated' },
     { id: 'settings-tab-general', lane: 'spine', chain: null, cost: 1.2, reason: 'clicks a Settings tab and reads its own panel; needs Settings open; safe beside settings-open in a shard, but held with the rest of the settings walk so the seven tabs cannot be split from it' },
     { id: 'settings-tab-appearance', lane: 'spine', chain: null, cost: 1.2, reason: 'clicks a Settings tab and reads its own panel; held in the spine: it did not reproduce its baseline result once the accumulated run was taken away (verify-manifest.mjs and/or a --shards 2 run diffed with compare-runs.mjs)' },

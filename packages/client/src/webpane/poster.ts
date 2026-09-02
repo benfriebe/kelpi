@@ -83,10 +83,27 @@ export function posterDataURL(reply: CommandReply | null | undefined): string | 
     return `data:${type};base64,${data}`;
 }
 
+/**
+ * The box a frame is OF: the view's own placement, in the client's CSS pixels, viewport-relative.
+ *
+ * The client cannot compute this. `viewBounds` in the shell rounds and clamps every edge before
+ * the view is placed, so the pane's measured CSS rect is a couple of tenths away from where the
+ * pixels actually were — and an `<img>` left to size itself is further away still. Standing the
+ * picture anywhere but here is the jump the owner reported.
+ */
+export interface PosterRect {
+    readonly x: number;
+    readonly y: number;
+    readonly w: number;
+    readonly h: number;
+}
+
 /** What one attempt at a frame came back with. */
 export interface PosterAttempt {
     /** The frame, or null for every kind of no. */
     readonly src: string | null;
+    /** Where the view was when the frame was taken; null when the host did not say. */
+    readonly box?: PosterRect | null | undefined;
     /**
      * The host said the view was not on screen (`transient` on the reply, HOST_PROTOCOL §3.6).
      *
@@ -98,10 +115,36 @@ export interface PosterAttempt {
     readonly transient?: boolean | undefined;
 }
 
+/**
+ * The placed box the reply describes, in CSS pixels — `{bounds, css_scale}` from HOST_PROTOCOL
+ * §3.6 — or null when this host did not say where the view was.
+ *
+ * The DIP numbers are the shell's own placement (already rounded and clamped); `css_scale` is the
+ * inverse of the page zoom, so the multiplication lands back in the units the client laid out in.
+ */
+export function posterViewRect(reply: CommandReply | null | undefined): PosterRect | null {
+    if (reply === null || reply === undefined) return null;
+    const bounds = reply['bounds'];
+    if (typeof bounds !== 'object' || bounds === null || Array.isArray(bounds)) return null;
+    const box = bounds as Record<string, unknown>;
+    const scale = reply['css_scale'];
+    const k = typeof scale === 'number' && Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const read = (key: string): number | null => {
+        const value = box[key];
+        return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    };
+    const x = read('x');
+    const y = read('y');
+    const w = read('width');
+    const h = read('height');
+    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) return null;
+    return { x: x * k, y: y * k, w: w * k, h: h * k };
+}
+
 /** Read a whole reply, keeping the one distinction the degrade rule turns on. */
 export function posterAttempt(reply: CommandReply | null | undefined): PosterAttempt {
     const src = posterDataURL(reply);
-    if (src !== null) return { src };
+    if (src !== null) return { src, box: posterViewRect(reply) };
     const transient = reply !== null && reply !== undefined && reply['transient'] === true;
     return { src: null, transient };
 }
@@ -141,12 +184,134 @@ export async function warmPosterImage(
     return src;
 }
 
-/** What the pane needs back from `sync` — the two facts the render and the report each read. */
+/** The four numbers an `<img>` needs so a browser cannot have an opinion about its size. */
+export interface PosterStyle {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+    /** `fill`: the frame is OF this box, so there is nothing to crop and nothing to letterbox. */
+    readonly objectFit: 'fill';
+    /** Tailwind's preflight is `img{max-width:100%;height:auto}` — see `posterStyle`. */
+    readonly maxWidth: 'none';
+    readonly maxHeight: 'none';
+}
+
+/**
+ * A frame's placement AND the hole it was placed against, taken together at the moment it landed.
+ *
+ * Both halves are needed because the pane can move while it is parked, and nothing about a menu
+ * being open stops it: a sibling pane exits, `kelpi pane close` runs in another terminal, a
+ * daemon-driven layout change lands. The offset is therefore stored RELATIVE to the hole
+ * (`box − hole`) and re-applied against wherever the hole is now, so the picture travels with the
+ * pane instead of staying pinned to the viewport position it was photographed at — which would
+ * slide it out from under its own `overflow-hidden` and leave blank strips.
+ */
+export interface PosterAnchor {
+    /** The view's placement when the frame was taken, in viewport CSS px. */
+    readonly box: PosterRect;
+    /** Where this pane's hole was at that same moment. */
+    readonly hole: PosterRect;
+}
+
+/**
+ * How far a hole may drift in size before its photograph is the wrong picture. A tenth of a CSS
+ * pixel is below anything layout can produce deliberately and above the noise of a
+ * `getBoundingClientRect` recomputation.
+ */
+export const POSTER_HOLE_EPSILON = 0.1;
+
+/**
+ * Where to stand the frame inside the hole, in the hole's own coordinates.
+ *
+ * **This is the fix for the jump, and the reason it needs the host's box.** A `<img>` given only
+ * `left/right/top/bottom` is not stretched to those insets: it is a REPLACED element, so
+ * `width:auto` resolves to its intrinsic size, Tailwind's preflight (`img{max-width:100%;
+ * height:auto}`) then clamps the width to the container and scales the height by the aspect
+ * ratio, and the over-constrained `right`/`bottom` are simply ignored. Measured on a 2× display:
+ * a 1050×1412 capture landed as a 528.99×711.38 box where the view had been 525×706 — the page
+ * appeared 0.76% larger and 5px taller the instant the menu opened, and snapped back when it
+ * closed. At 1× the intrinsic size happened to equal the view's box, which is why every 1×
+ * screenshot of this looked perfect.
+ *
+ * So the box is stated outright, from the placement the shell actually used, with `max-width`
+ * and `max-height` defeated so nothing downstream can resize it again. Without a host box
+ * (an older shell, a refusal to say) it falls back to §N27a's gutter, which is where the view is
+ * to within the rounding — the pre-#12 behaviour, and better than nothing.
+ *
+ * **The offset is relative, and the size is checked.** `anchor` carries the hole the box was
+ * measured against, so what is re-applied on every render is `box − hole`: the picture moves with
+ * the pane. A pane that has changed SIZE under the menu falls back to the gutter, because at that
+ * point the frame has the wrong number of pixels for the hole no matter where it is put.
+ */
+export function posterStyle(
+    anchor: PosterAnchor | null,
+    hole: PosterRect | null,
+    ring: number
+): PosterStyle {
+    const fixed = { objectFit: 'fill', maxWidth: 'none', maxHeight: 'none' } as const;
+    const gutter = (): PosterStyle => {
+        const horizontal = hole !== null && hole.w > ring * 2 ? ring : 0;
+        const vertical = hole !== null && hole.h > ring ? ring : 0;
+        return {
+            left: horizontal,
+            top: 0,
+            width: Math.max(0, (hole?.w ?? 0) - horizontal * 2),
+            height: Math.max(0, (hole?.h ?? 0) - vertical),
+            ...fixed
+        };
+    };
+    if (anchor === null || hole === null || hole.w <= 0 || hole.h <= 0) return gutter();
+    // A pane that has RESIZED under the menu is no longer the pane in the photograph: the frame
+    // is the wrong number of pixels for the hole whatever it is offset by, so it stretches to
+    // the hole and takes the small distortion instead of leaving a strip of nothing.
+    if (Math.abs(hole.w - anchor.hole.w) > POSTER_HOLE_EPSILON) return gutter();
+    if (Math.abs(hole.h - anchor.hole.h) > POSTER_HOLE_EPSILON) return gutter();
+    return {
+        left: anchor.box.x - anchor.hole.x,
+        top: anchor.box.y - anchor.hole.y,
+        width: anchor.box.w,
+        height: anchor.box.h,
+        ...fixed
+    };
+}
+
+/**
+ * Are two placements the same box? The publish runs on every render and rebuilds this style from
+ * live measurements, so without an equality the state would take a fresh object each time and the
+ * component would re-render itself for ever.
+ */
+export function samePosterStyle(a: PosterStyle, b: PosterStyle): boolean {
+    return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+}
+
+/** What the pane needs back from `sync` — the facts the render and the report each read. */
 export interface PosterView {
     /** The still frame to paint in the hole, or null when there is none to paint. */
     readonly src: string | null;
-    /** Keep the native view on screen for now: a frame is being taken. */
+    /**
+     * Keep the native view on screen for now.
+     *
+     * True while a frame is being TAKEN, and — the half the owner's flicker report bought — while
+     * a frame that has landed has not yet been PAINTED. Handing the view back in the same tick
+     * the `<img>` is committed loses a race the renderer cannot win: the park is a socket message
+     * the shell acts on in about a millisecond, and the picture that replaces it cannot appear
+     * before the next composited frame. Measured on the shipped build: the view left at t+0 and
+     * the image first existed at t+12ms, i.e. one to two frames of empty pane.
+     */
     readonly hold: boolean;
+    /** Where to stand the frame, in CSS px, viewport-relative; null when the host did not say. */
+    readonly box: PosterRect | null;
+    /**
+     * Which cover session this view belongs to, to be handed back with the paint confirmation.
+     *
+     * The src alone is not an identity: two covers of a still page produce byte-identical JPEGs,
+     * so a confirmation left over from the previous menu would satisfy the next one about two
+     * frames early — a ~35 ms window on a close-then-reopen, and exactly the blink this whole
+     * mechanism exists to remove. The token makes the confirmation specific to the session that
+     * asked for it.
+     */
+    readonly token: number;
 }
 
 export interface PosterControllerOptions {
@@ -159,6 +324,8 @@ export interface PosterControllerOptions {
     readonly lingerMs?: number | undefined;
     /** How long a host that said a real no is left alone (`POSTER_COOLDOWN_MS`). */
     readonly cooldownMs?: number | undefined;
+    /** How long a landed frame may take to reach the screen (`POSTER_PAINT_DEADLINE_MS`). */
+    readonly paintDeadlineMs?: number | undefined;
     /** Test seam; `Date.now` by default. */
     readonly now?: (() => number) | undefined;
     /** Test seams; `setTimeout`/`clearTimeout` by default. */
@@ -179,6 +346,13 @@ export interface PosterController {
      * keep the view on screen a moment longer.
      */
     sync(input: PosterSyncInput): PosterView;
+    /**
+     * The frame is now ON SCREEN — the `<img>` decoded and a composited frame carrying it has
+     * been produced. Only then may the view go back, which is what makes the swap seamless
+     * rather than a blink. Idempotent, and ignored unless BOTH the session token and the frame
+     * are the ones currently up.
+     */
+    painted(token: number, src: string): void;
     /** The pane is going away: drop the frame and any pending timer. */
     dispose(): void;
     /** Diagnostics: how many captures this pane has asked for. */
@@ -191,7 +365,7 @@ export interface PosterController {
  * Nothing covered, nothing to paint — the answer for every pane, almost always, and the answer a
  * client with no native view to photograph takes without asking.
  */
-export const POSTER_IDLE: PosterView = { src: null, hold: false };
+export const POSTER_IDLE: PosterView = { src: null, hold: false, box: null, token: 0 };
 
 /**
  * How long the frame stays painted after the surface closes.
@@ -231,8 +405,20 @@ export const POSTER_MISS_LIMIT = 2;
  */
 export const POSTER_COOLDOWN_MS = 5_000;
 
+/**
+ * How long the view is held for a frame that has landed but not yet painted.
+ *
+ * The wait is normally two composited frames — the `<img>` is committed, decoded and rastered —
+ * so this is the backstop for the cases where the confirmation never comes at all: a decode that
+ * rejects, a renderer that stops producing frames because the window was hidden mid-menu, a
+ * browser with no `decode()`. Past it the pane parks with the frame it has, which is the old
+ * behaviour plus a picture that will paint a moment later.
+ */
+export const POSTER_PAINT_DEADLINE_MS = 150;
+
 export function createPosterController(options: PosterControllerOptions): PosterController {
     const deadlineMs = options.deadlineMs ?? POSTER_DEADLINE_MS;
+    const paintDeadlineMs = options.paintDeadlineMs ?? POSTER_PAINT_DEADLINE_MS;
     const lingerMs = options.lingerMs ?? POSTER_LINGER_MS;
     const cooldownMs = options.cooldownMs ?? POSTER_COOLDOWN_MS;
     const now = options.now ?? ((): number => Date.now());
@@ -240,10 +426,20 @@ export function createPosterController(options: PosterControllerOptions): Poster
         options.schedule ?? ((callback: () => void, ms: number): unknown => setTimeout(callback, ms));
     const cancel = options.cancel ?? ((handle: unknown): void => clearTimeout(handle as never));
 
-    /** null = this pane is not covered; otherwise the cover session that is running. */
-    let session: { tabID: string; waiting: boolean; seq: number } | null = null;
+    /**
+     * null = this pane is not covered; otherwise the cover session that is running.
+     *
+     * `waiting` is "keep the view on screen", and it now spans BOTH halves of the swap: while the
+     * frame is being taken (`phase: 'capture'`) and while a frame that has landed waits to be
+     * painted (`phase: 'paint'`). Only when a composited frame carrying the picture exists does
+     * the view go back.
+     */
+    let session: { tabID: string; waiting: boolean; seq: number; phase: 'capture' | 'paint' | 'parked' } | null =
+        null;
     /** What the hole should wear right now — a landed frame, or a lingering one. */
     let painted: string | null = null;
+    /** Where to stand it: the view's own placement, as the host reported it. */
+    let paintedBox: PosterRect | null = null;
     /**
      * Until when this pane asks for nothing at all — set by a real no, cleared by a frame.
      *
@@ -265,7 +461,12 @@ export function createPosterController(options: PosterControllerOptions): Poster
         timer = null;
     };
 
-    const view = (): PosterView => ({ src: painted, hold: session?.waiting === true });
+    const view = (): PosterView => ({
+        src: painted,
+        hold: session?.waiting === true,
+        box: paintedBox,
+        token: session?.seq ?? 0
+    });
 
     /** A real no: leave this host alone for a while (see `POSTER_COOLDOWN_MS`). */
     const cool = (): void => {
@@ -276,10 +477,11 @@ export function createPosterController(options: PosterControllerOptions): Poster
     const start = (tabID: string): void => {
         captures += 1;
         const seq = captures;
-        session = { tabID, waiting: true, seq };
+        session = { tabID, waiting: true, seq, phase: 'capture' };
         // A frame from the last cover is of a page that has since been live and interactive: it
         // goes now rather than being shown while its replacement is taken.
         painted = null;
+        paintedBox = null;
         clearTimer();
         // The deadline is armed before the request, because a host that never answers at all is
         // not a rejected promise — it is silence, and the view has to come back either way.
@@ -291,6 +493,7 @@ export function createPosterController(options: PosterControllerOptions): Poster
             misses += 1;
             if (misses >= POSTER_MISS_LIMIT) cool();
             session.waiting = false;
+            session.phase = 'parked';
             options.onChange();
         }, deadlineMs);
         void options.capture(tabID).then(
@@ -309,19 +512,47 @@ export function createPosterController(options: PosterControllerOptions): Poster
                 // Uncovered while the frame was in flight, or the pane moved on to another tab:
                 // the picture is of a moment nobody is looking at any more.
                 if (session === null || session.seq !== seq) return;
-                // A refusal that arrives after the deadline already released the view changes
-                // nothing anyone can see, so it does not ask for a render.
-                const changed = attempt.src !== null || session.waiting;
-                if (attempt.src !== null) painted = attempt.src;
-                session.waiting = false;
                 clearTimer();
-                if (changed) options.onChange();
+                if (attempt.src === null) {
+                    // A refusal that arrives after the deadline already released the view changes
+                    // nothing anyone can see, so it does not ask for a render.
+                    const wasWaiting = session.waiting;
+                    session.waiting = false;
+                    session.phase = 'parked';
+                    if (wasWaiting) options.onChange();
+                    return;
+                }
+                painted = attempt.src;
+                paintedBox = attempt.box ?? null;
+                if (session.phase === 'capture') {
+                    /*
+                     * The frame is HERE but not yet on screen. Keep holding: the park is a socket
+                     * message the shell acts on within a millisecond, and the `<img>` that is
+                     * supposed to replace the view cannot appear before the next composited
+                     * frame. `painted()` — a decode plus a double rAF in the component — is what
+                     * says the picture exists; this timer is the backstop for when it cannot.
+                     */
+                    session.phase = 'paint';
+                    timer = schedule(() => {
+                        timer = null;
+                        if (disposed || session === null || session.seq !== seq || session.phase !== 'paint') return;
+                        session.waiting = false;
+                        session.phase = 'parked';
+                        options.onChange();
+                    }, paintDeadlineMs);
+                } else {
+                    // The deadline already handed the view back; the late frame simply appears.
+                    session.waiting = false;
+                    session.phase = 'parked';
+                }
+                options.onChange();
             },
             () => {
                 if (disposed) return;
                 cool();
                 if (session === null || session.seq !== seq || !session.waiting) return;
                 session.waiting = false;
+                session.phase = 'parked';
                 clearTimer();
                 options.onChange();
             }
@@ -335,8 +566,9 @@ export function createPosterController(options: PosterControllerOptions): Poster
      * refused, which is the loop the cooldown exists to break.
      */
     const parkWithoutAsking = (tabID: string): void => {
-        session = { tabID, waiting: false, seq: captures };
+        session = { tabID, waiting: false, seq: captures, phase: 'parked' };
         painted = null;
+        paintedBox = null;
         clearTimer();
     };
 
@@ -349,6 +581,7 @@ export function createPosterController(options: PosterControllerOptions): Poster
             timer = null;
             if (disposed || session !== null) return;
             painted = null;
+            paintedBox = null;
             options.onChange();
         }, lingerMs);
         return view();
@@ -368,10 +601,23 @@ export function createPosterController(options: PosterControllerOptions): Poster
             return view();
         },
 
+        painted(token, src) {
+            if (disposed || session === null) return;
+            // Only the frame that is currently up counts, and "currently" means this SESSION:
+            // a still page photographs identically twice, so a confirmation from the previous
+            // cover would otherwise answer for this one and release the view early.
+            if (session.seq !== token || session.phase !== 'paint' || painted !== src) return;
+            session.waiting = false;
+            session.phase = 'parked';
+            clearTimer();
+            options.onChange();
+        },
+
         dispose() {
             disposed = true;
             session = null;
             painted = null;
+            paintedBox = null;
             clearTimer();
         },
 

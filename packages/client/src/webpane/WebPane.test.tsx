@@ -26,10 +26,34 @@ interface Recorded {
     readonly args: readonly unknown[];
 }
 
-/** Issue #12: what a host that CAN photograph a pane answers `web-poster` with. */
+/**
+ * Issue #12: what a host that CAN photograph a pane answers `web-poster` with.
+ *
+ * `bounds` is the placement the shell actually used — `viewBounds` rounds and clamps each edge of
+ * the client's rect — and `css_scale` turns those DIP numbers back into CSS pixels. The client
+ * stands the picture on exactly that box; the numbers here are what a shell would compute for
+ * `RECT` at page zoom 1.
+ */
 const POSTER_BASE64 = 'AAAA';
 const POSTER_SRC = `data:image/jpeg;base64,${POSTER_BASE64}`;
-const POSTER_REPLY: CommandReply = { ok: true, image_base64: POSTER_BASE64, mime: 'image/jpeg' };
+const POSTER_BOUNDS = { x: 14, y: 40, width: 896, height: 498 };
+/**
+ * A hole on FRACTIONAL coordinates, and the placement a shell computes from it.
+ *
+ * Real layout is fractional (a measured hole of `751,88.398 529×707.602` is what the shipped
+ * build reports), and `viewBounds` rounds every edge before the view is placed. So the box the
+ * picture belongs in differs from the client's own rect in all four numbers — which is precisely
+ * why it has to come from the host rather than be re-derived here.
+ */
+const FRACTIONAL: GeometryRect = { x: 12.4, y: 40.6, w: 900.2, h: 500.9 };
+const FRACTIONAL_BOUNDS = { x: 14, y: 41, width: 897, height: 499 };
+const POSTER_REPLY: CommandReply = {
+    ok: true,
+    image_base64: POSTER_BASE64,
+    mime: 'image/jpeg',
+    bounds: POSTER_BOUNDS,
+    css_scale: 1
+};
 
 function fakeCommands(
     options: { poster?: CommandReply } = {}
@@ -562,15 +586,28 @@ describe('geometry reporting', () => {
         const hiddenOnce = (hidden: readonly string[]): readonly string[] => [...new Set(hidden)];
 
         /**
-         * Issue #12 — the park is one round trip behind the cover now.
+         * Issue #12 — the park is a round trip AND two animation frames behind the cover now.
          *
-         * A covered pane holds its view on screen while it asks the host for a still frame, so
-         * that the hole it is about to empty has something to wear (`./poster.ts`). Every
-         * assertion about the PARK therefore has to let that answer land first; the assertions
-         * about the poster itself are in the block below.
+         * A covered pane holds its view on screen while it asks the host for a still frame, and
+         * keeps holding until that frame has actually been PAINTED: the picture has to be on the
+         * screen before the view leaves it, or the pane shows its own background in the gap
+         * (measured on the shipped build: the view left 12 ms before the image existed). The
+         * paint is confirmed by a decode plus a double `requestAnimationFrame`, so every
+         * assertion about the PARK has to let both happen.
          */
+        const frame = async (): Promise<void> => {
+            const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => unknown }).requestAnimationFrame;
+            if (typeof raf !== 'function') return;
+            await new Promise<void>((resolve) => raf(() => resolve()));
+        };
         const settle = async (): Promise<void> => {
             await act(async () => {
+                await Promise.resolve();
+            });
+            // Two frames: the image is committed in one and composited in the next.
+            await act(async () => {
+                await frame();
+                await frame();
                 await Promise.resolve();
             });
         };
@@ -698,22 +735,156 @@ describe('geometry reporting', () => {
             });
 
             /**
-             * §N27a's gutter, and the reason the frame is not simply `inset-0`: the VIEW sits
-             * 2 px inside the hole on three edges, so a poster drawn to the hole's own box would
-             * be wider than the page it stands in for and the swap would shift by that much.
+             * THE JUMP, and why the box comes from the host.
+             *
+             * The frame is a photograph of the VIEW, so it has to be laid out on the view's own
+             * box — which the client cannot compute: the shell rounds and clamps every edge
+             * before placing it. Worse, an `<img>` given only insets is not stretched to them at
+             * all: it is a replaced element, so `width:auto` is its intrinsic size, Tailwind's
+             * preflight (`img{max-width:100%;height:auto}`) then scales that to the container's
+             * width by the image's own aspect ratio, and `right`/`bottom` are ignored. Measured
+             * on a 2× display, that put a 1050×1412 capture in a 528.99×711.38 box where the view
+             * had been 525×706 — the page grew 0.76% the moment the menu opened and snapped back
+             * when it closed. At 1× the intrinsic size happened to match, which is why every 1×
+             * screenshot looked right.
+             *
+             * So: explicit width and height, from the host's placement, with the preflight caps
+             * defeated.
              */
-            it('stands exactly where the view stands — on the ring gutter', async () => {
-                const h = mount();
+            it('stands exactly where the view stands — on the box the host placed it at', async () => {
+                mount({
+                    rect: FRACTIONAL,
+                    poster: {
+                        ok: true,
+                        image_base64: POSTER_BASE64,
+                        mime: 'image/jpeg',
+                        bounds: FRACTIONAL_BOUNDS,
+                        css_scale: 1
+                    }
+                });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLElement).style;
+                // The host's placement, in the hole's own coordinates — every number different
+                // from what this document would have chosen for itself.
+                expect(style.left).toBe(`${FRACTIONAL_BOUNDS.x - FRACTIONAL.x}px`);
+                expect(style.top).toBe(`${FRACTIONAL_BOUNDS.y - FRACTIONAL.y}px`);
+                expect(style.width).toBe(`${FRACTIONAL_BOUNDS.width}px`);
+                expect(style.height).toBe(`${FRACTIONAL_BOUNDS.height}px`);
+                // Nothing downstream may resize it again — this is the preflight that turned a
+                // 1050×1412 capture into a 528.99×711.38 box on a 2× display.
+                expect(style.maxWidth).toBe('none');
+                expect(style.maxHeight).toBe('none');
+                // The frame is of this exact box, so there is nothing to crop.
+                expect(style.objectFit).toBe('fill');
+            });
+
+            /**
+             * A parked pane can still MOVE, and nothing about an open menu stops it: a sibling
+             * pane exits, `kelpi pane close` runs in another terminal, the daemon changes the
+             * layout. A picture pinned to the viewport position it was photographed at would
+             * slide out from under the hole's own `overflow-hidden` and show as blank strips,
+             * then jump when the view came back — a regression against the inset layout this
+             * replaced, which at least moved with the pane.
+             */
+            it('travels with the pane when the grid reflows under the menu', async () => {
+                const h = mount({
+                    rect: FRACTIONAL,
+                    poster: {
+                        ok: true,
+                        image_base64: POSTER_BASE64,
+                        mime: 'image/jpeg',
+                        bounds: FRACTIONAL_BOUNDS,
+                        css_scale: 1
+                    }
+                });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const read = (): Record<string, string> => {
+                    // `CSSStyleDeclaration` keeps its properties on the prototype, so a spread
+                    // would copy nothing: read the four that matter by name.
+                    const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLImageElement).style;
+                    return { left: style.left, top: style.top, width: style.width, height: style.height };
+                };
+                const before = read();
+
+                // The pane slides 300 px left and 40 px down, same size: a sibling closing.
+                const moved: GeometryRect = { ...FRACTIONAL, x: FRACTIONAL.x - 300, y: FRACTIONAL.y + 40 };
+                act(() => {
+                    h.view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={h.commands}
+                            embedded={true}
+                            visible={true}
+                            measure={fixedRect(moved)}
+                            devicePixelRatio={2}
+                            onGeometry={(report) => h.reports.push(report)}
+                            onHidden={(paneID) => h.hidden.push(paneID)}
+                        />
+                    );
+                });
+                // Unchanged, because the offset is relative to the hole: the picture went with it.
+                expect(read()).toEqual(before);
+                expect(before.width).toBe(`${FRACTIONAL_BOUNDS.width}px`);
+            });
+
+            /**
+             * …and a pane that has RESIZED is not the pane in the photograph any more: the frame
+             * is the wrong number of pixels for the hole however it is offset, so it stretches to
+             * the hole rather than leaving a strip of nothing.
+             */
+            it('stretches to the hole when the pane is RESIZED under the menu', async () => {
+                const h = mount({
+                    rect: FRACTIONAL,
+                    poster: {
+                        ok: true,
+                        image_base64: POSTER_BASE64,
+                        mime: 'image/jpeg',
+                        bounds: FRACTIONAL_BOUNDS,
+                        css_scale: 1
+                    }
+                });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const narrower: GeometryRect = { ...FRACTIONAL, w: FRACTIONAL.w - 200 };
+                act(() => {
+                    h.view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={h.commands}
+                            embedded={true}
+                            visible={true}
+                            measure={fixedRect(narrower)}
+                            devicePixelRatio={2}
+                            onGeometry={(report) => h.reports.push(report)}
+                            onHidden={(paneID) => h.hidden.push(paneID)}
+                        />
+                    );
+                });
+                const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLImageElement).style;
+                expect(style.left).toBe(`${FOCUS_RING_WIDTH}px`);
+                expect(style.width).toBe(`${narrower.w - FOCUS_RING_WIDTH * 2}px`);
+            });
+
+            /**
+             * A host that does not say where the view is (an older shell, a placement it could
+             * not read) still gets a poster: §N27a's gutter is where the view is to within the
+             * rounding, and a frame two tenths of a pixel out is better than an empty hole.
+             */
+            it('falls back to the ring gutter when the host does not name the box', async () => {
+                mount({ poster: { ok: true, image_base64: POSTER_BASE64, mime: 'image/jpeg' } as CommandReply });
                 open({ x: 100, y: 100, w: 200, h: 200 });
                 await settle();
                 const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLElement).style;
                 expect(style.left).toBe(`${FOCUS_RING_WIDTH}px`);
-                expect(style.right).toBe(`${FOCUS_RING_WIDTH}px`);
-                expect(style.bottom).toBe(`${FOCUS_RING_WIDTH}px`);
                 expect(style.top).toBe('0px');
-                // The frame is of this exact box, so there is nothing to crop.
-                expect(style.objectFit).toBe('fill');
-                expect(h.reports.at(-1)?.rect).toEqual(RINGED);
+                expect(style.width).toBe(`${RECT.w - FOCUS_RING_WIDTH * 2}px`);
+                expect(style.height).toBe(`${RECT.h - FOCUS_RING_WIDTH}px`);
             });
 
             /**

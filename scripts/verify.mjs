@@ -63,7 +63,10 @@ const SURFACES = [
         steps: [
             'web-pane', 'web-find', 'web-url-bar-shortcut', 'web-batch-pickup', 'web-batch-internals',
             'web-tab-strip', 'web-loading-strip', 'web-focus-handoff', 'web-page-click-focus',
-            'web-favourite', 'web-cookie-panel', 'web-console-frames', 'web-popup-layering'
+            'web-favourite', 'web-cookie-panel', 'web-console-frames', 'web-popup-layering',
+            // Issue #12's timing half: the poster swap, sampled per frame. Its deeper
+            // counterpart is `scripts/ui-audit/poster-swap-flicker.mjs`, run outside a battery.
+            'poster-swap'
         ],
         smokes: ['smoke:web']
     },

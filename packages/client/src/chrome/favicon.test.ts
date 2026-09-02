@@ -1,4 +1,11 @@
-import { kelpieArt } from '@kelpi/core/icon';
+import {
+    ART_VIEWBOX,
+    KELPIE_MARK_BACKGROUND,
+    KELPIE_MARK_FOREGROUND,
+    KELPIE_MIN_STROKE_FRACTION,
+    KELPIE_TAB_STROKE,
+    kelpieArt
+} from '@kelpi/core/icon';
 import { describe, expect, it } from 'vitest';
 
 import indexHtml from '../../index.html?raw';
@@ -153,7 +160,18 @@ describe('drawFavicon', () => {
         drawFavicon(canvas, { running: 0, waiting: 0 }, { size: 64 });
         expect(canvas.caps).toEqual(['round']);
         expect(canvas.joins).toEqual(['round']);
-        expect(canvas.strokeWidths).toEqual([4]); // 1/16 of the canvas, the tray's own floor
+        // The floor core states, which is also the stroke the emitted `/favicon.svg` carries.
+        expect(canvas.strokeWidths).toEqual([64 * KELPIE_MIN_STROKE_FRACTION]);
+        expect(KELPIE_TAB_STROKE / ART_VIEWBOX).toBe(KELPIE_MIN_STROKE_FRACTION);
+    });
+
+    /**
+     * One palette, so the mark cannot change tone between the icon the document ships and the
+     * one this module paints over it.
+     */
+    it('draws in the mark\'s own colours', () => {
+        expect(DEFAULT_FAVICON_COLORS.foreground).toBe(KELPIE_MARK_FOREGROUND);
+        expect(DEFAULT_FAVICON_COLORS.background).toBe(KELPIE_MARK_BACKGROUND);
     });
 
     it('defaults to a canvas the browser can downsample without losing the mane', () => {
@@ -198,23 +216,35 @@ describe('createFaviconController', () => {
     });
 
     /**
-     * The document ships the mark as `/favicon.svg` (see `index.html`); the badge replaces it
-     * with a PNG of the same mark and must say so, then hand the link back untouched.
+     * The document ships the mark twice (see `index.html`), and which declaration a browser
+     * prefers is its own business. Badging one and leaving the other would show the dot in
+     * some browsers and not others, so the controller owns both, and hands both back.
      */
-    it('takes over the document\'s own icon link and restores it on dispose', () => {
-        document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />';
+    it('takes over every icon link the document declares, and restores them on dispose', () => {
+        document.head.innerHTML =
+            '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />' +
+            '<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />' +
+            '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />';
         document.title = 'Kelpi';
         const controller = createFaviconController({ createCanvas: () => fakeCanvas() });
 
         controller.update({ running: 1, waiting: 0 });
-        const link = document.querySelector('link[rel~="icon"]');
-        expect(link?.getAttribute('href')).toBe('data:image/png;base64,FAKE');
-        expect(link?.getAttribute('type')).toBe('image/png');
+        const links = [...document.querySelectorAll('link[rel~="icon"]')];
+        expect(links).toHaveLength(2);
+        for (const link of links) {
+            expect(link.getAttribute('href')).toBe('data:image/png;base64,FAKE');
+            expect(link.getAttribute('type')).toBe('image/png');
+        }
+        // Not the home-screen tile: iOS reads that one at install time, and it is never badged.
+        const touch = document.querySelector('link[rel="apple-touch-icon"]');
+        expect(touch?.getAttribute('href')).toBe('/apple-touch-icon.png');
 
         controller.dispose();
-        // Restored through the link's own `href` property, so it comes back absolutized.
-        expect(link?.getAttribute('href')).toMatch(/\/favicon\.svg$/);
-        expect(link?.getAttribute('type')).toBe('image/svg+xml');
+        // Restored through each link's own `href` property, so they come back absolutized.
+        expect(links[0]?.getAttribute('href')).toMatch(/\/favicon\.svg$/);
+        expect(links[0]?.getAttribute('type')).toBe('image/svg+xml');
+        expect(links[1]?.getAttribute('href')).toMatch(/\/favicon\.png$/);
+        expect(links[1]?.getAttribute('type')).toBe('image/png');
     });
 
     it('is inert without a canvas (jsdom, blocked embedders) instead of throwing', () => {
@@ -255,7 +285,13 @@ describe('the document the daemon serves', () => {
         expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />');
     });
 
-    it('carries no second icon link for the badge controller to pick the wrong one of', () => {
-        expect([...html.matchAll(/<link[^>]*rel="icon"/g)]).toHaveLength(1);
+    /**
+     * The headline case in issue #13 is a phone over the tailnet, which means Safari: no SVG
+     * favicon support, and no re-read of an icon script swapped in. Drop the raster links and
+     * that browser is back to no kelpie at all, silently, with every test still green.
+     */
+    it('declares the raster forms Safari and iOS need', () => {
+        expect(html).toContain('<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />');
+        expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
     });
 });

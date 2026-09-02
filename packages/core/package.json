@@ -10,6 +10,7 @@
     "./agent": "./src/agent/index.ts",
     "./env": "./src/env/index.ts",
     "./icon": "./src/icon/index.ts",
+    "./icon/png": "./src/icon/png.ts",
     "./config": "./src/config/index.ts"
   }
 }

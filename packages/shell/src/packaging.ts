@@ -15,7 +15,7 @@
  */
 
 import { stampKelpie } from '@kelpi/core/icon';
-import { encodePng } from './icon.js';
+import { encodePng } from '@kelpi/core/icon/png';
 import { RESOURCE_NAMES } from './resources.js';
 
 export { RESOURCE_NAMES } from './resources.js';

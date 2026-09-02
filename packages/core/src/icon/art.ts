@@ -267,10 +267,22 @@ export interface KelpieStampOptions {
      * The floor on the stroke's device width. The nominal stroke is ~12px at 1024 and scales
      * down linearly, so every small render needs one: without it the lines are sub-half-pixel
      * and dissolve into grey mush. Each caller states its own (`packaging.ts` for the ICNS
-     * variants, `icon.ts` for the menu bar).
+     * variants, `icon.ts` for the menu bar, `KELPIE_MIN_STROKE_FRACTION` for a browser tab).
      */
     readonly minStrokePx: number;
 }
+
+/**
+ * The floor a render destined for a browser tab uses, as a fraction of its canvas: one device
+ * pixel once the render has been scaled down to a 16px tab.
+ *
+ * The same rule the menu bar already follows (`icon.ts`: 1pt on a 16pt image), stated as a
+ * fraction because the tab's renders disagree about size. Every form of the favicon has to
+ * apply it or they disagree about *weight* instead, which is worse: the static icon a browser
+ * paints on first load would be a faint outline and the canvas one that replaces it a second
+ * later would pop bolder, in the same tab, for no reason a user could explain.
+ */
+export const KELPIE_MIN_STROKE_FRACTION = 1 / 16;
 
 /**
  * Stroke the kelpie onto a `size`-px canvas: a max-blended coverage buffer, one round-capped

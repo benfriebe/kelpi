@@ -350,9 +350,12 @@ function bundlePhase() {
 
     // ── the client build ─────────────────────────────────────────────────────────
     check('the client build is staged', fs.existsSync(path.join(resourcesPath, 'client', 'index.html')));
-    // The tab icon is a build output (`client/vite.config.ts` prints it from `@kelpi/core/icon`),
-    // so it rides along in the staged directory or the packaged app has no favicon at all.
-    check('…with the Kelpi mark beside it', fs.existsSync(path.join(resourcesPath, 'client', 'favicon.svg')));
+    // The tab icons are build outputs (`client/vite.config.ts` prints them from
+    // `@kelpi/core/icon`), so they ride along in the staged directory or the packaged app has
+    // no favicon at all, and on Safari, which reads only the PNG, no icon of any kind.
+    for (const icon of ['favicon.svg', 'favicon.png', 'apple-touch-icon.png']) {
+        check(`…with ${icon} beside it`, fs.existsSync(path.join(resourcesPath, 'client', icon)));
+    }
 
     // ── the CLI payload ──────────────────────────────────────────────────────────
     // `/usr/local/bin/kelpi` is a symlink into this directory (`src/cli-install.ts`), so both
@@ -717,13 +720,26 @@ async function launchPhase() {
         check('the daemon serves the client staged in Resources', served === staged, `${String(served.length)} bytes`);
         check('…and not its "client not built" placeholder', !served.includes('client not built'));
 
-        const icon = await fetch(`${sandbox.base}/favicon.svg`);
-        const iconBody = await icon.text();
-        check(
-            '…and the Kelpi mark that document links as its icon',
-            icon.ok && iconBody.startsWith('<svg ') && iconBody.includes('<path'),
-            `${String(icon.status)} ${icon.headers.get('content-type') ?? '?'}, ${String(iconBody.length)} bytes`
-        );
+        // Every icon the document links, with the content type each one has to arrive as: an
+        // SVG served as `text/html` is the SPA fallback answering for a file that is missing.
+        for (const [href, type] of [
+            ['/favicon.svg', 'image/svg+xml'],
+            ['/favicon.png', 'image/png'],
+            ['/apple-touch-icon.png', 'image/png']
+        ]) {
+            const icon = await fetch(`${sandbox.base}${href}`);
+            const bytes = new Uint8Array(await icon.arrayBuffer());
+            const contentType = icon.headers.get('content-type') ?? '?';
+            const looksRight =
+                type === 'image/png'
+                    ? bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+                    : Buffer.from(bytes).toString('utf8').startsWith('<svg ');
+            check(
+                `…and the Kelpi mark at ${href}`,
+                icon.ok && contentType.startsWith(type) && looksRight,
+                `${String(icon.status)} ${contentType}, ${String(bytes.length)} bytes`
+            );
+        }
 
         const asset = /\/assets\/[A-Za-z0-9._-]+\.js/.exec(served)?.[0];
         if (asset !== undefined) {

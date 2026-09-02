@@ -5,8 +5,9 @@
  * the same flattened vector data in `@kelpi/core/icon` — with a 6px status dot in the
  * top-right corner: waiting colour when anything waits, else running colour, else no dot.
  * Rather than ship binary assets through an esbuild bundle, the shell rasterizes the icon
- * into an RGBA buffer and encodes a PNG with `node:zlib` — zero dependencies, one kelpie in
- * the codebase, and the dot colour can follow the status live.
+ * into an RGBA buffer and hands it to core's `encodePng` (the zlib-and-nothing-else encoder
+ * that moved there with the mark, and that the client's build now writes its favicons with):
+ * zero dependencies, one kelpie in the codebase, and the dot colour follows the status live.
  *
  * Template vs mid-grey, which is §AGNT-087's actual rule and not a compromise:
  *
@@ -23,9 +24,8 @@
  * `nativeImage.setTemplateImage`, so the drawing and the flag can never disagree.
  */
 
-import { deflateSync } from 'node:zlib';
-
 import { stampKelpie } from '@kelpi/core/icon';
+import { encodePng, parseHexRgb } from '@kelpi/core/icon/png';
 
 export type IconIndicator = 'idle' | 'running' | 'waiting' | 'disconnected';
 
@@ -91,15 +91,8 @@ export interface TrayPaletteInput {
 
 /** `#RRGGBB` / `RRGGBB` → an opaque RGBA quad; anything else is null. */
 export function parseTrayHex(value: string): [number, number, number, number] | null {
-    const match = /^#?([0-9a-fA-F]{6})$/.exec(value.trim());
-    if (match === null) return null;
-    const hex = match[1] as string;
-    return [
-        Number.parseInt(hex.slice(0, 2), 16),
-        Number.parseInt(hex.slice(2, 4), 16),
-        Number.parseInt(hex.slice(4, 6), 16),
-        0xff
-    ];
+    const rgb = parseHexRgb(value);
+    return rgb === null ? null : [rgb[0], rgb[1], rgb[2], 0xff];
 }
 
 /**
@@ -160,65 +153,6 @@ const TEMPLATE_GLYPH: [number, number, number, number] = [0x00, 0x00, 0x00, 0xff
  */
 export function trayIconIsTemplate(indicator: IconIndicator): boolean {
     return STATUS_COLORS[indicator] === null;
-}
-
-// ── PNG encoding ────────────────────────────────────────────────────────────────────
-
-const CRC_TABLE = (() => {
-    const table = new Uint32Array(256);
-    for (let n = 0; n < 256; n += 1) {
-        let c = n;
-        for (let k = 0; k < 8; k += 1) c = (c & 1) === 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-        table[n] = c >>> 0;
-    }
-    return table;
-})();
-
-function crc32(bytes: Uint8Array): number {
-    let crc = 0xffffffff;
-    for (const byte of bytes) crc = ((CRC_TABLE[(crc ^ byte) & 0xff] as number) ^ (crc >>> 8)) >>> 0;
-    return (crc ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type: string, data: Uint8Array): Buffer {
-    const length = Buffer.alloc(4);
-    length.writeUInt32BE(data.length, 0);
-    const body = Buffer.concat([Buffer.from(type, 'ascii'), Buffer.from(data)]);
-    const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(crc32(body), 0);
-    return Buffer.concat([length, body, crc]);
-}
-
-/** Minimal 8-bit RGBA, non-interlaced PNG. `rgba` is `width * height * 4` bytes. */
-export function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
-    if (rgba.length !== width * height * 4) {
-        throw new Error(`encodePng: expected ${String(width * height * 4)} bytes, got ${String(rgba.length)}`);
-    }
-    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-    const ihdr = Buffer.alloc(13);
-    ihdr.writeUInt32BE(width, 0);
-    ihdr.writeUInt32BE(height, 4);
-    ihdr.writeUInt8(8, 8); // bit depth
-    ihdr.writeUInt8(6, 9); // colour type: RGBA
-    ihdr.writeUInt8(0, 10); // deflate
-    ihdr.writeUInt8(0, 11); // adaptive filtering
-    ihdr.writeUInt8(0, 12); // no interlace
-
-    // One filter byte (0 = None) per scanline.
-    const raw = Buffer.alloc(height * (width * 4 + 1));
-    for (let y = 0; y < height; y += 1) {
-        const rowStart = y * (width * 4 + 1);
-        raw[rowStart] = 0;
-        Buffer.from(rgba.buffer, rgba.byteOffset + y * width * 4, width * 4).copy(raw, rowStart + 1);
-    }
-
-    return Buffer.concat([
-        signature,
-        chunk('IHDR', ihdr),
-        chunk('IDAT', deflateSync(raw, { level: 9 })),
-        chunk('IEND', new Uint8Array(0))
-    ]);
 }
 
 // ── the glyph ───────────────────────────────────────────────────────────────────────

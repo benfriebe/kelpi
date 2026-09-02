@@ -7,12 +7,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
     <meta name="color-scheme" content="dark light" />
     <meta name="description" content="Kelpi — terminal workspaces served by the kelpid daemon" />
-    <!-- The Kelpi mark, printed from `@kelpi/core/icon` into `/favicon.svg` by the client's
-         build (see vite.config.ts): the same drawing the Dock tile and the menu-bar glyph
-         render, so a browser attached over a tailnet shows the app's own identity in its tab.
-         `chrome/favicon.ts` then replaces this href with a canvas-drawn badge of the same mark
-         as agents change state; it needs a `link[rel~="icon"]` to exist. -->
+    <!-- The Kelpi mark, printed from `@kelpi/core/icon` by the client's build (see
+         vite.config.ts): the same drawing the Dock tile and the menu-bar glyph render, so a
+         browser attached over a tailnet shows the app's own identity in its tab.
+
+         Three declarations because browsers disagree. Safari renders no SVG favicon and never
+         re-reads an icon that script swapped in, so the PNG is not a fallback there, it is the
+         only icon an iPhone on the tailnet will ever show. `chrome/favicon.ts` replaces the
+         href of BOTH icon links with a canvas-drawn badge of the same mark as agents change
+         state; it needs at least one `link[rel~="icon"]` to exist. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Kelpi</title>
   </head>
   <body>

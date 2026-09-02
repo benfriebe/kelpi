@@ -2,9 +2,22 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { ART_STROKE_WIDTH, ART_VIEWBOX, KELPIE_PATHS } from './art-data.js';
-import { flattenSvgPath } from './art.js';
-import { KELPIE_MARK_BACKGROUND, KELPIE_MARK_FOREGROUND, kelpieMarkSvg } from './svg.js';
+import {
+    ART_SCALE,
+    ART_STROKE_WIDTH,
+    ART_TRANSLATE_X,
+    ART_TRANSLATE_Y,
+    ART_VIEWBOX,
+    KELPIE_PATHS
+} from './art-data.js';
+import { KELPIE_MIN_STROKE_FRACTION, flattenSvgPath } from './art.js';
+import {
+    KELPIE_MARK_BACKGROUND,
+    KELPIE_MARK_FOREGROUND,
+    KELPIE_MARK_STROKE,
+    KELPIE_TAB_STROKE,
+    kelpieMarkSvg
+} from './svg.js';
 
 const svg = kelpieMarkSvg();
 
@@ -17,7 +30,10 @@ describe('kelpieMarkSvg', () => {
     it('is the whole mark, path for path', () => {
         const paths = [...svg.matchAll(/<path d="([^"]+)"\/>/g)].map((match) => match[1]);
         expect(paths).toEqual([...KELPIE_PATHS]);
-        expect(svg).toContain('transform="matrix(1.2460415,0,0,1.2460415,-124.26033,-80.177323)"');
+        const scale = String(ART_SCALE);
+        expect(svg).toContain(
+            `transform="matrix(${scale},0,0,${scale},${String(ART_TRANSLATE_X)},${String(ART_TRANSLATE_Y)})"`
+        );
         expect(svg).toContain(`stroke-width="${String(ART_STROKE_WIDTH)}"`);
     });
 
@@ -35,6 +51,28 @@ describe('kelpieMarkSvg', () => {
     it('sits on the source drawing\'s own square, with no width/height to fight the browser', () => {
         expect(svg).toContain(`viewBox="0 0 ${String(ART_VIEWBOX)} ${String(ART_VIEWBOX)}"`);
         expect(svg).not.toMatch(/<svg[^>]*\bwidth=/);
+    });
+
+    /**
+     * The floor, the whole reason `strokeWidth` is an option. The source drawing's ~1.2 % of
+     * the square is a fifth of a pixel at 16px; a tab needs a whole one, which is what the
+     * canvas favicon already floors itself at. Both must say the same number or the icon
+     * visibly thickens the moment the client mounts.
+     */
+    it('takes a stroke in viewBox units and states it pre-transform', () => {
+        expect(KELPIE_TAB_STROKE).toBe(ART_VIEWBOX * KELPIE_MIN_STROKE_FRACTION);
+        expect(KELPIE_MARK_STROKE).toBeCloseTo(ART_STROKE_WIDTH * ART_SCALE, 10);
+
+        const tab = kelpieMarkSvg({ strokeWidth: KELPIE_TAB_STROKE });
+        const width = Number(/stroke-width="([\d.]+)"/.exec(tab)?.[1]);
+        expect(width * ART_SCALE).toBeCloseTo(KELPIE_TAB_STROKE, 2);
+        expect(width).toBeGreaterThan(ART_STROKE_WIDTH * 5);
+
+        // Asking for the source's own stroke round-trips to it; the default prints it exactly,
+        // rather than through the division, so the drawing keeps its own exact number.
+        const asked = Number(/stroke-width="([\d.]+)"/.exec(kelpieMarkSvg({ strokeWidth: KELPIE_MARK_STROKE }))?.[1]);
+        expect(asked).toBeCloseTo(ART_STROKE_WIDTH, 3);
+        expect(kelpieMarkSvg()).toContain(`stroke-width="${String(ART_STROKE_WIDTH)}"`);
     });
 
     it('paints the tile behind the mark, and drops it when asked for a transparent one', () => {

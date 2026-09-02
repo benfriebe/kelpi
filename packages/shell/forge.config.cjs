@@ -241,9 +241,12 @@ module.exports = {
                     path.join(resources, RESOURCE_NAMES.daemon, 'kelpid.js'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'node_modules', 'node-pty', 'package.json'),
                     path.join(resources, RESOURCE_NAMES.client, 'index.html'),
-                    // The tab icon the served document links; a client build without it ships
-                    // a Kelpi that has no favicon anywhere a browser attaches.
+                    // The tab icons the served document links; a client build without them
+                    // ships a Kelpi with no favicon anywhere a browser attaches, and none at
+                    // all on Safari, which reads only the PNG.
                     path.join(resources, RESOURCE_NAMES.client, 'favicon.svg'),
+                    path.join(resources, RESOURCE_NAMES.client, 'favicon.png'),
+                    path.join(resources, RESOURCE_NAMES.client, 'apple-touch-icon.png'),
                     path.join(resources, RESOURCE_NAMES.cli, 'kelpi'),
                     path.join(resources, RESOURCE_NAMES.cli, 'kelpi.js'),
                     path.join(resources, RESOURCE_NAMES.cli, 'nex'),

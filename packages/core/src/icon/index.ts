@@ -5,6 +5,10 @@
  *                    `../../assets/kelpi-icon.svg` (the editable source).
  *   `art.ts`       — flattening and the SDF stamp, for anything that needs pixels.
  *   `svg.ts`       — the same mark as an `<svg>` document, for anything that needs vector.
+ *   `png.ts`       — the same mark as PNG bytes, for Safari, which renders neither of the
+ *                    above as a favicon. Deliberately NOT re-exported here: it imports
+ *                    `node:zlib`, and this barrel goes into the browser bundle. Node-side
+ *                    callers import `@kelpi/core/icon/png`.
  *
  * Consumers: the shell's app icon and tray glyph (`stampKelpie`), and the web client's tab
  * favicon, which strokes `kelpieArt()` onto a canvas and links `kelpieMarkSvg()` as the
@@ -21,6 +25,7 @@ export {
 } from './art-data.js';
 
 export {
+    KELPIE_MIN_STROKE_FRACTION,
     flattenSvgPath,
     kelpieArt,
     segmentDistance,
@@ -34,6 +39,8 @@ export {
 export {
     KELPIE_MARK_BACKGROUND,
     KELPIE_MARK_FOREGROUND,
+    KELPIE_MARK_STROKE,
+    KELPIE_TAB_STROKE,
     kelpieMarkSvg,
     type KelpieMarkSvgOptions
 } from './svg.js';

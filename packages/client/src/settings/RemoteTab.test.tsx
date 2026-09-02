@@ -1,9 +1,31 @@
+import { encodeQr, qrSvg } from '@kelpi/core/qr';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RemoteTab, type RemoteTabActions } from './RemoteTab';
 
 afterEach(cleanup);
+
+/**
+ * The card's QR, as the encoder would draw it for `url`, serialised the way the DOM serialises
+ * what `dangerouslySetInnerHTML` parsed.
+ *
+ * The options are spelled out rather than imported so that changing the module size or either
+ * colour in `RemoteTab.tsx` fails a test instead of quietly redefining what is being pinned.
+ * The round trip through a detached element is not slack in the assertion: an HTML serialiser
+ * writes `<rect …></rect>` where the encoder writes `<rect …/>`, so both sides are put through
+ * the same parser and the comparison stays exact everywhere it matters, the path data included.
+ */
+function expectedQr(url: string): string {
+    const probe = document.createElement('div');
+    probe.innerHTML = qrSvg(encodeQr(url), {
+        moduleSize: 5,
+        foreground: '#000000',
+        background: '#FFFFFF',
+        ariaLabel: 'Pairing QR code. Scan it with the device you are pairing.'
+    });
+    return probe.innerHTML;
+}
 
 function actions(overrides: Partial<RemoteTabActions> = {}): RemoteTabActions {
     return {
@@ -63,6 +85,107 @@ describe('Settings ▸ Remote', () => {
             'https://werk.taila.ts.net/?token=kd_secret'
         );
         expect(screen.getByTestId('remote-pair-minted').textContent).toContain('shown exactly once');
+    });
+
+    it('draws the minted tailnet URL as a QR beside the field, exactly what the encoder makes of it', async () => {
+        // The URL the daemon really returns over the tailnet: a MagicDNS host and a `kd_` token
+        // of the length `lifecycle/devices.ts` mints. 79 characters, so a version 5 symbol.
+        const url = `https://werk.taila.ts.net/?token=kd_${'a'.repeat(43)}`;
+        render(
+            <RemoteTab
+                actions={actions({
+                    pair: () => Promise.resolve({ ok: true, url, device: { id: 'cc33', name: 'phone', created_at: '' }, notes: [] })
+                })}
+            />
+        );
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'phone' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-qr')).toBeTruthy());
+
+        // The payload IS the reply's URL: the encoder is verified against a decoder in
+        // `@kelpi/core/qr`'s own tests, so drawing byte-for-byte what it draws for this URL is
+        // the proof that a phone pointed at the card gets this URL and not another one.
+        const host = screen.getByTestId('remote-pair-qr');
+        expect(host.innerHTML).toBe(expectedQr(url));
+
+        // Scannable from a Mac screen at arm's length: 37 modules plus the 4-module quiet zone
+        // each side, 5 px a module, so a 225 px plate. Dark modules inside a LIGHT quiet zone,
+        // whatever the theme is doing behind them.
+        const svg = host.querySelector('svg');
+        expect(svg?.getAttribute('width')).toBe('225');
+        expect(svg?.getAttribute('height')).toBe('225');
+        expect(svg?.getAttribute('viewBox')).toBe('0 0 45 45');
+        expect(svg?.querySelector('rect')?.getAttribute('fill')).toBe('#FFFFFF');
+        expect(svg?.querySelector('path')?.getAttribute('fill')).toBe('#000000');
+        // One image to a screen reader, not a wall of nothing, and no token in its name.
+        expect(svg?.getAttribute('role')).toBe('img');
+        expect(svg?.getAttribute('aria-label')).toBe('Pairing QR code. Scan it with the device you are pairing.');
+        expect(host.innerHTML).not.toContain('kd_');
+    });
+
+    it('draws no QR for a loopback pairing, and says nothing about one', async () => {
+        // The toggle off: the daemon answers with the URL only this machine can open. A QR of
+        // it would be an invitation a phone cannot accept, so there is not one.
+        const pair = vi.fn(() =>
+            Promise.resolve({
+                ok: true,
+                url: 'http://127.0.0.1:61154/?token=kd_secret',
+                device: { id: 'cc33', name: 'here', created_at: '' },
+                notes: ['This URL is loopback-only - it works in a browser on this machine.']
+            })
+        );
+        render(<RemoteTab actions={actions({ pair })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.click(screen.getByTestId('remote-pair-tailnet-toggle'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'here' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-url')).toBeTruthy());
+        expect(pair).toHaveBeenCalledWith('here', false);
+        expect(screen.queryByTestId('remote-pair-qr')).toBeNull();
+        expect(screen.getByTestId('remote-pair-minted').textContent).not.toContain('scan');
+    });
+
+    it('draws no QR when the toggle said tailnet but the daemon answered with loopback anyway', async () => {
+        // Belt and braces: the host the daemon actually sent decides, not only the toggle.
+        const pair = vi.fn(() =>
+            Promise.resolve({
+                ok: true,
+                url: 'http://localhost:61154/?token=kd_secret',
+                device: { id: 'cc33', name: 'phone', created_at: '' },
+                notes: []
+            })
+        );
+        render(<RemoteTab actions={actions({ pair })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'phone' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-url')).toBeTruthy());
+        expect(pair).toHaveBeenCalledWith('phone', true);
+        expect(screen.queryByTestId('remote-pair-qr')).toBeNull();
+    });
+
+    it('forgets the QR with the rest of the card, the one-time rule unchanged', async () => {
+        const url = `https://werk.taila.ts.net/?token=kd_${'a'.repeat(43)}`;
+        const pair = vi
+            .fn<(name: string, tailnet: boolean) => Promise<Record<string, unknown>>>()
+            .mockResolvedValueOnce({ ok: true, url, device: { id: 'cc33', name: 'phone', created_at: '' }, notes: [] })
+            .mockResolvedValueOnce({ ok: false, error: 'tailscaled is not running (state: Stopped)' });
+        render(<RemoteTab actions={actions({ pair })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'phone' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-qr')).toBeTruthy());
+
+        // The card goes, and the picture of the token goes with it - same one act, not two.
+        fireEvent.change(screen.getByTestId('remote-pair-name-input'), { target: { value: 'again' } });
+        fireEvent.click(screen.getByTestId('remote-pair-button'));
+        await waitFor(() => expect(screen.getByTestId('remote-pair-error')).toBeTruthy());
+        expect(screen.queryByTestId('remote-pair-minted')).toBeNull();
+        expect(screen.queryByTestId('remote-pair-url')).toBeNull();
+        expect(screen.queryByTestId('remote-pair-qr')).toBeNull();
+        // The token itself, not the string `kd_` - the Daemons card's placeholder carries that.
+        expect(document.body.innerHTML).not.toContain('a'.repeat(43));
     });
 
     it('renders a serve-not-enabled refusal as numbered SETUP STEPS with a real clickable link', async () => {

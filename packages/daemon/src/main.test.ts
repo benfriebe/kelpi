@@ -7,6 +7,7 @@
  * "not running" branch are covered instead.
  */
 
+import { QR_QUIET_ZONE, encodeQr, qrText } from '@kelpi/core/qr';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -14,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from './boot/index.js';
 import { openSqliteDatabase } from './db/index.js';
-import { createDeviceValidator, loadDevices } from './lifecycle/index.js';
+import { createDeviceValidator, loadDevices, type TailscaleRunner } from './lifecycle/index.js';
 import { helpText, parseKelpidArgs, resolveEntry, runKelpid, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -47,6 +48,20 @@ interface Captured extends CliIO {
     text(): string;
 }
 
+/**
+ * The `pair --qr` symbol as it was written to stderr.
+ *
+ * By position, not by matching glyphs: `writePairQr` frames the block with a blank line either
+ * side, and under `--qr-invert` the quiet-zone rows are entirely SPACES, so a glyph filter
+ * would silently eat four lines off a symbol and still look plausible.
+ */
+function symbolLines(stderr: readonly string[]): string[] {
+    const end = stderr.length - 1;
+    if (end < 1 || stderr[end] !== '') return [];
+    const start = stderr.lastIndexOf('', end - 1);
+    return start === -1 ? [] : stderr.slice(start + 1, end);
+}
+
 function io(env: NodeJS.ProcessEnv = {}): Captured {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -74,6 +89,17 @@ describe('parseKelpidArgs', () => {
     it('parses `url --tailnet`, defaulting off', () => {
         expect(parseKelpidArgs(['url'])).toMatchObject({ command: 'url', tailnet: false });
         expect(parseKelpidArgs(['url', '--tailnet'])).toMatchObject({ command: 'url', tailnet: true });
+    });
+
+    it('parses `pair --qr` and its polarity flag, both defaulting off', () => {
+        expect(parseKelpidArgs(['pair', '--name', 'x'])).toMatchObject({ qr: false, qrInvert: false });
+        expect(parseKelpidArgs(['pair', '--name', 'x', '--qr'])).toMatchObject({ qr: true, qrInvert: false });
+        // `--qr-invert` implies `--qr`: nobody types the polarity flag meaning "and no symbol".
+        expect(parseKelpidArgs(['pair', '--name', 'x', '--qr-invert'])).toMatchObject({ qr: true, qrInvert: true });
+        expect(parseKelpidArgs(['pair', '--name', 'x', '--qr', '--qr-invert'])).toMatchObject({
+            qr: true,
+            qrInvert: true
+        });
     });
 
     it('parses `pair` and the `devices` positional forms', () => {
@@ -262,6 +288,116 @@ describe('with a daemon running', () => {
         const revoke = io(env);
         expect(await runKelpid(['devices', 'revoke', 'alice'], revoke)).toBe(0);
         expect(validate(deviceToken)).toBe(false);
+    });
+
+    it('draws the pairing URL as a scannable symbol under it, on stderr, for a tailnet pairing only', async () => {
+        const paths = scratch();
+        const devicesPath = path.join(paths.root, 'devices.json');
+        const daemon = createDaemon({
+            env: {},
+            home: paths.home,
+            runDir: paths.runDir,
+            controlSocketPath: paths.socketPath,
+            dbPath: paths.dbPath,
+            configPath: paths.configPath,
+            httpPort: 0,
+            settleMs: 0
+        });
+        cleanups.push(() => daemon.stop());
+        const info = await daemon.start();
+        const env = {
+            KELPID_RUN_DIR: paths.runDir,
+            KELPID_SOCKET_PATH: paths.socketPath,
+            KELPID_DEVICES_PATH: devicesPath
+        };
+        // A tailnet that is up and already serving this daemon's port: the branch that yields
+        // an https URL a phone can actually reach, which is the only one that draws a symbol.
+        const tailscaleRunner: TailscaleRunner = (args) => {
+            const key = args.join(' ');
+            if (key === 'status --json') {
+                return Promise.resolve({
+                    code: 0,
+                    stdout: JSON.stringify({
+                        BackendState: 'Running',
+                        Self: { DNSName: 'werk.taila5f942.ts.net.' },
+                        CurrentTailnet: { MagicDNSEnabled: true }
+                    }),
+                    stderr: ''
+                });
+            }
+            if (key === 'serve status --json') {
+                return Promise.resolve({
+                    code: 0,
+                    stdout: JSON.stringify({
+                        TCP: { '443': { HTTPS: true } },
+                        Web: {
+                            'werk.taila5f942.ts.net:443': {
+                                Handlers: { '/': { Proxy: `http://127.0.0.1:${String(info.httpPort)}` } }
+                            }
+                        }
+                    }),
+                    stderr: ''
+                });
+            }
+            return Promise.resolve({ code: 1, stdout: '', stderr: `unexpected: ${key}` });
+        };
+
+        const pair: CliIO & Captured = { ...io(env), tailscaleRunner };
+        expect(await runKelpid(['pair', '--name', 'my-phone', '--tailnet', '--qr'], pair)).toBe(0);
+
+        // stdout is STILL exactly the URL: `open "$(kelpid pair …)"` keeps working, and the
+        // symbol is human framing on stderr like every other line this command prints.
+        expect(pair.stdout).toHaveLength(1);
+        const url = pair.stdout[0] as string;
+        expect(url.startsWith('https://werk.taila5f942.ts.net/?token=kd_')).toBe(true);
+
+        // The symbol is the encoder's own drawing of that URL, at its own quiet zone: half
+        // blocks, so the line count is the extent halved and rounded up, and every line is
+        // exactly the extent wide.
+        const matrix = encodeQr(url);
+        const extent = matrix.size + QR_QUIET_ZONE * 2;
+        const glyphs = symbolLines(pair.stderr);
+        expect(glyphs).toHaveLength(Math.ceil(extent / 2));
+        expect(new Set(glyphs.map((line) => [...line].length))).toEqual(new Set([extent]));
+        expect(glyphs.every((line) => /^[█▀▄ ]+$/.test(line))).toBe(true);
+        expect(glyphs.join('\n')).toBe(qrText(matrix));
+        // Drawn UNDER the URL: everything the command says comes before it in write order,
+        // and on a terminal both streams are the same screen.
+        expect(pair.stderr.indexOf(glyphs[0] as string)).toBeGreaterThan(
+            pair.stderr.findIndex((line) => line.includes('Revoke any time with'))
+        );
+        // Nothing else on those lines: no escape sequence to break the symbol's own contrast.
+        expect(glyphs.some((line) => line.includes('\u001b'))).toBe(false);
+
+        // The token is shown ONCE, in the URL. The symbol carries it in module bits, not text.
+        const token = new URL(url).searchParams.get('token') ?? '';
+        expect(token.startsWith('kd_')).toBe(true);
+        expect(pair.text().split(token)).toHaveLength(2);
+
+        // A light terminal wants the other polarity, and gets exactly the opposite glyphs.
+        const inverted: CliIO & Captured = { ...io(env), tailscaleRunner };
+        expect(await runKelpid(['pair', '--name', 'my-other-phone', '--tailnet', '--qr-invert'], inverted)).toBe(0);
+        const invertedGlyphs = symbolLines(inverted.stderr);
+        expect(invertedGlyphs).toHaveLength(Math.ceil(extent / 2));
+        // The quiet zone is now the terminal's own light background, so those rows are blank.
+        expect(invertedGlyphs[0]).toBe(' '.repeat(extent));
+        expect(invertedGlyphs.join('\n')).toBe(qrText(encodeQr(inverted.stdout[0] as string), { invert: true }));
+
+        // Without --tailnet the URL is loopback, which a phone cannot reach whatever it does
+        // with the picture: the pairing still succeeds, and the reason is one line.
+        const loopback = io(env);
+        expect(await runKelpid(['pair', '--name', 'here', '--qr'], loopback)).toBe(0);
+        expect(loopback.stdout).toHaveLength(1);
+        expect((loopback.stdout[0] as string).startsWith('http://127.0.0.1:')).toBe(true);
+        expect(symbolLines(loopback.stderr)).toEqual([]);
+        expect(loopback.stderr.some((line) => line.includes('█'))).toBe(false);
+        expect(loopback.text()).toContain('--qr drew nothing');
+        expect(loopback.text()).toContain('Add --tailnet');
+
+        // And no --qr at all leaves the command exactly as it was.
+        const plain: CliIO & Captured = { ...io(env), tailscaleRunner };
+        expect(await runKelpid(['pair', '--name', 'quiet', '--tailnet'], plain)).toBe(0);
+        expect(plain.stderr.some((line) => line.includes('█'))).toBe(false);
     });
 
     it('reports status and refuses to start a second one', async () => {

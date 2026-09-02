@@ -350,6 +350,9 @@ function bundlePhase() {
 
     // ── the client build ─────────────────────────────────────────────────────────
     check('the client build is staged', fs.existsSync(path.join(resourcesPath, 'client', 'index.html')));
+    // The tab icon is a build output (`client/vite.config.ts` prints it from `@kelpi/core/icon`),
+    // so it rides along in the staged directory or the packaged app has no favicon at all.
+    check('…with the Kelpi mark beside it', fs.existsSync(path.join(resourcesPath, 'client', 'favicon.svg')));
 
     // ── the CLI payload ──────────────────────────────────────────────────────────
     // `/usr/local/bin/kelpi` is a symlink into this directory (`src/cli-install.ts`), so both
@@ -713,6 +716,14 @@ async function launchPhase() {
         const staged = fs.readFileSync(path.join(resourcesPath, 'client', 'index.html'), 'utf8');
         check('the daemon serves the client staged in Resources', served === staged, `${String(served.length)} bytes`);
         check('…and not its "client not built" placeholder', !served.includes('client not built'));
+
+        const icon = await fetch(`${sandbox.base}/favicon.svg`);
+        const iconBody = await icon.text();
+        check(
+            '…and the Kelpi mark that document links as its icon',
+            icon.ok && iconBody.startsWith('<svg ') && iconBody.includes('<path'),
+            `${String(icon.status)} ${icon.headers.get('content-type') ?? '?'}, ${String(iconBody.length)} bytes`
+        );
 
         const asset = /\/assets\/[A-Za-z0-9._-]+\.js/.exec(served)?.[0];
         if (asset !== undefined) {

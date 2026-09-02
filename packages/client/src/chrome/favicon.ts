@@ -3,15 +3,25 @@
  *
  * agent-lifecycle.md §8.2/§8.4 and shell-ui.md §15 ("the web-only client can degrade to a
  * favicon badge/notification API. Keep the waiting-beats-running priority and theme-colored
- * dots"). So: a terminal glyph with a dot in the top-right corner —
+ * dots"). So: the Kelpi mark with a dot in the top-right corner —
  * `waiting > 0 → statusWaiting`, else `running > 0 → statusRunning`, else no dot — plus the
  * dock-badge equivalent, a waiting count folded into the document title.
+ *
+ * The mark is the app's own, not a stand-in: `@kelpi/core/icon` holds the kelpie head from
+ * `core/assets/kelpi-icon.svg` as flattened polylines, and the Dock tile, the menu-bar glyph
+ * and this canvas all stroke that one drawing. A browser attached over the tailnet gets the
+ * same identity in its tab as the packaged app has in the Dock, which is the whole reason the
+ * art sits in core rather than in the Electron shell. The document's *static* icon (before any
+ * of this runs) is the vector form of the same data, emitted as `/favicon.svg` by the client's
+ * build.
  *
  * Everything is injectable. Canvas is unavailable in jsdom (and in any embedder that blocks
  * it), so `createFaviconController` takes a canvas factory and a document, and **degrades to a
  * no-op** rather than throwing when 2D rendering is not available: a missing favicon must
  * never be able to break the app.
  */
+
+import { kelpieArt, type ArtPoint } from '@kelpi/core/icon';
 
 export interface FaviconSummary {
     readonly running: number;
@@ -56,6 +66,7 @@ export interface FaviconContext {
     strokeStyle: string;
     lineWidth: number;
     lineCap: string;
+    lineJoin: string;
     clearRect(x: number, y: number, w: number, h: number): void;
     fillRect(x: number, y: number, w: number, h: number): void;
     beginPath(): void;
@@ -79,15 +90,34 @@ export interface DrawFaviconOptions {
 }
 
 /**
- * Draws the terminal glyph + badge and returns a data URL, or null when the canvas cannot
- * give a 2D context.
+ * The canvas the mark is drawn on, before the browser scales it into a tab.
+ *
+ * 64 rather than the 32 the placeholder glyph used: the kelpie is a line drawing with real
+ * detail in the mane, and a browser downsampling a 64px render to 16px keeps far more of its
+ * shape than a 32px render of it does.
+ */
+export const FAVICON_SIZE = 64;
+
+/**
+ * The floor on the mark's stroke width, as a fraction of the canvas.
+ *
+ * The drawing's own stroke is ~1.2 % of its square, which at any favicon size is a fraction of
+ * a pixel: without a floor the whole mark dissolves into grey. This is the tray glyph's rule
+ * exactly (`shell/src/icon.ts`: 1pt on a 16pt image), so the tab and the menu bar carry the
+ * same weight of line.
+ */
+const MIN_STROKE_FRACTION = 1 / 16;
+
+/**
+ * Draws the Kelpi mark + badge and returns a data URL, or null when the canvas cannot give a
+ * 2D context.
  */
 export function drawFavicon(
     canvas: FaviconCanvas,
     summary: FaviconSummary,
     options: DrawFaviconOptions = {}
 ): string | null {
-    const size = options.size ?? 32;
+    const size = options.size ?? FAVICON_SIZE;
     const colors = options.colors ?? DEFAULT_FAVICON_COLORS;
     canvas.width = size;
     canvas.height = size;
@@ -100,16 +130,24 @@ export function drawFavicon(
         ctx.fillRect(0, 0, size, size);
     }
 
-    // `❯_` — the terminal glyph, drawn as strokes so it stays crisp at 16/32px.
+    // The kelpie head, full bleed: `kelpieArt()` hands back the source drawing's polylines on
+    // the unit square, so scaling by `size` is the entire mapping. Round caps and joins are
+    // what make a chain of segments the same stroke the SVG describes.
+    const art = kelpieArt();
     ctx.strokeStyle = colors.foreground;
-    ctx.lineWidth = Math.max(2, size * 0.09);
+    ctx.lineWidth = Math.max(art.strokeWidth * size, size * MIN_STROKE_FRACTION);
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(size * 0.22, size * 0.28);
-    ctx.lineTo(size * 0.48, size * 0.5);
-    ctx.lineTo(size * 0.22, size * 0.72);
-    ctx.moveTo(size * 0.56, size * 0.72);
-    ctx.lineTo(size * 0.8, size * 0.72);
+    for (const line of art.polylines) {
+        const start = line[0];
+        if (start === undefined) continue;
+        ctx.moveTo(start.x * size, start.y * size);
+        for (let at = 1; at < line.length; at += 1) {
+            const point = line[at] as ArtPoint;
+            ctx.lineTo(point.x * size, point.y * size);
+        }
+    }
     ctx.stroke();
 
     const badge = faviconBadgeColor(summary, colors);
@@ -180,6 +218,7 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
 
     let link: LinkLike | null = null;
     let originalHref: string | null = null;
+    let originalType: string | null = null;
     let lastKey: string | null = null;
 
     if (doc !== undefined && doc !== null) {
@@ -187,6 +226,8 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
         if (isLink(existing)) {
             link = existing;
             originalHref = existing.href;
+            // The document ships `/favicon.svg`; what goes in its place here is a PNG.
+            originalType = existing.type;
         } else {
             const created = doc.createElement('link');
             if (isLink(created)) {
@@ -216,10 +257,16 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
                 ...(options.colors === undefined ? {} : { colors: options.colors })
             };
             const url = drawFavicon(canvas, summary, drawOptions);
-            if (url !== null) link.href = url;
+            if (url !== null) {
+                link.href = url;
+                link.type = 'image/png';
+            }
         },
         dispose(): void {
-            if (link !== null && originalHref !== null && originalHref.length > 0) link.href = originalHref;
+            if (link !== null && originalHref !== null && originalHref.length > 0) {
+                link.href = originalHref;
+                if (originalType !== null) link.type = originalType;
+            }
             if (doc !== undefined && doc !== null && updateTitle) doc.title = baseTitle;
             lastKey = null;
         }

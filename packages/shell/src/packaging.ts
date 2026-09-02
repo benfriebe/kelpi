@@ -14,7 +14,7 @@
  * Nothing here imports Electron.
  */
 
-import { stampKelpie } from './app-icon-art.js';
+import { stampKelpie } from '@kelpi/core/icon';
 import { encodePng } from './icon.js';
 import { RESOURCE_NAMES } from './resources.js';
 
@@ -235,9 +235,9 @@ export function nodeRuntimeIssues(probe: NodeRuntimeProbe, targetArch: string): 
 // ── the app icon ────────────────────────────────────────────────────────────────────
 
 /**
- * The designed icon: the kelpie head from `assets/kelpi-icon.svg` (white line art on black),
+ * The designed icon: the kelpie head from `core/assets/kelpi-icon.svg` (white line art on black),
  * stroked onto the same rounded tile the placeholder used. The drawing itself is data in
- * `app-icon-art-data.ts`; `app-icon-art.ts` flattens it into polylines once per process.
+ * `@kelpi/core/icon` (`art-data.ts`), which flattens it into polylines once per process.
  *
  * The tile keeps a whisper of gradient and rim over the design's flat black so the icon still
  * reads as an object on a dark Dock, but it stays close enough to #000 that the mark and its
@@ -322,7 +322,7 @@ interface Canvas {
  * Draw the app icon at `size` px.
  *
  * The kelpie mark in white line art on a near-black rounded tile — the shipped drawing from
- * `assets/kelpi-icon.svg`, not a placeholder. Anti-aliasing comes from signed distance fields
+ * `core/assets/kelpi-icon.svg`, not a placeholder. Anti-aliasing comes from signed distance fields
  * rather than supersampling, because the largest ICNS variant is 1024², and a 4× supersample
  * of that is a 67 MB buffer.
  */

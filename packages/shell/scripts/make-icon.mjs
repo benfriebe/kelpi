@@ -13,11 +13,12 @@
  *
  *     node scripts/make-icon.mjs [--out <dir>]        # default: out/staging
  *
- * The drawing is the designed Kelpi mark: the kelpie head from `assets/kelpi-icon.svg`,
- * white line art on a near-black rounded tile. The SVG is the editable source; its path data
- * is restated in `src/app-icon-art-data.ts` (a unit test keeps the copy honest) and stroked
- * by the rasteriser in `src/packaging.ts`, so the icon is still rendered rather than shipped
- * as a binary. To change the icon, edit the SVG and re-extract the data module.
+ * The drawing is the designed Kelpi mark: the kelpie head from `@kelpi/core`'s
+ * `assets/kelpi-icon.svg`, white line art on a near-black rounded tile. The SVG is the
+ * editable source; its path data is restated in `@kelpi/core/icon` (a unit test keeps the copy
+ * honest) and stroked by the rasteriser in `src/packaging.ts`, so the icon is still rendered
+ * rather than shipped as a binary. To change the icon, edit the SVG and re-extract the data
+ * module. The mark lives in core because the web client's favicon draws it too.
  */
 
 import { createRequire } from 'node:module';

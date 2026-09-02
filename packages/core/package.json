@@ -9,6 +9,7 @@
     "./resolve": "./src/resolve/index.ts",
     "./agent": "./src/agent/index.ts",
     "./env": "./src/env/index.ts",
+    "./icon": "./src/icon/index.ts",
     "./config": "./src/config/index.ts"
   }
 }

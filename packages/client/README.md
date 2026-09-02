@@ -78,6 +78,12 @@ daemon answers with a "client not built" page and everything else (control socke
 `/healthz`) still works. Assets under `/assets/` are content-hashed and served immutable;
 any unknown path falls back to `index.html`, so deep links work.
 
+`/favicon.svg` is the one build output with a fixed name, because `index.html` links it: the
+Kelpi mark, printed from `@kelpi/core/icon` by a plugin in `vite.config.ts` rather than checked
+in, so the tab icon is the same drawing as the Dock tile and the menu-bar glyph. The dev server
+answers the same path. Once the client mounts, `chrome/favicon.ts` swaps the href for a canvas
+render of the mark carrying the agent status dot (§8.2's waiting-beats-running rule).
+
 ## The live smoke
 
 ```bash

@@ -2,7 +2,7 @@
  * The tray icon, drawn in code (docs/current/agent-lifecycle.md §8.2).
  *
  * The glyph is the Kelpi mark itself — the kelpie head the app icon strokes, rendered from
- * the same flattened vector data in `app-icon-art.ts` — with a 6px status dot in the
+ * the same flattened vector data in `@kelpi/core/icon` — with a 6px status dot in the
  * top-right corner: waiting colour when anything waits, else running colour, else no dot.
  * Rather than ship binary assets through an esbuild bundle, the shell rasterizes the icon
  * into an RGBA buffer and encodes a PNG with `node:zlib` — zero dependencies, one kelpie in
@@ -25,7 +25,7 @@
 
 import { deflateSync } from 'node:zlib';
 
-import { stampKelpie } from './app-icon-art.js';
+import { stampKelpie } from '@kelpi/core/icon';
 
 export type IconIndicator = 'idle' | 'running' | 'waiting' | 'disconnected';
 
@@ -293,7 +293,7 @@ export function trayIconPixels(
     const GLYPH = trayIconIsTemplate(indicator) ? TEMPLATE_GLYPH : NON_TEMPLATE_GLYPH;
 
     // The kelpie mark — the SAME flattened art and SDF stamp the app icon strokes
-    // (`app-icon-art.ts`), laid down in the glyph tone with the stamp's anti-aliased
+    // (`@kelpi/core/icon`), laid down in the glyph tone with the stamp's anti-aliased
     // coverage as the alpha channel. Alpha is all a template image keeps, so the AA
     // survives macOS's tinting untouched.
     const glyph = stampKelpie(size, {

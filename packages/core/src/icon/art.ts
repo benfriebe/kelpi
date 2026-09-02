@@ -1,14 +1,16 @@
 /**
- * The Kelpi mark's artwork AND its rasteriser: the kelpie head from `assets/kelpi-icon.svg`,
- * flattened into stroke centrelines, plus the SDF stamp that paints them. Both the app icon
- * (`packaging.ts`) and the menu-bar tray glyph (`icon.ts`) render from here, so there is
- * exactly one kelpie in the codebase.
+ * The Kelpi mark's artwork AND its rasteriser: the kelpie head from
+ * `../../assets/kelpi-icon.svg`, flattened into stroke centrelines, plus the SDF stamp that
+ * paints them. The app icon (`shell/src/packaging.ts`), the menu-bar tray glyph
+ * (`shell/src/icon.ts`) and the browser tab's favicon (`client/src/chrome/favicon.ts`) all
+ * render from here, so there is exactly one kelpie in the codebase. It lives in `@kelpi/core`
+ * rather than in the shell precisely because the third of those runs in a browser.
  *
  * The drawing is unusually friendly to this treatment: every path is `fill:none` with round
  * caps and round joins at one shared width, so "render the SVG" reduces to "stroke a set of
  * polylines with round-capped segments", which is exactly the `segmentDistance` primitive
  * below. No SVG library, no rasteriser dependency, no binary asset in git, and the mark still
- * re-renders at every size — 1024px Dock tile to 16pt menu bar — from one description.
+ * re-renders at every size — 1024px Dock tile to 16px favicon — from one description.
  *
  * What this file implements is therefore a *subset* of SVG path data, not a path engine:
  * moveto/lineto (and the implicit linetos after a moveto), cubic curves with their smooth `s`
@@ -23,7 +25,7 @@ import {
     ART_TRANSLATE_Y,
     ART_VIEWBOX,
     KELPIE_PATHS
-} from './app-icon-art-data.js';
+} from './art-data.js';
 
 export interface ArtPoint {
     readonly x: number;

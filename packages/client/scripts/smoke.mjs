@@ -365,6 +365,28 @@ async function main() {
             );
         }
 
+        /**
+         * Issue #13: a browser attached over the tailnet must get the Kelpi mark in its tab.
+         * The build emits `/favicon.svg` from `@kelpi/core/icon` and the document links it, so
+         * the failure mode this catches is either half going missing: a link to a path the
+         * daemon answers with the SPA fallback returns an HTML document served as the icon,
+         * which is exactly what a 404-shaped bug looks like here.
+         */
+        const iconHref = /<link rel="icon"[^>]*href="([^"]+)"/.exec(html)?.[1];
+        check('the document links a favicon', iconHref === '/favicon.svg', String(iconHref));
+        if (iconHref !== undefined) {
+            const icon = await fetch(`${daemon.base}${iconHref}`);
+            const body = await icon.text();
+            check(
+                'and the daemon serves the Kelpi mark there, not the SPA fallback',
+                icon.ok &&
+                    (icon.headers.get('content-type') ?? '').startsWith('image/svg+xml') &&
+                    body.startsWith('<svg ') &&
+                    body.includes('<path'),
+                `${iconHref} → ${icon.status} ${icon.headers.get('content-type') ?? '?'}, ${body.length} bytes`
+            );
+        }
+
         const health = await (await fetch(`${daemon.base}/healthz`)).json();
         check('healthz reports the protocol version', health.ok === true && health.protocol === PROTOCOL_VERSION);
 

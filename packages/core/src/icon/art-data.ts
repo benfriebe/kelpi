@@ -1,12 +1,13 @@
 /**
  * The Kelpi mark, restated as data: every `d`, the group transform and the stroke width from
- * `assets/kelpi-icon.svg`, copied verbatim (this file was machine-extracted from it).
+ * `../../assets/kelpi-icon.svg`, copied verbatim (this file was machine-extracted from it).
  *
  * The SVG stays in the repo as the *editable* source: open it in Inkscape, change the drawing,
- * re-extract these constants. `app-icon-art.test.ts` compares this file against the SVG on
- * every test run, so a drifted copy fails the suite rather than shipping a stale icon. The
- * rendering itself lives in `app-icon-art.ts`; nothing reads the SVG at build time, which is
- * what keeps `dist/packaging.cjs` a single self-contained bundle.
+ * re-extract these constants. `art.test.ts` compares this file against the SVG on every test
+ * run, so a drifted copy fails the suite rather than shipping a stale icon. The rendering
+ * itself lives in `art.ts` (raster) and `svg.ts` (vector); nothing reads the SVG at build
+ * time, which is what keeps the shell's `dist/packaging.cjs` a single self-contained bundle
+ * and lets the browser client draw the same mark without a file fetch.
  */
 
 /** The source canvas is a 1024 x 1024 square; every coordinate lives on it. */

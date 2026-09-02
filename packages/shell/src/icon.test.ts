@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { stampKelpie } from './app-icon-art.js';
+import { stampKelpie } from '@kelpi/core/icon';
 import {
     DARK_TRAY_STATUS,
     DEFAULT_TRAY_STATUS,
@@ -80,7 +80,7 @@ describe('trayIconPixels', () => {
 
     it('strokes the kelpie mark — the app icon’s own art, not a second drawing', () => {
         // The idle icon has no dot, so its ALPHA CHANNEL must be exactly the SDF stamp of
-        // `app-icon-art.ts`'s flattened kelpie at the tray's own span and stroke floor. This
+        // `@kelpi/core/icon`'s flattened kelpie at the tray's own span and stroke floor. This
         // is what makes "one kelpie in the codebase" a tested claim rather than a comment.
         const canvas = trayIconPixels('idle', 2);
         const coverage = stampKelpie(canvas.width, {

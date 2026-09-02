@@ -28683,6 +28683,24 @@ function buildFlows(ctx) {
 
                 try {
                     await emulatePhone(view);
+                    const signal = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                                    w: window.innerWidth,
+                                    h: window.innerHeight
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`form-factor signal under emulation: ${JSON.stringify(signal)}`);
+                    recorder.check(
+                        'the client is in the phone form factor (everything below is gated on it)',
+                        signal.formFactor === 'phone',
+                        `data-form-factor=${String(signal.formFactor)} coarse=${String(signal.coarse)} ${String(signal.w)}x${String(signal.h)}`
+                    );
                     const before = await readPanes();
                     recorder.note(`under the phone viewport, before the keyboard: ${JSON.stringify(before)}`);
                     recorder.check(

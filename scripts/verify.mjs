@@ -91,12 +91,13 @@ const SURFACES = [
             'terminal-drop-and-paste', 'cmd-click-path',
             // C2's software-keyboard layout lives in `terminal/keyboard-inset.ts` and reaches the
             // daemon through the pane's own resize path, so a change here can move the rows a PTY
-            // is told about on a phone. C1's key bar lives in this directory too and mounts inside
-            // `TerminalPane`, so a change here can move it; its step is the only place a real
-            // touch on a real 44px key reaches a real PTY (docs/MOBILE-PLAN.md §4). Both steps are
-            // the phone lane's; the desktop terminal steps above are what pin that neither moved
-            // anything anywhere else.
-            'phone-keyboard-inset', 'phone-key-bar'
+            // is told about on a phone. C1's key bar and C4's Paste live in this directory too and
+            // mount inside `TerminalPane`, so a change here can move them; their steps are the only
+            // place a real touch on a real 44px key reaches a real PTY, and the only place the
+            // bar's Paste is measured against the engine's own bracketed-paste envelope
+            // (docs/MOBILE-PLAN.md §4). All three are the phone lane's; the desktop terminal steps
+            // above are what pin that none of them moved anything anywhere else.
+            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste'
         ],
         smokes: ['smoke:terminal']
     },

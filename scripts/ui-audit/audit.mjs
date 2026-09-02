@@ -29193,6 +29193,231 @@ function buildFlows(ctx) {
         },
 
         /**
+         * C4 - Paste from the key bar (docs/MOBILE-PLAN.md §4).
+         *
+         * The claim being measured is a byte one: the bar's Paste key produces exactly what ⌘V
+         * produces, envelope and all, because it goes through the ENGINE's own paste listener
+         * rather than writing bytes of its own. `terminal-drop-and-paste` owns that claim for the
+         * desktop chord; this owns it for a thumb.
+         *
+         * Both clipboard paths are covered, because on a phone both are real: a browser that lets
+         * `navigator.clipboard.readText()` run inside the tap pastes directly, and one that
+         * refuses (an insecure context, a dismissed iOS confirmation, a denied permission) gets
+         * the fallback field. The step takes whichever this Chromium gives it, says which in the
+         * report, and asserts the same bytes either way.
+         *
+         * Phone-lane clean: it borrows the shell pane already on screen, leaves it at a prompt
+         * with DEC 2004 back off, provisions nothing, moves no setting, and clears the emulation
+         * in a `finally`. It deliberately does NOT drive the OSC 52 Copy pill: that needs
+         * `clipboard-write = true`, `terminal-osc52` leaves the gate shut, and a phone step that
+         * moved a setting would belong in the spine. The pill is unit-tested and is on the owner's
+         * device checklist.
+         */
+        {
+            id: 'phone-paste',
+            expect:
+                'Under a phone viewport, tapping the key bar\'s Paste puts the clipboard into the terminal through the engine\'s own paste path: with DEC 2004 set the PTY receives `ESC [ 200 ~ <text> ESC [ 201 ~`, and with it cleared the same tap sends the text bare. When the browser refuses a clipboard read inside the tap, a focused paste field appears above the bar instead and pastes whatever lands in it.',
+            needsEyes: true,
+            async run(recorder) {
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-paste: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const PAYLOAD = 'KBPASTE1';
+
+                /**
+                 * Re-seeded before every tap, and that is not belt-and-braces: ghostty-web copies
+                 * the selection on mouse-up, so the click that FOCUSES a pane can replace the
+                 * system clipboard with whatever character was under the pointer.
+                 * `terminal-drop-and-paste` learned that the hard way and its note is worth
+                 * repeating here, because this step focuses the pane too.
+                 */
+                const seedClipboard = async () =>
+                    String(
+                        await view.eval(
+                            `navigator.clipboard.writeText(${JSON.stringify(PAYLOAD)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                        )
+                    );
+
+                /**
+                 * Tap Paste, and drive the fallback field with a real paste when it appears.
+                 * `shotLabel` photographs the field WHILE it is up, which is the only moment it
+                 * exists - it closes itself the instant it has pasted.
+                 */
+                const tapPaste = async (shotLabel = null) => {
+                    await seedClipboard();
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="paste"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(150);
+                    await view.tap(`${body} [data-terminal-key="paste"]`);
+                    await sleep(400);
+                    const field = await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') !== null`);
+                    if (field !== true) return 'the clipboard read inside the tap';
+                    if (shotLabel !== null) await recorder.shot(view, shotLabel);
+                    // The fallback: the field is up and focused, so the platform's own paste is
+                    // what fills it - the same ⌘V + editing command a person would use.
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyDown',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta,
+                        commands: ['paste']
+                    });
+                    await sleep(40);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta
+                    });
+                    await sleep(400);
+                    return 'the fallback paste field';
+                };
+
+                await focusPaneBody(view, paneID);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+
+                let took = '(not reached)';
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('${body} [data-terminal-key="paste"]') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    recorder.check(
+                        'the Paste key is live now that C4 has landed',
+                        (await view.eval(`document.querySelector('${body} [data-terminal-key="paste"]').disabled === false`)) === true,
+                        'not disabled'
+                    );
+
+                    // Bracketed paste ON, then a reader that prints what the PTY received verbatim.
+                    await runInTerminal(view, `printf '\\033[?2004h'`, { settleMs: 400 });
+                    await runInTerminal(view, 'cat -v', { settleMs: 700 });
+                    took = await tapPaste();
+                    recorder.note(`the paste went through ${took}`);
+                    await view.key('Enter');
+                    await sleep(700);
+                    // The pane is ~170px wide under emulation, so `cat -v` wraps its echo; the
+                    // envelope is asserted on the JOINED capture, exactly as `terminal-long-line`
+                    // reads a wrapped row.
+                    const bracketedRaw = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const bracketed = bracketedRaw.replace(/\n/g, '');
+                    recorder.block('after tapping Paste with DEC 2004 set (cat -v)', bracketedRaw.slice(-400));
+                    recorder.check(
+                        `the tap put the clipboard into the terminal, via ${took}`,
+                        bracketed.includes(PAYLOAD),
+                        bracketed.includes(PAYLOAD) ? `${PAYLOAD} is at the PTY` : 'the payload never arrived'
+                    );
+                    recorder.check(
+                        'and it is WRAPPED, because the ENGINE decided that, not the key bar',
+                        bracketed.includes(`^[[200~${PAYLOAD}^[[201~`),
+                        JSON.stringify(bracketed.slice(Math.max(0, bracketed.indexOf('^[[200~') - 10), bracketed.indexOf('^[[201~') + 10))
+                    );
+                    await recorder.shot(view, 'bracketed');
+
+                    // …and the contrast: 2004 off, the same tap sends the text bare.
+                    await view.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                    await sleep(500);
+                    await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+                    await runInTerminal(view, 'cat -v', { settleMs: 700 });
+                    await tapPaste();
+                    await view.key('Enter');
+                    await sleep(700);
+                    const bare = (await cli.ok(['pane', 'capture', '--target', paneID])).replace(/\n/g, '');
+                    recorder.check(
+                        'with bracketed paste OFF the same tap sends the text with no envelope',
+                        bare.includes(PAYLOAD) && !bare.includes('^[[200~'),
+                        `text=${String(bare.includes(PAYLOAD))} envelope=${String(bare.includes('^[[200~'))}`
+                    );
+
+                    /*
+                     * …AND THE FALLBACK, forced.
+                     *
+                     * This Chromium lets `readText()` run inside the tap, so the path a real phone
+                     * hits most often - an insecure context, a dismissed iOS Paste confirmation, a
+                     * denied permission - would otherwise never be measured live. Making `readText`
+                     * reject is the smallest honest way to reach it: everything downstream of the
+                     * refusal is the product's own code, and the field is then filled by the
+                     * platform's real paste command, not by script. Restored immediately after.
+                     */
+                    await view.eval(
+                        `(() => {
+                            window.__kelpiRealReadText = navigator.clipboard.readText.bind(navigator.clipboard);
+                            navigator.clipboard.readText = () => Promise.reject(new Error('NotAllowedError'));
+                            return true;
+                        })()`
+                    );
+                    let fallbackTook = '(not reached)';
+                    try {
+                        fallbackTook = await tapPaste('fallback-field');
+                        recorder.check(
+                            'a refused clipboard read opens the fallback paste field instead',
+                            fallbackTook === 'the fallback paste field',
+                            `the tap went through ${fallbackTook}`
+                        );
+                        await view.key('Enter');
+                        await sleep(700);
+                        const viaField = (await cli.ok(['pane', 'capture', '--target', paneID])).replace(/\n/g, '');
+                        recorder.check(
+                            'the field pastes what lands in it, into the terminal',
+                            viaField.includes(PAYLOAD),
+                            viaField.includes(PAYLOAD) ? `${PAYLOAD} reached the PTY through the field` : 'the payload never arrived'
+                        );
+                        recorder.check(
+                            'and the field closes itself once it has pasted',
+                            (await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') === null`)) === true,
+                            'no field left on screen'
+                        );
+                    } finally {
+                        await view.eval(
+                            `(() => {
+                                navigator.clipboard.readText = window.__kelpiRealReadText;
+                                delete window.__kelpiRealReadText;
+                                return true;
+                            })()`
+                        );
+                    }
+                    recorder.eyes('is the Paste key legible at the bar\'s scroll position, and does the fallback field read as a field to paste into rather than as an error?');
+                } finally {
+                    // Leave the pane the way it was found: no `cat -v`, no DEC 2004, a prompt.
+                    await view.key('KeyD', { modifiers: MOD.ctrl, key: 'd' }).catch(() => {});
+                    await sleep(400);
+                    await clearPhoneEmulation(view);
+                }
+
+                await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                const restored = JSON.parse(
+                    String(
+                        await view.eval(
+                            `JSON.stringify({
+                                bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                fields: document.querySelectorAll('[data-terminal-paste-field]').length,
+                                formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                            })`
+                        )
+                    )
+                );
+                recorder.check(
+                    'and NOT on desktop: no key bar, no paste field, back to a desktop window',
+                    restored.bars === 0 && restored.fields === 0 && restored.formFactor === 'desktop',
+                    `${String(restored.bars)} bars, ${String(restored.fields)} fields, data-form-factor=${restored.formFactor}`
+                );
+            }
+        },
+
+        /**
          * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
          * "a web app in a window" and "a Mac app".
          *

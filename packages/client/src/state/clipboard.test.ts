@@ -19,7 +19,10 @@ import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../
 import { connectStore } from './bridge';
 import {
     createClipboardWriteHandler,
+    onClipboardOffer,
     parseClipboardWrite,
+    resetClipboardOffersForTests,
+    type ClipboardOffer,
     type ClipboardWriteOutcome
 } from './clipboard';
 import { createKelpiStore } from './store';
@@ -214,5 +217,62 @@ describe('the bridge relays a daemon clipboard-write', () => {
         expect(h.store.getState().ui.toasts).toBe(before);
         expect(JSON.stringify(h.store.getState())).not.toContain('copied by the pane');
         h.dispose();
+    });
+});
+
+/**
+ * C4 (docs/MOBILE-PLAN.md §4) - the OFFER, which is the phone's half of the same broadcast.
+ *
+ * The write above is best-effort and on a phone it is mostly effort: every mobile browser gates
+ * `navigator.clipboard.writeText` on transient activation, and a pane's own output is not a tap.
+ * So the phone key bar shows a Copy pill whose tap IS the gesture, and this registry is how the
+ * copy reaches it. Nothing renders unless a surface subscribed, which on a desktop nothing does.
+ */
+describe('the clipboard offer (C4)', () => {
+    it('offers every copy, whichever way the silent write went', () => {
+        const seen: ClipboardOffer[] = [];
+        const off = onClipboardOffer((offer) => seen.push(offer));
+
+        // The browser path, with a writer that refuses.
+        const browser = createClipboardWriteHandler({
+            shellWindowID: null,
+            writeText: () => Promise.reject(new Error('NotAllowedError')),
+            log: () => undefined
+        });
+        expect(browser(frame())).toBe('browser');
+
+        // …and the shell path, where the write always succeeds and the pill is still the honest
+        // thing to show, because the person holding the phone cannot tell the two apart.
+        const shell = createClipboardWriteHandler({ shellWindowID: SHELL_WINDOW, log: () => undefined });
+        expect(shell(frame({ text: 'second', bytes: 6 }))).toBe('shell');
+
+        expect(seen).toEqual([
+            { paneID: P1, workspaceID: W1, text: 'copied by the pane', bytes: 18 },
+            { paneID: P1, workspaceID: W1, text: 'second', bytes: 6 }
+        ]);
+        off();
+    });
+
+    it('offers nothing for a malformed frame, and nothing after an unsubscribe', () => {
+        const seen: ClipboardOffer[] = [];
+        const off = onClipboardOffer((offer) => seen.push(offer));
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+
+        expect(handler({ type: 'something-else' })).toBeNull();
+        expect(handler(frame({ text: '' }))).toBeNull();
+        expect(seen).toEqual([]);
+
+        off();
+        handler(frame());
+        expect(seen).toEqual([]);
+    });
+
+    it('resetClipboardOffersForTests drops every listener', () => {
+        const seen: ClipboardOffer[] = [];
+        onClipboardOffer((offer) => seen.push(offer));
+        resetClipboardOffersForTests();
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        handler(frame());
+        expect(seen).toEqual([]);
     });
 });

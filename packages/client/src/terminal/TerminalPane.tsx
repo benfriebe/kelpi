@@ -36,7 +36,7 @@ import {
 } from '../app/pane-focus';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
-import { KeyBar } from './KeyBar';
+import { KeyBar, dispatchPaste } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
@@ -58,6 +58,7 @@ import {
 } from './mouse';
 import {
     createTerminalRenderer,
+    engineKeyTarget,
     resolveTerminalTheme,
     type TerminalKeyInit,
     type TerminalMatchLocation,
@@ -1280,6 +1281,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      * tapping the terminal raises the keyboard again with nothing here involved.
      */
     const hideKeyboard = useCallback((): void => releasePaneCaret(hostRef.current), []);
+    /**
+     * C4 - text into the terminal through the ENGINE's own paste path, which is where the
+     * bracketed-paste envelope is decided (`KeyBar.tsx` `dispatchPaste`). The pane owns the host,
+     * so the pane is what resolves the engine's input node.
+     */
+    const pasteText = useCallback(
+        (text: string): boolean => dispatchPaste(engineKeyTarget(hostRef.current), text),
+        []
+    );
 
     const retryStart = useCallback((): void => {
         restartRef.current?.();
@@ -1398,7 +1408,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 {...{ [PANE_SURFACE_ATTR]: '' }}
             />
             {showKeyBar ? (
-                <KeyBar paneID={paneID} sendKey={sendKey} captureRoot={rootRef} hideKeyboard={hideKeyboard} />
+                <KeyBar
+                    paneID={paneID}
+                    sendKey={sendKey}
+                    captureRoot={rootRef}
+                    hideKeyboard={hideKeyboard}
+                    pasteText={pasteText}
+                />
+
             ) : null}
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder

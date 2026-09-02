@@ -105,7 +105,10 @@ const SURFACES = [
             'inspector-open', 'inspector-repo-status', 'inspector-worktree-create',
             'graft-toggle', 'graft-swap-prompt', 'graft-orphan-banner', 'repo-autodetect',
             'pane-branch-chain', 'help-overlay', 'titlebar-menu', 'mac-chrome', 'debug-menu',
-            'repo-picker-multiselect', 'search-colors', 'last-pane-close-deletes-workspace'
+            'repo-picker-multiselect', 'search-colors', 'last-pane-close-deletes-workspace',
+            // `chrome/form-factor.ts` is the phone program's one decision, and the live step is
+            // the only thing that can prove its media query against a real browser.
+            'phone-form-factor'
         ]
     },
     {
@@ -124,6 +127,27 @@ const SURFACES = [
             'web-page-click-focus', 'web-focus-handoff', 'terminal-cursor-focus', 'agent-lifecycle',
             'reattach-after-relaunch', 'content-pane-keybindings', 'scratchpad-create'
         ]
+    },
+    /*
+     * The phone program's two new client areas (docs/MOBILE-PLAN.md). Both directories are
+     * created by later lanes - `phone/` by B1, `pwa/` by A1/A2 - and they are mapped HERE, before
+     * they exist, on purpose: an unmapped source dir escalates to the full battery, so the map
+     * has to lead the code or the first phone PR pays a 20-minute tax for a file nothing else
+     * reaches. Both surfaces are additive and gated on the form factor, so the steps that cover
+     * them are the phone lane's, not the desktop suite's.
+     */
+    {
+        prefix: 'packages/client/src/phone/',
+        tests: ['packages/client/src/phone'],
+        steps: ['phone-form-factor']
+    },
+    {
+        prefix: 'packages/client/src/pwa/',
+        tests: ['packages/client/src/pwa'],
+        // No audit step yet: A1's manifest builder is covered by its own unit tests, and the
+        // daemon serves the files it emits, so `smoke:web` is its live gate. Add the PWA steps
+        // here (phone-pwa-shell, A2) when they land.
+        smokes: ['smoke:web']
     },
     {
         prefix: 'packages/daemon/src/term/',

@@ -114,6 +114,10 @@ function parseArgs(argv) {
          * `--window onscreen` is the per-class fidelity pin used by `lib/shards.mjs`'s
          * `ONSCREEN_STEPS`. The throttling half of the change (`backgroundThrottling: false`) is
          * unconditional under `KELPI_AUDIT` and is what makes any of them survive being occluded.
+         *
+         * There is deliberately no `phone` placement: a phone viewport is a size, a device scale
+         * factor and a pointer type, which is precisely what a placement is forbidden to change.
+         * The phone lane emulates per step instead - see `emulatePhone` and the block above it.
          */
         window: 'default',
         /** Total shards. 1 = the classic single-process serial run. */
@@ -1242,6 +1246,60 @@ async function resizeWindow(page, width, height) {
     );
     const inner = await page.eval('({ w: window.innerWidth, h: window.innerHeight })');
     return { mechanism, inner };
+}
+
+// ── the phone viewport ──────────────────────────────────────────────────────────────
+/*
+ * WHY THIS IS A PER-STEP HELPER AND NOT `--window phone`.
+ *
+ * It was tried as a placement first, because the plan (MOBILE-PLAN.md E2) offers both. It does
+ * not fit, for two independent reasons, and the second is the disqualifying one:
+ *
+ *   1. `--window` is not a renderer setting. Its value is passed to the SHELL as
+ *      `KELPI_AUDIT_WINDOW` and read by `packages/shell/src/audit-window.ts`, whose
+ *      `AuditWindowPlacement` is a closed union of four values; an unknown one degrades to
+ *      `default` by design. A `phone` placement would therefore have to be added to the shell's
+ *      own enum - another lane's file - to mean anything at all.
+ *   2. That module states the law a phone placement would break, in its own words: "None of them
+ *      changes the window's SIZE. That is not a detail: the audit asserts on layout geometry
+ *      (gutters, clearances, column counts, wrapped terminal rows), so a placement that also
+ *      resized the window would change the product under test and every one of those numbers
+ *      with it." A phone viewport is exactly a size change, plus a device scale factor and a
+ *      pointer type.
+ *
+ * And placement is fixed when Electron builds the window, i.e. per PROCESS, while the phone
+ * viewport is a renderer override that has to be put back: the phone steps share their process
+ * with 118 desktop steps whose geometry assertions must be untouched. So the primitive is a pair
+ * of per-step calls with the emulation clamped inside one step's `try`/`finally`, and
+ * `WINDOW_PLACEMENTS` is left exactly as it was.
+ */
+
+/** iPhone 14/15 in CSS px at its real backing scale - the device the plan names. */
+const PHONE_VIEWPORT = { width: 390, height: 844, deviceScaleFactor: 3 };
+
+/**
+ * Make the renderer a phone: 390x844 CSS px at DPR 3, `mobile: true`, and touch with five
+ * contacts (an iPhone reports five).
+ *
+ * `mobile: true` is what makes the page use the mobile viewport machinery rather than a shrunken
+ * desktop one, and `setTouchEmulationEnabled` is what makes `(pointer: coarse)` match - Chromium's
+ * `DevToolsEmulator` sets the page's primary pointer type to coarse for exactly as long as touch
+ * emulation is on. Both halves are needed: `chrome/form-factor.ts` requires a narrow viewport AND
+ * a coarse pointer, deliberately, so that a narrow desktop window stays a desktop.
+ */
+async function emulatePhone(page) {
+    await page.send('Emulation.setDeviceMetricsOverride', { ...PHONE_VIEWPORT, mobile: true });
+    await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    // The client answers on a resize event, and the layout, the engine and the PTY all move with
+    // it; let them settle before anything is read.
+    await sleep(400);
+}
+
+/** Put the window back exactly as it was. Every phone step owes this in a `finally`. */
+async function clearPhoneEmulation(page) {
+    await page.send('Emulation.clearDeviceMetricsOverride');
+    await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 });
+    await sleep(400);
 }
 
 /**
@@ -28374,6 +28432,195 @@ function buildFlows(ctx) {
                     `${String(occurrences)} occurrences (1 echo + 1 output is normal; more means replay duplication)`
                 );
                 recorder.eyes('DUPLICATION CHECK — does the reattached terminal show the same lines twice? Compare against the pre-quit screenshots.');
+            }
+        },
+
+        // ── the phone lane ──────────────────────────────────────────────────────────
+        /**
+         * The phone lane's smoke, and the only live proof E1's signal is real (MOBILE-PLAN.md
+         * E1/E2).
+         *
+         * `chrome/form-factor.ts` resolves `phone` from a narrow viewport AND `(pointer: coarse)`,
+         * and jsdom can pin the arithmetic but not the media query: whether a real Chromium says
+         * `coarse` under device emulation is a fact about the browser, not about the client. So
+         * this step reads BOTH halves of the signal out of the live renderer and says which path
+         * its assertion took - the real media query, or the `?form=phone` override the plan keeps
+         * in reserve for a browser that does not flip the pointer.
+         *
+         * It is a phone-lane step, which means it owes two things (lib/shards.mjs): it must not
+         * move the roster the spine reads, and it must put the emulation back. It touches no pane,
+         * no workspace and no setting; the gestures it fires are swallowed by a capture-phase
+         * `preventDefault`, so not even a focus moves; and the emulation is cleared in a `finally`
+         * so a failed assertion cannot hand the next step a 390 px window.
+         */
+        {
+            id: 'phone-form-factor',
+            expect:
+                'With the renderer emulating a 390x844 phone at DPR 3 with touch, the client publishes `data-form-factor="phone"` on <html>; with the emulation cleared it publishes `desktop` again. The touch helpers deliver real touchstart/touchmove/touchend to the page.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+
+                const before = String(await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`));
+                recorder.check(
+                    'the shell window is a DESKTOP before anything is emulated',
+                    before === 'desktop',
+                    `data-form-factor=${before}`
+                );
+
+                let took = 'the emulated media queries';
+                try {
+                    await emulatePhone(view);
+                    const emulated = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    innerWidth: window.innerWidth,
+                                    innerHeight: window.innerHeight,
+                                    dpr: window.devicePixelRatio,
+                                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                                    noHover: window.matchMedia('(hover: none)').matches,
+                                    maxTouchPoints: navigator.maxTouchPoints,
+                                    attribute: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`under emulation: ${JSON.stringify(emulated)}`);
+
+                    /*
+                     * THE MEASUREMENT the plan asked for, recorded either way: does
+                     * `setDeviceMetricsOverride({mobile:true})` + `setTouchEmulationEnabled`
+                     * actually flip `(pointer: coarse)` in this Chromium? If it does, the client's
+                     * own rule resolves `phone` and the assertion below is the real thing. If it
+                     * does not, the phone half navigates with `?form=phone` - still a real
+                     * assertion, but of the override rather than of the rule, and the assertion
+                     * text says so.
+                     */
+                    recorder.check(
+                        'the emulated viewport is the phone the plan names (390x844 at DPR 3)',
+                        emulated.innerWidth === PHONE_VIEWPORT.width &&
+                            emulated.innerHeight === PHONE_VIEWPORT.height &&
+                            emulated.dpr === PHONE_VIEWPORT.deviceScaleFactor,
+                        `${String(emulated.innerWidth)}x${String(emulated.innerHeight)} @${String(emulated.dpr)}x`
+                    );
+                    recorder.check(
+                        'CDP touch emulation flips (pointer: coarse) in the renderer',
+                        emulated.coarse === true,
+                        `(pointer: coarse)=${String(emulated.coarse)} (hover: none)=${String(emulated.noHover)} maxTouchPoints=${String(emulated.maxTouchPoints)}`
+                    );
+
+                    let attribute = String(emulated.attribute);
+                    if (emulated.coarse !== true) {
+                        // The reserve path: the pointer did not flip, so the viewport alone cannot
+                        // satisfy the rule and the override is how a phone lane addresses this
+                        // browser. Recorded as a finding for MOBILE-PLAN.md §7.
+                        took = 'the ?form=phone override (this Chromium did not flip the pointer)';
+                        await view.send('Page.navigate', {
+                            url: String(
+                                await view.eval(
+                                    `(() => { const url = new URL(location.href); url.searchParams.set('form', 'phone'); return url.toString(); })()`
+                                )
+                            )
+                        });
+                        await view.waitFor(`document.querySelector('${PAGE.app}') !== null`, {
+                            timeoutMs: 60_000,
+                            label: 'the app to remount under ?form=phone'
+                        });
+                        attribute = String(await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`));
+                    }
+                    recorder.check(
+                        `the client reports data-form-factor="phone" under a phone viewport, via ${took}`,
+                        attribute === 'phone',
+                        `data-form-factor=${attribute}`
+                    );
+
+                    /*
+                     * The touch helpers, proved inert. A capture-phase listener records the event
+                     * types and calls `preventDefault()` on the touchstart, which is what stops
+                     * Chromium synthesizing the mouse events and the click behind it - so the
+                     * gestures below reach the DOM as touches and change nothing at all, which is
+                     * what lets a phone step fire them in the middle of the spine.
+                     */
+                    await view.eval(
+                        `(() => {
+                            window.__auditTouch = [];
+                            window.__auditTouchListener = (event) => {
+                                window.__auditTouch.push(event.type);
+                                event.preventDefault();
+                            };
+                            for (const type of ['touchstart', 'touchmove', 'touchend']) {
+                                window.addEventListener(type, window.__auditTouchListener, { capture: true, passive: false });
+                            }
+                            return true;
+                        })()`
+                    );
+                    const centre = { x: Math.round(PHONE_VIEWPORT.width / 2), y: Math.round(PHONE_VIEWPORT.height / 2) };
+                    await view.tap(centre);
+                    await view.swipe({ x: 20, y: centre.y }, { x: 320, y: centre.y }, { steps: 6, durationMs: 120 });
+                    await view.longPress(centre, { ms: 550 });
+                    const seen = JSON.parse(String(await view.eval(`JSON.stringify(window.__auditTouch ?? [])`)));
+                    recorder.note(`touch events seen: ${seen.join(' ')}`);
+                    recorder.check(
+                        'page.tap, page.swipe and page.longPress deliver real touch events to the page',
+                        seen.filter((type) => type === 'touchstart').length === 3 &&
+                            seen.filter((type) => type === 'touchend').length === 3 &&
+                            seen.filter((type) => type === 'touchmove').length >= 6,
+                        `${String(seen.filter((t) => t === 'touchstart').length)} starts, ` +
+                            `${String(seen.filter((t) => t === 'touchmove').length)} moves, ` +
+                            `${String(seen.filter((t) => t === 'touchend').length)} ends`
+                    );
+                    await view.eval(
+                        `(() => {
+                            for (const type of ['touchstart', 'touchmove', 'touchend']) {
+                                window.removeEventListener(type, window.__auditTouchListener, { capture: true });
+                            }
+                            delete window.__auditTouchListener;
+                            delete window.__auditTouch;
+                            return true;
+                        })()`
+                    );
+                    await recorder.shot(view, 'phone');
+                } finally {
+                    if (took.startsWith('the ?form=')) {
+                        // Undo the reserve path's navigation as well, so the run is handed back
+                        // the page it was given.
+                        await view.send('Page.navigate', {
+                            url: String(
+                                await view.eval(
+                                    `(() => { const url = new URL(location.href); url.searchParams.delete('form'); return url.toString(); })()`
+                                )
+                            )
+                        });
+                        await view
+                            .waitFor(`document.querySelector('${PAGE.app}') !== null`, {
+                                timeoutMs: 60_000,
+                                label: 'the app to remount without the override'
+                            })
+                            .catch(() => {});
+                    }
+                    await clearPhoneEmulation(view);
+                }
+
+                const after = String(await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`));
+                recorder.check(
+                    'and NOT on desktop: with the emulation cleared the same window reports desktop again',
+                    after === 'desktop',
+                    `data-form-factor=${after}`
+                );
+                const restored = JSON.parse(
+                    String(
+                        await view.eval(
+                            `JSON.stringify({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio, coarse: window.matchMedia('(pointer: coarse)').matches })`
+                        )
+                    )
+                );
+                recorder.note(`after clearing: ${JSON.stringify(restored)}`);
+                recorder.check(
+                    'the window the next step inherits is the one this step was handed',
+                    restored.coarse === false && restored.w > PHONE_VIEWPORT.width,
+                    `${String(restored.w)}x${String(restored.h)} @${String(restored.dpr)}x coarse=${String(restored.coarse)}`
+                );
             }
         },
 

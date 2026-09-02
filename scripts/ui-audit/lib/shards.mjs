@@ -14,7 +14,7 @@
  * serial run.** Everything else here is live, proven, and is the vehicle for the wave that breaks
  * the coupling: read the manifest as a costed list of what would have to become self-provisioning.
  *
- * ## The two lanes
+ * ## The lanes
  *
  * **spine** — anything the accumulated timeline reaches. It runs **serially in shard 0, in the
  * full canonical order**, exactly as it does today. Three independent things put a step here, and
@@ -36,6 +36,16 @@
  *      cold boot and diffs it against the baseline; a real `--shards N` run diffed with
  *      `compare-runs.mjs` decides the rest. Both are re-runnable, and the entries below quote what
  *      they measured.
+ *
+ * **phone** - the third lane, added with the phone program (docs/MOBILE-PLAN.md E2). It is the
+ * free lane's contract plus one clause: a phone step drives the renderer through CDP device
+ * emulation (`audit.mjs` ▸ `emulatePhone`), so it must CLEAR that emulation before it returns.
+ * The reason it is a lane of its own rather than a free step with a helper call is the roster
+ * criterion above, read the other way round: a 390x844 window with a coarse pointer is a
+ * different app, and any spine step that inherited one would be measuring a layout no desktop
+ * user has. Keeping the phone steps named lets a sharded run put them in one process, and keeps
+ * the "did you clear it?" question answerable by reading one list. A phone step that needs to
+ * mutate the roster does not belong here; it belongs in the spine, like any other.
  *
  * **free** — what is left: a step that provisions everything it touches, changes nothing the
  * timeline carries, and reproduces its baseline result without the accumulated run behind it.
@@ -252,6 +262,7 @@ export const STEP_MANIFEST = [
     { id: 'debug-menu', lane: 'free', chain: null, cost: 6.3, reason: 'opens the debug menu and closes it' },
     { id: 'workspace-edges', lane: 'spine', chain: null, cost: 30.5, reason: 'creates the edge-case workspaces it drives, and deletes them; measured alone and in a 2-shard run: one of the three known reds is HERE (a header reveal that fails only against the accumulated sidebar) and it goes green without that context' },
     { id: 'reattach-after-relaunch', lane: 'spine', chain: 'firstPane', cost: 24.4, reason: 'reads state.firstPane, and relaunches the shell the rest of shard 0 is attached to' },
+    { id: 'phone-form-factor', lane: 'phone', chain: null, cost: 6.0, reason: 'the phone lane\'s smoke: it emulates a 390x844 phone, reads `data-form-factor` off <html>, fires the three touch helpers into a capture-phase `preventDefault`, and clears the emulation in a `finally`. It provisions nothing, reads nothing the timeline carries, and moves no pane, workspace, focus or setting - measured in a three-step run (`--only fresh-boot,terminal-ls,phone-form-factor`), the `state-timeline.jsonl` rows either side of it are identical. Placed immediately before `mac-chrome` (which must stay last) so the phone lane sits at the tail of the canonical order' },
     { id: 'mac-chrome', lane: 'spine', chain: null, cost: 21.5, reason: 'reads the window chrome and the menus it opens itself; but it MUTATES the accumulated roster (run-AH2 state timeline: the pane set or the active workspace differs across it) and shard 0 inherits that roster — measured: with these in the free lane, settings-live-apply ran against Default/3 panes instead of Renamed One/6 and its §N25 width floor went red' }
 ];
 
@@ -367,6 +378,7 @@ export function planShards(stepIDs, shardCount) {
             undeclared,
             spine: entries.map((e) => e.id),
             free: [],
+            phone: [],
             onscreen: entries.filter((entry) => ONSCREEN_STEPS.has(entry.id)).map((entry) => entry.id)
         };
     }
@@ -386,15 +398,31 @@ export function planShards(stepIDs, shardCount) {
     }
     // The free lane is disabled (see `FREE_LANE_ENABLED`): every step is spine, shard 0 is the
     // whole canonical order, and the other shards are empty — so `--shards N` is exactly today's
-    // serial run rather than a differently-broken one.
+    // serial run rather than a differently-broken one. The phone lane rides the same switch: with
+    // it off, a phone step is a spine step that happens to emulate and restore a viewport, which
+    // is exactly what it does in the serial run today.
     const spine = entries.filter((entry) => FREE_LANE_ENABLED ? entry.lane === 'spine' : true);
     const free = FREE_LANE_ENABLED
-        ? entries.filter((entry) => entry.lane !== 'spine' && !ONSCREEN_STEPS.has(entry.id))
+        ? entries.filter((entry) => entry.lane === 'free' && !ONSCREEN_STEPS.has(entry.id))
         : [];
-    const freeShards = Math.max(1, shardCount - 1 - (pinned.length > 0 ? 1 : 0));
+    /*
+     * The phone lane gets a group of its own, not a block of the free lane. Its steps emulate a
+     * phone viewport and restore it, and grouping them keeps that window of altered geometry
+     * inside one process - a free step sharing a renderer with one mid-emulation would be
+     * measuring the wrong app. No window placement is pinned: the emulation is a renderer
+     * override applied per step, which is the whole reason `--window phone` does not exist
+     * (`audit.mjs` ▸ the phone viewport block).
+     */
+    const phone = FREE_LANE_ENABLED ? entries.filter((entry) => entry.lane === 'phone') : [];
+    const extraGroups = (pinned.length > 0 ? 1 : 0) + (phone.length > 0 ? 1 : 0);
+    const freeShards = Math.max(1, shardCount - 1 - extraGroups);
     const blocks = balanceBlocks(free, freeShards);
     const groups = [spine.map((entry) => entry.id), ...blocks.map((block) => block.map((entry) => entry.id))];
     const placements = [null, ...blocks.map(() => null)];
+    if (phone.length > 0) {
+        groups.push(phone.map((entry) => entry.id));
+        placements.push(null);
+    }
     if (pinned.length > 0) {
         groups.push(pinned.map((entry) => entry.id));
         placements.push('onscreen');
@@ -408,6 +436,7 @@ export function planShards(stepIDs, shardCount) {
         undeclared,
         spine: spine.map((entry) => entry.id),
         free: free.map((entry) => entry.id),
+        phone: phone.map((entry) => entry.id),
         onscreen: pinned.map((entry) => entry.id)
     };
 }
@@ -416,9 +445,11 @@ export function planShards(stepIDs, shardCount) {
 export function describePartition(plan) {
     const lines = [];
     const cost = (ids) => ids.reduce((sum, id) => sum + (BY_ID.get(id)?.cost ?? 10), 0);
+    const phoneSet = new Set(plan.phone ?? []);
     for (let i = 0; i < plan.groups.length; i++) {
         const ids = plan.groups[i];
         const placement = plan.placements?.[i] ?? null;
+        const isPhone = i > 0 && ids.length > 0 && ids.every((id) => phoneSet.has(id));
         const lane =
             plan.groups.length === 1
                 ? 'serial (all steps)'
@@ -426,7 +457,9 @@ export function describePartition(plan) {
                   ? `fidelity class (window ${placement})`
                   : i === 0
                     ? 'spine (serial, canonical order)'
-                    : 'free';
+                    : isPhone
+                      ? 'phone (device emulation, cleared per step)'
+                      : 'free';
         lines.push(`  shard ${String(i)} — ${lane}: ${String(ids.length)} steps, ~${cost(ids).toFixed(0)}s of measured step time`);
     }
     if (!FREE_LANE_ENABLED) {

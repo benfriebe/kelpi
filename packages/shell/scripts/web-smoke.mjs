@@ -429,6 +429,24 @@ function startShell(sandbox) {
     };
 }
 
+/**
+ * Issue #12: the client's own hold deadline, read from the module that owns it.
+ *
+ * Hard-coding 250 here would make this file a second, silent home for the number - the exact
+ * shape of drift these smokes exist to catch. The client is TypeScript and this script is plain
+ * Node, so the constant is read out of the source rather than imported; a source that no longer
+ * declares it is a failure worth having, not a default worth guessing.
+ */
+function clientPosterDeadlineMs() {
+    const source = fs.readFileSync(
+        path.join(repoRoot, 'packages', 'client', 'src', 'webpane', 'poster.ts'),
+        'utf8'
+    );
+    const found = /POSTER_DEADLINE_MS\s*=\s*(\d+)/.exec(source);
+    if (found === null) throw new Error('POSTER_DEADLINE_MS is no longer declared in webpane/poster.ts');
+    return Number(found[1]);
+}
+
 // ── a synthetic web client (the geometry reporter) ──────────────────────────────────
 
 /**
@@ -1038,13 +1056,28 @@ async function webPhase() {
                     typeof shot.reply.image_base64 === 'string' &&
                     shot.reply.image_base64.startsWith('/9j/') &&
                     shot.reply.mime === 'image/jpeg' &&
-                    shot.reply.bytes > 1000,
-                `${String(shot.reply.bytes ?? shot.reply.error)} base64 bytes in ${String(shot.elapsedMs)}ms`
+                    shot.reply.base64_bytes > 1000,
+                `${String(shot.reply.base64_bytes ?? shot.reply.error)} base64 bytes in ${String(shot.elapsedMs)}ms`
             );
+            /*
+             * A WALL-CLOCK ceiling, so it must be one no honest machine trips.
+             *
+             * What matters is the order of magnitude: a capture that costs tens of milliseconds
+             * is a menu that opens a frame late, and one that costs seconds is a different
+             * mechanism entirely. A CI box under load, a cold renderer or a busy laptop can all
+             * push a healthy 16ms capture past the client's own 250ms deadline without anything
+             * being wrong — and missing that deadline is a case the client HANDLES (it parks with
+             * no frame) rather than a defect. So the check is against the host budget the daemon
+             * enforces, with the measurement and the client's deadline both printed: the number
+             * to read is the detail, and the assertion only fails when the mechanism is broken.
+             */
+            const clientDeadlineMs = clientPosterDeadlineMs();
+            const ceilingMs = 2_000;
             check(
-                'the frame arrives inside the deadline a menu is willing to wait',
-                shot.elapsedMs < 250,
-                `${String(shot.elapsedMs)}ms (client deadline 250ms)`
+                'the frame arrives in a time a menu could wait for (not seconds)',
+                shot.elapsedMs < ceilingMs,
+                `${String(shot.elapsedMs)}ms · client holds for ${String(clientDeadlineMs)}ms · ceiling ${String(ceilingMs)}ms` +
+                    (shot.elapsedMs < clientDeadlineMs ? '' : ' — SLOW: inside the ceiling but past the hold')
             );
             const posterLine = shell.lines.filter((line) => line.includes(': poster ')).at(-1) ?? '';
             check(

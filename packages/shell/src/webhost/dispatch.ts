@@ -451,8 +451,17 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
      * Every refusal is `ok:false` with a stated reason rather than an empty success, because the
      * client branches on exactly that: a pane whose host cannot poster stops holding its view
      * back for one (`client/src/webpane/poster.ts`), and it can only learn that from an honest
-     * no. The three noes are different facts — no tab, no on-screen view, a frame too big to
-     * send — and all three end the same way: the pane parks the way it always did.
+     * no. The noes are different facts — no tab, no on-screen view, a frame too big to send —
+     * and all of them end the same way: the pane parks the way it always did.
+     *
+     * **`transient` is the one distinction that matters, and it was learned the hard way.** "The
+     * view was not on screen" is a fact about WHEN the client asked, not about what this host can
+     * do: the commonest cause is the client's own park landing mid-capture (a menu that raised a
+     * dialog, a workspace switch), and a pane that treated it as a verdict stopped waiting for
+     * frames — which made every later capture race a park it could not win, so it never got one
+     * again. Caught by the `web-popup-layering` audit; the flag is what keeps a self-inflicted no
+     * from turning into a permanent one. Everything else (no poster surface at all, a frame over
+     * the budget, a capture that threw) really is about this host, and is not marked.
      */
     const poster = async (args: JsonObject): Promise<JsonObject> => {
         const found = tabOf(args);
@@ -466,10 +475,14 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
             report(error, 'poster');
             return failure(POSTER_FAILED_ERROR);
         }
-        if (data === null) return failure(POSTER_UNAVAILABLE_ERROR);
+        if (data === null) return { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true };
         if (data === '') return failure(POSTER_FAILED_ERROR);
         if (!posterWithinBudget(data.length)) return failure(POSTER_TOO_LARGE_ERROR);
-        return { ok: true, image_base64: data, mime: POSTER_MIME, bytes: data.length };
+        // `base64_bytes`, not §8.4's `byte_count`: this is the size of the payload AS IT RIDES
+        // THE REPLY (the base64 string), which is what the budget is expressed in and what a
+        // reader of the log line can compare against. The decoded JPEG is about a quarter
+        // smaller and nothing here has a use for that number.
+        return { ok: true, image_base64: data, mime: POSTER_MIME, base64_bytes: data.length };
     };
 
     // ── automation ──────────────────────────────────────────────────────────────────

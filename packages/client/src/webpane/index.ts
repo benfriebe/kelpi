@@ -24,7 +24,9 @@
  */
 
 export {
+    SILENT_WEB_COMMANDS,
     createWebPaneCommands,
+    webCommandIsSilent,
     type WebCookieWrite,
     type WebCommandSender,
     type WebFindOp,
@@ -118,12 +120,16 @@ export {
 } from './geometry';
 
 export {
+    POSTER_COOLDOWN_MS,
     POSTER_DEADLINE_MS,
     POSTER_IDLE,
     POSTER_LINGER_MS,
+    POSTER_MISS_LIMIT,
     createPosterController,
+    posterAttempt,
     posterDataURL,
     warmPosterImage,
+    type PosterAttempt,
     type PosterController,
     type PosterControllerOptions,
     type PosterSyncInput,

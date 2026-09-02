@@ -214,6 +214,7 @@ import {
     readWindowTransparent,
     revealAppliesHere,
     viewFocusAppliesHere,
+    webCommandIsSilent,
     type WebPaneTab
 } from './webpane';
 
@@ -874,12 +875,26 @@ function Shell(props: AppProps): ReactElement {
      * the same error toast every other command uses — and never as an unhandled rejection,
      * since the buttons deliberately do not await their acks (they are optimistic by design,
      * web-pane.md §17.4).
+     *
+     * **Except the verbs no one asked for** (`SILENT_WEB_COMMANDS`, issue #12). Every verb above
+     * is a gesture, and a refused gesture is news. `web-poster` is asked for by a PANE, once per
+     * menu that lands over it, and its refusals are its contract: each one means "park the way
+     * you always did", which is behaviour the user already knows and must not also read as an
+     * error. Toasting it would put a "Poster" card on screen on every right-click — and park the
+     * pane a second time on the way, since a toast is itself a modal surface (§H1).
+     *
+     * The rejection guard stays for them: `run` was also what kept a dropped socket from
+     * surfacing as an unhandled rejection, and a silent verb still must not.
      */
     const webCommands = useMemo(
         () =>
             createWebPaneCommands({
                 raw: (payload) => {
                     const promise = commands.raw(payload);
+                    if (webCommandIsSilent(payload)) {
+                        void promise.catch(() => undefined);
+                        return promise;
+                    }
                     run(webCommandLabel(payload), promise);
                     return promise;
                 }

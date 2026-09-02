@@ -755,6 +755,64 @@ describe('geometry reporting', () => {
              * screen — and a photograph of it would be a picture nobody ever sees, taken on every
              * Settings open.
              */
+            /**
+             * The ORDER, and the lesson the `web-popup-layering` audit taught about it.
+             *
+             * The frame is asked for while the view is still placed and the hide only follows a
+             * whole round trip later — never the other way round, because a capture that arrives
+             * after its own park is refused by the host (it would be a picture of the off-screen
+             * holder's viewport). That is not a detail: a pane that kept asking on the parking
+             * path was refused every time, and read those refusals as "this host cannot poster",
+             * so it never asked properly again. Hence the second half of this pin — a pane that
+             * has been told a real no asks for NOTHING while it cools off.
+             */
+            it('asks while the view is still placed, and asks nothing at all while cooling off', async () => {
+                const order: string[] = [];
+                const { commands } = fakeCommands({ poster: { ok: false, error: 'no on-screen view to poster' } });
+                const traced: WebPaneCommands = {
+                    ...commands,
+                    poster: (paneID: string, tabID: string) => {
+                        order.push('poster');
+                        return commands.poster(paneID, tabID);
+                    }
+                };
+                const view = render(
+                    <WebPane
+                        paneID={PANE}
+                        tabs={TABS}
+                        activeTabID={TAB1}
+                        commands={traced}
+                        embedded={true}
+                        visible={true}
+                        measure={fixedRect(RECT)}
+                        devicePixelRatio={2}
+                        onGeometry={() => order.push('placed')}
+                        onHidden={() => order.push('hidden')}
+                    />
+                );
+                order.length = 0;
+
+                // First cover: the ask goes out in the publish that discovered the surface, and
+                // NOTHING has been handed back yet — the view is still on screen for the capture.
+                const first = open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(order.filter((step) => step === 'poster')).toHaveLength(1);
+                expect(order).not.toContain('hidden');
+                await settle();
+                // …and the park follows the host's answer.
+                expect(order.indexOf('poster')).toBeLessThan(order.indexOf('hidden'));
+                close(first);
+                await settle();
+
+                // Second cover, inside the cooldown the refusal started: the pane parks at once
+                // and asks for nothing. An ask here would land after its own park, be refused for
+                // exactly that reason, and keep the pane in this state for ever.
+                order.length = 0;
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(order).toContain('hidden');
+                expect(order).not.toContain('poster');
+                view.unmount();
+            });
+
             it('never asks for a pane the assembly has already hidden', () => {
                 const h = mount({ visible: false });
                 open({ x: 100, y: 100, w: 200, h: 200 });

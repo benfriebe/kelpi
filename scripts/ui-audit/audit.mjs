@@ -7835,8 +7835,14 @@ function buildFlows(ctx) {
                             const r = el.getBoundingClientRect();
                             const id = el.getAttribute('data-testid').slice('web-page-'.length);
                             const pane = document.querySelector('[data-pane-id="' + id + '"]');
+                            // Issue #12: the still frame a parked pane wears, if it has one.
+                            const poster = el.querySelector('[data-testid="web-poster-' + id + '"]');
+                            const src = poster === null ? null : (poster.getAttribute('src') ?? '');
                             return { id,
                                      visible: el.getAttribute('data-visible'),
+                                     covered: el.getAttribute('data-overlay-covered'),
+                                     poster: src === null ? null : src.slice(0, 22),
+                                     posterBytes: src === null ? 0 : src.length,
                                      focused: pane?.getAttribute('data-focused') === 'true',
                                      x: Math.round(r.x), y: Math.round(r.y),
                                      w: Math.round(r.width), h: Math.round(r.height) };
@@ -8138,7 +8144,19 @@ function buildFlows(ctx) {
                  * that the SHELL agrees), prove every page it does not cover is untouched, then
                  * close it and prove all of them come back where they were.
                  */
-                const layer = async (name, open, close, { whole = false } = {}) => {
+                /*
+                 * `poster: true` — issue #12's half of the same rule.
+                 *
+                 * Parking the view is what makes a surface visible; the poster is what keeps the
+                 * PAGE visible while it is parked. It applies to the surfaces that park a pane
+                 * through the per-pane rect path and not to the ones that park it through the
+                 * whole-window modal count (`whole`, and anything raised from inside Settings):
+                 * a pane the assembly has already hidden is not on screen, so it is never
+                 * photographed. Where it does apply it is required rather than merely reported,
+                 * and it is folded into the settle below so a slow capture waits rather than
+                 * flakes.
+                 */
+                const layer = async (name, open, close, { whole = false, poster = false } = {}) => {
                     const baseline = await holes();
                     await open();
                     /*
@@ -8161,6 +8179,9 @@ function buildFlows(ctx) {
                             }
                             if (!under.every((hole) => embedOf(hole.id).includes('owner=holder'))) {
                                 return `the shell has not parked them yet @${String(Date.now())}`;
+                            }
+                            if (poster && !under.every((hole) => (hole.posterBytes ?? 0) > 0)) {
+                                return `no still frame in the parked holes yet @${String(Date.now())}`;
                             }
                             return JSON.stringify([live, pages]);
                         },
@@ -8190,6 +8211,27 @@ function buildFlows(ctx) {
                             line.includes('owner=holder'),
                             line
                         );
+                    }
+                    if (poster) {
+                        /*
+                         * Issue #12 — the page is parked AND still visible.
+                         *
+                         * Before this the pane went blank for as long as the surface was up (the
+                         * owner's report was the header menu). The park cannot go — nothing in
+                         * the document can be seen over a native view — so what is asserted is
+                         * that the hole is wearing a photograph of the page it is standing in
+                         * for: a real `data:image/jpeg` of non-trivial size, in the same hole the
+                         * shell just took the view out of.
+                         */
+                        for (const hole of covered) {
+                            recorder.check(
+                                `${name.label}: ${hole.id.slice(0, 8)}'s parked hole is wearing a still frame of its page (issue #12)`,
+                                typeof hole.poster === 'string' &&
+                                    hole.poster.startsWith('data:image/jpeg') &&
+                                    hole.posterBytes > 1000,
+                                `${String(hole.poster)}… ${String(hole.posterBytes)} chars`
+                            );
+                        }
                     }
                     if (!whole) {
                         // The rect's whole point: a surface parks what it covers and nothing else.
@@ -8395,7 +8437,9 @@ function buildFlows(ctx) {
                         await page.eval(
                             `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return null; })()`
                         );
-                    }
+                    },
+                    // A pane's own chrome menu drops straight onto its own page: same rule.
+                    { poster: true }
                 );
 
                 /*
@@ -8420,7 +8464,10 @@ function buildFlows(ctx) {
                     },
                     async () => {
                         await page.key('Escape');
-                    }
+                    },
+                    // The gesture issue #12 was filed for: this is where the page must still be
+                    // readable behind the menu, not merely parked.
+                    { poster: true }
                 );
 
                 /*

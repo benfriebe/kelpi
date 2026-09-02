@@ -383,26 +383,41 @@ describe('capture (§8.4)', () => {
  * with its own reason rather than an empty success.
  */
 describe('the poster (issue #12)', () => {
-    it('answers with the base64 frame, its mime and its size', async () => {
+    it('answers with the base64 frame, its mime and the size of what rides the reply', async () => {
         const { dispatcher, tab } = harness();
+        // `base64_bytes` rather than §8.4's `byte_count`: the budget, the log line and this field
+        // are all about the base64 payload, not the decoded JPEG behind it.
         await expect(dispatcher.call('poster', scope)).resolves.toEqual({
             ok: true,
             image_base64: 'AAAA',
             mime: 'image/jpeg',
-            bytes: 4
+            base64_bytes: 4
         });
         expect(tab.posters).toBe(1);
     });
 
-    it('refuses when there is no on-screen view to photograph', async () => {
+    it('refuses when there is no on-screen view, and marks that refusal TRANSIENT', async () => {
         const { dispatcher, tab } = harness();
         // The tab is in the off-screen holder: its frame would be the pinned 1280×800 automation
         // viewport, which is not the pane's page and must never be painted as if it were.
         tab.jpeg = null;
+        // `transient` is what stops the client reading this as a verdict on the host. The
+        // commonest cause is the client's OWN park landing mid-capture, and a pane that held it
+        // against the host stopped waiting for frames — which made every later capture race a
+        // park it could not win (found by the `web-popup-layering` audit).
         await expect(dispatcher.call('poster', scope)).resolves.toEqual({
             ok: false,
-            error: 'no on-screen view to poster'
+            error: 'no on-screen view to poster',
+            transient: true
         });
+    });
+
+    it('does NOT mark the host-side refusals transient — those are about this host', async () => {
+        const { dispatcher, tab } = harness();
+        tab.jpeg = 'A'.repeat(4_000_001);
+        expect('transient' in (await dispatcher.call('poster', scope))).toBe(false);
+        tab.jpeg = new Error('no surface');
+        expect('transient' in (await dispatcher.call('poster', scope))).toBe(false);
     });
 
     it('reports a failed capture rather than an empty frame', async () => {

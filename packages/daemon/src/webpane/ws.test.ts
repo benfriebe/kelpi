@@ -593,7 +593,7 @@ describe('web-poster (issue #12)', () => {
             JSON.stringify({
                 type: 'host-rpc-reply',
                 id: rpc['id'],
-                reply: { ok: true, image_base64: 'AAAA', mime: 'image/jpeg', bytes: 4 }
+                reply: { ok: true, image_base64: 'AAAA', mime: 'image/jpeg', base64_bytes: 4 }
             })
         );
         await Promise.resolve();
@@ -601,7 +601,7 @@ describe('web-poster (issue #12)', () => {
             ok: true,
             image_base64: 'AAAA',
             mime: 'image/jpeg',
-            bytes: 4,
+            base64_bytes: 4,
             pane_id: WEB_PANE
         });
     });

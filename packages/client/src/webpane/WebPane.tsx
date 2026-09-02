@@ -43,7 +43,7 @@ import type { GeometryRect, GeometryReport } from './geometry';
 import { Glyph, GLYPH_STROKE_MEDIUM, GLYPH_STROKE_SEMIBOLD, type GlyphName } from './glyphs';
 import {
     createPosterController,
-    posterDataURL,
+    posterAttempt,
     warmPosterImage,
     POSTER_IDLE,
     type PosterController
@@ -696,10 +696,11 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         posterRef.current = createPosterController({
             capture: async (tabID) => {
                 const { commands: live, paneID: pane } = posterDeps.current;
-                const src = posterDataURL(await live.poster(pane, tabID));
+                const attempt = posterAttempt(await live.poster(pane, tabID));
+                if (attempt.src === null) return attempt;
                 // Decoded before it counts as landed: parking on the bytes alone would hand the
                 // view back a frame before the picture replacing it could paint.
-                return src === null ? null : await warmPosterImage(src);
+                return { src: await warmPosterImage(attempt.src) };
             },
             // The publish re-runs on every render and is where `sync` is called, so a render is
             // all the controller ever has to ask for.

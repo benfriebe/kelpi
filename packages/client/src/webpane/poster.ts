@@ -83,6 +83,29 @@ export function posterDataURL(reply: CommandReply | null | undefined): string | 
     return `data:${type};base64,${data}`;
 }
 
+/** What one attempt at a frame came back with. */
+export interface PosterAttempt {
+    /** The frame, or null for every kind of no. */
+    readonly src: string | null;
+    /**
+     * The host said the view was not on screen (`transient` on the reply, HOST_PROTOCOL §3.6).
+     *
+     * A fact about WHEN we asked rather than about what this host can do — almost always our own
+     * park landing mid-capture — so it must NOT count against the host. Treating it as a verdict
+     * is what made a pane that lost one race stop waiting for frames, which made every later
+     * capture race a park it could not win: one slow moment and the pane never postered again.
+     */
+    readonly transient?: boolean | undefined;
+}
+
+/** Read a whole reply, keeping the one distinction the degrade rule turns on. */
+export function posterAttempt(reply: CommandReply | null | undefined): PosterAttempt {
+    const src = posterDataURL(reply);
+    if (src !== null) return { src };
+    const transient = reply !== null && reply !== undefined && reply['transient'] === true;
+    return { src: null, transient };
+}
+
 /**
  * What a frame has to be before it is worth parking behind: **decoded**.
  *
@@ -127,13 +150,17 @@ export interface PosterView {
 }
 
 export interface PosterControllerOptions {
-    /** Ask the host for a frame of `tabID`. Resolves to a data URL, or null for any refusal. */
-    readonly capture: (tabID: string) => Promise<string | null>;
+    /** Ask the host for a frame of `tabID`. Resolves to the frame, or to why there is none. */
+    readonly capture: (tabID: string) => Promise<PosterAttempt>;
     /** Something the render reads has changed (the src landed, the hold ended). */
     readonly onChange: () => void;
     readonly deadlineMs?: number | undefined;
     /** How long a landed frame stays painted after the surface closes (`POSTER_LINGER_MS`). */
     readonly lingerMs?: number | undefined;
+    /** How long a host that said a real no is left alone (`POSTER_COOLDOWN_MS`). */
+    readonly cooldownMs?: number | undefined;
+    /** Test seam; `Date.now` by default. */
+    readonly now?: (() => number) | undefined;
     /** Test seams; `setTimeout`/`clearTimeout` by default. */
     readonly schedule?: ((callback: () => void, ms: number) => unknown) | undefined;
     readonly cancel?: ((handle: unknown) => void) | undefined;
@@ -156,6 +183,8 @@ export interface PosterController {
     dispose(): void;
     /** Diagnostics: how many captures this pane has asked for. */
     readonly captures: number;
+    /** Diagnostics: is this pane parking without waiting, because the host keeps saying no? */
+    readonly degraded: boolean;
 }
 
 /**
@@ -175,9 +204,38 @@ export const POSTER_IDLE: PosterView = { src: null, hold: false };
  */
 export const POSTER_LINGER_MS = 400;
 
+/**
+ * How many deadlines in a row a host may miss before this pane stops waiting for it.
+ *
+ * A missed deadline is not a refusal — the frame may still be coming, and a slow page is worth
+ * one wait. But a host that is CONSISTENTLY slower than the deadline would otherwise cost the
+ * user 250ms of invisible menu on every single right-click, for a frame that never arrives in
+ * time to be worth it. Two in a row is the smallest number that can tell "this page was busy
+ * once" from "this host cannot do this", and the mark is cleared by the first frame that lands,
+ * so a page that recovers gets its poster back.
+ */
+export const POSTER_MISS_LIMIT = 2;
+
+/**
+ * How long a pane stops asking for frames after a host says a real no.
+ *
+ * Degrading has to be TIME-BOXED rather than sticky, and that is the correction the
+ * `web-popup-layering` audit forced: a permanently degraded pane parks the instant it is
+ * covered, so its capture always arrives after its own park and is always refused — the state
+ * that stops it asking is the state that guarantees it can never succeed again. A cooldown
+ * breaks the loop from both ends: while it is running the pane does not ask at all (nothing
+ * races, nothing is wasted), and when it expires the pane HOLDS for the next frame, which is the
+ * only condition under which one can come back. Five seconds is long enough that a host which
+ * genuinely cannot poster is asked at most once a menu-burst, and short enough that a person who
+ * fixed the cause does not have to wonder how long they must wait.
+ */
+export const POSTER_COOLDOWN_MS = 5_000;
+
 export function createPosterController(options: PosterControllerOptions): PosterController {
     const deadlineMs = options.deadlineMs ?? POSTER_DEADLINE_MS;
     const lingerMs = options.lingerMs ?? POSTER_LINGER_MS;
+    const cooldownMs = options.cooldownMs ?? POSTER_COOLDOWN_MS;
+    const now = options.now ?? ((): number => Date.now());
     const schedule =
         options.schedule ?? ((callback: () => void, ms: number): unknown => setTimeout(callback, ms));
     const cancel = options.cancel ?? ((handle: unknown): void => clearTimeout(handle as never));
@@ -187,10 +245,15 @@ export function createPosterController(options: PosterControllerOptions): Poster
     /** What the hole should wear right now — a landed frame, or a lingering one. */
     let painted: string | null = null;
     /**
-     * The last capture said no, so the next cover does not make the user wait for another one.
-     * A success clears it: the mark is about the host's current answer, not a life sentence.
+     * Until when this pane asks for nothing at all — set by a real no, cleared by a frame.
+     *
+     * Not a boolean, and the difference is the whole of the audit's finding: a sticky flag makes
+     * a pane park instantly, which makes its captures race their own park, which refuses them,
+     * which keeps the flag set. A deadline in time cannot do that.
      */
-    let degraded = false;
+    let coolingUntil = 0;
+    /** Consecutive deadlines this host has missed; a landed frame resets it. */
+    let misses = 0;
     /** At most one timer is ever live: a capture deadline, or a linger. */
     let timer: unknown = null;
     let captures = 0;
@@ -204,10 +267,16 @@ export function createPosterController(options: PosterControllerOptions): Poster
 
     const view = (): PosterView => ({ src: painted, hold: session?.waiting === true });
 
+    /** A real no: leave this host alone for a while (see `POSTER_COOLDOWN_MS`). */
+    const cool = (): void => {
+        coolingUntil = now() + cooldownMs;
+        misses = 0;
+    };
+
     const start = (tabID: string): void => {
         captures += 1;
         const seq = captures;
-        session = { tabID, waiting: !degraded, seq };
+        session = { tabID, waiting: true, seq };
         // A frame from the last cover is of a page that has since been live and interactive: it
         // goes now rather than being shown while its replacement is taken.
         painted = null;
@@ -217,35 +286,58 @@ export function createPosterController(options: PosterControllerOptions): Poster
         timer = schedule(() => {
             timer = null;
             if (disposed || session === null || session.seq !== seq || !session.waiting) return;
-            // Deliberately not `degraded`: a slow answer may still land and is still worth
-            // painting, so only an actual refusal marks the pane.
+            // A single miss does NOT cool the host: a slow answer may still land and is still
+            // worth painting. A run of them does — see `POSTER_MISS_LIMIT`.
+            misses += 1;
+            if (misses >= POSTER_MISS_LIMIT) cool();
             session.waiting = false;
             options.onChange();
         }, deadlineMs);
         void options.capture(tabID).then(
-            (src) => {
+            (attempt) => {
                 if (disposed) return;
-                degraded = src === null;
+                if (attempt.src !== null) {
+                    // A frame that landed at all — even after its deadline — says the host works.
+                    misses = 0;
+                    coolingUntil = 0;
+                } else if (attempt.transient !== true) {
+                    // A real no. A TRANSIENT one is not: it means the view had gone off screen by
+                    // the time the host looked, which is usually this pane's own park landing
+                    // mid-capture and says nothing about whether a frame can be had next time.
+                    cool();
+                }
                 // Uncovered while the frame was in flight, or the pane moved on to another tab:
                 // the picture is of a moment nobody is looking at any more.
                 if (session === null || session.seq !== seq) return;
                 // A refusal that arrives after the deadline already released the view changes
                 // nothing anyone can see, so it does not ask for a render.
-                const changed = src !== null || session.waiting;
-                if (src !== null) painted = src;
+                const changed = attempt.src !== null || session.waiting;
+                if (attempt.src !== null) painted = attempt.src;
                 session.waiting = false;
                 clearTimer();
                 if (changed) options.onChange();
             },
             () => {
                 if (disposed) return;
-                degraded = true;
+                cool();
                 if (session === null || session.seq !== seq || !session.waiting) return;
                 session.waiting = false;
                 clearTimer();
                 options.onChange();
             }
         );
+    };
+
+    /**
+     * A cover that asks for nothing: the pane parks at once and the hole stays empty, which is
+     * the pre-poster behaviour. Used only while a host is cooling off, and it asks for NOTHING
+     * on purpose — a capture fired here would arrive after the park it just caused and be
+     * refused, which is the loop the cooldown exists to break.
+     */
+    const parkWithoutAsking = (tabID: string): void => {
+        session = { tabID, waiting: false, seq: captures };
+        painted = null;
+        clearTimer();
     };
 
     const uncover = (): PosterView => {
@@ -269,7 +361,8 @@ export function createPosterController(options: PosterControllerOptions): Poster
             // its own pixels back: both end the session, and the frame lingers over the swap.
             if (!input.covered || input.tabID === null) return uncover();
             if (session === null || session.tabID !== input.tabID) {
-                start(input.tabID);
+                if (coolingUntil > now()) parkWithoutAsking(input.tabID);
+                else start(input.tabID);
                 return view();
             }
             return view();
@@ -284,6 +377,10 @@ export function createPosterController(options: PosterControllerOptions): Poster
 
         get captures() {
             return captures;
+        },
+
+        get degraded() {
+            return coolingUntil > now();
         }
     };
 }

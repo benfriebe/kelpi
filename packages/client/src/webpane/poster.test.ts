@@ -12,12 +12,17 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { SILENT_WEB_COMMANDS, webCommandIsSilent } from './commands';
 import {
     createPosterController,
+    posterAttempt,
     posterDataURL,
     warmPosterImage,
+    POSTER_COOLDOWN_MS,
     POSTER_DEADLINE_MS,
     POSTER_LINGER_MS,
+    POSTER_MISS_LIMIT,
+    type PosterAttempt,
     type WarmableImage
 } from './poster';
 
@@ -58,28 +63,39 @@ function timers(): {
 
 /** A capture the test settles when it chooses, so "while it is in flight" is a real state. */
 function deferredCapture(): {
-    capture: (tabID: string) => Promise<string | null>;
-    settle: (src: string | null) => void;
+    capture: (tabID: string) => Promise<PosterAttempt>;
+    settle: (src: string | null, transient?: boolean) => void;
     reject: () => void;
     readonly asked: readonly string[];
 } {
     const asked: string[] = [];
-    let settleOne: ((src: string | null) => void) | null = null;
+    let settleOne: ((attempt: PosterAttempt) => void) | null = null;
     let rejectOne: (() => void) | null = null;
     return {
         asked,
         capture(tabID) {
             asked.push(tabID);
-            return new Promise<string | null>((resolve, rejectPromise) => {
+            return new Promise<PosterAttempt>((resolve, rejectPromise) => {
                 settleOne = resolve;
                 rejectOne = () => rejectPromise(new Error('socket closed'));
             });
         },
-        settle(src) {
-            settleOne?.(src);
+        settle(src, transient = false) {
+            settleOne?.(src === null ? { src: null, transient } : { src });
         },
         reject() {
             rejectOne?.();
+        }
+    };
+}
+
+/** A clock the test moves by hand, so the cooldown is exercised without waiting for one. */
+function clockAt(start = 1_000): { now: () => number; advance: (ms: number) => void } {
+    let value = start;
+    return {
+        now: () => value,
+        advance(ms) {
+            value += ms;
         }
     };
 }
@@ -107,6 +123,23 @@ describe('posterDataURL', () => {
         expect(posterDataURL({ ok: true })).toBeNull();
         expect(posterDataURL({ ok: true, image_base64: '' })).toBeNull();
         expect(posterDataURL({ ok: true, image_base64: 42 })).toBeNull();
+    });
+});
+
+describe('posterAttempt', () => {
+    it('reads a frame, and every no with the one distinction the degrade rule turns on', () => {
+        expect(posterAttempt({ ok: true, image_base64: 'AAAA', mime: 'image/jpeg' })).toEqual({ src: FRAME });
+        // `transient` = "the view was not on screen when I looked", which is usually the client's
+        // own park landing mid-capture: a fact about the moment, not about the host.
+        expect(posterAttempt({ ok: false, error: 'no on-screen view to poster', transient: true })).toEqual({
+            src: null,
+            transient: true
+        });
+        expect(posterAttempt({ ok: false, error: 'poster too large to send inline' })).toEqual({
+            src: null,
+            transient: false
+        });
+        expect(posterAttempt(null)).toEqual({ src: null, transient: false });
     });
 });
 
@@ -164,32 +197,82 @@ describe('the poster controller', () => {
         expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false });
     });
 
-    it('stops making the user wait after a refusal, and starts again after a success', async () => {
+    it('stops asking for a cooldown after a real no, then holds again and recovers', async () => {
         const clock = timers();
-        let answer: string | null = null;
+        const wall = clockAt();
+        let answer: PosterAttempt = { src: null };
+        let asks = 0;
         const poster = createPosterController({
-            capture: () => Promise.resolve(answer),
+            capture: () => {
+                asks += 1;
+                return Promise.resolve(answer);
+            },
             onChange: () => undefined,
             schedule: clock.schedule,
-            cancel: clock.cancel
+            cancel: clock.cancel,
+            now: wall.now
         });
 
         expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
         await flush();
+        expect(poster.degraded).toBe(true);
         poster.sync({ covered: false, tabID: TAB });
 
-        // A host that said no once is not asked to be waited for again: the pane parks at once
-        // and only *tries* for a frame, so a browser client (or a view in the holder) pays one
-        // deferred park in its life rather than one per menu.
-        answer = FRAME;
+        /*
+         * Inside the cooldown the pane parks at once AND ASKS NOTHING — the second half is the
+         * one the audit forced. A capture fired here would arrive after the park it just caused,
+         * be refused for exactly that reason, and re-arm the cooldown: the state that stops the
+         * pane waiting would be the state that guarantees it can never stop.
+         */
+        answer = { src: FRAME };
+        const asksBefore = asks;
         expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(false);
         await flush();
-        expect(poster.sync({ covered: true, tabID: TAB }).src).toBe(FRAME);
-
-        // …and the yes clears the mark, so the next cover is held again.
+        expect(asks).toBe(asksBefore);
+        expect(poster.sync({ covered: true, tabID: TAB }).src).toBeNull();
         poster.sync({ covered: false, tabID: TAB });
-        clock.run(POSTER_LINGER_MS);
+
+        // Once it expires the pane HOLDS again, which is the only condition under which a frame
+        // can come back at all — and the frame that lands clears the mark.
+        wall.advance(POSTER_COOLDOWN_MS + 1);
+        expect(poster.degraded).toBe(false);
         expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+        await flush();
+        expect(poster.sync({ covered: true, tabID: TAB }).src).toBe(FRAME);
+        expect(poster.degraded).toBe(false);
+    });
+
+    /**
+     * The failure the `web-popup-layering` audit caught, as a unit: the client's own park lands
+     * while the capture is in flight (a menu that raises a dialog, a workspace switch), the host
+     * answers "the view is not on screen", and the pane must NOT read that as a verdict on the
+     * host. It did once — and because a marked pane parks instantly, every later capture raced a
+     * park it could not win, so the pane never postered again.
+     */
+    it('does not hold a TRANSIENT no against the host — it is about the moment, not the host', async () => {
+        const clock = timers();
+        const wall = clockAt();
+        const shot = deferredCapture();
+        const poster = createPosterController({
+            capture: shot.capture,
+            onChange: () => undefined,
+            schedule: clock.schedule,
+            cancel: clock.cancel,
+            now: wall.now
+        });
+
+        poster.sync({ covered: true, tabID: TAB });
+        // "no on-screen view to poster": our own park got there first.
+        shot.settle(null, true);
+        await flush();
+        expect(poster.degraded).toBe(false);
+
+        poster.sync({ covered: false, tabID: TAB });
+        // …so the very next cover still waits for a frame, and gets one.
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+        shot.settle(FRAME);
+        await flush();
+        expect(poster.sync({ covered: true, tabID: TAB }).src).toBe(FRAME);
     });
 
     it('treats a rejected call as a refusal, not as a reason to hold forever', async () => {
@@ -216,7 +299,7 @@ describe('the poster controller', () => {
     it('keeps the frame painted across the swap back, then lets it go', async () => {
         const clock = timers();
         const poster = createPosterController({
-            capture: () => Promise.resolve(FRAME),
+            capture: () => Promise.resolve({ src: FRAME }),
             onChange: () => undefined,
             schedule: clock.schedule,
             cancel: clock.cancel
@@ -281,7 +364,7 @@ describe('the poster controller', () => {
         const poster = createPosterController({
             capture: () => {
                 asked += 1;
-                return Promise.resolve(FRAME);
+                return Promise.resolve({ src: FRAME });
             },
             onChange: () => undefined,
             schedule: clock.schedule,
@@ -311,6 +394,82 @@ describe('the poster controller', () => {
         // A pane that has unmounted must not ask React for a render, and has nothing to paint.
         expect(renders).toBe(0);
         expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false });
+    });
+});
+
+/**
+ * A run of missed deadlines is the one failure the deadline alone does not answer: each miss is
+ * forgiven on its own (the frame may still be coming), so a host that is consistently slower than
+ * the deadline would cost 250ms of invisible menu on every right-click, for ever.
+ */
+describe('a host that keeps missing the deadline', () => {
+    it('cools off after a run of misses, and is forgiven by one landed frame', async () => {
+        const clock = timers();
+        const wall = clockAt();
+        let hang = true;
+        const poster = createPosterController({
+            capture: (): Promise<PosterAttempt> =>
+                hang ? new Promise<PosterAttempt>(() => undefined) : Promise.resolve({ src: FRAME }),
+            onChange: () => undefined,
+            schedule: clock.schedule,
+            cancel: clock.cancel,
+            now: wall.now
+        });
+
+        for (let miss = 1; miss <= POSTER_MISS_LIMIT; miss++) {
+            expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+            clock.run(POSTER_DEADLINE_MS);
+            // Every miss releases the view; the run is what changes what happens NEXT time.
+            expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(false);
+            expect(poster.degraded).toBe(miss >= POSTER_MISS_LIMIT);
+            poster.sync({ covered: false, tabID: TAB });
+        }
+
+        // Cooling: the menu is instant, and nothing is asked for at all.
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(false);
+        poster.sync({ covered: false, tabID: TAB });
+
+        hang = false;
+        wall.advance(POSTER_COOLDOWN_MS + 1);
+        poster.sync({ covered: true, tabID: TAB });
+        await flush();
+        expect(poster.degraded).toBe(false);
+        poster.sync({ covered: false, tabID: TAB });
+        clock.run(POSTER_LINGER_MS);
+        // One frame that landed is enough to say the host works; the pane waits again.
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+    });
+
+    it('does not cool off on a single miss — a page can be busy once', () => {
+        const clock = timers();
+        const poster = createPosterController({
+            capture: (): Promise<PosterAttempt> => new Promise<PosterAttempt>(() => undefined),
+            onChange: () => undefined,
+            schedule: clock.schedule,
+            cancel: clock.cancel
+        });
+        poster.sync({ covered: true, tabID: TAB });
+        clock.run(POSTER_DEADLINE_MS);
+        expect(poster.degraded).toBe(false);
+    });
+});
+
+/**
+ * The contract the module header promises the user — "every failure degrades to the behaviour
+ * that shipped before" — is worth nothing unless the assembly agrees to it, because `App.tsx`
+ * wraps every web verb in a toast on `ok:false`. The verb is on the silent list for that reason;
+ * `App.window-chrome.test.tsx` pins the assembly end of the same rule.
+ */
+describe('the verb is exempt from the assembly’s error toasts', () => {
+    it('names `web-poster` and nothing else', () => {
+        expect([...SILENT_WEB_COMMANDS]).toEqual(['web-poster']);
+        expect(webCommandIsSilent({ command: 'web-poster', pane_id: 'p', tab_id: 't' })).toBe(true);
+    });
+
+    it('leaves every gesture verb loud — a refused gesture is news', () => {
+        expect(webCommandIsSilent({ command: 'web-navigate', pane_id: 'p', url: 'u' })).toBe(false);
+        expect(webCommandIsSilent({ command: 'web-capture', pane_id: 'p', mode: 'screenshot' })).toBe(false);
+        expect(webCommandIsSilent({})).toBe(false);
     });
 });
 

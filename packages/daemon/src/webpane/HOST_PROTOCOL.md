@@ -162,12 +162,12 @@ menu ends up over a picture of the page rather than over nothing.
   "command":"web-poster","pane_id":"…",              "args":{"paneID":"…","tabID":"…"},
   "tab_id":"…"}}                                     "timeoutMs":2000}
 // host → daemon → client
-{"ok":true,"image_base64":"…","mime":"image/jpeg","bytes":214512,"pane_id":"…"}
+{"ok":true,"image_base64":"…","mime":"image/jpeg","base64_bytes":214512,"pane_id":"…"}
 ```
 
 | verb | args | reply |
 |---|---|---|
-| `poster` | `{paneID, tabID}` | `{ok:true, image_base64, mime:"image/jpeg", bytes}` — the tab's **visible viewport as it is on screen**, at the pane's own size and the display's own scale. `{ok:false,error}` for every no. Budget: **2 s**. |
+| `poster` | `{paneID, tabID}` | `{ok:true, image_base64, mime:"image/jpeg", base64_bytes}` — the tab's **visible viewport as it is on screen**, at the pane's own size and the display's own scale. `{ok:false,error}` for every no. Budget: **2 s**. |
 
 Rules, and each of them is load-bearing:
 
@@ -186,8 +186,25 @@ Rules, and each of them is load-bearing:
   (`poster capture failed`) — is an `ok:false` now, not a slow `ok:true`. The client parks with an
   empty hole, exactly as it did before this verb existed, and stops asking that pane to be waited
   for until one succeeds.
+- **Every refusal is SILENT at the other end.** No `ok:false` from this verb reaches the user:
+  nobody asked for a poster, so nothing about one is news, and the pane's answer to every no is
+  behaviour the person already knows. The client enforces that by keeping `web-poster` off the
+  toasting path its gesture verbs use (`client/src/webpane/commands.ts` `SILENT_WEB_COMMANDS`,
+  pinned in `App.window-chrome.test.tsx`) — without which a right-click over a page could raise
+  an error card *per click*, and park every pane again for the card.
 - **Nothing is stored.** The daemon forwards and forgets: no frame is kept, cached or logged, and
-  a pane that is never covered is never photographed.
+  a pane that is never covered is never photographed. The shell logs that a frame was taken and
+  how big it was, never the frame itself.
+- **Who may ask: any authenticated session, including a paired device — a decision, not an
+  oversight.** `web-poster` is an ordinary web command, so a phone attached over the tailnet with
+  a `kd_` device token can call it and receive a picture of what is on the owner's screen in that
+  pane. That is deliberate and it adds **no new class of access**: the same session can already
+  call `web-capture --mode screenshot` for a PNG of the page, `--mode dom` for its HTML and
+  `web-exec` to run script in it, and every one of those is older than this verb. The owner-only
+  family is `remote-*` (pairing and revocation, `ws/remote.ts`), and a poster is not in it: it
+  reads the same page the guest can already read, at the same trust boundary, and gating it alone
+  would buy nothing while pretending otherwise. **If the web family is ever put behind a guest
+  gate, this verb belongs behind the same one** — it is page content, not chrome.
 
 ### 3.2 Navigation (RPC)
 

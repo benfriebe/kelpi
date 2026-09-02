@@ -26,6 +26,34 @@ export interface WebCommandSender {
     raw(payload: JsonObject): Promise<CommandReply>;
 }
 
+/**
+ * The web verbs whose refusals must NOT reach the user (issue #12).
+ *
+ * Every other verb here is a GESTURE: the user pressed reload, submitted a URL, dragged a tab,
+ * and a refusal is news — the assembly turns it into the same error toast every command uses
+ * (`App.tsx`'s `run`). The poster is not a gesture. Nobody asked for it, it is asked for by the
+ * pane itself whenever a menu lands over its page, and **its refusals are part of its contract**:
+ * no host attached, a view that is not on screen, a frame over the inline budget, a tab switched
+ * away mid-flight (`./poster.ts`, `daemon/src/webpane/HOST_PROTOCOL.md` §3.6). Each one is
+ * answered by parking the pane exactly as it did before the poster existed — which the user sees
+ * as the old behaviour, and must not also see as an error.
+ *
+ * A toast here would be the worst kind: raised by a right-click, once per right-click, saying
+ * "Poster" about a mechanism the person has never heard of. And it would park the pane a second
+ * time, since a toast is itself a modal surface (§H1).
+ *
+ * The set is deliberately a set of COMMANDS rather than a flag on the call: whether a refusal is
+ * news is a property of the verb, and keeping it beside the vocabulary is what stops the next
+ * silent verb from having to rediscover this.
+ */
+export const SILENT_WEB_COMMANDS: ReadonlySet<string> = new Set(['web-poster']);
+
+/** Whether this payload's refusal should be swallowed rather than shown. */
+export function webCommandIsSilent(payload: JsonObject): boolean {
+    const command = payload['command'];
+    return typeof command === 'string' && SILENT_WEB_COMMANDS.has(command);
+}
+
 /** The find bar's four operations (§10), the same set `__kelpiWebFind` exposes. */
 export type WebFindOp = 'search' | 'next' | 'prev' | 'clear';
 

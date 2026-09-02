@@ -1030,23 +1030,44 @@ class ElectronTab implements HostTab {
      * decode, no re-encode, no `nativeImage` round trip on the main thread while a menu waits.
      */
     async poster(): Promise<string | null> {
-        if (this.disposed || this.contents.isDestroyed()) return null;
-        if (!this.embedded) return null;
+        if (this.disposed || this.contents.isDestroyed()) return this.posterRefused('the view is not on screen');
+        if (!this.embedded) return this.posterRefused('the view is not on screen');
         await this.ready;
         // Re-read after the await: a tab can be parked, switched away or closed while the CDP
         // session is coming up, and a frame taken then is of a view nobody is looking at.
-        if (this.disposed || !this.embedded) return null;
+        if (this.disposed || !this.embedded) return this.posterRefused('parked while the session came up');
         const result = await this.send('Page.captureScreenshot', {
             format: 'jpeg',
             quality: POSTER_JPEG_QUALITY
         });
+        // Checked a THIRD time, on the other side of the capture. A screenshot is not
+        // instantaneous and the view can be taken off screen while it is in flight — a tab
+        // switch, the workspace changing, the client's own park landing from another path — and
+        // the frame CDP hands back then is the holder's pinned 1280×800, which is exactly the
+        // wrong-aspect picture §3.6 exists to refuse. The client is holding a live view on
+        // screen for this answer, so the only safe answer is the honest no.
+        if (this.disposed || this.contents.isDestroyed() || !this.embedded) {
+            return this.posterRefused('parked while the frame was being taken');
+        }
         const data = isRecord(result) ? text(result['data']) : undefined;
-        if (data === undefined) return null;
+        if (data === undefined) return this.posterRefused('the capture returned no data');
         // A poster is otherwise invisible from outside the process — the client paints it and the
         // view goes back — so the one line that says a real frame was taken, and how big it was,
         // is what a live check (or a "why did that menu feel slow") has to read.
         log(`web pane ${this.paneID}: poster ${String(data.length)} base64 bytes (tab ${this.tabID})`);
         return data;
+    }
+
+    /**
+     * The other half of the poster's log line, and it earns its place: a refusal is the case
+     * somebody will be looking into (a menu over a blank pane), it is invisible from outside the
+     * process, and the REASON is the whole diagnosis — "parked while the frame was being taken"
+     * and "the capture returned no data" are different bugs. Found exactly this way: a pane that
+     * stopped postering after one slow capture, in a log that only recorded successes.
+     */
+    private posterRefused(reason: string): null {
+        log(`web pane ${this.paneID}: poster refused - ${reason} (tab ${this.tabID})`);
+        return null;
     }
 
     private applyZoom(): void {

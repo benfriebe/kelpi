@@ -20,6 +20,7 @@
  * detach and probing. This file parses arguments and prints.
  */
 
+import { encodeQr, qrText } from '@kelpi/core/qr';
 import fs, { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import nodePath from 'node:path';
@@ -81,6 +82,10 @@ export interface ParsedArgs {
     readonly tailnet: boolean;
     /** `pair --name`: who the minted device token is for. */
     readonly pairName: string | undefined;
+    /** `pair --qr`: draw the URL as a scannable symbol under it, on stderr. */
+    readonly qr: boolean;
+    /** `pair --qr --qr-invert`: the symbol drawn for a LIGHT terminal instead of a dark one. */
+    readonly qrInvert: boolean;
     /** `devices [revoke]`: list by default. */
     readonly deviceAction: 'list' | 'revoke';
     /** `devices revoke <id-or-name>`. */
@@ -96,8 +101,10 @@ Usage:
   kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
   kelpid status [--json]        Ping the daemon and report version, pid and ports
   kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
-  kelpid pair --name <who> [--tailnet]
+  kelpid pair --name <who> [--tailnet] [--qr [--qr-invert]]
                                 Mint a per-device token and print its client URL
+                                (--qr draws it as a scannable symbol under the URL;
+                                 --qr-invert if your terminal has a light background)
   kelpid devices                List paired devices
   kelpid devices revoke <id|name>
                                 Revoke a paired device (applies at its next connect)
@@ -141,6 +148,14 @@ token only that device holds, stored hashed in <data dir>/devices.json):
   kelpid pair --name "alice-laptop" --tailnet
   kelpid devices
   kelpid devices revoke alice-laptop
+
+Pairing a phone from a terminal: --qr draws the URL as a QR code on stderr, under
+the URL, so the phone can be pointed at the screen instead of being typed into.
+stdout is still exactly the URL, so \`open "$(kelpid pair --name x --tailnet --qr)"\`
+keeps working. The symbol is drawn for a DARK terminal; add --qr-invert for a light
+one. It needs --tailnet: a loopback URL is not reachable from a phone, so --qr
+without it pairs as usual and says why it drew nothing.
+  kelpid pair --name "my-phone" --tailnet --qr
 
 Environment:
   KELPID_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
@@ -198,6 +213,8 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
     let dryRun = false;
     let tailnet = false;
     let pairName: string | undefined;
+    let qr = false;
+    let qrInvert = false;
     let deviceAction: 'list' | 'revoke' = 'list';
     let deviceTarget: string | undefined;
     let error: string | undefined;
@@ -213,6 +230,14 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
                 break;
             case '--tailnet':
                 tailnet = true;
+                break;
+            case '--qr':
+                qr = true;
+                break;
+            case '--qr-invert':
+                // Implies --qr: nobody types the polarity flag meaning "and no symbol".
+                qr = true;
+                qrInvert = true;
                 break;
             case '--name': {
                 const value = parseValue(argv[index + 1]);
@@ -309,6 +334,8 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
         dryRun,
         tailnet,
         pairName,
+        qr,
+        qrInvert,
         deviceAction,
         deviceTarget,
         error
@@ -744,8 +771,43 @@ async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
 }
 
 /**
- * `kelpid pair --name <who> [--tailnet]` — mint a paired-device token and print the URL that
- * carries it. Multi-user remote access: every person/device gets its OWN token
+ * The pairing URL as a scannable symbol, on stderr, under the URL.
+ *
+ * WHY THIS EXISTS. A headless host has no Settings window, and the device being paired is
+ * usually a phone: the URL is a MagicDNS host plus a 43-character `kd_` token, which nobody
+ * types. There is no Swift precedent for any of this (the shipped app has no phone UI at all),
+ * so this rule is owner-directed, like the rest of the phone program.
+ *
+ * WHY STDERR. `pair` has the same stream discipline as `url`: stdout is EXACTLY the URL, so
+ * `open "$(kelpid pair --name x --tailnet)"` works. The symbol is human framing, like the
+ * "paired ..." and "Revoke any time with ..." lines already on stderr, and putting it on stdout
+ * would break every caller that pipes this. Both streams are the terminal in the case that
+ * matters and Node's writes to a TTY are synchronous, so it still appears under the URL.
+ *
+ * WHY TAILNET ONLY. Same rule the pair card follows (D2, `settings/RemoteTab.tsx`): without
+ * `--tailnet` the daemon builds `http://127.0.0.1:<port>/?token=...`, which a phone cannot
+ * reach whatever it does with the picture. The pairing still succeeds and the URL still prints;
+ * only the symbol is withheld, with the reason.
+ *
+ * `qrText` carries the LIGHT modules in its glyphs, which is the right polarity on a dark
+ * terminal and wrong on a light one, so `--qr-invert` exists. Nothing is coloured: the string
+ * goes out as it comes back, because an escape sequence in the middle of a symbol is a run of
+ * modules the camera reads as the wrong colour, and the terminal's own palette is not ours to
+ * assume beyond dark-or-light.
+ */
+function writePairQr(io: CliIO, url: string, tailnet: boolean, invert: boolean): void {
+    if (!tailnet) {
+        io.err('(--qr drew nothing: this is a loopback URL, which a phone cannot reach. Add --tailnet.)');
+        return;
+    }
+    io.err('');
+    for (const line of qrText(encodeQr(url), { invert }).split('\n')) io.err(line);
+    io.err('');
+}
+
+/**
+ * `kelpid pair --name <who> [--tailnet] [--qr]`: mint a paired-device token and print the URL
+ * that carries it. Multi-user remote access: every person/device gets its OWN token
  * (`lifecycle/devices.ts`), so revoking one (`kelpid devices revoke`) strands nobody else and
  * never rotates the run dir's owner token.
  *
@@ -753,11 +815,17 @@ async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
  * AFTER the mint, the fresh entry is DELETED again (safe: its token never left this process)
  * — a pairing either yields a working URL or leaves no residue in the registry.
  */
-async function commandPair(io: CliIO, name: string | undefined, tailnet: boolean): Promise<number> {
+async function commandPair(
+    io: CliIO,
+    name: string | undefined,
+    tailnet: boolean,
+    qr: boolean,
+    qrInvert: boolean
+): Promise<number> {
     const env = io.env ?? process.env;
     if (name === undefined || name.trim().length === 0) {
         io.err('kelpid pair needs --name <who> — the person or device this token is for.');
-        io.err('Usage: kelpid pair --name <who> [--tailnet]');
+        io.err('Usage: kelpid pair --name <who> [--tailnet] [--qr [--qr-invert]]');
         return 2;
     }
     const paths = runPathsFor(env);
@@ -814,6 +882,7 @@ async function commandPair(io: CliIO, name: string | undefined, tailnet: boolean
     io.err(`The URL below carries this device's own token — send it to them, not to anyone else.`);
     io.err(`Revoke any time with: kelpid devices revoke ${minted.device.id}`);
     io.out(url);
+    if (qr) writePairQr(io, url, tailnet, qrInvert);
     return 0;
 }
 
@@ -1038,7 +1107,7 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
         case 'url':
             return commandUrl(io, args.tailnet);
         case 'pair':
-            return commandPair(io, args.pairName, args.tailnet);
+            return commandPair(io, args.pairName, args.tailnet, args.qr, args.qrInvert);
         case 'devices':
             return commandDevices(io, args.deviceAction, args.deviceTarget);
         case 'import':

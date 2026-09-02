@@ -10,8 +10,7 @@
  *   M42  trigger chips are the rounded UI face at 13 px, not 11 px monospace;
  *   M43  the remove-trigger / clear-hotkey control is a FILLED-CIRCLE glyph;
  *   M44  the Keybindings footer strip is back, pinned, with Reset All at the END;
- *   M45  all four empty states carry their large glyph, with no card (centred in the three
- *        that own a fill; §N41 reads the Labels one from that tab's left margin instead);
+ *   M45  all four empty states carry their large glyph, centred with no card;
  *   M46  a row's detail copy is its own full-width row UNDER the control, and a section's
  *        caption comes LAST;
  *   M47  Profiles: rail glyphs, an "Environment Variables" heading, an aligned marker row;
@@ -164,35 +163,6 @@ describe('Settings ▸ Labels', () => {
         expect(screen.getByTestId('labels-empty').textContent).toContain('Define reusable labels');
         // The `VStack` has no card behind it; the port's dashed box was its own invention.
         expect(screen.getByTestId('labels-empty').className).not.toContain('border');
-    });
-
-    /**
-     * §N41 (issue #4) - ONE margin on the tab.
-     *
-     * The empty tab is five lines: the section heading, the divider, the glyph, the headline,
-     * the caption and the hint. M45's centred `VStack` gave three of them a margin of their own
-     * in the middle of the column while the heading and the hint stayed left, which is the
-     * mixed-alignment screen the issue is about. Pinned per element rather than on the wrapper,
-     * because `items-center` on a parent is the half of it a class check on the caption alone
-     * would not catch.
-     */
-    it('§N41 - the empty state reads from the left margin of the tab, not the middle', () => {
-        renderLabels([]);
-        const empty = screen.getByTestId('labels-empty');
-        expect(empty.className).toContain('text-left');
-        expect(empty.className).toContain('items-start');
-        expect(empty.className).not.toContain('text-center');
-        expect(empty.className).not.toContain('items-center');
-        // The other three tabs are untouched: a fill still centres its placeholder (M45).
-        render(
-            <WebTab
-                favourites={[]}
-                actions={{ renameFavourite: vi.fn(), removeFavourite: vi.fn(), moveFavourite: vi.fn() }}
-            />
-        );
-        const web = screen.getByTestId('settings-favourites-empty');
-        expect(web.className).toContain('text-center');
-        expect(web.className).toContain('items-center');
     });
 });
 

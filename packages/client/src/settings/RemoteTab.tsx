@@ -9,6 +9,10 @@
  *   2. **Pair a device** — name + Pair. The reply's URL carries the device's own token
  *      exactly ONCE (the registry stores only the hash), so it is shown in a copyable field
  *      with that warning attached, and never rendered again after the card is dismissed.
+ *      Beside the field, for a tailnet pairing only, the same URL as a QR code, because the
+ *      device being paired is usually a phone and nobody types an 80-character URL with a
+ *      token in it. The QR is drawn from the URL held in this component's state, so it lives
+ *      and dies with the card exactly as the field does; there is nothing extra to forget.
  *      Over the tailnet the daemon may CONFIGURE `tailscale serve` (same one-command
  *      behaviour the CLI has); its notes are surfaced verbatim. A failure the daemon can hand
  *      back STEPS for renders as those steps rather than as a red paragraph: the commonest one
@@ -20,7 +24,8 @@
  *      so the row flipping to "revoked" is the whole story.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { encodeQr, qrSvg } from '@kelpi/core/qr';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
 import { SettingsButton, SettingsDetail, SettingsRow, SettingsSection } from './ui';
 import { tokens } from '../chrome/tokens';
@@ -68,6 +73,82 @@ interface MintedPairing {
     readonly url: string;
     readonly deviceName: string;
     readonly notes: readonly string[];
+    /** What the toggle said when this URL was minted, not what it says now. See {@link pairingQr}. */
+    readonly overTailnet: boolean;
+}
+
+/**
+ * The pairing QR: how big, what colour, and when there is one at all.
+ *
+ * There is no Swift precedent for any of this - the shipped app has no phone UI at all - so
+ * every rule below is an owner-directed divergence, recorded here once for the whole feature.
+ *
+ * SIZE. `QR_MODULE_PX` is the only number: `qrSvg` puts the viewBox in module units and the px
+ * size on the root, so the plate is `(size + 2 * quiet zone) * QR_MODULE_PX` square and grows
+ * with the symbol rather than squashing it. Measured with the encoder on realistic replies: a
+ * 79-character tailnet URL (`https://werk.taila.ts.net/?token=kd_` + a 43-character token, the
+ * shape `daemon/src/lifecycle/devices.ts` mints) is version 5, 37 modules, 45 with the quiet
+ * zone, so 225 CSS px at 5; a 25-character MagicDNS name is version 6 and 245 px; the longest
+ * hostname worth planning for (121 characters) is version 7 and 265 px. That brackets the
+ * 200-to-240 px a Mac screen needs for an arm's-length scan, and being over the top of it only
+ * makes the modules bigger. 5 is an INTEGER on purpose: `qrSvg` sets `shape-rendering:
+ * crispEdges`, and at a fractional module size neighbouring modules land a device pixel apart,
+ * which is the very contrast a camera is trying to threshold.
+ *
+ * COLOUR. Black on white, not `tokens.textPrimary` on `tokens.surfaceBackground`. A QR scanner
+ * thresholds the image and expects dark modules inside a LIGHT quiet zone; the dark preset's
+ * card is `#101013`, so the theme's own colours would draw a symbol no camera reads (the light
+ * preset's `#FFFFFF` surface would have been fine, which is exactly why this cannot follow the
+ * theme). `qrSvg`'s background rect covers the quiet zone as well as the light modules, so the
+ * white plate IS the quiet zone; the only token here is the plate's border, which keeps the
+ * edge reading as part of the card in both presets.
+ *
+ * WHEN. A tailnet pairing only. A loopback URL (`http://127.0.0.1:<port>/?token=...`, what the
+ * daemon returns when the toggle is off) is openable on this Mac and nowhere else, so a QR of
+ * it would be an invitation a phone cannot accept; there is no QR and nothing is said about
+ * one. Both halves are checked: the toggle as it stood when this URL was minted, AND the host
+ * the daemon actually answered with, because the toggle can be flipped while the card is up
+ * and a future daemon could fall back to loopback.
+ */
+const QR_MODULE_PX = 5;
+const QR_DARK = '#000000';
+const QR_LIGHT = '#FFFFFF';
+/**
+ * The accessible name. Deliberately a constant with no device name and no URL in it: it is the
+ * one caller-supplied string that reaches the SVG markup, and keeping it fixed is what makes
+ * the `dangerouslySetInnerHTML` below trivially safe to argue about.
+ */
+const QR_LABEL = 'Pairing QR code. Scan it with the device you are pairing.';
+
+/**
+ * Is this URL openable only from this machine?
+ *
+ * Hostname only, and lowercased: `new URL` already normalises the case and strips the brackets
+ * from an IPv6 literal, so `::1` arrives bare. Loopback is the whole 127.0.0.0/8 block, not
+ * just `127.0.0.1`. An unparseable URL counts as loopback: a URL this code cannot read is one
+ * it cannot promise a phone can reach, and no QR is the safe answer.
+ */
+function isLoopbackURL(raw: string): boolean {
+    let host: string;
+    try {
+        host = new URL(raw).hostname.toLowerCase();
+    } catch {
+        return true;
+    }
+    if (host === 'localhost' || host.endsWith('.localhost')) return true;
+    if (host === '::1' || host === '0.0.0.0') return true;
+    return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/** The minted URL as an SVG string, or `null` when this pairing must not show one. */
+function pairingQr(minted: MintedPairing | null): string | null {
+    if (minted === null || !minted.overTailnet || isLoopbackURL(minted.url)) return null;
+    return qrSvg(encodeQr(minted.url), {
+        moduleSize: QR_MODULE_PX,
+        foreground: QR_DARK,
+        background: QR_LIGHT,
+        ariaLabel: QR_LABEL
+    });
 }
 
 /** The app's destructive/failure red (`chrome/QuitConfirmDialog.tsx`'s DESTRUCTIVE_COLOR). */
@@ -253,7 +334,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                 const notes = Array.isArray(reply['notes'])
                     ? reply['notes'].filter((note): note is string => typeof note === 'string')
                     : [];
-                setMinted({ url, deviceName: name, notes });
+                setMinted({ url, deviceName: name, notes, overTailnet: viaTailnet });
                 setPairName('');
                 refresh();
             },
@@ -298,6 +379,9 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
 
     const live = devices.filter((device) => device.revokedAt === null);
     const revoked = devices.filter((device) => device.revokedAt !== null);
+    // Encoding a version 7 symbol is about a millisecond, but the card re-renders on every
+    // Copy click (the "Copied" flag) and the picture never changes while the URL does not.
+    const qr = useMemo(() => pairingQr(minted), [minted]);
 
     return (
         <div className="flex flex-col gap-5" data-testid="settings-tab-remote">
@@ -430,38 +514,64 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                 {minted !== null ? (
                     <div
                         data-testid="remote-pair-minted"
-                        className="flex flex-col gap-2 rounded border p-3"
+                        className="flex items-start gap-3 rounded border p-3"
                         style={{ borderColor: tokens.divider, background: tokens.surfaceBackground }}
                     >
-                        <span style={{ color: tokens.textPrimary }} className="text-[12px] font-semibold">
-                            “{minted.deviceName}” is paired - send this URL to that device, and no one else.
-                        </span>
-                        <span style={{ color: tokens.textTertiary }} className="text-[11px]">
-                            It carries the device’s own token and is shown exactly once. Closing this card
-                            forgets it; revoke and re-pair to mint another.
-                        </span>
-                        <div className="flex items-center gap-2">
-                            <input
-                                data-testid="remote-pair-url"
-                                readOnly
-                                className="w-full rounded border px-2 py-1 text-[11px]"
-                                style={{
-                                    background: tokens.surfaceBackground,
-                                    borderColor: tokens.divider,
-                                    color: tokens.textSecondary
-                                }}
-                                value={minted.url}
-                                onFocus={(event) => event.target.select()}
-                            />
-                            <SettingsButton testID="remote-pair-copy" onClick={copyURL}>
-                                {copied ? 'Copied' : 'Copy'}
-                            </SettingsButton>
-                        </div>
-                        {minted.notes.map((note) => (
-                            <span key={note} style={{ color: tokens.textTertiary }} className="text-[11px]">
-                                {note}
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
+                            <span style={{ color: tokens.textPrimary }} className="text-[12px] font-semibold">
+                                “{minted.deviceName}” is paired - send this URL to that device, and no one else.
                             </span>
-                        ))}
+                            <span style={{ color: tokens.textTertiary }} className="text-[11px]">
+                                It carries the device’s own token and is shown exactly once. Closing this card
+                                forgets it; revoke and re-pair to mint another.
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    data-testid="remote-pair-url"
+                                    readOnly
+                                    className="w-full rounded border px-2 py-1 text-[11px]"
+                                    style={{
+                                        background: tokens.surfaceBackground,
+                                        borderColor: tokens.divider,
+                                        color: tokens.textSecondary
+                                    }}
+                                    value={minted.url}
+                                    onFocus={(event) => event.target.select()}
+                                />
+                                <SettingsButton testID="remote-pair-copy" onClick={copyURL}>
+                                    {copied ? 'Copied' : 'Copy'}
+                                </SettingsButton>
+                            </div>
+                            {minted.notes.map((note) => (
+                                <span key={note} style={{ color: tokens.textTertiary }} className="text-[11px]">
+                                    {note}
+                                </span>
+                            ))}
+                        </div>
+                        {qr !== null ? (
+                            <div className="flex shrink-0 flex-col items-center gap-1">
+                                {/*
+                                 * `dangerouslySetInnerHTML` because `qrSvg` returns markup, not a React
+                                 * tree, and parsing 800-odd path commands into elements to hand them
+                                 * straight back to the DOM would buy nothing. It is safe to inline: the
+                                 * string is the encoder's own output and it is a closed shape - one
+                                 * `<svg>`, one `<rect>`, one `<path>`, every attribute either a number
+                                 * this file computed or one of the two colour literals above. The pairing
+                                 * URL never reaches the markup; it is in the module bits. The one string
+                                 * a caller supplies is `ariaLabel`, `qrSvg` XML-escapes it, and ours is a
+                                 * constant with no interpolation in it.
+                                 */}
+                                <div
+                                    data-testid="remote-pair-qr"
+                                    className="rounded border"
+                                    style={{ borderColor: tokens.divider, lineHeight: 0 }}
+                                    dangerouslySetInnerHTML={{ __html: qr }}
+                                />
+                                <span style={{ color: tokens.textTertiary }} className="text-[11px]">
+                                    Or scan this
+                                </span>
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
             </SettingsSection>

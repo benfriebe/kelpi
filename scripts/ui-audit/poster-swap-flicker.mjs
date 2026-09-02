@@ -21,6 +21,13 @@
  *   3. **The two clocks, merged.** Both streams are wall-clock, so "the view left before the
  *      picture arrived" is arithmetic rather than an opinion.
  *
+ * **Known bias, and it is the safe direction.** The shell's timestamps are taken when its line
+ * reaches this process's stdout pipe, which is AFTER the moment it logged — so a loaded machine
+ * makes the park look later than it was and the ordering check under-detects. It cannot produce a
+ * false red: a run that says "painted 3 ms before the park" may in truth have been 1 ms, but a run
+ * that says "painted 8 ms after" cannot have been before. Reds are therefore trustworthy and a
+ * thin green margin is worth re-running.
+ *
  * What it asserts, and each one is a defect that shipped:
  *
  *   - **The picture is on screen BEFORE the view leaves.** The park is a socket message the shell
@@ -72,6 +79,29 @@ const options = {
 const { buildAll, makeSandbox, startDaemon, startShell, waitForHealthz, makeCli, waitFor, sleep } = await import(
     path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'stack.mjs')
 );
+
+/**
+ * Wait until a sample stops changing — the audit's own `settleStable`, inlined because
+ * `audit.mjs` does not export it. Preferred over a fixed sleep wherever the thing being waited
+ * for is observable: a duration is a guess that is too short on a loaded machine and wasted on a
+ * fast one, and here the waits bracket the very measurement being taken.
+ */
+async function settleStable(sample, { ceilingMs, stableMs = 300, intervalMs = 70 }) {
+    const started = Date.now();
+    let last = null;
+    let since = Date.now();
+    while (Date.now() - started < ceilingMs) {
+        const value = await sample();
+        if (value !== last) {
+            last = value;
+            since = Date.now();
+        } else if (Date.now() - since >= stableMs) {
+            return value;
+        }
+        await sleep(intervalMs);
+    }
+    return last;
+}
 const { waitForPageTarget, connect } = await import(path.join(repoRoot, 'scripts', 'ui-audit', 'lib', 'cdp.mjs'));
 
 const results = [];
@@ -173,8 +203,20 @@ async function main() {
                 )) === true,
             30_000
         );
-        // The page has painted and the layout has settled, so the "before" frames are steady.
-        await sleep(1500);
+        // The "before" frames must be steady, and "steady" is a measurement rather than a
+        // duration: the hole has stopped moving and the shell has finished placing the view.
+        await settleStable(
+            async () =>
+                String(
+                    await page.eval(
+                        `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
+                          const r = el.getBoundingClientRect();
+                          return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
+                                  el.getAttribute('data-visible')].join('/'); })()`
+                    )
+                ) + `|${String(stamps.length)}`,
+            { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
+        );
 
         await page.eval(`(() => {
             window.__posterProbe = { frames: [], marks: [] };
@@ -200,7 +242,6 @@ async function main() {
             return true;
         })()`);
 
-        await sleep(300);
         await page.eval(`window.__posterMark('open')`);
         await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
         await waitFor(
@@ -208,10 +249,35 @@ async function main() {
             async () => (await page.eval(`document.querySelector('[data-testid="context-menu"]') !== null`)) === true,
             10_000
         );
-        await sleep(900);
+        // Parked and settled: the frame is up, the shell has logged its park, and the sampler has
+        // seen several frames of the steady state.
+        await settleStable(
+            async () =>
+                String(
+                    await page.eval(
+                        `(() => { const net = window.__posterProbe;
+                          const last = net.frames[net.frames.length - 1];
+                          return [last?.visible ?? null, last?.poster === null || last?.poster === undefined
+                              ? '-' : Math.round(last.poster.w) + 'x' + Math.round(last.poster.h)].join('/'); })()`
+                    )
+                ) + `|${String(stamps.length)}`,
+            { ceilingMs: 2500, stableMs: 400, intervalMs: 80 }
+        );
         await page.eval(`window.__posterMark('close')`);
         await page.key('Escape');
-        await sleep(900);
+        // …and restored: the view is back and the linger has expired, which is the last thing any
+        // assertion below reads.
+        await settleStable(
+            async () =>
+                String(
+                    await page.eval(
+                        `(() => { const net = window.__posterProbe;
+                          const last = net.frames[net.frames.length - 1];
+                          return [last?.visible ?? null, last?.poster === null ? '-' : 'poster'].join('/'); })()`
+                    )
+                ) + `|${String(stamps.length)}`,
+            { ceilingMs: 2500, stableMs: 400, intervalMs: 80 }
+        );
 
         clearInterval(pump);
         const probe = await page.eval(`JSON.stringify(window.__posterProbe)`);

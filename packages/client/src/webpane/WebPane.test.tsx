@@ -780,6 +780,98 @@ describe('geometry reporting', () => {
             });
 
             /**
+             * A parked pane can still MOVE, and nothing about an open menu stops it: a sibling
+             * pane exits, `kelpi pane close` runs in another terminal, the daemon changes the
+             * layout. A picture pinned to the viewport position it was photographed at would
+             * slide out from under the hole's own `overflow-hidden` and show as blank strips,
+             * then jump when the view came back — a regression against the inset layout this
+             * replaced, which at least moved with the pane.
+             */
+            it('travels with the pane when the grid reflows under the menu', async () => {
+                const h = mount({
+                    rect: FRACTIONAL,
+                    poster: {
+                        ok: true,
+                        image_base64: POSTER_BASE64,
+                        mime: 'image/jpeg',
+                        bounds: FRACTIONAL_BOUNDS,
+                        css_scale: 1
+                    }
+                });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const read = (): Record<string, string> => {
+                    // `CSSStyleDeclaration` keeps its properties on the prototype, so a spread
+                    // would copy nothing: read the four that matter by name.
+                    const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLImageElement).style;
+                    return { left: style.left, top: style.top, width: style.width, height: style.height };
+                };
+                const before = read();
+
+                // The pane slides 300 px left and 40 px down, same size: a sibling closing.
+                const moved: GeometryRect = { ...FRACTIONAL, x: FRACTIONAL.x - 300, y: FRACTIONAL.y + 40 };
+                act(() => {
+                    h.view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={h.commands}
+                            embedded={true}
+                            visible={true}
+                            measure={fixedRect(moved)}
+                            devicePixelRatio={2}
+                            onGeometry={(report) => h.reports.push(report)}
+                            onHidden={(paneID) => h.hidden.push(paneID)}
+                        />
+                    );
+                });
+                // Unchanged, because the offset is relative to the hole: the picture went with it.
+                expect(read()).toEqual(before);
+                expect(before.width).toBe(`${FRACTIONAL_BOUNDS.width}px`);
+            });
+
+            /**
+             * …and a pane that has RESIZED is not the pane in the photograph any more: the frame
+             * is the wrong number of pixels for the hole however it is offset, so it stretches to
+             * the hole rather than leaving a strip of nothing.
+             */
+            it('stretches to the hole when the pane is RESIZED under the menu', async () => {
+                const h = mount({
+                    rect: FRACTIONAL,
+                    poster: {
+                        ok: true,
+                        image_base64: POSTER_BASE64,
+                        mime: 'image/jpeg',
+                        bounds: FRACTIONAL_BOUNDS,
+                        css_scale: 1
+                    }
+                });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const narrower: GeometryRect = { ...FRACTIONAL, w: FRACTIONAL.w - 200 };
+                act(() => {
+                    h.view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={h.commands}
+                            embedded={true}
+                            visible={true}
+                            measure={fixedRect(narrower)}
+                            devicePixelRatio={2}
+                            onGeometry={(report) => h.reports.push(report)}
+                            onHidden={(paneID) => h.hidden.push(paneID)}
+                        />
+                    );
+                });
+                const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLImageElement).style;
+                expect(style.left).toBe(`${FOCUS_RING_WIDTH}px`);
+                expect(style.width).toBe(`${narrower.w - FOCUS_RING_WIDTH * 2}px`);
+            });
+
+            /**
              * A host that does not say where the view is (an older shell, a placement it could
              * not read) still gets a poster: §N27a's gutter is where the view is to within the
              * rounding, and a frame two tenths of a pixel out is better than an empty hole.

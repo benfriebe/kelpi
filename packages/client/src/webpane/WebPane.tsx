@@ -48,6 +48,7 @@ import {
     samePosterStyle,
     warmPosterImage,
     POSTER_IDLE,
+    type PosterAnchor,
     type PosterController,
     type PosterStyle
 } from './poster';
@@ -687,6 +688,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * this hole at the moment the frame landed.
      */
     const [posterFrame, setPosterFrame] = useState<{ src: string; style: PosterStyle } | null>(null);
+    /** The placement a landed frame was taken against — see the publish below. */
+    const posterAnchor = useRef<(PosterAnchor & { src: string }) | null>(null);
     /**
      * §N26's cover, MINUS issue #12's few-frame hold — i.e. "this pane's own view is off screen
      * because something is over it". Kept beside `coveredByOverlay` rather than folded into it
@@ -731,18 +734,21 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * gap, which is exactly what "it flickers" was.
      */
     const posterImgRef = useRef<HTMLImageElement | null>(null);
+    /** The session the frame on screen belongs to, so its confirmation cannot answer for another. */
+    const posterToken = useRef(0);
     const confirmPosterPaint = useCallback((): void => {
         const image = posterImgRef.current;
         if (image === null) return;
         const src = image.src;
+        const token = posterToken.current;
         const afterPaint = (): void => {
             const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => unknown })
                 .requestAnimationFrame;
             if (typeof raf !== 'function') {
-                poster.painted(src);
+                poster.painted(token, src);
                 return;
             }
-            raf(() => raf(() => poster.painted(src)));
+            raf(() => raf(() => poster.painted(token, src)));
         };
         const decoded = typeof image.decode === 'function' ? image.decode() : null;
         if (decoded === null) {
@@ -799,12 +805,31 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                   tabID: active?.id ?? null
               })
             : POSTER_IDLE;
-        // The picture stands where the VIEW stood, not where this document would put an image:
-        // `posterStyle` turns the host's placement into offsets inside this hole, and pins the
-        // width and height so the browser cannot size the `<img>` from its own aspect ratio.
+        /*
+         * The picture stands where the VIEW stood, not where this document would put an image:
+         * the host's placement, pinned to explicit width and height so the browser cannot size
+         * the `<img>` from its own aspect ratio.
+         *
+         * The ANCHOR is taken once, when the frame lands, and holds the hole it was measured
+         * against — because a parked pane can still move. Nothing about an open menu stops a
+         * sibling pane from exiting or a `kelpi pane close` in another terminal from reflowing
+         * the grid, and a picture pinned to the viewport position it was taken at would slide out
+         * from under its own `overflow-hidden` and leave blank strips. Re-applied as
+         * `box − holeAtLand` against the live hole, it travels with the pane.
+         */
+        posterToken.current = shot.token;
+        if (shot.src !== null && posterAnchor.current?.src !== shot.src) {
+            posterAnchor.current =
+                shot.box === null || rect === null ? null : { src: shot.src, box: shot.box, hole: rect };
+        }
         setPosterFrame((current) => {
             if (shot.src === null) return current === null ? current : null;
-            const style = posterStyle(shot.box, rect);
+            const anchor = posterAnchor.current;
+            const style = posterStyle(
+                anchor === null || anchor.src !== shot.src ? null : anchor,
+                rect,
+                FOCUS_RING_WIDTH
+            );
             // Same frame in the same box: keep the object, or the publish (which runs on every
             // render) would hand React a new one every time and re-render itself for ever.
             if (current !== null && current.src === shot.src && samePosterStyle(current.style, style)) {

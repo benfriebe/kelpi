@@ -420,6 +420,16 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             if (placed === null) return null;
             const metrics = windowMetrics();
             if (metrics === null) return null;
+            /*
+             * Both halves of the conversion have to be from the SAME moment. The client's
+             * `devicePixelRatio` is whatever its last report carried; the window's `scaleFactor`
+             * is read now. Drag the window from a retina panel to a 1× one while a menu is open
+             * and multiplying one by the other gives a factor that was never true — so the
+             * placement's own scale factor is compared with the live one and the box is withheld
+             * when they disagree. The client then falls back to the ring gutter, which is right
+             * at any scale.
+             */
+            if (placed.scaleFactor !== metrics.scaleFactor) return null;
             const scale = cssToDipScale(placed.geometry.devicePixelRatio, metrics.scaleFactor);
             if (!Number.isFinite(scale) || scale <= 0) return null;
             return { bounds: placed.bounds, cssScale: 1 / scale };

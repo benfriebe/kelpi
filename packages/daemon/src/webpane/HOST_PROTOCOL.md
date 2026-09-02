@@ -203,7 +203,12 @@ Rules, and each of them is load-bearing:
   528.99 × 711.38 where the view had been 525 × 706, so the page appeared to grow 0.76% the
   instant a menu opened, and snapped back when it closed. A host that cannot say where the view
   is may omit both fields; the client then falls back to the focus-ring gutter, which is the
-  right box to within the rounding.
+  right box to within the rounding. **The box describes the view at REPLY time, not at capture
+  time**: it is read when the reply is built, so a host must not answer with a placement it has
+  since changed — and a host whose window changed display scale between the two must omit it
+  rather than mix the client's last-reported `devicePixelRatio` with a scale factor that no longer
+  holds. (`web-smoke`'s check compares the reply's `bounds` with the placement line the shell
+  logged, which is only a fair comparison because of this rule.)
 - **The client parks only once the picture is ON SCREEN.** Not a host rule but the other half of
   the same defect, recorded here because the budget above is sized for it: the park is a socket
   message the shell acts on within a millisecond, and an `<img>` committed in the same tick cannot

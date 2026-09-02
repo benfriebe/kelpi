@@ -198,6 +198,30 @@ export interface PosterStyle {
 }
 
 /**
+ * A frame's placement AND the hole it was placed against, taken together at the moment it landed.
+ *
+ * Both halves are needed because the pane can move while it is parked, and nothing about a menu
+ * being open stops it: a sibling pane exits, `kelpi pane close` runs in another terminal, a
+ * daemon-driven layout change lands. The offset is therefore stored RELATIVE to the hole
+ * (`box − hole`) and re-applied against wherever the hole is now, so the picture travels with the
+ * pane instead of staying pinned to the viewport position it was photographed at — which would
+ * slide it out from under its own `overflow-hidden` and leave blank strips.
+ */
+export interface PosterAnchor {
+    /** The view's placement when the frame was taken, in viewport CSS px. */
+    readonly box: PosterRect;
+    /** Where this pane's hole was at that same moment. */
+    readonly hole: PosterRect;
+}
+
+/**
+ * How far a hole may drift in size before its photograph is the wrong picture. A tenth of a CSS
+ * pixel is below anything layout can produce deliberately and above the noise of a
+ * `getBoundingClientRect` recomputation.
+ */
+export const POSTER_HOLE_EPSILON = 0.1;
+
+/**
  * Where to stand the frame inside the hole, in the hole's own coordinates.
  *
  * **This is the fix for the jump, and the reason it needs the host's box.** A `<img>` given only
@@ -214,10 +238,19 @@ export interface PosterStyle {
  * and `max-height` defeated so nothing downstream can resize it again. Without a host box
  * (an older shell, a refusal to say) it falls back to §N27a's gutter, which is where the view is
  * to within the rounding — the pre-#12 behaviour, and better than nothing.
+ *
+ * **The offset is relative, and the size is checked.** `anchor` carries the hole the box was
+ * measured against, so what is re-applied on every render is `box − hole`: the picture moves with
+ * the pane. A pane that has changed SIZE under the menu falls back to the gutter, because at that
+ * point the frame has the wrong number of pixels for the hole no matter where it is put.
  */
-export function posterStyle(box: PosterRect | null, hole: PosterRect | null, ring = 2): PosterStyle {
+export function posterStyle(
+    anchor: PosterAnchor | null,
+    hole: PosterRect | null,
+    ring: number
+): PosterStyle {
     const fixed = { objectFit: 'fill', maxWidth: 'none', maxHeight: 'none' } as const;
-    if (box === null || hole === null || hole.w <= 0 || hole.h <= 0) {
+    const gutter = (): PosterStyle => {
         const horizontal = hole !== null && hole.w > ring * 2 ? ring : 0;
         const vertical = hole !== null && hole.h > ring ? ring : 0;
         return {
@@ -227,8 +260,20 @@ export function posterStyle(box: PosterRect | null, hole: PosterRect | null, rin
             height: Math.max(0, (hole?.h ?? 0) - vertical),
             ...fixed
         };
-    }
-    return { left: box.x - hole.x, top: box.y - hole.y, width: box.w, height: box.h, ...fixed };
+    };
+    if (anchor === null || hole === null || hole.w <= 0 || hole.h <= 0) return gutter();
+    // A pane that has RESIZED under the menu is no longer the pane in the photograph: the frame
+    // is the wrong number of pixels for the hole whatever it is offset by, so it stretches to
+    // the hole and takes the small distortion instead of leaving a strip of nothing.
+    if (Math.abs(hole.w - anchor.hole.w) > POSTER_HOLE_EPSILON) return gutter();
+    if (Math.abs(hole.h - anchor.hole.h) > POSTER_HOLE_EPSILON) return gutter();
+    return {
+        left: anchor.box.x - anchor.hole.x,
+        top: anchor.box.y - anchor.hole.y,
+        width: anchor.box.w,
+        height: anchor.box.h,
+        ...fixed
+    };
 }
 
 /**
@@ -257,6 +302,16 @@ export interface PosterView {
     readonly hold: boolean;
     /** Where to stand the frame, in CSS px, viewport-relative; null when the host did not say. */
     readonly box: PosterRect | null;
+    /**
+     * Which cover session this view belongs to, to be handed back with the paint confirmation.
+     *
+     * The src alone is not an identity: two covers of a still page produce byte-identical JPEGs,
+     * so a confirmation left over from the previous menu would satisfy the next one about two
+     * frames early — a ~35 ms window on a close-then-reopen, and exactly the blink this whole
+     * mechanism exists to remove. The token makes the confirmation specific to the session that
+     * asked for it.
+     */
+    readonly token: number;
 }
 
 export interface PosterControllerOptions {
@@ -294,9 +349,10 @@ export interface PosterController {
     /**
      * The frame is now ON SCREEN — the `<img>` decoded and a composited frame carrying it has
      * been produced. Only then may the view go back, which is what makes the swap seamless
-     * rather than a blink. Idempotent, and ignored for a frame that is no longer the current one.
+     * rather than a blink. Idempotent, and ignored unless BOTH the session token and the frame
+     * are the ones currently up.
      */
-    painted(src: string): void;
+    painted(token: number, src: string): void;
     /** The pane is going away: drop the frame and any pending timer. */
     dispose(): void;
     /** Diagnostics: how many captures this pane has asked for. */
@@ -309,7 +365,7 @@ export interface PosterController {
  * Nothing covered, nothing to paint — the answer for every pane, almost always, and the answer a
  * client with no native view to photograph takes without asking.
  */
-export const POSTER_IDLE: PosterView = { src: null, hold: false, box: null };
+export const POSTER_IDLE: PosterView = { src: null, hold: false, box: null, token: 0 };
 
 /**
  * How long the frame stays painted after the surface closes.
@@ -405,7 +461,12 @@ export function createPosterController(options: PosterControllerOptions): Poster
         timer = null;
     };
 
-    const view = (): PosterView => ({ src: painted, hold: session?.waiting === true, box: paintedBox });
+    const view = (): PosterView => ({
+        src: painted,
+        hold: session?.waiting === true,
+        box: paintedBox,
+        token: session?.seq ?? 0
+    });
 
     /** A real no: leave this host alone for a while (see `POSTER_COOLDOWN_MS`). */
     const cool = (): void => {
@@ -540,11 +601,12 @@ export function createPosterController(options: PosterControllerOptions): Poster
             return view();
         },
 
-        painted(src) {
+        painted(token, src) {
             if (disposed || session === null) return;
-            // Only the frame that is currently up counts: a confirmation for a picture the pane
-            // has already replaced (a tab switch, a second cover) says nothing about this one.
-            if (session.phase !== 'paint' || painted !== src) return;
+            // Only the frame that is currently up counts, and "currently" means this SESSION:
+            // a still page photographs identically twice, so a confirmation from the previous
+            // cover would otherwise answer for this one and release the view early.
+            if (session.seq !== token || session.phase !== 'paint' || painted !== src) return;
             session.waiting = false;
             session.phase = 'parked';
             clearTimer();

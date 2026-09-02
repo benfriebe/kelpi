@@ -355,3 +355,98 @@ describe('the active-agents delete gate (§H18)', () => {
         expect(pageVisible()).toBe('false');
     });
 });
+
+
+/**
+ * Issue #12 — the poster's refusals are SILENT, and only a whole-assembly test can say so.
+ *
+ * The mechanism promises the user sees the old behaviour when a frame cannot be taken: the pane
+ * parks with an empty hole and nothing else happens. But the client's web verbs are wrapped by
+ * `App.tsx` in `run(...)`, which turns any `ok:false` into an error toast — so the module's own
+ * contract was worth exactly nothing until the assembly agreed to it. The component tests cannot
+ * see this at all: they inject a fake command set and never touch the wrapper.
+ *
+ * The stakes are not one stray card. A poster is asked for on EVERY right-click over a page, and
+ * a toast is itself a modal surface (§H1) — so a toasted refusal would park every pane in the
+ * window a second time, for the error about the parking.
+ */
+describe('the poster refuses silently (issue #12)', () => {
+    /** `embedded` is what makes a pane ask for a frame, and it is read off the URL. */
+    const asShellWindow = (): (() => void) => {
+        const original = `${window.location.pathname}${window.location.search}`;
+        window.history.replaceState({}, '', '/?shellWindow=cccccccc-0000-4000-8000-000000000009');
+        return () => window.history.replaceState({}, '', original);
+    };
+
+    /** Answer the pane's `web-poster` the way a host with nothing to photograph does. */
+    const refusePoster = async (h: Harness): Promise<Record<string, unknown> | undefined> => {
+        const asked = h
+            .socket()
+            .messages()
+            .filter((message) => message['type'] === 'command')
+            .map((message) => message as Record<string, unknown>)
+            .filter((message) => (message['payload'] as Record<string, unknown>)['command'] === 'web-poster');
+        const last = asked.at(-1);
+        if (last === undefined) return undefined;
+        await act(async () => {
+            h.socket().emit({
+                type: 'command-reply',
+                id: last['id'],
+                reply: { ok: false, error: 'no on-screen view to poster', pane_id: PANE_WEB }
+            });
+            await Promise.resolve();
+        });
+        return last;
+    };
+
+    it('a refused frame parks the pane and says nothing at all', async () => {
+        const restore = asShellWindow();
+        try {
+            const h = mount({ web: true });
+            act(() => {
+                fireEvent.contextMenu(screen.getByTestId(`pane-header-${PANE_A}`));
+            });
+            // The menu is up and the pane is holding its view on screen while it asks.
+            expect(screen.getByTestId('context-menu')).toBeTruthy();
+            const asked = await refusePoster(h);
+            expect(asked).toBeTruthy();
+
+            // The park happened…
+            expect(pageVisible()).toBe('false');
+            // …and the refusal produced no card. A "Poster" toast here would be raised by a
+            // right-click, on every right-click, about a mechanism nobody asked for.
+            expect(screen.queryByTestId('toast-stack')).toBeNull();
+        } finally {
+            restore();
+        }
+    });
+
+    it('every OTHER web verb still toasts — the exemption is one verb wide', async () => {
+        const restore = asShellWindow();
+        try {
+            const h = mount({ web: true });
+            const reload = screen.getByTestId(`web-reload-${PANE_WEB}`);
+            act(() => {
+                fireEvent.click(reload);
+            });
+            const sent = h
+                .socket()
+                .messages()
+                .filter((message) => message['type'] === 'command')
+                .find((message) => (message['payload'] as Record<string, unknown>)['command'] === 'web-reload');
+            expect(sent).toBeTruthy();
+            await act(async () => {
+                h.socket().emit({
+                    type: 'command-reply',
+                    id: (sent as Record<string, unknown>)['id'],
+                    reply: { ok: false, error: 'no web pane host connected' }
+                });
+                await Promise.resolve();
+            });
+            // A gesture the user made, refused: that is news, and it reads as it always did.
+            expect(screen.getByTestId('toast-stack').textContent).toContain('Reload');
+        } finally {
+            restore();
+        }
+    });
+});

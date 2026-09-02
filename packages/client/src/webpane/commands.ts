@@ -26,6 +26,34 @@ export interface WebCommandSender {
     raw(payload: JsonObject): Promise<CommandReply>;
 }
 
+/**
+ * The web verbs whose refusals must NOT reach the user (issue #12).
+ *
+ * Every other verb here is a GESTURE: the user pressed reload, submitted a URL, dragged a tab,
+ * and a refusal is news — the assembly turns it into the same error toast every command uses
+ * (`App.tsx`'s `run`). The poster is not a gesture. Nobody asked for it, it is asked for by the
+ * pane itself whenever a menu lands over its page, and **its refusals are part of its contract**:
+ * no host attached, a view that is not on screen, a frame over the inline budget, a tab switched
+ * away mid-flight (`./poster.ts`, `daemon/src/webpane/HOST_PROTOCOL.md` §3.6). Each one is
+ * answered by parking the pane exactly as it did before the poster existed — which the user sees
+ * as the old behaviour, and must not also see as an error.
+ *
+ * A toast here would be the worst kind: raised by a right-click, once per right-click, saying
+ * "Poster" about a mechanism the person has never heard of. And it would park the pane a second
+ * time, since a toast is itself a modal surface (§H1).
+ *
+ * The set is deliberately a set of COMMANDS rather than a flag on the call: whether a refusal is
+ * news is a property of the verb, and keeping it beside the vocabulary is what stops the next
+ * silent verb from having to rediscover this.
+ */
+export const SILENT_WEB_COMMANDS: ReadonlySet<string> = new Set(['web-poster']);
+
+/** Whether this payload's refusal should be swallowed rather than shown. */
+export function webCommandIsSilent(payload: JsonObject): boolean {
+    const command = payload['command'];
+    return typeof command === 'string' && SILENT_WEB_COMMANDS.has(command);
+}
+
 /** The find bar's four operations (§10), the same set `__kelpiWebFind` exposes. */
 export type WebFindOp = 'search' | 'next' | 'prev' | 'clear';
 
@@ -71,6 +99,16 @@ export interface WebPaneCommands {
     focusView(paneID: string, tabID?: string | null): Promise<CommandReply>;
     /** `</>`: toggle the docked inspector for the pane's active tab. */
     toggleDevTools(paneID: string, tabID?: string | null): Promise<CommandReply>;
+
+    // ── the page poster (issue #12) ─────────────────────────────────────────
+    /**
+     * One still frame of the page, taken while the view is still on screen, so the hole has
+     * something to wear while a menu is over it (`./poster.ts`).
+     *
+     * `tabID` is explicit for the same reason `find`'s is: the frame is of ONE tab, and one that
+     * arrives after a tab switch is a picture of the wrong page.
+     */
+    poster(paneID: string, tabID: string): Promise<CommandReply>;
 
     // ── find (§10) ──────────────────────────────────────────────────────────
     /**
@@ -150,6 +188,8 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
                 pane_id: paneID,
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
             }),
+
+        poster: (paneID, tabID) => sender.raw({ command: 'web-poster', pane_id: paneID, tab_id: tabID }),
 
         find: (paneID, tabID, op, needle = '') =>
             sender.raw({ command: 'web-find', pane_id: paneID, tab_id: tabID, action: op, needle }),

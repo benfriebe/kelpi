@@ -26,13 +26,20 @@ interface Recorded {
     readonly args: readonly unknown[];
 }
 
-function fakeCommands(): { commands: WebPaneCommands; sent: Recorded[] } {
+/** Issue #12: what a host that CAN photograph a pane answers `web-poster` with. */
+const POSTER_BASE64 = 'AAAA';
+const POSTER_SRC = `data:image/jpeg;base64,${POSTER_BASE64}`;
+const POSTER_REPLY: CommandReply = { ok: true, image_base64: POSTER_BASE64, mime: 'image/jpeg' };
+
+function fakeCommands(
+    options: { poster?: CommandReply } = {}
+): { commands: WebPaneCommands; sent: Recorded[] } {
     const sent: Recorded[] = [];
     const record =
-        (verb: string) =>
+        (verb: string, reply: CommandReply = { ok: true }) =>
         (...args: unknown[]): Promise<CommandReply> => {
             sent.push({ verb, args });
-            return Promise.resolve({ ok: true });
+            return Promise.resolve(reply);
         };
     return {
         sent,
@@ -47,7 +54,9 @@ function fakeCommands(): { commands: WebPaneCommands; sent: Recorded[] } {
             toggleDevTools: record('toggleDevTools'),
             // WEB-043's keyboard handoff fires on the unfocused→focused transition, so any test
             // that focuses a pane goes through it.
-            focusView: record('focusView')
+            focusView: record('focusView'),
+            // Issue #12: the still frame a covered pane asks for before it parks.
+            poster: record('poster', options.poster ?? POSTER_REPLY)
         } as unknown as WebPaneCommands
     };
 }
@@ -304,9 +313,11 @@ describe('geometry reporting', () => {
             tabs?: readonly WebPaneTab[];
             activeTabID?: string | null;
             focused?: boolean;
+            /** Issue #12: what this pane's host answers `web-poster` with. */
+            poster?: CommandReply;
         } = {}
     ) {
-        const { commands } = fakeCommands();
+        const { commands, sent } = fakeCommands(props.poster === undefined ? {} : { poster: props.poster });
         const reports: GeometryReport[] = [];
         const hidden: string[] = [];
         const element = (
@@ -325,7 +336,7 @@ describe('geometry reporting', () => {
             />
         );
         const view = render(element);
-        return { view, reports, hidden, commands };
+        return { view, reports, hidden, commands, sent };
     }
 
     it('reports the page-area rect on mount', () => {
@@ -550,19 +561,35 @@ describe('geometry reporting', () => {
         /** The hide re-publishes on each render while it holds; the reporter upstream dedupes. */
         const hiddenOnce = (hidden: readonly string[]): readonly string[] => [...new Set(hidden)];
 
-        it('parks the view — the page reports itself hidden while the surface is up', () => {
+        /**
+         * Issue #12 — the park is one round trip behind the cover now.
+         *
+         * A covered pane holds its view on screen while it asks the host for a still frame, so
+         * that the hole it is about to empty has something to wear (`./poster.ts`). Every
+         * assertion about the PARK therefore has to let that answer land first; the assertions
+         * about the poster itself are in the block below.
+         */
+        const settle = async (): Promise<void> => {
+            await act(async () => {
+                await Promise.resolve();
+            });
+        };
+
+        it('parks the view — the page reports itself hidden while the surface is up', async () => {
             const h = mount();
             expect(h.reports).toHaveLength(1);
             open({ x: 100, y: 100, w: 200, h: 200 });
+            await settle();
             expect(hiddenOnce(h.hidden)).toEqual([PANE]);
             const hole = screen.getByTestId(`web-page-${PANE}`);
             expect(hole.dataset['visible']).toBe('false');
             expect(hole.dataset['overlayCovered']).toBe('true');
         });
 
-        it('hands it straight back when the surface closes, at the same rect (no flash, §N24)', () => {
+        it('hands it straight back when the surface closes, at the same rect (no flash, §N24)', async () => {
             const h = mount();
             const overlay = open({ x: 100, y: 100, w: 200, h: 200 });
+            await settle();
             expect(hiddenOnce(h.hidden)).toEqual([PANE]);
             close(overlay);
             expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
@@ -585,10 +612,11 @@ describe('geometry reporting', () => {
          * surface was up silently invalidated the pre-park number. With a constant gutter the
          * question disappears — there is only ever one rect for a given hole.
          */
-        it('round-trips a FOCUSED pane through park/restore at the identical rect', () => {
+        it('round-trips a FOCUSED pane through park/restore at the identical rect', async () => {
             const h = mount({ focused: true });
             const parked = h.reports.at(-1)?.rect;
             const overlay = open({ x: 100, y: 100, w: 200, h: 200 });
+            await settle();
             expect(hiddenOnce(h.hidden)).toEqual([PANE]);
             close(overlay);
             expect(h.reports.at(-1)?.rect).toEqual(parked);
@@ -604,9 +632,10 @@ describe('geometry reporting', () => {
             expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
         });
 
-        it('an UNMEASURED surface parks it, exactly as the blunt H1 count did', () => {
+        it('an UNMEASURED surface parks it, exactly as the blunt H1 count did', async () => {
             const h = mount();
             open(null);
+            await settle();
             expect(hiddenOnce(h.hidden)).toEqual([PANE]);
         });
 
@@ -615,6 +644,181 @@ describe('geometry reporting', () => {
             mount({ embedded: false });
             open({ x: 100, y: 100, w: 200, h: 200 });
             expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('false');
+        });
+
+        /**
+         * Issue #12 — the page stays VISIBLE under the menu.
+         *
+         * The owner's report: right-click a web pane's header and the page disappears until the
+         * menu closes. The park itself is right and cannot go — nothing in this document can be
+         * seen over a native view — so what changes is what the pane looks like while it is
+         * parked. It photographs itself first, and wears the photograph.
+         */
+        describe('the still frame it wears while parked (issue #12)', () => {
+            it('holds the view on screen until the frame is in hand, then parks with it', async () => {
+                const h = mount();
+                const placed = h.hidden.length;
+                open({ x: 100, y: 100, w: 200, h: 200 });
+
+                // Still placed: for these few frames the surface is drawn UNDER a live page and
+                // is simply not visible yet. That is the trade — a menu that finishes appearing
+                // a frame late, instead of a page that blinks black on every menu.
+                expect(h.hidden).toHaveLength(placed);
+                expect(h.sent.filter((entry) => entry.verb === 'poster')).toEqual([
+                    { verb: 'poster', args: [PANE, TAB1] }
+                ]);
+                expect(screen.queryByTestId(`web-poster-${PANE}`)).toBeNull();
+
+                await settle();
+
+                expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+                const poster = screen.getByTestId(`web-poster-${PANE}`);
+                expect(poster.getAttribute('src')).toBe(POSTER_SRC);
+                // Inert: the live view owns every gesture, and it is coming back.
+                expect(poster.getAttribute('aria-hidden')).toBe('true');
+                expect(poster.getAttribute('draggable')).toBe('false');
+            });
+
+            /**
+             * The attribute pair says which of the two states the pane is in, and they differ for
+             * exactly the length of the hold: `data-overlay-covered` is the geometry (a surface is
+             * over this hole), `data-visible` is the placement (the page is therefore gone). The
+             * live audit cross-checks the second against the shell's own `owner=` line, so it has
+             * to mean placement and nothing else.
+             */
+            it('still calls itself on screen while the frame is being taken', async () => {
+                mount();
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                const hole = screen.getByTestId(`web-page-${PANE}`);
+                expect(hole.dataset['overlayCovered']).toBe('true');
+                expect(hole.dataset['visible']).toBe('true');
+                await settle();
+                expect(hole.dataset['overlayCovered']).toBe('true');
+                expect(hole.dataset['visible']).toBe('false');
+            });
+
+            /**
+             * §N27a's gutter, and the reason the frame is not simply `inset-0`: the VIEW sits
+             * 2 px inside the hole on three edges, so a poster drawn to the hole's own box would
+             * be wider than the page it stands in for and the swap would shift by that much.
+             */
+            it('stands exactly where the view stands — on the ring gutter', async () => {
+                const h = mount();
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                const style = (screen.getByTestId(`web-poster-${PANE}`) as HTMLElement).style;
+                expect(style.left).toBe(`${FOCUS_RING_WIDTH}px`);
+                expect(style.right).toBe(`${FOCUS_RING_WIDTH}px`);
+                expect(style.bottom).toBe(`${FOCUS_RING_WIDTH}px`);
+                expect(style.top).toBe('0px');
+                // The frame is of this exact box, so there is nothing to crop.
+                expect(style.objectFit).toBe('fill');
+                expect(h.reports.at(-1)?.rect).toEqual(RINGED);
+            });
+
+            /**
+             * The other end of the same no-flash rule: handing the view back is a round trip, so
+             * dropping the frame in the same tick would open a blank exactly as wide as that gap.
+             */
+            it('keeps the frame painted while the live view is on its way back', async () => {
+                const h = mount();
+                const overlay = open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                close(overlay);
+                expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
+                expect(screen.getByTestId(`web-poster-${PANE}`).getAttribute('src')).toBe(POSTER_SRC);
+                expect(h.reports.at(-1)?.visible).toBe(true);
+            });
+
+            /**
+             * Every refusal degrades to the behaviour that shipped before the poster existed: the
+             * pane parks with an empty hole. A host answers no for real reasons — the view is in
+             * the off-screen holder, the frame is too big to send — and none of them may leave a
+             * menu waiting.
+             */
+            it('parks with nothing when the host cannot photograph the pane', async () => {
+                const h = mount({ poster: { ok: false, error: 'no on-screen view to poster' } });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+                expect(screen.queryByTestId(`web-poster-${PANE}`)).toBeNull();
+            });
+
+            it('never asks from a browser client — there is no view to photograph', () => {
+                const h = mount({ embedded: false });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(h.sent.filter((entry) => entry.verb === 'poster')).toEqual([]);
+            });
+
+            /**
+             * A pane parked by a whole-window modal (H1) is not covered by anything — it is off
+             * screen — and a photograph of it would be a picture nobody ever sees, taken on every
+             * Settings open.
+             */
+            /**
+             * The ORDER, and the lesson the `web-popup-layering` audit taught about it.
+             *
+             * The frame is asked for while the view is still placed and the hide only follows a
+             * whole round trip later — never the other way round, because a capture that arrives
+             * after its own park is refused by the host (it would be a picture of the off-screen
+             * holder's viewport). That is not a detail: a pane that kept asking on the parking
+             * path was refused every time, and read those refusals as "this host cannot poster",
+             * so it never asked properly again. Hence the second half of this pin — a pane that
+             * has been told a real no asks for NOTHING while it cools off.
+             */
+            it('asks while the view is still placed, and asks nothing at all while cooling off', async () => {
+                const order: string[] = [];
+                const { commands } = fakeCommands({ poster: { ok: false, error: 'no on-screen view to poster' } });
+                const traced: WebPaneCommands = {
+                    ...commands,
+                    poster: (paneID: string, tabID: string) => {
+                        order.push('poster');
+                        return commands.poster(paneID, tabID);
+                    }
+                };
+                const view = render(
+                    <WebPane
+                        paneID={PANE}
+                        tabs={TABS}
+                        activeTabID={TAB1}
+                        commands={traced}
+                        embedded={true}
+                        visible={true}
+                        measure={fixedRect(RECT)}
+                        devicePixelRatio={2}
+                        onGeometry={() => order.push('placed')}
+                        onHidden={() => order.push('hidden')}
+                    />
+                );
+                order.length = 0;
+
+                // First cover: the ask goes out in the publish that discovered the surface, and
+                // NOTHING has been handed back yet — the view is still on screen for the capture.
+                const first = open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(order.filter((step) => step === 'poster')).toHaveLength(1);
+                expect(order).not.toContain('hidden');
+                await settle();
+                // …and the park follows the host's answer.
+                expect(order.indexOf('poster')).toBeLessThan(order.indexOf('hidden'));
+                close(first);
+                await settle();
+
+                // Second cover, inside the cooldown the refusal started: the pane parks at once
+                // and asks for nothing. An ask here would land after its own park, be refused for
+                // exactly that reason, and keep the pane in this state for ever.
+                order.length = 0;
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(order).toContain('hidden');
+                expect(order).not.toContain('poster');
+                view.unmount();
+            });
+
+            it('never asks for a pane the assembly has already hidden', () => {
+                const h = mount({ visible: false });
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                expect(h.sent.filter((entry) => entry.verb === 'poster')).toEqual([]);
+                expect(screen.queryByTestId(`web-poster-${PANE}`)).toBeNull();
+            });
         });
     });
 });

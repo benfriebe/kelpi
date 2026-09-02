@@ -145,6 +145,67 @@ Rules:
 - The report is fire-and-forget; the daemon never answers it, and drops it when no host is
   attached or the pane is not a web pane.
 
+### 3.6 Poster: the still frame a parked pane wears (issue #12)
+
+A web pane's page is a native view composited **above** the client's document, so a menu drawn
+over it can only be seen once the view goes back to the holder — and the pane then shows an empty
+hole for as long as the menu is up. That is what the owner reported: right-click a web pane's
+header and the page vanishes until the menu closes.
+
+The client answers it by photographing the page **before** it parks. It holds the view on screen,
+asks for one frame, paints that frame in the hole and only then reports `visible:false`, so the
+menu ends up over a picture of the page rather than over nothing.
+
+```jsonc
+// client → daemon                                  // daemon → host
+{"type":"command","id":"c1","payload":{             {"type":"host-rpc","id":"…","verb":"poster",
+  "command":"web-poster","pane_id":"…",              "args":{"paneID":"…","tabID":"…"},
+  "tab_id":"…"}}                                     "timeoutMs":2000}
+// host → daemon → client
+{"ok":true,"image_base64":"…","mime":"image/jpeg","base64_bytes":214512,"pane_id":"…"}
+```
+
+| verb | args | reply |
+|---|---|---|
+| `poster` | `{paneID, tabID}` | `{ok:true, image_base64, mime:"image/jpeg", base64_bytes}` — the tab's **visible viewport as it is on screen**, at the pane's own size and the display's own scale. `{ok:false,error}` for every no. Budget: **2 s**. |
+
+Rules, and each of them is load-bearing:
+
+- **On-screen views only.** A tab in the off-screen holder is laid out at the pinned automation
+  viewport (§3.5), so its frame is a picture of a page sized for nobody; painted into the pane's
+  hole it would be a clipped, wrong-aspect corner. A host with the tab parked answers
+  `{ok:false,error:"no on-screen view to poster"}` — never a frame it knows is wrong.
+- **It is not `capture`.** `capture --mode screenshot` is the automation read: deterministic
+  1280×800 @1× PNG, spilled to a temp file above 1 MB, 20 s of budget. A poster is the opposite
+  of all four — the pane's real pixels, JPEG (a base64 PNG of a retina pane is megabytes *per
+  menu*), inline-or-nothing (an `<img>` in a renderer cannot open a temp file), and answered in
+  milliseconds or not at all.
+- **Refuse rather than delay.** The client is holding a live view on screen and a half-drawn menu
+  under it while this call is out. Anything a host cannot answer immediately — no renderer yet, a
+  frame over the inline budget (`poster too large to send inline`), a capture that threw
+  (`poster capture failed`) — is an `ok:false` now, not a slow `ok:true`. The client parks with an
+  empty hole, exactly as it did before this verb existed, and stops asking that pane to be waited
+  for until one succeeds.
+- **Every refusal is SILENT at the other end.** No `ok:false` from this verb reaches the user:
+  nobody asked for a poster, so nothing about one is news, and the pane's answer to every no is
+  behaviour the person already knows. The client enforces that by keeping `web-poster` off the
+  toasting path its gesture verbs use (`client/src/webpane/commands.ts` `SILENT_WEB_COMMANDS`,
+  pinned in `App.window-chrome.test.tsx`) — without which a right-click over a page could raise
+  an error card *per click*, and park every pane again for the card.
+- **Nothing is stored.** The daemon forwards and forgets: no frame is kept, cached or logged, and
+  a pane that is never covered is never photographed. The shell logs that a frame was taken and
+  how big it was, never the frame itself.
+- **Who may ask: any authenticated session, including a paired device — a decision, not an
+  oversight.** `web-poster` is an ordinary web command, so a phone attached over the tailnet with
+  a `kd_` device token can call it and receive a picture of what is on the owner's screen in that
+  pane. That is deliberate and it adds **no new class of access**: the same session can already
+  call `web-capture --mode screenshot` for a PNG of the page, `--mode dom` for its HTML and
+  `web-exec` to run script in it, and every one of those is older than this verb. The owner-only
+  family is `remote-*` (pairing and revocation, `ws/remote.ts`), and a poster is not in it: it
+  reads the same page the guest can already read, at the same trust boundary, and gating it alone
+  would buy nothing while pretending otherwise. **If the web family is ever put behind a guest
+  gate, this verb belongs behind the same one** — it is page content, not chrome.
+
 ### 3.2 Navigation (RPC)
 
 | verb | args | reply |
@@ -232,6 +293,7 @@ The split is what makes the daemon usable headlessly, and it is a contract of it
 | `web url` | **works** — falls back to the state's active-tab url/title (§8.2's "view not built yet") |
 | `web cookies-list/clear/delete` | **works** — empty list / `deleted:0` (§13.2's "no coordinator") |
 | `web navigate`, `back`, `forward`, `reload`, `capture`, `click`, `type`, `q-*`, `wait`, `select`, `scroll`, `hover`, `key`, `exec`, `web inspect` (arm) | `{"ok":false,"error":"no web pane host connected"}` |
+| `web-poster` (GUI-only, §3.6) | `{"ok":false,"error":"no web pane host connected"}` — the client reads that as "park with no frame" |
 
 Failure strings the daemon can author, all stable:
 

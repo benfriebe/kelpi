@@ -24,6 +24,7 @@ import {
 import { recordingTransport, type RecordedTransport } from '../ws/testing.js';
 import { NO_HOST_ERROR } from './host.js';
 import { createWebPaneService, type WebPaneService } from './service.js';
+import { HOST_TIMEOUT_POSTER_MS } from './verbs.js';
 import { HOME, id, SHELL_PANE, WEB_PANE, WEB_TAB, WORKSPACE, NOW } from './testing.js';
 
 /** A second tab id for the reorder tests (the fixture opens the pane with one). */
@@ -549,6 +550,100 @@ describe('web-devtools (GUI-only verb)', () => {
                 type: 'command',
                 id: 'c1',
                 payload: { command: 'web-devtools', pane_id: WEB_PANE }
+            })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: false,
+            error: NO_HOST_ERROR,
+            pane_id: WEB_PANE
+        });
+    });
+});
+
+/**
+ * Issue #12's poster: a still frame of a pane's on-screen page, so the client can paint the hole
+ * it is about to empty for a menu.
+ *
+ * The daemon's whole job here is to be a fast pipe — the frame is worth nothing if it arrives
+ * after the menu has finished opening — so what is pinned is the pass-through: the verb, the tab
+ * it names, and the envelope coming back unedited apart from the pane id every web reply carries.
+ */
+describe('web-poster (issue #12)', () => {
+    it('forwards to the host and returns its frame', async () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-poster', pane_id: WEB_PANE, tab_id: WEB_TAB }
+            })
+        );
+        const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+        expect(rpc['verb']).toBe('poster');
+        expect(rpc['args']).toMatchObject({ paneID: WEB_PANE, tabID: WEB_TAB });
+        // The budget is the tightest in the table: past it, waiting is worse than the blank.
+        expect(rpc['timeoutMs']).toBe(HOST_TIMEOUT_POSTER_MS);
+        host.session.handleMessage(
+            JSON.stringify({
+                type: 'host-rpc-reply',
+                id: rpc['id'],
+                reply: { ok: true, image_base64: 'AAAA', mime: 'image/jpeg', base64_bytes: 4 }
+            })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: true,
+            image_base64: 'AAAA',
+            mime: 'image/jpeg',
+            base64_bytes: 4,
+            pane_id: WEB_PANE
+        });
+    });
+
+    it('passes the host refusal through, so the pane parks instead of waiting', async () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-poster', pane_id: WEB_PANE, tab_id: WEB_TAB }
+            })
+        );
+        const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+        host.session.handleMessage(
+            JSON.stringify({
+                type: 'host-rpc-reply',
+                id: rpc['id'],
+                reply: { ok: false, error: 'no on-screen view to poster' }
+            })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: false,
+            error: 'no on-screen view to poster',
+            pane_id: WEB_PANE
+        });
+    });
+
+    it('answers the no-host failure rather than hanging', async () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-poster', pane_id: WEB_PANE }
             })
         );
         await Promise.resolve();

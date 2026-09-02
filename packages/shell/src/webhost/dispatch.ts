@@ -25,10 +25,15 @@ import type { JsonObject, JsonValue } from '@kelpi/protocol';
 import {
     DOM_CAPTURE_LIMIT,
     DOM_TRUNCATION_MARKER,
+    POSTER_FAILED_ERROR,
+    POSTER_MIME,
+    POSTER_TOO_LARGE_ERROR,
+    POSTER_UNAVAILABLE_ERROR,
     SCREENSHOT_INLINE_LIMIT,
     TEXT_CAPTURE_LIMIT,
     TEXT_TRUNCATION_MARKER,
-    clampUtf8
+    clampUtf8,
+    posterWithinBudget
 } from './caps.js';
 import type { RegistryPaneSpec, TabRegistry } from './registry.js';
 import {
@@ -77,6 +82,9 @@ export const RPC_VERBS = [
     'reload',
     'url',
     'capture',
+    // Issue #12's still frame. Beside `capture` rather than inside it: same CDP call, different
+    // question (`TabController.poster`).
+    'poster',
     'actuate',
     'exec',
     'inspect-arm',
@@ -144,6 +152,21 @@ export interface TabController {
     evaluate(expression: string): Promise<EvalOutcome>;
     /** Visible-viewport PNG (§8.4). Rejects/throws are turned into the spec's failure envelope. */
     screenshot(): Promise<Uint8Array>;
+    /**
+     * Issue #12's still frame: base64 JPEG of the view AS IT IS ON SCREEN, or `null` when there
+     * is no on-screen view to photograph.
+     *
+     * Deliberately a different method from `screenshot()` rather than a mode of it, because it
+     * asks a different question. A capture is an *automation* read and is specified against the
+     * pinned off-screen viewport (§8.4) so it answers the same on every machine; a poster is the
+     * pane's own pixels, at the pane's own size and the display's own scale, and is worthless
+     * unless it matches the hole the client is about to empty. A tab in the holder therefore has
+     * a screenshot and no poster.
+     *
+     * Optional, like `stop`/`focusView`: a test double or a future non-Electron host omits it
+     * and the verb answers honestly instead of crashing.
+     */
+    poster?(): Promise<string | null>;
     /** Clamped to [0.5, 3.0]; returns the applied factor. */
     setZoom(factor: number): number;
     zoom(): number;
@@ -418,6 +441,48 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
             return { ...composite, ...rest, screenshot_byte_count: bytes ?? 0 };
         }
         return failure(`unknown capture mode '${mode}' (allowed: ${CAPTURE_MODES.join(', ')})`);
+    };
+
+    // ── the poster (issue #12) ──────────────────────────────────────────────────────
+
+    /**
+     * One still frame of a pane's page, for the hole to wear while the view is parked.
+     *
+     * Every refusal is `ok:false` with a stated reason rather than an empty success, because the
+     * client branches on exactly that: a pane whose host cannot poster stops holding its view
+     * back for one (`client/src/webpane/poster.ts`), and it can only learn that from an honest
+     * no. The noes are different facts — no tab, no on-screen view, a frame too big to send —
+     * and all of them end the same way: the pane parks the way it always did.
+     *
+     * **`transient` is the one distinction that matters, and it was learned the hard way.** "The
+     * view was not on screen" is a fact about WHEN the client asked, not about what this host can
+     * do: the commonest cause is the client's own park landing mid-capture (a menu that raised a
+     * dialog, a workspace switch), and a pane that treated it as a verdict stopped waiting for
+     * frames — which made every later capture race a park it could not win, so it never got one
+     * again. Caught by the `web-popup-layering` audit; the flag is what keeps a self-inflicted no
+     * from turning into a permanent one. Everything else (no poster surface at all, a frame over
+     * the budget, a capture that threw) really is about this host, and is not marked.
+     */
+    const poster = async (args: JsonObject): Promise<JsonObject> => {
+        const found = tabOf(args);
+        if ('error' in found) return found.error;
+        const take = found.tab.poster?.bind(found.tab);
+        if (take === undefined) return failure(POSTER_UNAVAILABLE_ERROR);
+        let data: string | null;
+        try {
+            data = await take();
+        } catch (error) {
+            report(error, 'poster');
+            return failure(POSTER_FAILED_ERROR);
+        }
+        if (data === null) return { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true };
+        if (data === '') return failure(POSTER_FAILED_ERROR);
+        if (!posterWithinBudget(data.length)) return failure(POSTER_TOO_LARGE_ERROR);
+        // `base64_bytes`, not §8.4's `byte_count`: this is the size of the payload AS IT RIDES
+        // THE REPLY (the base64 string), which is what the budget is expressed in and what a
+        // reader of the log line can compare against. The decoded JPEG is about a quarter
+        // smaller and nothing here has a use for that number.
+        return { ok: true, image_base64: data, mime: POSTER_MIME, base64_bytes: data.length };
     };
 
     // ── automation ──────────────────────────────────────────────────────────────────
@@ -716,6 +781,8 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
             }
             case 'capture':
                 return await capture(args);
+            case 'poster':
+                return await poster(args);
             case 'actuate':
                 return await actuate(args);
             case 'exec':

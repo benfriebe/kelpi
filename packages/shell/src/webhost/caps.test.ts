@@ -8,9 +8,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
     INSPECT_LIMITS,
+    POSTER_INLINE_LIMIT,
+    POSTER_JPEG_QUALITY,
+    POSTER_MIME,
     clampField,
     clampInspectPayload,
     clampUtf8,
+    posterWithinBudget,
     screenshotFileName,
     stripUnsafeControlCharacters,
     utf8Length
@@ -126,5 +130,30 @@ describe('clampInspectPayload', () => {
         expect(clamped['attributes']).toEqual({});
         expect('nonce' in clamped).toBe(false);
         expect('cancelled' in clamped).toBe(false);
+    });
+});
+
+/**
+ * Issue #12's poster budget — the one read in this file with no temp-file escape hatch.
+ *
+ * §8.4's screenshot spills a frame it cannot inline to `/tmp` because a CLI reader can open one.
+ * The poster's reader is an `<img>` in a renderer, so an oversized frame is not a bigger reply —
+ * it is no reply at all, and the pane parks with an empty hole the way it always did.
+ */
+describe('the poster budget', () => {
+    it('takes a frame at or under the inline limit and refuses one over it', () => {
+        expect(posterWithinBudget(1)).toBe(true);
+        expect(posterWithinBudget(POSTER_INLINE_LIMIT)).toBe(true);
+        expect(posterWithinBudget(POSTER_INLINE_LIMIT + 1)).toBe(false);
+    });
+
+    it('refuses an empty frame, which is a failed capture rather than a small one', () => {
+        expect(posterWithinBudget(0)).toBe(false);
+    });
+
+    it('is a JPEG, because base64 PNG of a retina pane is megabytes per menu', () => {
+        expect(POSTER_MIME).toBe('image/jpeg');
+        expect(POSTER_JPEG_QUALITY).toBeGreaterThan(0);
+        expect(POSTER_JPEG_QUALITY).toBeLessThanOrEqual(100);
     });
 });

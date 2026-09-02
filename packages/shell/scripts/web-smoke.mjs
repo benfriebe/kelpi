@@ -429,6 +429,24 @@ function startShell(sandbox) {
     };
 }
 
+/**
+ * Issue #12: the client's own hold deadline, read from the module that owns it.
+ *
+ * Hard-coding 250 here would make this file a second, silent home for the number - the exact
+ * shape of drift these smokes exist to catch. The client is TypeScript and this script is plain
+ * Node, so the constant is read out of the source rather than imported; a source that no longer
+ * declares it is a failure worth having, not a default worth guessing.
+ */
+function clientPosterDeadlineMs() {
+    const source = fs.readFileSync(
+        path.join(repoRoot, 'packages', 'client', 'src', 'webpane', 'poster.ts'),
+        'utf8'
+    );
+    const found = /POSTER_DEADLINE_MS\s*=\s*(\d+)/.exec(source);
+    if (found === null) throw new Error('POSTER_DEADLINE_MS is no longer declared in webpane/poster.ts');
+    return Number(found[1]);
+}
+
 // ── a synthetic web client (the geometry reporter) ──────────────────────────────────
 
 /**
@@ -507,6 +525,36 @@ async function connectProbe(sandbox) {
                     payload: { command, ...extra }
                 })
             );
+        },
+        /**
+         * The same, awaited. Issue #12's `web-poster` is answered rather than broadcast, and the
+         * whole point of it is that the answer arrives while a menu is opening — so the reply,
+         * and how long it took, are both worth having here.
+         */
+        call(command, extra = {}, timeoutMs = 10_000) {
+            commandID += 1;
+            const id = `probe-${String(commandID)}`;
+            const started = Date.now();
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    socket.removeEventListener('message', onMessage);
+                    reject(new Error(`no reply to ${command} within ${String(timeoutMs)}ms`));
+                }, timeoutMs);
+                const onMessage = (event) => {
+                    let message;
+                    try {
+                        message = JSON.parse(String(event.data));
+                    } catch {
+                        return;
+                    }
+                    if (message.type !== 'command-reply' || message.id !== id) return;
+                    clearTimeout(timer);
+                    socket.removeEventListener('message', onMessage);
+                    resolve({ reply: message.reply ?? {}, elapsedMs: Date.now() - started });
+                };
+                socket.addEventListener('message', onMessage);
+                socket.send(JSON.stringify({ type: 'command', id, payload: { command, ...extra } }));
+            });
         },
         close() {
             try {
@@ -992,6 +1040,52 @@ async function webPhase() {
                 placed.trim()
             );
 
+            // ── issue #12: the poster, taken off the view that is on screen right now ──
+            //
+            // This is the assumption the whole fix rests on and the one no unit test can
+            // reach: a `WebContentsView` embedded in a real window answers
+            // `Page.captureScreenshot {format:'jpeg'}` with the pane's own pixels, fast enough
+            // that a menu can wait for it. Both halves are asserted — the frame IS a JPEG (the
+            // `/9j/` magic, base64) and the round trip is inside the client's own deadline.
+            const liveTabs = await cli.json(['web', 'tabs', ...at(), '--json']);
+            const activeTabID = (liveTabs.find((tab) => tab.active === true) ?? liveTabs[0]).id;
+            const shot = await probe.call('web-poster', { pane_id: paneID, tab_id: activeTabID });
+            check(
+                'a covered pane can photograph its own on-screen view (issue #12)',
+                shot.reply.ok === true &&
+                    typeof shot.reply.image_base64 === 'string' &&
+                    shot.reply.image_base64.startsWith('/9j/') &&
+                    shot.reply.mime === 'image/jpeg' &&
+                    shot.reply.base64_bytes > 1000,
+                `${String(shot.reply.base64_bytes ?? shot.reply.error)} base64 bytes in ${String(shot.elapsedMs)}ms`
+            );
+            /*
+             * A WALL-CLOCK ceiling, so it must be one no honest machine trips.
+             *
+             * What matters is the order of magnitude: a capture that costs tens of milliseconds
+             * is a menu that opens a frame late, and one that costs seconds is a different
+             * mechanism entirely. A CI box under load, a cold renderer or a busy laptop can all
+             * push a healthy 16ms capture past the client's own 250ms deadline without anything
+             * being wrong — and missing that deadline is a case the client HANDLES (it parks with
+             * no frame) rather than a defect. So the check is against the host budget the daemon
+             * enforces, with the measurement and the client's deadline both printed: the number
+             * to read is the detail, and the assertion only fails when the mechanism is broken.
+             */
+            const clientDeadlineMs = clientPosterDeadlineMs();
+            const ceilingMs = 2_000;
+            check(
+                'the frame arrives in a time a menu could wait for (not seconds)',
+                shot.elapsedMs < ceilingMs,
+                `${String(shot.elapsedMs)}ms · client holds for ${String(clientDeadlineMs)}ms · ceiling ${String(ceilingMs)}ms` +
+                    (shot.elapsedMs < clientDeadlineMs ? '' : ' — SLOW: inside the ceiling but past the hold')
+            );
+            const posterLine = shell.lines.filter((line) => line.includes(': poster ')).at(-1) ?? '';
+            check(
+                'the shell logs the frame it took, so the capture is visible from outside',
+                posterLine.includes(`web pane ${paneID}: poster `),
+                posterLine.trim()
+            );
+
             // ── §N29: the click that lands in the PAGE ─────────────────────────────
             //
             // A native view's content cannot be clicked from here — no automation surface
@@ -1242,6 +1336,16 @@ async function webPhase() {
                 20_000
             );
             check('hiding the pane returns the view to the off-screen holder', returned.includes('owner=holder'), returned.trim());
+
+            // Issue #12's other half: a view in the holder is laid out at the pinned automation
+            // viewport, so its frame is not the pane's page and the host must refuse rather than
+            // hand the client something to paint that is the wrong size at the wrong scale.
+            const noShot = await probe.call('web-poster', { pane_id: paneID, tab_id: activeTabID });
+            check(
+                'a parked view refuses to poster rather than lying about what it shows',
+                noShot.reply.ok === false && noShot.reply.error === 'no on-screen view to poster',
+                String(noShot.reply.error ?? noShot.reply.ok)
+            );
 
             const stillDrivable = await cli.run(['web', 'capture', '--mode', 'text', ...at()]);
             check(

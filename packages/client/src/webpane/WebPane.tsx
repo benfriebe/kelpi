@@ -25,6 +25,7 @@ import {
     useEffect,
     useLayoutEffect,
     useMemo,
+    useReducer,
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
@@ -40,6 +41,13 @@ import type { WebPaneCommands } from './commands';
 import { BookmarksMenu, FavouriteStar } from './FavouritesMenu';
 import type { GeometryRect, GeometryReport } from './geometry';
 import { Glyph, GLYPH_STROKE_MEDIUM, GLYPH_STROKE_SEMIBOLD, type GlyphName } from './glyphs';
+import {
+    createPosterController,
+    posterAttempt,
+    warmPosterImage,
+    POSTER_IDLE,
+    type PosterController
+} from './poster';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import { useLoadProgress, type LoadProgressTimings } from './progress';
 import type { BatchDestination, WebBatchSession, WebFavourite } from './state';
@@ -655,6 +663,53 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
     const overlays = useOverlayRects();
     const [coveredByOverlay, setCoveredByOverlay] = useState(false);
 
+    /**
+     * Issue #12 — the still frame the hole wears while a floating surface is over it.
+     *
+     * §N26 above decides WHETHER the page parks; this decides what the pane looks like while it
+     * is parked, which until now was "empty". The controller is a ref rather than state because
+     * the publish below is a LAYOUT effect and has to take both decisions — park, and what to
+     * paint — in the same pass the surface appears in; anything that waited for a passive effect
+     * would be one paint late, and that paint is the black frame (`./poster.ts`).
+     *
+     * `capture` reads the pane's commands through a ref so the controller is created exactly
+     * once: a fresh controller per render would lose the in-flight frame it is holding the view
+     * for, on every render the grid does while a menu is open.
+     */
+    const posterDeps = useRef({ commands, paneID });
+    posterDeps.current = { commands, paneID };
+    const [posterSrc, setPosterSrc] = useState<string | null>(null);
+    /**
+     * §N26's cover, MINUS issue #12's few-frame hold — i.e. "this pane's own view is off screen
+     * because something is over it". Kept beside `coveredByOverlay` rather than folded into it
+     * because the two answer different questions: that one is the geometry (is a surface over my
+     * hole), this one is the placement (is my page therefore gone). They differ for exactly as
+     * long as a frame is being taken, which is the window in which a covered pane is still live.
+     *
+     * `visible` stays a prop read at render rather than being folded in here: a pane the assembly
+     * has hidden must not spend a render on a state flip to say so.
+     */
+    const [pageParked, setPageParked] = useState(false);
+    const [, bumpPoster] = useReducer((tick: number) => tick + 1, 0);
+    const posterRef = useRef<PosterController | null>(null);
+    if (posterRef.current === null) {
+        posterRef.current = createPosterController({
+            capture: async (tabID) => {
+                const { commands: live, paneID: pane } = posterDeps.current;
+                const attempt = posterAttempt(await live.poster(pane, tabID));
+                if (attempt.src === null) return attempt;
+                // Decoded before it counts as landed: parking on the bytes alone would hand the
+                // view back a frame before the picture replacing it could paint.
+                return { src: await warmPosterImage(attempt.src) };
+            },
+            // The publish re-runs on every render and is where `sync` is called, so a render is
+            // all the controller ever has to ask for.
+            onChange: () => bumpPoster()
+        });
+    }
+    const poster = posterRef.current;
+    useEffect(() => () => poster.dispose(), [poster]);
+
     const publish = useCallback(() => {
         const element = pageRef.current;
         // Measured (and answered) BEFORE the `embedded` gate: "is this page covered" is a fact
@@ -663,11 +718,42 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         const rect = element === null ? null : measure(element);
         const covered = overlayCovers(rect, overlays);
         setCoveredByOverlay(covered);
+        /*
+         * Issue #12 — the frame is taken while the view is still on screen.
+         *
+         * `hold` is the controller saying "a capture is in flight": for those few frames the
+         * pane keeps its view placed, so the page stays live and the surface over it is simply
+         * not visible yet. The park then happens WITH a poster to hand, which is what makes the
+         * swap invisible. Everything that can go wrong (no host, no frame, a host that does not
+         * answer inside its deadline) ends the hold and parks the pane exactly as it did before
+         * this existed.
+         *
+         * Asked for BEFORE the `embedded` gate, like the measurement above, and answered
+         * `POSTER_IDLE` for a browser client: there is no view to photograph there, and
+         * `data-visible` still has to state the same truth about the document.
+         *
+         * A pane that is not `visible` is not covered by anything — it is off screen, in a hidden
+         * workspace or under a whole-window modal — so it never asks for a frame.
+         */
+        const shot = embedded
+            ? poster.sync({
+                  // `rect === null` is a hole that has not been laid out: `overlayCovers` reads
+                  // that as covered (fail open, so the pane still parks) but there is no box to
+                  // photograph, so no frame is asked for either.
+                  covered: covered && visible && rect !== null,
+                  tabID: active?.id ?? null
+              })
+            : POSTER_IDLE;
+        setPosterSrc(shot.src);
+        // The covered half of `data-visible`: a covered pane is not parked while its frame is
+        // being taken, and that few-frame difference is real — the view is still on screen, and
+        // the shell's own `owner=main` line still says so.
+        setPageParked(covered && !shot.hold);
         // A browser client has nothing to place: reporting from it would only be noise the
         // host has to reject (and it does, on `ownWindow`).
         if (!embedded) return;
         if (element === null || rect === null) return;
-        if (!visible || covered) {
+        if (!visible || (covered && !shot.hold)) {
             onHidden?.(paneID);
             return;
         }
@@ -686,7 +772,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         });
         // `focused` is deliberately NOT a dependency (§N27a): nothing in the report depends on
         // it any more, so a focus change must not even re-identify this callback.
-    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays]);
+    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays, poster]);
 
     // Layout effect, and deliberately with no dependency list: the grid re-renders a pane
     // whenever anything about the layout moves, so "after every render" IS the change signal.
@@ -1040,14 +1126,49 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 data-testid={`web-page-${paneID}`}
                 // The pane's EFFECTIVE placement, so one attribute answers "is the page on
                 // screen": `visible` is the assembly's (a modal, a hidden workspace) and
-                // `coveredByOverlay` is §N26's per-pane half.
-                data-visible={visible && !coveredByOverlay ? 'true' : 'false'}
+                // `pageParked` is §N26's per-pane half — the cover, less issue #12's few-frame
+                // hold, which is the one window in which a covered pane is still genuinely
+                // placed. `data-overlay-covered` beside it is the raw geometry either way.
+                data-visible={visible && !pageParked ? 'true' : 'false'}
                 data-overlay-covered={coveredByOverlay ? 'true' : 'false'}
                 className="relative min-h-0 flex-1 overflow-hidden"
                 // Nothing is drawn here when embedded: the shell's native view covers this box
                 // exactly, and anything underneath would only be visible while it catches up.
                 style={{ background: tokens.windowBackground }}
             >
+                {/*
+                  * Issue #12 — the page's own last frame, painted in the hole the native view is
+                  * about to leave (or has just left).
+                  *
+                  * Positioned on §N27a's gutter rather than on the hole's own box, because the
+                  * gutter is where the VIEW is: `insetHoleForFocusRing` places it 2 px inside on
+                  * the left, right and bottom, so a poster drawn to the full hole would be a
+                  * couple of pixels wider than the page it is standing in for and the swap would
+                  * shift by exactly that much. `fill`, not `cover`: the frame is of this box, so
+                  * there is nothing to crop and a resize mid-menu should stretch rather than
+                  * silently lose an edge.
+                  *
+                  * Inert by construction — `aria-hidden`, undraggable, no pointer events: it is a
+                  * picture standing in for a page, and everything a person can do to it (click a
+                  * link, select text) belongs to the live view that is coming back.
+                  */}
+                {posterSrc === null ? null : (
+                    <img
+                        data-testid={`web-poster-${paneID}`}
+                        src={posterSrc}
+                        alt=""
+                        aria-hidden
+                        draggable={false}
+                        className="pointer-events-none absolute select-none"
+                        style={{
+                            left: FOCUS_RING_WIDTH,
+                            right: FOCUS_RING_WIDTH,
+                            top: 0,
+                            bottom: FOCUS_RING_WIDTH,
+                            objectFit: 'fill'
+                        }}
+                    />
+                )}
                 {tabs.length === 0 ? (
                     <EmptyPaneNote paneID={paneID} />
                 ) : embedded ? null : (

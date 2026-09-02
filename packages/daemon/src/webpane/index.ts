@@ -140,6 +140,7 @@ export {
     HOST_TIMEOUT_CAPTURE_MS,
     HOST_TIMEOUT_DEFAULT_MS,
     HOST_TIMEOUT_EXEC_MS,
+    HOST_TIMEOUT_POSTER_MS,
     HOST_VERBS,
     waitTimeoutMs,
     type HostVerb

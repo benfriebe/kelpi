@@ -381,6 +381,130 @@ export async function connect(webSocketDebuggerUrl, { repoRoot, verbose = false 
             await session.mouse('mouseReleased', toX, toY, { button, clickCount: 1 });
         },
 
+        // ── input: touch ────────────────────────────────────────────────────────────
+        /*
+         * The phone lane's hands (MOBILE-PLAN.md E2). Same law as the mouse and keyboard helpers
+         * above: real `Input.*` events into the real renderer, never a synthetic DOM event in page
+         * script - a `new TouchEvent(...)` dispatched from `Runtime.evaluate` is untrusted, skips
+         * Chromium's gesture recognizer entirely, and would therefore prove nothing about the
+         * behaviour a thumb actually gets (no tap-to-click, no long-press, no scroll).
+         *
+         * These need `Emulation.setTouchEmulationEnabled` to be on for the page to have touch
+         * handlers at all; `audit.mjs`'s `emulatePhone` is what turns it on, and a phone step
+         * turns it off again when it finishes.
+         */
+
+        /**
+         * Where a gesture lands. A selector is resolved to its centre (as `click` does) and a
+         * `{x, y}` is taken verbatim (as `clickAt` does), so touch addresses things exactly the
+         * way the pointer helpers already do and a step can mix the two.
+         */
+        async touchPoint(target, { label = 'touch' } = {}) {
+            if (typeof target !== 'string') {
+                if (typeof target?.x !== 'number' || typeof target?.y !== 'number') {
+                    throw new Error(`${label}: expected a selector or {x, y}`);
+                }
+                return { x: target.x, y: target.y };
+            }
+            const box = await session.box(target);
+            if (box === null) throw new Error(`${label}: no element matches ${target}`);
+            if (box.width === 0 && box.height === 0) throw new Error(`${label}: ${target} has a zero-size box`);
+            return { x: box.cx, y: box.cy };
+        },
+
+        /**
+         * One touch frame.
+         *
+         * `touchEnd` carries an EMPTY point list, which is the protocol's way of saying "the
+         * points that were down are now up" - sending the released point again is how a
+         * hand-rolled client ends up with a finger Chromium believes is still on the glass, and
+         * every later gesture then arrives as a second contact.
+         *
+         * The radii are a finger, not a pixel: ~24 CSS px of contact, which is what a phone
+         * reports and what a hit-test that honours touch slop expects. `force: 1` is a plain
+         * (non-3D-Touch) contact. Nothing in the client reads either today; they are here so the
+         * events are not obviously synthetic.
+         */
+        async touch(type, points, { modifiers = 0 } = {}) {
+            await send('Input.dispatchTouchEvent', {
+                type,
+                touchPoints:
+                    type === 'touchEnd'
+                        ? []
+                        : points.map((point, index) => ({
+                              x: point.x,
+                              y: point.y,
+                              id: index,
+                              radiusX: 12,
+                              radiusY: 12,
+                              force: 1
+                          })),
+                modifiers
+            });
+        },
+
+        /**
+         * A tap: down, a short dwell, up, with no movement in between.
+         *
+         * The dwell is 60 ms - long enough to be a real contact and far below Chromium's 500 ms
+         * long-press threshold, so the recognizer emits a tap (and therefore the synthesized
+         * mousedown/mouseup/click a touch-unaware component still listens for) rather than a
+         * context gesture.
+         */
+        async tap(target, { modifiers = 0, holdMs = 60 } = {}) {
+            const point = await session.touchPoint(target, { label: 'tap' });
+            await session.touch('touchStart', [point], { modifiers });
+            await sleep(holdMs);
+            await session.touch('touchEnd', [point], { modifiers });
+            return point;
+        },
+
+        /**
+         * A one-finger drag: down, `steps` moves spread over `durationMs`, up at the destination.
+         *
+         * Intermediate moves are not decoration - Chromium's gesture recognizer needs motion past
+         * the touch slop (about 8 px) before it will call anything a scroll or a swipe, and a
+         * down/up pair at two different points is just a tap somewhere unexpected. The default
+         * 200 ms over 12 moves is a deliberate, unhurried swipe; a drawer's velocity threshold is
+         * tested by shortening it, not by moving further.
+         */
+        async swipe(from, to, { steps = 12, durationMs = 200, modifiers = 0 } = {}) {
+            const start = await session.touchPoint(from, { label: 'swipe' });
+            const end = await session.touchPoint(to, { label: 'swipe' });
+            await session.touch('touchStart', [start], { modifiers });
+            const perStep = Math.max(1, Math.round(durationMs / steps));
+            for (let step = 1; step <= steps; step++) {
+                await session.touch(
+                    'touchMove',
+                    [
+                        {
+                            x: start.x + ((end.x - start.x) * step) / steps,
+                            y: start.y + ((end.y - start.y) * step) / steps
+                        }
+                    ],
+                    { modifiers }
+                );
+                await sleep(perStep);
+            }
+            await session.touch('touchEnd', [end], { modifiers });
+            return { start, end };
+        },
+
+        /**
+         * A long press: down, hold past the recognizer's threshold, up.
+         *
+         * 600 ms by default because Chromium's long-press gesture fires at 500 ms; anything
+         * shorter is a tap with extra waiting, and the step would be asserting on the wrong
+         * gesture. The contact does not move, so the slop above is never crossed.
+         */
+        async longPress(target, { ms = 600, modifiers = 0 } = {}) {
+            const point = await session.touchPoint(target, { label: 'longPress' });
+            await session.touch('touchStart', [point], { modifiers });
+            await sleep(ms);
+            await session.touch('touchEnd', [point], { modifiers });
+            return point;
+        },
+
         // ── input: keyboard ─────────────────────────────────────────────────────────
 
         /**

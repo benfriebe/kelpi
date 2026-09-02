@@ -11,6 +11,7 @@
     "./env": "./src/env/index.ts",
     "./icon": "./src/icon/index.ts",
     "./icon/png": "./src/icon/png.ts",
-    "./config": "./src/config/index.ts"
+    "./config": "./src/config/index.ts",
+    "./qr": "./src/qr/index.ts"
   }
 }

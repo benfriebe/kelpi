@@ -19,6 +19,31 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- The web app manifest, built by `src/pwa/manifest.ts` and emitted by vite.config.ts.
+         Its `start_url` is bare `/`: the token stays out of URLs and caches, and an installed
+         app finds it in the origin's localStorage where `app/config.ts` put it.
+
+         Everything from here down is an owner-directed divergence from the shipped Swift app,
+         which has no phone UI at all to be faithful to (see src/pwa/manifest.ts). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS reads these, not the manifest, when the page is added to the Home Screen.
+
+         `black-translucent` puts the app UNDER the status bar rather than below it, which is
+         the only way to use the full screen; it also means the status bar's glyphs sit on top of
+         whatever the app paints there, so A3 owes this page `env(safe-area-inset-*)` padding in
+         the top bar. `viewport-fit=cover` above is the half of that contract that already
+         shipped. `apple-mobile-web-app-title` is the name under the icon: without it iOS uses
+         `<title>`, which `chrome/favicon.ts` rewrites with an agent badge. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Kelpi" />
+    <!-- The colour the OS paints around the page. Two metas rather than the manifest's single
+         `theme_color`, mirroring styles.css exactly: `:root` is the dark column and the light
+         one applies only under `(prefers-color-scheme: light)`. Both values are the ground,
+         `--kelpi-bg` of their preset, which is what `<body>` paints; `pwa/manifest.test.ts`
+         pins them to the token table so they cannot drift out of the theme. -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0A0A0C" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#EAE8E2" />
     <title>Kelpi</title>
   </head>
   <body>

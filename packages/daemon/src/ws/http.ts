@@ -65,6 +65,11 @@ const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
     ['.css', 'text/css; charset=utf-8'],
     ['.json', 'application/json; charset=utf-8'],
     ['.map', 'application/json; charset=utf-8'],
+    // The web app manifest, emitted by the client's build (`client/src/pwa/manifest.ts`). It
+    // needs its own row: a manifest served as `application/octet-stream` is fetched and dropped,
+    // and the page installs from whatever the document alone implies, which on iOS is the apple
+    // metas - so the icon looks right and the app still opens in a browser tab.
+    ['.webmanifest', 'application/manifest+json'],
     ['.txt', 'text/plain; charset=utf-8'],
     ['.svg', 'image/svg+xml'],
     ['.png', 'image/png'],

@@ -17,7 +17,8 @@ import {
     resolveClientDistDir,
     resolveStaticPath,
     runDirToken,
-    tokensMatch
+    tokensMatch,
+    SERVICE_WORKER_PATH
 } from './http.js';
 
 const VERSION = { version: '0.1.0', build: '42', protocol: 1 };
@@ -134,6 +135,59 @@ describe('static client serving', () => {
     it('answers a plain GET of the websocket path with 426', async () => {
         const app = createHttpApp({ version: VERSION });
         expect((await app.request('/ws')).status).toBe(426);
+    });
+
+    /**
+     * Phone program A2. Two headers, and the whole update story rests on the second.
+     *
+     * `Service-Worker-Allowed: /` widens the scope a registration may claim; a worker served
+     * from the root already defaults to `/`, so it changes nothing today and is what keeps the
+     * registration working the day the file moves under a hashed path. `Cache-Control:
+     * no-cache` is what makes an update possible at all: the browser re-fetches this exact URL
+     * and compares BYTES to decide whether to install a new worker, so a cached copy is
+     * compared against itself and an installed phone keeps its old shell.
+     */
+    it('serves the service worker with its scope header and no-cache', async () => {
+        const dir = distDir({ 'index.html': 'SHELL', 'sw.js': 'self.addEventListener("fetch",()=>{})' });
+        const app = createHttpApp({ version: VERSION, distDir: dir });
+
+        const response = await app.request(SERVICE_WORKER_PATH);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('service-worker-allowed')).toBe('/');
+        expect(response.headers.get('cache-control')).toBe('no-cache');
+        expect(response.headers.get('content-type')).toContain('text/javascript');
+        expect(await response.text()).toContain('addEventListener');
+    });
+
+    it('adds the scope header to nothing else', async () => {
+        const dir = distDir({
+            'index.html': 'SHELL',
+            'sw.js': 'SW',
+            'assets/app-abc123.js': 'console.log(1)',
+            'manifest.webmanifest': '{}'
+        });
+        const app = createHttpApp({ version: VERSION, distDir: dir });
+        for (const requestPath of ['/', '/assets/app-abc123.js', '/manifest.webmanifest', '/index.html']) {
+            const response = await app.request(requestPath);
+            expect([requestPath, response.headers.get('service-worker-allowed')]).toEqual([
+                requestPath,
+                null
+            ]);
+        }
+    });
+
+    /**
+     * The SPA fallback would otherwise hand a browser `index.html` under the worker's URL, and
+     * a registration whose script is an HTML document fails with a MIME error. Nothing here
+     * makes that happen - the fallback is the existing behaviour for any missing file - but the
+     * headers must not travel with it, or the failure would be reported as a scope problem.
+     */
+    it('does not dress the index fallback up as a worker when the build has none', async () => {
+        const dir = distDir({ 'index.html': 'SHELL' });
+        const app = createHttpApp({ version: VERSION, distDir: dir });
+        const response = await app.request(SERVICE_WORKER_PATH);
+        expect(response.headers.get('service-worker-allowed')).toBeNull();
+        expect(await response.text()).toBe('SHELL');
     });
 });
 

@@ -63,8 +63,10 @@ import {
 import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
 import {
     parseShellAction,
+    parseWindowControl,
     parseWorkspaceSelection,
-    shellActionAppliesHere
+    shellActionAppliesHere,
+    type WindowControlAction
 } from './shell-actions.js';
 import { log, logError, warn } from './log.js';
 
@@ -86,6 +88,15 @@ export interface StatusHost {
     showWindow(): void;
     /** Bounce suppression: §7.1's `isAppActive`. */
     isWindowFocused(): boolean;
+    /**
+     * §APP-046b: is this shell's window maximised RIGHT NOW?
+     *
+     * `isWindowFocused`'s twin, and needed for the same reason: `maximize`/`unmaximize` report
+     * TRANSITIONS, so a client that attaches mid-life — a page reload, a renderer crash reload,
+     * a reconnect after the status socket dropped — would otherwise assume the default and draw
+     * the wrong glyph on a real button until the user toggled it by hand.
+     */
+    isWindowMaximized?(): boolean;
     /** Tray "Start Daemon" — spawn/adopt and re-point this connection. */
     startDaemon(): void;
     /** Tray "Quit Kelpi" (goes through the quit gate). */
@@ -171,6 +182,14 @@ export interface StatusHost {
      * page. The count travels client → daemon → here so the row's enabled state can follow it.
      */
     workspaceSelectionChanged?(selectedCount: number): void;
+    /**
+     * §APP-046b: the page's own window-control cluster was clicked.
+     *
+     * On Windows and Linux the window has no native buttons — the client draws them — so the
+     * click arrives here, over the socket, and the main process performs it. Only `main.ts` can:
+     * minimising a window is not something the daemon or the page can do.
+     */
+    windowControlRequested?(action: WindowControlAction): void;
 }
 
 /**
@@ -244,6 +263,12 @@ export interface StatusController {
      * Returns false when the socket is not up; the client's own default (active) then stands.
      */
     reportActivation(active: boolean): boolean;
+    /**
+     * §APP-046b: tell the client in this window that it was maximised (or restored), so a
+     * page-drawn maximise button can show the right glyph. Returns false when the socket is not
+     * up; the client's own default (not maximised) then stands until the next report.
+     */
+    reportWindowFrameState(maximized: boolean): boolean;
     /** Rebuild the tray (host state, e.g. window visibility, changed). */
     refresh(): void;
 }
@@ -378,6 +403,18 @@ export function createStatusController(options: StatusOptions): StatusController
         );
         if (sent) log(`activation report: ${active ? 'active' : 'inactive'}`);
         return sent;
+    }
+
+    /** §APP-046b: shell → daemon → this window's client, "the window is (not) maximised". */
+    function sendWindowFrameState(maximized: boolean): boolean {
+        return sendJson(
+            {
+                type: 'window-frame-state',
+                maximized,
+                ...(options.windowID === undefined ? {} : { windowID: options.windowID })
+            },
+            'window frame state'
+        );
     }
 
     function sendJson(message: Record<string, unknown>, what: string): boolean {
@@ -747,6 +784,11 @@ export function createStatusController(options: StatusOptions): StatusController
                 // and clear a badge nobody has looked at. Scoped to this window, so a shell
                 // with no window at all reports into an empty room.
                 sendActivation(host.isWindowFocused());
+                // §APP-046b: and the window's CURRENT maximised state, for exactly the reason
+                // above — the page-drawn maximise button has to be right on first paint, not
+                // only after the next time somebody maximises something. A host that cannot
+                // answer (no window) reports false, which is what a client already assumes.
+                sendWindowFrameState(host.isWindowMaximized?.() ?? false);
                 publish();
                 break;
             }
@@ -853,6 +895,22 @@ export function createStatusController(options: StatusOptions): StatusController
                 const report = parseWorkspaceSelection(parsed);
                 if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
                 host.workspaceSelectionChanged?.(report.selected);
+                break;
+            }
+            case 'window-control': {
+                /*
+                 * §APP-046b: minimise / maximise / close, from the buttons the page draws on
+                 * Windows and Linux.
+                 *
+                 * The window filter is `shell-action`'s, and here it is the one that stops a
+                 * second window from closing when you click the first one's ×. An unscoped
+                 * request (a browser with no `?shellWindow=`) is still everyone's — consistent
+                 * with every other relayed action, and harmless: a browser draws no cluster, so
+                 * nothing sends one.
+                 */
+                const request = parseWindowControl(parsed);
+                if (request === null || !shellActionAppliesHere(request.windowID, options.windowID)) break;
+                host.windowControlRequested?.(request.action);
                 break;
             }
             case 'rejected': {
@@ -973,6 +1031,20 @@ export function createStatusController(options: StatusOptions): StatusController
         },
         reportActivation(active: boolean): boolean {
             return sendActivation(active);
+        },
+        /**
+         * §APP-046b: shell → daemon → this window's client, "the window is (not) maximised".
+         *
+         * Scoped to THIS window for `shell-activation`'s reason: two windows are independently
+         * maximised, and the cluster whose glyph this drives is the one drawn inside this window.
+         *
+         * Unconditional rather than gated on `windowControls`: the fact is true on macOS too, it
+         * costs one small frame on a state change a user performed by hand, and a client that has
+         * no cluster to draw simply stores a boolean it never reads. Gating it would put the frame
+         * decision in a second place.
+         */
+        reportWindowFrameState(maximized: boolean): boolean {
+            return sendWindowFrameState(maximized);
         },
         reportHotkeyStatus(status: HotkeyStatusReport): boolean {
             // NOT scoped to this window: a hotkey is registered for the whole app, so the

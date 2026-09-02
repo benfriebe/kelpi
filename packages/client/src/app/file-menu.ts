@@ -57,3 +57,23 @@ export function workspaceSelectionReport(
         ...(shellWindowID === null ? {} : { windowID: shellWindowID })
     };
 }
+
+/**
+ * §APP-046b: the frame a page-drawn window button sends.
+ *
+ * `workspaceSelectionReport`'s sibling and scoped identically — `windowID` names the shell window
+ * this page belongs to, so the × in one window cannot close another. A page with no shell window
+ * has no cluster to click, so the unscoped form only ever arises in automation.
+ */
+export type WindowControlAction = 'minimize' | 'maximize' | 'close';
+
+export function windowControlRequest(
+    action: WindowControlAction,
+    shellWindowID: string | null
+): { type: 'window-control'; action: WindowControlAction; windowID?: string } {
+    return {
+        type: 'window-control',
+        action,
+        ...(shellWindowID === null ? {} : { windowID: shellWindowID })
+    };
+}

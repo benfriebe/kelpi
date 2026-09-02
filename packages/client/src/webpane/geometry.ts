@@ -39,6 +39,20 @@ export interface GeometryReport {
     readonly rect: GeometryRect;
     readonly visible: boolean;
     readonly devicePixelRatio: number;
+    /**
+     * `visible:false` because something is momentarily OVER this pane, not because the pane has
+     * left the screen (issue #12, round 3).
+     *
+     * The distinction is the page's layout. A host that takes a view back to the off-screen
+     * holder re-pins it to the automation viewport (1280×800 @1×), so the page reflows on the
+     * way out and again on the way back, and the frames between the view returning and the page
+     * repainting show the WRONG layout clipped into the pane. Photographed on a fixture whose
+     * relayout costs what a real page's costs: 259 ms after the menu closed, a four-column
+     * 1280-wide grid squeezed into a 525 px pane. A menu is over in a second and the pane's
+     * geometry never changed, so a transient park must not move the view or its viewport at all:
+     * the host hides it where it stands.
+     */
+    readonly transient?: boolean | undefined;
 }
 
 export interface GeometryReporterOptions {
@@ -55,10 +69,14 @@ export interface GeometryReporter {
     /** Measure-and-report. Cheap to call on every render: identical reports do nothing. */
     report(report: GeometryReport): void;
     /**
-     * The pane is gone (unmounted, workspace switched): report `visible:false` immediately and
-     * forget it, so a later re-mount reports afresh rather than being deduped away.
+     * The pane is gone (unmounted, workspace switched) or momentarily covered: report
+     * `visible:false` immediately and forget it, so a later re-mount reports afresh rather than
+     * being deduped away.
+     *
+     * `transient` says which of the two it is — a covered pane is coming straight back and its
+     * view must keep its layout (see `GeometryReport.transient`).
      */
-    hide(paneID: string): void;
+    hide(paneID: string, options?: { transient?: boolean | undefined }): void;
     /** Drop everything without sending (the socket is going away). */
     dispose(): void;
     /** Panes with a pending trailing send (tests/diagnostics). */
@@ -73,6 +91,7 @@ function sameReport(a: GeometryReport, b: GeometryReport): boolean {
         a.paneID === b.paneID &&
         (a.tabID ?? null) === (b.tabID ?? null) &&
         a.visible === b.visible &&
+        (a.transient ?? false) === (b.transient ?? false) &&
         a.devicePixelRatio === b.devicePixelRatio &&
         a.rect.x === b.rect.x &&
         a.rect.y === b.rect.y &&
@@ -151,7 +170,7 @@ export function createGeometryReporter(options: GeometryReporterOptions): Geomet
             }, wait);
         },
 
-        hide(paneID) {
+        hide(paneID, hideOptions = {}) {
             if (disposed) return;
             const entry = panes.get(paneID);
             if (entry === undefined) return;
@@ -159,7 +178,11 @@ export function createGeometryReporter(options: GeometryReporterOptions): Geomet
             panes.delete(paneID);
             // Nothing was ever placed, so there is nothing to take back.
             if (entry.sent === null || !entry.sent.visible) return;
-            options.send({ ...entry.sent, visible: false });
+            options.send({
+                ...entry.sent,
+                visible: false,
+                ...(hideOptions.transient === true ? { transient: true } : {})
+            });
         },
 
         dispose() {

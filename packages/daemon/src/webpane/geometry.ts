@@ -37,6 +37,12 @@ export interface GeometryReportInput {
     readonly tabID?: string | undefined;
     readonly rect: GeometryRect;
     readonly visible: boolean;
+    /**
+     * Issue #12: `visible:false` because something is momentarily over this pane, not because the
+     * pane has left the screen. The host keeps such a view where it is (and keeps its viewport),
+     * because moving it re-pins the page's layout and the page then reflows out and back.
+     */
+    readonly transient?: boolean | undefined;
     readonly devicePixelRatio: number;
     /** The reporting client's claim to be the page inside a shell window. */
     readonly shellWindowID?: string | undefined;
@@ -83,6 +89,8 @@ export function geometryNotifyArgs(
         ...(report.tabID !== undefined && report.tabID !== '' ? { tabID: report.tabID } : {}),
         rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h },
         visible,
+        // Only ever sent with `visible:false`: a placed view is not hidden by anything.
+        ...(!visible && report.transient === true ? { transient: true } : {}),
         devicePixelRatio: finite(report.devicePixelRatio, 1),
         ownWindow: shellWindowID !== null && hostWindowID !== null && shellWindowID === hostWindowID,
         ...(shellWindowID === null ? {} : { shellWindowID }),

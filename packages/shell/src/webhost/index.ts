@@ -385,6 +385,19 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             },
             setBounds: (tab, bounds) => {
                 tab.contentsView.setBounds(bounds);
+            },
+            /*
+             * Issue #12 — the whole of a transient park, and the whole of its restore.
+             *
+             * `setVisible(false)` stops the view being composited and touches nothing else: it
+             * stays a child of this window, at these bounds, with the page laid out exactly as it
+             * was. Compare the detach path above, which re-parents it AND re-pins its viewport to
+             * `DEFAULT_VIEWPORT` @1× — measured on a page whose relayout costs what a real page's
+             * costs, that shows the 1280×800 layout clipped into the pane for as long as the page
+             * takes to repaint after the menu closes, which is the jump the owner reported.
+             */
+            setVisible: (tab, visible) => {
+                tab.setVisible(visible);
             }
         },
         onChange: (event) => {
@@ -392,12 +405,24 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 event.bounds === null
                     ? '-'
                     : `${String(event.bounds.x)},${String(event.bounds.y)} ${String(event.bounds.width)}×${String(event.bounds.height)}`;
-            // The live smoke asserts on this line: it is the only externally visible proof that
-            // a view moved into the shell window rather than staying in the holder.
-            log(
-                `web pane ${event.paneID} view ${event.outcome === 'placed' ? 'owner=main' : 'owner=holder'} ` +
-                    `bounds=${box} (${event.reason})`
-            );
+            /*
+             * The live smoke and the audit assert on this line: it is the only externally visible
+             * proof of where a view is and whether it is being drawn.
+             *
+             * Three states now, not two (issue #12). `owner=main` is placed and drawn;
+             * `owner=holder` is taken back to the off-screen holder, which re-pins the page to
+             * the automation viewport; and `owner=main hidden` is the transient park — still in
+             * this window, still at these bounds, still laid out as the pane, simply not
+             * composited while a menu is over it. Saying `holder` for that would be a lie about
+             * the one fact this line exists to report.
+             */
+            const owner =
+                event.outcome === 'placed'
+                    ? 'owner=main'
+                    : event.outcome === 'hidden'
+                      ? 'owner=main hidden'
+                      : 'owner=holder';
+            log(`web pane ${event.paneID} view ${owner} bounds=${box} (${event.reason})`);
         },
         onError
     });

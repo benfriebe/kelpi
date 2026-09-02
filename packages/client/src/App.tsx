@@ -695,6 +695,9 @@ function Shell(props: AppProps): ReactElement {
                             : { tabID: report.tabID }),
                         rect: report.rect,
                         visible: report.visible,
+                        // Issue #12: "covered, not gone" — the host then hides the view where it
+                        // stands instead of re-pinning the page's viewport (`webpane/geometry.ts`).
+                        ...(report.transient === true ? { transient: true } : {}),
                         devicePixelRatio: report.devicePixelRatio,
                         // The claim the daemon matches against the host's own window id.
                         ...(shellWindowID === null ? {} : { shellWindowID })

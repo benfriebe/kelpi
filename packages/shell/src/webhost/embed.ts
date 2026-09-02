@@ -35,6 +35,16 @@ export interface EmbedHooks<V> {
     detach(view: V): void;
     /** Position an already-attached view. */
     setBounds(view: V, bounds: ViewBounds): void;
+    /**
+     * Issue #12 — stop drawing a view WITHOUT moving it.
+     *
+     * A menu over a pane needs the view to stop covering the document; it does not need the view
+     * to go anywhere. Detaching it does two things that are only wanted when the pane has really
+     * left the screen: it re-parents the view to the holder, and it re-pins the page's viewport
+     * to the automation default, which reflows the page out and back and shows the wrong layout
+     * for however long the page takes to repaint. Hiding in place does neither.
+     */
+    setVisible(view: V, visible: boolean): void;
 }
 
 export interface EmbedOptions<V> {
@@ -55,6 +65,8 @@ export type EmbedOutcome =
     | 'placed'
     /** It moved (or stayed) back in the holder. */
     | 'released'
+    /** Issue #12: still in the window, at the same bounds, not being drawn. */
+    | 'hidden'
     /** Not ours, or nothing to do. */
     | 'ignored';
 
@@ -94,6 +106,8 @@ interface Placement<V> {
     view: V;
     bounds: ViewBounds;
     geometry: PaneGeometry;
+    /** Issue #12: in the window and at these bounds, but not drawn (a menu is over it). */
+    hidden: boolean;
     /**
      * The display scale the bounds were computed under.
      *
@@ -134,9 +148,43 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         return true;
     };
 
+    /**
+     * Issue #12's transient park: stop drawing the view, leave everything else alone.
+     *
+     * Only for a pane that is CURRENTLY PLACED — there is nothing to hide otherwise, and a
+     * transient report for an unplaced pane is a client that got ahead of itself, which the
+     * ordinary release path already answers.
+     */
+    const hideInPlace = (paneID: string): EmbedOutcome => {
+        const placement = placed.get(paneID);
+        if (placement === undefined) return 'ignored';
+        if (placement.hidden) return 'hidden';
+        try {
+            options.hooks.setVisible(placement.view, false);
+        } catch (error) {
+            report(error, `embed-hide ${paneID}`);
+            return 'ignored';
+        }
+        placement.hidden = true;
+        announce(paneID, 'hidden', placement.bounds, 'covered');
+        return 'hidden';
+    };
+
     const place = (geometry: PaneGeometry, metrics: WindowMetrics): EmbedOutcome => {
         const bounds = viewBounds(geometry, metrics);
         if (bounds === null) {
+            /*
+             * Issue #12 — a pane that is merely COVERED keeps its view, and its layout.
+             *
+             * `visible:false` used to mean one thing (take the view back). It means two: the pane
+             * has left the screen, or something is momentarily over it. Only the first wants the
+             * holder and the automation viewport; the second wants the view exactly where it is,
+             * not drawn, so that when the surface closes the page is already the right shape.
+             */
+            if (!geometry.visible && geometry.transient) {
+                const hid = hideInPlace(geometry.paneID);
+                if (hid !== 'ignored') return hid;
+            }
             // Hidden, zero-sized, or scrolled entirely out of the window: the holder is where
             // a view with nowhere to be belongs.
             release(geometry.paneID, geometry.visible ? 'off-screen' : 'hidden');
@@ -160,13 +208,31 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         try {
             if (attached === undefined) options.hooks.attach(view, bounds);
             else if (!sameBounds(attached.bounds, bounds)) options.hooks.setBounds(view, bounds);
+            // Coming back from a transient park: the view never moved, so this is the whole
+            // restore — no re-parent, no bounds change, no viewport to re-pin, and therefore
+            // nothing for the page to reflow. The pixels that come back are the pixels that left.
+            if (attached?.hidden === true) options.hooks.setVisible(view, true);
         } catch (error) {
             report(error, `embed-place ${geometry.paneID}`);
             return 'ignored';
         }
         const changed = attached === undefined || !sameBounds(attached.bounds, bounds);
-        placed.set(geometry.paneID, { view, bounds, geometry, scaleFactor: metrics.scaleFactor });
-        if (changed) announce(geometry.paneID, 'placed', bounds, attached === undefined ? 'attached' : 'moved');
+        const shown = attached?.hidden === true;
+        placed.set(geometry.paneID, {
+            view,
+            bounds,
+            geometry,
+            scaleFactor: metrics.scaleFactor,
+            hidden: false
+        });
+        if (changed || shown) {
+            announce(
+                geometry.paneID,
+                'placed',
+                bounds,
+                attached === undefined ? 'attached' : shown ? 'uncovered' : 'moved'
+            );
+        }
         return 'placed';
     };
 

@@ -81,3 +81,42 @@ describe('geometryNotifyArgs', () => {
         expect(geometryNotifyArgs(report({ devicePixelRatio: NaN }), null)['devicePixelRatio']).toBe(1);
     });
 });
+
+/**
+ * Issue #12, round 3: the client's "covered, not gone" flag, carried to the host.
+ *
+ * The host answers the two cases differently — a view it takes back is re-pinned to the
+ * automation viewport, which reflows the page out and back — so the daemon has to pass the
+ * distinction through rather than flatten it.
+ */
+describe('the transient flag', () => {
+    it('rides a hide that the client called transient', () => {
+        const args = geometryNotifyArgs(
+            {
+                paneID: PANE,
+                rect: { x: 1, y: 2, w: 3, h: 4 },
+                visible: false,
+                transient: true,
+                devicePixelRatio: 2,
+                shellWindowID: 'WIN'
+            },
+            'WIN'
+        );
+        expect(args['visible']).toBe(false);
+        expect(args['transient']).toBe(true);
+    });
+
+    it('is absent from a placement, and from a hide the client did not qualify', () => {
+        const placed = geometryNotifyArgs(
+            { paneID: PANE, rect: { x: 1, y: 2, w: 3, h: 4 }, visible: true, transient: true, devicePixelRatio: 1 },
+            null
+        );
+        // A view that is being PLACED is not hidden by anything; the flag would be noise.
+        expect('transient' in placed).toBe(false);
+        const gone = geometryNotifyArgs(
+            { paneID: PANE, rect: { x: 1, y: 2, w: 3, h: 4 }, visible: false, devicePixelRatio: 1 },
+            null
+        );
+        expect('transient' in gone).toBe(false);
+    });
+});

@@ -1802,6 +1802,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     ...(text(message['tabID']) !== undefined ? { tabID: text(message['tabID']) } : {}),
                     rect: parseGeometryRect(message['rect']),
                     visible,
+                    // Issue #12: a park the client calls transient (something is over the pane)
+                    // rather than a pane that has left the screen. A CLIENT that vanishes never
+                    // sends one — `releaseGeometry` below is the un-transient case by nature.
+                    ...(message['transient'] === true ? { transient: true } : {}),
                     devicePixelRatio: count(message['devicePixelRatio']) ?? 1,
                     ...(shellWindowID === undefined ? {} : { shellWindowID }),
                     clientID: this.clientID

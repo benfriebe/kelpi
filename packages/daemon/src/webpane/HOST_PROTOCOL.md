@@ -131,6 +131,15 @@ Rules:
 - **`visible:false` means "put the view back"** — the pane was zoomed away, the workspace
   switched, the tab closed, or the client unmounted it. A zero-area rect is normalised to
   `visible:false` by the daemon so there is exactly one rule to implement.
+- **…unless it carries `transient:true`, which means "stop drawing it where it is"** (issue #12).
+  A pane with a menu over it has not moved and is coming back in a second, and moving its view
+  costs the PAGE: back in the holder its viewport is re-pinned to `DEFAULT_VIEWPORT` @1×, so it
+  reflows on the way out and again on the way back, and the frames between the view returning and
+  the page repainting show the automation layout clipped into the pane. Photographed on a fixture
+  whose relayout costs what a real page's costs: 259 ms after a menu closed, a four-column
+  1280 px grid squeezed into a 525 px pane. So a transient park is `view.setVisible(false)` and
+  nothing else — same parent, same bounds, same viewport, same scroll — and the restore is
+  `setVisible(true)`. A host that ignores the flag still behaves correctly, just visibly.
 - **CSS px → DIP is the host's job.** `devicePixelRatio` is display scale × page zoom; dividing
   it by the window's own scale factor yields the CSS→DIP factor. Clamp the result to the window's
   content bounds — a pane can be scrolled or dragged partly off-screen, and a view must never be
@@ -176,6 +185,15 @@ Rules, and each of them is load-bearing:
   viewport (§3.5), so its frame is a picture of a page sized for nobody; painted into the pane's
   hole it would be a clipped, wrong-aspect corner. A host with the tab parked answers
   `{ok:false,error:"no on-screen view to poster"}` — never a frame it knows is wrong.
+- **The frame is copied from the SURFACE, not asked of the page.** `webContents.capturePage()`
+  is served by the browser process, so a page whose main thread is busy — a React commit, an ad,
+  a `resize` handler, which is most real pages most of the time — still hands back what is on
+  screen. CDP's `Page.captureScreenshot` is served by the renderer and cannot answer until the
+  page is free: measured on a page busy for 1.5 s at the moment of the right-click, it missed the
+  client's deadline every time and the pane parked with nothing, which is issue #12 itself. The
+  renderer path stays as the FALLBACK, because the two fail in opposite conditions: a window the
+  OS is not compositing (an audit run parks one past the work area; a minimised one is the same)
+  has no surface to copy and answers `UnknownVizError`, and then only the renderer can help.
 - **It is not `capture`.** `capture --mode screenshot` is the automation read: deterministic
   1280×800 @1× PNG, spilled to a temp file above 1 MB, 20 s of budget. A poster is the opposite
   of all four — the pane's real pixels, JPEG (a base64 PNG of a retina pane is megabytes *per

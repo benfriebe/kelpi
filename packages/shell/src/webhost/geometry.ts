@@ -58,6 +58,17 @@ export interface PaneGeometry {
     readonly tabID: string | null;
     readonly rect: CssRect;
     readonly visible: boolean;
+    /**
+     * Issue #12: `visible:false` because a menu (or any floating surface) is momentarily OVER the
+     * pane, not because the pane has left the screen.
+     *
+     * The two need different answers, and the difference is the page's layout. Taking a view back
+     * to the holder re-pins its viewport to `DEFAULT_VIEWPORT` @1× (§3.5), so the page reflows on
+     * the way out and again on the way back, and the frames between the view returning and the
+     * page repainting show the automation layout clipped into the pane. A transient park is over
+     * in a second and the pane's rect has not changed, so the view is hidden where it stands.
+     */
+    readonly transient: boolean;
     readonly devicePixelRatio: number;
     /** The daemon's answer to "did this come from my own window?" (§3.5). */
     readonly ownWindow: boolean;
@@ -92,6 +103,7 @@ export function parsePaneGeometry(args: Record<string, unknown>): PaneGeometry |
         tabID: str(args['tabID']),
         rect,
         visible: args['visible'] === true && rect.w > 0 && rect.h > 0,
+        transient: args['transient'] === true,
         devicePixelRatio: num(args['devicePixelRatio'], 1),
         ownWindow: args['ownWindow'] === true,
         shellWindowID: str(args['shellWindowID'])

@@ -7876,6 +7876,14 @@ function buildFlows(ctx) {
                  * the view was placed at) while the pane is currently parked, so the plain "last
                  * line" reading would hand it the `owner=holder` line that has no bounds in it.
                  */
+                /**
+                 * Is this placement line a PARK? Two shapes since issue #12's round 3: a view the
+                 * shell took back to the holder (`owner=holder`), and one it hid where it stands
+                 * (`owner=main hidden`) — which is what a transient park does now, because moving
+                 * a view re-pins the page's viewport and the page then reflows out and back.
+                 * Either way the view is not being drawn, which is what these assertions mean.
+                 */
+                const isParked = (line) => line.includes('owner=holder') || line.includes('owner=main hidden');
                 const embedOf = (paneID, match = '') => {
                     const lines = (runtime.shell?.lines ?? []).filter(
                         (line) => line.includes(`web pane ${String(paneID)} view `) && line.includes(match)
@@ -8189,7 +8197,7 @@ function buildFlows(ctx) {
                             if (under.length === 0 || !under.every((hole) => hole.visible === 'false')) {
                                 return `pages not parked yet @${String(Date.now())}`;
                             }
-                            if (!under.every((hole) => embedOf(hole.id).includes('owner=holder'))) {
+                            if (!under.every((hole) => isParked(embedOf(hole.id)))) {
                                 return `the shell has not parked them yet @${String(Date.now())}`;
                             }
                             if (poster && !under.every((hole) => (hole.posterBytes ?? 0) > 0)) {
@@ -8219,8 +8227,8 @@ function buildFlows(ctx) {
                     for (const hole of covered) {
                         const line = embedOf(hole.id);
                         recorder.check(
-                            `${name.label}: the SHELL took ${hole.id.slice(0, 8)}'s view back to the holder`,
-                            line.includes('owner=holder'),
+                            `${name.label}: the SHELL stopped drawing ${hole.id.slice(0, 8)}'s view`,
+                            isParked(line),
                             line
                         );
                     }
@@ -8254,7 +8262,15 @@ function buildFlows(ctx) {
                              * comes from the host's own placement, which is the same string the
                              * shell logs.
                              */
-                            const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(embedOf(hole.id, 'owner=main'));
+                            // The last line that PLACED the view: a hidden-in-place line also says
+                            // `owner=main`, and it carries the same bounds, but the placement is
+                            // the one to compare a picture against.
+                            const placedLines = (runtime.shell?.lines ?? []).filter(
+                                (line) =>
+                                    line.includes(`web pane ${hole.id} view owner=main`) &&
+                                    !line.includes('hidden')
+                            );
+                            const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placedLines.at(-1) ?? '');
                             const want =
                                 placed === null
                                     ? null
@@ -8685,8 +8701,8 @@ function buildFlows(ctx) {
                         JSON.stringify(dropped)
                     );
                     recorder.check(
-                        "the SHELL took the drop target's view back to the holder",
-                        embedOf(dropped?.id ?? right).includes('owner=holder'),
+                        "the SHELL stopped drawing the drop target's view",
+                        isParked(embedOf(dropped?.id ?? right)),
                         embedOf(dropped?.id ?? right)
                     );
                     for (const hole of during.filter(
@@ -9096,9 +9112,16 @@ function buildFlows(ctx) {
                     String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
                 );
                 const frames = net.frames ?? [];
-                const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
+                // Three placement states since round 3; a transient park is `owner=main hidden`.
+                const parked = stamps.find(
+                    (stamp) => stamp.line.includes('owner=main hidden') || stamp.line.includes('owner=holder')
+                );
                 const restored = stamps.find(
-                    (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
+                    (stamp) =>
+                        stamp.line.includes('owner=main') &&
+                        !stamp.line.includes('hidden') &&
+                        parked !== undefined &&
+                        stamp.at > parked.at
                 );
                 recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
                 recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
@@ -9126,7 +9149,10 @@ function buildFlows(ctx) {
                 // through `web-popup-layering`'s own `embedOf`, which is local to that step.
                 const placementLine =
                     (runtime.shell?.lines ?? [])
-                        .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
+                        .filter(
+                            (line) =>
+                                line.includes(`web pane ${paneID} view owner=main`) && !line.includes('hidden')
+                        )
                         .at(-1) ?? '';
                 const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
                 const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;

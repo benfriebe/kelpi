@@ -25,6 +25,7 @@ function geometry(overrides: Partial<PaneGeometry> = {}): PaneGeometry {
         tabID: 'T1',
         rect: { x: 100, y: 50, w: 800, h: 600 },
         visible: true,
+    transient: false,
         devicePixelRatio: 2,
         ownWindow: true,
         shellWindowID: 'WIN',
@@ -118,10 +119,28 @@ describe('parsePaneGeometry', () => {
             tabID: 'T1',
             rect: { x: 1, y: 2, w: 3, h: 4 },
             visible: true,
+            // Issue #12: absent means "not a transient park", which is every report a client
+            // sent before the flag existed and every report about a pane that really went away.
+            transient: false,
             devicePixelRatio: 2,
             ownWindow: true,
             shellWindowID: 'WIN'
         });
+    });
+
+    it('reads the transient flag a covered pane sends (issue #12)', () => {
+        const parsed = parsePaneGeometry({
+            paneID: PANE,
+            rect: { x: 1, y: 2, w: 3, h: 4 },
+            visible: false,
+            transient: true,
+            ownWindow: true
+        });
+        expect(parsed?.transient).toBe(true);
+        // Anything but `true` is the safe reading: take the view back, as every host did before.
+        expect(parsePaneGeometry({ paneID: PANE, rect: { x: 1, y: 2, w: 3, h: 4 }, transient: 'yes' })?.transient).toBe(
+            false
+        );
     });
 
     it('refuses args with no pane, and never trusts a missing ownWindow', () => {

@@ -82,7 +82,13 @@ export interface WebPaneProps {
     /** Where the page area is; assembly throttles and puts it on the wire. */
     readonly onGeometry?: ((report: GeometryReport) => void) | undefined;
     /** The pane is no longer on screen: take the view back. */
-    readonly onHidden?: ((paneID: string) => void) | undefined;
+    /**
+     * Take the view back. `transient` is issue #12's round-3 distinction: the pane is still on
+     * screen and something is momentarily over it, so the host hides the view where it stands
+     * rather than moving it to the holder and re-pinning the page's viewport (which reflows the
+     * page on the way out AND on the way back — see `geometry.ts`'s `GeometryReport.transient`).
+     */
+    readonly onHidden?: ((paneID: string, options?: { transient?: boolean | undefined }) => void) | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     /** Test seam: jsdom has no layout, so measurement is injectable. */
     readonly measure?: ((element: HTMLElement) => GeometryRect) | undefined;
@@ -846,7 +852,11 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         if (!embedded) return;
         if (element === null || rect === null) return;
         if (!visible || (covered && !shot.hold)) {
-            onHidden?.(paneID);
+            // A COVERED pane is coming straight back and has not moved: the host keeps the view
+            // where it is, so the page never learns a menu was open. A pane the assembly has
+            // hidden (a workspace switch, a zoom, a modal) really is off screen, and its view
+            // goes back to the holder with the automation viewport the CLI is specified against.
+            onHidden?.(paneID, { transient: visible && covered });
             return;
         }
         onGeometry?.({

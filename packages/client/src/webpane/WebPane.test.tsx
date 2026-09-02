@@ -984,6 +984,59 @@ describe('geometry reporting', () => {
                 view.unmount();
             });
 
+            /**
+             * Issue #12, round 3 — WHICH KIND of park this is, told to the host.
+             *
+             * A covered pane is coming straight back and has not moved, so the host keeps its
+             * view where it stands. Taking it back re-pins the page to the automation viewport,
+             * and the page then reflows out and back: photographed at 259 ms after a menu closed,
+             * a 1280 px four-column layout clipped into a 525 px pane.
+             */
+            it('calls the park TRANSIENT when it is a cover, and not when the pane is gone', async () => {
+                const hidden: { paneID: string; transient: boolean }[] = [];
+                const view = render(
+                    <WebPane
+                        paneID={PANE}
+                        tabs={TABS}
+                        activeTabID={TAB1}
+                        commands={fakeCommands().commands}
+                        embedded={true}
+                        visible={true}
+                        measure={fixedRect(RECT)}
+                        devicePixelRatio={2}
+                        onGeometry={() => undefined}
+                        onHidden={(paneID, options) =>
+                            hidden.push({ paneID, transient: options?.transient === true })
+                        }
+                    />
+                );
+                open({ x: 100, y: 100, w: 200, h: 200 });
+                await settle();
+                expect(hidden.at(-1)).toEqual({ paneID: PANE, transient: true });
+
+                // The assembly hides the pane (a workspace switch, a zoom, a modal): really gone.
+                act(() => {
+                    view.rerender(
+                        <WebPane
+                            paneID={PANE}
+                            tabs={TABS}
+                            activeTabID={TAB1}
+                            commands={fakeCommands().commands}
+                            embedded={true}
+                            visible={false}
+                            measure={fixedRect(RECT)}
+                            devicePixelRatio={2}
+                            onGeometry={() => undefined}
+                            onHidden={(paneID, options) =>
+                                hidden.push({ paneID, transient: options?.transient === true })
+                            }
+                        />
+                    );
+                });
+                expect(hidden.at(-1)).toEqual({ paneID: PANE, transient: false });
+                view.unmount();
+            });
+
             it('never asks for a pane the assembly has already hidden', () => {
                 const h = mount({ visible: false });
                 open({ x: 100, y: 100, w: 200, h: 200 });

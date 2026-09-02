@@ -1036,26 +1036,93 @@ class ElectronTab implements HostTab {
         // Re-read after the await: a tab can be parked, switched away or closed while the CDP
         // session is coming up, and a frame taken then is of a view nobody is looking at.
         if (this.disposed || !this.embedded) return this.posterRefused('parked while the session came up');
-        const result = await this.send('Page.captureScreenshot', {
-            format: 'jpeg',
-            quality: POSTER_JPEG_QUALITY
-        });
-        // Checked a THIRD time, on the other side of the capture. A screenshot is not
-        // instantaneous and the view can be taken off screen while it is in flight — a tab
-        // switch, the workspace changing, the client's own park landing from another path — and
-        // the frame CDP hands back then is the holder's pinned 1280×800, which is exactly the
-        // wrong-aspect picture §3.6 exists to refuse. The client is holding a live view on
-        // screen for this answer, so the only safe answer is the honest no.
+        /*
+         * **`capturePage`, NOT `Page.captureScreenshot`, and the difference is the whole point.**
+         *
+         * The CDP screenshot is served by the RENDERER: it asks the page to produce a frame, so a
+         * page whose main thread is busy cannot answer until it is free. Real pages are busy all
+         * the time — a React commit, an ad, a `resize` handler — and measured on a fixture with a
+         * 450 ms resize handler the capture missed the client's 250 ms deadline every time, so
+         * the pane parked with no frame and went BLANK, which is issue #12 back again.
+         *
+         * `webContents.capturePage()` is served by the BROWSER process: it copies the view's last
+         * composited surface (`RenderWidgetHostView::CopyFromSurface`), which needs no main-thread
+         * work in the page at all. A busy page still hands back the pixels that are on screen,
+         * which is exactly what a still frame of it should be.
+         */
+        const startedAt = Date.now();
+        let jpeg = await this.capturePageJpeg();
+        let path = 'surface';
+        if (jpeg === null) {
+            /*
+             * The two paths fail in OPPOSITE conditions, which is why both are here.
+             *
+             * `capturePage` needs a compositing surface: a window the OS is not compositing (an
+             * audit run parks one past the work area; a minimised or fully occluded one is the
+             * same case) answers `UnknownVizError` and no frame at all. The CDP screenshot needs
+             * the page's main thread instead, and cannot be served while the page is busy. So the
+             * browser-side copy is tried first — it is the one that survives the ordinary case, a
+             * busy page — and the renderer-side one is the fallback for the ordinary case of the
+             * other kind, a window with nothing on screen to copy.
+             */
+            jpeg = await this.captureCdpJpeg();
+            path = 'renderer';
+        }
+        if (jpeg === null) return this.posterRefused('neither capture path could produce a frame');
+        // Checked a THIRD time, on the other side of the capture. A capture is not instantaneous
+        // and the view can be taken off screen while it is in flight — a tab switch, the
+        // workspace changing, the client's own park landing from another path — and a frame taken
+        // then is of a view nobody is looking at. The client is holding a live view on screen for
+        // this answer, so the only safe answer is the honest no.
         if (this.disposed || this.contents.isDestroyed() || !this.embedded) {
             return this.posterRefused('parked while the frame was being taken');
         }
-        const data = isRecord(result) ? text(result['data']) : undefined;
+        const data = jpeg.length === 0 ? undefined : jpeg;
         if (data === undefined) return this.posterRefused('the capture returned no data');
         // A poster is otherwise invisible from outside the process — the client paints it and the
         // view goes back — so the one line that says a real frame was taken, and how big it was,
         // is what a live check (or a "why did that menu feel slow") has to read.
-        log(`web pane ${this.paneID}: poster ${String(data.length)} base64 bytes (tab ${this.tabID})`);
+        // The elapsed time is the number that decides whether a menu ever sees this frame: the
+        // client holds its view for a bounded moment and parks without one if the frame is later.
+        log(
+            `web pane ${this.paneID}: poster ${String(data.length)} base64 bytes ` +
+                `via ${path} in ${String(Date.now() - startedAt)}ms (tab ${this.tabID})`
+        );
         return data;
+    }
+
+    /**
+     * The browser process's copy of the view's last composited surface, as base64 JPEG.
+     *
+     * No main-thread work in the page, so a page that is busy — a React commit, an ad, a `resize`
+     * handler — still hands back what is on screen. Null when the compositor has nothing to give.
+     */
+    private async capturePageJpeg(): Promise<string | null> {
+        try {
+            const image = await this.contents.capturePage();
+            if (image.isEmpty()) return null;
+            const jpeg = image.toJPEG(POSTER_JPEG_QUALITY);
+            return jpeg.byteLength === 0 ? null : jpeg.toString('base64');
+        } catch (error) {
+            // Expected for a window the OS is not compositing; the caller falls back.
+            this.report(error, 'poster-capture');
+            return null;
+        }
+    }
+
+    /** The renderer's own screenshot: works with no surface, needs the page's main thread. */
+    private async captureCdpJpeg(): Promise<string | null> {
+        try {
+            const result = await this.send('Page.captureScreenshot', {
+                format: 'jpeg',
+                quality: POSTER_JPEG_QUALITY
+            });
+            const data = isRecord(result) ? text(result['data']) : undefined;
+            return data ?? null;
+        } catch (error) {
+            this.report(error, 'poster-capture-cdp');
+            return null;
+        }
     }
 
     /**

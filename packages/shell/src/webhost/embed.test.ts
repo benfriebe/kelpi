@@ -27,6 +27,7 @@ function geometry(overrides: Partial<PaneGeometry> = {}): PaneGeometry {
         tabID: 'T1',
         rect: { x: 10, y: 20, w: 400, h: 300 },
         visible: true,
+        transient: false,
         devicePixelRatio: 1,
         ownWindow: true,
         shellWindowID: 'WIN',
@@ -44,6 +45,8 @@ function harness(
     const attaches: { view: FakeView; bounds: ViewBounds }[] = [];
     const detaches: FakeView[] = [];
     const moves: { view: FakeView; bounds: ViewBounds }[] = [];
+    /** Issue #12: stop drawing a view without moving it. */
+    const visibilities: { view: FakeView; visible: boolean }[] = [];
     const events: EmbedEvent[] = [];
     const views = options.views ?? { T1: { id: 'T1' } };
 
@@ -53,14 +56,81 @@ function harness(
         hooks: {
             attach: (view, bounds) => attaches.push({ view, bounds }),
             detach: (view) => detaches.push(view),
-            setBounds: (view, bounds) => moves.push({ view, bounds })
+            setBounds: (view, bounds) => moves.push({ view, bounds }),
+            setVisible: (view, visible) => visibilities.push({ view, visible })
         },
         ...(options.windowID === undefined ? {} : { windowID: options.windowID }),
         onChange: (event) => events.push(event)
     });
 
-    return { controller, attaches, detaches, moves, events, views };
+    return { controller, attaches, detaches, moves, visibilities, events, views };
 }
+
+/**
+ * Issue #12, round 3 — a pane that is merely COVERED keeps its view, and its layout.
+ *
+ * `visible:false` used to mean one thing. It means two, and only one of them wants the holder:
+ * taking a view back re-pins the page's viewport to the automation default, so the page reflows
+ * on the way out and again on the way back, and the frames between the view returning and the
+ * page repainting show the 1280×800 layout clipped into the pane. Photographed at 259 ms after a
+ * menu closed, on a fixture whose relayout costs what a real page's costs.
+ */
+describe('a transient park (issue #12)', () => {
+    it('hides the view where it stands rather than taking it back', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        expect(h.attaches).toHaveLength(1);
+
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        // Not moved, not re-pinned, not re-parented: just not drawn.
+        expect(h.detaches).toEqual([]);
+        expect(h.visibilities).toEqual([{ view: { id: 'T1' }, visible: false }]);
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'hidden', reason: 'covered' });
+    });
+
+    it('shows it again on the next visible report, with no bounds change', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        h.controller.apply(geometry());
+
+        expect(h.visibilities).toEqual([
+            { view: { id: 'T1' }, visible: false },
+            { view: { id: 'T1' }, visible: true }
+        ]);
+        // One attach for the life of the pane, and no move: the restore is the visibility flip
+        // and nothing else, which is what leaves the page's layout untouched.
+        expect(h.attaches).toHaveLength(1);
+        expect(h.moves).toEqual([]);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'placed', reason: 'uncovered' });
+    });
+
+    it('still takes the view back when the pane really leaves the screen', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        // No `transient`: a workspace switch, a zoom, an unmount. The automation viewport is
+        // specified against the holder, so this path must not change.
+        h.controller.apply(geometry({ visible: false }));
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.visibilities).toEqual([]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+    });
+
+    it('ignores a transient park for a pane it never placed', () => {
+        const h = harness();
+        expect(h.controller.apply(geometry({ visible: false, transient: true }))).toBe('released');
+        expect(h.visibilities).toEqual([]);
+    });
+
+    it('is idempotent while the surface stays up', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        expect(h.visibilities).toHaveLength(1);
+    });
+});
 
 describe('placing a view', () => {
     it('attaches the active view at the reported bounds', () => {

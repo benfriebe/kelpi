@@ -175,6 +175,39 @@ describe('geometry reporter', () => {
     });
 });
 
+/**
+ * Issue #12, round 3: `visible:false` means two different things, and the host has to be able to
+ * tell them apart. A pane that has left the screen gives its view back (and the page is re-pinned
+ * to the automation viewport on the way); a pane something is momentarily OVER keeps it, because
+ * moving it reflows the page out and back and the frames after the menu closes show the wrong
+ * layout clipped into the pane.
+ */
+describe('a transient hide (issue #12)', () => {
+    const RECT = { x: 0, y: 0, w: 100, h: 100 };
+
+    it('carries the flag when the pane is merely covered', () => {
+        const h = harness();
+        h.reporter.report({ paneID: PANE, rect: RECT, visible: true, devicePixelRatio: 2 });
+        h.reporter.hide(PANE, { transient: true });
+        expect(h.sent.at(-1)).toMatchObject({ paneID: PANE, visible: false, transient: true });
+    });
+
+    it('says nothing when the pane really went away', () => {
+        const h = harness();
+        h.reporter.report({ paneID: PANE, rect: RECT, visible: true, devicePixelRatio: 2 });
+        h.reporter.hide(PANE);
+        // Absent, not `false`: a host that predates the flag reads the report exactly as before.
+        expect('transient' in (h.sent.at(-1) as object)).toBe(false);
+    });
+
+    it('is part of a report’s identity, so a cover after a hide is not deduped away', () => {
+        const h = harness();
+        h.reporter.report({ paneID: PANE, rect: RECT, visible: false, devicePixelRatio: 2 });
+        h.reporter.report({ paneID: PANE, rect: RECT, visible: false, devicePixelRatio: 2, transient: true });
+        expect(h.sent).toHaveLength(2);
+    });
+});
+
 describe('readShellWindowID', () => {
     it('reads the shell marker the Electron window appends', () => {
         expect(readShellWindowID(`?token=abc&${SHELL_WINDOW_PARAM}=WIN-1`)).toBe('WIN-1');

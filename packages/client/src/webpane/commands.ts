@@ -72,6 +72,16 @@ export interface WebPaneCommands {
     /** `</>`: toggle the docked inspector for the pane's active tab. */
     toggleDevTools(paneID: string, tabID?: string | null): Promise<CommandReply>;
 
+    // ── the page poster (issue #12) ─────────────────────────────────────────
+    /**
+     * One still frame of the page, taken while the view is still on screen, so the hole has
+     * something to wear while a menu is over it (`./poster.ts`).
+     *
+     * `tabID` is explicit for the same reason `find`'s is: the frame is of ONE tab, and one that
+     * arrives after a tab switch is a picture of the wrong page.
+     */
+    poster(paneID: string, tabID: string): Promise<CommandReply>;
+
     // ── find (§10) ──────────────────────────────────────────────────────────
     /**
      * Drive the page's find. `tabID` is explicit because the reply carries it back: a count that
@@ -150,6 +160,8 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
                 pane_id: paneID,
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
             }),
+
+        poster: (paneID, tabID) => sender.raw({ command: 'web-poster', pane_id: paneID, tab_id: tabID }),
 
         find: (paneID, tabID, op, needle = '') =>
             sender.raw({ command: 'web-find', pane_id: paneID, tab_id: tabID, action: op, needle }),

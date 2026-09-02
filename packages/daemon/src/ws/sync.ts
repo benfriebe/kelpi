@@ -101,6 +101,7 @@ import { isTerminalSearchCommand, type TerminalSearchChannel } from './search.js
 import { parseGeometryRect } from '../webpane/geometry.js';
 import type { HostRegistration } from '../webpane/host.js';
 import type { WebPaneService } from '../webpane/service.js';
+import { HOST_TIMEOUT_POSTER_MS } from '../webpane/verbs.js';
 import { serializeDomainEvents, serializeLabelPreset, serializeState } from './serialize.js';
 
 export type KelpiDomainStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
@@ -984,6 +985,9 @@ export const WEB_COMMANDS = [
     'web-tab-reorder',
     'web-stop',
     'web-focus-view',
+    // Issue #12's still frame. GUI-only for the plainest of reasons: it exists to paint a hole
+    // in a window, and a CLI has no hole (`kelpi web capture` is the automation read).
+    'web-poster',
     // §12 batch "element pickup". All pane-scoped, all direct manipulation.
     'web-batch-state',
     'web-batch-toggle',
@@ -2484,6 +2488,34 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     report(error, `ws-command ${command}`);
                     settle(failure('handler failed'));
                 });
+                return;
+            }
+
+            if (command === 'web-poster') {
+                /*
+                 * Issue #12 — straight through to the host, and deliberately NOT through the
+                 * capture path beside it.
+                 *
+                 * `web-capture --mode screenshot` is the automation read: a PNG of the pinned
+                 * off-screen viewport, spilled to a temp file above 1 MB. A poster is the pane's
+                 * own on-screen pixels, must ride the reply (a client cannot open a temp file)
+                 * and must come back before a menu has finished opening — three different
+                 * answers, so a different verb with its own budget (§3.6).
+                 */
+                const tabID = text(payload['tab_id']);
+                void channel
+                    .call(
+                        'poster',
+                        { paneID, ...(tabID === undefined ? {} : { tabID }) },
+                        { timeoutMs: HOST_TIMEOUT_POSTER_MS }
+                    )
+                    .then((reply) => {
+                        this.send({
+                            type: 'command-reply',
+                            id,
+                            reply: { ...reply, pane_id: paneID }
+                        });
+                    });
                 return;
             }
 

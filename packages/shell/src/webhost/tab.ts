@@ -66,6 +66,7 @@ import {
     type NetworkRequestInfo,
     type RemoteObject
 } from './console-format.js';
+import { POSTER_JPEG_QUALITY } from './caps.js';
 import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
 import { isWebErrorPageURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
@@ -1011,6 +1012,41 @@ class ElectronTab implements HostTab {
         const data = isRecord(result) ? text(result['data']) : undefined;
         if (data === undefined) throw new Error('no screenshot data');
         return Buffer.from(data, 'base64');
+    }
+
+    /**
+     * Issue #12's still frame — see `./caps.ts`.
+     *
+     * **Embedded only, and the guard is the contract rather than an optimisation.** Off screen
+     * the viewport is pinned to `DEFAULT_VIEWPORT` @1× (`applyViewportPin`), so a holder view's
+     * frame is a 1280×800 picture of a page laid out for nobody: painted into the pane's hole it
+     * would be the clipped, soft, wrong-aspect corner that run-B L2 already caught once. There is
+     * no honest poster for a view that is not on screen, so this says so and the client parks the
+     * way it always did.
+     *
+     * Same CDP call as `screenshot()` and deliberately no `clip`/`captureBeyondViewport`: the
+     * frame wanted IS the visible viewport, and those two are the pair measured never to answer
+     * on a hidden view. JPEG comes back base64 from CDP and travels to the client untouched — no
+     * decode, no re-encode, no `nativeImage` round trip on the main thread while a menu waits.
+     */
+    async poster(): Promise<string | null> {
+        if (this.disposed || this.contents.isDestroyed()) return null;
+        if (!this.embedded) return null;
+        await this.ready;
+        // Re-read after the await: a tab can be parked, switched away or closed while the CDP
+        // session is coming up, and a frame taken then is of a view nobody is looking at.
+        if (this.disposed || !this.embedded) return null;
+        const result = await this.send('Page.captureScreenshot', {
+            format: 'jpeg',
+            quality: POSTER_JPEG_QUALITY
+        });
+        const data = isRecord(result) ? text(result['data']) : undefined;
+        if (data === undefined) return null;
+        // A poster is otherwise invisible from outside the process — the client paints it and the
+        // view goes back — so the one line that says a real frame was taken, and how big it was,
+        // is what a live check (or a "why did that menu feel slow") has to read.
+        log(`web pane ${this.paneID}: poster ${String(data.length)} base64 bytes (tab ${this.tabID})`);
+        return data;
     }
 
     private applyZoom(): void {

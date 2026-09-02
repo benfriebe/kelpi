@@ -72,6 +72,14 @@ class FakeTab implements TabController {
         if (this.png instanceof Error) return Promise.reject(this.png);
         return Promise.resolve(this.png);
     }
+    /** Issue #12: base64 JPEG, `null` for "no on-screen view", or an Error for a failed call. */
+    jpeg: string | null | Error = 'AAAA';
+    posters = 0;
+    poster(): Promise<string | null> {
+        this.posters += 1;
+        if (this.jpeg instanceof Error) return Promise.reject(this.jpeg);
+        return Promise.resolve(this.jpeg);
+    }
     setZoom(factor: number): number {
         this.zoomFactor = clampZoom(factor);
         return this.zoomFactor;
@@ -364,6 +372,80 @@ describe('capture (§8.4)', () => {
         const reply = await dispatcher.call('capture', { ...scope, mode: 'all' });
         expect(reply['screenshot_byte_count']).toBe(3);
         expect('byte_count' in reply).toBe(false);
+    });
+});
+
+/**
+ * Issue #12's poster — the still frame a covered pane wears while its view is parked.
+ *
+ * The envelope is a contract like every other one here: the client branches on `ok` to decide
+ * whether to keep holding its view on screen, so each refusal has to be an honest `ok:false`
+ * with its own reason rather than an empty success.
+ */
+describe('the poster (issue #12)', () => {
+    it('answers with the base64 frame, its mime and its size', async () => {
+        const { dispatcher, tab } = harness();
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: true,
+            image_base64: 'AAAA',
+            mime: 'image/jpeg',
+            bytes: 4
+        });
+        expect(tab.posters).toBe(1);
+    });
+
+    it('refuses when there is no on-screen view to photograph', async () => {
+        const { dispatcher, tab } = harness();
+        // The tab is in the off-screen holder: its frame would be the pinned 1280×800 automation
+        // viewport, which is not the pane's page and must never be painted as if it were.
+        tab.jpeg = null;
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: false,
+            error: 'no on-screen view to poster'
+        });
+    });
+
+    it('reports a failed capture rather than an empty frame', async () => {
+        const { dispatcher, tab } = harness();
+        tab.jpeg = new Error('no surface');
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: false,
+            error: 'poster capture failed'
+        });
+        tab.jpeg = '';
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: false,
+            error: 'poster capture failed'
+        });
+    });
+
+    it('refuses a frame too large to ride the reply', async () => {
+        const { dispatcher, tab } = harness();
+        // A poster has no temp-file fallback the way §8.4's screenshot does: the client paints
+        // it or does without, so the budget is the refusal.
+        tab.jpeg = 'A'.repeat(4_000_001);
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: false,
+            error: 'poster too large to send inline'
+        });
+    });
+
+    it('refuses honestly on a host with no poster surface at all', async () => {
+        const { dispatcher, tab } = harness();
+        // A future non-Electron host (or a test double) simply omits the method.
+        (tab as unknown as { poster: (() => Promise<string | null>) | undefined }).poster = undefined;
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: false,
+            error: 'no on-screen view to poster'
+        });
+    });
+
+    it('refuses when the pane has no live tab', async () => {
+        const { dispatcher } = harness();
+        await expect(dispatcher.call('poster', { paneID: 'P1', tabID: 'T9' })).resolves.toEqual({
+            ok: false,
+            error: 'web pane has no live tab T9'
+        });
     });
 });
 

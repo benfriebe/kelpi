@@ -178,3 +178,44 @@ export function clampInspectPayload(payload: Record<string, unknown>): Record<st
 export function screenshotFileName(paneID: string, atEpochMs: number): string {
     return `kelpi-web-capture-${paneID}-${String(Math.floor(atEpochMs / 1000))}.png`;
 }
+
+// ── the page poster (issue #12) ─────────────────────────────────────────────────────
+
+/**
+ * A web pane's page is a native `WebContentsView` the shell composites ABOVE the client's
+ * document, so a menu drawn over it can only be seen if the view goes back to the holder — and
+ * the pane then shows an empty hole for as long as the menu is up (the owner's issue #12: right
+ * click a web pane's header and the page vanishes until the menu closes).
+ *
+ * The poster is the answer: one still frame of the page, taken while the view is still on
+ * screen, handed to the client to paint in the hole it is about to empty. The page keeps
+ * running; only its pixels are frozen, and only for as long as the menu is up.
+ *
+ * **JPEG, not PNG, and that is the whole reason the budget works.** The reply crosses the daemon
+ * socket as base64 inside a JSON frame, so §8.4's PNG — 1–4 MB for a full-pane retina capture —
+ * would be a multi-megabyte string per menu open. A quality-70 JPEG of the same frame is a few
+ * hundred KB, and the artefacts it costs are invisible at the one thing this image is ever asked
+ * to do: sit exactly where the page was, at the page's own device resolution, for a second.
+ */
+export const POSTER_JPEG_QUALITY = 70;
+export const POSTER_MIME = 'image/jpeg';
+
+/**
+ * The largest poster that may ride the reply, in base64 characters.
+ *
+ * §8.4's screenshot spills to a temp file above its budget because a CLI reader can open one.
+ * A poster has no such fallback — the client paints it or does without — so the budget is the
+ * refusal: an oversized frame answers `ok:false` and the pane parks the way it always did.
+ */
+export const POSTER_INLINE_LIMIT = 4_000_000;
+
+/** No view on screen to photograph (the tab is in the holder, or has no renderer yet). */
+export const POSTER_UNAVAILABLE_ERROR = 'no on-screen view to poster';
+/** The capture itself failed or came back empty. */
+export const POSTER_FAILED_ERROR = 'poster capture failed';
+export const POSTER_TOO_LARGE_ERROR = 'poster too large to send inline';
+
+/** Whether a captured frame is small enough to ride the reply. */
+export function posterWithinBudget(base64Length: number): boolean {
+    return base64Length > 0 && base64Length <= POSTER_INLINE_LIMIT;
+}

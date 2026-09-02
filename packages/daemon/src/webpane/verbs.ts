@@ -22,6 +22,8 @@ export const HOST_VERBS = [
     'reload',
     'url',
     'capture',
+    // issue #12: the still frame a parked pane paints in its own hole
+    'poster',
     // automation
     'actuate',
     'exec',
@@ -38,6 +40,17 @@ export type HostVerb = (typeof HOST_VERBS)[number];
 export const HOST_TIMEOUT_DEFAULT_MS = 5_000;
 /** A screenshot has to wait for pending screen updates, and `all` also serialises the DOM. */
 export const HOST_TIMEOUT_CAPTURE_MS = 20_000;
+/**
+ * Issue #12's poster, and the tightest budget in the table on purpose.
+ *
+ * Every other verb's budget answers "how long may this legitimately take"; this one answers "how
+ * long is a menu allowed to look broken". The client holds the pane's view on screen while the
+ * frame is taken — that is what stops the page blinking out — so the budget is the point at
+ * which waiting is worse than the blank: past it the pane parks with no poster, exactly as it
+ * did before this existed. The client's own deadline is shorter still and lands first in
+ * practice; this one is the backstop for a host that has stopped answering at all.
+ */
+export const HOST_TIMEOUT_POSTER_MS = 2_000;
 /** `kelpi web exec` scripts routinely `await kelpi.wait(...)`; the CLI's own default is 30 s. */
 export const HOST_TIMEOUT_EXEC_MS = 30_000;
 /** Slack added on top of a caller-supplied wait budget so the host answers first. */

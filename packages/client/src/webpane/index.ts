@@ -14,6 +14,7 @@
  *   `state.ts`          read models for favourites + batch sessions, and their matching rules
  *   `hooks.ts`          the two broadcast subscriptions those read models need
  *   `geometry.ts`       the throttled "here is where the hole is" reporter
+ *   `poster.ts`         the still frame that keeps a parked page visible under a menu (#12)
  *   `commands.ts`       the chrome's verbs (`web-navigate`, `web-tab-*`, `web-devtools`, …)
  *   `shell-window.ts`   am-I-inside-a-shell-window, which decides pixels vs placeholder
  *   `reveal.ts`         the client end of a clicked desktop notification (§8.5)
@@ -115,6 +116,20 @@ export {
     type GeometryReporter,
     type GeometryReporterOptions
 } from './geometry';
+
+export {
+    POSTER_DEADLINE_MS,
+    POSTER_IDLE,
+    POSTER_LINGER_MS,
+    createPosterController,
+    posterDataURL,
+    warmPosterImage,
+    type PosterController,
+    type PosterControllerOptions,
+    type PosterSyncInput,
+    type PosterView,
+    type WarmableImage
+} from './poster';
 
 export {
     REVEAL_PANE_MESSAGE,

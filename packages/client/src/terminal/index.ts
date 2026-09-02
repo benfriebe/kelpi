@@ -35,6 +35,22 @@ export {
 } from './TerminalPane';
 
 export {
+    KEYBOARD_INSET_ATTRIBUTE,
+    PHONE_KEYBOARD_SETTLE_MS,
+    PHONE_TEXT_INPUT_ATTRIBUTES,
+    PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED,
+    TERMINAL_RESIZES_ATTRIBUTE,
+    TERMINAL_ROWS_ATTRIBUTE,
+    clearPhoneTerminalState,
+    createSoftKeyboardInsetSource,
+    heightUnderKeyboard,
+    publishPhoneTerminalState,
+    useSettledSoftKeyboardInset,
+    type PhoneTerminalState,
+    type SoftKeyboardInsetSource
+} from './keyboard-inset';
+
+export {
     IDLE_PANE_MODES,
     MAX_WHEEL_REPORTS_PER_EVENT,
     NO_MODIFIERS,

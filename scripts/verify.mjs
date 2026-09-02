@@ -88,7 +88,12 @@ const SURFACES = [
             'terminal-nerdfont-prompt', 'terminal-size-matrix', 'terminal-resize-storm',
             'terminal-input-matrix', 'terminal-ime', 'terminal-cursor-focus', 'terminal-osc52',
             'terminal-host-edges', 'terminal-kitty', 'pane-title-osc', 'capture-parity',
-            'terminal-drop-and-paste', 'cmd-click-path'
+            'terminal-drop-and-paste', 'cmd-click-path',
+            // C2's software-keyboard layout lives in `terminal/keyboard-inset.ts` and reaches the
+            // daemon through the pane's own resize path, so a change here can move the rows a PTY
+            // is told about on a phone. The step is the phone lane's; the desktop terminal steps
+            // above are what pin that it did not move them anywhere else.
+            'phone-keyboard-inset'
         ],
         smokes: ['smoke:terminal']
     },

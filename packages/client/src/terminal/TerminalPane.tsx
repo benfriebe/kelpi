@@ -34,9 +34,19 @@ import {
     shouldGrabFocus,
     undoSurfaceAutoFocus
 } from '../app/pane-focus';
+import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
+import {
+    PHONE_KEYBOARD_SETTLE_MS,
+    PHONE_TEXT_INPUT_ATTRIBUTES,
+    PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED,
+    clearPhoneTerminalState,
+    heightUnderKeyboard,
+    publishPhoneTerminalState,
+    useSettledSoftKeyboardInset
+} from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
 import {
     IDLE_PANE_MODES,
@@ -271,22 +281,40 @@ export interface TerminalPaneProps {
     readonly accessibilityName?: string | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
+    /**
+     * C2 - the window the form-factor signal and the software-keyboard inset are read from.
+     *
+     * Defaults to the page's own window, which is what assembly passes (nothing). It exists so a
+     * jsdom test can hand in a fake `visualViewport` and drive a keyboard, which is the only way
+     * to test a keyboard at all off a device: jsdom has no layout and no software keyboard.
+     */
+    readonly formFactorWindow?: FormFactorWindow | undefined;
+    /** C2 - how long the visual viewport must hold still; defaults to `PHONE_KEYBOARD_SETTLE_MS`. */
+    readonly keyboardSettleMs?: number | undefined;
     readonly className?: string | undefined;
 }
 
-/** Cols/rows from the body box and the engine's cell metrics; `null` for a zero-size pass. */
+/**
+ * Cols/rows from the body box and the engine's cell metrics; `null` for a zero-size pass.
+ *
+ * `bottomInset` is the software keyboard's, and it is 0 everywhere but a phone with the keyboard
+ * up (C2 - `keyboard-inset.ts` holds the rule and the reason it is arithmetic here rather than a
+ * padding on the pane root). At 0 the arithmetic below is character for character what it was.
+ */
 export function measureGeometry(
     element: HTMLElement,
     renderer: TerminalRenderer,
-    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined
+    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined,
+    bottomInset = 0
 ): TerminalGeometry | null {
     const box = measure?.(element) ?? { width: element.clientWidth, height: element.clientHeight };
     if (!Number.isFinite(box.width) || !Number.isFinite(box.height)) return null;
     if (box.width <= 0 || box.height <= 0) return null;
     const cell = renderer.cellSize();
     if (cell.width <= 0 || cell.height <= 0) return null;
+    const usable = heightUnderKeyboard(box.height, bottomInset, cell.height);
     const cols = Math.max(1, Math.floor(box.width / cell.width));
-    const rows = Math.max(1, Math.floor(box.height / cell.height));
+    const rows = Math.max(1, Math.floor(usable / cell.height));
     return { cols, rows };
 }
 
@@ -385,6 +413,31 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
     const restartRef = useRef<(() => void) | null>(null);
 
+    // ── the software keyboard (C2, docs/MOBILE-PLAN.md §4) ──────────────────────────
+    //
+    // The ONE place a soft-keyboard inset is applied to a terminal (§7, "Keyboard inset
+    // ownership"): the key bar (C1) sits in flow at the bottom of the pane and shrinks the host
+    // by its own height through the ResizeObserver below, `PhoneShell` (B2) does not subtract the
+    // inset for panes, and the overlays (B5) apply it to themselves. The rule, the settle window
+    // and the reason none of this is a CSS padding are in `keyboard-inset.ts`.
+    //
+    // Nothing here does anything on a desktop: `useFormFactor` answers `desktop` for every window
+    // with a fine pointer, `useSettledSoftKeyboardInset(false, …)` subscribes to nothing and
+    // returns 0, and 0 is the value at which every path below is the pre-C2 one.
+    const formFactorWindow = props.formFactorWindow ?? defaultFormFactorWindow();
+    const phone = useFormFactor(formFactorWindow) === 'phone';
+    const keyboardInset = useSettledSoftKeyboardInset(
+        phone,
+        formFactorWindow,
+        props.keyboardSettleMs ?? PHONE_KEYBOARD_SETTLE_MS
+    );
+    /** The inset the geometry is currently measured with; read by `syncGeometry`, not a prop. */
+    const keyboardInsetRef = useRef(0);
+    /** Whether the published phone attributes are in force; refs, so `syncGeometry` can read it. */
+    const phoneRef = useRef(false);
+    /** `resize` messages this pane has put on its stream. The settle rule's whole point is this. */
+    const resizeMessages = useRef(0);
+
     // ── mouse reporting (§TERM-037…§TERM-039) ───────────────────────────────────────
     //
     // The daemon streams this pane's DEC mouse modes (`pane-modes`, off the same
@@ -464,7 +517,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (renderer === null || host === null) return;
         const current = latest.current;
         if (!current.visible) return; // idle while hidden; the daemon keeps draining the PTY
-        const next = measureGeometry(host, renderer, current.measure);
+        const next = measureGeometry(host, renderer, current.measure, keyboardInsetRef.current);
         if (next === null) return; // zero-size guard
         const previous = geometryRef.current;
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
@@ -476,6 +529,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         );
         renderer.resize(next.cols, next.rows);
         streamRef.current?.resize(next.cols, next.rows);
+        // C2 - counted on the line that sends it, so the attribute reports what the DAEMON was
+        // told rather than what the pane looks like afterwards. Published only under the phone
+        // form factor, so a desktop pane's DOM is byte-identical to what it was before C2.
+        resizeMessages.current += 1;
+        if (phoneRef.current) {
+            publishPhoneTerminalState(rootRef.current, {
+                inset: keyboardInsetRef.current,
+                rows: next.rows,
+                resizes: resizeMessages.current
+            });
+        }
         if (!unchanged || force) current.onDimensionsChange?.(current.paneID, next);
     }, []);
 
@@ -985,6 +1049,61 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         observer.observe(host);
         return () => observer.disconnect();
     }, [scheduleGeometrySync]);
+
+    // ── the keyboard's inset, applied (C2) ──────────────────────────────────────────
+    //
+    // ONE resize per keyboard transition, up and down, and this is where that is true rather
+    // than merely likely. The inset arriving here is already settled (`keyboard-inset.ts`), so
+    // this effect runs once per transition; it syncs DIRECTLY instead of through
+    // `scheduleGeometrySync`, because the debounce's ceiling exists to republish geometry ~10x/s
+    // during a continuous gesture (`RESIZE_MAX_WAIT_MS`) and a keyboard is not a gesture - it is
+    // one step. The pending timer is dropped first so a resize already in flight cannot land a
+    // second message behind this one; a trailing one would short-circuit on unchanged geometry
+    // anyway, but not being in the race is cheaper than winning it.
+    //
+    // Measured (`phone-keyboard-inset`, and the jsdom test beside it): a burst of frame-cadence
+    // `visualViewport` resizes taking the viewport down by 300 px produces exactly one `resize`
+    // on the pane's stream, and the return to zero produces exactly one more.
+    useEffect(() => {
+        phoneRef.current = phone;
+        const next = phone ? keyboardInset : 0;
+        const changed = keyboardInsetRef.current !== next;
+        keyboardInsetRef.current = next;
+        if (changed) {
+            clearResizeTimer();
+            syncGeometry();
+        }
+        if (!phone) {
+            clearPhoneTerminalState(rootRef.current);
+            return;
+        }
+        publishPhoneTerminalState(rootRef.current, {
+            inset: next,
+            rows: geometryRef.current?.rows ?? 0,
+            resizes: resizeMessages.current
+        });
+    }, [phone, keyboardInset, clearResizeTimer, syncGeometry]);
+
+    // ── the engine's textarea, told it is talking to a software keyboard (C2) ───────
+    //
+    // Phone only, and never called at all on a desktop - `applied` is what makes the "never"
+    // literal: a pane that has always been a desktop never reaches the renderer, so its textarea
+    // carries exactly the attributes the engine gave it. `status` is in the deps for the same
+    // reason the focus effect has it: a restart builds a FRESH engine with a FRESH textarea, and
+    // it has to be told again.
+    const appliedTextInput = useRef(false);
+    useEffect(() => {
+        const renderer = rendererRef.current;
+        if (renderer === null) return;
+        if (phone) {
+            renderer.setTextInputAttributes?.(PHONE_TEXT_INPUT_ATTRIBUTES);
+            appliedTextInput.current = true;
+            return;
+        }
+        if (!appliedTextInput.current) return;
+        appliedTextInput.current = false;
+        renderer.setTextInputAttributes?.(PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED);
+    }, [phone, status]);
 
     // ── visibility ──────────────────────────────────────────────────────────────────
     useEffect(() => {

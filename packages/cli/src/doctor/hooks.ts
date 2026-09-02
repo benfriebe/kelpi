@@ -91,9 +91,15 @@ function groupsUnder(files: readonly JsonObject[], event: string): JsonObject[] 
  * The pre-rename `nex event …` spelling is accepted alongside `kelpi event …`: hooks installed
  * before the Kelpi rename still fire (the compat launcher keeps `nex` resolving), so a doctor
  * that warned on them would be prescribing a repair for something that works.
+ *
+ * So is the CLI invoked by its entry file — `/…/packages/cli/dist/kelpi.js event stop` — which
+ * the bare substring misses (`kelpi.js event` is not `kelpi event`). Those hooks fire
+ * identically; warning on them prescribed a repair for a wired install.
  */
 function groupsWiring(files: readonly JsonObject[], event: string, command: string): JsonObject[] {
-    const accepted = [command, command.replace(/^kelpi /, 'nex ')];
+    const accepted = ['kelpi ', 'nex ', 'kelpi.js ', 'nex.js '].map((cli) =>
+        command.replace(/^kelpi /, cli)
+    );
     return groupsUnder(files, event).filter((group) => {
         const inner = group['hooks'];
         if (!Array.isArray(inner)) return false;

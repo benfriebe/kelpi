@@ -334,6 +334,11 @@ describe('hooks', () => {
         expect(claudeHooksCheck(fsWith({ '/Users/t/.claude/settings.json': absolute }), '/Users/t').status).toBe('PASS');
     });
 
+    it('accepts the CLI invoked by its entry file — kelpi.js fires the same hooks', () => {
+        const byEntryFile = wired.replace(/kelpi event/g, '/Users/t/code/kelpi/packages/cli/dist/kelpi.js event');
+        expect(claudeHooksCheck(fsWith({ '/Users/t/.claude/settings.json': byEntryFile }), '/Users/t').status).toBe('PASS');
+    });
+
     it('reports missing hooks and a stale SessionStart matcher', () => {
         const stale = JSON.stringify({
             hooks: {
@@ -391,6 +396,19 @@ describe('hooks', () => {
         expect(partial.status).toBe('WARN');
         expect(partial.detail).toContain('missing hook(s)');
         expect(partial.repair).toContain('/hooks inside codex');
+    });
+
+    it('accepts codex hooks invoked by the CLI entry file too', () => {
+        const codex = JSON.stringify({
+            hooks: {
+                Stop: [{ hooks: [{ type: 'command', command: '/opt/kelpi/dist/kelpi.js event stop --agent codex' }] }],
+                PermissionRequest: [{ hooks: [{ type: 'command', command: '/opt/kelpi/dist/kelpi.js event notification --agent codex' }] }],
+                SessionStart: [{ hooks: [{ type: 'command', command: '/opt/kelpi/dist/kelpi.js event session-start --agent codex' }] }],
+                UserPromptSubmit: [{ hooks: [{ type: 'command', command: '/opt/kelpi/dist/kelpi.js event start --agent codex' }] }]
+            }
+        });
+        const check = codexHooksCheck(fsWith({ '/Users/t/.codex/hooks.json': codex }, ['/Users/t/.codex']), '/Users/t');
+        expect(check.status).toBe('PASS');
     });
 });
 

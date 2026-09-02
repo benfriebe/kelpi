@@ -355,6 +355,7 @@ export { hoverFill, hoverText, useHoverKey, type HoverBinding } from './hover';
 
 export {
     DEFAULT_FAVICON_COLORS,
+    FAVICON_SIZE,
     createFaviconController,
     drawFavicon,
     faviconBadgeColor,

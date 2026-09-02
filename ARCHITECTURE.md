@@ -117,7 +117,8 @@ kelpi/
 ├─ ARCHITECTURE.md
 ├─ packages/
 │  ├─ protocol/         wire + WS message types, protocol version, zod schemas
-│  ├─ core/             pure domain logic: layout tree, resolution rules, agent state machine
+│  ├─ core/             pure domain logic: layout tree, resolution rules, agent state machine,
+│  │                    and the Kelpi mark every surface draws (`core/icon`)
 │  ├─ daemon/           kelpid: PTY, VT state, store, sqlite, control + WS servers, static serving
 │  ├─ client/           web UI (React + Vite)
 │  ├─ shell/            Electron wrapper

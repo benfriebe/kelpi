@@ -6,7 +6,9 @@
  * the whole app under one, and a preview/settings surface can mount a *second* provider with
  * a different appearance to render a live theme preview without touching the document.
  * Descendants read the palette either as CSS (`var(--kelpi-fg)`) or, when they need the value
- * itself (canvas favicon, inline SVG), through `useChromeTheme()`.
+ * itself (the inline-SVG chrome: stat gauges, pane-header glyphs), through `useChromeTheme()`.
+ * The tab favicon is not one of them: it draws the Kelpi mark in the mark's own colours from
+ * `@kelpi/core/icon`, which is what keeps it identical to the icon the build emits.
  */
 
 import {

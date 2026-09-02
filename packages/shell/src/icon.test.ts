@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { stampKelpie } from './app-icon-art.js';
+import { stampKelpie } from '@kelpi/core/icon';
 import {
     DARK_TRAY_STATUS,
     DEFAULT_TRAY_STATUS,
@@ -9,7 +9,6 @@ import {
     STATUS_COLORS,
     TRAY_GLYPH_SPAN,
     TRAY_STROKE_FLOOR_PT,
-    encodePng,
     parseTrayHex,
     resolveTrayStatusPalette,
     trayIconIsTemplate,
@@ -18,24 +17,8 @@ import {
     trayPaletteSignature
 } from './icon.js';
 
+// The encoder itself moved to `@kelpi/core/icon/png` with the mark; its tests went with it.
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-describe('encodePng', () => {
-    it('writes a signature, an IHDR with the right dimensions, and an IEND', () => {
-        const png = encodePng(2, 1, new Uint8Array(8));
-        expect(png.subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
-        expect(png.subarray(12, 16).toString('ascii')).toBe('IHDR');
-        expect(png.readUInt32BE(16)).toBe(2);
-        expect(png.readUInt32BE(20)).toBe(1);
-        expect(png.readUInt8(24)).toBe(8); // bit depth
-        expect(png.readUInt8(25)).toBe(6); // RGBA
-        expect(png.subarray(png.length - 8, png.length - 4).toString('ascii')).toBe('IEND');
-    });
-
-    it('rejects a buffer that is not width × height × 4', () => {
-        expect(() => encodePng(2, 2, new Uint8Array(4))).toThrow(/expected 16 bytes/);
-    });
-});
 
 describe('trayIconPixels', () => {
     it('renders at the menu-bar size for the given scale', () => {
@@ -80,7 +63,7 @@ describe('trayIconPixels', () => {
 
     it('strokes the kelpie mark — the app icon’s own art, not a second drawing', () => {
         // The idle icon has no dot, so its ALPHA CHANNEL must be exactly the SDF stamp of
-        // `app-icon-art.ts`'s flattened kelpie at the tray's own span and stroke floor. This
+        // `@kelpi/core/icon`'s flattened kelpie at the tray's own span and stroke floor. This
         // is what makes "one kelpie in the codebase" a tested claim rather than a comment.
         const canvas = trayIconPixels('idle', 2);
         const coverage = stampKelpie(canvas.width, {

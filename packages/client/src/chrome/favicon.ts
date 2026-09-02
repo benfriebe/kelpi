@@ -3,15 +3,36 @@
  *
  * agent-lifecycle.md §8.2/§8.4 and shell-ui.md §15 ("the web-only client can degrade to a
  * favicon badge/notification API. Keep the waiting-beats-running priority and theme-colored
- * dots"). So: a terminal glyph with a dot in the top-right corner —
+ * dots"). So: the Kelpi mark with a dot in the top-right corner —
  * `waiting > 0 → statusWaiting`, else `running > 0 → statusRunning`, else no dot — plus the
  * dock-badge equivalent, a waiting count folded into the document title.
+ *
+ * The mark is the app's own, not a stand-in: `@kelpi/core/icon` holds the kelpie head from
+ * `core/assets/kelpi-icon.svg` as flattened polylines, and the Dock tile, the menu-bar glyph
+ * and this canvas all stroke that one drawing. A browser attached over the tailnet gets the
+ * same identity in its tab as the packaged app has in the Dock, which is the whole reason the
+ * art sits in core rather than in the Electron shell.
+ *
+ * The document's *static* icons carry the same mark before any of this runs, printed from the
+ * same data by the client's build: `/favicon.svg`, `/favicon.png` and `/apple-touch-icon.png`.
+ * The PNGs are not belt-and-braces. Safari renders no SVG favicon and re-reads no icon a
+ * script swaps in, so on an iPhone the static raster form is the ONLY one that ever shows, and
+ * it is the one this module cannot badge. Everything here is therefore an enhancement on top
+ * of an icon that is already correct, never the thing that makes it correct.
  *
  * Everything is injectable. Canvas is unavailable in jsdom (and in any embedder that blocks
  * it), so `createFaviconController` takes a canvas factory and a document, and **degrades to a
  * no-op** rather than throwing when 2D rendering is not available: a missing favicon must
  * never be able to break the app.
  */
+
+import {
+    KELPIE_MARK_BACKGROUND,
+    KELPIE_MARK_FOREGROUND,
+    KELPIE_MIN_STROKE_FRACTION,
+    kelpieArt,
+    type ArtPoint
+} from '@kelpi/core/icon';
 
 export interface FaviconSummary {
     readonly running: number;
@@ -27,11 +48,16 @@ export interface FaviconColors {
     readonly background?: string | undefined;
 }
 
+/**
+ * The glyph tones come from `@kelpi/core/icon` rather than being restated here: the build
+ * prints `/favicon.svg` from those same two constants, and a tab that swapped one mark for
+ * another in a slightly different grey would be a bug nobody could name.
+ */
 export const DEFAULT_FAVICON_COLORS: FaviconColors = {
     running: '#5FBE89',
     waiting: '#6F9BD8',
-    foreground: '#E6E6EA',
-    background: '#0A0A0C'
+    foreground: KELPIE_MARK_FOREGROUND,
+    background: KELPIE_MARK_BACKGROUND
 };
 
 /** §8.2: waiting wins over running; null = draw no dot at all. */
@@ -56,6 +82,7 @@ export interface FaviconContext {
     strokeStyle: string;
     lineWidth: number;
     lineCap: string;
+    lineJoin: string;
     clearRect(x: number, y: number, w: number, h: number): void;
     fillRect(x: number, y: number, w: number, h: number): void;
     beginPath(): void;
@@ -79,15 +106,24 @@ export interface DrawFaviconOptions {
 }
 
 /**
- * Draws the terminal glyph + badge and returns a data URL, or null when the canvas cannot
- * give a 2D context.
+ * The canvas the mark is drawn on, before the browser scales it into a tab.
+ *
+ * 64 rather than the 32 the placeholder glyph used: the kelpie is a line drawing with real
+ * detail in the mane, and a browser downsampling a 64px render to 16px keeps far more of its
+ * shape than a 32px render of it does.
+ */
+export const FAVICON_SIZE = 64;
+
+/**
+ * Draws the Kelpi mark + badge and returns a data URL, or null when the canvas cannot give a
+ * 2D context.
  */
 export function drawFavicon(
     canvas: FaviconCanvas,
     summary: FaviconSummary,
     options: DrawFaviconOptions = {}
 ): string | null {
-    const size = options.size ?? 32;
+    const size = options.size ?? FAVICON_SIZE;
     const colors = options.colors ?? DEFAULT_FAVICON_COLORS;
     canvas.width = size;
     canvas.height = size;
@@ -100,16 +136,26 @@ export function drawFavicon(
         ctx.fillRect(0, 0, size, size);
     }
 
-    // `❯_` — the terminal glyph, drawn as strokes so it stays crisp at 16/32px.
+    // The kelpie head, full bleed: `kelpieArt()` hands back the source drawing's polylines on
+    // the unit square, so scaling by `size` is the entire mapping. Round caps and joins are
+    // what make a chain of segments the same stroke the SVG describes.
+    const art = kelpieArt();
     ctx.strokeStyle = colors.foreground;
-    ctx.lineWidth = Math.max(2, size * 0.09);
+    // The floor is core's, shared with the emitted `/favicon.svg` and `/favicon.png`, so
+    // every form of the icon carries the same weight of line (`KELPIE_MIN_STROKE_FRACTION`).
+    ctx.lineWidth = Math.max(art.strokeWidth * size, size * KELPIE_MIN_STROKE_FRACTION);
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(size * 0.22, size * 0.28);
-    ctx.lineTo(size * 0.48, size * 0.5);
-    ctx.lineTo(size * 0.22, size * 0.72);
-    ctx.moveTo(size * 0.56, size * 0.72);
-    ctx.lineTo(size * 0.8, size * 0.72);
+    for (const line of art.polylines) {
+        const start = line[0];
+        if (start === undefined) continue;
+        ctx.moveTo(start.x * size, start.y * size);
+        for (let at = 1; at < line.length; at += 1) {
+            const point = line[at] as ArtPoint;
+            ctx.lineTo(point.x * size, point.y * size);
+        }
+    }
     ctx.stroke();
 
     const badge = faviconBadgeColor(summary, colors);
@@ -135,7 +181,7 @@ interface LinkLike {
 export interface FaviconDocument {
     title: string;
     readonly head: { appendChild(node: unknown): unknown } | null;
-    querySelector(selectors: string): unknown;
+    querySelectorAll(selectors: string): ArrayLike<unknown>;
     createElement(tag: 'link'): unknown;
 }
 
@@ -168,9 +214,20 @@ function isLink(value: unknown): value is LinkLike {
     return typeof value === 'object' && value !== null && 'href' in value;
 }
 
+interface OwnedLink {
+    readonly link: LinkLike;
+    readonly href: string;
+    readonly type: string;
+}
+
 /**
  * Keeps `<link rel="icon">` (and optionally the title) in sync with the agent summary. Safe to
  * construct anywhere: with no document, no canvas or no 2D context every method is inert.
+ *
+ * **Every** icon link, not the first one: the document declares the mark twice, as an SVG for
+ * the browsers that render one and as a PNG for Safari, and which of the two a browser picks is
+ * its own business. Repainting one and leaving the other would badge the tab in some browsers
+ * and not others, for reasons invisible from the page.
  */
 export function createFaviconController(options: FaviconControllerOptions = {}): FaviconController {
     const doc = options.document ?? (globalThis.document as unknown as FaviconDocument | undefined);
@@ -178,23 +235,24 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
     const baseTitle = options.title ?? doc?.title ?? 'Kelpi';
     const updateTitle = options.updateTitle !== false;
 
-    let link: LinkLike | null = null;
-    let originalHref: string | null = null;
+    const owned: OwnedLink[] = [];
     let lastKey: string | null = null;
 
     if (doc !== undefined && doc !== null) {
-        const existing = doc.querySelector('link[rel~="icon"]');
-        if (isLink(existing)) {
-            link = existing;
-            originalHref = existing.href;
-        } else {
+        const existing = doc.querySelectorAll('link[rel~="icon"]');
+        for (let at = 0; at < existing.length; at += 1) {
+            const candidate = existing[at];
+            // The document ships `/favicon.svg` and `/favicon.png`; what goes in their place
+            // here is a canvas PNG, so the type each link declares changes with its href.
+            if (isLink(candidate)) owned.push({ link: candidate, href: candidate.href, type: candidate.type });
+        }
+        if (owned.length === 0) {
             const created = doc.createElement('link');
             if (isLink(created)) {
                 created.rel = 'icon';
                 created.type = 'image/png';
                 doc.head?.appendChild(created);
-                link = created;
-                originalHref = '';
+                owned.push({ link: created, href: '', type: '' });
             }
         }
     }
@@ -208,7 +266,7 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
             if (doc !== undefined && doc !== null && updateTitle) {
                 doc.title = titleWithBadge(baseTitle, summary.waiting);
             }
-            if (link === null) return;
+            if (owned.length === 0) return;
             const canvas = createCanvas();
             if (canvas === null) return;
             const drawOptions: DrawFaviconOptions = {
@@ -216,10 +274,18 @@ export function createFaviconController(options: FaviconControllerOptions = {}):
                 ...(options.colors === undefined ? {} : { colors: options.colors })
             };
             const url = drawFavicon(canvas, summary, drawOptions);
-            if (url !== null) link.href = url;
+            if (url === null) return;
+            for (const entry of owned) {
+                entry.link.href = url;
+                entry.link.type = 'image/png';
+            }
         },
         dispose(): void {
-            if (link !== null && originalHref !== null && originalHref.length > 0) link.href = originalHref;
+            for (const entry of owned) {
+                if (entry.href.length === 0) continue;
+                entry.link.href = entry.href;
+                entry.link.type = entry.type;
+            }
             if (doc !== undefined && doc !== null && updateTitle) doc.title = baseTitle;
             lastKey = null;
         }

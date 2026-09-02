@@ -8,17 +8,17 @@ import {
     ART_TRANSLATE_Y,
     ART_VIEWBOX,
     KELPIE_PATHS
-} from './app-icon-art-data.js';
-import { flattenSvgPath, kelpieArt, segmentDistance, stampKelpie } from './app-icon-art.js';
+} from './art-data.js';
+import { flattenSvgPath, kelpieArt, segmentDistance, stampKelpie } from './art.js';
 
 describe('the embedded art data', () => {
     /**
-     * `app-icon-art-data.ts` is a machine-extracted copy of the SVG, and copies drift. This is
+     * `art-data.ts` is a machine-extracted copy of the SVG, and copies drift. This is
      * the test the data file's header promises: edit `assets/kelpi-icon.svg` without
      * re-extracting and the suite fails here, not in the Dock three releases later.
      */
     it('is verbatim assets/kelpi-icon.svg', () => {
-        const svg = readFileSync(fileURLToPath(new URL('../assets/kelpi-icon.svg', import.meta.url)), 'utf8');
+        const svg = readFileSync(fileURLToPath(new URL('../../assets/kelpi-icon.svg', import.meta.url)), 'utf8');
 
         const paths = [...svg.matchAll(/\bd="([^"]+)"/g)].map((match) => match[1]);
         expect(paths).toEqual([...KELPIE_PATHS]);

@@ -78,6 +78,17 @@ daemon answers with a "client not built" page and everything else (control socke
 `/healthz`) still works. Assets under `/assets/` are content-hashed and served immutable;
 any unknown path falls back to `index.html`, so deep links work.
 
+`/favicon.svg`, `/favicon.png` and `/apple-touch-icon.png` are the build outputs with fixed
+names, because `index.html` links them: the Kelpi mark, printed from `@kelpi/core/icon` by a
+plugin in `vite.config.ts` rather than checked in, so the tab icon is the same drawing as the
+Dock tile and the menu-bar glyph. The dev server answers the same paths. Once the client
+mounts, `chrome/favicon.ts` swaps the href of both icon links for a canvas render of the mark
+carrying the agent status dot (§8.2's waiting-beats-running rule).
+
+The PNGs are not spares. Safari renders no SVG favicon and re-reads no icon a script swapped
+in, so on an iPhone attached over the tailnet `/favicon.png` is the only icon there will ever
+be, and `/apple-touch-icon.png` is what "Add to Home Screen" installs.
+
 ## The live smoke
 
 ```bash

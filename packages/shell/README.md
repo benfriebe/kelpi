@@ -14,7 +14,8 @@ src/
 ├─ quit.ts          the quit gate (Electron wiring)   settings.ts  its policy + settings file
 ├─ hotkey.ts        `global-hotkey` from the shared config file → an Electron accelerator
 ├─ window-state.ts  frame persistence + the off-screen clamp
-├─ icon.ts          the tray icon, rasterized and PNG-encoded in code (no binary assets)
+├─ icon.ts          the tray icon, rasterized and PNG-encoded in code (no binary assets);
+│                  the kelpie it draws is `@kelpi/core/icon`, shared with the web favicon
 ├─ control.ts       a minimal control-protocol client (Finder "Open With" → daemon `open`)
 ├─ resources.ts     the packaged `Contents/Resources` layout — written by the build, read here
 ├─ packaging.ts     build-time only: the app icon + ICNS, the asar allowlist, Node-runtime checks

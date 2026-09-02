@@ -1,14 +1,16 @@
 /**
- * The Kelpi mark's artwork AND its rasteriser: the kelpie head from `assets/kelpi-icon.svg`,
- * flattened into stroke centrelines, plus the SDF stamp that paints them. Both the app icon
- * (`packaging.ts`) and the menu-bar tray glyph (`icon.ts`) render from here, so there is
- * exactly one kelpie in the codebase.
+ * The Kelpi mark's artwork AND its rasteriser: the kelpie head from
+ * `../../assets/kelpi-icon.svg`, flattened into stroke centrelines, plus the SDF stamp that
+ * paints them. The app icon (`shell/src/packaging.ts`), the menu-bar tray glyph
+ * (`shell/src/icon.ts`) and the browser tab's favicon (`client/src/chrome/favicon.ts`) all
+ * render from here, so there is exactly one kelpie in the codebase. It lives in `@kelpi/core`
+ * rather than in the shell precisely because the third of those runs in a browser.
  *
  * The drawing is unusually friendly to this treatment: every path is `fill:none` with round
  * caps and round joins at one shared width, so "render the SVG" reduces to "stroke a set of
  * polylines with round-capped segments", which is exactly the `segmentDistance` primitive
  * below. No SVG library, no rasteriser dependency, no binary asset in git, and the mark still
- * re-renders at every size — 1024px Dock tile to 16pt menu bar — from one description.
+ * re-renders at every size — 1024px Dock tile to 16px favicon — from one description.
  *
  * What this file implements is therefore a *subset* of SVG path data, not a path engine:
  * moveto/lineto (and the implicit linetos after a moveto), cubic curves with their smooth `s`
@@ -23,7 +25,7 @@ import {
     ART_TRANSLATE_Y,
     ART_VIEWBOX,
     KELPIE_PATHS
-} from './app-icon-art-data.js';
+} from './art-data.js';
 
 export interface ArtPoint {
     readonly x: number;
@@ -265,10 +267,22 @@ export interface KelpieStampOptions {
      * The floor on the stroke's device width. The nominal stroke is ~12px at 1024 and scales
      * down linearly, so every small render needs one: without it the lines are sub-half-pixel
      * and dissolve into grey mush. Each caller states its own (`packaging.ts` for the ICNS
-     * variants, `icon.ts` for the menu bar).
+     * variants, `icon.ts` for the menu bar, `KELPIE_MIN_STROKE_FRACTION` for a browser tab).
      */
     readonly minStrokePx: number;
 }
+
+/**
+ * The floor a render destined for a browser tab uses, as a fraction of its canvas: one device
+ * pixel once the render has been scaled down to a 16px tab.
+ *
+ * The same rule the menu bar already follows (`icon.ts`: 1pt on a 16pt image), stated as a
+ * fraction because the tab's renders disagree about size. Every form of the favicon has to
+ * apply it or they disagree about *weight* instead, which is worse: the static icon a browser
+ * paints on first load would be a faint outline and the canvas one that replaces it a second
+ * later would pop bolder, in the same tab, for no reason a user could explain.
+ */
+export const KELPIE_MIN_STROKE_FRACTION = 1 / 16;
 
 /**
  * Stroke the kelpie onto a `size`-px canvas: a max-blended coverage buffer, one round-capped

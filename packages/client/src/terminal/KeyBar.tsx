@@ -86,6 +86,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
 import { tokens } from '../chrome/tokens';
+import { onClipboardOffer } from '../state/clipboard';
 import type { TerminalKeyInit } from './renderer';
 
 /**
@@ -112,8 +113,60 @@ export const KEY_BAR_ATTR = 'data-terminal-key-bar';
 /** …and the one each key carries, e.g. `[data-terminal-key="ctrl"]`. */
 export const KEY_ATTR = 'data-terminal-key';
 
-/** Copy for the Paste key while C4 has not landed. */
-export const PASTE_PENDING_TITLE = 'Paste is not wired up yet (phone task C4)';
+/** C4: the OSC 52 Copy pill, and the fallback paste field. Both sit ABOVE the bar. */
+export const COPY_PILL_ATTR = 'data-terminal-copy-pill';
+export const PASTE_FIELD_ATTR = 'data-terminal-paste-field';
+
+/** How long the Copy pill stays up before it takes itself away (C4). */
+export const COPY_PILL_TIMEOUT_MS = 6_000;
+
+/**
+ * Put `text` into the terminal the way the ENGINE's own paste does (C4).
+ *
+ * A synthesized `paste` ClipboardEvent on the engine's input, for the same reason C1's keys are
+ * synthesized `keydown`s: it is the only way to be byte-identical rather than nearly right. The
+ * vendored engine binds a `paste` listener on its own textarea
+ * (`vendor/ghostty-web-patched/source/lib/terminal.ts:596-604`) which calls `Terminal.paste()`,
+ * and THAT is where the bracketed-paste envelope is decided - `hasBracketedPaste()` off the live
+ * WASM terminal, wrapping in `ESC [ 200 ~` / `ESC [ 201 ~` when DEC 2004 is set and sending the
+ * text bare when it is not (`terminal.ts:724-741`). The listener also `stopPropagation()`s, so
+ * the InputHandler's container-level paste path (which would send raw) never runs.
+ *
+ * Measured against the real engine in `KeyBar.test.tsx`: the same text comes out
+ * `1b 5b 32 30 30 7e … 1b 5b 32 30 31 7e` under `ESC [ ? 2004 h` and bare without it.
+ *
+ * Two event shapes, because the constructor is not everywhere. Where `ClipboardEvent` and
+ * `DataTransfer` exist (every browser this ships to) a real one is built. Where they do not
+ * - jsdom, and any engine whose `ClipboardEvent` ignores the `clipboardData` init - a plain
+ * `Event` carrying a `clipboardData` with the one method the engine calls stands in. Both reach
+ * the same listener, which is what the fallback has to be judged on.
+ */
+export function dispatchPaste(target: HTMLElement | null, text: string): boolean {
+    if (target === null || text === '') return false;
+    const view = target.ownerDocument.defaultView;
+    if (view === null) return false;
+    let event: Event | null = null;
+    try {
+        if (typeof view.ClipboardEvent === 'function' && typeof view.DataTransfer === 'function') {
+            const data = new view.DataTransfer();
+            data.setData('text/plain', text);
+            const real = new view.ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+            // Some engines accept the init member and hand back a null `clipboardData` anyway;
+            // an event the engine reads nothing off is worse than the stand-in below.
+            if (real.clipboardData !== null) event = real;
+        }
+    } catch {
+        // A constructor that refuses the init is the stand-in's case, not an error.
+    }
+    if (event === null) {
+        event = new view.Event('paste', { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'clipboardData', {
+            value: { getData: (): string => text }
+        });
+    }
+    target.dispatchEvent(event);
+    return true;
+}
 
 /** The two modifiers that latch. */
 export type StickyModifier = 'ctrl' | 'alt';
@@ -171,7 +224,14 @@ export const KEY_BAR_KEYS: readonly KeyBarKey[] = [
     { id: 'minus', label: '-', name: 'Hyphen', title: 'Hyphen', init: { key: '-', code: 'Minus' } },
     { id: 'slash', label: '/', name: 'Slash', title: 'Slash', init: { key: '/', code: 'Slash' } },
     { id: 'pipe', label: '|', name: 'Pipe', title: 'Pipe', init: { key: '|', code: 'Backslash', shiftKey: true } },
-    { id: 'paste', label: 'Paste', name: 'Paste', title: PASTE_PENDING_TITLE, action: 'paste', wide: true },
+    {
+        id: 'paste',
+        label: 'Paste',
+        name: 'Paste',
+        title: 'Paste the clipboard into the terminal',
+        action: 'paste',
+        wide: true
+    },
     {
         id: 'hide-keyboard',
         label: 'Hide',
@@ -197,6 +257,18 @@ export interface KeyBarProps {
     readonly captureRoot: RefObject<HTMLElement | null>;
     /** Drop the caret inside the pane, which is what dismisses the software keyboard. */
     readonly hideKeyboard: () => void;
+    /**
+     * C4 - put text into the terminal through the engine's own paste path (bracketed when the
+     * application asked for it). The pane supplies it because the pane owns the host.
+     */
+    readonly pasteText: (text: string) => boolean;
+    /**
+     * C4 test seam: how the clipboard is READ, defaulting to `navigator.clipboard.readText`.
+     * Null means this page has no clipboard read at all, which is the fallback field's case.
+     */
+    readonly readClipboard?: (() => Promise<string>) | null | undefined;
+    /** C4 test seam: how the Copy pill WRITES, defaulting to `navigator.clipboard.writeText`. */
+    readonly writeClipboard?: ((text: string) => Promise<void>) | null | undefined;
 }
 
 /** The modifiers that must never be "the next key" - holding one is not spending the latch. */
@@ -322,7 +394,29 @@ export function withSticky(init: TerminalKeyInit, sticky: StickyModifiers): Term
     };
 }
 
-export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarProps): ReactElement {
+/** `navigator.clipboard.readText`, or null on a page that has none (insecure context, old engine). */
+function defaultClipboardReader(): (() => Promise<string>) | null {
+    const clipboard = (globalThis.navigator as Navigator | undefined)?.clipboard;
+    if (clipboard?.readText === undefined) return null;
+    return () => clipboard.readText();
+}
+
+/** `navigator.clipboard.writeText`, or null. The Copy pill's writer. */
+function defaultClipboardWriter(): ((text: string) => Promise<void>) | null {
+    const clipboard = (globalThis.navigator as Navigator | undefined)?.clipboard;
+    if (clipboard?.writeText === undefined) return null;
+    return (text) => clipboard.writeText(text);
+}
+
+export function KeyBar({
+    paneID,
+    sendKey,
+    captureRoot,
+    hideKeyboard,
+    pasteText,
+    readClipboard,
+    writeClipboard
+}: KeyBarProps): ReactElement {
     const [sticky, setSticky] = useState<StickyModifiers>(NO_STICKY);
     /**
      * The ref is the AUTHORITY and the state is only for painting. The interceptor below clears
@@ -556,6 +650,88 @@ export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarPro
     // A pane that loses its engine (or its bar) must not leave a latch behind for the next one.
     useEffect(() => () => setLatch(NO_STICKY), [setLatch]);
 
+    // ── C4: paste ───────────────────────────────────────────────────────────────────
+
+    const pasteTextRef = useRef(pasteText);
+    pasteTextRef.current = pasteText;
+    /** The fallback field is up, because the clipboard could not be read from a tap. */
+    const [pasteFieldOpen, setPasteFieldOpen] = useState(false);
+    const pasteFieldRef = useRef<HTMLTextAreaElement | null>(null);
+
+    /**
+     * Read the clipboard INSIDE the tap, which is the whole reason this lives on the click and
+     * not behind a promise chain that starts later: every browser gates `readText` on transient
+     * activation, and on iOS it additionally raises its own one-tap Paste confirmation, which is
+     * only offered to a gesture.
+     *
+     * A refusal is not an error to report, it is a different UI: an insecure context has no
+     * `navigator.clipboard` at all, a permission prompt can be dismissed, and a browser can
+     * simply say no. All three land on the same fallback - a small field, focused, that takes
+     * whatever the platform's own paste puts in it.
+     */
+    const requestPaste = useCallback((): void => {
+        const read = readClipboard === undefined ? defaultClipboardReader() : readClipboard;
+        if (read === null) {
+            setPasteFieldOpen(true);
+            return;
+        }
+        void read().then(
+            (text) => {
+                if (text === '') return;
+                pasteTextRef.current(text);
+            },
+            () => setPasteFieldOpen(true)
+        );
+    }, [readClipboard]);
+
+    // Focus the field the moment it exists: it is the caret's whole purpose, and on a phone a
+    // field that is not focused is a field with no keyboard and no paste menu.
+    useEffect(() => {
+        if (!pasteFieldOpen) return;
+        pasteFieldRef.current?.focus();
+    }, [pasteFieldOpen]);
+
+    const acceptFallbackPaste = useCallback((text: string): void => {
+        setPasteFieldOpen(false);
+        if (text === '') return;
+        pasteTextRef.current(text);
+    }, []);
+
+    // ── C4: the Copy pill ───────────────────────────────────────────────────────────
+
+    /**
+     * An OSC 52 copy a program in THIS pane made, waiting for the tap that can put it on the
+     * clipboard (`state/clipboard.ts` `onClipboardOffer`).
+     *
+     * `seq` is what re-arms the timer: two copies of the same text are two offers, and a
+     * value-equal object alone would leave the first one's countdown running.
+     */
+    const [offer, setOffer] = useState<{ text: string; bytes: number; seq: number } | null>(null);
+    useEffect(() => {
+        let seq = 0;
+        return onClipboardOffer((incoming) => {
+            if (incoming.paneID !== paneID) return;
+            seq += 1;
+            setOffer({ text: incoming.text, bytes: incoming.bytes, seq });
+        });
+    }, [paneID]);
+
+    useEffect(() => {
+        if (offer === null) return;
+        const timer = setTimeout(() => setOffer(null), COPY_PILL_TIMEOUT_MS);
+        return () => clearTimeout(timer);
+    }, [offer]);
+
+    const takeOffer = useCallback((): void => {
+        const text = offer?.text ?? '';
+        setOffer(null);
+        if (text === '') return;
+        const write = writeClipboard === undefined ? defaultClipboardWriter() : writeClipboard;
+        // Best-effort, exactly as `state/clipboard.ts` is: the tap supplies the activation the
+        // pane's own output could not, and a browser that still refuses is not worth a modal.
+        void write?.(text).catch(() => undefined);
+    }, [offer, writeClipboard]);
+
     const press = useCallback(
         (key: KeyBarKey): void => {
             // The one key that must NOT get the caret back: dismissing the keyboard is exactly
@@ -572,78 +748,184 @@ export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarPro
                 setLatch({ ...current, [key.modifier]: !current[key.modifier] });
                 return;
             }
-            // C4 owns Paste; until then the key renders disabled and never gets here.
+            if (key.action === 'paste') {
+                requestPaste();
+                return;
+            }
             if (key.action !== undefined || key.init === undefined) return;
             const latch = stickyRef.current;
             setLatch(NO_STICKY);
             sendKeyRef.current(withSticky(key.init, latch));
         },
-        [hideKeyboard, restoreCaret, setLatch]
+        [hideKeyboard, requestPaste, restoreCaret, setLatch]
     );
 
     return (
-        <div
-            data-testid={`terminal-key-bar-${paneID}`}
-            {...{ [KEY_BAR_ATTR]: '' }}
-            role="toolbar"
-            aria-label="Terminal keys"
-            aria-orientation="horizontal"
-            className="flex w-full shrink-0 items-center gap-1 overflow-x-auto px-1"
-            style={{
-                height: KEY_BAR_HEIGHT_PX,
-                borderTop: `1px solid ${tokens.divider}`,
-                backgroundColor: tokens.headerBackground,
-                // A horizontal drag scrolls the bar (15 keys at 44 px do not fit a 390 px phone);
-                // a vertical one is left to the pane, which is where scrollback lives.
-                touchAction: 'pan-x',
-                scrollbarWidth: 'none'
-            }}
-        >
-            {KEY_BAR_KEYS.map((key) => {
-                const pressed = key.modifier === undefined ? undefined : sticky[key.modifier];
-                const disabled = key.action === 'paste';
-                return (
+        <>
+            {/*
+             * The two transient surfaces sit ABOVE the bar and OVER the terminal, absolutely
+             * positioned against the pane root's own `relative`. Deliberately not in flow: the
+             * bar's 45 px is a contract C2 and C3 lay out against, and a pill that changed the
+             * terminal's height would resize the PTY for four seconds and then resize it back.
+             */}
+            {offer !== null ? (
+                <div
+                    data-testid={`terminal-copy-pill-${paneID}`}
+                    {...{ [COPY_PILL_ATTR]: '' }}
+                    role="status"
+                    className="absolute right-2 left-2 z-10 flex items-center justify-center"
+                    style={{ bottom: KEY_BAR_HEIGHT_PX + 8 }}
+                >
                     <button
-                        key={key.id}
                         type="button"
-                        data-testid={`terminal-key-${key.id}-${paneID}`}
-                        {...{ [KEY_ATTR]: key.id }}
-                        aria-label={key.name}
-                        aria-pressed={pressed}
-                        aria-disabled={disabled ? true : undefined}
-                        disabled={disabled}
-                        title={key.title}
-                        /*
-                         * THE TAP MUST NOT TAKE THE CARET. A button that takes focus dismisses the
-                         * software keyboard and orphans the terminal, so the very first tap on Esc
-                         * would close the keyboard the bar exists to sit above. `holdCaret`
-                         * cancels the pointer-down (which is what suppresses the focus change) and
-                         * remembers who had the caret, so `press` can hand it back if the platform
-                         * moved it anyway. The `click` that follows is unaffected by a cancelled
-                         * pointer-down, which is why activation still lives on `onClick`;
-                         * `onMouseDown` covers a browser with no pointer events.
-                         */
+                        data-testid={`terminal-copy-pill-button-${paneID}`}
+                        aria-label={`Copy ${String(offer.bytes)} bytes to the clipboard`}
+                        title="A program in this pane copied text; tap to put it on this phone's clipboard"
                         onPointerDown={holdCaret}
                         onMouseDown={holdCaret}
-                        onClick={() => press(key)}
-                        className="flex shrink-0 items-center justify-center rounded text-sm font-medium whitespace-nowrap"
+                        onClick={takeOffer}
+                        className="flex items-center justify-center rounded-full px-4 text-sm font-medium whitespace-nowrap shadow-lg"
                         style={{
-                            minWidth: key.wide === true ? KEY_BAR_KEY_SIZE_PX + 12 : KEY_BAR_KEY_SIZE_PX,
                             height: KEY_BAR_KEY_SIZE_PX,
-                            padding: '0 8px',
                             border: `1px solid ${tokens.divider}`,
-                            backgroundColor: pressed === true ? tokens.accent : tokens.surfaceBackground,
-                            color: disabled
-                                ? tokens.textTertiary
-                                : pressed === true
-                                  ? tokens.windowBackground
-                                  : tokens.textPrimary
+                            backgroundColor: tokens.accent,
+                            color: tokens.windowBackground
                         }}
                     >
-                        {key.label}
+                        {`Copy ${String(offer.bytes)} bytes`}
                     </button>
-                );
-            })}
-        </div>
+                </div>
+            ) : null}
+            {pasteFieldOpen ? (
+                <div
+                    data-testid={`terminal-paste-field-${paneID}`}
+                    {...{ [PASTE_FIELD_ATTR]: '' }}
+                    className="absolute right-2 left-2 z-10 flex items-center gap-2 rounded p-2"
+                    style={{
+                        bottom: KEY_BAR_HEIGHT_PX + 8,
+                        border: `1px solid ${tokens.divider}`,
+                        backgroundColor: tokens.headerBackground
+                    }}
+                >
+                    <textarea
+                        ref={pasteFieldRef}
+                        data-testid={`terminal-paste-input-${paneID}`}
+                        aria-label="Paste here"
+                        placeholder="Paste here"
+                        rows={1}
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="min-w-0 flex-1 rounded px-2 text-sm"
+                        style={{
+                            height: KEY_BAR_KEY_SIZE_PX,
+                            border: `1px solid ${tokens.divider}`,
+                            backgroundColor: tokens.surfaceBackground,
+                            color: tokens.textPrimary
+                        }}
+                        onPaste={(event) => {
+                            // The platform's own paste, which is the one gesture that always
+                            // works: take the text off the event rather than off the field, so
+                            // nothing depends on the insertion having landed yet.
+                            const text = event.clipboardData.getData('text/plain');
+                            event.preventDefault();
+                            acceptFallbackPaste(text);
+                        }}
+                        onKeyDown={(event) => {
+                            // The field is not the terminal, so its keys are its own: Enter sends
+                            // what is in it (a platform that inserted without a `paste` event),
+                            // Escape gives up. Both stop here.
+                            if (event.key === 'Escape') {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setPasteFieldOpen(false);
+                                return;
+                            }
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                acceptFallbackPaste(event.currentTarget.value);
+                            }
+                        }}
+                    />
+                    <button
+                        type="button"
+                        data-testid={`terminal-paste-cancel-${paneID}`}
+                        aria-label="Cancel paste"
+                        title="Cancel paste"
+                        onPointerDown={(event) => event.preventDefault()}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => setPasteFieldOpen(false)}
+                        className="flex shrink-0 items-center justify-center rounded"
+                        style={{
+                            minWidth: KEY_BAR_KEY_SIZE_PX,
+                            height: KEY_BAR_KEY_SIZE_PX,
+                            border: `1px solid ${tokens.divider}`,
+                            backgroundColor: tokens.surfaceBackground,
+                            color: tokens.textPrimary
+                        }}
+                    >
+                        {'×'}
+                    </button>
+                </div>
+            ) : null}
+            <div
+                data-testid={`terminal-key-bar-${paneID}`}
+                {...{ [KEY_BAR_ATTR]: '' }}
+                role="toolbar"
+                aria-label="Terminal keys"
+                aria-orientation="horizontal"
+                className="flex w-full shrink-0 items-center gap-1 overflow-x-auto px-1"
+                style={{
+                    height: KEY_BAR_HEIGHT_PX,
+                    borderTop: `1px solid ${tokens.divider}`,
+                    backgroundColor: tokens.headerBackground,
+                    // A horizontal drag scrolls the bar (15 keys at 44 px do not fit a 390 px
+                    // phone); a vertical one is left to the pane, where scrollback lives.
+                    touchAction: 'pan-x',
+                    scrollbarWidth: 'none'
+                }}
+            >
+                {KEY_BAR_KEYS.map((key) => {
+                    const pressed = key.modifier === undefined ? undefined : sticky[key.modifier];
+                    return (
+                        <button
+                            key={key.id}
+                            type="button"
+                            data-testid={`terminal-key-${key.id}-${paneID}`}
+                            {...{ [KEY_ATTR]: key.id }}
+                            aria-label={key.name}
+                            aria-pressed={pressed}
+                            title={key.title}
+                            /*
+                             * THE TAP MUST NOT TAKE THE CARET. A button that takes focus dismisses
+                             * the software keyboard and orphans the terminal, so the very first tap
+                             * on Esc would close the keyboard the bar exists to sit above.
+                             * `holdCaret` cancels the pointer-down (which is what suppresses the
+                             * focus change) and remembers who had the caret, so `press` can hand it
+                             * back if the platform moved it anyway. The `click` that follows is
+                             * unaffected by a cancelled pointer-down, which is why activation still
+                             * lives on `onClick`; `onMouseDown` covers a browser with no pointer
+                             * events.
+                             */
+                            onPointerDown={holdCaret}
+                            onMouseDown={holdCaret}
+                            onClick={() => press(key)}
+                            className="flex shrink-0 items-center justify-center rounded text-sm font-medium whitespace-nowrap"
+                            style={{
+                                minWidth: key.wide === true ? KEY_BAR_KEY_SIZE_PX + 12 : KEY_BAR_KEY_SIZE_PX,
+                                height: KEY_BAR_KEY_SIZE_PX,
+                                padding: '0 8px',
+                                border: `1px solid ${tokens.divider}`,
+                                backgroundColor: pressed === true ? tokens.accent : tokens.surfaceBackground,
+                                color: pressed === true ? tokens.windowBackground : tokens.textPrimary
+                            }}
+                        >
+                            {key.label}
+                        </button>
+                    );
+                })}
+            </div>
+        </>
     );
 }

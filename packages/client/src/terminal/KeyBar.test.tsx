@@ -18,7 +18,18 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { KEY_BAR_HEIGHT_PX, KEY_BAR_KEYS, KEY_BAR_KEY_SIZE_PX, KeyBar, characterKey, withSticky } from './KeyBar';
+import { CLIPBOARD_WRITE_MESSAGE, createClipboardWriteHandler, resetClipboardOffersForTests } from '../state/clipboard';
+import {
+    COPY_PILL_TIMEOUT_MS,
+    KEY_BAR_HEIGHT_PX,
+    KEY_BAR_KEYS,
+    KEY_BAR_KEY_SIZE_PX,
+    KeyBar,
+    characterKey,
+    dispatchPaste,
+    withSticky,
+    type KeyBarProps
+} from './KeyBar';
 import { KITTY_DISAMBIGUATE, KITTY_REPORT_ALL_KEYS } from './kitty-keyboard';
 import { TerminalPane } from './TerminalPane';
 import { createTerminalRenderer } from './renderer';
@@ -205,6 +216,45 @@ describe('the key bar routes through the ENGINE: bytes off a real ghostty-web', 
     });
 
     /**
+     * C4 - PASTE, and the reason it is a `paste` event rather than a `write()`.
+     *
+     * The bracketed-paste envelope is not the bar's decision and must not be: the vendored
+     * engine's textarea paste listener calls `Terminal.paste()`, which asks the live WASM
+     * terminal `hasBracketedPaste()` and wraps or does not (`terminal.ts:596-604`, `:724-741`).
+     * Both answers are measured here off the same call, with DEC 2004 flipped in between.
+     */
+    it('pastes bare with DEC 2004 off and wrapped with it on, off one call', async () => {
+        const area = host.querySelector('textarea') as HTMLTextAreaElement;
+
+        expect(dispatchPaste(area, 'PAYLOAD')).toBe(true);
+        expect(hex(out.join(''))).toBe(hex('PAYLOAD'));
+
+        out.length = 0;
+        await writeAndSettle(`${ESC}[?2004h`);
+        dispatchPaste(area, 'PAYLOAD');
+        expect(hex(out.join(''))).toBe(hex(`${ESC}[200~PAYLOAD${ESC}[201~`));
+
+        out.length = 0;
+        await writeAndSettle(`${ESC}[?2004l`);
+        dispatchPaste(area, 'PAYLOAD');
+        expect(hex(out.join(''))).toBe(hex('PAYLOAD'));
+    });
+
+    it('carries a multi-line paste through in one envelope', async () => {
+        const area = host.querySelector('textarea') as HTMLTextAreaElement;
+        await writeAndSettle(`${ESC}[?2004h`);
+        dispatchPaste(area, 'alpha\nbeta\ngamma');
+        expect(out.join('')).toBe(`${ESC}[200~alpha\nbeta\ngamma${ESC}[201~`);
+    });
+
+    it('is a no-op for empty text and for a target that is gone', () => {
+        const area = host.querySelector('textarea') as HTMLTextAreaElement;
+        expect(dispatchPaste(area, '')).toBe(false);
+        expect(dispatchPaste(null, 'PAYLOAD')).toBe(false);
+        expect(out).toEqual([]);
+    });
+
+    /**
      * WHY THE RESCUE BELOW IS LOAD-BEARING, and why the owner's phone lost Enter but kept
      * Backspace. Nothing of the bar is mounted here: this is the engine, on its own.
      *
@@ -276,6 +326,9 @@ describe('the soft keyboard: Android event shapes, end to end at the engine', ()
                 sendKey={(init) => renderer.dispatchKey(init)}
                 captureRoot={{ current: root }}
                 hideKeyboard={() => undefined}
+                // C4's Paste seam, stubbed: this block is about what the SOFT KEYBOARD sends, and
+                // nothing in it taps Paste. C4's own tests own the paste path.
+                pasteText={() => true}
             />
         );
     });
@@ -521,6 +574,17 @@ async function mountPane({ focused = true, visible = true } = {}): Promise<Harne
     };
 }
 
+/** jsdom has no `navigator.clipboard`, so every clipboard test says what this page's one is. */
+function stubClipboard(
+    impl: { readText?: () => Promise<string>; writeText?: (text: string) => Promise<void> } | null
+): void {
+    if (impl === null) {
+        Reflect.deleteProperty(navigator as unknown as Record<string, unknown>, 'clipboard');
+        return;
+    }
+    Object.defineProperty(navigator, 'clipboard', { value: impl, configurable: true, writable: true });
+}
+
 /** A tap: the pointer-down the bar suppresses, then the click the browser raises anyway. */
 function tap(button: HTMLElement): void {
     act(() => {
@@ -540,6 +604,8 @@ describe('KeyBar in a terminal pane', () => {
         cleanup();
         observers.restore();
         setFormFactor(null);
+        stubClipboard(null);
+        resetClipboardOffersForTests();
         vi.restoreAllMocks();
     });
 
@@ -985,13 +1051,26 @@ describe('KeyBar in a terminal pane', () => {
         expect(document.activeElement).toBe(h.area);
     });
 
-    it('renders Paste disabled until C4 wires it up, and says so', async () => {
+    /**
+     * C4 - the pane's half of Paste: whatever the clipboard hands back goes to the ENGINE's own
+     * input as a `paste` event, which is where bracketing is decided. The bytes are pinned
+     * against the real engine above; what is pinned here is the wiring.
+     */
+    it('sends the clipboard to the engine input as a paste event', async () => {
+        stubClipboard({ readText: () => Promise.resolve('from-the-clipboard') });
         const h = await mountPane();
-        const paste = h.key('paste');
-        expect(paste.getAttribute('aria-disabled')).toBe('true');
-        expect(paste.disabled).toBe(true);
-        expect(paste.getAttribute('title')).toContain('C4');
-        tap(paste);
+        const pasted: string[] = [];
+        h.area.addEventListener('paste', (event) => {
+            pasted.push((event as ClipboardEvent & { clipboardData: { getData(t: string): string } }).clipboardData.getData('text'));
+        });
+
+        tap(h.key('paste'));
+        await settle();
+
+        expect(pasted).toEqual(['from-the-clipboard']);
+        // Paste is a key like any other now: enabled, named, and not a keystroke.
+        expect(h.key('paste').disabled).toBe(false);
+        expect(h.key('paste').getAttribute('aria-disabled')).toBeNull();
         expect(h.renderers.last().keys).toEqual([]);
     });
 
@@ -1037,6 +1116,262 @@ describe('KeyBar in a terminal pane', () => {
             fireEvent.keyDown(h.area, { key: 'c', code: 'KeyC' });
         });
         expect(h.renderers.last().keys).toEqual([]);
+    });
+});
+
+// ── C4: the fallback field and the Copy pill ────────────────────────────────────────
+//
+// Driven against the bar on its own rather than through a pane: both surfaces are the bar's, the
+// pane contributes nothing to either, and mounting the bar directly is what lets the clipboard
+// seams be handed in as values instead of patched onto a global.
+
+interface BarHarness {
+    root: HTMLElement;
+    pasted: string[];
+    written: string[];
+    query(attr: string): HTMLElement | null;
+    key(id: string): HTMLButtonElement;
+    field(): HTMLTextAreaElement;
+}
+
+function mountBar(props: Partial<KeyBarProps> = {}): BarHarness {
+    const root = document.createElement('div');
+    root.className = 'relative';
+    document.body.appendChild(root);
+    const pasted: string[] = [];
+    const written: string[] = [];
+    render(
+        <KeyBar
+            paneID="pane-1"
+            sendKey={() => true}
+            captureRoot={{ current: root }}
+            hideKeyboard={() => undefined}
+            pasteText={(text) => {
+                pasted.push(text);
+                return true;
+            }}
+            writeClipboard={(text) => {
+                written.push(text);
+                return Promise.resolve();
+            }}
+            {...props}
+        />,
+        { container: root }
+    );
+    return {
+        root,
+        pasted,
+        written,
+        query: (attr) => root.querySelector(`[${attr}]`),
+        key: (id) => root.querySelector(`[data-terminal-key="${id}"]`) as HTMLButtonElement,
+        field: () => root.querySelector('[data-terminal-paste-field] textarea') as HTMLTextAreaElement
+    };
+}
+
+/** The `clipboard-write` frame the daemon broadcasts for an OSC 52 a pane raised. */
+function offerFrame(paneID: string, text: string, bytes = text.length): Record<string, unknown> {
+    return { type: CLIPBOARD_WRITE_MESSAGE, paneID, workspaceID: 'ws-1', text, bytes };
+}
+
+describe('KeyBar: paste', () => {
+    afterEach(() => {
+        cleanup();
+        stubClipboard(null);
+        resetClipboardOffersForTests();
+        vi.restoreAllMocks();
+    });
+
+    it('reads the clipboard inside the tap and hands the text to the pane', async () => {
+        const h = mountBar({ readClipboard: () => Promise.resolve('hello') });
+        tap(h.key('paste'));
+        await settle();
+        expect(h.pasted).toEqual(['hello']);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+    });
+
+    it('ignores an empty clipboard rather than pasting nothing', async () => {
+        const h = mountBar({ readClipboard: () => Promise.resolve('') });
+        tap(h.key('paste'));
+        await settle();
+        expect(h.pasted).toEqual([]);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+    });
+
+    /**
+     * The refusal is the interesting case, and it is the common one on a phone: an insecure
+     * context has no `navigator.clipboard` at all, iOS raises its own confirmation that can be
+     * dismissed, and a browser may simply say no. All three land on the same field.
+     */
+    it('opens a focused paste field when the clipboard read is refused', async () => {
+        const h = mountBar({ readClipboard: () => Promise.reject(new Error('NotAllowedError')) });
+        tap(h.key('paste'));
+        await settle();
+        const field = h.field();
+        expect(field).not.toBeNull();
+        expect(document.activeElement).toBe(field);
+
+        act(() => {
+            const event = new Event('paste', { bubbles: true, cancelable: true });
+            Object.defineProperty(event, 'clipboardData', { value: { getData: (): string => 'pasted-by-hand' } });
+            field.dispatchEvent(event);
+        });
+        expect(h.pasted).toEqual(['pasted-by-hand']);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+    });
+
+    it('opens the same field when the page has no clipboard read at all', async () => {
+        const h = mountBar({ readClipboard: null });
+        tap(h.key('paste'));
+        await settle();
+        expect(h.query('data-terminal-paste-field')).not.toBeNull();
+        expect(h.pasted).toEqual([]);
+    });
+
+    it('sends what was typed into the field on Enter, and gives up on Escape', async () => {
+        const h = mountBar({ readClipboard: null });
+        tap(h.key('paste'));
+        await settle();
+        const field = h.field();
+        act(() => {
+            fireEvent.change(field, { target: { value: 'typed' } });
+            fireEvent.keyDown(field, { key: 'Enter', code: 'Enter' });
+        });
+        expect(h.pasted).toEqual(['typed']);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+
+        tap(h.key('paste'));
+        await settle();
+        act(() => {
+            fireEvent.keyDown(h.field(), { key: 'Escape', code: 'Escape' });
+        });
+        expect(h.pasted).toEqual(['typed']);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+    });
+
+    it('closes on the cancel button without pasting', async () => {
+        const h = mountBar({ readClipboard: null });
+        tap(h.key('paste'));
+        await settle();
+        tap(h.root.querySelector('[data-testid="terminal-paste-cancel-pane-1"]') as HTMLElement);
+        expect(h.query('data-terminal-paste-field')).toBeNull();
+        expect(h.pasted).toEqual([]);
+    });
+
+    it('falls back to navigator.clipboard when no reader is injected', async () => {
+        stubClipboard({ readText: () => Promise.resolve('from-navigator') });
+        const h = mountBar();
+        tap(h.key('paste'));
+        await settle();
+        expect(h.pasted).toEqual(['from-navigator']);
+    });
+});
+
+describe('KeyBar: the OSC 52 Copy pill', () => {
+    afterEach(() => {
+        cleanup();
+        stubClipboard(null);
+        resetClipboardOffersForTests();
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+    });
+
+    /**
+     * §TERM-046's phone end. The daemon has already parsed the OSC 52 and checked the
+     * `clipboard-write` setting; what arrives is a copy the user's own setting allowed. On a
+     * phone the silent `navigator.clipboard.writeText` behind it is gated on transient
+     * activation that a pane's own output cannot supply, so the pill's tap is the gesture.
+     */
+    it('shows a pill for a copy made in THIS pane, and writes it on tap', () => {
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        const h = mountBar();
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+
+        act(() => {
+            handler(offerFrame('pane-1', 'copied-text', 11));
+        });
+        const pill = h.query('data-terminal-copy-pill');
+        expect(pill).not.toBeNull();
+        expect(pill?.textContent).toContain('11 bytes');
+
+        tap(h.root.querySelector('[data-testid="terminal-copy-pill-button-pane-1"]') as HTMLElement);
+        expect(h.written).toEqual(['copied-text']);
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+    });
+
+    it('ignores a copy made in another pane', () => {
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        const h = mountBar();
+        act(() => {
+            handler(offerFrame('pane-2', 'not-mine'));
+        });
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+    });
+
+    it('takes itself away after a few seconds', () => {
+        vi.useFakeTimers();
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        const h = mountBar();
+        act(() => {
+            handler(offerFrame('pane-1', 'copied-text'));
+        });
+        expect(h.query('data-terminal-copy-pill')).not.toBeNull();
+        act(() => {
+            vi.advanceTimersByTime(COPY_PILL_TIMEOUT_MS + 1);
+        });
+        expect(h.query('data-terminal-copy-pill')).toBeNull();
+        expect(h.written).toEqual([]);
+    });
+
+    it('re-arms for a second copy of the same text', () => {
+        vi.useFakeTimers();
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        const h = mountBar();
+        act(() => {
+            handler(offerFrame('pane-1', 'same'));
+        });
+        act(() => {
+            vi.advanceTimersByTime(COPY_PILL_TIMEOUT_MS - 100);
+        });
+        act(() => {
+            handler(offerFrame('pane-1', 'same'));
+        });
+        act(() => {
+            vi.advanceTimersByTime(200);
+        });
+        // The first countdown would have expired by now; the second offer restarted it.
+        expect(h.query('data-terminal-copy-pill')).not.toBeNull();
+    });
+
+    it('stops listening when the bar goes away', () => {
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        mountBar();
+        cleanup();
+        // No listener, no throw, and nothing rendered anywhere.
+        act(() => {
+            handler(offerFrame('pane-1', 'copied-text'));
+        });
+        expect(document.querySelector('[data-terminal-copy-pill]')).toBeNull();
+    });
+});
+
+describe('a terminal pane on a DESKTOP has neither surface', () => {
+    afterEach(() => {
+        cleanup();
+        observers.restore();
+        setFormFactor(null);
+        resetClipboardOffersForTests();
+    });
+
+    it('renders no pill and no paste field for an OSC 52 copy', async () => {
+        observers = installFakeResizeObserver();
+        setFormFactor('desktop');
+        const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });
+        const h = await mountPane();
+        act(() => {
+            handler(offerFrame('pane-1', 'copied-text'));
+        });
+        expect(h.root.querySelector('[data-terminal-copy-pill]')).toBeNull();
+        expect(h.root.querySelector('[data-terminal-key-bar]')).toBeNull();
     });
 });
 

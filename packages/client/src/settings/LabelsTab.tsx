@@ -828,10 +828,11 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 plain
                 /*
                  * Empty, the list section takes the tab's remaining height so the placeholder
-                 * centres in the space the user actually sees (the adoption section and hints
-                 * settle below it). With presets, the list reads top-down as before.
+                 * centres in the space the user actually sees, and the hint centres under it
+                 * (the adoption section below centres too, so the tab reads as one centred
+                 * column). With presets, the list reads top-down as before, hint left under it.
                  */
-                fill={props.presets.length === 0}
+                empty={props.presets.length === 0}
                 /*
                  * §N36(2) — "Labels", not "Presets".
                  *
@@ -968,6 +969,12 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                     title="Labels not defined here"
                     hint="Applied to a workspace but not in the list above - they render neutral until you add them."
                     testID="label-orphans"
+                    /*
+                     * Under an empty list this section is the only other thing on the tab, and
+                     * the placeholder above it is centred: heading, buttons and hint centre with
+                     * it. Under a list of presets it reads top-down, left-aligned, like the list.
+                     */
+                    centred={props.presets.length === 0}
                 >
                     <div className="flex flex-wrap items-center gap-2">
                         {orphans.map((label) => (

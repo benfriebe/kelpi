@@ -181,6 +181,29 @@ describe('Settings ▸ Labels', () => {
         renderLabels();
         expect(screen.getByTestId('label-presets').className).not.toContain('flex-1');
     });
+
+    /**
+     * The copy at the foot of the tab centres WITH the placeholder. Under an empty list the
+     * section's hint and the whole "not defined here" section (its heading, its Add buttons,
+     * its hint) were the left-aligned lines at the bottom of an otherwise centred tab; the owner
+     * asked for them to line up. With presets everything reads top-down and left-aligned again,
+     * as a list with captions should.
+     */
+    it('centres the hint and the adoption section while empty, and only while empty', () => {
+        const worn = [{ labels: ['active'] }];
+        render(<LabelsTab presets={[]} workspaces={worn} actions={actions()} bucket="dark" />);
+        expect(screen.getByText(/wears the colors set here/).className).toContain('text-center');
+        const orphans = screen.getByTestId('label-orphans');
+        expect(orphans.querySelector('h3')?.className).toContain('text-center');
+        expect(screen.getByText(/render neutral until you add them/).className).toContain('text-center');
+        // The button row is a centred child of the section, so the buttons centre too.
+        expect(screen.getByTestId('label-adopt-active').parentElement?.parentElement?.className).toContain('items-center');
+        cleanup();
+        render(<LabelsTab presets={PRESETS} workspaces={worn} actions={actions()} bucket="dark" />);
+        expect(screen.getByText(/wears the colors set here/).className).not.toContain('text-center');
+        expect(screen.getByTestId('label-orphans').querySelector('h3')?.className).not.toContain('text-center');
+        expect(screen.getByText(/render neutral until you add them/).className).not.toContain('text-center');
+    });
 });
 
 // ── M41 / M42 / M43 / M44 (Keybindings) ─────────────────────────────────────────────

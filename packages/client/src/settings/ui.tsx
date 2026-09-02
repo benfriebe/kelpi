@@ -138,14 +138,28 @@ export interface SettingsSectionProps {
      */
     readonly plain?: boolean | undefined;
     /**
-     * The section grows to take the tab's remaining height, handing it on to its children
-     * (plain sections only). This is what lets an empty state centre in the SPACE THE TAB
-     * ACTUALLY HAS rather than in a fixed-height band near the top: the tab root asks for
-     * `min-h-full`, the section asks for `fill`, and the placeholder's own `flex-1` +
-     * `justify-center` does the rest. Callers pass it only while the section is empty, so a
-     * populated list still reads top-down.
+     * The section's list is EMPTY and the placeholder is all there is (plain sections only).
+     *
+     * Two things follow. The section grows to take the tab's remaining height, handing it on
+     * to its children, which is what lets the placeholder centre in the SPACE THE TAB ACTUALLY
+     * HAS rather than in a fixed-height band near the top: the tab root asks for `min-h-full`,
+     * the section asks for `empty`, and the placeholder's own `flex-1` + `justify-center` does
+     * the rest. And the hint under it CENTRES: with the placeholder centred top to bottom, a
+     * caption left-aligned at the foot of the tab was the one line out of step, and the owner
+     * asked for it to line up (the shipped app has no caption under either empty list at all -
+     * `SettingsView.swift:709-720`, `LabelPresetsSettingsView.swift:85-98` - so the alignment is
+     * this port's to decide). Callers pass it only while the section is empty, so a populated
+     * list still reads top-down with its caption left-aligned under the rows.
      */
-    readonly fill?: boolean | undefined;
+    readonly empty?: boolean | undefined;
+    /**
+     * The whole section centres - heading, children, hint - because it stands under a centred
+     * empty state and is the only other thing on the tab (the Labels tab's "not defined here"
+     * section while the list is empty). A heading row that carries an `action` stays a toolbar,
+     * title left and action right; no caller does both. Off by default: a section with rows
+     * reads top-down, left-aligned, as every grouped form does.
+     */
+    readonly centred?: boolean | undefined;
     /**
      * §N36(1) — a control on the header's TRAILING edge, level with the title.
      *
@@ -211,13 +225,20 @@ export const SETTINGS_SECTION_HEADING = 'text-[13px] font-semibold';
  */
 export function SettingsSection(props: SettingsSectionProps): ReactElement {
     const rows = Children.toArray(props.children);
+    const empty = props.empty === true;
+    const centred = props.centred === true;
+    // The hint centres under a centred placeholder (`empty`) or as part of a centred section.
+    const hintClass = empty || centred ? 'text-center text-[11px]' : 'text-[11px]';
     return (
         <section
-            className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'flex flex-col gap-1.5'}
+            className={empty ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'flex flex-col gap-1.5'}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             {props.action === undefined ? (
-                <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
+                <h3
+                    className={centred ? `${SETTINGS_SECTION_HEADING} text-center` : SETTINGS_SECTION_HEADING}
+                    style={{ color: tokens.textPrimary }}
+                >
                     {props.title}
                 </h3>
             ) : (
@@ -234,7 +255,15 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                 </div>
             )}
             {props.plain === true ? (
-                <div className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'}>
+                <div
+                    className={
+                        empty
+                            ? 'flex min-h-0 flex-1 flex-col gap-2'
+                            : centred
+                              ? 'flex flex-col items-center gap-2'
+                              : 'flex flex-col gap-2'
+                    }
+                >
                     {props.children}
                 </div>
             ) : (
@@ -262,7 +291,7 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                 </div>
             )}
             {props.hint === undefined ? null : (
-                <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                <p className={hintClass} style={{ color: tokens.textTertiary }}>
                     {props.hint}
                 </p>
             )}
@@ -755,12 +784,21 @@ export function SettingsEmptyState(props: SettingsEmptyStateProps): ReactElement
     );
 }
 
-/** The "Config: ~/.config/nex/config" strip every file-backed tab ends with (§13.1). */
-export function SettingsFooterNote(props: { readonly children: ReactNode }): ReactElement {
+/**
+ * The "Config: ~/.config/nex/config" strip every file-backed tab ends with (§13.1).
+ *
+ * `centred` is for the tab whose only content above it is a centred empty placeholder: the
+ * note then lines up with it rather than being the one left-aligned line at the foot of an
+ * otherwise centred tab. A tab with rows keeps it left, under the list, as before.
+ */
+export function SettingsFooterNote(props: {
+    readonly children: ReactNode;
+    readonly centred?: boolean | undefined;
+}): ReactElement {
     return (
         <p
             data-testid="settings-footer-note"
-            className="pt-1 text-[11px] leading-relaxed"
+            className={props.centred === true ? 'pt-1 text-center text-[11px] leading-relaxed' : 'pt-1 text-[11px] leading-relaxed'}
             style={{ color: tokens.textTertiary }}
         >
             {props.children}

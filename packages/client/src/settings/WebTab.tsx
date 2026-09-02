@@ -109,9 +109,10 @@ export function WebTab(props: WebTabProps): ReactElement {
                 /*
                  * Empty, the section takes the whole tab so the placeholder centres in the
                  * space the user actually sees - not in a fixed band near the top with the
-                 * tab's leftover height dead below it. With rows, the list reads top-down.
+                 * tab's leftover height dead below it - and the hint under it centres with it.
+                 * With rows, the list reads top-down and the hint sits left under it.
                  */
-                fill={favourites.length === 0}
+                empty={favourites.length === 0}
                 title="Favourites"
                 hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
                 testID="settings-favourites"
@@ -231,7 +232,8 @@ export function WebTab(props: WebTabProps): ReactElement {
                 )}
             </SettingsSection>
 
-            <SettingsFooterNote>
+            {/* Centred while the tab is one centred placeholder; left under a list of rows. */}
+            <SettingsFooterNote centred={favourites.length === 0}>
                 Favourites live with the daemon, beside its database (by default{' '}
                 <code>{props.path ?? DEFAULT_FAVOURITES_PATH}</code>), so every window and the desktop app share one
                 list.

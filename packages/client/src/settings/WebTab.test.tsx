@@ -165,6 +165,23 @@ describe('the empty state', () => {
         setup([favourite('a', 'A', 'https://a.example')]);
         expect(screen.getByTestId('settings-favourites').className).not.toContain('flex-1');
     });
+
+    /**
+     * The copy at the foot of the tab centres WITH the placeholder: the section's hint ("Saved
+     * from a web pane's URL bar...") and the footer note about where favourites live were the
+     * two left-aligned lines under an otherwise centred tab. With rows both go back under the
+     * list, left-aligned, where a caption belongs.
+     */
+    it('centres the hint and the footer note while empty, and only while empty', () => {
+        setup([]);
+        const hint = screen.getByText(/Saved from a web pane's URL bar/);
+        expect(hint.className).toContain('text-center');
+        expect(screen.getByTestId('settings-footer-note').className).toContain('text-center');
+        cleanup();
+        setup([favourite('a', 'A', 'https://a.example')]);
+        expect(screen.getByText(/Saved from a web pane's URL bar/).className).not.toContain('text-center');
+        expect(screen.getByTestId('settings-footer-note').className).not.toContain('text-center');
+    });
 });
 
 /**

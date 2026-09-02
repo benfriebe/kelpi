@@ -3,7 +3,7 @@
  * Settings > Remote, and half-block text for `kelpid pair --qr` on a headless host.
  *
  * Both add the quiet zone themselves, and both default it to 4 modules, which is the minimum
- * ISO/IEC 18004 clause 9.1 allows. It is not decoration: a scanner locates the symbol by finding
+ * ISO/IEC 18004 allows for a QR symbol. It is not decoration: a scanner locates it by finding
  * three finder patterns against a light surround, and a QR code butted against a coloured card
  * or a terminal's background is routinely unreadable. Neither renderer will let you forget it,
  * and neither stops you setting it to zero if you are placing the symbol inside your own margin.

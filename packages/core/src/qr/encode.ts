@@ -11,7 +11,7 @@
  * order this file implements them:
  *
  *   1. GF(256) arithmetic and the Reed-Solomon remainder  (clause 7.5)
- *   2. the capacity tables and version selection           (clause 7.4.10, tables 7 and 9)
+ *   2. the capacity tables and version selection           (clause 7.5.1, table 9)
  *   3. the bit stream: mode, count, data, terminator, pad  (clause 7.4)
  *   4. block splitting and interleaving                    (clause 7.6)
  *   5. function patterns, format and version information   (clauses 6.3.3 to 6.3.6, 7.9, 7.10)
@@ -118,7 +118,7 @@ function tableValue(table: Readonly<Record<QrEcLevel, readonly number[]>>, ecLev
     return value;
 }
 
-/** The side of a symbol, in modules (clause 6.3.1): 21 at version 1, growing by 4 a version. */
+/** The side of a symbol, in modules (clause 6.3): 21 at version 1, growing by 4 a version. */
 export function qrSizeForVersion(version: number): number {
     return version * 4 + 17;
 }
@@ -131,7 +131,8 @@ export function qrSizeForVersion(version: number): number {
  *
  * Computing it beats another 40-row table: the alignment count is a closed form, and the
  * overlaps between alignment patterns and the timing rows are regular enough to subtract
- * arithmetically (clause 7.4.10 derives the same numbers).
+ * arithmetically. `qr/encode.test.ts` pins the result against table 9's own codeword counts at
+ * the versions the fixtures reach.
  */
 function rawDataModules(version: number): number {
     let modules = (16 * version + 128) * version + 64;
@@ -200,7 +201,7 @@ function dataCodewords(bytes: Uint8Array, version: number, ecLevel: QrEcLevel): 
     // decodes correctly (the pad is past the data) but does not match any other encoder, and
     // masks differently because the pad modules are scored like any other.
     appendBits(0, (8 - (bitPosition % 8)) % 8);
-    for (let index = bitPosition / 8, pad = 0; index < capacity; index += 1, pad += 1) {
+    for (let index = bitPosition >>> 3, pad = 0; index < capacity; index += 1, pad += 1) {
         codewords[index] = pad % 2 === 0 ? 0xec : 0x11;
     }
     return codewords;
@@ -337,7 +338,8 @@ function alignmentPositions(version: number): readonly number[] {
  * A finder pattern and its separator in one sweep (clauses 6.3.3 and 6.3.4). Taking the
  * Chebyshev distance from the centre gives the concentric rings directly: 0 and 1 dark, 2 light,
  * 3 dark, 4 light, and that last light ring is exactly the separator. The write is clipped, so
- * the two rings that fall off the symbol edge simply do not land.
+ * the parts of the separator that fall outside the symbol simply do not land, which is why a
+ * finder in a corner needs no special case.
  */
 function drawFinder(canvas: SymbolCanvas, centreX: number, centreY: number): void {
     for (let dy = -4; dy <= 4; dy += 1) {
@@ -509,6 +511,12 @@ const FINDER_LOOKALIKE_BEFORE = 0b00001011101;
  * total is the one the symbol keeps. The weights (3, 3, 40, 10) are the spec's, not a tuning
  * choice: an encoder that changes them picks different masks and stops matching every other
  * encoder in the world, which is what the reference fixtures would catch.
+ *
+ * This is the corner of QR encoding where widely used libraries genuinely disagree, because
+ * table 24 is prose and the readings differ at the edges. What is implemented here is ZXing's,
+ * which is the decoder the whole scanning ecosystem is built on. `fixtures.reference.ts` records
+ * the one measured disagreement with the library the fixtures came from, and why the reading
+ * below is the one that follows the table.
  */
 function penaltyScore(canvas: SymbolCanvas): number {
     const size = canvas.size;
@@ -571,8 +579,10 @@ function penaltyScore(canvas: SymbolCanvas): number {
  *
  * The text is taken as its UTF-8 bytes and written in byte mode. Error correction defaults to
  * `'M'`. The version is the smallest in `minVersion..maxVersion` that fits; all eight data masks
- * are then scored with the four penalty rules of clause 7.8.3.1 and the lowest total wins, so
- * the matrix is the same one a conforming reference encoder produces, mask included.
+ * are then scored with the four penalty rules of clause 7.8.3.1 and the lowest total wins. That
+ * last step is what makes the output reproducible rather than merely valid, and
+ * `fixtures.reference.ts` pins seven symbols against an independent encoder to prove it, module
+ * for module and mask included.
  *
  * Throws when the text does not fit `maxVersion`, or when the options are out of range. It never
  * silently truncates: a half-written pairing URL that still scans is worse than no QR at all.

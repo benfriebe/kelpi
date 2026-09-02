@@ -144,6 +144,35 @@ export {
 
 export { useSecondsTicker, tickerListenerCount } from './clock';
 
+/**
+ * The phone program's one decision (docs/MOBILE-PLAN.md §E1): is this a phone or a desktop?
+ * Everything phone-shaped hangs off it, and nothing else in the client is allowed to ask the
+ * question its own way.
+ */
+export {
+    COARSE_POINTER_QUERY,
+    FORM_FACTOR_ATTRIBUTE,
+    FORM_FACTOR_PARAM,
+    PHONE_NARROW_MAX_PX,
+    bindFormFactorAttribute,
+    currentFormFactor,
+    defaultFormFactorWindow,
+    formFactorOverride,
+    readFormFactorSignal,
+    readSoftKeyboardInset,
+    resolveFormFactor,
+    useFormFactor,
+    useSoftKeyboardInset,
+    watchFormFactor,
+    watchSoftKeyboardInset,
+    type FormFactor,
+    type FormFactorDocument,
+    type FormFactorSignal,
+    type FormFactorWindow,
+    type MediaQueryListLike,
+    type VisualViewportLike
+} from './form-factor';
+
 export {
     PANE_TYPE_ICONS,
     buildPaletteItems,

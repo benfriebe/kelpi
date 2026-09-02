@@ -63,9 +63,17 @@
  *     node scripts/ui-audit/poster-swap-flicker.mjs [--window hidden|offscreen|onscreen|default]
  *          [--no-build] [--keep] [--verbose] [--out DIR]
  *
- * Exit code 0 = every assertion held. **`--window hidden` is the meaningful default**: it keeps
- * the real 2× backing scale, and the whole geometry defect above is invisible at 1× (where the
- * capture's intrinsic size happens to equal the view's box).
+ * Exit code 0 = every assertion held.
+ *
+ * **The window must be ON SCREEN, which is why `--window default` is the default.** Two of the
+ * conditions only exist there. The backing scale is the real 2× (the geometry defect this file
+ * was first written for is invisible at 1×, where the capture's intrinsic size happens to equal
+ * the view's box), and — the one that would silently gut the busy pass — `capturePage` copies a
+ * COMPOSITING SURFACE, which a window the OS is not compositing does not have: under `hidden` or
+ * `offscreen` the frame comes from the renderer FALLBACK instead, i.e. from the very path the
+ * busy pass exists to prove unnecessary. `--packaged` runs the shipped bundle, which is what the
+ * owner actually uses; round 3 exists because a dev-shell-only gate passed a build they
+ * rejected.
  */
 
 import fs from 'node:fs';
@@ -241,10 +249,18 @@ async function main() {
             },
             options.packaged ? 180_000 : 60_000
         ).catch(() => undefined);
-        const target = await waitForPageTarget(debugPort, {
-            match: (t) => t.url.includes('shellWindow='),
-            timeoutMs: options.packaged ? 180_000 : 60_000
-        });
+        let target;
+        try {
+            target = await waitForPageTarget(debugPort, {
+                match: (t) => t.url.includes('shellWindow='),
+                timeoutMs: options.packaged ? 180_000 : 60_000
+            });
+        } catch (error) {
+            // A shell that never showed a page is a stack problem, not a poster one: say what it
+            // said rather than leaving a bare timeout.
+            log(`  the shell's last words:\n${shell.text().split('\n').slice(-15).join('\n')}`);
+            throw error;
+        }
         page = await connect(target.webSocketDebuggerUrl, { repoRoot, verbose: options.verbose });
 
         const created = await cli.run(['workspace', 'create', '--name', 'poster-swap'], { timeoutMs: 40_000 });
@@ -307,8 +323,13 @@ async function main() {
                     'exec',
                     '--target',
                     paneID,
-                    `(() => { window.__guestNet = { frames: [] };
-                      const tick = () => { window.__guestNet.frames.push([Date.now(), innerWidth, innerHeight, devicePixelRatio]);
+                    // The previous pass's loop is stopped before this one starts: an orphaned
+                    // tick keeps pushing into the new array and inflates every count in pass two.
+                    `(() => { if (window.__guestNet !== undefined) window.__guestNet.stopped = true;
+                      const net = { frames: [], stopped: false };
+                      window.__guestNet = net;
+                      const tick = () => { if (net.stopped) return;
+                        net.frames.push([Date.now(), innerWidth, innerHeight, devicePixelRatio]);
                         requestAnimationFrame(tick); };
                       requestAnimationFrame(tick); return 'installed'; })()`
                 ],
@@ -318,13 +339,17 @@ async function main() {
 
 
             await page.eval(`(() => {
-                window.__posterProbe = { frames: [], marks: [] };
-                window.__posterMark = (name) => window.__posterProbe.marks.push({ name, at: Date.now() });
+                // Same teardown on this side, for the same reason.
+                if (window.__posterProbe !== undefined) window.__posterProbe.stopped = true;
+                const probe = { frames: [], marks: [], stopped: false };
+                window.__posterProbe = probe;
+                window.__posterMark = (name) => probe.marks.push({ name, at: Date.now() });
                 const tick = () => {
+                    if (probe.stopped) return;
                     const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
                     const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
                     const box = img === null ? null : img.getBoundingClientRect();
-                    window.__posterProbe.frames.push({
+                    probe.frames.push({
                         at: Date.now(),
                         dpr: window.devicePixelRatio,
                         visible: hole === null ? null : hole.getAttribute('data-visible'),
@@ -538,7 +563,7 @@ async function main() {
                 guestFrames.length > 0 && viewports.length === 1,
                 `${String(guestFrames.length)} page frames, viewports: ${viewports.join(' → ') || '(none sampled)'}`
             );
-                lastGuest = guestFrames;
+            lastGuest = guestFrames;
             fs.writeFileSync(path.join(outDir, `guest-${label}.json`), JSON.stringify(guestFrames));
 
 

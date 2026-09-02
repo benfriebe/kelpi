@@ -8667,7 +8667,11 @@ function buildFlows(ctx) {
                             if (parsed.zone !== 'bottom') return false;
                             const live = await holes();
                             const target = live.find((hole) => hole.id.toLowerCase() === String(right).toLowerCase()) ?? null;
-                            return target !== null && target.visible === 'false' && embedOf(target.id).includes('owner=holder');
+                            // `isParked`, not `owner=holder`: a drop target is covered, so since
+                            // issue #12's round 3 it is hidden where it stands. Waiting for the
+                            // holder line here could never be satisfied — the wait would burn its
+                            // whole ceiling and hand the assertion back the race it replaced.
+                            return target !== null && target.visible === 'false' && isParked(embedOf(target.id));
                         },
                         { ceilingMs: 800, intervalMs: 60 }
                     );

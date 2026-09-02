@@ -17,6 +17,7 @@ import {
     type DispatchDeps,
     type EvalOutcome,
     type PaneStorage,
+    type PosterOutcome,
     type TabController
 } from './dispatch.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
@@ -73,13 +74,19 @@ class FakeTab implements TabController {
         if (this.png instanceof Error) return Promise.reject(this.png);
         return Promise.resolve(this.png);
     }
-    /** Issue #12: base64 JPEG, `null` for "no on-screen view", or an Error for a failed call. */
-    jpeg: string | null | Error = 'AAAA';
+    /**
+     * Issue #12. A string is a frame; `null` is "no on-screen view to photograph" (about the
+     * moment); `'failed'` is a capture machinery that produced nothing (about this host); an
+     * Error is a call that threw.
+     */
+    jpeg: string | null | 'failed' | Error = 'AAAA';
     posters = 0;
-    poster(): Promise<string | null> {
+    poster(): Promise<PosterOutcome> {
         this.posters += 1;
         if (this.jpeg instanceof Error) return Promise.reject(this.jpeg);
-        return Promise.resolve(this.jpeg);
+        if (this.jpeg === null) return Promise.resolve({ ok: false, reason: 'no-view' });
+        if (this.jpeg === 'failed') return Promise.resolve({ ok: false, reason: 'failed' });
+        return Promise.resolve({ ok: true, base64: this.jpeg });
     }
     setZoom(factor: number): number {
         this.zoomFactor = clampZoom(factor);
@@ -459,6 +466,14 @@ describe('the poster (issue #12)', () => {
         expect('transient' in (await dispatcher.call('poster', scope))).toBe(false);
     });
 
+    it('refuses honestly, and not transiently, on a host with no poster surface at all', async () => {
+        const { dispatcher, tab } = harness();
+        (tab as unknown as { poster: (() => Promise<PosterOutcome>) | undefined }).poster = undefined;
+        const reply = await dispatcher.call('poster', scope);
+        expect(reply).toEqual({ ok: false, error: 'no on-screen view to poster' });
+        expect('transient' in reply).toBe(false);
+    });
+
     it('reports a failed capture rather than an empty frame', async () => {
         const { dispatcher, tab } = harness();
         tab.jpeg = new Error('no surface');
@@ -471,6 +486,27 @@ describe('the poster (issue #12)', () => {
             ok: false,
             error: 'poster capture failed'
         });
+    });
+
+    /**
+     * The two refusals are different facts, and the client acts on the difference: a host whose
+     * capture machinery answers nothing must be allowed to cool off, or it is re-asked — and
+     * WAITED for, for a quarter of a second — on every single menu.
+     */
+    it('marks only "no on-screen view" transient, never a capture that failed', async () => {
+        const { dispatcher, tab } = harness();
+        tab.jpeg = null;
+        expect(await dispatcher.call('poster', scope)).toEqual({
+            ok: false,
+            error: 'no on-screen view to poster',
+            transient: true
+        });
+        tab.jpeg = 'failed';
+        const failed = await dispatcher.call('poster', scope);
+        expect(failed).toEqual({ ok: false, error: 'poster capture failed' });
+        expect('transient' in failed).toBe(false);
+        tab.jpeg = new Error('threw');
+        expect('transient' in (await dispatcher.call('poster', scope))).toBe(false);
     });
 
     it('refuses a frame too large to ride the reply', async () => {
@@ -487,7 +523,7 @@ describe('the poster (issue #12)', () => {
     it('refuses honestly on a host with no poster surface at all', async () => {
         const { dispatcher, tab } = harness();
         // A future non-Electron host (or a test double) simply omits the method.
-        (tab as unknown as { poster: (() => Promise<string | null>) | undefined }).poster = undefined;
+        (tab as unknown as { poster: (() => Promise<PosterOutcome>) | undefined }).poster = undefined;
         await expect(dispatcher.call('poster', scope)).resolves.toEqual({
             ok: false,
             error: 'no on-screen view to poster'

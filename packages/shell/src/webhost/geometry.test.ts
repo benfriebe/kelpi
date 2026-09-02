@@ -25,7 +25,7 @@ function geometry(overrides: Partial<PaneGeometry> = {}): PaneGeometry {
         tabID: 'T1',
         rect: { x: 100, y: 50, w: 800, h: 600 },
         visible: true,
-    transient: false,
+        transient: false,
         devicePixelRatio: 2,
         ownWindow: true,
         shellWindowID: 'WIN',

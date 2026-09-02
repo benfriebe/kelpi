@@ -67,7 +67,7 @@ import {
     type RemoteObject
 } from './console-format.js';
 import { POSTER_JPEG_QUALITY } from './caps.js';
-import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
+import { clampZoom, type EvalOutcome, type PosterOutcome, type TabController } from './dispatch.js';
 import { isWebErrorPageURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
@@ -1029,7 +1029,7 @@ class ElectronTab implements HostTab {
      * on a hidden view. JPEG comes back base64 from CDP and travels to the client untouched — no
      * decode, no re-encode, no `nativeImage` round trip on the main thread while a menu waits.
      */
-    async poster(): Promise<string | null> {
+    async poster(): Promise<PosterOutcome> {
         if (this.disposed || this.contents.isDestroyed()) return this.posterRefused('the view is not on screen');
         if (!this.embedded) return this.posterRefused('the view is not on screen');
         await this.ready;
@@ -1068,7 +1068,10 @@ class ElectronTab implements HostTab {
             jpeg = await this.captureCdpJpeg();
             path = 'renderer';
         }
-        if (jpeg === null) return this.posterRefused('neither capture path could produce a frame');
+        // NEITHER path could produce a frame, which is about this host rather than about this
+        // moment: the client is told so (`failed`, not `no-view`) and stops waiting for one until
+        // its cooldown expires.
+        if (jpeg === null) return this.posterRefused('neither capture path could produce a frame', 'failed');
         // Checked a THIRD time, on the other side of the capture. A capture is not instantaneous
         // and the view can be taken off screen while it is in flight — a tab switch, the
         // workspace changing, the client's own park landing from another path — and a frame taken
@@ -1078,7 +1081,7 @@ class ElectronTab implements HostTab {
             return this.posterRefused('parked while the frame was being taken');
         }
         const data = jpeg.length === 0 ? undefined : jpeg;
-        if (data === undefined) return this.posterRefused('the capture returned no data');
+        if (data === undefined) return this.posterRefused('the capture returned no data', 'failed');
         // A poster is otherwise invisible from outside the process — the client paints it and the
         // view goes back — so the one line that says a real frame was taken, and how big it was,
         // is what a live check (or a "why did that menu feel slow") has to read.
@@ -1088,7 +1091,7 @@ class ElectronTab implements HostTab {
             `web pane ${this.paneID}: poster ${String(data.length)} base64 bytes ` +
                 `via ${path} in ${String(Date.now() - startedAt)}ms (tab ${this.tabID})`
         );
-        return data;
+        return { ok: true, base64: data };
     }
 
     /**
@@ -1096,6 +1099,12 @@ class ElectronTab implements HostTab {
      *
      * No main-thread work in the page, so a page that is busy — a React commit, an ad, a `resize`
      * handler — still hands back what is on screen. Null when the compositor has nothing to give.
+     *
+     * `toJPEG` is a SYNCHRONOUS encode on the shell's main process. At pane sizes it is a couple
+     * of milliseconds on top of the copy (measured 33 ms end to end for 1050×1412 in a packaged
+     * build) and it buys the one property that matters here: no main-thread work in the PAGE. A
+     * pane the size of a 4K display would be worth revisiting — `nativeImage.resize` first, or an
+     * off-thread encode — but a pane is a fraction of a window by construction.
      */
     private async capturePageJpeg(): Promise<string | null> {
         try {
@@ -1132,9 +1141,9 @@ class ElectronTab implements HostTab {
      * and "the capture returned no data" are different bugs. Found exactly this way: a pane that
      * stopped postering after one slow capture, in a log that only recorded successes.
      */
-    private posterRefused(reason: string): null {
+    private posterRefused(reason: string, kind: 'no-view' | 'failed' = 'no-view'): PosterOutcome {
         log(`web pane ${this.paneID}: poster refused - ${reason} (tab ${this.tabID})`);
-        return null;
+        return { ok: false, reason: kind };
     }
 
     private applyZoom(): void {

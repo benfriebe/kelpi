@@ -117,6 +117,42 @@ describe('a transient park (issue #12)', () => {
         expect(h.controller.embeddedPaneIDs).toEqual([]);
     });
 
+    /**
+     * The regression this pins is worse than the defect it came from.
+     *
+     * `refresh()` re-applies each placement's own geometry and runs on every tab-open /
+     * tab-select / tab-close / pane-open for ANY pane. While the park stored no geometry, that
+     * replayed the last VISIBLE one and put the view back on screen with the menu still up —
+     * composited OVER it, so the menu was invisible but still held the keyboard and the pointer
+     * reached the page underneath. A `kelpi web open` in another terminal was enough to trigger
+     * it, and so was the covered page calling `window.open`.
+     */
+    it('stays hidden through a refresh (another pane opening a tab must not un-hide it)', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        h.visibilities.length = 0;
+
+        h.controller.refresh();
+        h.controller.refresh();
+
+        expect(h.visibilities).toEqual([]);
+        expect(h.attaches).toHaveLength(1);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'hidden' });
+    });
+
+    it('un-hides on the way out, so a view never reaches the holder invisible', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ visible: false, transient: true }));
+        h.visibilities.length = 0;
+
+        // The pane really goes now (closed, workspace switched, window gone).
+        h.controller.release(PANE);
+        expect(h.visibilities).toEqual([{ view: { id: 'T1' }, visible: true }]);
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+    });
+
     it('ignores a transient park for a pane it never placed', () => {
         const h = harness();
         expect(h.controller.apply(geometry({ visible: false, transient: true }))).toBe('released');

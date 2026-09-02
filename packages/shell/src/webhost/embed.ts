@@ -134,6 +134,11 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
     const detach = (paneID: string, placement: Placement<V>): void => {
         placed.delete(paneID);
         try {
+            // A view that was hidden in place must not go back to the holder invisible: off
+            // screen it is an automation surface again, and every non-visual verb is specified
+            // against a view that renders. Un-hiding here is the one funnel for leaving the
+            // window, so no path can forget it.
+            if (placement.hidden) options.hooks.setVisible(placement.view, true);
             options.hooks.detach(placement.view);
         } catch (error) {
             report(error, `embed-detach ${paneID}`);
@@ -155,9 +160,20 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
      * transient report for an unplaced pane is a client that got ahead of itself, which the
      * ordinary release path already answers.
      */
-    const hideInPlace = (paneID: string): EmbedOutcome => {
+    const hideInPlace = (paneID: string, geometry: PaneGeometry): EmbedOutcome => {
         const placement = placed.get(paneID);
         if (placement === undefined) return 'ignored';
+        /*
+         * The park is REMEMBERED, not just performed, and that is not bookkeeping tidiness.
+         *
+         * `refresh()` re-applies each placement's own geometry, and it runs on every
+         * `tab-open` / `tab-select` / `tab-close` / `pane-open` for ANY pane. With the last
+         * VISIBLE geometry still stored here, a `kelpi web open` in another terminal — or the
+         * covered page's own `window.open` — would replay it and put the view back on screen
+         * while the menu was still up: composited OVER the menu, which is then invisible but
+         * still holding the keyboard, with the pointer going to the page underneath.
+         */
+        placement.geometry = geometry;
         if (placement.hidden) return 'hidden';
         try {
             options.hooks.setVisible(placement.view, false);
@@ -182,7 +198,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
              * not drawn, so that when the surface closes the page is already the right shape.
              */
             if (!geometry.visible && geometry.transient) {
-                const hid = hideInPlace(geometry.paneID);
+                const hid = hideInPlace(geometry.paneID, geometry);
                 if (hid !== 'ignored') return hid;
             }
             // Hidden, zero-sized, or scrolled entirely out of the window: the holder is where

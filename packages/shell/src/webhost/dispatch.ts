@@ -130,6 +130,19 @@ export type EvalOutcome =
     | { readonly ok: false; readonly error: string };
 
 /** One live tab. `./tab.ts` is the Electron implementation; tests pass a fake. */
+/**
+ * What one attempt at a still frame came back with (issue #12).
+ *
+ * The two refusals are DIFFERENT FACTS and the client acts on the difference: `no-view` is about
+ * the moment (the view was not on screen when we looked, usually the client's own park landing
+ * mid-capture) and must not count against the host, while `failed` is about the host's capture
+ * machinery and should stop the pane holding its view for one. Collapsing both into "no frame"
+ * is what makes a broken host cost 250 ms of invisible menu on every single right-click.
+ */
+export type PosterOutcome =
+    | { readonly ok: true; readonly base64: string }
+    | { readonly ok: false; readonly reason: 'no-view' | 'failed' };
+
 export interface TabController {
     readonly paneID: string;
     readonly tabID: string;
@@ -154,8 +167,7 @@ export interface TabController {
     /** Visible-viewport PNG (§8.4). Rejects/throws are turned into the spec's failure envelope. */
     screenshot(): Promise<Uint8Array>;
     /**
-     * Issue #12's still frame: base64 JPEG of the view AS IT IS ON SCREEN, or `null` when there
-     * is no on-screen view to photograph.
+     * Issue #12's still frame: the view AS IT IS ON SCREEN, or why there is none.
      *
      * Deliberately a different method from `screenshot()` rather than a mode of it, because it
      * asks a different question. A capture is an *automation* read and is specified against the
@@ -167,7 +179,7 @@ export interface TabController {
      * Optional, like `stop`/`focusView`: a test double or a future non-Electron host omits it
      * and the verb answers honestly instead of crashing.
      */
-    poster?(): Promise<string | null>;
+    poster?(): Promise<PosterOutcome>;
     /** Clamped to [0.5, 3.0]; returns the applied factor. */
     setZoom(factor: number): number;
     zoom(): number;
@@ -473,22 +485,34 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
      * dialog, a workspace switch), and a pane that treated it as a verdict stopped waiting for
      * frames — which made every later capture race a park it could not win, so it never got one
      * again. Caught by the `web-popup-layering` audit; the flag is what keeps a self-inflicted no
-     * from turning into a permanent one. Everything else (no poster surface at all, a frame over
-     * the budget, a capture that threw) really is about this host, and is not marked.
+     * from turning into a permanent one.
+     *
+     * Everything else is about THIS HOST and is not marked, so the client's cooldown can do its
+     * job: no poster surface at all, a frame over the budget, a capture that threw, and a capture
+     * machinery that answers nothing (`reason: 'failed'`). A host that fails fast would otherwise
+     * be re-asked — and waited for — on every single menu, for ever.
      */
     const poster = async (args: JsonObject): Promise<JsonObject> => {
         const found = tabOf(args);
         if ('error' in found) return found.error;
         const take = found.tab.poster?.bind(found.tab);
+        // A host with no poster surface at all is not a moment, it is a capability: no `transient`.
         if (take === undefined) return failure(POSTER_UNAVAILABLE_ERROR);
-        let data: string | null;
+        let outcome: PosterOutcome;
         try {
-            data = await take();
+            outcome = await take();
         } catch (error) {
             report(error, 'poster');
             return failure(POSTER_FAILED_ERROR);
         }
-        if (data === null) return { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true };
+        if (!outcome.ok) {
+            // `no-view` is the only refusal about WHEN we asked. Everything else is about this
+            // host, and marking it transient would keep the client waiting for it for ever.
+            return outcome.reason === 'no-view'
+                ? { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true }
+                : failure(POSTER_FAILED_ERROR);
+        }
+        const data = outcome.base64;
         if (data === '') return failure(POSTER_FAILED_ERROR);
         if (!posterWithinBudget(data.length)) return failure(POSTER_TOO_LARGE_ERROR);
         // The box the frame is OF, so the client can stand the picture exactly where the view

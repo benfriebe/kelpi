@@ -611,11 +611,15 @@ async function findPageTarget(port, match, timeoutMs = 15_000) {
  * Which of a pane's page targets is the one IN the window.
  *
  * A pane can have several tabs on the same URL, and only the active one is embedded — so the
- * URL cannot tell them apart. What can is the layout: an embedded view is laid out at the pane's
- * rect, while every other view keeps the pinned 1280 px automation viewport (`tab.ts`'s
- * `setEmbedded`). The width the shell logged when it placed the view is therefore the key.
+ * URL cannot tell them apart. Nor, any more, can the layout: a view that was on screen keeps
+ * the pane's width when it is parked (`webhost/viewport-pin.ts` - the automation viewport is
+ * applied lazily, by the first automation read, because pinning on every park is what reflowed
+ * a page under a menu), and a holder view says `document.visibilityState === 'visible'` all the
+ * same (measured). What CAN tell them apart is the daemon: `web-exec` runs on the pane's ACTIVE
+ * tab and nothing else, so a global it sets is on exactly one page - the embedded one. The
+ * caller sets `marker` that way and this finds the target that carries it.
  */
-async function findEmbeddedTarget(port, baseURL, width, timeoutMs = 15_000) {
+async function findEmbeddedTarget(port, baseURL, marker, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         const response = await fetch(`http://127.0.0.1:${String(port)}/json/list`, {
@@ -626,11 +630,11 @@ async function findEmbeddedTarget(port, baseURL, width, timeoutMs = 15_000) {
         for (const target of targets) {
             if (target.type !== 'page' || typeof target.webSocketDebuggerUrl !== 'string') continue;
             if (!String(target.url).startsWith(baseURL)) continue;
-            const measured = await cdpCommand(target, 'Runtime.evaluate', {
-                expression: 'window.innerWidth',
+            const marked = await cdpCommand(target, 'Runtime.evaluate', {
+                expression: `window[${JSON.stringify(marker)}] === true`,
                 returnByValue: true
             });
-            if (measured?.result?.result?.value === width) return target;
+            if (marked?.result?.result?.value === true) return target;
         }
         if (Date.now() > deadline) return null;
         await sleep(250);
@@ -1118,16 +1122,32 @@ async function webPhase() {
             // check; everything downstream of the focus event is proved here.
             //
             // Finding the right target takes one extra step: the pane has several tabs on the
-            // same URL, and only the ACTIVE one is the view in the window. The embedded view is
-            // the one laid out at the pane's rect (every other view keeps the pinned 1280 px
-            // automation viewport), so the placement line the shell just logged is the key.
+            // same URL, and only the ACTIVE one is the view in the window. A parked view keeps
+            // the pane's layout now (`webhost/viewport-pin.ts`), so the width cannot say which is
+            // which; the daemon can - `web-exec` runs on the active tab alone, so a marker it
+            // sets is on exactly the embedded page. (Exec on the EMBEDDED view pins nothing: the
+            // pane's rect is its viewport, and `expectedWidth` below is the proof.)
+            const marker = '__kelpiSmokeEmbedded';
+            const marked = await probe.call('web-exec', { pane_id: paneID, script: `window.${marker} = true` });
+            check('the daemon can mark the active tab through exec', marked.reply.ok === true, JSON.stringify(marked.reply));
             const placedWidth = Number(/bounds=\d+,\d+ (\d+)×\d+/.exec(placed)?.[1] ?? '0');
-            const viewTarget = await findEmbeddedTarget(sandbox.debugPort, fixture.base, placedWidth);
+            const viewTarget = await findEmbeddedTarget(sandbox.debugPort, fixture.base, marker);
             check(
                 'the embedded page has its own CDP target',
                 viewTarget !== null,
-                `${String(viewTarget?.url ?? 'none')} at ${String(placedWidth)}px`
+                `${String(viewTarget?.url ?? 'none')} placed at ${String(placedWidth)}px`
             );
+            if (viewTarget !== null) {
+                const expectedWidth = await cdpCommand(viewTarget, 'Runtime.evaluate', {
+                    expression: 'window.innerWidth',
+                    returnByValue: true
+                });
+                check(
+                    'the marked page is laid out at the pane\'s width (an automation read on an on-screen view pins nothing)',
+                    expectedWidth?.result?.result?.value === placedWidth,
+                    `innerWidth ${String(expectedWidth?.result?.result?.value)} vs placed ${String(placedWidth)}`
+                );
+            }
             if (viewTarget !== null) {
                 // Settle first. A focus event that arrives mid-load is held and then dropped by
                 // the commit that follows it (that is the second filter — a committing

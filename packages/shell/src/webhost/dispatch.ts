@@ -168,6 +168,16 @@ export interface TabController {
      * and the verb answers honestly instead of crashing.
      */
     poster?(): Promise<string | null>;
+    /**
+     * An automation read is about to run - §8.4's `capture`, the actuator, `exec`. A view that
+     * is parked off screen lays itself out at the pinned automation viewport first, so the read
+     * answers the same on every machine; a view on screen is left alone, the pane's rect being
+     * its viewport. The pin is applied here rather than when the view leaves the screen because
+     * a pin is a reflow and most parks are a menu (`./viewport-pin.ts`).
+     *
+     * Optional, like `poster`: a test double or a host with no such distinction omits it.
+     */
+    pinViewport?(): Promise<void>;
     /** Clamped to [0.5, 3.0]; returns the applied factor. */
     setZoom(factor: number): number;
     zoom(): number;
@@ -420,6 +430,12 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         const base: JsonObject = { ok: true, url: tab.url(), title: tab.title() };
 
         if (mode === 'meta') return base;
+        if (!(CAPTURE_MODES as readonly string[]).includes(mode)) {
+            return failure(`unknown capture mode '${mode}' (allowed: ${CAPTURE_MODES.join(', ')})`);
+        }
+        // Every read below is specified against the automation viewport (§8.4): a parked view
+        // lays out there first. `meta` reads no layout, so it did not wait for one.
+        await tab.pinViewport?.();
         if (mode === 'text') {
             const { text, byteCount } = await captureText(tab);
             return { ...base, text, byte_count: byteCount };
@@ -453,6 +469,7 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
             const { bytes, ...rest } = shot.fields;
             return { ...composite, ...rest, screenshot_byte_count: bytes ?? 0 };
         }
+        // Unreachable: the mode was checked against `CAPTURE_MODES` above.
         return failure(`unknown capture mode '${mode}' (allowed: ${CAPTURE_MODES.join(', ')})`);
     };
 
@@ -526,6 +543,9 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         if ('error' in found) return found.error;
         const method = str(args, 'method');
         if (method === '') return failure('actuator method is required');
+        // The actuator reads and clicks layout (element rects, `wait`): a parked view lays out
+        // at the automation viewport first (`TabController.pinViewport`).
+        await found.tab.pinViewport?.();
         const outcome = await found.tab.evaluate(buildActuatorCall(method, list(args, 'args')));
         return parseEnvelope('actuator', outcome);
     };
@@ -535,6 +555,9 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         if ('error' in found) return found.error;
         const script = str(args, 'script');
         if (script.trim() === '') return failure('script is required');
+        // Arbitrary page script is an automation read too: whatever it measures is measured
+        // against the same viewport `capture` answers with.
+        await found.tab.pinViewport?.();
         return parseEnvelope('exec', await found.tab.evaluate(wrapExecScript(script)));
     };
 

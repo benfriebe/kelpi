@@ -36,10 +36,11 @@
  * `setBounds` / which window owns the view.
  *
  * The holder window is what gives the views a place to live; `Emulation.setDeviceMetricsOverride`
- * then pins their viewport, so layout (`innerText`, `getBoundingClientRect`) and screenshots are
- * the same 1280×800 regardless of the holder. Measured on Electron 43/macOS: a view in a window
- * that is never shown still lays out and still screenshots, including while it is the hidden
- * background tab of a pane — which is the whole premise of the headless surface.
+ * then pins their viewport for automation reads (`./viewport-pin.ts` - lazily, because a pin is
+ * a reflow and most parks are a menu), so layout (`innerText`, `getBoundingClientRect`) and
+ * screenshots are the same 1280×800 regardless of the holder. Measured on Electron 43/macOS: a
+ * view in a window that is never shown still lays out and still screenshots, including while it
+ * is the hidden background tab of a pane - which is the whole premise of the headless surface.
  *
  * ## `webSecurity` stays ON
  *
@@ -85,6 +86,7 @@ import {
     type NavFocusGuard
 } from './nav-focus.js';
 import { createViewFocusGate, traceFocus, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
+import { viewportPinAction, type ViewportPinEvent } from './viewport-pin.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -183,10 +185,18 @@ export interface HostTab extends TabController {
      * one is a defect the user sees: a 1280×800 page painted into a 516×673 hole shows its
      * top-left corner — clipped, non-responsive, and at 1× on a retina panel (run-B L2).
      *
-     * So the override is cleared while embedded (Chromium then lays the page out at the widget's
-     * real size and the window's real scale factor) and re-applied the moment it goes back.
+     * So a placement clears the override (Chromium then lays the page out at the widget's real
+     * size and the window's real scale factor). A park does NOT re-apply it: the page keeps the
+     * layout the person was looking at, and the pin waits for `pinViewport` - the rule, and the
+     * sideways jump it stops, are `./viewport-pin.ts`.
      */
     setEmbedded(embedded: boolean): void;
+    /**
+     * An automation read is about to run on this view (`TabController.pinViewport`): a parked
+     * view lays itself out at the automation viewport first, an on-screen one is left alone.
+     * Resolves once the layout is in effect, or at once when there is nothing to do.
+     */
+    pinViewport(): Promise<void>;
     /**
      * §N30: does this view hold the shell window's keyboard focus right now?
      *
@@ -248,10 +258,14 @@ class ElectronTab implements HostTab {
     /** The last `nav-state` payload, so an unchanged repeat is not put on the wire. */
     private lastNavState: { loading: boolean; canGoBack: boolean; canGoForward: boolean } | null = null;
 
-    /** The pinned automation viewport, re-applied whenever the view returns to the holder. */
+    /** The automation viewport, applied on demand to a parked view (`pinViewport`). */
     private readonly viewport: { readonly width: number; readonly height: number };
     /** True while the view lives in the shell window, where the pane's rect is the viewport. */
     private embedded = false;
+    /** True while `Emulation.setDeviceMetricsOverride` holds the page at `viewport` @1×. */
+    private pinned = false;
+    /** Pin and unpin run one at a time, each behind `ready` - see `queueViewport`. */
+    private viewportOps: Promise<void> = Promise.resolve();
     /** §N29: tells the shell's own `focus()` calls from the user's clicks (`./view-focus.ts`). */
     private readonly focusGate: ViewFocusGate;
     /** §N30: keeps a committing navigation from moving the keyboard (`./nav-focus.ts`). */
@@ -432,37 +446,74 @@ class ElectronTab implements HostTab {
                 }
             );
         }
-        await this.applyViewportPin();
+        // A fresh tab is an automation surface until the client places it, so it is born pinned.
+        // One the client placed while the session was still coming up is left at the pane's
+        // rect: `setEmbedded(true)` is already recorded, and its queued transition would only
+        // clear the pin again a moment later.
+        if (!this.embedded) await this.pin();
     }
 
     /**
-     * Pin (or unpin) the layout viewport, per `HostTab.setEmbedded`.
+     * Lay the page out at the automation viewport (`./viewport-pin.ts`).
      *
-     * Off-screen the tab is an automation surface and the viewport is fixed at `DEFAULT_VIEWPORT`
-     * @1×, so `capture`, `q-rect` and `wait` are deterministic. Embedded in the shell window the
-     * pane's rect is the viewport, so the override has to go — otherwise the page lays out at
-     * 1280×800 inside whatever hole the client drew and the user sees its clipped top-left corner.
+     * Both halves: the widget's own size - invisible, the holder is never shown - and the
+     * emulated metrics, which are what make `capture`, `q-rect` and `wait` deterministic
+     * whatever the holder window happens to be.
      */
-    private async applyViewportPin(): Promise<void> {
-        if (this.embedded) {
-            await this.send('Emulation.clearDeviceMetricsOverride').catch((error: unknown) => {
-                // Non-fatal: the page keeps the pinned viewport, i.e. today's behaviour.
-                this.report(error, 'device-metrics-clear');
+    private async pin(): Promise<void> {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        this.view.setBounds({ x: 0, y: 0, width: this.viewport.width, height: this.viewport.height });
+        try {
+            await this.send('Emulation.setDeviceMetricsOverride', {
+                width: this.viewport.width,
+                height: this.viewport.height,
+                // 1, not 0 ("system default"): on a retina Mac the default would double every
+                // screenshot's byte count for no extra information, and push captures over §8.4's
+                // 1 MB inline budget for pages that have no business spilling to a temp file.
+                deviceScaleFactor: 1,
+                mobile: false
             });
-            return;
-        }
-        await this.send('Emulation.setDeviceMetricsOverride', {
-            width: this.viewport.width,
-            height: this.viewport.height,
-            // 1, not 0 ("system default"): on a retina Mac the default would double every
-            // screenshot's byte count for no extra information, and push captures over §8.4's
-            // 1 MB inline budget for pages that have no business spilling to a temp file.
-            deviceScaleFactor: 1,
-            mobile: false
-        }).catch((error: unknown) => {
+            this.pinned = true;
+        } catch (error) {
             // Non-fatal: the holder window's size then decides layout.
             this.report(error, 'device-metrics');
+        }
+    }
+
+    /** Let the page lay out at the widget's real size and the window's real scale factor. */
+    private async unpin(): Promise<void> {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        try {
+            await this.send('Emulation.clearDeviceMetricsOverride');
+            this.pinned = false;
+        } catch (error) {
+            // Non-fatal, and the pin stays recorded so the next placement tries again: until one
+            // succeeds the page keeps the pinned viewport, i.e. run-B L2's clipped corner.
+            this.report(error, 'device-metrics-clear');
+        }
+    }
+
+    /**
+     * Pin and unpin are CDP round trips that must not interleave: a placement landing while a
+     * read is still pinning would clear an override that is still being applied and leave the
+     * on-screen page laid out for the holder. Each transition therefore waits for the one before
+     * it, and for `ready` - a view can be placed (or read) before its CDP session exists, and a
+     * command sent to a renderer that is not there yet never answers. The decision is taken when
+     * the transition RUNS, against the state then, not when it was queued.
+     */
+    private queueViewport(event: ViewportPinEvent): Promise<void> {
+        const run = this.viewportOps
+            .then(() => this.ready)
+            .then(async () => {
+                if (this.disposed) return;
+                const action = viewportPinAction({ embedded: this.embedded, pinned: this.pinned }, event);
+                if (action === 'pin') await this.pin();
+                else if (action === 'unpin') await this.unpin();
+            });
+        this.viewportOps = run.catch((error: unknown) => {
+            this.report(error, 'viewport-pin');
         });
+        return this.viewportOps;
     }
 
     /**
@@ -1018,11 +1069,11 @@ class ElectronTab implements HostTab {
      * Issue #12's still frame — see `./caps.ts`.
      *
      * **Embedded only, and the guard is the contract rather than an optimisation.** Off screen
-     * the viewport is pinned to `DEFAULT_VIEWPORT` @1× (`applyViewportPin`), so a holder view's
-     * frame is a 1280×800 picture of a page laid out for nobody: painted into the pane's hole it
-     * would be the clipped, soft, wrong-aspect corner that run-B L2 already caught once. There is
-     * no honest poster for a view that is not on screen, so this says so and the client parks the
-     * way it always did.
+     * the view may be pinned to `DEFAULT_VIEWPORT` @1× (`pinViewport`, once an automation read
+     * has asked for it), and a holder view's frame is then a 1280×800 picture of a page laid out
+     * for nobody: painted into the pane's hole it would be the clipped, soft, wrong-aspect corner
+     * that run-B L2 already caught once. There is no honest poster for a view that is not on
+     * screen, so this says so and the client parks the way it always did.
      *
      * Same CDP call as `screenshot()` and deliberately no `clip`/`captureBeyondViewport`: the
      * frame wanted IS the visible viewport, and those two are the pair measured never to answer
@@ -1043,9 +1094,9 @@ class ElectronTab implements HostTab {
         // Checked a THIRD time, on the other side of the capture. A screenshot is not
         // instantaneous and the view can be taken off screen while it is in flight — a tab
         // switch, the workspace changing, the client's own park landing from another path — and
-        // the frame CDP hands back then is the holder's pinned 1280×800, which is exactly the
-        // wrong-aspect picture §3.6 exists to refuse. The client is holding a live view on
-        // screen for this answer, so the only safe answer is the honest no.
+        // the frame CDP hands back then is of a view nobody is looking at, which is exactly the
+        // picture §3.6 exists to refuse. The client is holding a live view on screen for this
+        // answer, so the only safe answer is the honest no.
         if (this.disposed || this.contents.isDestroyed() || !this.embedded) {
             return this.posterRefused('parked while the frame was being taken');
         }
@@ -1105,12 +1156,15 @@ class ElectronTab implements HostTab {
     setEmbedded(embedded: boolean): void {
         if (this.disposed || this.embedded === embedded) return;
         this.embedded = embedded;
-        // Sequenced behind `ready`: a view can be placed before its CDP session exists (the
-        // client's first geometry report races the bootstrap), and an override applied to a
-        // renderer that is not there yet never resolves.
-        void this.ready.then(() => this.applyViewportPin()).catch((error: unknown) => {
-            this.report(error, 'device-metrics-embed');
-        });
+        // A placement clears a pin an automation read left; a park keeps the page as it is - 
+        // `./viewport-pin.ts` for why that second half is the whole point.
+        void this.queueViewport(embedded ? 'placed' : 'parked');
+    }
+
+    /** `HostTab.pinViewport`: a parked view lays out at the automation viewport before a read. */
+    pinViewport(): Promise<void> {
+        if (this.disposed) return Promise.resolve();
+        return this.queueViewport('automation-read');
     }
 
     /**

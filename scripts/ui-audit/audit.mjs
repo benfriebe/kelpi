@@ -28624,6 +28624,260 @@ function buildFlows(ctx) {
             }
         },
 
+        /*
+         * C2 - the terminal under a software keyboard (MOBILE-PLAN.md §4, §7 "Keyboard inset
+         * ownership"). The live half of `terminal/keyboard-inset.ts`.
+         *
+         * TWO facts, and neither can be established in jsdom.
+         *
+         *   1. THE SEAM. jsdom has no visual viewport worth the name, so the unit tests drive a
+         *      hand-written fake through the pane's injectable `formFactorWindow`. Whether the
+         *      REAL client, reading the REAL `window.visualViewport`, resizes its terminal is a
+         *      fact about Chromium and about the wiring between them. There is no way to raise a
+         *      real software keyboard in a desktop Chromium, so the keyboard is faked at the one
+         *      place the client reads: an own `height` accessor defined on the live
+         *      `VisualViewport` instance, shadowing the prototype getter, plus `resize` events
+         *      dispatched on the instance. `readSoftKeyboardInset` computes
+         *      `innerHeight - viewport.height - offsetTop`, so a 300 px shadow IS a 300 px
+         *      keyboard as far as every line of client code is concerned.
+         *   2. THE COUNT. "One resize per keyboard transition" is not visible in a screenshot or
+         *      in a final size: one resize and fifteen resizes end at the same rows. The pane
+         *      publishes `data-terminal-resizes` under the phone form factor, incremented on the
+         *      same line that puts the message on the pane's stream, so the delta across the
+         *      transition is a report of what the DAEMON was told rather than an inference from
+         *      what the pane looks like afterwards.
+         *
+         * A phone-lane step (lib/shards.mjs), so it owes the lane's clause: it clears the
+         * emulation in a `finally`, and the shadow with it. It provisions nothing, moves no
+         * focus, opens no menu and types nothing; it resizes the panes that are on screen, which
+         * is exactly what `emulatePhone` already does on its own and is undone by clearing it.
+         */
+        {
+            id: 'phone-keyboard-inset',
+            expect:
+                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; removing the fake restores the rows in exactly one more.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                /** The keyboard this step fakes, in CSS px: iOS's is around 300 on an iPhone. */
+                const FAKE_KEYBOARD_PX = 300;
+                /** Animation frames the fake keyboard travels over, at ~16 ms (60 Hz). */
+                const FRAMES = 15;
+
+                /** Every live terminal pane's published phone state, newest read. */
+                const readPanes = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify(Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => ({
+                                    id: el.getAttribute('data-pane-id'),
+                                    rows: el.getAttribute('data-terminal-rows'),
+                                    inset: el.getAttribute('data-terminal-keyboard-inset'),
+                                    resizes: el.getAttribute('data-terminal-resizes'),
+                                    cell: el.getAttribute('data-terminal-cell'),
+                                    canvas: (() => { const c = el.querySelector('canvas'); return c === null ? null : Math.round(c.getBoundingClientRect().height); })()
+                                })))`
+                            )
+                        )
+                    );
+
+                try {
+                    await emulatePhone(view);
+                    const signal = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                                    w: window.innerWidth,
+                                    h: window.innerHeight
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`form-factor signal under emulation: ${JSON.stringify(signal)}`);
+                    recorder.check(
+                        'the client is in the phone form factor (everything below is gated on it)',
+                        signal.formFactor === 'phone',
+                        `data-form-factor=${String(signal.formFactor)} coarse=${String(signal.coarse)} ${String(signal.w)}x${String(signal.h)}`
+                    );
+                    const before = await readPanes();
+                    recorder.note(`under the phone viewport, before the keyboard: ${JSON.stringify(before)}`);
+                    recorder.check(
+                        'a live terminal pane publishes its phone state (rows, inset, resize count)',
+                        before.length > 0 && before.every((pane) => pane.rows !== null && pane.inset === '0'),
+                        `${String(before.length)} live terminal pane(s); ` +
+                            `${String(before.filter((pane) => pane.rows !== null).length)} carry data-terminal-rows`
+                    );
+                    if (before.length === 0) return;
+
+                    /*
+                     * Raise the keyboard the way a keyboard actually arrives: over FRAMES steps,
+                     * one `resize` per step, ~16 ms apart. A single jump would prove the inset is
+                     * read; only the burst proves the settle rule absorbs an animation.
+                     */
+                    const raised = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(async () => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    const shadowed = Object.getOwnPropertyDescriptor(vv, 'height') !== undefined;
+                                    window.__kelpiFakeKeyboard = 0;
+                                    Object.defineProperty(vv, 'height', {
+                                        configurable: true,
+                                        get() { return window.innerHeight - (window.__kelpiFakeKeyboard ?? 0); }
+                                    });
+                                    let events = 0;
+                                    for (let frame = 1; frame <= ${String(FRAMES)}; frame += 1) {
+                                        window.__kelpiFakeKeyboard = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / ${String(FRAMES)});
+                                        vv.dispatchEvent(new Event('resize'));
+                                        events += 1;
+                                        await new Promise((resolve) => setTimeout(resolve, 16));
+                                    }
+                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`fake keyboard: ${JSON.stringify(raised)}`);
+                    recorder.check(
+                        'shadowing `height` on the live VisualViewport instance is a usable seam in this Chromium',
+                        raised.ok === true &&
+                            raised.ownPropertyBefore === false &&
+                            raised.innerHeight - raised.height === FAKE_KEYBOARD_PX,
+                        raised.ok === true
+                            ? `innerHeight ${String(raised.innerHeight)} - viewport ${String(raised.height)} = ${String(raised.innerHeight - raised.height)} px of keyboard`
+                            : String(raised.why)
+                    );
+                    // The settle window plus the pane's own measure/resize/repaint.
+                    await sleep(600);
+                    const up = await readPanes();
+                    recorder.note(`with the keyboard up: ${JSON.stringify(up)}`);
+
+                    const pairs = before
+                        .map((pane) => ({ before: pane, after: up.find((other) => other.id === pane.id) }))
+                        .filter((pair) => pair.after !== undefined);
+                    const drops = pairs.map((pair) => {
+                        const cellHeight = Number(String(pair.before.cell ?? '0x0').split('x')[1]);
+                        return {
+                            id: pair.before.id,
+                            cellHeight,
+                            expected: Math.floor((Number(pair.before.rows) * cellHeight - FAKE_KEYBOARD_PX) / cellHeight),
+                            rows: Number(pair.after.rows),
+                            wasRows: Number(pair.before.rows),
+                            resizes: Number(pair.after.resizes) - Number(pair.before.resizes)
+                        };
+                    });
+                    recorder.note(`row drops: ${JSON.stringify(drops)}`);
+                    recorder.check(
+                        'the keyboard took about 300 / cellHeight rows off every terminal',
+                        drops.length > 0 && drops.every((drop) => Math.abs(drop.rows - drop.expected) <= 1 && drop.rows < drop.wasRows),
+                        drops
+                            .map((drop) => `${String(drop.wasRows)} -> ${String(drop.rows)} rows (expected ~${String(drop.expected)} at ${String(drop.cellHeight)}px cells)`)
+                            .join('; ')
+                    );
+                    recorder.check(
+                        `${String(FRAMES)} visualViewport resize events cost the daemon exactly ONE resize per pane`,
+                        drops.length > 0 && drops.every((drop) => drop.resizes === 1),
+                        drops.map((drop) => `${String(drop.id)}: +${String(drop.resizes)}`).join('; ')
+                    );
+                    recorder.check(
+                        'the inset the pane measured with is the keyboard it was given',
+                        up.every((pane) => pane.inset === String(FAKE_KEYBOARD_PX)),
+                        up.map((pane) => `${String(pane.id)}: ${String(pane.inset)}px`).join('; ')
+                    );
+                    // The canvas is the pixel half: the engine sizes it inline to rows x cellHeight
+                    // (`vendor/.../renderer.ts:441-446`), so a shrunken grid is a shorter canvas and
+                    // the prompt line sits above where the keyboard would be.
+                    recorder.check(
+                        'the engine canvas shrank with the grid, so the prompt line clears the keyboard',
+                        pairs.every((pair) => pair.after.canvas !== null && pair.after.canvas < pair.before.canvas),
+                        pairs.map((pair) => `${String(pair.before.canvas)}px -> ${String(pair.after.canvas)}px`).join('; ')
+                    );
+                    await recorder.shot(view, 'keyboard-up');
+
+                    // …and down again: one more transition, one more message, back where it was.
+                    const lowered = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(async () => {
+                                    const vv = window.visualViewport;
+                                    for (let frame = ${String(FRAMES)} - 1; frame >= 0; frame -= 1) {
+                                        window.__kelpiFakeKeyboard = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / ${String(FRAMES)});
+                                        vv.dispatchEvent(new Event('resize'));
+                                        await new Promise((resolve) => setTimeout(resolve, 16));
+                                    }
+                                    delete vv.height;
+                                    delete window.__kelpiFakeKeyboard;
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ restored: vv.height === window.innerHeight, height: vv.height });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`fake keyboard removed: ${JSON.stringify(lowered)}`);
+                    recorder.check(
+                        'deleting the shadow puts the real VisualViewport getter back',
+                        lowered.restored === true,
+                        `viewport height ${String(lowered.height)}`
+                    );
+                    await sleep(600);
+                    const down = await readPanes();
+                    recorder.note(`with the keyboard dismissed: ${JSON.stringify(down)}`);
+                    const restored = before
+                        .map((pane) => ({ before: pane, after: down.find((other) => other.id === pane.id) }))
+                        .filter((pair) => pair.after !== undefined)
+                        .map((pair) => ({
+                            id: pair.before.id,
+                            rows: Number(pair.after.rows),
+                            wasRows: Number(pair.before.rows),
+                            resizes: Number(pair.after.resizes) - Number(up.find((other) => other.id === pair.before.id)?.resizes ?? 0)
+                        }));
+                    recorder.check(
+                        'dismissing the keyboard gives the rows back',
+                        restored.length > 0 && restored.every((pane) => pane.rows === pane.wasRows),
+                        restored.map((pane) => `${String(pane.rows)} rows (was ${String(pane.wasRows)})`).join('; ')
+                    );
+                    recorder.check(
+                        'and costs exactly ONE resize per pane on the way down too',
+                        restored.length > 0 && restored.every((pane) => pane.resizes === 1),
+                        restored.map((pane) => `${String(pane.id)}: +${String(pane.resizes)}`).join('; ')
+                    );
+                } finally {
+                    // Belt and braces: an assertion that threw mid-transition must not hand the
+                    // next step a window whose visual viewport lies about its own height.
+                    await view
+                        .eval(
+                            `(() => {
+                                const vv = window.visualViewport;
+                                if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                    delete vv.height;
+                                    vv.dispatchEvent(new Event('resize'));
+                                }
+                                delete window.__kelpiFakeKeyboard;
+                                return true;
+                            })()`
+                        )
+                        .catch(() => {});
+                    await clearPhoneEmulation(view);
+                }
+
+                const after = await view.eval(
+                    `JSON.stringify({
+                        formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                        panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => el.getAttribute('data-terminal-rows'))
+                    })`
+                );
+                const parsed = JSON.parse(String(after));
+                recorder.check(
+                    'and NOT on desktop: with the emulation cleared the panes carry no phone state at all',
+                    parsed.formFactor === 'desktop' && parsed.panes.every((rows) => rows === null),
+                    `data-form-factor=${String(parsed.formFactor)}, data-terminal-rows: ${JSON.stringify(parsed.panes)}`
+                );
+            }
+        },
+
         /**
          * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
          * "a web app in a window" and "a Mac app".

@@ -8,6 +8,7 @@
 
 import type { WsVtModes } from '@kelpi/protocol';
 
+import type { FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import type {
     CellSize,
@@ -234,6 +235,25 @@ export class FakeRenderer implements TerminalRenderer {
         this.themes.push(theme);
     }
 
+    /**
+     * C2 - every `setTextInputAttributes` call, in order. Empty is the desktop assertion: a
+     * desktop pane must never reach the renderer for this at all.
+     */
+    readonly textInputAttributes: Readonly<Record<string, string | null>>[] = [];
+
+    setTextInputAttributes(attributes: Readonly<Record<string, string | null>>): void {
+        this.textInputAttributes.push(attributes);
+        // …and onto a real element, so a test can assert the DOM the keyboard would read rather
+        // than the call that was made. The adapter finds the engine's own textarea; the fake
+        // only has one when `autoFocusOnOpen` built it, which is the case that models the engine.
+        const target = this.opened?.querySelector('textarea') ?? null;
+        if (target === null) return;
+        for (const [name, value] of Object.entries(attributes)) {
+            if (value === null) target.removeAttribute(name);
+            else target.setAttribute(name, value);
+        }
+    }
+
     cellSize(): CellSize {
         return this.cell;
     }
@@ -439,6 +459,122 @@ export function installFakeResizeObserver(): FakeResizeObservers {
         observed,
         restore(): void {
             (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
+        }
+    };
+}
+
+// ── a phone with a software keyboard (C2) ───────────────────────────────────────────
+
+/**
+ * A `FormFactorWindow` that answers `phone` and whose visual viewport a test can drive.
+ *
+ * Shared between `keyboard-inset.test.ts` and `TerminalPane.keyboard.test.tsx` because both need
+ * exactly the same thing and it is the only way to have a software keyboard at all off a device:
+ * jsdom has no layout, no `visualViewport` worth the name and no keyboard. `raiseKeyboard` models
+ * what iOS actually does - the viewport shrinks over several ANIMATION frames, each one firing
+ * `resize` - which is the input the settle rule exists to absorb.
+ */
+export interface FakePhoneWindow extends FormFactorWindow {
+    /** Shrink the viewport to `innerHeight - inset` over `frames` resize events. */
+    raiseKeyboard(inset: number, frames?: number): void;
+    /** Restore it, over `frames` resize events. */
+    lowerKeyboard(frames?: number): void;
+    /** Every `resize` event the viewport has fired since the window was made. */
+    viewportEvents(): number;
+    /** Live listener count, so a test can pin that a desktop pane subscribes to nothing. */
+    listenerCount(): number;
+    /** Flip `(pointer: coarse)`, as pairing a Bluetooth mouse to an iPad does. */
+    setPointer(next: boolean): void;
+}
+
+/** iPhone 14/15 in CSS px - the device MOBILE-PLAN.md names, and the audit's phone viewport. */
+export const FAKE_PHONE_VIEWPORT = { width: 390, height: 844 };
+
+export function createFakePhoneWindow(
+    init: { width?: number; height?: number; coarse?: boolean } = {}
+): FakePhoneWindow {
+    const width = init.width ?? FAKE_PHONE_VIEWPORT.width;
+    const height = init.height ?? FAKE_PHONE_VIEWPORT.height;
+    let coarse = init.coarse ?? true;
+    let viewportHeight = height;
+    let fired = 0;
+    const media = new Set<() => void>();
+    const windowResize = new Set<() => void>();
+    const viewportListeners = new Map<string, Set<() => void>>();
+    const bucket = (type: string): Set<() => void> => {
+        const existing = viewportListeners.get(type);
+        if (existing !== undefined) return existing;
+        const created = new Set<() => void>();
+        viewportListeners.set(type, created);
+        return created;
+    };
+    const fire = (type: string): void => {
+        fired += 1;
+        for (const listener of [...bucket(type)]) listener();
+    };
+
+    const step = (target: number, frames: number): void => {
+        const from = viewportHeight;
+        const count = Math.max(1, frames);
+        for (let index = 1; index <= count; index += 1) {
+            viewportHeight = Math.round(from + ((target - from) * index) / count);
+            fire('resize');
+        }
+    };
+
+    return {
+        innerWidth: width,
+        innerHeight: height,
+        visualViewport: {
+            width,
+            get height(): number {
+                return viewportHeight;
+            },
+            offsetTop: 0,
+            addEventListener(type: string, listener: () => void): void {
+                bucket(type).add(listener);
+            },
+            removeEventListener(type: string, listener: () => void): void {
+                bucket(type).delete(listener);
+            }
+        },
+        location: { search: '' },
+        matchMedia(query: string) {
+            return {
+                get matches(): boolean {
+                    return query === '(pointer: coarse)' ? coarse : false;
+                },
+                addEventListener(_type: 'change', listener: () => void): void {
+                    media.add(listener);
+                },
+                removeEventListener(_type: 'change', listener: () => void): void {
+                    media.delete(listener);
+                }
+            };
+        },
+        addEventListener(type: string, listener: () => void): void {
+            if (type === 'resize') windowResize.add(listener);
+        },
+        removeEventListener(type: string, listener: () => void): void {
+            windowResize.delete(listener);
+        },
+        raiseKeyboard(inset: number, frames = 15): void {
+            step(height - inset, frames);
+        },
+        lowerKeyboard(frames = 15): void {
+            step(height, frames);
+        },
+        viewportEvents(): number {
+            return fired;
+        },
+        listenerCount(): number {
+            let total = media.size + windowResize.size;
+            for (const set of viewportListeners.values()) total += set.size;
+            return total;
+        },
+        setPointer(next: boolean): void {
+            coarse = next;
+            for (const listener of [...media]) listener();
         }
     };
 }

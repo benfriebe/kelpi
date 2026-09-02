@@ -199,6 +199,21 @@ export interface TerminalRenderer {
      * Unfocused, it is a steady hollow block — `src/renderer/cursor.zig:59-60`.
      */
     setSurfaceFocus(focused: boolean): void;
+    /**
+     * Set attributes on the engine's hidden text input (C2, `terminal/keyboard-inset.ts`).
+     *
+     * The engine owns that `<textarea>` - it creates it inside the host in `open()` and destroys
+     * it in `dispose()` - so the port has no element of its own to put a software keyboard's
+     * hints on, and reaching through the host from a component would mean a caller knowing the
+     * engine's internal DOM. This is the one narrow way in: a name/value map, applied now if the
+     * engine is open and re-applied to the fresh textarea every time it opens again. A `null`
+     * VALUE removes the attribute, which is what lets a caller take back exactly what it added.
+     *
+     * Optional, like `remeasure`: a fake or a third engine may have no text input to configure.
+     * Never called by a desktop pane - `TerminalPane` calls it only under the phone form factor,
+     * so a desktop terminal's textarea is byte-identical to what the engine built.
+     */
+    setTextInputAttributes?(attributes: Readonly<Record<string, string | null>>): void;
     setTheme(theme: TerminalTheme): void;
     /** CSS-pixel cell metrics; falls back to a font-derived estimate before the engine is up. */
     cellSize(): CellSize;
@@ -269,6 +284,14 @@ export interface XtermLikeTerminal {
     getSelection?(): string;
     onSelectionChange?(listener: () => void): EngineDisposable;
     clearSelection?(): void;
+    /**
+     * The hidden `<textarea>` the engine routes keyboard and IME input through, once `open()` has
+     * created it (C2). Both shipped engines expose it under this name -
+     * `vendor/ghostty-web-patched/source/lib/terminal.ts:50` and xterm.js's own `Terminal.textarea`
+     * - and the adapter falls back to finding it in the host when an engine does not, so this is
+     * a shortcut rather than a requirement.
+     */
+    readonly textarea?: HTMLTextAreaElement | null | undefined;
 }
 
 /** What a loader hands back: the terminal plus the engine-specific bits it can serve. */
@@ -708,6 +731,18 @@ class AdapterRenderer implements TerminalRenderer {
     private requestedCols: number;
     private requestedRows: number;
     private readonly faults: EngineFaultHook | undefined;
+    /**
+     * C2 - what the owner has asked the engine's hidden textarea to say, and the host it lives in.
+     *
+     * Held rather than written once, because the textarea is the ENGINE's: it is created by
+     * `open()` and destroyed by `dispose()`, so an attribute set before the engine is up, or set
+     * on the textarea of an engine that then dies and is rebuilt, has to be re-applied to
+     * whichever textarea exists now. Empty on every desktop pane, and an empty map is the fast
+     * path out of `applyTextInputAttributes` - so a desktop terminal pays nothing and its
+     * textarea keeps exactly the attributes the engine gave it.
+     */
+    private textInputAttributes: Record<string, string | null> = {};
+    private host: HTMLElement | undefined;
 
     /**
      * §N24 — the resize→replay paint hold.
@@ -962,6 +997,33 @@ class AdapterRenderer implements TerminalRenderer {
         this.swallow(() => this.handle?.setSurfaceFocus?.(focused));
     }
 
+    /** C2 - see the interface. Merges into what is already asked for; `null` removes. */
+    setTextInputAttributes(attributes: Readonly<Record<string, string | null>>): void {
+        if (this.disposed) return;
+        this.textInputAttributes = { ...this.textInputAttributes, ...attributes };
+        this.applyTextInputAttributes();
+    }
+
+    /**
+     * Put the asked-for attributes onto whichever textarea the engine currently owns.
+     *
+     * Swallowed rather than guarded: a textarea attribute is a hint to a software keyboard, and a
+     * failure to set one must never poison an engine whose PTY is fine.
+     */
+    private applyTextInputAttributes(): void {
+        const names = Object.keys(this.textInputAttributes);
+        if (names.length === 0) return;
+        const target = this.handle?.terminal.textarea ?? this.host?.querySelector('textarea') ?? null;
+        if (target === null) return;
+        this.swallow(() => {
+            for (const name of names) {
+                const value = this.textInputAttributes[name];
+                if (value === null || value === undefined) target.removeAttribute(name);
+                else target.setAttribute(name, value);
+            }
+        });
+    }
+
     setTheme(theme: TerminalTheme): void {
         this.options = { ...this.options, theme };
         if (this.disposed || this.poisoned) return;
@@ -1021,6 +1083,9 @@ class AdapterRenderer implements TerminalRenderer {
         if (wasHolding) this.announceHold(false);
         this.holdListeners.clear();
         this.releaseEngine();
+        // C2: do not hold the pane's host past teardown - the element outlives this adapter and
+        // the next engine gets its own.
+        this.host = undefined;
         this.pending = [];
         this.pendingBytes = 0;
         this.dataListeners.clear();
@@ -1221,6 +1286,8 @@ class AdapterRenderer implements TerminalRenderer {
             throw error;
         }
         this.handle = handle;
+        // C2's fallback route to the engine's textarea, for an engine that does not expose one.
+        this.host = element;
 
         /**
          * Everything from here on talks to a LIVE engine, and every one of these calls reaches
@@ -1272,6 +1339,10 @@ class AdapterRenderer implements TerminalRenderer {
                 if (plantedWrite !== undefined) throw new RangeError(plantedWrite);
                 terminal.write(chunk);
             }
+
+            // C2: the textarea only exists now, and it is a NEW one on every engine build. A
+            // no-op unless a phone pane has asked for something (the map is empty otherwise).
+            this.applyTextInputAttributes();
 
             // ghostty-web#100: `open()` focuses itself. Re-assert what the caller asked for.
             if (this.wantFocus) terminal.focus();

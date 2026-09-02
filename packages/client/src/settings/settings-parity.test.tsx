@@ -164,6 +164,23 @@ describe('Settings ▸ Labels', () => {
         // The `VStack` has no card behind it; the port's dashed box was its own invention.
         expect(screen.getByTestId('labels-empty').className).not.toContain('border');
     });
+
+    /**
+     * The placeholder centres in the tab's real height, not in a 180px band near the top:
+     * the tab root claims the panel's full height and the empty list section fills it, so
+     * the empty state's own flex centring works on the space the user actually sees. The
+     * fill is conditional - a populated list must read top-down again.
+     */
+    it('centres the empty state in the tab, not a band', () => {
+        renderLabels([]);
+        expect(screen.getByTestId('settings-tab-labels').className).toContain('min-h-full');
+        expect(screen.getByTestId('label-presets').className).toContain('flex-1');
+        expect(screen.getByTestId('labels-empty').className).toContain('flex-1');
+        expect(screen.getByTestId('labels-empty').className).toContain('justify-center');
+        cleanup();
+        renderLabels();
+        expect(screen.getByTestId('label-presets').className).not.toContain('flex-1');
+    });
 });
 
 // ── M41 / M42 / M43 / M44 (Keybindings) ─────────────────────────────────────────────

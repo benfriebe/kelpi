@@ -817,7 +817,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     }, [order, props.presets]);
 
     return (
-        <div className="flex flex-col gap-4" data-testid="settings-tab-labels" ref={rootRef}>
+        <div className="flex min-h-full flex-col gap-4" data-testid="settings-tab-labels" ref={rootRef}>
             {/*
              * L79's `plain`: `LabelPresetsSettingsView.swift:27-45` is a `VStack { addRow;
              * Divider(); List }`, not a `Form` — there is no grouped card anywhere on this tab,
@@ -826,6 +826,12 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
              */}
             <SettingsSection
                 plain
+                /*
+                 * Empty, the list section takes the tab's remaining height so the placeholder
+                 * centres in the space the user actually sees (the adoption section and hints
+                 * settle below it). With presets, the list reads top-down as before.
+                 */
+                fill={props.presets.length === 0}
                 /*
                  * §N36(2) — "Labels", not "Presets".
                  *

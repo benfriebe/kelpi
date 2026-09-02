@@ -138,6 +138,15 @@ export interface SettingsSectionProps {
      */
     readonly plain?: boolean | undefined;
     /**
+     * The section grows to take the tab's remaining height, handing it on to its children
+     * (plain sections only). This is what lets an empty state centre in the SPACE THE TAB
+     * ACTUALLY HAS rather than in a fixed-height band near the top: the tab root asks for
+     * `min-h-full`, the section asks for `fill`, and the placeholder's own `flex-1` +
+     * `justify-center` does the rest. Callers pass it only while the section is empty, so a
+     * populated list still reads top-down.
+     */
+    readonly fill?: boolean | undefined;
+    /**
      * §N36(1) — a control on the header's TRAILING edge, level with the title.
      *
      * Owner-directed, and it had no in-app precedent to inherit: the one header-trailing action
@@ -204,7 +213,7 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
     const rows = Children.toArray(props.children);
     return (
         <section
-            className="flex flex-col gap-1.5"
+            className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-1.5' : 'flex flex-col gap-1.5'}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             {props.action === undefined ? (
@@ -225,7 +234,9 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                 </div>
             )}
             {props.plain === true ? (
-                <div className="flex flex-col gap-2">{props.children}</div>
+                <div className={props.fill === true ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'}>
+                    {props.children}
+                </div>
             ) : (
                 <div
                     data-settings-card="true"

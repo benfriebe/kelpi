@@ -99,13 +99,19 @@ export function WebTab(props: WebTabProps): ReactElement {
     };
 
     return (
-        <div className="flex flex-col gap-4" data-testid="settings-tab-web">
+        <div className="flex min-h-full flex-col gap-4" data-testid="settings-tab-web">
             {/*
              * L79's `plain`: `SettingsView.swift:707-741` is a `VStack { List }` — the favourites
              * tab has no `Form` and no grouped card, and each row already carries its own fill.
              */}
             <SettingsSection
                 plain
+                /*
+                 * Empty, the section takes the whole tab so the placeholder centres in the
+                 * space the user actually sees - not in a fixed band near the top with the
+                 * tab's leftover height dead below it. With rows, the list reads top-down.
+                 */
+                fill={favourites.length === 0}
                 title="Favourites"
                 hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
                 testID="settings-favourites"

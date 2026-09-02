@@ -151,6 +151,20 @@ describe('the empty state', () => {
         expect(empty.textContent).toContain('star');
         expect(screen.queryByTestId('settings-favourites-list')).toBeNull();
     });
+
+    /**
+     * The placeholder centres in the tab's real height: the tab root claims the panel's full
+     * height, and while empty the section fills it so the star block's flex centring works on
+     * the space the user actually sees. With rows the fill is gone - a list reads top-down.
+     */
+    it('centres in the tab while empty, and only while empty', () => {
+        setup([]);
+        expect(screen.getByTestId('settings-tab-web').className).toContain('min-h-full');
+        expect(screen.getByTestId('settings-favourites').className).toContain('flex-1');
+        cleanup();
+        setup([favourite('a', 'A', 'https://a.example')]);
+        expect(screen.getByTestId('settings-favourites').className).not.toContain('flex-1');
+    });
 });
 
 /**

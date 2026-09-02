@@ -144,6 +144,18 @@ describe('content types', () => {
         expect(contentTypeFor('/x/font.woff2')).toBe('font/woff2');
         expect(contentTypeFor('/x/thing.bin')).toBe('application/octet-stream');
     });
+
+    /**
+     * The one extension whose fallback is silent rather than visible.
+     *
+     * A `.js` served as `application/octet-stream` fails loudly and nothing works; a manifest
+     * served that way is fetched, dropped, and the page goes on installing from the document's
+     * apple metas alone - the Home Screen icon is right and the app opens in a browser tab.
+     * `client/src/pwa/manifest.ts` states the same constant on its side.
+     */
+    it('gives the web app manifest its own type', () => {
+        expect(contentTypeFor('/manifest.webmanifest')).toBe('application/manifest+json');
+    });
 });
 
 describe('pane-assets gating', () => {

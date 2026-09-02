@@ -44,9 +44,12 @@ import { Glyph, GLYPH_STROKE_MEDIUM, GLYPH_STROKE_SEMIBOLD, type GlyphName } fro
 import {
     createPosterController,
     posterAttempt,
+    posterStyle,
+    samePosterStyle,
     warmPosterImage,
     POSTER_IDLE,
-    type PosterController
+    type PosterController,
+    type PosterStyle
 } from './poster';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import { useLoadProgress, type LoadProgressTimings } from './progress';
@@ -678,7 +681,12 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      */
     const posterDeps = useRef({ commands, paneID });
     posterDeps.current = { commands, paneID };
-    const [posterSrc, setPosterSrc] = useState<string | null>(null);
+    /**
+     * The frame AND the box to stand it in, together, because they are only correct together: the
+     * box is the view's own placement (`PosterRect`, viewport CSS px) turned into offsets inside
+     * this hole at the moment the frame landed.
+     */
+    const [posterFrame, setPosterFrame] = useState<{ src: string; style: PosterStyle } | null>(null);
     /**
      * §N26's cover, MINUS issue #12's few-frame hold — i.e. "this pane's own view is off screen
      * because something is over it". Kept beside `coveredByOverlay` rather than folded into it
@@ -698,9 +706,10 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 const { commands: live, paneID: pane } = posterDeps.current;
                 const attempt = posterAttempt(await live.poster(pane, tabID));
                 if (attempt.src === null) return attempt;
-                // Decoded before it counts as landed: parking on the bytes alone would hand the
-                // view back a frame before the picture replacing it could paint.
-                return { src: await warmPosterImage(attempt.src) };
+                // Warmed off-document so the element's own decode is a cache hit. It is NOT the
+                // paint signal — an image that is ready is not an image that is on screen, and
+                // the difference is the frame the owner saw blink (`confirmPosterPaint`).
+                return { ...attempt, src: await warmPosterImage(attempt.src) };
             },
             // The publish re-runs on every render and is where `sync` is called, so a render is
             // all the controller ever has to ask for.
@@ -709,6 +718,52 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
     }
     const poster = posterRef.current;
     useEffect(() => () => poster.dispose(), [poster]);
+
+    /**
+     * "The picture is on the screen" — the signal the park now waits for (issue #12).
+     *
+     * Three things have to be true and only the last one matters: the element exists, its bitmap
+     * is decoded (`decode()`, a cache hit after `warmPosterImage`), and a composited frame
+     * carrying it has been produced. The double `requestAnimationFrame` is what says the third:
+     * the first callback runs before the paint of the frame the image was committed in, the
+     * second after it. Then, and only then, the view may go back — otherwise the shell removes it
+     * a frame or two before this element appears and the pane shows its own background in the
+     * gap, which is exactly what "it flickers" was.
+     */
+    const posterImgRef = useRef<HTMLImageElement | null>(null);
+    const confirmPosterPaint = useCallback((): void => {
+        const image = posterImgRef.current;
+        if (image === null) return;
+        const src = image.src;
+        const afterPaint = (): void => {
+            const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => unknown })
+                .requestAnimationFrame;
+            if (typeof raf !== 'function') {
+                poster.painted(src);
+                return;
+            }
+            raf(() => raf(() => poster.painted(src)));
+        };
+        const decoded = typeof image.decode === 'function' ? image.decode() : null;
+        if (decoded === null) {
+            afterPaint();
+            return;
+        }
+        void decoded.then(afterPaint, afterPaint);
+    }, [poster]);
+
+    /*
+     * `onLoad` alone is not enough and the reason is a classic: an image whose bytes are already
+     * in hand can finish loading before React has attached the handler, and then the event never
+     * comes and the pane holds its view until the paint deadline. A data URL that
+     * `warmPosterImage` has already decoded is exactly that image. So the confirmation is also
+     * driven from an effect on the frame itself — idempotent, since the controller ignores a
+     * confirmation for anything but the frame it is currently waiting on.
+     */
+    useEffect(() => {
+        if (posterFrame === null) return;
+        confirmPosterPaint();
+    }, [posterFrame, confirmPosterPaint]);
 
     const publish = useCallback(() => {
         const element = pageRef.current;
@@ -744,7 +799,19 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                   tabID: active?.id ?? null
               })
             : POSTER_IDLE;
-        setPosterSrc(shot.src);
+        // The picture stands where the VIEW stood, not where this document would put an image:
+        // `posterStyle` turns the host's placement into offsets inside this hole, and pins the
+        // width and height so the browser cannot size the `<img>` from its own aspect ratio.
+        setPosterFrame((current) => {
+            if (shot.src === null) return current === null ? current : null;
+            const style = posterStyle(shot.box, rect);
+            // Same frame in the same box: keep the object, or the publish (which runs on every
+            // render) would hand React a new one every time and re-render itself for ever.
+            if (current !== null && current.src === shot.src && samePosterStyle(current.style, style)) {
+                return current;
+            }
+            return { src: shot.src, style };
+        });
         // The covered half of `data-visible`: a covered pane is not parked while its frame is
         // being taken, and that few-frame difference is real — the view is still on screen, and
         // the shell's own `owner=main` line still says so.
@@ -1152,21 +1219,17 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                   * picture standing in for a page, and everything a person can do to it (click a
                   * link, select text) belongs to the live view that is coming back.
                   */}
-                {posterSrc === null ? null : (
+                {posterFrame === null ? null : (
                     <img
+                        ref={posterImgRef}
                         data-testid={`web-poster-${paneID}`}
-                        src={posterSrc}
+                        src={posterFrame.src}
                         alt=""
                         aria-hidden
                         draggable={false}
                         className="pointer-events-none absolute select-none"
-                        style={{
-                            left: FOCUS_RING_WIDTH,
-                            right: FOCUS_RING_WIDTH,
-                            top: 0,
-                            bottom: FOCUS_RING_WIDTH,
-                            objectFit: 'fill'
-                        }}
+                        style={posterFrame.style}
+                        onLoad={confirmPosterPaint}
                     />
                 )}
                 {tabs.length === 0 ? (

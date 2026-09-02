@@ -162,12 +162,13 @@ menu ends up over a picture of the page rather than over nothing.
   "command":"web-poster","pane_id":"…",              "args":{"paneID":"…","tabID":"…"},
   "tab_id":"…"}}                                     "timeoutMs":2000}
 // host → daemon → client
-{"ok":true,"image_base64":"…","mime":"image/jpeg","base64_bytes":214512,"pane_id":"…"}
+{"ok":true,"image_base64":"…","mime":"image/jpeg","base64_bytes":214512,
+ "bounds":{"x":753,"y":88,"width":525,"height":706},"css_scale":1,"pane_id":"…"}
 ```
 
 | verb | args | reply |
 |---|---|---|
-| `poster` | `{paneID, tabID}` | `{ok:true, image_base64, mime:"image/jpeg", base64_bytes}` — the tab's **visible viewport as it is on screen**, at the pane's own size and the display's own scale. `{ok:false,error}` for every no. Budget: **2 s**. |
+| `poster` | `{paneID, tabID}` | `{ok:true, image_base64, mime:"image/jpeg", base64_bytes, bounds?, css_scale?}` — the tab's **visible viewport as it is on screen**, at the pane's own size and the display's own scale, plus **the box it is a picture OF**. `{ok:false,error}` for every no. Budget: **2 s**. |
 
 Rules, and each of them is load-bearing:
 
@@ -192,6 +193,24 @@ Rules, and each of them is load-bearing:
   toasting path its gesture verbs use (`client/src/webpane/commands.ts` `SILENT_WEB_COMMANDS`,
   pinned in `App.window-chrome.test.tsx`) — without which a right-click over a page could raise
   an error card *per click*, and park every pane again for the card.
+- **The frame comes with the box it is OF** (`bounds`, DIP, relative to the window's content
+  area — the placement `viewBounds` computed — and `css_scale`, the factor that turns those back
+  into the client's CSS pixels, i.e. the inverse of the page zoom). **The client cannot derive
+  this**, and the promoted build proved what happens when it tries: the shell rounds and clamps
+  every edge before placing the view, and an `<img>` given only insets is not stretched to them —
+  it is a replaced element, so it keeps its intrinsic aspect under Tailwind's
+  `img{max-width:100%;height:auto}`. On a 2× display a 1050×1412 capture was laid out as
+  528.99 × 711.38 where the view had been 525 × 706, so the page appeared to grow 0.76% the
+  instant a menu opened, and snapped back when it closed. A host that cannot say where the view
+  is may omit both fields; the client then falls back to the focus-ring gutter, which is the
+  right box to within the rounding.
+- **The client parks only once the picture is ON SCREEN.** Not a host rule but the other half of
+  the same defect, recorded here because the budget above is sized for it: the park is a socket
+  message the shell acts on within a millisecond, and an `<img>` committed in the same tick cannot
+  appear before the next composited frame — measured at 8–12 ms of empty pane, one to two frames,
+  which is what "it flickers" was. The client holds the view until a decode plus a double
+  `requestAnimationFrame` says the frame exists, so a host that answers slowly costs a late menu
+  and never a blink (`scripts/ui-audit/poster-swap-flicker.mjs` measures both ends).
 - **Nothing is stored.** The daemon forwards and forgets: no frame is kept, cached or logged, and
   a pane that is never covered is never photographed. The shell logs that a frame was taken and
   how big it was, never the frame itself.

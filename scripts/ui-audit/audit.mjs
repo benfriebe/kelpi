@@ -7838,7 +7838,13 @@ function buildFlows(ctx) {
                             // Issue #12: the still frame a parked pane wears, if it has one.
                             const poster = el.querySelector('[data-testid="web-poster-' + id + '"]');
                             const src = poster === null ? null : (poster.getAttribute('src') ?? '');
+                            // Spelled the way the shell spells a placement, so the two can be
+                            // compared as strings rather than as four numbers with a tolerance.
+                            const pb = poster === null ? null : poster.getBoundingClientRect();
                             return { id,
+                                     posterBox: pb === null ? null :
+                                         Math.round(pb.x) + ',' + Math.round(pb.y) + ' ' +
+                                         Math.round(pb.width) + '×' + Math.round(pb.height),
                                      visible: el.getAttribute('data-visible'),
                                      covered: el.getAttribute('data-overlay-covered'),
                                      poster: src === null ? null : src.slice(0, 22),
@@ -7864,9 +7870,15 @@ function buildFlows(ctx) {
                  */
                 const RING = 2;
                 const expectedPlacement = (hole) => ({ x: hole.x + RING, y: hole.y });
-                const embedOf = (paneID) => {
-                    const lines = (runtime.shell?.lines ?? []).filter((line) =>
-                        line.includes(`web pane ${String(paneID)} view `)
+                /**
+                 * The shell's last placement line for a pane — or, with `match`, the last one of a
+                 * given KIND. Issue #12's geometry check wants the last `owner=main` line (the box
+                 * the view was placed at) while the pane is currently parked, so the plain "last
+                 * line" reading would hand it the `owner=holder` line that has no bounds in it.
+                 */
+                const embedOf = (paneID, match = '') => {
+                    const lines = (runtime.shell?.lines ?? []).filter(
+                        (line) => line.includes(`web pane ${String(paneID)} view `) && line.includes(match)
                     );
                     return lines[lines.length - 1] ?? '(none)';
                 };
@@ -8230,6 +8242,27 @@ function buildFlows(ctx) {
                                     hole.poster.startsWith('data:image/jpeg') &&
                                     hole.posterBytes > 1000,
                                 `${String(hole.poster)}… ${String(hole.posterBytes)} chars`
+                            );
+                            /*
+                             * …and it stands exactly where the view stood. The promoted build's
+                             * flicker report was two defects, and this is the one a still frame
+                             * can catch: the picture was laid out on the pane's own CSS box (and
+                             * then re-sized by Tailwind's `img{max-width:100%;height:auto}` to
+                             * its intrinsic aspect), so on a 2× display it covered
+                             * 528.99×711.38 where the view had been 525×706 and the page
+                             * appeared to grow 0.76% the moment the menu opened. The box now
+                             * comes from the host's own placement, which is the same string the
+                             * shell logs.
+                             */
+                            const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(embedOf(hole.id, 'owner=main'));
+                            const want =
+                                placed === null
+                                    ? null
+                                    : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
+                            recorder.check(
+                                `${name.label}: ${hole.id.slice(0, 8)}'s frame stands on the box the view was placed at`,
+                                want !== null && hole.posterBox === want,
+                                `poster ${String(hole.posterBox)} vs view ${String(want)}`
                             );
                         }
                     }

@@ -1085,6 +1085,27 @@ async function webPhase() {
                 posterLine.includes(`web pane ${paneID}: poster `),
                 posterLine.trim()
             );
+            /*
+             * Issue #12's second half: the frame names the BOX it is a picture of, and that box
+             * is the placement this run just watched the shell make. Without it the client lays
+             * the image out on its own CSS rect, which is neither rounded nor clamped the way
+             * `viewBounds` is — a 0.76% scale error on a 2× display, seen as the page jumping
+             * when a menu opens.
+             */
+            const placedBounds = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placed);
+            check(
+                'the frame names the box it is a picture of, and it is the placed one',
+                placedBounds !== null &&
+                    typeof shot.reply.bounds === 'object' &&
+                    shot.reply.bounds !== null &&
+                    shot.reply.bounds.x === Number(placedBounds[1]) &&
+                    shot.reply.bounds.y === Number(placedBounds[2]) &&
+                    shot.reply.bounds.width === Number(placedBounds[3]) &&
+                    shot.reply.bounds.height === Number(placedBounds[4]) &&
+                    typeof shot.reply.css_scale === 'number' &&
+                    shot.reply.css_scale > 0,
+                `${JSON.stringify(shot.reply.bounds)} css_scale=${String(shot.reply.css_scale)} vs ${String(placed).trim()}`
+            );
 
             // ── §N29: the click that lands in the PAGE ─────────────────────────────
             //

@@ -17,11 +17,15 @@ import {
     createPosterController,
     posterAttempt,
     posterDataURL,
+    posterStyle,
+    posterViewRect,
+    samePosterStyle,
     warmPosterImage,
     POSTER_COOLDOWN_MS,
     POSTER_DEADLINE_MS,
     POSTER_LINGER_MS,
     POSTER_MISS_LIMIT,
+    POSTER_PAINT_DEADLINE_MS,
     type PosterAttempt,
     type WarmableImage
 } from './poster';
@@ -128,7 +132,19 @@ describe('posterDataURL', () => {
 
 describe('posterAttempt', () => {
     it('reads a frame, and every no with the one distinction the degrade rule turns on', () => {
-        expect(posterAttempt({ ok: true, image_base64: 'AAAA', mime: 'image/jpeg' })).toEqual({ src: FRAME });
+        expect(posterAttempt({ ok: true, image_base64: 'AAAA', mime: 'image/jpeg' })).toEqual({
+            src: FRAME,
+            box: null
+        });
+        expect(
+            posterAttempt({
+                ok: true,
+                image_base64: 'AAAA',
+                mime: 'image/jpeg',
+                bounds: { x: 14, y: 41, width: 897, height: 499 },
+                css_scale: 1
+            })
+        ).toEqual({ src: FRAME, box: { x: 14, y: 41, w: 897, h: 499 } });
         // `transient` = "the view was not on screen when I looked", which is usually the client's
         // own park landing mid-capture: a fact about the moment, not about the host.
         expect(posterAttempt({ ok: false, error: 'no on-screen view to poster', transient: true })).toEqual({
@@ -140,6 +156,82 @@ describe('posterAttempt', () => {
             transient: false
         });
         expect(posterAttempt(null)).toEqual({ src: null, transient: false });
+    });
+});
+
+/**
+ * The JUMP, where it is decided: the box a frame is laid out in.
+ *
+ * The picture has to occupy the view's own rectangle, and only the host knows what that is —
+ * `viewBounds` rounds and clamps every edge of the rect the client reported. Re-deriving it here
+ * would be wrong in all four numbers, and leaving it to the browser is worse: an `<img>` with
+ * only insets keeps its intrinsic aspect under Tailwind's `img{max-width:100%;height:auto}`.
+ */
+describe('posterStyle', () => {
+    // The shipped build's own numbers on a 2× display: a fractional hole, a rounded placement.
+    const hole = { x: 751, y: 88.398, w: 529, h: 707.602 };
+    const box = { x: 753, y: 88, w: 525, h: 706 };
+
+    it('stands the frame on the host box, in the hole’s own coordinates', () => {
+        expect(posterStyle(box, hole)).toEqual({
+            left: 2,
+            top: 88 - 88.398,
+            width: 525,
+            height: 706,
+            objectFit: 'fill',
+            maxWidth: 'none',
+            maxHeight: 'none'
+        });
+    });
+
+    it('pins width and height, because insets alone do not size a replaced element', () => {
+        const style = posterStyle(box, hole);
+        // The defect this replaces: 1050×1412 intrinsic → 528.99×711.38 laid out, against a view
+        // of 525×706. Explicit numbers plus `max-*: none` is the only shape a browser cannot
+        // reinterpret.
+        expect(style.width).toBe(box.w);
+        expect(style.height).toBe(box.h);
+        expect(style.maxWidth).toBe('none');
+        expect(style.maxHeight).toBe('none');
+    });
+
+    it('falls back to §N27a’s gutter when the host does not say', () => {
+        expect(posterStyle(null, { x: 0, y: 0, w: 900, h: 500 })).toMatchObject({
+            left: 2,
+            top: 0,
+            width: 896,
+            height: 498
+        });
+        // A hole too small to give the strips up keeps them, exactly as the report does.
+        expect(posterStyle(null, { x: 0, y: 0, w: 3, h: 1 })).toMatchObject({ left: 0, width: 3, height: 1 });
+        expect(posterStyle(null, null)).toMatchObject({ left: 0, top: 0, width: 0, height: 0 });
+    });
+
+    it('answers equality on the numbers, so the publish can keep one object', () => {
+        expect(samePosterStyle(posterStyle(box, hole), posterStyle(box, hole))).toBe(true);
+        expect(samePosterStyle(posterStyle(box, hole), posterStyle({ ...box, w: 526 }, hole))).toBe(false);
+    });
+});
+
+describe('posterViewRect', () => {
+    it('multiplies the host’s DIP placement into CSS pixels', () => {
+        // css_scale is the inverse of the page zoom; at ⌘+ the view is bigger in DIP than in CSS.
+        expect(posterViewRect({ ok: true, bounds: { x: 20, y: 10, width: 200, height: 100 }, css_scale: 0.5 })).toEqual(
+            { x: 10, y: 5, w: 100, h: 50 }
+        );
+        expect(posterViewRect({ ok: true, bounds: { x: 14, y: 41, width: 897, height: 499 }, css_scale: 1 })).toEqual({
+            x: 14,
+            y: 41,
+            w: 897,
+            h: 499
+        });
+    });
+
+    it('is null when the host says nothing usable — the client then uses the gutter', () => {
+        expect(posterViewRect({ ok: true })).toBeNull();
+        expect(posterViewRect({ ok: true, bounds: { x: 0, y: 0, width: 0, height: 10 }, css_scale: 1 })).toBeNull();
+        expect(posterViewRect({ ok: true, bounds: 'nope', css_scale: 1 })).toBeNull();
+        expect(posterViewRect(null)).toBeNull();
     });
 });
 
@@ -159,10 +251,10 @@ describe('the poster controller', () => {
 
         // The frame is asked for in the same call that discovers the cover — the whole point is
         // that it is taken while the view is still on screen.
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: true });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: true, box: null });
         expect(shot.asked).toEqual([TAB]);
         // Every later render of the same cover rides the same capture.
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: true });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: true, box: null });
         expect(shot.asked).toEqual([TAB]);
         expect(poster.captures).toBe(1);
 
@@ -170,9 +262,54 @@ describe('the poster controller', () => {
         await flush();
 
         expect(renders).toBe(1);
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false });
+        /*
+         * The frame is here — and the view STAYS on screen until it is painted. This is the
+         * flicker the owner reported, as a unit: parking on arrival hands the view back a frame
+         * or two before the `<img>` can appear, and the pane shows its own background in between
+         * (measured on the shipped build: view gone at t+0, image first present at t+12ms).
+         */
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: true, box: null });
+        poster.painted(FRAME);
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false, box: null });
         // The deadline was disarmed by the answer, not left to fire into a settled session.
         expect(clock.pending).toBe(0);
+    });
+
+    it('parks anyway when the paint is never confirmed', async () => {
+        const clock = timers();
+        const shot = deferredCapture();
+        const poster = createPosterController({
+            capture: shot.capture,
+            onChange: () => undefined,
+            schedule: clock.schedule,
+            cancel: clock.cancel
+        });
+        poster.sync({ covered: true, tabID: TAB });
+        shot.settle(FRAME);
+        await flush();
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+        // A decode that never resolves, a renderer that stopped producing frames: the menu must
+        // not stay invisible for it.
+        clock.run(POSTER_PAINT_DEADLINE_MS);
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false, box: null });
+    });
+
+    it('ignores a paint confirmation for a frame it is no longer showing', async () => {
+        const clock = timers();
+        const shot = deferredCapture();
+        const poster = createPosterController({
+            capture: shot.capture,
+            onChange: () => undefined,
+            schedule: clock.schedule,
+            cancel: clock.cancel
+        });
+        poster.sync({ covered: true, tabID: TAB });
+        shot.settle(FRAME);
+        await flush();
+        poster.painted('data:image/jpeg;base64,SOMETHINGELSE');
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(true);
+        poster.painted(FRAME);
+        expect(poster.sync({ covered: true, tabID: TAB }).hold).toBe(false);
     });
 
     it('gives up on the deadline so a silent host cannot hide a menu', async () => {
@@ -189,12 +326,13 @@ describe('the poster controller', () => {
         clock.run(POSTER_DEADLINE_MS);
         // The view goes back with nothing to paint: exactly the behaviour that shipped before
         // the poster existed, which is what makes this a safe addition rather than a new risk.
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false, box: null });
 
-        // A late frame is still worth painting — the menu is very likely still open.
+        // A late frame is still worth painting — the menu is very likely still open — and it does
+        // NOT re-hold a view that has already gone back.
         shot.settle(FRAME);
         await flush();
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: FRAME, hold: false, box: null });
     });
 
     it('stops asking for a cooldown after a real no, then holds again and recovers', async () => {
@@ -292,7 +430,7 @@ describe('the poster controller', () => {
         shot.reject();
         await flush();
         expect(renders).toBe(1);
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false, box: null });
         expect(clock.pending).toBe(0);
     });
 
@@ -306,13 +444,14 @@ describe('the poster controller', () => {
         });
         poster.sync({ covered: true, tabID: TAB });
         await flush();
+        poster.painted(FRAME);
         expect(poster.sync({ covered: true, tabID: TAB }).src).toBe(FRAME);
 
         // Uncovered: the view is on its way back, and the frame stays under it so the handover
         // has no blank in it. This is the same no-flash rule as the hold, at the other end.
-        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: FRAME, hold: false });
+        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: FRAME, hold: false, box: null });
         clock.run(POSTER_LINGER_MS);
-        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: null, hold: false, box: null });
     });
 
     it('drops a frame that was taken for a cover the pane has already left', async () => {
@@ -333,7 +472,7 @@ describe('the poster controller', () => {
 
         // Nothing lingers, because nothing was ever painted: a frame that lands after the view
         // is back would be a picture of the page appearing OVER the live page.
-        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: false, tabID: TAB })).toEqual({ src: null, hold: false, box: null });
         expect(clock.pending).toBe(0);
     });
 
@@ -350,11 +489,12 @@ describe('the poster controller', () => {
         poster.sync({ covered: true, tabID: TAB });
         shot.settle(FRAME);
         await flush();
+        poster.painted(FRAME);
         expect(poster.sync({ covered: true, tabID: TAB }).src).toBe(FRAME);
 
         // A tab switch while the menu is up: the old frame is of a page that is no longer in the
         // pane, so it goes immediately rather than lingering over the new one.
-        expect(poster.sync({ covered: true, tabID: OTHER_TAB })).toEqual({ src: null, hold: true });
+        expect(poster.sync({ covered: true, tabID: OTHER_TAB })).toEqual({ src: null, hold: true, box: null });
         expect(shot.asked).toEqual([TAB, OTHER_TAB]);
     });
 
@@ -370,7 +510,7 @@ describe('the poster controller', () => {
             schedule: clock.schedule,
             cancel: clock.cancel
         });
-        expect(poster.sync({ covered: true, tabID: null })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: true, tabID: null })).toEqual({ src: null, hold: false, box: null });
         expect(asked).toBe(0);
     });
 
@@ -393,7 +533,7 @@ describe('the poster controller', () => {
         await flush();
         // A pane that has unmounted must not ask React for a render, and has nothing to paint.
         expect(renders).toBe(0);
-        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false });
+        expect(poster.sync({ covered: true, tabID: TAB })).toEqual({ src: null, hold: false, box: null });
     });
 });
 

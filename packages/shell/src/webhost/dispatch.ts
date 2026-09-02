@@ -35,6 +35,7 @@ import {
     clampUtf8,
     posterWithinBudget
 } from './caps.js';
+import type { ViewBounds } from './geometry.js';
 import type { RegistryPaneSpec, TabRegistry } from './registry.js';
 import {
     CAPTURE_DOM_EXPRESSION,
@@ -226,6 +227,18 @@ export interface DispatchDeps<V extends TabController = TabController> {
     readonly storage: PaneStorage;
     /** §8.4 spill path for a screenshot over the inline budget; returns the written path. */
     readonly writeScreenshot: (paneID: string, png: Uint8Array) => Promise<string>;
+    /**
+     * Issue #12: where a pane's view is placed right now, and how to say that in the client's
+     * own CSS pixels (`cssScale` multiplies DIP → CSS px).
+     *
+     * The poster is a photograph OF THAT BOX, and the client has to lay it out on that box or
+     * the swap is a visible jump — the shell rounds and clamps each edge (`viewBounds`), and the
+     * client's own CSS rect is neither rounded nor clamped. Optional: a host that cannot say
+     * where the view is answers the frame without a box, and the client falls back to the hole.
+     */
+    readonly viewPlacement?:
+        | ((paneID: string) => { bounds: ViewBounds; cssScale: number } | null)
+        | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -478,11 +491,32 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         if (data === null) return { ...failure(POSTER_UNAVAILABLE_ERROR), transient: true };
         if (data === '') return failure(POSTER_FAILED_ERROR);
         if (!posterWithinBudget(data.length)) return failure(POSTER_TOO_LARGE_ERROR);
+        // The box the frame is OF, so the client can stand the picture exactly where the view
+        // stood. Without it the client lays the image out on its own CSS rect and the swap moves
+        // the page: the shell rounds every edge and the browser then sizes a replaced element
+        // from its intrinsic aspect, which on a 2× display came out 0.76% too large.
+        const placement = deps.viewPlacement?.(str(args, 'paneID')) ?? null;
         // `base64_bytes`, not §8.4's `byte_count`: this is the size of the payload AS IT RIDES
         // THE REPLY (the base64 string), which is what the budget is expressed in and what a
         // reader of the log line can compare against. The decoded JPEG is about a quarter
         // smaller and nothing here has a use for that number.
-        return { ok: true, image_base64: data, mime: POSTER_MIME, base64_bytes: data.length };
+        return {
+            ok: true,
+            image_base64: data,
+            mime: POSTER_MIME,
+            base64_bytes: data.length,
+            ...(placement === null
+                ? {}
+                : {
+                      bounds: {
+                          x: placement.bounds.x,
+                          y: placement.bounds.y,
+                          width: placement.bounds.width,
+                          height: placement.bounds.height
+                      },
+                      css_scale: placement.cssScale
+                  })
+        };
     };
 
     // ── automation ──────────────────────────────────────────────────────────────────

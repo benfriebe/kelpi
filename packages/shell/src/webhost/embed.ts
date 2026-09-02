@@ -76,7 +76,13 @@ export interface EmbedController<V> {
     /** Re-apply the last geometry for every embedded pane (the view set changed). */
     refresh(): void;
     readonly embeddedPaneIDs: readonly string[];
-    placementOf(paneID: string): { view: V; bounds: ViewBounds } | null;
+    /**
+     * Where a pane's view actually IS: the rounded, clamped DIP box the shell placed it at, plus
+     * the client report that produced it. Issue #12's poster hangs off the pair — a still frame
+     * has to be laid out on the box the view occupied, not on the CSS box the client measured,
+     * and only this side knows what the rounding did to it.
+     */
+    placementOf(paneID: string): { view: V; bounds: ViewBounds; geometry: PaneGeometry } | null;
 }
 
 interface Placement<V> {
@@ -205,7 +211,9 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
 
         placementOf(paneID) {
             const placement = placed.get(paneID);
-            return placement === undefined ? null : { view: placement.view, bounds: placement.bounds };
+            return placement === undefined
+                ? null
+                : { view: placement.view, bounds: placement.bounds, geometry: placement.geometry };
         }
     };
 }

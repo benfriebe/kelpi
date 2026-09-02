@@ -14,6 +14,7 @@ import {
     createVerbDispatcher,
     paneSpecOf,
     type CookieRecord,
+    type DispatchDeps,
     type EvalOutcome,
     type PaneStorage,
     type TabController
@@ -100,6 +101,8 @@ function harness(
         writeScreenshot?: (paneID: string, png: Uint8Array) => Promise<string>;
         /** False models a host with no cookie-write surface, which must refuse honestly. */
         canWriteCookies?: boolean;
+        /** Issue #12: where the embedder says this pane's view is placed. */
+        viewPlacement?: DispatchDeps<FakeTab>['viewPlacement'];
     } = {}
 ) {
     const tabs: FakeTab[] = [];
@@ -138,7 +141,12 @@ function harness(
     const writeScreenshot = vi.fn(
         options.writeScreenshot ?? ((): Promise<string> => Promise.resolve('/tmp/kelpi-web-capture-P1-1.png'))
     );
-    const dispatcher = createVerbDispatcher<FakeTab>({ registry, storage, writeScreenshot });
+    const dispatcher = createVerbDispatcher<FakeTab>({
+        registry,
+        storage,
+        writeScreenshot,
+        ...(options.viewPlacement === undefined ? {} : { viewPlacement: options.viewPlacement })
+    });
     dispatcher.notify('pane-open', {
         paneID: 'P1',
         isPrivate: false,
@@ -394,6 +402,37 @@ describe('the poster (issue #12)', () => {
             base64_bytes: 4
         });
         expect(tab.posters).toBe(1);
+    });
+
+    /**
+     * Issue #12's second half: the frame carries the BOX it is a picture of.
+     *
+     * The client cannot work this out. `viewBounds` rounds and clamps every edge before the view
+     * is placed, and an `<img>` left to size itself keeps its intrinsic aspect — on a 2× display
+     * that put a 1050×1412 capture in a 528.99×711.38 box where the view was 525×706, and the
+     * page appeared to grow the instant a menu opened.
+     */
+    it('names the box the view was placed at, in the client’s own pixels', async () => {
+        const { dispatcher } = harness({
+            viewPlacement: () => ({ bounds: { x: 753, y: 88, width: 525, height: 706 }, cssScale: 1 })
+        });
+        await expect(dispatcher.call('poster', scope)).resolves.toEqual({
+            ok: true,
+            image_base64: 'AAAA',
+            mime: 'image/jpeg',
+            base64_bytes: 4,
+            bounds: { x: 753, y: 88, width: 525, height: 706 },
+            css_scale: 1
+        });
+    });
+
+    it('says nothing about the box when the host cannot place the view', async () => {
+        const { dispatcher } = harness({ viewPlacement: () => null });
+        const reply = await dispatcher.call('poster', scope);
+        // The client then falls back to the focus-ring gutter rather than to no picture.
+        expect('bounds' in reply).toBe(false);
+        expect('css_scale' in reply).toBe(false);
+        expect(reply['ok']).toBe(true);
     });
 
     it('refuses when there is no on-screen view, and marks that refusal TRANSIENT', async () => {

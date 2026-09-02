@@ -901,7 +901,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                  * "No label presets yet" and `:244` really does say "Remove preset".
                  */
                 title="Labels"
-                hint="A workspace's label wears the colors set here when its text matches the name exactly."
+                hint="A workspace's label wears the colours set here when its text matches the name exactly."
                 testID="label-presets"
                 /*
                  * §N36(1) — the New Label button moves to the header's TOP RIGHT.

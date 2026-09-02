@@ -119,60 +119,11 @@ export function hoverBackground(hovered: boolean, base: string): string {
     return hovered ? SETTINGS_HOVER_FILL : base;
 }
 
-export interface SettingsSectionProps {
+interface SettingsSectionBaseProps {
     readonly title: string;
     readonly hint?: string | undefined;
     readonly children: ReactNode;
     readonly testID?: string | undefined;
-    /**
-     * **This section is a heading over a LIST, not a grouped-form section** — so it draws no card
-     * and bands nothing.
-     *
-     * Four of the eight tabs are not `Form`s in the shipped app: `RepoRegistryView.swift:12-55`,
-     * `LabelPresetsSettingsView.swift:27-45`, `ProfilesSettingsView.swift` and
-     * `SettingsView.swift:707-741` are each a `VStack` around a toolbar and a `List`, with no
-     * `Section` and therefore no card anywhere on the tab. Their children here already carry
-     * their own row chrome (`.listStyle(.inset)`'s stripes, the Labels add row's accent tint,
-     * an explicit `Divider()`), so banding them would draw a second, contradictory grouping over
-     * the first — which is L79's own defect pointing the other way.
-     */
-    readonly plain?: boolean | undefined;
-    /**
-     * The section's empty state, while it is showing (plain sections only): a placeholder that
-     * sits at the vertical CENTRE of the height the tab has below this section's header,
-     * whatever else the tab puts after it.
-     *
-     * Third cut at "centre the placeholder", and the first one measured on a screen. The first
-     * two (a 180px band; then a `min-h-full` root with a `fill`ed section) both passed class
-     * assertions in jsdom and both left the placeholder high in the real overlay, for a reason
-     * no class name can show: a flex item centres its content in ITS OWN box, and that box ends
-     * where the next sibling begins. The caption under the list, the Web tab's footer note and
-     * the Labels tab's adoption section all take their height off the BOTTOM of the
-     * placeholder's box, so the centre it found was the centre of the band above that copy:
-     * 36px high on Web at the audit's window, more on Labels once an adoption section shows.
-     * The root's percentage height was never the problem; it resolves, because the dialog is
-     * a definite `min(620px, 90%)` and the panel is a stretched item of a definite flex row.
-     * (`scripts/ui-audit/audit.mjs` ▸ `settings-empty-centering` holds the boxes.)
-     *
-     * So the section lays an empty state out as a BALANCED column: the children (a lead-in
-     * such as Labels' divider) at the top, a flexible spacer, the placeholder, then a second
-     * spacer of the same flex that carries the caption and `trailing` settled at its foot. Two
-     * equal spacers put the placeholder's centre at the centre of the column however tall the
-     * trailing copy is. When the window is too short for both, the bottom spacer keeps its
-     * content (its minimum is its content) and the top one gives way, so the copy never rides
-     * over the placeholder; shorter still and the tab scrolls, as a populated one would. The
-     * section grows to the tab's remaining height; the tab root asks for `min-h-full`.
-     *
-     * A populated section never passes this and reads top-down as before.
-     */
-    readonly empty?: ReactNode | undefined;
-    /**
-     * Copy that follows the caption while `empty` is showing (the Web tab's footer note, the
-     * Labels tab's adoption section), rendered inside the balanced column so it settles at the
-     * bottom of the tab instead of shortening the centred area. Callers render the same node as
-     * a sibling of the section once the list is populated.
-     */
-    readonly trailing?: ReactNode | undefined;
     /**
      * §N36(1) — a control on the header's TRAILING edge, level with the title.
      *
@@ -189,6 +140,74 @@ export interface SettingsSectionProps {
      */
     readonly action?: ReactNode;
 }
+
+/**
+ * `empty` and `trailing` exist only on a PLAIN section: the balanced column is a list's layout,
+ * and a card has no slot for it. Typed as a union rather than checked at render, so a card
+ * section handed an empty state is a compile error and not a placeholder that never appears.
+ */
+export type SettingsSectionProps =
+    | (SettingsSectionBaseProps & {
+          /**
+           * **This section is a heading over a LIST, not a grouped-form section** — so it draws no card
+           * and bands nothing.
+           *
+           * Four of the eight tabs are not `Form`s in the shipped app: `RepoRegistryView.swift:12-55`,
+           * `LabelPresetsSettingsView.swift:27-45`, `ProfilesSettingsView.swift` and
+           * `SettingsView.swift:707-741` are each a `VStack` around a toolbar and a `List`, with no
+           * `Section` and therefore no card anywhere on the tab. Their children here already carry
+           * their own row chrome (`.listStyle(.inset)`'s stripes, the Labels add row's accent tint,
+           * an explicit `Divider()`), so banding them would draw a second, contradictory grouping over
+           * the first — which is L79's own defect pointing the other way.
+           */
+          readonly plain: true;
+          /**
+           * The section's empty state, while it is showing (plain sections only): a placeholder that
+           * sits at the vertical CENTRE of the height the tab has below this section's header,
+           * whatever else the tab puts after it.
+           *
+           * Third cut at "centre the placeholder", and the first one measured on a screen. The first
+           * two (a 180px band; then a `min-h-full` root with a `fill`ed section) both passed class
+           * assertions in jsdom and both left the placeholder high in the real overlay, for a reason
+           * no class name can show: a flex item centres its content in ITS OWN box, and that box ends
+           * where the next sibling begins. The caption under the list, the Web tab's footer note and
+           * the Labels tab's adoption section all take their height off the BOTTOM of the
+           * placeholder's box, so the centre it found was the centre of the band above that copy:
+           * 36px high on Web at the audit's window, more on Labels once an adoption section shows.
+           * The root's percentage height was never the problem; it resolves, because the dialog is
+           * a definite `min(620px, 90%)` and the panel is a stretched item of a definite flex row.
+           * (`scripts/ui-audit/audit.mjs` ▸ `settings-empty-centering` holds the boxes.)
+           *
+           * So the section lays an empty state out as a BALANCED column: the children (a lead-in
+           * such as Labels' divider) at the top, a flexible spacer, the placeholder held at its own
+           * height in a `flex-none` slot, then a second spacer of the same flex that carries the
+           * caption and `trailing` settled at its foot. Only the two spacers grow, so they split the
+           * free height evenly and the placeholder's centre lands on the column's centre however
+           * tall the trailing copy is, up to one limit: the bottom spacer's minimum is its content,
+           * so once the trailing copy needs more than half of the free height the top spacer gives
+           * way and the placeholder rises with it (never overlapping; shorter still and the tab
+           * scrolls, as a populated one would). The slot is not decoration: the placeholder is
+           * itself `flex-1`, and as a third grower it took a third of the free height and pulled
+           * the split off centre in proportion to the trailing copy, the old defect back by another
+           * door. The section grows to the tab's remaining height; the tab root asks for
+           * `min-h-full`.
+           *
+           * A populated section never passes this and reads top-down as before.
+           */
+          readonly empty?: ReactNode | undefined;
+          /**
+           * Copy that follows the caption while `empty` is showing (the Web tab's footer note, the
+           * Labels tab's adoption section), rendered inside the balanced column so it settles at the
+           * bottom of the tab instead of shortening the centred area. Callers render the same node as
+           * a sibling of the section once the list is populated.
+           */
+          readonly trailing?: ReactNode | undefined;
+      })
+    | (SettingsSectionBaseProps & {
+          readonly plain?: false | undefined;
+          readonly empty?: undefined;
+          readonly trailing?: undefined;
+      });
 
 /**
  * The **card** a `.formStyle(.grouped)` section draws, and the padding of the rows inside it.
@@ -270,7 +289,8 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
             {props.plain === true ? (
                 balanced ? (
                     /*
-                     * The balanced column (see `empty`). No `gap` here: a gap either side of the
+                     * The balanced column (see `empty`). The placeholder sits in a `flex-none`
+                     * slot so it is not a third grower. No `gap` here: a gap either side of the
                      * spacer would sit above the placeholder and not below it, and the tail's own
                      * top padding is what keeps the caption off the placeholder when the spacers
                      * have closed to nothing. Both spacers are `flex-1 basis-0` so the free
@@ -279,7 +299,9 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
                     <div className="flex min-h-0 flex-1 flex-col" data-settings-balanced="true">
                         {props.children}
                         <div aria-hidden className="min-h-0 flex-1 basis-0" data-settings-spacer="top" />
-                        {props.empty}
+                        <div className="flex-none" data-settings-empty-slot="true">
+                            {props.empty}
+                        </div>
                         <div className="flex flex-1 basis-0 flex-col justify-end gap-4 pt-2" data-settings-spacer="bottom">
                             {hint}
                             {props.trailing}

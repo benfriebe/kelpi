@@ -168,8 +168,13 @@ describe('the empty state', () => {
         expect(screen.getByTestId('settings-tab-web').className).toContain('min-h-full');
         expect(screen.getByTestId('settings-favourites').className).toContain('flex-1');
         const empty = screen.getByTestId('settings-favourites-empty');
-        const above = empty.previousElementSibling as HTMLElement;
-        const below = empty.nextElementSibling as HTMLElement;
+        // The placeholder is held at its own height: it is `flex-1` itself, and as a third
+        // grower it pulled the split off centre in proportion to the trailing copy.
+        const slot = empty.parentElement as HTMLElement;
+        expect(slot.className).toContain('flex-none');
+        expect(slot.parentElement?.getAttribute('data-settings-balanced')).toBe('true');
+        const above = slot.previousElementSibling as HTMLElement;
+        const below = slot.nextElementSibling as HTMLElement;
         expect(above.getAttribute('data-settings-spacer')).toBe('top');
         expect(below.getAttribute('data-settings-spacer')).toBe('bottom');
         for (const spacer of [above, below]) {
@@ -183,6 +188,7 @@ describe('the empty state', () => {
         const section = screen.getByTestId('settings-favourites');
         expect(section.className).not.toContain('flex-1');
         expect(section.querySelector('[data-settings-spacer]')).toBeNull();
+        expect(section.querySelector('[data-settings-balanced]')).toBeNull();
         expect(section.contains(screen.getByTestId('settings-footer-note'))).toBe(false);
     });
 });

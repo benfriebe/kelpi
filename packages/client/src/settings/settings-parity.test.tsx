@@ -183,8 +183,13 @@ describe('Settings ▸ Labels', () => {
         expect(screen.getByTestId('label-presets').className).toContain('flex-1');
         const empty = screen.getByTestId('labels-empty');
         expect(empty.className).toContain('justify-center');
-        const above = empty.previousElementSibling as HTMLElement;
-        const below = empty.nextElementSibling as HTMLElement;
+        // Held at its own height in a `flex-none` slot: the placeholder is `flex-1` itself, and
+        // as a third grower it pulled the split off centre in proportion to the trailing copy.
+        const slot = empty.parentElement as HTMLElement;
+        expect(slot.className).toContain('flex-none');
+        expect(slot.parentElement?.getAttribute('data-settings-balanced')).toBe('true');
+        const above = slot.previousElementSibling as HTMLElement;
+        const below = slot.nextElementSibling as HTMLElement;
         expect(above.getAttribute('data-settings-spacer')).toBe('top');
         expect(below.getAttribute('data-settings-spacer')).toBe('bottom');
         for (const spacer of [above, below]) {
@@ -192,12 +197,13 @@ describe('Settings ▸ Labels', () => {
             expect(spacer.className).toContain('basis-0');
         }
         expect(above.previousElementSibling?.getAttribute('data-testid')).toBe('label-add-divider');
-        expect(below.textContent).toContain("A workspace's label wears the colors set here");
+        expect(below.textContent).toContain("A workspace's label wears the colours set here");
         cleanup();
         renderLabels();
         const section = screen.getByTestId('label-presets');
         expect(section.className).not.toContain('flex-1');
         expect(section.querySelector('[data-settings-spacer]')).toBeNull();
+        expect(section.querySelector('[data-settings-balanced]')).toBeNull();
     });
 });
 

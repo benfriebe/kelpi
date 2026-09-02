@@ -36,6 +36,7 @@ import {
 } from '../app/pane-focus';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
+import { KeyBar } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
@@ -58,6 +59,7 @@ import {
 import {
     createTerminalRenderer,
     resolveTerminalTheme,
+    type TerminalKeyInit,
     type TerminalMatchLocation,
     type TerminalRenderer,
     type TerminalRendererFactory,
@@ -1258,6 +1260,27 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         current.onFocusRequest?.(current.paneID);
     }, []);
 
+    // ── the phone key bar (C1, docs/MOBILE-PLAN.md §4) ──────────────────────────────
+    //
+    // AND NOT ON DESKTOP: off `phone`, which is the pane's ONE reading of the program's one
+    // form-factor signal (`chrome/form-factor.ts`, resolved at the top of this component beside
+    // C2's keyboard inset). A desktop window, an Electron shell and a tablet render the tree they
+    // render today, unchanged, and the bar exists only where a software keyboard does.
+    // `focused && visible` on top of it because the bar belongs to the terminal a thumb is
+    // actually in: a background workspace's focused pane is neither on screen nor typed into.
+    const showKeyBar = phone && focused && visible;
+    /** A bar key, raised at the engine exactly as a physical one arrives (C1's routing decision). */
+    const sendKey = useCallback((init: TerminalKeyInit): boolean => rendererRef.current?.dispatchKey(init) ?? false, []);
+    /**
+     * Dismiss the software keyboard by letting the caret go, which is what `releasePaneCaret` does
+     * and what `renderer.blur()` does NOT: ghostty-web's `blur()` blurs the CONTAINER
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:866-870`) while the caret sits in the
+     * hidden textarea inside it, so the keyboard would stay up. The way back is the engine's own:
+     * its canvas has a `touchend` listener that focuses the textarea (`terminal.ts:490-493`), so
+     * tapping the terminal raises the keyboard again with nothing here involved.
+     */
+    const hideKeyboard = useCallback((): void => releasePaneCaret(hostRef.current), []);
+
     const retryStart = useCallback((): void => {
         restartRef.current?.();
     }, []);
@@ -1324,7 +1347,19 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             aria-multiline="true"
             aria-label={terminalAccessibilityName(props.accessibilityName)}
             aria-describedby={`terminal-help-${paneID}`}
-            className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
+            /*
+             * C1 - the key bar is IN-FLOW below the host, so the host shrinks by the bar's height
+             * through the ResizeObserver the pane already has and the PTY hears about it once,
+             * like any other resize (MOBILE-PLAN.md §7, "Keyboard inset ownership"). A column
+             * flex box is the only way to say that; without the bar the class string is exactly
+             * the one this pane has always rendered, which is what "desktop is untouched" means
+             * down to the attribute.
+             */
+            className={
+                showKeyBar
+                    ? `relative flex h-full w-full flex-col overflow-hidden ${className ?? ''}`
+                    : `relative h-full w-full overflow-hidden ${className ?? ''}`
+            }
             style={{
                 backgroundColor: background,
                 visibility: visible ? 'visible' : 'hidden',
@@ -1354,7 +1389,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 caret — the engine's hidden `<textarea>` lives in here. It is what tells the
                 politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
                 not a chrome text field, and it is what `focusPaneSurface` hands the caret to. */}
-            <div ref={hostRef} className="h-full w-full" data-terminal-host="" {...{ [PANE_SURFACE_ATTR]: '' }} />
+            <div
+                ref={hostRef}
+                /* `min-h-0` is what lets the flex child actually give the bar its 45 px: a flex
+                   item's default `min-height: auto` refuses to shrink below its content. */
+                className={showKeyBar ? 'w-full min-h-0 flex-1' : 'h-full w-full'}
+                data-terminal-host=""
+                {...{ [PANE_SURFACE_ATTR]: '' }}
+            />
+            {showKeyBar ? (
+                <KeyBar paneID={paneID} sendKey={sendKey} captureRoot={rootRef} hideKeyboard={hideKeyboard} />
+            ) : null}
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
                 // is now the last stop on the retry path, not a dead end. The pane root still

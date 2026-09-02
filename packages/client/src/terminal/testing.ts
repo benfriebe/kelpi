@@ -10,9 +10,11 @@ import type { WsVtModes } from '@kelpi/protocol';
 
 import type { FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
+import { engineKeyTarget } from './renderer';
 import type {
     CellSize,
     TerminalEngine,
+    TerminalKeyInit,
     TerminalMatchLocation,
     TerminalRenderer,
     TerminalRendererFactory,
@@ -62,6 +64,8 @@ export class FakeRenderer implements TerminalRenderer {
     readonly writes: string[] = [];
     readonly resizes: { cols: number; rows: number }[] = [];
     readonly themes: TerminalTheme[] = [];
+    /** C1 - every `dispatchKey` the key bar asked for, in order. */
+    readonly keys: TerminalKeyInit[] = [];
     resets = 0;
     focusCount = 0;
     blurCount = 0;
@@ -224,6 +228,25 @@ export class FakeRenderer implements TerminalRenderer {
 
     blur(): void {
         this.blurCount += 1;
+    }
+
+    /**
+     * C1 - the same rule the adapter follows, so a pane test exercises the real event path.
+     *
+     * The fake has no encoder, so this produces no bytes; what it DOES produce is a real
+     * `keydown` on the real element, which is what the pane's capture-phase kitty interceptor
+     * and the key bar's sticky-modifier interceptor are made of. Every dispatch is also recorded,
+     * for the tests that only care that the bar asked for the right key.
+     */
+    dispatchKey(init: TerminalKeyInit): boolean {
+        if (this.disposed) return false;
+        const target = engineKeyTarget(this.opened);
+        if (target === null) return false;
+        const view = target.ownerDocument.defaultView;
+        if (view === null) return false;
+        this.keys.push(init);
+        target.dispatchEvent(new view.KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true }));
+        return true;
     }
 
     /** §N20 — every surface-focus report, in order; the last one is the live state. */

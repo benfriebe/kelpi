@@ -72,3 +72,26 @@ describe('the forwarded set', () => {
         expect(chordCommand({ code: 'BracketRight', shift: true })).toBe('web-chord:BracketRight:shift');
     });
 });
+
+/**
+ * Issue #33 — the regression the hardcoded set caused.
+ *
+ * Every one of these is an ordinary binding in `DEFAULT_KEYBIND_LINES`, so a user pressing it
+ * over a focused page expects Kelpi to act. Until the set is derived from the binding map they
+ * all fall into the page instead, and ⌘P in particular lands on Chromium's print dialog.
+ */
+describe('issue #33: bindings that must reach Kelpi from a focused page', () => {
+    it('forwards ⌘D / ⇧⌘D (split_right / split_down)', () => {
+        expect(forwardedChord(input('KeyD'))).toEqual({ code: 'KeyD', shift: false });
+        expect(forwardedChord(input('KeyD', { shift: true }))).toEqual({ code: 'KeyD', shift: true });
+    });
+
+    it('forwards ⌘P (command_palette), so the palette is a workaround for anything else', () => {
+        expect(forwardedChord(input('KeyP'))).toEqual({ code: 'KeyP', shift: false });
+    });
+
+    it('forwards ⇧⌘N (create_scratchpad) and ⌘N (new_workspace)', () => {
+        expect(forwardedChord(input('KeyN', { shift: true }))).not.toBeNull();
+        expect(forwardedChord(input('KeyN'))).not.toBeNull();
+    });
+});

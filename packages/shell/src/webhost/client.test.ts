@@ -343,7 +343,7 @@ describe('role lifecycle', () => {
 });
 
 /**
- * Issue #33 — the config the chord relay's claimed set is derived from.
+ * Issue #33 - the config the chord relay's claimed set is derived from.
  *
  * The set has to follow the user's `keybind` lines, and this connection is the only one in the
  * main process that sees them whole. What matters is that it is told on EVERY connect (not only
@@ -378,7 +378,7 @@ describe('keybind lines', () => {
         expect(test.keybindLines).toEqual([]);
     });
 
-    it('reports an empty list as an empty list — that is a real config, not silence', () => {
+    it('reports an empty list as an empty list - that is a real config, not silence', () => {
         const test = connected();
         test.latest().deliver({ type: 'settings-changed', settings: { keybindLines: [] } });
         expect(test.keybindLines).toEqual([[]]);

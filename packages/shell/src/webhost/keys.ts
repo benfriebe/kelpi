@@ -9,7 +9,7 @@
  * whole priority key layer (WEB-152/TERM-156) would be dead the instant it was needed.
  *
  * So the host intercepts exactly the chords Kelpi claims, cancels them in the page, and replays
- * them into the shell window's own renderer — which is where they are implemented. Everything
+ * them into the shell window's own renderer - which is where they are implemented. Everything
  * else (⌘C, ⌘A, typing, the page's own shortcuts) is left completely alone: a page that binds
  * ⌘K for its command palette keeps it.
  *
@@ -17,7 +17,7 @@
  *
  * It used to be a hardcoded twelve-key literal: the web priority table plus ⌘F. That set served
  * the priority layer correctly and was never the thing that also had to carry the **ordinary
- * binding map** across the process boundary — so ⌘D never split, ⌘W never closed, ⇧⌘N never made
+ * binding map** across the process boundary - so ⌘D never split, ⌘W never closed, ⇧⌘N never made
  * a scratchpad, and ⌘P reached Chromium's print dialog instead of Kelpi's palette, which meant
  * the palette was not a workaround either. A literal is wrong in principle as well: every one of
  * those is a `keybind` line a user can move, and a hardcoded physical key cannot move with it.
@@ -38,14 +38,14 @@
  *   - **the priority layer** (§7.3, `client/src/webpane/priority.ts`) is a hardcoded browser
  *     keymap that runs BEFORE the binding lookup, so ⌘L / ⌘R / ⌘T / ⌘← / ⌘→ / ⌘⇧[ / ⌘⇧] / the
  *     zoom trio mean what they mean in every browser. Most of those are in no `keybind` line at
- *     all, so they are listed here — the one place in this module a literal is still right,
+ *     all, so they are listed here - the one place in this module a literal is still right,
  *     because it mirrors a literal the client also holds;
  *   - **⌘, and ⌘/ ⌘?** open Settings and Help through their own window listeners rather than
  *     through the binding map (they are OS menu-bar items in the Swift app, and there is no
  *     `KelpiAction` for either). The content-pane set folds them in for exactly this reason;
  *   - **bare ⌘[ / ⌘]** are subtracted even though the map binds them (`focus_previous_pane` /
  *     `focus_next_pane`): inside a page they are back/forward, which the page may itself want
- *     (SET-189). Only ⌘⇧[ / ⌘⇧] — tab cycling — are Kelpi's.
+ *     (SET-189). Only ⌘⇧[ / ⌘⇧] - tab cycling - are Kelpi's.
  *
  * ## Why only ⌘ chords cross
  *
@@ -54,7 +54,7 @@
  * `parseChordCommand`), so a chord carrying ⌃ or ⌥ has no faithful encoding: relaying
  * `ctrl+shift+left` (`move_pane_left`) as `web-chord:ArrowLeft:shift` would replay ⌘⇧← and
  * navigate the page back. Those triggers are therefore refused rather than mistranslated, and
- * the same rule keeps the page safe from the map's one unmodified line (`escape=close_search`) —
+ * the same rule keeps the page safe from the map's one unmodified line (`escape=close_search`) -
  * stealing bare Escape from every page would be a far worse defect than the one this fixes.
  * Widening the relay to ⌃/⌥ needs the decoder on the other side to grow first.
  */
@@ -113,8 +113,8 @@ function chordKey(code: string, shift: boolean): string {
 /**
  * §7.3's hardcoded browser keymap, restated as chord keys.
  *
- * It is not in the binding map — it is a *layer* that runs ahead of the map, deliberately, so
- * the defaults do not change for every other pane type — so nothing derived from the map can
+ * It is not in the binding map - it is a *layer* that runs ahead of the map, deliberately, so
+ * the defaults do not change for every other pane type - so nothing derived from the map can
  * find it. `Equal` appears with and without shift because ⌘+ on a US layout is a shifted `=`
  * and the layer zooms in for both.
  */
@@ -145,7 +145,7 @@ const PAGE_OWNED_CHORDS: readonly string[] = ['BracketLeft', 'BracketRight'];
 /**
  * A trigger's chord key, or null when the relay cannot carry it faithfully.
  *
- * ⌘ exactly, optionally with ⇧, and nothing else — see the module header on why ⌃/⌥ and the
+ * ⌘ exactly, optionally with ⇧, and nothing else - see the module header on why ⌃/⌥ and the
  * unmodified lines are refused rather than approximated.
  */
 function relayableChordKey(trigger: KeyTrigger): string | null {
@@ -181,8 +181,8 @@ export function claimedChords(bindings: KeyBindingMap): ReadonlySet<string> {
  * the user every other chord (`KeybindingService.loadFromDisk`).
  *
  * NOT canonicalized for the platform (`canonicalKeyBindingsForPlatform`). The relay speaks ⌘
- * end to end — the wire format forces `metaKey`, and the priority layer it serves is a browser
- * keymap — so on a Ctrl-primary platform the honest answer is the set as written, which is what
+ * end to end - the wire format forces `metaKey`, and the priority layer it serves is a browser
+ * keymap - so on a Ctrl-primary platform the honest answer is the set as written, which is what
  * this path already delivered before the set was derived.
  */
 export function claimedChordsForLines(lines: readonly string[]): ReadonlySet<string> {
@@ -193,7 +193,7 @@ export function claimedChordsForLines(lines: readonly string[]): ReadonlySet<str
 }
 
 /**
- * The live set, module state — like `./scripts.ts`'s find palette, and for the same reason.
+ * The live set, module state - like `./scripts.ts`'s find palette, and for the same reason.
  *
  * The decision itself is taken inside `./tab.ts`'s `before-input-event` handler, one per view,
  * and threading a set through every tab would be a lot of wiring for a single-process fact that
@@ -218,7 +218,7 @@ export function forwardedChordKeys(): ReadonlySet<string> {
  *
  * Rules, in order:
  *   - key-downs only (a forwarded key-up would double-fire the binding);
- *   - ⌘ held, and neither ⌃ nor ⌥ — the relay cannot encode those, and every chord that carries
+ *   - ⌘ held, and neither ⌃ nor ⌥ - the relay cannot encode those, and every chord that carries
  *     one is the page's as far as this boundary is concerned;
  *   - the (key, shift) pair is claimed by the set above.
  *

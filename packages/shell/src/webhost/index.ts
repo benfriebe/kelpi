@@ -499,7 +499,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
          * Issue #33: the chord relay's claimed set follows the user's `keybind` lines.
          *
          * `./keys.ts` holds the set as module state and starts it at the shipped defaults, so
-         * this is a refresh rather than an initialisation — a view created before the handshake
+         * this is a refresh rather than an initialisation - a view created before the handshake
          * lands still forwards the standard chords, and a rebind applied while the app is
          * running reaches the relay on the `settings-changed` that carries it.
          */

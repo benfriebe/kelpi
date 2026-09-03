@@ -13,12 +13,12 @@
  * React bundle into the Electron main process for one `Map`. What keeps the two honest instead
  * is the third party they already agree with: `@kelpi/core/config`'s `KEY_NAME_TO_CODE` is the
  * source both tables were written from, and `./key-codes.test.ts` asserts this one covers every
- * key code that table can produce — so no `keybind` line a user can write is silently
+ * key code that table can produce - so no `keybind` line a user can write is silently
  * unrepresentable on the wire.
  *
  * Two key codes are ambiguous in the client's table and resolved here the only way that can
  * reach it: 36 is both `Enter` and `NumpadEnter` (the client maps both to 36, so `Enter` is
- * enough), and 51 is `Backspace` (`delete` in config-file spelling — macOS's ⌫), while 117 is
+ * enough), and 51 is `Backspace` (`delete` in config-file spelling - macOS's ⌫), while 117 is
  * `Delete` (`forward_delete`, ⌦).
  */
 
@@ -47,7 +47,7 @@ export function domCodeForKeyCode(keyCode: number): string | null {
     return KEY_CODE_TO_DOM_CODE.get(keyCode) ?? null;
 }
 
-/** Every key code a `keybind` line can name — the coverage obligation, restated for the test. */
+/** Every key code a `keybind` line can name - the coverage obligation, restated for the test. */
 export function configurableKeyCodes(): ReadonlySet<number> {
     return new Set(KEY_NAME_TO_CODE.values());
 }

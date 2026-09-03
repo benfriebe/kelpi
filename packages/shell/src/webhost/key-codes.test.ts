@@ -3,10 +3,10 @@
  *
  * Two obligations, and the module is only useful if both hold:
  *
- *   1. **Coverage** — every key code a `keybind` line can name has a `KeyboardEvent.code`, or a
+ *   1. **Coverage** - every key code a `keybind` line can name has a `KeyboardEvent.code`, or a
  *      user's binding would be silently unreachable from a page, which is the exact class of
  *      defect issue #33 is about.
- *   2. **Agreement** — the code it emits is one the client's dispatcher maps back to the SAME
+ *   2. **Agreement** - the code it emits is one the client's dispatcher maps back to the SAME
  *      key code. The client owns that direction (`client/src/chrome/keys.ts` ▸
  *      `CODE_TO_KEY_CODE`) and cannot be imported here (no package edge, deliberately), so the
  *      test reads it off disk. A duplicated table that nothing compares is a table that drifts.

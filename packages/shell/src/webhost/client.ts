@@ -53,8 +53,8 @@ export interface WebHostClientOptions {
      * The daemon's `keybind` line values, from `welcome.settings` and every `settings-changed`.
      *
      * Issue #33: the chord relay's claimed set is derived from the binding map, and this is the
-     * connection that can see it. The renderer's copy is no use — the whole point of the relay
-     * is the keystrokes the renderer never gets — and the main process's status socket
+     * connection that can see it. The renderer's copy is no use - the whole point of the relay
+     * is the keystrokes the renderer never gets - and the main process's status socket
      * deliberately narrows the snapshot to what its own native surfaces need
      * (`../status.ts` ▸ `ShellDaemonSettings`), so the host reads its own.
      *
@@ -110,7 +110,7 @@ function readString(source: JsonRecord, key: string): string | undefined {
  *
  * Null rather than `[]`: an empty list is a legitimate answer (a config file with no `keybind`
  * lines resolves to the shipped defaults), while a daemon too old to sync settings has said
- * nothing at all — and the caller must not read silence as "the user unbound everything".
+ * nothing at all - and the caller must not read silence as "the user unbound everything".
  */
 function readKeybindLines(message: JsonRecord): readonly string[] | null {
     const settings = message['settings'];

@@ -3,7 +3,7 @@
  *
  * The set has to be exactly what Kelpi claims: the resolved binding map, plus the web-pane
  * priority layer and the two window-listener chords, minus bare ⌘[ / ⌘]. Too narrow and a
- * binding is unreachable the moment a user clicks the page — issue #33, where ⌘D never split
+ * binding is unreachable the moment a user clicks the page - issue #33, where ⌘D never split
  * and ⌘P reached Chromium's print dialog. Too wide and Kelpi starts eating a page's own
  * shortcuts — ⌘K for a command palette, ⌘S for a save — which is a much worse failure, because
  * the page looks broken and nothing says why.
@@ -46,7 +46,7 @@ function takes(code: string, shift = false): boolean {
 
 describe('the derived set', () => {
     it('takes every pane binding that used to die on a focused page (issue #33)', () => {
-        // ⌘D / ⇧⌘D split, ⌘W closes, ⌘P is the palette, ⇧⌘N is a scratchpad — the exact list
+        // ⌘D / ⇧⌘D split, ⌘W closes, ⌘P is the palette, ⇧⌘N is a scratchpad - the exact list
         // the issue reports as dead, plus the rest of the map's ⌘ chords.
         const claimed: readonly (readonly [string, boolean])[] = [
             ['KeyD', false], // split_right
@@ -84,7 +84,7 @@ describe('the derived set', () => {
 
     it('still takes ⌘F for Kelpi’s find bar', () => {
         // Not a special case any more: `super+f=toggle_search` is an ordinary line in the map,
-        // so a derived set gets it for free — and loses it if the user unbinds it, which is the
+        // so a derived set gets it for free - and loses it if the user unbinds it, which is the
         // right answer rather than a carve-out.
         expect(takes('KeyF')).toBe(true);
         expect(claimedChordsForLines(['super+f=unbind']).has('KeyF')).toBe(false);
@@ -105,7 +105,7 @@ describe('what stays with the page', () => {
         for (const code of ['KeyC', 'KeyA', 'KeyK', 'KeyS', 'KeyV', 'KeyX', 'KeyZ', 'KeyJ', 'KeyB']) {
             expect(takes(code), code).toBe(false);
         }
-        // ⇧⌘F is not `toggle_search` (that is bare ⌘F), so it stays with the page too — the set
+        // ⇧⌘F is not `toggle_search` (that is bare ⌘F), so it stays with the page too - the set
         // is per (key, shift), not per key.
         expect(takes('KeyF', true)).toBe(false);
     });
@@ -121,7 +121,7 @@ describe('what stays with the page', () => {
 
     it('never takes a bare key, however the map binds it', () => {
         // `escape=close_search` is a real default. Forwarding it would steal Escape from every
-        // page in the app — a dialog that will not close is not a fix.
+        // page in the app - a dialog that will not close is not a fix.
         expect(DEFAULTS.has('Escape')).toBe(false);
         expect(forwardedChord(input('Escape', { meta: false }), DEFAULTS)).toBeNull();
         expect(forwardedChord(input('Escape'), DEFAULTS)).toBeNull();
@@ -133,7 +133,7 @@ describe('what stays with the page', () => {
         expect(forwardedChord(input('KeyF', { alt: true }), DEFAULTS)).toBeNull();
         // The two default chord families the relay cannot encode: `move_pane_*` is
         // ctrl+shift+arrow and `focus_*_pane` / workspace nav are alt+super+arrow. They are
-        // refused rather than mistranslated — `web-chord:ArrowLeft:shift` would replay ⌘⇧← and
+        // refused rather than mistranslated - `web-chord:ArrowLeft:shift` would replay ⌘⇧← and
         // navigate the page back. See the module header.
         expect(forwardedChord(input('ArrowLeft', { meta: false, control: true, shift: true }), DEFAULTS)).toBeNull();
         expect(forwardedChord(input('ArrowRight', { alt: true }), DEFAULTS)).toBeNull();

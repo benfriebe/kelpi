@@ -1303,6 +1303,77 @@ async function clearPhoneEmulation(page) {
 }
 
 /**
+ * The window a phone step was handed, in the terms the next step will read it in.
+ *
+ * `outerWidth`/`outerHeight` are in the list on purpose and they are what caught the leak this
+ * function exists for: `Browser.getWindowBounds` is not implemented by this Electron's CDP
+ * ("'Browser.getWindowBounds' wasn't found", measured 2026-09-04), so the renderer's own view of
+ * the window frame is the only reading available, and a window that grew to the screen shows up
+ * there first. `visualViewport` is here because C2's keyboard-inset step shadows its `height` on
+ * the live instance, and a shadow left behind would make every later measurement lie.
+ */
+async function readPhoneFrame(page) {
+    return JSON.parse(
+        String(
+            await page.eval(
+                `JSON.stringify({
+                    inner: window.innerWidth,
+                    innerH: window.innerHeight,
+                    outer: window.outerWidth,
+                    outerH: window.outerHeight,
+                    dpr: window.devicePixelRatio,
+                    visual: window.visualViewport ? Math.round(window.visualViewport.width) : null,
+                    visualH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                    fields: document.querySelectorAll('[data-terminal-paste-field]').length,
+                    pills: document.querySelectorAll('[data-terminal-copy-pill]').length
+                })`
+            )
+        )
+    );
+}
+
+/**
+ * THE HAND-BACK, and it belongs to the step that emulated rather than to the step after it.
+ *
+ * Measured 2026-09-04: `phone-paste` was leaving the window at 2056x1329, the SCREEN's size,
+ * and the next step to read an absolute coordinate was `mac-chrome`, which read the inspector
+ * panel at x 1776 instead of 1000 and stayed green only because its own assertions are relative.
+ * A step that changes the window and hands it on broken should fail itself, so every phone step
+ * ends with this: the frame it was handed, the form factor it was handed, and none of its own
+ * surfaces left on screen.
+ *
+ * `visualViewport` is compared to `innerWidth` rather than to the handed-in number for width
+ * only, because a scrollbar can legitimately differ by a few px between reads; a shadow left on
+ * the instance shows up as a large mismatch, which is what this is looking for.
+ */
+async function checkPhoneHandback(page, recorder, handedIn) {
+    const after = await readPhoneFrame(page);
+    recorder.note(`handed in ${JSON.stringify(handedIn)}; handing back ${JSON.stringify(after)}`);
+    const sameFrame =
+        after.inner === handedIn.inner &&
+        after.innerH === handedIn.innerH &&
+        after.outer === handedIn.outer &&
+        after.outerH === handedIn.outerH &&
+        after.dpr === handedIn.dpr;
+    const noShadow =
+        after.visual !== null &&
+        Math.abs(Number(after.visual) - Number(after.inner)) <= 20 &&
+        after.visualH !== null &&
+        Math.abs(Number(after.visualH) - Number(after.innerH)) <= 20;
+    recorder.check(
+        'the window the next step inherits is the one this step was handed',
+        sameFrame && noShadow && after.coarse === false && after.formFactor === 'desktop' && after.bars === 0 && after.fields === 0 && after.pills === 0,
+        `${String(after.inner)}x${String(after.innerH)} inner (was ${String(handedIn.inner)}x${String(handedIn.innerH)}), ` +
+            `${String(after.outer)}x${String(after.outerH)} outer (was ${String(handedIn.outer)}x${String(handedIn.outerH)}), ` +
+            `@${String(after.dpr)}x, visual ${String(after.visual)}, coarse=${String(after.coarse)}, ` +
+            `form=${after.formFactor}, ${String(after.bars)} bars, ${String(after.fields)} fields, ${String(after.pills)} pills`
+    );
+}
+
+/**
  * The trigger the LIVE binding map holds for an action, read out of the Help overlay.
  *
  * Earlier steps rebind keys through Settings (run-H had `split_right` on ⌃⌥T by the time the
@@ -28918,6 +28989,8 @@ function buildFlows(ctx) {
                 // to mount at all, and a clear screen makes the capture below readable.
                 await focusPaneBody(view, paneID);
                 await runInTerminal(view, 'clear', { settleMs: 400 });
+                // The window this step is handed, for the hand-back in the `finally`.
+                const handedIn = await readPhoneFrame(view);
 
                 try {
                     await emulatePhone(view);
@@ -29319,24 +29392,28 @@ function buildFlows(ctx) {
                     );
                 } finally {
                     await clearPhoneEmulation(view);
-                }
 
-                // AND NOT ON DESKTOP: the same pane, the same window, no bar.
-                const afterClear = JSON.parse(
-                    String(
-                        await view.eval(
-                            `JSON.stringify({
-                                bars: document.querySelectorAll('[data-terminal-key-bar]').length,
-                                formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
-                            })`
+                    // AND NOT ON DESKTOP: the same pane, the same window, no bar.
+                    const afterClear = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
                         )
-                    )
-                );
-                recorder.check(
-                    'the key bar is gone the moment the window is a desktop again',
-                    afterClear.bars === 0 && afterClear.formFactor === 'desktop',
-                    `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
-                );
+                    );
+                    recorder.check(
+                        'the key bar is gone the moment the window is a desktop again',
+                        afterClear.bars === 0 && afterClear.formFactor === 'desktop',
+                        `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
+                    );
+                    // …and the window itself, which is what the step after this one inherits.
+                    // A phone step that leaves the frame changed must fail HERE, not three steps
+                    // later in whichever step is the first to read an absolute coordinate.
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
             }
         },
 
@@ -29434,6 +29511,9 @@ function buildFlows(ctx) {
 
                 await focusPaneBody(view, paneID);
                 await runInTerminal(view, 'clear', { settleMs: 400 });
+                // The window this step is handed, read before it changes anything, so the
+                // hand-back at the bottom compares against a fact rather than an expectation.
+                const handedIn = await readPhoneFrame(view);
 
                 let took = '(not reached)';
                 try {
@@ -29542,26 +29622,46 @@ function buildFlows(ctx) {
                     await view.key('KeyD', { modifiers: MOD.ctrl, key: 'd' }).catch(() => {});
                     await sleep(400);
                     await clearPhoneEmulation(view);
-                }
 
-                await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
-                await runInTerminal(view, 'clear', { settleMs: 400 });
-                const restored = JSON.parse(
-                    String(
-                        await view.eval(
-                            `JSON.stringify({
-                                bars: document.querySelectorAll('[data-terminal-key-bar]').length,
-                                fields: document.querySelectorAll('[data-terminal-paste-field]').length,
-                                formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
-                            })`
+                    /*
+                     * FOCUS THE PANE BEFORE TYPING INTO IT, and this line is the whole fix for a
+                     * leak measured on 2026-09-04.
+                     *
+                     * The cleanup below types two commands. Since the key bar stopped restoring
+                     * the caret (device round 3 - a `focus()` back onto the engine's textarea is
+                     * how Android raises the software keyboard), the caret after a tapped Paste is
+                     * on the button, and when the bar unmounts with the emulation the caret falls
+                     * to `document.body`. Typing there is not typing into a terminal: it is typing
+                     * into the APP, where a bare keystroke is a binding or a menu accelerator.
+                     * Probed character by character, `printf` got as far as its `f` and the window
+                     * went from 1280 to 2056 wide, which is this display's full screen width, and
+                     * `mac-chrome` then read the inspector panel at x 1776 instead of 1000. No
+                     * client binding matches a bare `f`, so the actor is below the client; the
+                     * lesson is the general one, which every other terminal step already follows:
+                     * a step that types into a pane focuses the pane first.
+                     */
+                    await focusPaneBody(view, paneID).catch(() => {});
+                    await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+                    const restored = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                    fields: document.querySelectorAll('[data-terminal-paste-field]').length,
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
                         )
-                    )
-                );
-                recorder.check(
-                    'and NOT on desktop: no key bar, no paste field, back to a desktop window',
-                    restored.bars === 0 && restored.fields === 0 && restored.formFactor === 'desktop',
-                    `${String(restored.bars)} bars, ${String(restored.fields)} fields, data-form-factor=${restored.formFactor}`
-                );
+                    );
+                    recorder.check(
+                        'and NOT on desktop: no key bar, no paste field, back to a desktop window',
+                        restored.bars === 0 && restored.fields === 0 && restored.formFactor === 'desktop',
+                        `${String(restored.bars)} bars, ${String(restored.fields)} fields, data-form-factor=${restored.formFactor}`
+                    );
+                    // …and the last thing the step does, so it covers the cleanup above too.
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
             }
         },
 

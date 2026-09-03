@@ -28903,7 +28903,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard key is a TOGGLE and the bar works with the keyboard down: tapping it drops the caret off the engine and the key reads Show, Esc and an arrow tapped in that state still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -29168,6 +29168,154 @@ function buildFlows(ctx) {
                         'the letter was not ALSO inserted',
                         !afterIme.includes('ime-interruptc'),
                         afterIme.includes('ime-interruptc') ? 'the c reached the PTY as text as well as an interrupt' : 'no stray c after the marker'
+                    );
+
+                    /*
+                     * ── THE BAR WITH THE KEYBOARD DOWN (owner device round 3, 2026-09-04) ──
+                     *
+                     * Round 3 found every tap raising the software keyboard, because the bar used
+                     * to hand the caret back to the engine's textarea after a tap and a `focus()`
+                     * on an editable IS how Android raises the keyboard. The bar no longer
+                     * focuses anything except its own Show key, so the case to drive here is the
+                     * one that was impossible before: the caret OFF the terminal, keys still
+                     * reaching the PTY.
+                     *
+                     * CDP cannot show or hide an Android software keyboard, and this is a Mac
+                     * running Electron in any case, so FOCUS IS THE PROXY: `document.activeElement`
+                     * being the engine's textarea is exactly the condition that makes a phone put
+                     * the keyboard up, and it is what the toggle acts on. The assertions below say
+                     * so where they are read.
+                     */
+                    const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+                    // A reader that echoes control bytes, started while the caret is still there.
+                    await runInTerminal(view, 'cat', { settleMs: 700 });
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${keyboardKey}');
+                            if (key !== null) key.scrollIntoView({ inline: 'end', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(keyboardKey);
+                    await sleep(250);
+                    const hidden = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
+                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`after tapping the keyboard key: ${JSON.stringify(hidden)}`);
+                    recorder.check(
+                        'the keyboard key drops the caret off the engine (the proxy for the keyboard going down; CDP cannot show an Android keyboard)',
+                        hidden.inHost === false,
+                        `activeElement=${hidden.caret} inside the terminal host=${String(hidden.inHost)}`
+                    );
+                    recorder.check(
+                        'and it turns into Show, because the same key is the way back',
+                        hidden.label === 'Show' && hidden.pressed === 'false',
+                        `label=${hidden.label} aria-pressed=${hidden.pressed}`
+                    );
+
+                    // …and NOW the keys, with the caret nowhere near the terminal.
+                    for (const id of ['esc', 'up']) {
+                        await view.eval(
+                            `(() => {
+                                const key = document.querySelector('${body} [data-terminal-key="${id}"]');
+                                if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                                return true;
+                            })()`
+                        );
+                        await sleep(120);
+                        await view.tap(`${body} [data-terminal-key="${id}"]`);
+                        await sleep(200);
+                    }
+                    await sleep(400);
+                    const blurredCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (keys tapped with the caret off the engine)', blurredCapture.slice(-400));
+                    /*
+                     * The tty echoes what it received, control bytes as `^X`: Esc is `^[` and the
+                     * arrow is `^[[A`, so `^[^[[A` on screen is both keys, in order, at the PTY.
+                     */
+                    recorder.check(
+                        'keys tapped with the caret off the engine still reach the PTY',
+                        blurredCapture.includes('^[^[[A'),
+                        blurredCapture.includes('^[^[[A')
+                            ? 'the tty echoed ^[ then ^[[A'
+                            : 'no ^[^[[A in the capture - the keys did not arrive with the caret away'
+                    );
+                    const stillBlurred = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false,
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'THE BAR NEVER FOCUSES ANYTHING: tapping keys did not put the caret back (which is what raised the keyboard in round 3)',
+                        stillBlurred.inHost === false && stillBlurred.label === 'Show',
+                        `activeElement=${stillBlurred.caret} inside the host=${String(stillBlurred.inHost)} key=${stillBlurred.label}`
+                    );
+
+                    // The way back, which is the one focus the bar may cause.
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${keyboardKey}');
+                            if (key !== null) key.scrollIntoView({ inline: 'end', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(keyboardKey);
+                    await sleep(250);
+                    const shown = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
+                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'tapping Show puts the caret back on the engine (the proxy for the keyboard coming up)',
+                        shown.caret === 'textarea' && shown.inHost === true && shown.label === 'Hide',
+                        `activeElement=${shown.caret} inside the host=${String(shown.inHost)} key=${shown.label}`
+                    );
+
+                    // Leave the pane at a prompt: Ctrl from the bar, `c` from the keyboard, which
+                    // also re-proves the latch survives the toggle.
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await sleep(200);
+                    await view.type('c');
+                    await sleep(700);
+                    await runInTerminal(view, `printf 'KB-%s\\n' $((8*8))`, { settleMs: 900 });
+                    const afterToggle = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.check(
+                        'the pane is back at a prompt with the keyboard back up',
+                        afterToggle.includes('KB-64'),
+                        afterToggle.includes('KB-64') ? 'the shell evaluated $((8*8))' : 'no KB-64 - cat is probably still running'
                     );
                 } finally {
                     await clearPhoneEmulation(view);

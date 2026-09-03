@@ -18,7 +18,8 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { KEY_BAR_HEIGHT_PX, KEY_BAR_KEYS, KEY_BAR_KEY_SIZE_PX, withSticky } from './KeyBar';
+import { KEY_BAR_HEIGHT_PX, KEY_BAR_KEYS, KEY_BAR_KEY_SIZE_PX, KeyBar, characterKey, withSticky } from './KeyBar';
+import { KITTY_DISAMBIGUATE, KITTY_REPORT_ALL_KEYS } from './kitty-keyboard';
 import { TerminalPane } from './TerminalPane';
 import { createTerminalRenderer } from './renderer';
 import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from './testing';
@@ -201,6 +202,235 @@ describe('the key bar routes through the ENGINE: bytes off a real ghostty-web', 
     it('answers false rather than throwing once the renderer is gone', () => {
         renderer.dispose();
         expect(renderer.dispatchKey({ key: 'Escape', code: 'Escape' })).toBe(false);
+    });
+
+    /**
+     * WHY THE RESCUE BELOW IS LOAD-BEARING, and why the owner's phone lost Enter but kept
+     * Backspace. Nothing of the bar is mounted here: this is the engine, on its own.
+     *
+     * A named key with no `code` falls off `KEY_MAP` (`input-handler.ts:389`) and then off the
+     * vendor fallback under it, which rescues a single-scalar PRINTABLE and nothing else
+     * (`:391-411`); a line-break `beforeinput` is ignored by `handleBeforeInput`, which forwards
+     * `insertText` alone. The same key WITH a `code` is encoded normally - so Backspace arriving
+     * at the PTY as `^?` on Android is evidence that Chrome sends it with a real `code`, and
+     * Enter arriving as nothing is evidence that it does not.
+     */
+    it('drops a named key that has no code, and takes the same key when it has one', () => {
+        const area = host.querySelector('textarea') as HTMLTextAreaElement;
+        const press = (init: KeyboardEventInit): void => {
+            area.dispatchEvent(new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true }));
+        };
+
+        press({ key: 'Enter', code: '' });
+        press({ key: 'Backspace', code: '' });
+        press({ key: 'ArrowUp', code: '' });
+        area.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType: 'insertLineBreak' }));
+        expect(hex(out.join(''))).toBe('');
+
+        press({ key: 'Backspace', code: 'Backspace' });
+        expect(hex(out.join(''))).toBe('7f');
+    });
+});
+
+// ── the soft keyboard's own shapes, measured at the same engine ──────────────────────
+
+/**
+ * THE DEVICE ROUND'S TWO FAILURES, as bytes.
+ *
+ * On the owner's Android phone (round 2, 2026-09-03, `stty -icanon -echo min 1; cat -v`) a latched
+ * Ctrl then the soft keyboard's `c` put a plain `c` at the PTY, and the soft keyboard's Enter put
+ * nothing there at all. Both are shapes jsdom can raise exactly: Chrome's IME letter is a
+ * `keydown` at keyCode 229 with `key` `'Unidentified'` and an EMPTY `code`, followed by
+ * `beforeinput` `insertText` carrying the letter; its Enter is a `keydown` with `key` `'Enter'`
+ * and an empty `code`, or a `beforeinput` of `insertLineBreak`.
+ *
+ * So this block is the whole path with nothing faked in the middle: the real bar component, its
+ * capture-phase listeners on a real pane root, and the real vendored engine underneath, with the
+ * bytes read off `renderer.onData` the way the first block reads them.
+ */
+describe('the soft keyboard: Android event shapes, end to end at the engine', () => {
+    beforeAll(installStubCanvas);
+    afterAll(restoreCanvas);
+
+    let root: HTMLElement;
+    let host: HTMLElement;
+    let area: HTMLTextAreaElement;
+    let renderer: ReturnType<typeof createTerminalRenderer>;
+    let out: string[];
+
+    beforeEach(async () => {
+        // The pane's shape: a root with the terminal host inside it, which is what makes the
+        // bar's capture listener sit ABOVE both the engine's listener and the kitty interceptor.
+        root = document.createElement('div');
+        document.body.appendChild(root);
+        host = document.createElement('div');
+        root.appendChild(host);
+        renderer = createTerminalRenderer({ cols: 40, rows: 8 });
+        await renderer.open(host);
+        area = host.querySelector('textarea') as HTMLTextAreaElement;
+        out = [];
+        renderer.onData((data) => out.push(data));
+        render(
+            <KeyBar
+                paneID="engine"
+                sendKey={(init) => renderer.dispatchKey(init)}
+                captureRoot={{ current: root }}
+                hideKeyboard={() => undefined}
+            />
+        );
+    });
+
+    afterEach(() => {
+        cleanup();
+        renderer.dispose();
+        root.remove();
+    });
+
+    function key(id: string): HTMLElement {
+        const button = document.querySelector(`[data-terminal-key="${id}"]`);
+        if (button === null) throw new Error(`no key bar button for ${id}`);
+        return button as HTMLElement;
+    }
+
+    /** Chrome's IME letter: the placeholder keydown, then the letter at `beforeinput`. */
+    function softLetter(letter: string): void {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Unidentified', code: '', keyCode: 229 });
+            fireEvent(area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: letter, inputType: 'insertText' }));
+        });
+    }
+
+    it('Ctrl from the bar, then the soft keyboard’s c: the interrupt, 0x03', () => {
+        tap(key('ctrl'));
+        softLetter('c');
+        expect(hex(out.join(''))).toBe('03');
+        expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    /**
+     * ALT IS APPLIED, AND WHAT THE ENGINE DOES WITH IT IS THE ENGINE'S BUSINESS.
+     *
+     * The claim this bar can make is equivalence: a latched Alt plus the soft keyboard's `x`
+     * produces exactly the bytes a physical Alt+x produces, which is asserted first and is the
+     * contract. What those bytes ARE, measured here on 2026-09-03 while fixing the device round:
+     * a plain `x`, no ESC prefix - because nothing in the port or the vendored engine ever sets
+     * `KeyEncoderOption.ALT_ESC_PREFIX` (DEC mode 1036), and `input-handler.ts:436-439` syncs only
+     * DEC 1 and DEC 66 into the encoder before an encode. That is the same answer a desktop gets
+     * today, so it is a port-wide gap and not a phone one; it is pinned rather than worked around
+     * because re-encoding bytes here is exactly what C1's routing decision forbids. With the
+     * kitty protocol negotiated the modifier is reported in full, which the component block below
+     * measures.
+     */
+    it('Alt from the bar, then the soft keyboard’s x: exactly what a physical Alt+x sends', () => {
+        tap(key('alt'));
+        softLetter('x');
+        const viaBar = out.join('');
+        expect(key('alt').getAttribute('aria-pressed')).toBe('false');
+
+        out.length = 0;
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', code: 'KeyX', altKey: true, bubbles: true, cancelable: true }));
+        expect(hex(viaBar)).toBe(hex(out.join('')));
+        expect(hex(viaBar)).toBe(hex('x'));
+    });
+
+    /**
+     * …and with nothing latched the same pair is left entirely alone: the engine inserts the
+     * letter from `beforeinput` itself, which is why plain typing on the phone always worked.
+     */
+    it('leaves an unlatched soft-keyboard letter to the engine, once', () => {
+        softLetter('c');
+        expect(hex(out.join(''))).toBe(hex('c'));
+    });
+
+    it('the soft keyboard’s Enter, a keydown with an empty code, is a carriage return', () => {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Enter', code: '', keyCode: 13 });
+        });
+        expect(hex(out.join(''))).toBe('0d');
+    });
+
+    it.each(['insertLineBreak', 'insertParagraph'])('a beforeinput of %s is the same carriage return', (inputType) => {
+        act(() => {
+            fireEvent(area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType }));
+        });
+        expect(hex(out.join(''))).toBe('0d');
+    });
+
+    /**
+     * BOTH shapes for one keystroke is one carriage return. A phone that sent `\r` twice would
+     * run every command twice, which is worse than not running it at all.
+     */
+    it('sends one carriage return when the keydown and the line break are the same keystroke', () => {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Enter', code: '', keyCode: 13 });
+            fireEvent(area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType: 'insertLineBreak' }));
+        });
+        expect(hex(out.join(''))).toBe('0d');
+    });
+
+    /**
+     * WHY BACKSPACE ALREADY WORKED, and the shape of the rescue read back off the engine.
+     *
+     * `0x7f` has exactly one route through the engine: `KEY_MAP['Backspace']`, which is keyed on
+     * `event.code`. The vendor fallback under it (`input-handler.ts:391-411`) rescues only a
+     * single-scalar PRINTABLE, so it could never have produced it. The device round measured `^?`
+     * arriving, so Chrome must deliver the soft keyboard's Backspace with a real `code` - and
+     * that key therefore needs nothing from this bar. Enter, measured arriving with none, needs
+     * the rescue; both are pinned here so a future engine bump cannot quietly swap them.
+     */
+    it('takes the real-code Backspace as it comes, and rescues one with no code the same way', () => {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Backspace', code: 'Backspace', keyCode: 8 });
+        });
+        expect(hex(out.join(''))).toBe('7f');
+        out.length = 0;
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Backspace', code: '', keyCode: 8 });
+        });
+        expect(hex(out.join(''))).toBe('7f');
+    });
+
+    /**
+     * The rescue names a `code` and stops. It does not encode: DECCKM is still read off the live
+     * VT by the engine, one layer below, exactly as it is for a physical arrow key.
+     */
+    it('an arrow with no code still follows DECCKM', async () => {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'ArrowUp', code: '', keyCode: 38 });
+        });
+        expect(hex(out.join(''))).toBe(hex(`${ESC}[A`));
+
+        out.length = 0;
+        renderer.write(`${ESC}[?1h`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        act(() => {
+            fireEvent.keyDown(area, { key: 'ArrowUp', code: '', keyCode: 38 });
+        });
+        expect(hex(out.join(''))).toBe(hex(`${ESC}OA`));
+    });
+
+    /**
+     * A PHYSICAL KEYBOARD ON THE PHONE IS UNTOUCHED. Every one of these carries a real `code`, so
+     * the bar returns on its first branch and the bytes are the engine's own, latch or no latch.
+     */
+    it('leaves a physical keyboard on the path it is on today', () => {
+        act(() => {
+            fireEvent.keyDown(area, { key: 'c', code: 'KeyC', keyCode: 67 });
+        });
+        expect(hex(out.join(''))).toBe(hex('c'));
+
+        out.length = 0;
+        act(() => {
+            fireEvent.keyDown(area, { key: 'Enter', code: 'Enter', keyCode: 13 });
+        });
+        expect(hex(out.join(''))).toBe('0d');
+
+        out.length = 0;
+        tap(key('ctrl'));
+        act(() => {
+            fireEvent.keyDown(area, { key: 'c', code: 'KeyC', keyCode: 67 });
+        });
+        expect(hex(out.join(''))).toBe('03');
     });
 });
 
@@ -528,6 +758,175 @@ describe('KeyBar in a terminal pane', () => {
         expect(inserted).toEqual(['x', 'y']);
     });
 
+    // ── the Android shapes, as the bar sees them (device round 2) ───────────────────
+
+    /**
+     * THE FAILURE THE OWNER MEASURED: Ctrl latched, then `c` on the soft keyboard, arrived as a
+     * plain `c`. The letter is not in the keydown at all - that one is Chrome's keyCode 229
+     * placeholder with an empty `code` and `key` `'Unidentified'` - so the latch has to be spent
+     * on the `beforeinput` that carries it, and the key it re-raises has to be given the `code`
+     * the character comes from or the engine's `KEY_MAP` cannot map it.
+     */
+    it('applies a latched Ctrl to a letter that arrives as beforeinput, the Android shape', async () => {
+        const h = await mountPane();
+        const inserted: (string | null)[] = [];
+        h.area.addEventListener('beforeinput', (event) => inserted.push((event as InputEvent).data));
+
+        tap(h.key('ctrl'));
+        act(() => {
+            fireEvent.keyDown(h.area, { key: 'Unidentified', code: '', keyCode: 229 });
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: 'c', inputType: 'insertText' }));
+        });
+
+        expect(h.renderers.last().keys).toEqual([
+            expect.objectContaining({ key: 'c', code: 'KeyC', ctrlKey: true, altKey: false, shiftKey: false })
+        ]);
+        // The insertion never reached the engine, so the letter is not sent twice.
+        expect(inserted).toEqual([]);
+        expect(h.key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('names the key a shifted character comes from, so the modifier lands on a real key', async () => {
+        const h = await mountPane();
+        tap(h.key('alt'));
+        act(() => {
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: '|', inputType: 'insertText' }));
+        });
+        expect(h.renderers.last().keys).toEqual([
+            expect.objectContaining({ key: '|', code: 'Backslash', shiftKey: true, altKey: true, ctrlKey: false })
+        ]);
+    });
+
+    /**
+     * A suggestion strip inserting a whole word (Gboard did exactly this in device round 2, and
+     * "I do it to" reached the PTY) has no single key to put a modifier on. The latch is released
+     * rather than left armed to land on whatever comes next, and the text is left to the engine.
+     */
+    it('releases the latch and leaves predictive text alone', async () => {
+        const h = await mountPane();
+        const inserted: (string | null)[] = [];
+        h.area.addEventListener('beforeinput', (event) => inserted.push((event as InputEvent).data));
+
+        tap(h.key('ctrl'));
+        act(() => {
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: 'hello', inputType: 'insertText' }));
+        });
+        expect(inserted).toEqual(['hello']);
+        expect(h.renderers.last().keys).toEqual([]);
+        expect(h.key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    /** …and so does a glyph no US key produces: there is no `code` to name for it. */
+    it('releases the latch and leaves a glyph off the US layout alone', async () => {
+        const h = await mountPane();
+        tap(h.key('ctrl'));
+        act(() => {
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: 'é', inputType: 'insertText' }));
+        });
+        expect(h.renderers.last().keys).toEqual([]);
+        expect(h.key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    /**
+     * THE OTHER FAILURE: the soft keyboard's Enter never reached the PTY. It arrives with an
+     * empty `code`, which the engine cannot map and whose printables-only fallback cannot rescue,
+     * so the bar cancels it and re-raises it with the `code` the key would have carried.
+     */
+    it('re-raises a named key that arrives with no code, with nothing latched', async () => {
+        const h = await mountPane();
+        let dispatched = true;
+        act(() => {
+            dispatched = fireEvent.keyDown(h.area, { key: 'Enter', code: '', keyCode: 13 });
+        });
+        expect(dispatched).toBe(false);
+        expect(h.renderers.last().keys).toEqual([expect.objectContaining({ key: 'Enter', code: 'Enter', ctrlKey: false, altKey: false })]);
+    });
+
+    it.each([
+        ['Backspace', 8],
+        ['Tab', 9],
+        ['Escape', 27],
+        ['Delete', 46],
+        ['ArrowUp', 38],
+        ['ArrowDown', 40],
+        ['ArrowLeft', 37],
+        ['ArrowRight', 39],
+        ['Home', 36],
+        ['End', 35]
+    ])('re-raises %s with no code the same way', async (name, keyCode) => {
+        const h = await mountPane();
+        act(() => {
+            fireEvent.keyDown(h.area, { key: name, code: '', keyCode });
+        });
+        expect(h.renderers.last().keys).toEqual([expect.objectContaining({ key: name, code: name })]);
+    });
+
+    it('turns a line-break beforeinput into Enter, and takes the latch with it', async () => {
+        const h = await mountPane();
+        tap(h.key('ctrl'));
+        act(() => {
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType: 'insertLineBreak' }));
+        });
+        expect(h.renderers.last().keys).toEqual([expect.objectContaining({ key: 'Enter', code: 'Enter', ctrlKey: true })]);
+        expect(h.key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('sends one Enter when the keydown and the line break are the same keystroke', async () => {
+        const h = await mountPane();
+        act(() => {
+            fireEvent.keyDown(h.area, { key: 'Enter', code: '', keyCode: 13 });
+            fireEvent(h.area, new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType: 'insertLineBreak' }));
+        });
+        expect(h.renderers.last().keys).toEqual([expect.objectContaining({ key: 'Enter', code: 'Enter' })]);
+    });
+
+    /**
+     * A PHYSICAL KEYBOARD ON THE PHONE IS UNTOUCHED. Everything above hangs off an EMPTY `code`;
+     * a real keyboard sends one, so with nothing latched the bar never sees these keys at all and
+     * the engine gets the event the browser raised, not a copy of it.
+     */
+    it.each([
+        ['Enter', 'Enter'],
+        ['Backspace', 'Backspace'],
+        ['a', 'KeyA']
+    ])('leaves a physical %s alone when nothing is latched', async (name, code) => {
+        const h = await mountPane();
+        let dispatched = false;
+        act(() => {
+            dispatched = fireEvent.keyDown(h.area, { key: name, code });
+        });
+        expect(dispatched).toBe(true);
+        expect(h.renderers.last().keys).toEqual([]);
+    });
+
+    /**
+     * …and the rescued key goes through the PANE's kitty interceptor like any other, because all
+     * the bar did was give it a `code`. `ESC [ 13 u` is Enter's CSI u form (§TERM-030), which the
+     * protocol reaches once `report all keys` is negotiated - with disambiguation alone Enter
+     * keeps its `\r` by the spec's compatibility clause, which is `kitty-keyboard.ts`'s own rule
+     * and not something this bar may second-guess.
+     */
+    it('a rescued Enter with the kitty protocol negotiated is encoded by the pane', async () => {
+        const h = await mountPane();
+        h.setKittyFlags(KITTY_DISAMBIGUATE | KITTY_REPORT_ALL_KEYS);
+        act(() => {
+            fireEvent.keyDown(h.area, { key: 'Enter', code: '', keyCode: 13 });
+        });
+        expect(h.pty.last().input).toEqual(['[13u']);
+    });
+
+    it('AND NOT ON DESKTOP: a keydown with no code is nobody’s business', async () => {
+        setFormFactor('desktop');
+        const h = await mountPane();
+        expect(h.bar).toBeNull();
+        let dispatched = false;
+        act(() => {
+            dispatched = fireEvent.keyDown(h.area, { key: 'Enter', code: '', keyCode: 13 });
+        });
+        expect(dispatched).toBe(true);
+        expect(h.renderers.last().keys).toEqual([]);
+    });
+
     it('latches Alt the same way, and the two compose', async () => {
         const h = await mountPane();
         tap(h.key('ctrl'));
@@ -638,6 +1037,33 @@ describe('KeyBar in a terminal pane', () => {
             fireEvent.keyDown(h.area, { key: 'c', code: 'KeyC' });
         });
         expect(h.renderers.last().keys).toEqual([]);
+    });
+});
+
+/**
+ * The one thing a character cannot tell you about itself: which key it came from. A letter that
+ * arrives through `beforeinput` carries no `code`, and the engine maps keys by `code`.
+ */
+describe('characterKey', () => {
+    it.each([
+        ['c', 'KeyC', false],
+        ['C', 'KeyC', true],
+        ['x', 'KeyX', false],
+        ['7', 'Digit7', false],
+        ['&', 'Digit7', true],
+        ['-', 'Minus', false],
+        ['_', 'Minus', true],
+        ['/', 'Slash', false],
+        ['?', 'Slash', true],
+        ['|', 'Backslash', true],
+        ['\\', 'Backslash', false],
+        [' ', 'Space', false]
+    ])('names %s as %s', (character, code, shiftKey) => {
+        expect(characterKey(character)).toEqual({ code, shiftKey });
+    });
+
+    it('answers null for anything off the US layout, which is what leaves it alone', () => {
+        for (const character of ['é', '漢', '🙂', '']) expect(characterKey(character)).toBeNull();
     });
 });
 

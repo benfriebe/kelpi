@@ -1374,6 +1374,51 @@ async function checkPhoneHandback(page, recorder, handedIn) {
 }
 
 /**
+ * Get a chrome overlay off the screen and PROVE it is gone, for a step's `finally`.
+ *
+ * **A `finally` may not assume a keystroke lands.** Escape on the palette and on the settings
+ * sheet is scoped to the surface's own subtree - `CommandPalette`'s handler is
+ * `onKeyDownCapture` on the panel and `SettingsOverlay`'s is `onKeyDown` on the dialog, so React
+ * delivers it only when `document.activeElement` is INSIDE them - and the global dispatcher
+ * deliberately stands down while the palette is open (§M55, `chrome/keys.ts:230-232`). So a
+ * mousedown or a stray touch that blurs the field to `document.body` leaves the surface with no
+ * keyboard dismiss at all, by design.
+ *
+ * Measured, on `phone-palette-sheet` with its confirming tap forced to miss: the step's `finally`
+ * pressed Escape, the palette did not close, `clearPhoneEmulation` then repainted it as the
+ * desktop card with the query still in the field, and `mac-chrome` - the next step in the shard
+ * plan - lost its four ⌘N assertions because the dispatcher stands down for an open palette
+ * (`docs/audit/20260903-113312/02-mac-chrome-new-workspace-sheet.png` is the leaked card).
+ *
+ * So this puts the caret back inside the surface before each Escape, retries, and returns whether
+ * it succeeded rather than throwing: nothing in a `finally` may raise, or it replaces the failure
+ * the step was actually reporting.
+ */
+async function forceCloseOverlay(page, selector, { tries = 3, settleMs = 300 } = {}) {
+    const gone = async () =>
+        (await page.eval(`document.querySelector('${selector}') === null`).catch(() => true)) === true;
+    for (let attempt = 0; attempt < tries; attempt += 1) {
+        if (await gone()) return true;
+        await page
+            .eval(
+                `(() => {
+                    const root = document.querySelector('${selector}');
+                    if (root === null) return false;
+                    // Whatever inside can hold a caret: the palette's field, the sheet's back
+                    // button or its Close. The surface's own Escape handler does the rest.
+                    const target = root.querySelector('input, button:not([disabled]), [tabindex]');
+                    target?.focus?.();
+                    return target !== null;
+                })()`
+            )
+            .catch(() => {});
+        await page.key('Escape').catch(() => {});
+        await sleep(settleMs);
+    }
+    return await gone();
+}
+
+/**
  * The trigger the LIVE binding map holds for an action, read out of the Help overlay.
  *
  * Earlier steps rebind keys through Settings (run-H had `split_right` on ⌃⌥T by the time the
@@ -29873,10 +29918,42 @@ function buildFlows(ctx) {
                     });
                     recorder.check('tapping Close closes the sheet', true, 'settings-window is gone');
                 } finally {
-                    // A failed assertion must not hand the next step an open modal or a 390 px
-                    // window: Escape is the one route that works from either screen.
-                    await view.key('Escape').catch(() => {});
-                    await clearPhoneEmulation(view);
+                    /*
+                     * A failed assertion must not hand the next step an open modal or a 390 px
+                     * window, and it must not hand it one because a single Escape did not land
+                     * either: the sheet's Escape is scoped to its own dialog, so `forceCloseOverlay`
+                     * puts the caret back inside it and proves the sheet is gone. Every action has
+                     * its own catch, so one failure cannot skip the emulation clear behind it.
+                     */
+                    const closed = await forceCloseOverlay(view, '[data-testid="settings-window"]');
+                    await clearPhoneEmulation(view).catch(() => {});
+                    const handedBack = JSON.parse(
+                        String(
+                            await view
+                                .eval(
+                                    `JSON.stringify({
+                                        formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                                        overlays: document.querySelectorAll('[data-testid="settings-window"], [data-testid="command-palette"]').length,
+                                        w: window.innerWidth,
+                                        coarse: window.matchMedia('(pointer: coarse)').matches
+                                    })`
+                                )
+                                .catch(() => '{}')
+                        )
+                    );
+                    recorder.note(`handed back: ${JSON.stringify(handedBack)}`);
+                    // In the `finally` on purpose, so it is reported on the ERROR path too - which
+                    // is the only path on which the hand-off has ever actually been wrong.
+                    recorder.check(
+                        'the step hands the next one a bare desktop window: no overlay, no emulation',
+                        closed === true &&
+                            handedBack.overlays === 0 &&
+                            handedBack.formFactor === 'desktop' &&
+                            handedBack.coarse === false &&
+                            handedBack.w > PHONE_VIEWPORT.width,
+                        `closed=${String(closed)} overlays=${String(handedBack.overlays)} ` +
+                            `form-factor=${String(handedBack.formFactor)} ${String(handedBack.w)}px coarse=${String(handedBack.coarse)}`
+                    );
                 }
 
                 const rosterAfter = await readRoster();
@@ -29995,6 +30072,7 @@ function buildFlows(ctx) {
                                     const field = panel.querySelector('input');
                                     const rows = Array.from(document.querySelectorAll('[data-testid="palette-row"]'));
                                     const rowBox = row === null ? null : row.getBoundingClientRect();
+                                    const scroller = rows[0]?.parentElement ?? null;
                                     return JSON.stringify({
                                         open: true,
                                         panel: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
@@ -30006,6 +30084,19 @@ function buildFlows(ctx) {
                                             top: Math.round(el.getBoundingClientRect().top),
                                             h: Math.round(el.getBoundingClientRect().height)
                                         })),
+                                        /*
+                                         * WHICH row is selected, and whether a stationary desktop
+                                         * MOUSE is sitting on one. §M59's rule is that hovering a
+                                         * row selects it, on both form factors, and the audit's
+                                         * pointer is wherever the last desktop step left it - so
+                                         * these two are what tell a failure "the pointer moved the
+                                         * selection" from "the reducer did".
+                                         */
+                                        selectedIndex: rows.findIndex((el) => el.getAttribute('data-selected') === 'true'),
+                                        hoveredIndex: rows.findIndex((el) => el.matches(':hover')),
+                                        scroll: scroller === null
+                                            ? null
+                                            : { top: Math.round(scroller.scrollTop), h: Math.round(scroller.clientHeight), content: Math.round(scroller.scrollHeight) },
                                         innerHeight: window.innerHeight,
                                         viewportHeight: Math.round(window.visualViewport?.height ?? window.innerHeight)
                                     });
@@ -30028,9 +30119,50 @@ function buildFlows(ctx) {
                         `data-form-factor=${formFactor}`
                     );
 
-                    // The LIVE binding, read out of the Help overlay, so an earlier rebinding step
-                    // cannot make this press the wrong chord.
-                    const bound = await pressBoundAction(view, 'command_palette');
+                    /*
+                     * PARK THE POINTER where the sheet's search row will be.
+                     *
+                     * The audit emulates touch, but the OS mouse is still on the glass wherever the
+                     * last desktop step left it, and §M59's rule - hovering a row selects it - is
+                     * one this sheet deliberately did not change. With a short list the pointer sits
+                     * above the bottom-anchored rows and nothing happens; once the list is long
+                     * enough to fill the 800 px the pointer is over a row whatever its y, its
+                     * `mouseenter` fires as the sheet arrives, and the hover decides the selection.
+                     * That is what turned `47 rows; selected row at y=752` red in the RC1 battery
+                     * while every geometry conjunct beside it held (docs/audit/verify-latest, step
+                     * 123), and it reproduced here at 20 rows as `selected index 16`.
+                     *
+                     * BEFORE THE OPEN, not after: the palette resets its selection on the OPEN
+                     * EDGE (`setSelected(0)`), so parking afterwards only clears the hover and
+                     * leaves the selection it had already moved. Measured, parked after the open:
+                     * `20 rows, selected index 16, hovered index -1`.
+                     *
+                     * And AFTER the binding is read, not before, which is the other half of the
+                     * same measurement. `pressBoundAction` reads the LIVE binding by opening the
+                     * ••• menu and the Help overlay with real clicks (`liveShortcut`), and a click
+                     * moves the pointer: parked ahead of it, the step still read `hovered index 16`
+                     * with the pointer left up at the ••• button. So the read and the keypress are
+                     * inlined here with the park between them.
+                     *
+                     * y is 34 px up from the bottom, which is inside the 44 px search row once the
+                     * sheet is up and just ABOVE the 24 px status footer before it, so the move
+                     * itself hovers nothing that reacts. A real phone has no pointer at all
+                     * (`(hover: none)` is half of what the form-factor rule matched on); parking is
+                     * how the emulated window is made to behave like the device. The assertion below
+                     * states the rule rather than the outcome anyway, so a pointer that lands
+                     * somewhere unexpected is reported instead of turning the step red.
+                     */
+                    const bound = await liveShortcut(view, 'command_palette');
+                    await view
+                        .mouse('mouseMoved', Math.round(PHONE_VIEWPORT.width / 2), PHONE_VIEWPORT.height - 34, {
+                            button: 'none',
+                            buttons: 0
+                        })
+                        .catch(() => {});
+                    await sleep(120);
+                    if (bound.key !== null) {
+                        await view.key(bound.key.code, { modifiers: bound.key.modifiers });
+                    }
                     recorder.note(`command_palette is bound to ${String(bound.glyphs ?? bound.key?.code ?? '(unbound)')}`);
                     await view.waitFor(`document.querySelector('${panelSelector}') !== null`, {
                         timeoutMs: 10_000,
@@ -30048,6 +30180,10 @@ function buildFlows(ctx) {
 
                     const opened = await readSheet();
                     recorder.note(`the sheet with no keyboard: ${JSON.stringify(opened.panel)} field ${JSON.stringify(opened.field)}`);
+                    recorder.note(
+                        `${String(opened.rows.length)} rows, selected index ${String(opened.selectedIndex)}, ` +
+                            `hovered index ${String(opened.hoveredIndex)}, scroll ${JSON.stringify(opened.scroll)}`
+                    );
                     await recorder.shot(view, 'palette-sheet');
                     recorder.check(
                         'the sheet fills the emulated viewport exactly: 0,0 390x844',
@@ -30069,17 +30205,38 @@ function buildFlows(ctx) {
                         opened.field !== null && opened.field.h >= 44 && opened.focusedField === true,
                         `${String(opened.field?.h)}px, focused=${String(opened.focusedField)}`
                     );
-                    // The best match is DOM row 0 and it is the row nearest the field: the list's
-                    // main axis is reversed, so "first" paints lowest.
+                    /*
+                     * TWO rules, and they were one assertion until the RC1 battery ran the step
+                     * against a 47-row universe and it went red.
+                     *
+                     * The first is the SHEET's, and it is pure geometry: the list's main axis is
+                     * reversed, so DOM row 0 - `paletteNavigationOrder`'s best match - paints
+                     * lowest, nearest the field, and the rest run upward away from it. That is
+                     * unconditional and it held even in the failing run.
+                     *
+                     * The second is the REDUCER's, which B5 deliberately did not touch: the
+                     * selection starts at row 0 (`setSelected(0)` on the open edge) and §M59's rule
+                     * is that hovering a row selects it, on both form factors. So "row 0 is
+                     * selected" is only true while no pointer is on a row - which is always true of
+                     * a real phone (`(hover: none)`) and only true of the emulated one once the
+                     * pointer is parked, above. Asserted as the rule rather than as the outcome, so
+                     * a pointer that lands somewhere unexpected is REPORTED instead of failing.
+                     */
                     const firstRow = opened.rows[0];
                     const lastRow = opened.rows[opened.rows.length - 1];
                     recorder.check(
                         'the results run upward from the field, best match nearest it',
-                        opened.rows.length > 1 &&
-                            firstRow.selected === 'true' &&
-                            firstRow.top > lastRow.top &&
-                            firstRow.top < opened.field.top,
-                        `${String(opened.rows.length)} rows; selected row at y=${String(firstRow?.top)}, last row at y=${String(lastRow?.top)}, field at y=${String(opened.field?.top)}`
+                        opened.rows.length > 1 && firstRow.top > lastRow.top && firstRow.top < opened.field.top,
+                        `${String(opened.rows.length)} rows; row 0 at y=${String(firstRow?.top)}, last row at y=${String(lastRow?.top)}, field at y=${String(opened.field?.top)}`
+                    );
+                    recorder.check(
+                        'and the selection is §M59’s: the best match with no pointer on a row, the hovered row otherwise',
+                        opened.hoveredIndex === -1
+                            ? opened.selectedIndex === 0
+                            : opened.selectedIndex === opened.hoveredIndex,
+                        opened.hoveredIndex === -1
+                            ? `no row hovered, selected index ${String(opened.selectedIndex)} (the best match)`
+                            : `row ${String(opened.hoveredIndex)} hovered, selected index ${String(opened.selectedIndex)}`
                     );
                     recorder.check(
                         'every result row is at least 44 CSS px tall',
@@ -30184,12 +30341,21 @@ function buildFlows(ctx) {
                         const filtered = await readSheet();
                         recorder.note(`filtered to ${String(filtered.rows.length)} row(s): ${JSON.stringify(filtered.rows.map((row) => row.id))}`);
                         recorder.check(
-                            'typing filters the list on the same substring rule, and the best match stays selected and nearest the field',
+                            'typing filters the list on the same substring rule, and the matches stay above the field',
                             filtered.rows.length > 0 &&
                                 filtered.rows.length <= opened.rows.length &&
-                                filtered.rows[0].selected === 'true' &&
                                 filtered.rows.every((row) => row.top < filtered.field.top),
                             `${String(opened.rows.length)} -> ${String(filtered.rows.length)} rows`
+                        );
+                        // §M59 again, on the re-filtered list: a query change resets the selection
+                        // to the best match, and a pointer on a row still wins. The pointer is
+                        // parked on the search row, so this reads as the strong claim in practice.
+                        recorder.check(
+                            'and the selection is back on the best match, nearest the field',
+                            filtered.hoveredIndex === -1
+                                ? filtered.selectedIndex === 0
+                                : filtered.selectedIndex === filtered.hoveredIndex,
+                            `hovered index ${String(filtered.hoveredIndex)}, selected index ${String(filtered.selectedIndex)}`
                         );
 
                         /*
@@ -30200,6 +30366,52 @@ function buildFlows(ctx) {
                          */
                         const present = await view.eval(`document.querySelector('${target}') !== null`);
                         if (present === true) {
+                            /*
+                             * SCROLL IT INTO VIEW FIRST, which is what a thumb does.
+                             *
+                             * The list is a scroller, and on a reversed main axis the rows above
+                             * DOM row 0 climb off the top of it: in the RC1 battery the query
+                             * matched 15 rows, the focused pane's was the 15th, and with the fake
+                             * keyboard up the list is only 500 px, so its row sat at roughly y=-160.
+                             * `page.tap` takes the element's centre with no viewport check
+                             * (`lib/cdp.mjs` `touchPoint`), so the contact was dispatched off-screen,
+                             * hit nothing, and the step waited 8 s for a palette that was never
+                             * asked to close. Not a sheet defect - the desktop list scrolls the same
+                             * way, and a person scrolls to the row - but a step that taps a row
+                             * without putting it under the thumb first.
+                             *
+                             * `elementFromPoint` afterwards is what turns a future miss into "the
+                             * row is at y=N and the point hits X" instead of a timeout.
+                             */
+                            const reachable = JSON.parse(
+                                String(
+                                    await view.eval(
+                                        `(() => {
+                                            const row = document.querySelector('${target}');
+                                            if (row === null) return JSON.stringify({ found: false });
+                                            row.scrollIntoView({ block: 'center' });
+                                            const box = row.getBoundingClientRect();
+                                            const x = Math.round(box.x + box.width / 2);
+                                            const y = Math.round(box.y + box.height / 2);
+                                            const hit = document.elementFromPoint(x, y);
+                                            return JSON.stringify({
+                                                found: true,
+                                                x, y,
+                                                top: Math.round(box.top),
+                                                onScreen: y > 0 && y < window.innerHeight,
+                                                hits: hit === null ? null : (hit.closest('[data-testid="palette-row"]')?.getAttribute('data-item-id') ?? hit.tagName)
+                                            });
+                                        })()`
+                                    )
+                                )
+                            );
+                            recorder.note(`the target row after scrolling it into view: ${JSON.stringify(reachable)}`);
+                            recorder.check(
+                                'scrolling the target row into view puts it under the thumb',
+                                reachable.onScreen === true &&
+                                    reachable.hits === `pane:${String(rosterBefore.focused)}`,
+                                `row centre (${String(reachable.x)}, ${String(reachable.y)}) hits ${String(reachable.hits)}`
+                            );
                             await view.tap(target);
                             await view.waitFor(`document.querySelector('[data-testid="command-palette"]') === null`, {
                                 timeoutMs: 8000,
@@ -30221,9 +30433,15 @@ function buildFlows(ctx) {
                         recorder.check('the focused pane has a title to query on', false, '(empty title)');
                     }
                 } finally {
-                    // Belt and braces: an assertion that threw must not hand the next step an open
-                    // palette, a lying visual viewport or a 390 px window.
-                    await view.key('Escape').catch(() => {});
+                    /*
+                     * An assertion that threw must not hand the next step an open palette, a lying
+                     * visual viewport or a 390 px window. THE ORDER MATTERS: the fake keyboard goes
+                     * first, because the palette's own box is sized from it and a surface being
+                     * measured while its viewport lies is the one state nothing downstream expects.
+                     *
+                     * `forceCloseOverlay` rather than a bare Escape, because a bare Escape is
+                     * exactly what failed: see that helper's header for the measurement.
+                     */
                     await view
                         .eval(
                             `(() => {
@@ -30237,7 +30455,37 @@ function buildFlows(ctx) {
                             })()`
                         )
                         .catch(() => {});
-                    await clearPhoneEmulation(view);
+                    const closed = await forceCloseOverlay(view, '[data-testid="command-palette"]');
+                    await clearPhoneEmulation(view).catch(() => {});
+                    const handedBack = JSON.parse(
+                        String(
+                            await view
+                                .eval(
+                                    `JSON.stringify({
+                                        formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                                        overlays: document.querySelectorAll('[data-testid="settings-window"], [data-testid="command-palette"]').length,
+                                        shadowed: (() => { const vv = window.visualViewport; return vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined; })(),
+                                        w: window.innerWidth,
+                                        coarse: window.matchMedia('(pointer: coarse)').matches
+                                    })`
+                                )
+                                .catch(() => '{}')
+                        )
+                    );
+                    recorder.note(`handed back: ${JSON.stringify(handedBack)}`);
+                    // In the `finally` on purpose, so it is reported on the ERROR path too - which
+                    // is the only path on which the hand-off has ever actually been wrong.
+                    recorder.check(
+                        'the step hands the next one a bare desktop window: no overlay, no emulation, no shadowed viewport',
+                        closed === true &&
+                            handedBack.overlays === 0 &&
+                            handedBack.shadowed === false &&
+                            handedBack.formFactor === 'desktop' &&
+                            handedBack.coarse === false &&
+                            handedBack.w > PHONE_VIEWPORT.width,
+                        `closed=${String(closed)} overlays=${String(handedBack.overlays)} shadowed=${String(handedBack.shadowed)} ` +
+                            `form-factor=${String(handedBack.formFactor)} ${String(handedBack.w)}px coarse=${String(handedBack.coarse)}`
+                    );
                 }
 
                 const rosterAfter = await readRoster();

@@ -29,6 +29,13 @@
  *      cache afterwards;
  *   5. **the daemon is killed** and the page reloaded: the app paints its own
  *      `connection-splash`, not a browser error page, and how long that took is reported;
+ *   5b. **the daemon is dead behind a live proxy**, which is the shape a phone actually meets.
+ *      The owner's device round found the bug this covers: with kelpid stopped and
+ *      `tailscale serve` still fronting its port, the tailnet URL answers a real 502 with a
+ *      real body, so a worker that only fell back on a thrown `fetch` handed the browser
+ *      Chrome's "This page isn't working". A stub that answers everything 502 the way the
+ *      proxy does takes the daemon's port, and the assertions are repeated against it: the
+ *      navigation, an icon, a manifest, and a cache that does not grow;
  *   6. a second window loading the SAME url with the shell's own `?shellWindow=<uuid>` marker,
  *      in its own partition, registers nothing and is controlled by nothing. That is guardrail
  *      1 (desktop is untouched) measured in a real browser rather than only in jsdom.
@@ -41,6 +48,7 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -186,6 +194,7 @@ async function makeSandbox() {
         probe,
         userData,
         debugPort,
+        httpPort,
         base: `http://127.0.0.1:${String(httpPort)}`,
         runDir: env.KELPID_RUN_DIR,
         cleanup() {
@@ -259,6 +268,41 @@ async function waitForDaemonGone(base, timeoutMs = 10_000) {
         if (Date.now() > deadline) return false;
         await sleep(100);
     }
+}
+
+/**
+ * `tailscale serve` with nothing behind it, in eight lines.
+ *
+ * The owner's device round measured the real thing:
+ *
+ *     curl -o /dev/null -w '%{http_code}' https://werk.taila5f942.ts.net:8444/   ->  502
+ *
+ * with the sandboxed daemon killed and serve still fronting its port. What matters for the
+ * worker is exactly that shape - the port is open, the connection succeeds, `fetch` resolves,
+ * and the status is 5xx with a body - so a stub that binds the daemon's own port and answers
+ * every request that way reproduces it without a tailnet. Same origin, which is the part that
+ * has to be true for the installed worker to still be in charge.
+ */
+const BAD_GATEWAY_BODY =
+    '<html><head><title>502 Bad Gateway</title></head><body><h1>Bad Gateway</h1></body></html>';
+
+async function startBadGatewayProxy(port) {
+    const server = http.createServer((request, response) => {
+        response.writeHead(502, {
+            'content-type': 'text/html; charset=utf-8',
+            'content-length': String(Buffer.byteLength(BAD_GATEWAY_BODY))
+        });
+        response.end(BAD_GATEWAY_BODY);
+    });
+    await new Promise((resolve, reject) => {
+        server.on('error', reject);
+        server.listen(port, '127.0.0.1', resolve);
+    });
+    return {
+        async stop() {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    };
 }
 
 // ── the browser probe ───────────────────────────────────────────────────────────────
@@ -380,6 +424,7 @@ async function main() {
     const shellWindowID = writeProbeApp(sandbox);
     const daemon = startDaemon(sandbox);
     let probe;
+    let proxy;
 
     try {
         if (!(await waitForHealthz(sandbox.base))) {
@@ -570,9 +615,73 @@ async function main() {
             JSON.stringify(offline.text)
         );
 
+        // 5b. the daemon is dead BEHIND A LIVE PROXY (the device round's bug) ───────────
+        proxy = await startBadGatewayProxy(sandbox.httpPort);
+        const raw = await fetch(`${sandbox.base}/`, { cache: 'no-store' });
+        check(
+            'the origin now answers a real 502 with a body, the way tailscale serve does',
+            raw.status === 502 && (await raw.text()).includes('Bad Gateway'),
+            `status ${String(raw.status)}`
+        );
+
+        const proxiedAt = Date.now();
+        await phone.send('Page.reload', { ignoreCache: false });
+        const proxiedSplash = await phone.waitFor(
+            'document.querySelector(\'[data-testid="connection-splash"]\') === null ? false : document.querySelector(\'[data-testid="connection-splash"]\').getAttribute("data-status") ?? "present"',
+            { timeoutMs: 30_000, label: 'the connection splash behind a 502 proxy' }
+        );
+        pass(
+            `behind a 502 proxy, the reload still paints connection-splash (${String(proxiedSplash)})`,
+            `${String(Date.now() - proxiedAt)}ms`
+        );
+
+        const proxied = await phone.eval(
+            `(async () => {
+                const icon = await fetch('/icon-192.png', { cache: 'no-store' });
+                const manifest = await fetch('/manifest.webmanifest', { cache: 'no-store' });
+                const missingAsset = await fetch('/assets/never-emitted-00000000.js', { cache: 'no-store' });
+                const cached = [];
+                for (const name of await caches.keys()) {
+                    const cache = await caches.open(name);
+                    for (const request of await cache.keys()) cached.push(request.url);
+                }
+                return {
+                    title: document.title,
+                    root: document.getElementById('root') !== null,
+                    body: (document.body.innerText || '').slice(0, 120),
+                    icon: { status: icon.status, type: icon.headers.get('content-type') },
+                    manifest: { status: manifest.status, parses: await manifest.json().then(() => true, () => false) },
+                    missingAsset: missingAsset.status,
+                    cached: cached.length
+                };
+            })()`,
+            { timeoutMs: 30_000 }
+        );
+        check(
+            'it is Kelpi`s own document behind the proxy, not the proxy`s page',
+            proxied.root && proxied.title.toLowerCase().includes('kelpi') && !proxied.body.includes('Bad Gateway'),
+            JSON.stringify({ title: proxied.title, root: proxied.root })
+        );
+        check(
+            'an icon comes from the cache rather than the proxy`s HTML',
+            proxied.icon.status === 200 && String(proxied.icon.type).includes('image/png'),
+            JSON.stringify(proxied.icon)
+        );
+        check(
+            'the manifest still parses behind the proxy',
+            proxied.manifest.status === 200 && proxied.manifest.parses === true,
+            JSON.stringify(proxied.manifest)
+        );
+        check(
+            'a cache-missing asset gets the proxy`s 502 and it is NOT cached',
+            proxied.missingAsset === 502 && proxied.cached === expected.length,
+            `status ${String(proxied.missingAsset)}, ${String(proxied.cached)} cache entries`
+        );
+
         phone.close();
         shell.close();
     } finally {
+        await proxy?.stop();
         await probe?.quit();
         await daemon.stop();
         sandbox.cleanup();

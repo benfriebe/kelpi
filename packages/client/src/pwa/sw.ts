@@ -12,9 +12,12 @@
  * past that first paint needs the daemon, and this worker never pretends otherwise: there is no
  * offline mode, no queued command, no cached pane content.
  *
- * The decision of what to do with a request is `sw-routing.ts`, a pure function with its own
- * tests, because this file runs in a global vitest cannot mount. Read the guardrail there: the
- * token stays out of the caches, and four of the five bypasses are that rule.
+ * The decision of what to do with a request is `sw-routing.ts`, two pure functions with their
+ * own tests, because this file runs in a global vitest cannot mount. Read the guardrail there:
+ * the token stays out of the caches, and four of the five bypasses are that rule. Read
+ * `networkAnswer` too: the owner's device round found that a dead daemon is not always a
+ * refused connection, and a 502 from a live `tailscale serve` has to fall back exactly as a
+ * thrown `fetch` does.
  *
  * **The update policy** (phone program section 7, decided by the coordinator): `skipWaiting()`
  * on install, `clients.claim()` on activate, old caches deleted on activate, and no prompt. The
@@ -36,7 +39,7 @@
  * rather than a reload nobody wrote.
  */
 
-import { SHELL_PATH, rootPrecachePaths, routeRequest } from './sw-routing';
+import { SHELL_PATH, networkAnswer, rootPrecachePaths, routeRequest } from './sw-routing';
 
 // ── the worker global, declared narrowly ────────────────────────────────────────────
 
@@ -192,6 +195,10 @@ worker.addEventListener('fetch', (event) => {
 /**
  * The document: network first, cached `/` as the fallback.
  *
+ * Two things count as "no network", not one: a thrown `fetch` (the daemon is on this machine
+ * and the port refuses) and a 5xx (the daemon is behind `tailscale serve`, which keeps
+ * listening and answers 502). `networkAnswer` owns that rule and carries the measurement.
+ *
  * **Nothing is written back.** The `/` in the cache is the one `install` fetched, from the same
  * build as the `/assets/*` beside it; overwriting it with a newer daemon's `index.html` would
  * leave a document naming asset hashes this cache does not hold, which is exactly the offline
@@ -202,10 +209,10 @@ worker.addEventListener('fetch', (event) => {
 async function shellResponse(request: Request): Promise<Response> {
     try {
         const response = await fetchWithTimeout(request, SHELL_NETWORK_TIMEOUT_MS);
-        if (response.ok) return response;
-        // A non-2xx from a reachable daemon is a real answer about a real path; the cached
-        // shell is only better than an error page when there was no answer at all.
-        return response;
+        if (networkAnswer(response.status) === 'use') return response;
+        // A 5xx. Fall back exactly as a thrown fetch does, and return the proxy's own page only
+        // when there is nothing cached to prefer over it.
+        return (await cachedShell()) ?? response;
     } catch {
         const cached = await cachedShell();
         if (cached !== undefined) return cached;
@@ -215,7 +222,13 @@ async function shellResponse(request: Request): Promise<Response> {
     }
 }
 
-/** `/assets/*`: cache first. The content hash in the name is the version. */
+/**
+ * `/assets/*`: cache first. The content hash in the name is the version.
+ *
+ * Unaffected by the 502 rule, because a hit never asks the network at all. A MISS returns
+ * whatever the network says, 502 included, and writes none of it: the cache holds one build's
+ * assets and a proxy's error page is not one of them.
+ */
 async function immutableAsset(request: Request): Promise<Response> {
     const cache = await caches.open(CACHE_NAME);
     const hit = await cache.match(request);
@@ -225,11 +238,17 @@ async function immutableAsset(request: Request): Promise<Response> {
     return await fetch(request);
 }
 
-/** The manifest and the icons: network first, cache fallback. Stable paths, changing bytes. */
+/**
+ * The manifest and the icons: network first, cache fallback. Stable paths, changing bytes.
+ *
+ * The same 5xx rule as the shell, for the same measurement: without it a phone whose daemon is
+ * behind a live proxy gets the proxy's HTML where an icon should be, and a manifest that no
+ * longer parses.
+ */
 async function rootFile(request: Request): Promise<Response> {
     try {
         const response = await fetchWithTimeout(request, ROOT_NETWORK_TIMEOUT_MS);
-        if (response.ok) return response;
+        if (networkAnswer(response.status) === 'use') return response;
         const cache = await caches.open(CACHE_NAME);
         return (await cache.match(request)) ?? response;
     } catch {

@@ -29665,6 +29665,638 @@ function buildFlows(ctx) {
             }
         },
 
+        /*
+         * B5's live half for Settings (MOBILE-PLAN.md §4 B5).
+         *
+         * Three facts, none of which jsdom can establish.
+         *
+         *   1. THE GEOMETRY. "Fills the screen" is a claim about a laid-out box, and jsdom has no
+         *      layout at all: the unit tests can pin `h-full w-full` and `position: fixed` as
+         *      class strings, but only a real browser can say whether the sheet is 390x844 at
+         *      0,0. It matters here more than usual, because this overlay is `fixed` precisely so
+         *      that it does NOT inherit the box it happens to be mounted in - and that is a
+         *      containing-block question a CSS engine answers, not a test.
+         *   2. `env(safe-area-inset-*)`. jsdom holds the declaration; a browser computes it.
+         *   3. THE TWO SCREENS UNDER A THUMB. The list and the pushed tab are driven by
+         *      `page.tap`, i.e. real `touchstart`/`touchend` through `Input.dispatchTouchEvent`,
+         *      not by a synthetic click.
+         *
+         * A phone-lane step (lib/shards.mjs), so it owes the lane's clause: it changes nothing the
+         * spine reads and it clears the emulation in a `finally`. Settings is a MODAL over daemon
+         * state and this step only navigates it - it opens the sheet, taps into one tab, taps back
+         * and closes. It writes no setting, provisions nothing, and creates and destroys no pane or
+         * workspace; the pane roster and the active workspace are read either side and reported.
+         *
+         * Deep-open is NOT driven here. Every live route to it goes through another surface that
+         * is not phone-adapted yet (the Help overlay's keybindings link, `App.tsx:4452`; the label
+         * flyover's "Manage labels…", `:4097`; the web chrome's "Manage favourites", `:3825`), so a
+         * live assertion would be measuring those surfaces under a phone rather than this one.
+         * `SettingsOverlay.phone.test.tsx` pins deep-open on the prop that carries it.
+         */
+        {
+            id: 'phone-settings-sheet',
+            expect:
+                'Under a 390x844 phone viewport, ⌘, opens Settings as a full-screen sheet pinned to the VIEWPORT (0,0 390x844, not the box it is mounted in), landing on the list of tabs - the same catalog, order and labels as the desktop rail, every row at least 44 px tall. Tapping a row pushes that tab behind a back button that names it, with Close still on screen; tapping back returns to the list. Closing leaves the pane roster and the active workspace exactly as they were, and with the emulation cleared the desktop dialog is back with its rail.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const sheetSelector = '[data-testid="settings-window"][data-phone-sheet="true"]';
+
+                /** What the spine reads, either side of this step. */
+                const readRoster = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    panes: ${paneIDsExpr},
+                                    focused: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',
+                                    workspace: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''
+                                })`
+                            )
+                        )
+                    );
+
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+
+                try {
+                    await emulatePhone(view);
+                    const formFactor = String(
+                        await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`)
+                    );
+                    recorder.check(
+                        'the client is in the phone form factor (everything below is gated on it)',
+                        formFactor === 'phone',
+                        `data-form-factor=${formFactor}`
+                    );
+
+                    await openSettingsRoot(view);
+                    await view.waitFor(`document.querySelector('${sheetSelector}') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the Settings phone sheet'
+                    });
+
+                    const list = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const sheet = document.querySelector('${sheetSelector}');
+                                    const box = sheet.getBoundingClientRect();
+                                    const rows = Array.from(document.querySelectorAll('[data-testid="settings-phone-list"] button'));
+                                    const style = getComputedStyle(sheet);
+                                    return JSON.stringify({
+                                        sheet: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+                                        position: getComputedStyle(sheet.parentElement).position,
+                                        padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' '),
+                                        rail: document.querySelector('[data-testid="settings-tabs"]') !== null,
+                                        panel: document.querySelector('[data-testid="settings-panel"]') !== null,
+                                        close: document.querySelector('[data-testid="settings-close"]') !== null,
+                                        back: document.querySelector('[data-testid="settings-phone-back"]') !== null,
+                                        labels: rows.map((el) => (el.textContent ?? '').trim()),
+                                        heights: rows.map((el) => Math.round(el.getBoundingClientRect().height)),
+                                        toolbar: (document.querySelector('[data-testid="settings-toolbar"]')?.textContent ?? '').trim()
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`the sheet on the list screen: ${JSON.stringify(list)}`);
+                    await recorder.shot(view, 'settings-list');
+
+                    /*
+                     * THE MEASUREMENT the `fixed` rule exists for. `absolute inset-0` here would
+                     * have measured the App root, which is the window; the palette next door is
+                     * mounted on the CONTENT ROW and would have measured the window minus a 32 px
+                     * top bar, a 24 px footer and the sidebar. Asserted at 0,0 and the full 390x844
+                     * so the two overlays answer to the same rule whatever B1 mounts them in.
+                     */
+                    recorder.check(
+                        'the sheet fills the emulated viewport exactly: 0,0 390x844',
+                        list.sheet.x === 0 &&
+                            list.sheet.y === 0 &&
+                            list.sheet.w === PHONE_VIEWPORT.width &&
+                            list.sheet.h === PHONE_VIEWPORT.height,
+                        `${String(list.sheet.w)}x${String(list.sheet.h)} at ${String(list.sheet.x)},${String(list.sheet.y)} (backdrop position: ${String(list.position)})`
+                    );
+                    // A desktop Chromium computes every `env(safe-area-inset-*)` as 0, so this is
+                    // the honest live claim: the declaration resolves to a length rather than
+                    // being dropped. A notch is the owner's device round (§8).
+                    recorder.check(
+                        'the safe-area declarations resolve to real lengths (0 on a Mac; the notch is the device round)',
+                        /^(\d|\.)+px (\d|\.)+px (\d|\.)+px (\d|\.)+px$/.test(String(list.padding)),
+                        `computed padding: ${String(list.padding)}`
+                    );
+                    recorder.check(
+                        'it lands on the LIST of tabs: no rail, no panel, no back button',
+                        list.rail === false && list.panel === false && list.back === false,
+                        `rail=${String(list.rail)} panel=${String(list.panel)} back=${String(list.back)}`
+                    );
+                    recorder.check(
+                        'the list is the desktop rail’s catalog, in the same order, with the same labels',
+                        list.labels.join('|') ===
+                            'General|Appearance|Repositories|Labels|Profiles|Keybindings|Web|Workspaces|Remote',
+                        list.labels.join(', ')
+                    );
+                    recorder.check(
+                        'every row is at least 44 CSS px tall',
+                        list.heights.length > 0 && list.heights.every((height) => height >= 44),
+                        `${String(Math.min(...list.heights))}..${String(Math.max(...list.heights))} px over ${String(list.heights.length)} rows`
+                    );
+                    recorder.check(
+                        'Close is on the list screen too',
+                        list.close === true,
+                        `toolbar: ${String(list.toolbar)}`
+                    );
+
+                    // …a thumb pushes a tab. `page.tap` is a real touch sequence, not a click.
+                    await view.tap('[data-testid="settings-tab-button-workspaces"]');
+                    await view.waitFor(`document.querySelector('[data-testid="settings-tab-workspaces"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the Workspaces tab to be pushed'
+                    });
+                    const pushed = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    list: document.querySelector('[data-testid="settings-phone-list"]') !== null,
+                                    panel: document.querySelector('[data-testid="settings-panel"]') !== null,
+                                    back: (document.querySelector('[data-testid="settings-phone-back"]')?.textContent ?? '').trim(),
+                                    close: document.querySelector('[data-testid="settings-close"]') !== null,
+                                    toolbar: (document.querySelector('[data-testid="settings-toolbar"]')?.textContent ?? '').trim(),
+                                    backHeight: Math.round(document.querySelector('[data-testid="settings-phone-back"]')?.getBoundingClientRect().height ?? 0)
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`after tapping Workspaces: ${JSON.stringify(pushed)}`);
+                    await recorder.shot(view, 'settings-tab-pushed');
+                    recorder.check(
+                        'the tap pushed the tab: its content is on screen and the list is gone',
+                        pushed.panel === true && pushed.list === false,
+                        `panel=${String(pushed.panel)} list=${String(pushed.list)}`
+                    );
+                    recorder.check(
+                        'the header carries a back button and the tab’s name, and Close is still reachable',
+                        pushed.back.length > 0 &&
+                            pushed.toolbar.includes('Workspaces') &&
+                            pushed.close === true &&
+                            pushed.backHeight >= 44,
+                        `back="${String(pushed.back)}" (${String(pushed.backHeight)}px) toolbar="${String(pushed.toolbar)}" close=${String(pushed.close)}`
+                    );
+
+                    await view.tap('[data-testid="settings-phone-back"]');
+                    await view.waitFor(`document.querySelector('[data-testid="settings-phone-list"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the tab list to come back'
+                    });
+                    const popped = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    list: document.querySelector('[data-testid="settings-phone-list"]') !== null,
+                                    tab: document.querySelector('[data-testid="settings-tab-workspaces"]') !== null,
+                                    back: document.querySelector('[data-testid="settings-phone-back"]') !== null
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'back returns to the list, and the tab’s content goes with it',
+                        popped.list === true && popped.tab === false && popped.back === false,
+                        JSON.stringify(popped)
+                    );
+
+                    await view.tap('[data-testid="settings-close"]');
+                    await view.waitFor(`document.querySelector('[data-testid="settings-window"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the sheet to close'
+                    });
+                    recorder.check('tapping Close closes the sheet', true, 'settings-window is gone');
+                } finally {
+                    // A failed assertion must not hand the next step an open modal or a 390 px
+                    // window: Escape is the one route that works from either screen.
+                    await view.key('Escape').catch(() => {});
+                    await clearPhoneEmulation(view);
+                }
+
+                const rosterAfter = await readRoster();
+                recorder.note(`roster after: ${JSON.stringify(rosterAfter)}`);
+                recorder.check(
+                    'the phone lane’s clause: the roster the spine reads is untouched',
+                    JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                    `${JSON.stringify(rosterBefore)} -> ${JSON.stringify(rosterAfter)}`
+                );
+
+                // …and NOT on desktop: the same chord, in the same window, is the shipped dialog.
+                await openSettingsRoot(view);
+                await view
+                    .waitFor(`document.querySelector('[data-testid="settings-window"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the desktop Settings dialog'
+                    })
+                    .catch(() => {});
+                const desktop = JSON.parse(
+                    String(
+                        await view.eval(
+                            `(() => {
+                                const dialog = document.querySelector('[data-testid="settings-window"]');
+                                if (dialog === null) return JSON.stringify({ open: false });
+                                const box = dialog.getBoundingClientRect();
+                                return JSON.stringify({
+                                    open: true,
+                                    sheet: dialog.getAttribute('data-phone-sheet'),
+                                    rail: document.querySelector('[data-testid="settings-tabs"]') !== null,
+                                    list: document.querySelector('[data-testid="settings-phone-list"]') !== null,
+                                    w: Math.round(box.width),
+                                    h: Math.round(box.height)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`the desktop dialog after clearing: ${JSON.stringify(desktop)}`);
+                recorder.check(
+                    // The width is §S57's `clamp(560px, 92%, 880px)`, i.e. a WINDOW's geometry
+                    // rather than a viewport's: measured 880x620 in the audit's 1280x820 shell.
+                    'and NOT on desktop: the rail is back, the phone list is gone, and the dialog is a window again',
+                    desktop.open === true &&
+                        desktop.sheet === null &&
+                        desktop.rail === true &&
+                        desktop.list === false &&
+                        desktop.w >= 560 &&
+                        desktop.w <= 880,
+                    `${String(desktop.w)}x${String(desktop.h)} rail=${String(desktop.rail)} phoneSheet=${String(desktop.sheet)}`
+                );
+                await view.key('Escape').catch(() => {});
+                await view
+                    .waitFor(`document.querySelector('[data-testid="settings-window"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the desktop dialog to close again'
+                    })
+                    .catch(() => {});
+            }
+        },
+
+        /*
+         * B5's live half for the command palette (MOBILE-PLAN.md §4 B5, §7 "Keyboard inset
+         * ownership").
+         *
+         * The thing that can only be established here is WHERE THE FIELD SITS. The unit test pins
+         * the declaration (`padding-bottom: calc(300px + env(safe-area-inset-bottom))` on the
+         * palette's own box); whether that declaration puts the caret directly above the keyboard
+         * is a question about a flex container with a REVERSED main axis, a scrolling child and a
+         * viewport - i.e. about a layout engine. And there is no way to raise a real software
+         * keyboard in a desktop Chromium, so the keyboard is faked at the one place the client
+         * reads: an own `height` accessor defined on the live `VisualViewport` instance, shadowing
+         * the prototype getter, plus a `resize` dispatched on the instance. That is C2's seam
+         * (`phone-keyboard-inset`), reused here because it is the same seam and it was measured to
+         * work in this Chromium; the shadow is deleted in the `finally`.
+         *
+         * A phone-lane step, so it owes the lane's clause. Its one CONFIRM is deliberately the
+         * pane that already has focus: the palette's confirm path is a focus change, and a focus
+         * change to where focus already is moves nothing at all. The roster and the focused pane
+         * are read either side and reported, which is the proof rather than the promise.
+         */
+        {
+            id: 'phone-palette-sheet',
+            expect:
+                'Under a 390x844 phone viewport, the command palette opens as a full-screen sheet pinned to the VIEWPORT with its search field at the BOTTOM and the results above it, best match nearest the field; faking a 300 px software keyboard through the live `visualViewport` lifts the field to sit within a few px of the keyboard’s top edge, and removing it puts the field back on the window’s bottom edge. Typing filters on the same rule and a tap confirms the same row the reducer selected, leaving the pane roster and the focused pane exactly as they were.',
+            async run(recorder) {
+                const view = runtime.page ?? page;
+                /** iOS's software keyboard on an iPhone is about this tall in CSS px. */
+                const FAKE_KEYBOARD_PX = 300;
+                /** §H19's 150 ms arrival, plus a frame or two of slack before anything is measured. */
+                const PALETTE_SETTLE_MS = 300;
+                const panelSelector = '[data-testid="command-palette"][data-phone-sheet="true"]';
+
+                const readRoster = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    panes: ${paneIDsExpr},
+                                    focused: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',
+                                    workspace: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''
+                                })`
+                            )
+                        )
+                    );
+
+                /** The sheet's geometry, as a browser lays it out. */
+                const readSheet = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const panel = document.querySelector('${panelSelector}');
+                                    if (panel === null) return JSON.stringify({ open: false });
+                                    const box = panel.getBoundingClientRect();
+                                    const row = document.querySelector('[data-testid="palette-search-row"]');
+                                    const field = panel.querySelector('input');
+                                    const rows = Array.from(document.querySelectorAll('[data-testid="palette-row"]'));
+                                    const rowBox = row === null ? null : row.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        open: true,
+                                        panel: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+                                        field: rowBox === null ? null : { top: Math.round(rowBox.top), bottom: Math.round(rowBox.bottom), h: Math.round(rowBox.height) },
+                                        focusedField: field !== null && document.activeElement === field,
+                                        rows: rows.map((el) => ({
+                                            id: el.getAttribute('data-item-id'),
+                                            selected: el.getAttribute('data-selected'),
+                                            top: Math.round(el.getBoundingClientRect().top),
+                                            h: Math.round(el.getBoundingClientRect().height)
+                                        })),
+                                        innerHeight: window.innerHeight,
+                                        viewportHeight: Math.round(window.visualViewport?.height ?? window.innerHeight)
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+
+                try {
+                    await emulatePhone(view);
+                    const formFactor = String(
+                        await view.eval(`document.documentElement.dataset.formFactor ?? '(unset)'`)
+                    );
+                    recorder.check(
+                        'the client is in the phone form factor (everything below is gated on it)',
+                        formFactor === 'phone',
+                        `data-form-factor=${formFactor}`
+                    );
+
+                    // The LIVE binding, read out of the Help overlay, so an earlier rebinding step
+                    // cannot make this press the wrong chord.
+                    const bound = await pressBoundAction(view, 'command_palette');
+                    recorder.note(`command_palette is bound to ${String(bound.glyphs ?? bound.key?.code ?? '(unbound)')}`);
+                    await view.waitFor(`document.querySelector('${panelSelector}') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the palette phone sheet'
+                    });
+                    /*
+                     * Past §H19's arrival. `kelpi-palette-enter` (styles.css) is `translateY(-8px)
+                     * -> none` over 150 ms with `both`, and it plays on the phone sheet too - the
+                     * sheet keeps the shipped `kelpi-palette-panel` class rather than growing a
+                     * second animation in a shared stylesheet for an 8 px slide that is invisible
+                     * on a full-screen surface. Measured mid-flight the first time this ran, the
+                     * sheet reported 0,-7 390x844; the geometry below is the settled one.
+                     */
+                    await sleep(PALETTE_SETTLE_MS);
+
+                    const opened = await readSheet();
+                    recorder.note(`the sheet with no keyboard: ${JSON.stringify(opened.panel)} field ${JSON.stringify(opened.field)}`);
+                    await recorder.shot(view, 'palette-sheet');
+                    recorder.check(
+                        'the sheet fills the emulated viewport exactly: 0,0 390x844',
+                        opened.panel.x === 0 &&
+                            opened.panel.y === 0 &&
+                            opened.panel.w === PHONE_VIEWPORT.width &&
+                            opened.panel.h === PHONE_VIEWPORT.height,
+                        `${String(opened.panel.w)}x${String(opened.panel.h)} at ${String(opened.panel.x)},${String(opened.panel.y)}`
+                    );
+                    recorder.check(
+                        'the search field is at the BOTTOM of the sheet, not 40 px from the top',
+                        opened.field !== null && PHONE_VIEWPORT.height - opened.field.bottom <= 2,
+                        opened.field === null
+                            ? '(no search row)'
+                            : `field bottom ${String(opened.field.bottom)} of ${String(PHONE_VIEWPORT.height)}`
+                    );
+                    recorder.check(
+                        'the field is at least 44 CSS px tall and holds the caret',
+                        opened.field !== null && opened.field.h >= 44 && opened.focusedField === true,
+                        `${String(opened.field?.h)}px, focused=${String(opened.focusedField)}`
+                    );
+                    // The best match is DOM row 0 and it is the row nearest the field: the list's
+                    // main axis is reversed, so "first" paints lowest.
+                    const firstRow = opened.rows[0];
+                    const lastRow = opened.rows[opened.rows.length - 1];
+                    recorder.check(
+                        'the results run upward from the field, best match nearest it',
+                        opened.rows.length > 1 &&
+                            firstRow.selected === 'true' &&
+                            firstRow.top > lastRow.top &&
+                            firstRow.top < opened.field.top,
+                        `${String(opened.rows.length)} rows; selected row at y=${String(firstRow?.top)}, last row at y=${String(lastRow?.top)}, field at y=${String(opened.field?.top)}`
+                    );
+                    recorder.check(
+                        'every result row is at least 44 CSS px tall',
+                        opened.rows.length > 0 && opened.rows.every((row) => row.h >= 44),
+                        `${String(Math.min(...opened.rows.map((row) => row.h)))}..${String(Math.max(...opened.rows.map((row) => row.h)))} px`
+                    );
+
+                    /*
+                     * §7's "Keyboard inset ownership", live. `readSoftKeyboardInset` computes
+                     * `innerHeight - viewport.height - offsetTop`, so a 300 px shadow IS a 300 px
+                     * keyboard as far as every line of client code is concerned.
+                     */
+                    const shadowed = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    const already = Object.getOwnPropertyDescriptor(vv, 'height') !== undefined;
+                                    window.__kelpiFakeKeyboard = ${String(FAKE_KEYBOARD_PX)};
+                                    Object.defineProperty(vv, 'height', {
+                                        configurable: true,
+                                        get() { return window.innerHeight - (window.__kelpiFakeKeyboard ?? 0); }
+                                    });
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ ok: true, ownPropertyBefore: already, height: vv.height, innerHeight: window.innerHeight });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`fake keyboard: ${JSON.stringify(shadowed)}`);
+                    recorder.check(
+                        'shadowing `height` on the live VisualViewport instance is a usable seam in this Chromium',
+                        shadowed.ok === true &&
+                            shadowed.ownPropertyBefore === false &&
+                            shadowed.innerHeight - shadowed.height === FAKE_KEYBOARD_PX,
+                        shadowed.ok === true
+                            ? `innerHeight ${String(shadowed.innerHeight)} - viewport ${String(shadowed.height)} = ${String(shadowed.innerHeight - shadowed.height)} px of keyboard`
+                            : String(shadowed.why)
+                    );
+                    await sleep(300);
+                    const raised = await readSheet();
+                    recorder.note(`with the keyboard up: field ${JSON.stringify(raised.field)}`);
+                    await recorder.shot(view, 'palette-keyboard-up');
+                    const keyboardTop = PHONE_VIEWPORT.height - FAKE_KEYBOARD_PX;
+                    recorder.check(
+                        'the field sits within a few px of the fake keyboard’s top edge',
+                        raised.field !== null && Math.abs(keyboardTop - raised.field.bottom) <= 4,
+                        `field bottom ${String(raised.field?.bottom)}, keyboard top ${String(keyboardTop)} (delta ${String(keyboardTop - (raised.field?.bottom ?? 0))})`
+                    );
+                    recorder.check(
+                        'and the results still run above it, so nothing is behind the keyboard',
+                        raised.rows.length > 0 && raised.rows.every((row) => row.top < keyboardTop),
+                        `lowest row top ${String(Math.max(...raised.rows.map((row) => row.top)))} vs keyboard top ${String(keyboardTop)}`
+                    );
+
+                    /*
+                     * The typed half: same substring rule, same selection, same confirm.
+                     *
+                     * The query is read off the PALETTE's own row rather than off the pane header.
+                     * Measured the first time this ran: the header for the focused pane reads "~"
+                     * (`pane-title-<id>`, the display title), while `buildPaletteItems` gives the
+                     * row a title of its own, and typing "~" matched nothing at all. The row is
+                     * what the substring rule is applied to, so the row is what to read - the
+                     * title is its first `.truncate` span (the subtitle is the second).
+                     */
+                    const target = `[data-testid="palette-row"][data-item-id="pane:${String(rosterBefore.focused)}"]`;
+                    const focusedTitle = String(
+                        await view.eval(
+                            `(document.querySelector('${target} .truncate')?.textContent ?? '').trim()`
+                        )
+                    );
+                    /*
+                     * The last path segment, not the whole string: the title in this sandbox is a
+                     * 71-character temp path (`/var/folders/.../T/nexaudit-ui-XXXXXX/home`) and a
+                     * short term is a better filter test anyway.
+                     *
+                     * `insertText`, not `type` - the same helper `scratchpad-create` uses on this
+                     * field. `page.type` sends a `keyDown` carrying `text` AND a separate `char`
+                     * event, which is right for the terminal (a canvas that reads one of them) and
+                     * wrong for a real `<input>`, where Chromium honours BOTH: measured here, and
+                     * the field held "hhoommee" for a typed "home". The readback below is what
+                     * caught it and is kept so a future failure says whether the QUERY or the RULE
+                     * was wrong.
+                     */
+                    const query = (focusedTitle.split('/').pop() ?? focusedTitle).slice(0, 8);
+                    recorder.note(`the focused pane's palette row is titled "${focusedTitle}"; querying "${query}"`);
+                    if (query.length > 0) {
+                        await view.insertText(query);
+                        await sleep(400);
+                        const typed = String(
+                            await view.eval(
+                                `(document.querySelector('[data-testid="command-palette"] input')?.value ?? '(no field)')`
+                            )
+                        );
+                        recorder.note(`the field holds ${JSON.stringify(typed)}`);
+                        recorder.check(
+                            'every character reached the field, so what follows is a test of the RULE',
+                            typed === query,
+                            `typed ${JSON.stringify(query)}, field holds ${JSON.stringify(typed)}`
+                        );
+                        const filtered = await readSheet();
+                        recorder.note(`filtered to ${String(filtered.rows.length)} row(s): ${JSON.stringify(filtered.rows.map((row) => row.id))}`);
+                        recorder.check(
+                            'typing filters the list on the same substring rule, and the best match stays selected and nearest the field',
+                            filtered.rows.length > 0 &&
+                                filtered.rows.length <= opened.rows.length &&
+                                filtered.rows[0].selected === 'true' &&
+                                filtered.rows.every((row) => row.top < filtered.field.top),
+                            `${String(opened.rows.length)} -> ${String(filtered.rows.length)} rows`
+                        );
+
+                        /*
+                         * The one confirm, chosen to move nothing: the pane that ALREADY has
+                         * focus. `App.tsx`'s palette confirm is a focus change plus the §10.4
+                         * handoff, and a focus change to where focus already is is a no-op the
+                         * roster check below proves rather than assumes.
+                         */
+                        const present = await view.eval(`document.querySelector('${target}') !== null`);
+                        if (present === true) {
+                            await view.tap(target);
+                            await view.waitFor(`document.querySelector('[data-testid="command-palette"]') === null`, {
+                                timeoutMs: 8000,
+                                label: 'the palette to close on confirm'
+                            });
+                            recorder.check(
+                                'a tap on a row confirms it and closes the sheet',
+                                true,
+                                `tapped pane:${String(rosterBefore.focused)}`
+                            );
+                        } else {
+                            recorder.check(
+                                'the focused pane is among the filtered rows, so the harmless confirm is available',
+                                false,
+                                `no row for pane:${String(rosterBefore.focused)} under query "${query}"`
+                            );
+                        }
+                    } else {
+                        recorder.check('the focused pane has a title to query on', false, '(empty title)');
+                    }
+                } finally {
+                    // Belt and braces: an assertion that threw must not hand the next step an open
+                    // palette, a lying visual viewport or a 390 px window.
+                    await view.key('Escape').catch(() => {});
+                    await view
+                        .eval(
+                            `(() => {
+                                const vv = window.visualViewport;
+                                if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                    delete vv.height;
+                                    vv.dispatchEvent(new Event('resize'));
+                                }
+                                delete window.__kelpiFakeKeyboard;
+                                return true;
+                            })()`
+                        )
+                        .catch(() => {});
+                    await clearPhoneEmulation(view);
+                }
+
+                const rosterAfter = await readRoster();
+                recorder.note(`roster after: ${JSON.stringify(rosterAfter)}`);
+                recorder.check(
+                    'the phone lane’s clause: the roster and the focused pane the spine reads are untouched',
+                    JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                    `${JSON.stringify(rosterBefore)} -> ${JSON.stringify(rosterAfter)}`
+                );
+
+                // …and NOT on desktop: the same chord, in the same window, is the shipped card.
+                await pressBoundAction(view, 'command_palette');
+                await view
+                    .waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the desktop palette'
+                    })
+                    .catch(() => {});
+                const desktop = JSON.parse(
+                    String(
+                        await view.eval(
+                            `(() => {
+                                const panel = document.querySelector('[data-testid="command-palette"]');
+                                if (panel === null) return JSON.stringify({ open: false });
+                                const box = panel.getBoundingClientRect();
+                                const field = panel.querySelector('input');
+                                return JSON.stringify({
+                                    open: true,
+                                    sheet: panel.getAttribute('data-phone-sheet'),
+                                    searchRow: document.querySelector('[data-testid="palette-search-row"]') !== null,
+                                    w: Math.round(box.width),
+                                    top: Math.round(box.y),
+                                    fieldTop: field === null ? null : Math.round(field.getBoundingClientRect().top),
+                                    attrs: field === null ? null : ['autocapitalize', 'autocorrect', 'spellcheck', 'enterkeyhint'].map((name) => field.getAttribute(name))
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`the desktop palette after clearing: ${JSON.stringify(desktop)}`);
+                recorder.check(
+                    'and NOT on desktop: the 440 px card is back at the top, with none of the phone attributes on its field',
+                    desktop.open === true &&
+                        desktop.sheet === null &&
+                        desktop.searchRow === false &&
+                        desktop.w === 440 &&
+                        (desktop.attrs ?? []).every((value) => value === null),
+                    `${String(desktop.w)}px wide at y=${String(desktop.top)}, field at y=${String(desktop.fieldTop)}, phone attrs: ${JSON.stringify(desktop.attrs)}`
+                );
+                await view.key('Escape').catch(() => {});
+                await view
+                    .waitFor(`document.querySelector('[data-testid="command-palette"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the desktop palette to close again'
+                    })
+                    .catch(() => {});
+            }
+        },
+
         /**
          * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
          * "a web app in a window" and "a Mac app".

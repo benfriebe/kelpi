@@ -54,7 +54,11 @@ const SURFACES = [
             'settings-open', 'settings-close', 'keybinding-record', 'keybinding-conflict',
             'appearance-preset-theme', 'appearance-ghostty-write', 'appearance-system-stats',
             'appearance-sidebar-tint', 'global-hotkey-record', 'settings-tcp-state',
-            'settings-repositories', 'settings-live-apply', 'labels-design', 'repo-picker-multiselect'
+            'settings-repositories', 'settings-live-apply', 'labels-design', 'repo-picker-multiselect',
+            // B5's phone sheet lives in `SettingsOverlay.tsx` beside the desktop dialog, and the
+            // two share every tab component below it, so a change here can move either. The
+            // desktop steps above are what pin that it moved neither.
+            'phone-settings-sheet'
         ]
     },
     {
@@ -117,7 +121,10 @@ const SURFACES = [
             'repo-picker-multiselect', 'search-colors', 'last-pane-close-deletes-workspace',
             // `chrome/form-factor.ts` is the phone program's one decision, and the live step is
             // the only thing that can prove its media query against a real browser.
-            'phone-form-factor'
+            'phone-form-factor',
+            // B5's phone sheet lives in `chrome/CommandPalette.tsx` beside the desktop card, and
+            // where a field sits relative to a software keyboard is a layout-engine fact.
+            'phone-palette-sheet'
         ]
     },
     {
@@ -147,8 +154,14 @@ const SURFACES = [
      */
     {
         prefix: 'packages/client/src/phone/',
-        tests: ['packages/client/src/phone'],
-        steps: ['phone-form-factor']
+        /*
+         * B5 put `phone/testing.ts` here - the fake phone window both of its sheets are driven
+         * through - so a change to this directory reaches the `settings/` and `chrome/` suites as
+         * well as its own, and the two sheet steps with them. That is why the lists below are
+         * wider than "the phone directory's own tests".
+         */
+        tests: ['packages/client/src/phone', 'packages/client/src/settings', 'packages/client/src/chrome'],
+        steps: ['phone-form-factor', 'phone-settings-sheet', 'phone-palette-sheet']
     },
     {
         prefix: 'packages/client/src/pwa/',

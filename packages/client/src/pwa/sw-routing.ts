@@ -109,6 +109,40 @@ export function routeRequest(
     return 'bypass';
 }
 
+/** What a network-first strategy does with the response it got. */
+export type NetworkAnswer = 'use' | 'fall-back';
+
+/**
+ * Is a network response an answer, or is it the shape a dead daemon makes?
+ *
+ * **This is the device round's bug.** The first version of this worker treated any response at
+ * all as success and only fell back when `fetch` threw. That is right when the daemon is on the
+ * same machine, which is what `smoke:pwa` measured: kelpid stops, the port refuses the
+ * connection, `fetch` rejects, the cached shell is served. It is wrong on the path a phone
+ * actually takes. Behind `tailscale serve` the PROXY is still listening after the daemon dies,
+ * and it answers, with a real response carrying a real body:
+ *
+ *     curl -o /dev/null -w '%{http_code}' https://werk.taila5f942.ts.net:8444/   ->  502
+ *
+ * So the worker handed the browser a 502 and the installed app rendered Chrome's "This page
+ * isn't working", which is exactly the dead end this whole task exists to prevent. A 5xx is
+ * never a statement about the URL; it is the absence of the thing that would make one.
+ *
+ * **A 4xx passes through.** It is the opposite case: something reached the origin, found this
+ * specific URL, and decided about it. The daemon's own 404s are real answers (its static
+ * handler falls back to `index.html` for unknown paths, so a navigation reaching a 404 means
+ * something genuinely is not there), and `tailscale serve` answers 403 for a device that has
+ * lost access. Serving the cached shell over either would replace a diagnosable refusal with an
+ * app that boots, looks healthy, and loops forever on a connection it will never get. The
+ * browser's own page for a 403 is worse-looking and more truthful, and A4's re-pair recovery is
+ * the answer to the case that matters.
+ *
+ * A 3xx never reaches here: `fetch` follows redirects and reports the final status.
+ */
+export function networkAnswer(status: number): NetworkAnswer {
+    return status >= 500 ? 'fall-back' : 'use';
+}
+
 /**
  * The precached paths that are neither the shell document nor hashed assets: the manifest, the
  * two manifest icons and the favicons.

@@ -5,6 +5,7 @@ import {
     PANE_ASSETS_PREFIX,
     SHELL_PATH,
     WS_PATH,
+    networkAnswer,
     rootPrecachePaths,
     routeRequest,
     type ServiceWorkerRequestFacts,
@@ -130,6 +131,41 @@ describe('what the service worker answers for', () => {
         expect(route({ url: `${ORIGIN}/apple-touch-icon.png` })).toBe('root');
         expect(route({ url: `${ORIGIN}/favicon.svg` })).toBe('root');
         expect(route({ url: `${ORIGIN}/favicon.png` })).toBe('root');
+    });
+});
+
+describe('what counts as an answer from the network', () => {
+    /**
+     * The device round's bug, as an assertion. With the daemon dead behind `tailscale serve`
+     * the proxy is still listening and answers 502 with a real body, so a rule that only fell
+     * back on a thrown `fetch` handed the browser that page. Measured from the Mac:
+     * `curl -o /dev/null -w '%{http_code}' https://werk.taila5f942.ts.net:8444/` returns 502
+     * with the sandboxed daemon killed and serve still fronting its port.
+     */
+    it('treats every 5xx as the daemon being gone', () => {
+        for (const status of [500, 501, 502, 503, 504, 507, 599]) {
+            expect([status, networkAnswer(status)]).toEqual([status, 'fall-back']);
+        }
+    });
+
+    it('uses a 2xx', () => {
+        for (const status of [200, 201, 204, 206, 299]) {
+            expect([status, networkAnswer(status)]).toEqual([status, 'use']);
+        }
+    });
+
+    /**
+     * A 4xx passes through. Something reached the origin, found this URL and decided about it:
+     * the daemon's static handler falls back to `index.html` for unknown paths, so a navigation
+     * that really does reach a 404 means something is genuinely not there, and `tailscale serve`
+     * answers 403 for a device that has lost access. A cached shell over either would replace a
+     * diagnosable refusal with an app that boots, looks healthy and loops on a connection it
+     * will never get.
+     */
+    it('passes a 4xx through rather than masking a refusal with a stale shell', () => {
+        for (const status of [400, 401, 403, 404, 410, 426, 429, 499]) {
+            expect([status, networkAnswer(status)]).toEqual([status, 'use']);
+        }
     });
 });
 

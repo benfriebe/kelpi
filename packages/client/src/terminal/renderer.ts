@@ -130,6 +130,17 @@ export interface TerminalMatchLocation {
     readonly length: number;
 }
 
+/**
+ * What {@link TerminalRenderer.dispatchKey} takes: a `KeyboardEventInit` whose `key` and `code`
+ * are REQUIRED. `bubbles` and `cancelable` are not part of it - the renderer sets both, because a
+ * key that does not bubble never reaches the engine's container listener and one that cannot be
+ * cancelled cannot be intercepted.
+ */
+export interface TerminalKeyInit extends KeyboardEventInit {
+    readonly key: string;
+    readonly code: string;
+}
+
 export interface TerminalRenderer {
     readonly engine: TerminalEngine;
     /** Grid size the engine currently holds (the requested size until it is open). */
@@ -183,6 +194,37 @@ export interface TerminalRenderer {
     resize(cols: number, rows: number): void;
     focus(): void;
     blur(): void;
+    /**
+     * Send a key the way a PHYSICAL key arrives (C1, the phone key bar - MOBILE-PLAN.md §4).
+     *
+     * **Owner-directed divergence from the shipped Swift app.** There is no Swift phone UI, so a
+     * software key bar has no parity reference; `chrome/form-factor.ts` carries that note for the
+     * whole phone program and this is the terminal layer's one instance of it.
+     *
+     * A synthesized `KeyboardEvent('keydown')` rather than bytes, and dispatched at the engine's
+     * own hidden `<textarea>` rather than handed to the encoder, because that is the only way a
+     * bar key can be IDENTICAL to the physical one. The vendored engine binds `keydown` on the
+     * CONTAINER it was opened into (`vendor/ghostty-web-patched/source/lib/input-handler.ts:261`),
+     * syncs DECCKM (DEC mode 1) and DECNKM (mode 66) into the WASM encoder before every encode
+     * (`:436-439`), and never reads `isTrusted` (zero hits in `dist/` and in `source/`). So an
+     * event raised on the textarea travels exactly the path a real one does: the pane's
+     * capture-phase kitty interceptor on the host first (`TerminalPane.tsx`, §TERM-030), then the
+     * engine's own encoder. Nothing here re-implements an encoding, which is what keeps
+     * application-cursor mode, the kitty protocol and bracketed paste honoured for free.
+     *
+     * Measured in `KeyBar.test.tsx` against the REAL engine (jsdom plus a stub 2D context): Esc
+     * `1b`, Tab `09`, ArrowUp `1b 5b 41` in normal mode and `1b 4f 41` under DECCKM, Ctrl+C `03`,
+     * `-` `2d`, `/` `2f`, `|` `7c` - byte for byte what the same event dispatched by the browser
+     * produces.
+     *
+     * `code` is required, not optional: the engine maps `KeyboardEvent.code` to a USB HID key
+     * through `KEY_MAP` and a named key with no `code` falls off the mapped path entirely.
+     *
+     * Returns whether there was an element to dispatch on - false for a renderer that is
+     * disposed, poisoned, or not yet open. It never reports what the engine did with the key;
+     * that is what `onData` is for.
+     */
+    dispatchKey(init: TerminalKeyInit): boolean;
     /**
      * Does the PANE hold focus? (§N20 — `ghostty_surface_set_focus`.)
      *
@@ -699,6 +741,28 @@ function byteLength(data: Uint8Array | string): number {
     return typeof data === 'string' ? data.length : data.length;
 }
 
+/**
+ * Where a synthesized key has to land: the engine's hidden `<textarea>`, or the host itself when
+ * there is none yet (C1).
+ *
+ * The textarea is the honest target and not merely a convenient one. Both engines put one inside
+ * the host - ghostty-web's is created by `open()` (`source/lib/terminal.ts:440-470`), xterm.js's
+ * is `.xterm-helper-textarea` - and it is the element a physical key actually arrives at, because
+ * it is the element the engine focuses. Dispatching there means the event CAPTURES down through
+ * the host on its way, which is what puts the pane's kitty interceptor (a capture-phase listener
+ * on `[data-terminal-host]`) ahead of the engine's own listener, exactly as it is for a real key.
+ * Dispatching on the host instead would make the host the target, where capture and bubble
+ * listeners run in registration order and the interceptor's guarantee of going first is gone.
+ *
+ * The host fallback is for an engine that has not built its textarea (a fake, an engine still
+ * loading): the vendored engine binds `keydown` on the container, so the key still encodes; only
+ * the ordering guarantee above is weaker, and no real pane is in that state once it is live.
+ */
+export function engineKeyTarget(host: HTMLElement | null): HTMLElement | null {
+    if (host === null) return null;
+    return host.querySelector('textarea') ?? host;
+}
+
 class AdapterRenderer implements TerminalRenderer {
     readonly engine: TerminalEngine;
 
@@ -720,6 +784,16 @@ class AdapterRenderer implements TerminalRenderer {
 
     private pending: (Uint8Array | string)[] = [];
     private pendingBytes = 0;
+    /**
+     * The element `open()` was given, and the route to the engine's own hidden `<textarea>`.
+     *
+     * Two callers, both of which need that textarea and neither of which may know the engine's
+     * internal DOM: `dispatchKey` raises C1's key bar keys AT it (so the event path is a physical
+     * key's), and `applyTextInputAttributes` puts C2's software-keyboard hints ON it. The engine
+     * creates it in `open()` and destroys it in `dispose()`, so the host is what both resolve
+     * through rather than a reference either could hold.
+     */
+    private host: HTMLElement | null = null;
     private wantFocus = false;
     /**
      * §N20 — the SURFACE's focus, which is not the same thing as the DOM caret (`wantFocus`).
@@ -732,17 +806,17 @@ class AdapterRenderer implements TerminalRenderer {
     private requestedRows: number;
     private readonly faults: EngineFaultHook | undefined;
     /**
-     * C2 - what the owner has asked the engine's hidden textarea to say, and the host it lives in.
+     * C2 - what the owner has asked the engine's hidden textarea to say.
      *
      * Held rather than written once, because the textarea is the ENGINE's: it is created by
      * `open()` and destroyed by `dispose()`, so an attribute set before the engine is up, or set
      * on the textarea of an engine that then dies and is rebuilt, has to be re-applied to
      * whichever textarea exists now. Empty on every desktop pane, and an empty map is the fast
      * path out of `applyTextInputAttributes` - so a desktop terminal pays nothing and its
-     * textarea keeps exactly the attributes the engine gave it.
+     * textarea keeps exactly the attributes the engine gave it. The element it is applied to is
+     * found through `host` above.
      */
     private textInputAttributes: Record<string, string | null> = {};
-    private host: HTMLElement | undefined;
 
     /**
      * §N24 — the resize→replay paint hold.
@@ -811,6 +885,7 @@ class AdapterRenderer implements TerminalRenderer {
 
     open(element: HTMLElement): Promise<void> {
         if (this.openPromise !== undefined) return this.openPromise;
+        this.host = element;
         this.openPromise = this.load(element);
         return this.openPromise;
     }
@@ -991,6 +1066,26 @@ class AdapterRenderer implements TerminalRenderer {
         this.swallow(() => this.handle?.terminal.blur());
     }
 
+    /** C1 - see the interface. Synthesized keydown at the engine's own input node. */
+    dispatchKey(init: TerminalKeyInit): boolean {
+        if (this.disposed || this.poisoned) return false;
+        const target = engineKeyTarget(this.host);
+        if (target === null) return false;
+        // The event has to be constructed from the TARGET's own realm: a jsdom test (and an
+        // Electron page with more than one document) has a `KeyboardEvent` per window, and a
+        // listener in another realm fails the `instanceof` its handlers are written against.
+        const view = target.ownerDocument.defaultView;
+        if (view === null) return false;
+        let dispatched = false;
+        // Swallowed, not guarded: a key the engine chokes on is a lost keystroke, never a reason
+        // to poison a pane whose PTY is fine.
+        this.swallow(() => {
+            target.dispatchEvent(new view.KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true }));
+            dispatched = true;
+        });
+        return dispatched;
+    }
+
     setSurfaceFocus(focused: boolean): void {
         this.wantSurfaceFocus = focused;
         if (this.disposed || this.poisoned) return;
@@ -1083,9 +1178,10 @@ class AdapterRenderer implements TerminalRenderer {
         if (wasHolding) this.announceHold(false);
         this.holdListeners.clear();
         this.releaseEngine();
-        // C2: do not hold the pane's host past teardown - the element outlives this adapter and
-        // the next engine gets its own.
-        this.host = undefined;
+        // Let the host go with the engine: a disposed renderer must not keep a detached pane's
+        // DOM alive, the next engine gets its own, and `dispatchKey` has to answer false rather
+        // than raise a key into it.
+        this.host = null;
         this.pending = [];
         this.pendingBytes = 0;
         this.dataListeners.clear();
@@ -1286,8 +1382,6 @@ class AdapterRenderer implements TerminalRenderer {
             throw error;
         }
         this.handle = handle;
-        // C2's fallback route to the engine's textarea, for an engine that does not expose one.
-        this.host = element;
 
         /**
          * Everything from here on talks to a LIVE engine, and every one of these calls reaches

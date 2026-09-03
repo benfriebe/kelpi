@@ -28879,6 +28879,320 @@ function buildFlows(ctx) {
         },
 
         /**
+         * C1 - the key bar (docs/MOBILE-PLAN.md §4), driven with a thumb.
+         *
+         * The unit suite owns the BYTES: `KeyBar.test.tsx` opens the real vendored engine over a
+         * stub 2D context and reads Esc / Tab / the arrows / Ctrl+C / `- / |` off
+         * `renderer.onData`, in normal mode and under DECCKM. What no jsdom can show is the half
+         * this step exists for: that a real touch on a real 44px key, in a real Chromium with a
+         * coarse pointer, reaches a real PTY - and that the caret survives the tap, which is the
+         * whole difference between a key bar and a button that dismisses the keyboard.
+         *
+         * It is a phone-lane step (lib/shards.mjs): it provisions nothing, moves no pane, no
+         * workspace and no setting, leaves the shell it borrows back at a prompt, and clears the
+         * emulation in a `finally`. The one thing it does leave behind is scrollback in a pane
+         * that is about to be deleted by `mac-chrome` anyway.
+         *
+         * Since the owner's device round (2026-09-03) it also drives the two shapes a real
+         * Android soft keyboard sends and a physical keyboard never does - a keydown with an
+         * empty `code`, and a letter that arrives only as `Input.insertText`. Those are the two
+         * that failed on the phone while every key on the bar was byte-exact, so they are the
+         * half of this step that the unit suite cannot reach and a desktop keyboard cannot
+         * reproduce; see the block at the end of the run.
+         */
+        {
+            id: 'phone-key-bar',
+            expect:
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-key-bar: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const bar = `${body} [data-terminal-key-bar]`;
+
+                // Focus and tidy at DESKTOP size: the pane has to be the focused one for the bar
+                // to mount at all, and a clear screen makes the capture below readable.
+                await focusPaneBody(view, paneID);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('${bar}') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+
+                    /*
+                     * IN FLOW, NOT OVER (MOBILE-PLAN.md §7, "Keyboard inset ownership"). The bar
+                     * sits below the terminal host inside the same pane, so the host loses the
+                     * bar's height through the pane's existing ResizeObserver and the PTY hears
+                     * one resize. Measured as geometry rather than asserted as a class name: the
+                     * host's bottom edge must be at or above the bar's top edge.
+                     */
+                    const layout = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const pane = document.querySelector('${body}');
+                                    const bar = pane === null ? null : pane.querySelector('[data-terminal-key-bar]');
+                                    const host = pane === null ? null : pane.querySelector('[data-terminal-host]');
+                                    if (bar === null || host === null) return JSON.stringify(null);
+                                    const b = bar.getBoundingClientRect();
+                                    const h = host.getBoundingClientRect();
+                                    const keys = Array.from(bar.querySelectorAll('[data-terminal-key]')).map((el) => {
+                                        const r = el.getBoundingClientRect();
+                                        return { id: el.getAttribute('data-terminal-key'), w: Math.round(r.width), h: Math.round(r.height) };
+                                    });
+                                    return JSON.stringify({
+                                        pane: { w: Math.round(pane.getBoundingClientRect().width) },
+                                        bar: { top: Math.round(b.top), h: Math.round(b.height), position: getComputedStyle(bar).position },
+                                        host: { bottom: Math.round(h.bottom), h: Math.round(h.height) },
+                                        keys
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`key bar layout: ${JSON.stringify(layout)}`);
+                    recorder.check('the bar carries the fifteen keys C1 names', layout.keys.length === 15, `${String(layout.keys.length)} keys`);
+                    const small = layout.keys.filter((key) => key.w < 44 || key.h < 44);
+                    recorder.check(
+                        'every key is at least 44x44 CSS px',
+                        small.length === 0,
+                        small.length === 0 ? `${String(layout.keys.length)} keys, smallest ${String(Math.min(...layout.keys.map((k) => k.w)))}x${String(Math.min(...layout.keys.map((k) => k.h)))}` : `under: ${small.map((k) => `${k.id} ${String(k.w)}x${String(k.h)}`).join(', ')}`
+                    );
+                    recorder.check(
+                        'the bar is in flow, not positioned over the terminal',
+                        layout.bar.position === 'static' && layout.host.bottom <= layout.bar.top + 1,
+                        `position=${layout.bar.position} host bottom ${String(layout.host.bottom)} vs bar top ${String(layout.bar.top)}`
+                    );
+
+                    // Start something the interrupt has to kill, and put a word in front of it.
+                    await runInTerminal(view, 'cat', { settleMs: 700 });
+                    await view.type('interrupt-me');
+                    await sleep(200);
+
+                    /*
+                     * Scroll Ctrl to the bar's leading edge before the tap. Fifteen 44px keys are
+                     * 700px of bar in a 390px window, so the bar scrolls; `inline: 'start'` puts
+                     * the key inside the pane's clip whatever the grid has left the pane's width
+                     * at, and the hit test below is what says the finger really lands on it.
+                     */
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    const ctrlBox = await view.box(`${body} [data-terminal-key="ctrl"]`);
+                    const hit = String(
+                        await view.eval(
+                            `(() => {
+                                const el = document.elementFromPoint(${String(Math.round(ctrlBox.cx))}, ${String(Math.round(ctrlBox.cy))});
+                                return el === null ? '(none)' : (el.closest('[data-terminal-key]')?.getAttribute('data-terminal-key') ?? el.tagName.toLowerCase());
+                            })()`
+                        )
+                    );
+                    recorder.check('the Ctrl key is what a finger at its centre actually hits', hit === 'ctrl', `elementFromPoint says ${hit}`);
+
+                    const caretBefore = String(
+                        await view.eval(`(document.activeElement?.tagName ?? '(none)').toLowerCase()`)
+                    );
+                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await sleep(200);
+                    const afterTap = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    pressed: document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`caret before the tap: ${caretBefore}; after: ${JSON.stringify(afterTap)}`);
+                    recorder.check('tapping Ctrl latches it', afterTap.pressed === 'true', `aria-pressed=${afterTap.pressed}`);
+                    /*
+                     * THE TAP MUST NOT TAKE THE CARET. A key that steals focus dismisses the
+                     * software keyboard, so the first tap would close the thing the bar sits above.
+                     */
+                    recorder.check(
+                        'the caret is still the engine textarea inside the pane',
+                        afterTap.caret === 'textarea' && afterTap.inHost === true,
+                        `activeElement=${afterTap.caret} inside the terminal host=${String(afterTap.inHost)}`
+                    );
+                    // Taken HERE and not earlier: this is the one frame that carries every part of
+                    // the eyes call at once - the bar under a shrunken terminal, the word typed
+                    // into the running `cat`, and Ctrl latched.
+                    await recorder.shot(view, 'ctrl-latched');
+
+                    // …and now C, from the keyboard, the way a thumb would type it.
+                    await view.type('c');
+                    await sleep(800);
+                    /*
+                     * The proof that the PTY saw an INTERRUPT and not the letter c: only a shell
+                     * at a prompt evaluates the arithmetic. A still-running `cat` would echo the
+                     * command back verbatim, `KB-42` would never appear, and the check goes red.
+                     */
+                    await runInTerminal(view, `printf 'KB-%s\\n' $((6*7))`, { settleMs: 900 });
+                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture', capture.slice(-600));
+                    recorder.check(
+                        'the shell is back at a prompt, so the PTY took the interrupt',
+                        capture.includes('KB-42'),
+                        capture.includes('KB-42') ? 'the shell evaluated $((6*7))' : 'no KB-42 in the capture - cat is probably still running'
+                    );
+                    recorder.check(
+                        'the terminal echoed the interrupt',
+                        capture.includes('^C'),
+                        capture.includes('^C') ? '^C is on screen' : 'no ^C (ECHOCTL off?) - the prompt check above is the load-bearing one'
+                    );
+                    recorder.eyes('does the bar read as one row of keys above the keyboard, with Ctrl visibly latched and the prompt still legible?');
+
+                    /*
+                     * ── THE ANDROID SHAPES (owner device round 2, 2026-09-03) ──────────────
+                     *
+                     * Everything above types the way a PHYSICAL keyboard does: every keydown
+                     * carries a real `code`. The owner's phone does not. Chrome on Android hands
+                     * a Gboard-class keyboard's letter over as a placeholder keydown (keyCode
+                     * 229, `key` `'Unidentified'`, an EMPTY `code`) followed by the letter at
+                     * `beforeinput`, and its Enter as a keydown with `key` `'Enter'` and an empty
+                     * `code`. Measured at the PTY, that cost the phone its interrupt (a latched
+                     * Ctrl then `c` arrived as a plain `c`) and its Enter (nothing arrived at
+                     * all). CDP can raise both shapes exactly:
+                     *
+                     *   - `Input.dispatchKeyEvent` with `code: ''` is a keydown with no code,
+                     *     which is Enter's shape and the placeholder's;
+                     *   - `Input.insertText` is Chromium's own IME commit path, so it reaches the
+                     *     focused textarea as `beforeinput` / `insertText` with no key event of
+                     *     its own - which is exactly what a soft keyboard's letter is.
+                     *
+                     * What CDP cannot raise is the third shape, a `beforeinput` of
+                     * `insertLineBreak` or `insertParagraph`: no CDP command emits one (insertText
+                     * always reports `insertText`, and a keydown with text is consumed by the
+                     * engine's own keydown path before the editor sees it). That one is pinned in
+                     * jsdom in `KeyBar.test.tsx` instead, against the real engine.
+                     */
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+
+                    // 1. The soft keyboard's Enter. The command is typed but never submitted by a
+                    //    key that carries a `code`; only the empty-code Enter can run it.
+                    await view.type(`printf 'KB-%s\\n' $((6*8))`);
+                    await sleep(150);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'rawKeyDown',
+                        code: '',
+                        key: 'Enter',
+                        windowsVirtualKeyCode: 13,
+                        nativeVirtualKeyCode: 13,
+                        modifiers: 0
+                    });
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: '',
+                        key: 'Enter',
+                        windowsVirtualKeyCode: 13,
+                        nativeVirtualKeyCode: 13,
+                        modifiers: 0
+                    });
+                    await sleep(900);
+                    const afterEnter = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the soft keyboard’s Enter)', afterEnter.slice(-400));
+                    recorder.check(
+                        'a keydown with key Enter and NO code runs the command',
+                        afterEnter.includes('KB-48'),
+                        afterEnter.includes('KB-48') ? 'the shell evaluated $((6*8))' : 'no KB-48 - the empty-code Enter never reached the PTY'
+                    );
+
+                    // 2. The soft keyboard's letter under a latched Ctrl: the placeholder keydown
+                    //    the latch must NOT spend itself on, then the letter at `beforeinput`.
+                    await runInTerminal(view, 'cat', { settleMs: 700 });
+                    await view.type('ime-interrupt');
+                    await sleep(200);
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await sleep(200);
+                    const imeLatched = String(
+                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                    );
+                    recorder.check('Ctrl is latched again for the IME half', imeLatched === 'true', `aria-pressed=${imeLatched}`);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'rawKeyDown',
+                        code: '',
+                        key: 'Unidentified',
+                        windowsVirtualKeyCode: 229,
+                        nativeVirtualKeyCode: 229,
+                        modifiers: 0
+                    });
+                    await view.send('Input.insertText', { text: 'c' });
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: '',
+                        key: 'Unidentified',
+                        windowsVirtualKeyCode: 229,
+                        nativeVirtualKeyCode: 229,
+                        modifiers: 0
+                    });
+                    await sleep(800);
+                    const releasedAfterIme = String(
+                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                    );
+                    recorder.check(
+                        'the latch is spent by the letter, not by the placeholder keydown',
+                        releasedAfterIme === 'false',
+                        `aria-pressed=${releasedAfterIme}`
+                    );
+                    await runInTerminal(view, `printf 'KB-%s\\n' $((7*8))`, { settleMs: 900 });
+                    const afterIme = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the IME letter under a latched Ctrl)', afterIme.slice(-500));
+                    recorder.check(
+                        'a letter delivered by insertText under a latched Ctrl is the interrupt',
+                        afterIme.includes('KB-56'),
+                        afterIme.includes('KB-56') ? 'the shell evaluated $((7*8))' : 'no KB-56 - cat is probably still running, so the letter arrived plain'
+                    );
+                    recorder.check(
+                        'the letter was not ALSO inserted',
+                        !afterIme.includes('ime-interruptc'),
+                        afterIme.includes('ime-interruptc') ? 'the c reached the PTY as text as well as an interrupt' : 'no stray c after the marker'
+                    );
+                } finally {
+                    await clearPhoneEmulation(view);
+                }
+
+                // AND NOT ON DESKTOP: the same pane, the same window, no bar.
+                const afterClear = JSON.parse(
+                    String(
+                        await view.eval(
+                            `JSON.stringify({
+                                bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                            })`
+                        )
+                    )
+                );
+                recorder.check(
+                    'the key bar is gone the moment the window is a desktop again',
+                    afterClear.bars === 0 && afterClear.formFactor === 'desktop',
+                    `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
+                );
+            }
+        },
+
+        /**
          * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
          * "a web app in a window" and "a Mac app".
          *

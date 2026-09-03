@@ -16,10 +16,33 @@
  *     pending; a newer interaction supersedes it and re-opening cancels it outright. That is
  *     why this component stays MOUNTED while closed (it renders null) — an unmounted component
  *     cannot honor a pending timer.
+ *
+ * ── On a phone it is a full-screen sheet with the field at the BOTTOM (B5) ──────────
+ *
+ * **An owner-directed divergence from the shipped Swift app, like every phone rule in this
+ * program** (MOBILE-PLAN.md §4 B5; `chrome/form-factor.ts` carries the standing note). There is no
+ * Swift phone palette to port.
+ *
+ * Under `useFormFactor() === 'phone'` the card becomes the screen: 440 px of fixed width does not
+ * fit a 390 px viewport, and a 300 px results cap pinned 40 px from the top puts the list under a
+ * software keyboard that covers the bottom 300 px of an 844 px phone. So the sheet fills the
+ * viewport, the SEARCH FIELD sits at the bottom directly above the keyboard, and the results run
+ * upward from it with the best match nearest the field - the thumb is at the bottom of the phone
+ * and so is the keyboard, so that is where the thing you are typing into and the thing you are
+ * most likely to pick both belong.
+ *
+ * The keyboard's height is `useSoftKeyboardInset()`, applied to THIS component's own box, which is
+ * the plan's rule for an overlay that owns its layout (§7, "Keyboard inset ownership": a terminal
+ * gets it once inside `TerminalPane`; an overlay applies it to itself).
+ *
+ * Matching, selection, the key handling and the §10.4 handoff are untouched: the DOM order of the
+ * rows is still `paletteNavigationOrder`'s and it is CSS (`flex-col-reverse`) that paints them
+ * bottom-up, so the reducer, `data-selected`, ↑/↓ and Enter behave identically on both.
  */
 
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { defaultFormFactorWindow, useFormFactor, useSoftKeyboardInset, type FormFactorWindow } from './form-factor';
 import { ChromeIcon, iconGlyph } from './icons';
 import { clampSelection, matchPaletteQuery, paletteNavigationOrder, type PaletteItem } from './palette';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
@@ -56,7 +79,41 @@ export interface CommandPaletteProps {
     readonly fallbackPaneID?: string | null | undefined;
     readonly bucket?: ChromeBucket | undefined;
     readonly handoffDelayMs?: number | undefined;
+    /**
+     * B5 - the window the form-factor signal and the software-keyboard inset are read from.
+     * Defaults to the page's own, which is what assembly passes (nothing). It exists so a jsdom
+     * test can hand in a phone with a keyboard: jsdom has no `matchMedia` and no `visualViewport`,
+     * so a real window there answers `desktop` with a zero inset, forever.
+     */
+    readonly formFactorWindow?: FormFactorWindow | undefined;
 }
+
+/**
+ * The floor for a row a thumb has to hit, in CSS px - Apple's Human Interface Guidelines' 44x44 pt
+ * since the first iPhone. The desktop row is `py-1.5` around 13 px text, about 27 px tall: a
+ * pointer lands where it is aimed and a thumb does not.
+ */
+const PHONE_ROW_MIN_PX = 44;
+
+/**
+ * What the field tells a software keyboard about itself (B5, and C2's own set for the terminal's
+ * hidden textarea).
+ *
+ * A palette query is a workspace or pane name, not prose: autocapitalising it makes "notes" into
+ * "Notes" against a substring match that is fed the raw string, autocorrect rewrites a path
+ * fragment into a word, and a spellcheck underline under every row of a filter field is noise. The
+ * Enter key is labelled "go" because Enter here CONFIRMS the selection (`handleKey`'s Enter
+ * branch), it does not insert a newline or move to a next field.
+ *
+ * Phone only, and spread as a whole object so a desktop render passes nothing at all and its DOM
+ * is byte-for-byte the one that ships today.
+ */
+const PHONE_INPUT_ATTRIBUTES = {
+    autoCapitalize: 'off',
+    autoCorrect: 'off',
+    spellCheck: false,
+    enterKeyHint: 'go'
+} as const;
 
 export function CommandPalette(props: CommandPaletteProps): ReactElement | null {
     const bucket = props.bucket ?? 'dark';
@@ -65,6 +122,15 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
     const inputRef = useRef<HTMLInputElement | null>(null);
     const handoffRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
+
+    const formFactorWindow = props.formFactorWindow ?? defaultFormFactorWindow();
+    const phone = useFormFactor(formFactorWindow) === 'phone';
+    /*
+     * §7's "Keyboard inset ownership": the palette owns its own layout, so it applies the inset to
+     * ITSELF. Always subscribed (the hook is cheap and returns 0 wherever there is no visual
+     * viewport), but only ever read on the phone branch - a desktop render adds nothing to its box.
+     */
+    const keyboardInset = useSoftKeyboardInset(formFactorWindow);
 
     const matched = matchPaletteQuery(props.items, props.query);
     const order = paletteNavigationOrder(matched);
@@ -248,11 +314,90 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
         }
     };
 
+    /*
+     * B5 - the whole phone layout is `flex-col-reverse` on the panel, and that is deliberate:
+     * NOTHING in the JSX below moves.
+     *
+     * The children stay in the order they ship in - search row, "No results", results list - so
+     * the desktop tree is untouched, the tab order and the reading order are the ones §M55's
+     * capture handler and the focus rules were written against, and the reconciler sees the same
+     * elements in the same places. Reversing the MAIN AXIS is what puts the field at the bottom
+     * with the list above it, and reversing the list's own axis is what puts the best match (DOM
+     * row 0, still `data-selected` row 0) against the field. Reordering the JSX instead would have
+     * moved the field out of the reading order for the sake of a paint.
+     */
+    /*
+     * `fixed`, not `absolute`. §M53 mounts this overlay on the CONTENT ROW (`App.tsx:4340`, one
+     * level in, so the title bar and the status footer stay live behind the shipped card's hit
+     * target) - which on a phone is the window minus a 32 px top bar, a 24 px footer and the whole
+     * sidebar. A sheet that claims to fill the screen has to be positioned against the VIEWPORT.
+     * Nothing between here and the document is a containing block for a fixed element
+     * (`App.tsx:3921` and `:3979` are `position: relative` with no transform, filter or
+     * containment), so this resolves to the viewport - measured live by `phone-palette-sheet`.
+     */
+    const backdropClass = phone
+        ? 'kelpi-palette-scrim fixed inset-0 z-40 flex'
+        : 'kelpi-palette-scrim absolute inset-0 z-40 flex justify-center';
+
+    const panelClass = phone
+        ? 'kelpi-palette-panel flex h-full w-full min-w-0 flex-col-reverse overflow-hidden'
+        : 'kelpi-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]';
+    const panelStyle = phone
+        ? {
+              background: tokens.surfaceBackground,
+              color: tokens.textPrimary,
+              /*
+               * §7's "Keyboard inset ownership", as arithmetic on the palette's own box: the
+               * sheet's content stops `keyboardInset` px above the window's bottom edge, so the
+               * field - the last thing on the reversed main axis - sits directly on top of the
+               * software keyboard. Plus the home indicator, since a full-screen overlay covers the
+               * phone chrome A3 paints its safe areas on and has to respect them itself.
+               */
+              paddingBottom: `calc(${String(keyboardInset)}px + env(safe-area-inset-bottom))`,
+              /*
+               * Wrapped in `calc()` for the same reason `settings/SettingsOverlay.tsx`'s
+               * `PHONE_SAFE_AREA` is: a browser computes `calc(env(x))` and `env(x)` identically,
+               * but a CSS parser that does not know the function drops the bare form, and jsdom's
+               * is one - which is where the unit test reads these back.
+               */
+              paddingTop: 'calc(env(safe-area-inset-top))',
+              paddingLeft: 'calc(env(safe-area-inset-left))',
+              paddingRight: 'calc(env(safe-area-inset-right))'
+          }
+        : {
+              /*
+               * UI-FIDELITY L94 / L95 - the shipped card is a fill, a clip and one soft shadow.
+               *
+               * `CommandPaletteView.swift:85-87` is `.background(surfaceBackground)
+               * .clipShape(RoundedRectangle(cornerRadius: 10)).shadow(black@0.25, radius 12, y 4)`.
+               * There is no stroke on it at all, and the shadow is a lift off the pane behind it -
+               * the port's `0 20px 60px rgba(0,0,0,0.45)` was 5x the offset, 5x the blur and nearly
+               * twice the alpha, a dark halo plainly visible in run-O/104. A phone sheet has no
+               * shadow because it has nothing to lift off: it covers the window.
+               */
+              background: tokens.surfaceBackground,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+              color: tokens.textPrimary
+          };
+
+    /*
+     * L101's divider is drawn only when something follows the field. On a phone the list is ABOVE
+     * the field, so the same line is drawn on the same edge of the same gap - `border-t` rather
+     * than `border-b`.
+     */
+    const searchRowClass = phone
+        ? `flex shrink-0 items-center gap-2 px-3 ${showDivider ? 'border-t' : ''}`
+        : `flex items-center gap-2 px-3 py-[10px] ${showDivider ? 'border-b' : ''}`;
+
+    const listClass = phone
+        ? 'flex min-h-0 flex-1 flex-col-reverse overflow-y-auto py-1'
+        : 'max-h-[300px] overflow-y-auto py-1';
+
     return (
         <div
             data-testid="palette-backdrop"
             data-palette-phase={phase}
-            className="kelpi-palette-scrim absolute inset-0 z-40 flex justify-center"
+            className={backdropClass}
             style={{
                 /*
                  * UI-FIDELITY M56 — the shipped backdrop is INVISIBLE.
@@ -275,21 +420,9 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                 data-testid="command-palette"
                 role="dialog"
                 aria-label="Command palette"
-                className="kelpi-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
-                /*
-                 * UI-FIDELITY L94 / L95 — the shipped card is a fill, a clip and one soft shadow.
-                 *
-                 * `CommandPaletteView.swift:85-87` is `.background(surfaceBackground)
-                 * .clipShape(RoundedRectangle(cornerRadius: 10)).shadow(black@0.25, radius 12,
-                 * y 4)`. There is no stroke on it at all, and the shadow is a lift off the pane
-                 * behind it — the port's `0 20px 60px rgba(0,0,0,0.45)` was 5× the offset, 5× the
-                 * blur and nearly twice the alpha, a dark halo plainly visible in run-O/104.
-                 */
-                style={{
-                    background: tokens.surfaceBackground,
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-                    color: tokens.textPrimary
-                }}
+                {...(phone ? { 'data-phone-sheet': 'true' } : {})}
+                className={panelClass}
+                style={panelStyle}
                 onKeyDownCapture={handleKey}
                 /*
                  * M55's other half: the card's own chrome must not be able to take focus OUT of
@@ -317,8 +450,16 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                      * empty query with nothing to list is a bare field, not a field with a line
                      * under it.
                      */
-                    className={`flex items-center gap-2 px-3 py-[10px] ${showDivider ? 'border-b' : ''}`}
-                    style={{ borderColor: tokens.divider }}
+                    // Phone only, so a desktop render's markup is byte-for-byte the one that ships:
+                    // the live phone step needs a handle on the row to measure where it sits.
+                    {...(phone ? { 'data-testid': 'palette-search-row' } : {})}
+                    className={searchRowClass}
+                    style={{
+                        borderColor: tokens.divider,
+                        // A thumb's row, and the field is the row: `py-[10px]` around 14 px text is
+                        // about 34 px, under the 44 px floor.
+                        ...(phone ? { minHeight: `${String(PHONE_ROW_MIN_PX)}px` } : {})
+                    }}
                 >
                     {/* L97: the app's own magnifier at the shipped 14 pt, in `.secondary` — the
                         `⌕` text glyph it replaced sat small inside its em box whatever size it
@@ -336,7 +477,18 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                         autoFocus
                         aria-label="Jump to workspace or pane"
                         placeholder="Jump to workspace or pane..."
-                        className="min-w-0 flex-1 bg-transparent text-[14px] outline-none"
+                        {...(phone ? PHONE_INPUT_ATTRIBUTES : {})}
+                        /*
+                         * 16 px on a phone. `index.html` already carries `maximum-scale=1`, so
+                         * Safari cannot zoom the page when a smaller field takes focus, but the
+                         * field it refuses to zoom is then a 14 px one under a thumb - the same
+                         * measurement that argues for 44 px rows argues for the text in them.
+                         */
+                        className={
+                            phone
+                                ? 'min-w-0 flex-1 bg-transparent text-[16px] outline-none'
+                                : 'min-w-0 flex-1 bg-transparent text-[14px] outline-none'
+                        }
                         style={{ color: tokens.textPrimary }}
                         value={props.query}
                         onChange={(event) => {
@@ -364,7 +516,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                     own 12 pt inset is what indents the content, so a selected row's fill is a
                     full-bleed band across the card rather than an inset pill. */}
                 {showResults ? (
-                    <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1">
+                    <div ref={listRef} className={listClass}>
                         {(
                         /*
                          * M54 — one flat list, in the universe's own order: a workspace, then
@@ -391,9 +543,17 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                     /* L98 / L99: `CommandPaletteRow`'s `HStack(spacing: 10)` with
                                        `.padding(.horizontal, 12).padding(.vertical, 6)`, and a
                                        selection background with NO radius — a band, not a pill. */
-                                    className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left"
+                                    className={
+                                        phone
+                                            ? 'flex w-full shrink-0 items-center gap-2.5 px-3 text-left'
+                                            : 'flex w-full items-center gap-2.5 px-3 py-1.5 text-left'
+                                    }
                                     style={{
-                                        background: isSelected ? withAlpha('#6F9BD8', 0.2) : 'transparent'
+                                        background: isSelected ? withAlpha('#6F9BD8', 0.2) : 'transparent',
+                                        // A thumb's row: `py-1.5` around 13 px text is about 27 px.
+                                        // `shrink-0` above is the other half - a flex column would
+                                        // otherwise squeeze the rows below the floor to fit.
+                                        ...(phone ? { minHeight: `${String(PHONE_ROW_MIN_PX)}px` } : {})
                                     }}
                                     onMouseEnter={() => {
                                         setSelected(rowIndex);

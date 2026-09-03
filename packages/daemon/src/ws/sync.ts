@@ -1036,6 +1036,22 @@ export {
 /** The client → daemon report that carries an embedded web pane's page-area rect. */
 export const WEB_GEOMETRY_REPORT_MESSAGE = 'web-geometry-report';
 
+/**
+ * Daemon → client: "say where your web panes are again" (issue #34).
+ *
+ * Sent when a web-pane host registers. The daemon keeps no geometry — that is the property
+ * `webpane/HOST_PROTOCOL.md` §3.5 protects — so a fresh host has no placements and there is
+ * nothing here to hand it. Only the clients know where the holes are, and a client cannot see
+ * a host come or go, so it has to be asked. Without this, every report made while the host
+ * slot was empty was simply dropped (`webpane/service.ts` `notifyGeometry`) and the pages
+ * stayed in the holder for ever: an empty hole with the pane's chrome still drawn round it.
+ *
+ * `windowID` carries the host's own window when it declared one, and the scoping is the
+ * CLIENT's check for the same reason `reveal-pane`'s is — it is the party that knows which
+ * window it renders into.
+ */
+export const WEB_GEOMETRY_RESYNC_MESSAGE = 'web-geometry-resync';
+
 /** Client → daemon "take the user to this pane", and the daemon's fan-out of it. */
 export const REVEAL_REQUEST_MESSAGE = 'reveal-request';
 export const REVEAL_PANE_MESSAGE = 'reveal-pane';
@@ -1283,6 +1299,41 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         for (const session of sessions) {
             if (session.ready) session.send({ type: 'size-control', ownerClientID: sizeOwnerID });
         }
+    };
+    /**
+     * Issue #34: ask every client to re-state its web-pane placements, because the host that
+     * held them is new and holds nothing. Unfiltered, like `revealPane` — the window check
+     * belongs to the client, and a client with nothing placed answers with nothing.
+     */
+    const broadcastGeometryResync = (windowID: string | null): void => {
+        if (closed) return;
+        for (const session of sessions) {
+            if (!session.ready) continue;
+            session.send({
+                type: WEB_GEOMETRY_RESYNC_MESSAGE,
+                ...(windowID === null ? {} : { windowID })
+            });
+        }
+    };
+    /**
+     * Is some OTHER live client still drawing a hole for this pane in the same shell window?
+     *
+     * Asked by `releaseGeometry` before it parks a view on a departing connection's behalf.
+     * The window matters: two UIs in DIFFERENT windows can both claim the same pane, but only
+     * the one matching the host's own window actually places anything (§3.5's `ownWindow`), so
+     * a claim from elsewhere is no reason to leave a view on screen.
+     *
+     * The case this exists for is a client that reconnected: `resync()` closes and redials at
+     * once, so the new session's first reports can in principle reach the daemon before the
+     * old socket's close does — and the old session's release would then park exactly what the
+     * new one had just placed, which is the dead state of issue #34 by another route.
+     */
+    const panePlacedElsewhere = (paneID: string, windowID: string | null, except: SessionImpl): boolean => {
+        for (const session of sessions) {
+            if (session === except || !session.ready) continue;
+            if (session.hasPlaced(paneID, windowID)) return true;
+        }
+        return false;
     };
     /**
      * §SET-200/§SET-201: the last `hotkey-status` the shell reported, replayed to every client
@@ -1594,7 +1645,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 );
             } catch (error) {
                 report(error, 'host-register');
+                return;
             }
+            // Issue #34: a fresh host has blank pages AND no placements. `registerHost` replays
+            // the panes; only the clients can replay where they go, so they are asked here —
+            // after the registration, so the `pane-open` frames are already on the host's wire
+            // ahead of the geometry that follows them.
+            broadcastGeometryResync(windowID ?? null);
         }
 
         private releaseHost(): void {
@@ -1818,9 +1875,23 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
 
         /**
+         * Does this connection currently have a view placed for `paneID` in `windowID`? Read
+         * by `panePlacedElsewhere` on a sibling session's behalf.
+         */
+        hasPlaced(paneID: string, windowID: string | null): boolean {
+            return this.geometryWindowID === windowID && this.geometryPanes.has(paneID);
+        }
+
+        /**
          * The reporting client vanished (tab closed, reload, crash): every view it placed goes
          * back to the host's holder. Without this a stale page would sit over a window whose
          * UI is gone — and the next client's first report cannot undo a view it never placed.
+         *
+         * Issue #34 adds the exception: a client that RECONNECTED is not gone. `resync()`
+         * closes and redials immediately, so the replacement session's first reports can beat
+         * this close through the daemon, and parking then would undo a placement a live UI is
+         * drawing a hole for right now. So a pane another live session in the same window has
+         * placed is left alone.
          */
         private releaseGeometry(): void {
             const channel = options.webPanes;
@@ -1828,6 +1899,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const panes = [...this.geometryPanes];
             this.geometryPanes.clear();
             for (const paneID of panes) {
+                if (panePlacedElsewhere(paneID, this.geometryWindowID, this)) continue;
                 try {
                     channel.notifyGeometry({
                         paneID,

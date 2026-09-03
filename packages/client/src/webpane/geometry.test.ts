@@ -163,6 +163,84 @@ describe('geometry reporter', () => {
         expect(h.sent).toHaveLength(2);
     });
 
+    /*
+     * Issue #34 — the fourth rule, and the one that makes Rule 1 safe: the dedupe cache is a
+     * claim about what the FAR END holds, so it has to be re-stated whenever the far end has
+     * been reset (a reconnect, or a fresh web-pane host).
+     */
+    it('reassert re-states a placement, so a reconnect re-places the view', () => {
+        const h = harness();
+        h.reporter.report(report());
+        expect(h.sent).toHaveLength(1);
+        // The re-render after a reconnect is deduped away — that is the defect.
+        h.reporter.report(report());
+        expect(h.sent).toHaveLength(1);
+
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(2);
+        expect(h.sent[1]).toMatchObject({ paneID: PANE, visible: true, rect: { w: 800, h: 600 } });
+    });
+
+    it('reassert says nothing about a pane that is not placed', () => {
+        const h = harness();
+        // Never reported at all.
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(0);
+
+        // Hidden on purpose — the workspace switched, or a menu came up over it. `hide()`
+        // forgets the pane, so there is nothing to re-state and the view stays in the holder.
+        h.reporter.report(report());
+        h.reporter.hide(PANE);
+        expect(h.sent).toHaveLength(2);
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(2);
+
+        // The same for a pane whose last word was `visible:false` without a `hide()`.
+        h.reporter.report(report({ paneID: 'OTHER' }));
+        h.reporter.report(report({ paneID: 'OTHER', visible: false }));
+        const before = h.sent.length;
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(before);
+    });
+
+    it('reassert re-states every placed pane, and leaves a pending drag frame alone', () => {
+        const h = harness(100);
+        h.reporter.report(report());
+        h.reporter.report(report({ paneID: 'OTHER', rect: { x: 900, y: 24, w: 300, h: 600 } }));
+        // Mid-drag: a newer position is waiting on the trailing edge.
+        h.reporter.report(report({ rect: { x: 0, y: 24, w: 700, h: 600 } }));
+        expect(h.sent).toHaveLength(2);
+        expect(h.reporter.pending).toEqual([PANE]);
+
+        h.reporter.reassert();
+        expect(h.sent.map((entry) => entry.paneID)).toEqual([PANE, 'OTHER', PANE, 'OTHER']);
+        // The trailing send still lands: it describes where the pane is NOW.
+        h.advance(200);
+        expect(h.sent).toHaveLength(5);
+        expect(h.sent[4]?.rect.w).toBe(700);
+    });
+
+    it('reassert restarts the throttle window rather than opening a burst', () => {
+        const h = harness(100);
+        h.reporter.report(report());
+        h.advance(90);
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(2);
+        // A movement arriving right after is still throttled — the re-statement was a send.
+        h.reporter.report(report({ rect: { x: 4, y: 24, w: 800, h: 600 } }));
+        expect(h.sent).toHaveLength(2);
+        h.advance(100);
+        expect(h.sent).toHaveLength(3);
+    });
+
+    it('reassert does nothing once disposed (the socket is going away)', () => {
+        const h = harness();
+        h.reporter.report(report());
+        h.reporter.dispose();
+        h.reporter.reassert();
+        expect(h.sent).toHaveLength(1);
+    });
+
     it('dispose stops pending sends (the socket is going away)', () => {
         const h = harness(100);
         h.reporter.report(report());

@@ -57,7 +57,10 @@ Releasing the role: send `{"type":"host-unregister"}`, or just close the socket.
 
 **On (re)registration the daemon replays state**: one `pane-open` notification per existing web
 pane (§3), so a shell that starts after the daemon — or reconnects after a crash — rebuilds
-exactly the panes the daemon has. Build them idempotently.
+exactly the panes the daemon has. Build them idempotently. The pages come back **empty and
+unplaced**: the daemon holds no geometry to replay, so it asks the clients to re-state theirs
+instead (§3.5.1) and the placements arrive right behind these frames as ordinary
+`pane-geometry` notifications.
 
 ---
 
@@ -144,14 +147,52 @@ Rules:
   content bounds — a pane can be scrolled or dragged partly off-screen, and a view must never be
   placed outside the window it lives in.
 - **Reports are facts about *now***, never stored: the daemon keeps no geometry, so a host that
-  reconnects gets nothing until the client's next report (which its own re-render produces).
-  Panes that never get one — every pane while no client is attached — keep working exactly as
-  before, off-screen: this whole section is additive to the automation surface.
+  registers gets none of it — it gets the placements back because the daemon **asks the clients
+  for them** (§3.5.1). Panes that never get one — every pane while no client is attached — keep
+  working exactly as before, off-screen: this whole section is additive to the automation
+  surface.
 - **A client that vanishes releases what it placed.** A closed tab, a reload or a crash never
   sends `visible:false`, so the daemon synthesises one per pane that connection had placed when
-  its socket closes. Expect a hide you did not see a report for.
+  its socket closes. Expect a hide you did not see a report for. One exception, and it is the
+  daemon's own bookkeeping rather than anything a host sees: a pane another live client is
+  claiming in the *same* window is not released, because a reconnecting UI can place a view
+  before the daemon has processed the socket it left behind.
 - The report is fire-and-forget; the daemon never answers it, and drops it when no host is
   attached or the pane is not a web pane.
+
+### 3.5.1 Re-asserting placements (issue #34)
+
+The rule above used to end differently: *"a host that reconnects gets nothing until the client's
+next report (which its own re-render produces)"*. That parenthetical was wrong, and the bug it
+produced was a web pane with an empty hole where its page should be, the pane's chrome still
+drawn around it, that no reload, navigation, tab switch, workspace switch or window resize could
+recover — only closing the pane and opening a new one.
+
+A re-render does not produce a report. The client dedupes identical reports
+(`client/src/webpane/geometry.ts`, Rule 1) because the grid re-renders every pane on any layout
+change, and that cache is a claim about what the **far end** holds. Two events falsify it while
+the client's own layout stands perfectly still:
+
+- **the client's socket dropped and came back.** The daemon released every view that connection
+  had placed; the client that reconnected is the *same* client, with the same cache.
+- **a host registered.** Everything reported while the slot was empty was dropped on the floor
+  here, and the client has no way to see that happen.
+
+Both are answered by re-stating, not by remembering:
+
+```jsonc
+// daemon → every client, on host registration
+{"type":"web-geometry-resync","windowID":"<the host's window, if it declared one>"}
+```
+
+A client that hears it (or completes a fresh handshake, which it can see for itself) re-sends
+the last report of every pane it currently has **placed**, as an ordinary `web-geometry-report`.
+Panes it has parked say nothing, so a view that was meant to stay hidden stays hidden. Nothing
+is stored on this side: the daemon still owns no geometry, it just knows when to ask.
+
+`windowID` is scoped the way `reveal-pane`'s is — the check belongs to the client, since it is
+the party that knows which window it renders into. A host is free to ignore the whole mechanism:
+what reaches it is `pane-geometry`, exactly as before.
 
 ### 3.6 Poster: the still frame a parked pane wears (issue #12)
 

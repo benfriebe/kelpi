@@ -12,6 +12,7 @@ export {
     DEFAULT_WS_PATH,
     KelpiConnection,
     SOCKET_OPEN,
+    WEB_GEOMETRY_RESYNC_MESSAGE,
     createConnection,
     defaultSocketFactory,
     resolveWsUrl,
@@ -28,7 +29,8 @@ export {
     type SocketCloseLike,
     type SocketFactory,
     type SocketLike,
-    type SocketMessageLike
+    type SocketMessageLike,
+    type WebGeometryResyncMessage
 } from './socket';
 
 export {

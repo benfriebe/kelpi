@@ -53,6 +53,8 @@ function snapshotState(): JsonObject {
 
 interface Harness {
     socket(): FakeWebSocket;
+    /** Answer every command still outstanding, so the drop below is an IDLE one. */
+    settle(): void;
     /** Every geometry report this socket carried, oldest first. */
     reports(socket?: FakeWebSocket): Record<string, unknown>[];
     /** Just the placements — `visible:true`, the ones that put a view on screen. */
@@ -84,11 +86,35 @@ function setup(): Harness {
         (socket ?? sockets.last())
             .messages()
             .filter((message) => message['type'] === 'web-geometry-report' && message['paneID'] === WEB_PANE);
+    /**
+     * The issue is about a drop while the app is IDLE, and an idle client has no command in
+     * flight. A command that is still outstanding when the socket goes rejects, and a rejected
+     * command raises a toast — which registers as a modal surface (H1) and legitimately parks
+     * every web pane's view for six seconds. That park is correct behaviour and would mask the
+     * defect entirely, so the harness settles the handshake's commands first.
+     */
+    const settle = (): void => {
+        const socket = sockets.last();
+        const answered = new Set(
+            socket
+                .messages()
+                .filter((message) => message['type'] === 'command-reply')
+                .map((message) => message['id'])
+        );
+        act(() => {
+            for (const message of socket.messages()) {
+                if (message['type'] !== 'command' || answered.has(message['id'])) continue;
+                socket.emit({ type: 'command-reply', id: message['id'], reply: { ok: true } });
+            }
+        });
+    };
     return {
         socket: () => sockets.last(),
+        settle,
         reports,
         placements: (socket) => reports(socket).filter((message) => message['visible'] === true),
         async drop() {
+            settle();
             const before = sockets.last();
             act(() => {
                 before.serverClose();

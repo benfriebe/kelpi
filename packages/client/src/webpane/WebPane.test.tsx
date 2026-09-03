@@ -80,7 +80,9 @@ function fakeCommands(
             // that focuses a pane goes through it.
             focusView: record('focusView'),
             // Issue #12: the still frame a covered pane asks for before it parks.
-            poster: record('poster', options.poster ?? POSTER_REPLY)
+            poster: record('poster', options.poster ?? POSTER_REPLY),
+            // Issue #32: opening the find bar is how its caret gets into the pane.
+            find: record('find')
         } as unknown as WebPaneCommands
     };
 }
@@ -243,6 +245,130 @@ describe('chrome commands', () => {
         );
         fireEvent.click(screen.getByTestId(`web-devtools-${PANE}`));
         expect(sent).toEqual([{ verb: 'toggleDevTools', args: [PANE, TAB1] }]);
+    });
+});
+
+/**
+ * Issue #32 - the release half of the chrome-text rule.
+ *
+ * Every test here is about the PARTITION: only the pane losing focus may release. A page taking
+ * focus, a URL landing under a draft, and WEB-002's grant to a background pane must all be left
+ * alone, and each is one of the cases below.
+ */
+describe('losing pane focus releases the chrome caret (issue #32)', () => {
+    function mount(options: { focused?: boolean } = {}) {
+        const { commands, sent } = fakeCommands();
+        const draw = (props: {
+            focused: boolean;
+            tabs?: readonly WebPaneTab[];
+            findToken?: number;
+            focusURLToken?: number;
+        }) => (
+            <WebPane
+                paneID={PANE}
+                tabs={props.tabs ?? TABS}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                visible={true}
+                focused={props.focused}
+                findToken={props.findToken ?? 0}
+                focusURLToken={props.focusURLToken ?? 0}
+                measure={fixedRect(RECT)}
+            />
+        );
+        let last = { focused: options.focused ?? true } as Parameters<typeof draw>[0];
+        const view = render(draw(last));
+        /** Re-render with only what the caller names changed. */
+        const update = (next: Partial<Parameters<typeof draw>[0]>): void => {
+            last = { ...last, ...next };
+            act(() => {
+                view.rerender(draw(last));
+            });
+        };
+        return { view, commands, sent, update };
+    }
+
+    const urlBar = (): HTMLInputElement => screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+
+    it('lets go of the URL bar when the pane stops wearing the ring', () => {
+        const h = mount();
+        const url = urlBar();
+        url.focus();
+        expect(document.activeElement).toBe(url);
+
+        h.update({ focused: false });
+
+        expect(document.activeElement).not.toBe(url);
+    });
+
+    it('lets go of the FIND bar too - one rule for every chrome field the pane owns', () => {
+        const h = mount();
+        // §3.13's token: a bump opens the bar, which claims the caret as it mounts.
+        h.update({ findToken: 1 });
+        const find = screen.getByTestId(`web-find-input-${PANE}`);
+        expect(document.activeElement).toBe(find);
+
+        h.update({ focused: false });
+
+        expect(document.activeElement).not.toBe(find);
+    });
+
+    // WEB-043's exemption: a URL landing under a half-typed address is not a focus change, and
+    // the draft has to survive it.
+    it('keeps the caret - and the draft - while the pane still wears the ring', () => {
+        const h = mount();
+        const url = urlBar();
+        url.focus();
+        fireEvent.change(url, { target: { value: 'half-typed-add' } });
+
+        // The page redirects under the draft; the ring has not moved, so nothing may.
+        h.update({ tabs: [{ id: TAB1, url: 'https://example.com/moved', title: 'Moved' }] });
+
+        expect(document.activeElement).toBe(url);
+        expect(url.value).toBe('half-typed-add');
+    });
+
+    // WEB-002 grants the caret to a blank pane's bar whether or not it wears the ring, which is
+    // why the release watches the true -> false transition and not `!focused`.
+    it('does not touch a background pane’s URL bar, which WEB-002 may have just filled', () => {
+        const h = mount({ focused: false });
+        // What `focusURLBar` does for a blank pane nobody has focused.
+        h.update({ focusURLToken: 1 });
+        const url = urlBar();
+        expect(document.activeElement).toBe(url);
+
+        // Anything else changing on the unfocused pane must not read as "focus left".
+        h.update({ tabs: [{ id: TAB1, url: '', title: 'New tab' }] });
+
+        expect(document.activeElement).toBe(url);
+    });
+
+    // Two panes' effects run in one commit in an order nothing here controls, so a claim that has
+    // already landed elsewhere may not be undone by the pane it landed from.
+    it('never blurs a caret that has already moved outside the pane', () => {
+        const h = mount();
+        const elsewhere = document.createElement('input');
+        document.body.appendChild(elsewhere);
+        elsewhere.focus();
+        expect(document.activeElement).toBe(elsewhere);
+
+        h.update({ focused: false });
+
+        expect(document.activeElement).toBe(elsewhere);
+        elsewhere.remove();
+    });
+
+    // A focused chrome button swallows no keystroke and blocks no claim, so it is not this rule's.
+    it('leaves a focused chrome button where it is - only TEXT is released', () => {
+        const h = mount();
+        const reload = screen.getByTestId(`web-reload-${PANE}`);
+        reload.focus();
+        expect(document.activeElement).toBe(reload);
+
+        h.update({ focused: false });
+
+        expect(document.activeElement).toBe(reload);
     });
 });
 

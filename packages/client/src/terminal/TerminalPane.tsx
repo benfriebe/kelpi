@@ -1282,6 +1282,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const hideKeyboard = useCallback((): void => releasePaneCaret(hostRef.current), []);
     /**
+     * …and the way back, for the bar's toggle only (device round 3, 2026-09-04).
+     *
+     * The same node `dispatchKey` and `pasteText` resolve, focused directly rather than through
+     * `renderer.focus()`: the engine's `focus()` focuses this textarea too
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:844-860`) and then schedules a second,
+     * delayed focus as a backup, which is a reasonable thing for an engine opening to do and a
+     * strange thing to trigger from a button. This is the ONLY focus the phone key bar can cause,
+     * and it happens only when the person taps a key that says Show.
+     */
+    const showKeyboard = useCallback((): void => engineKeyTarget(hostRef.current)?.focus(), []);
+    /**
      * C4 - text into the terminal through the ENGINE's own paste path, which is where the
      * bracketed-paste envelope is decided (`KeyBar.tsx` `dispatchPaste`). The pane owns the host,
      * so the pane is what resolves the engine's input node.
@@ -1413,6 +1424,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     sendKey={sendKey}
                     captureRoot={rootRef}
                     hideKeyboard={hideKeyboard}
+                    showKeyboard={showKeyboard}
                     pasteText={pasteText}
                 />
 

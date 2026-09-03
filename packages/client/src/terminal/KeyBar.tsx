@@ -81,6 +81,45 @@
  * desktop - is untouched by all of it and keeps the path it has today. So is an unmodified
  * single-scalar key with no `code`: the engine's own vendor fallback already rescues that one,
  * which is why plain typing on the phone worked before any of this.
+ *
+ * ## THE BAR NEVER FOCUSES ANYTHING
+ *
+ * Device round 3 (2026-09-04, same phone) found the previous cut of this file summoning the
+ * software keyboard on EVERY tap, including right after the person had dismissed it: the bar was
+ * unusable for driving vim, less, or a prompt with the keyboard down.
+ *
+ * The mechanism was the caret restore this file used to carry. A tap remembered
+ * `document.activeElement` at pointer-down and called `held.focus()` afterwards if the platform
+ * had moved focus to the button, which on a desktop is invisible bookkeeping and on Android is
+ * the gesture that RAISES the keyboard: focusing an editable element is how a soft keyboard is
+ * summoned, and `preventDefault()` on a pointer-down does not reliably keep focus on the textarea
+ * for a touch tap. So the bar took the caret and then handed it back, and the keyboard came up.
+ *
+ * The rule now, and it is absolute: **nothing in the bar calls `focus()` except the keyboard
+ * toggle, which exists because the person asked for the keyboard.** Everything else works whether
+ * or not the caret is anywhere near the terminal:
+ *
+ *   - a key is dispatched AT the engine's textarea (`renderer.dispatchKey`, which resolves it
+ *     through `engineKeyTarget` and never focuses it). The engine binds `keydown` on the
+ *     CONTAINER, so an event dispatched at a blurred textarea still bubbles to it and is encoded
+ *     exactly as it would be with the caret there; measured in `KeyBar.test.tsx` against the real
+ *     engine with `document.activeElement === document.body`;
+ *   - the keys are `tabIndex={-1}` and still cancel their own pointer-down, so a tap leaves the
+ *     caret alone as far as a platform allows. **The design does not depend on that**, which is
+ *     the whole point of the paragraph above: if Android moves focus to the button anyway, the
+ *     keystroke still lands, and the keyboard is the person's to bring back;
+ *   - `touch-action: manipulation` on each key, so a fast second tap is a second key and never a
+ *     double-tap zoom.
+ *
+ * The keyboard key is therefore a TOGGLE rather than a one-way dismiss: it hides when the engine
+ * holds the caret and shows when it does not, and which one it is comes from `focusin`/`focusout`
+ * on the pane root rather than from a flag this file keeps. Tapping the terminal itself still
+ * raises the keyboard through the engine's own `touchend` handler
+ * (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`), which nothing here touches.
+ *
+ * C4's two transient surfaces keep their own rules: the fallback paste field focuses ITSELF when
+ * it opens, because a field nobody can type into is not a paste affordance, and the Copy pill
+ * only cancels its pointer-down like every other button here.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
@@ -198,10 +237,30 @@ export interface KeyBarKey {
     /** A key that LATCHES. */
     readonly modifier?: StickyModifier | undefined;
     /** A key that does something to the bar or the pane rather than to the terminal. */
-    readonly action?: 'paste' | 'hideKeyboard' | undefined;
+    readonly action?: 'paste' | 'toggleKeyboard' | undefined;
     /** Render the label wider than a single glyph (Esc, Tab, Home, End, Paste, Hide). */
     readonly wide?: boolean | undefined;
 }
+
+/**
+ * The keyboard key's two faces (device round 3 - see the header).
+ *
+ * It is one button in one place, and what it does depends on where the caret is: with the engine
+ * holding it, tapping hides the software keyboard; with the caret anywhere else, tapping brings it
+ * back. The id stays `hide-keyboard` because the audit step and the sibling lanes select on it and
+ * a rename would break them for no gain in truth.
+ */
+export const KEYBOARD_TOGGLE_HIDE = {
+    label: 'Hide',
+    name: 'Hide keyboard',
+    title: 'Hide the software keyboard; this key or a tap on the terminal brings it back'
+} as const;
+
+export const KEYBOARD_TOGGLE_SHOW = {
+    label: 'Show',
+    name: 'Show keyboard',
+    title: 'Show the software keyboard; the bar works with it down'
+} as const;
 
 /**
  * The bar's contents, in order (the brief's list).
@@ -234,10 +293,10 @@ export const KEY_BAR_KEYS: readonly KeyBarKey[] = [
     },
     {
         id: 'hide-keyboard',
-        label: 'Hide',
-        name: 'Hide keyboard',
-        title: 'Hide the software keyboard; tap the terminal to bring it back',
-        action: 'hideKeyboard',
+        label: KEYBOARD_TOGGLE_HIDE.label,
+        name: KEYBOARD_TOGGLE_HIDE.name,
+        title: KEYBOARD_TOGGLE_HIDE.title,
+        action: 'toggleKeyboard',
         wide: true
     }
 ];
@@ -257,6 +316,14 @@ export interface KeyBarProps {
     readonly captureRoot: RefObject<HTMLElement | null>;
     /** Drop the caret inside the pane, which is what dismisses the software keyboard. */
     readonly hideKeyboard: () => void;
+    /**
+     * Put the caret back on the engine's input, which is what RAISES the software keyboard.
+     *
+     * The one focus the bar is allowed (device round 3): it happens only from the keyboard
+     * toggle, which is the person asking for the keyboard in as many words. Nothing else in this
+     * file focuses anything.
+     */
+    readonly showKeyboard: () => void;
     /**
      * C4 - put text into the terminal through the engine's own paste path (bracketed when the
      * application asked for it). The pane supplies it because the pane owns the host.
@@ -413,6 +480,7 @@ export function KeyBar({
     sendKey,
     captureRoot,
     hideKeyboard,
+    showKeyboard,
     pasteText,
     readClipboard,
     writeClipboard
@@ -447,26 +515,22 @@ export function KeyBar({
     }, []);
 
     /**
-     * Who held the caret when the finger went down - the belt to `preventDefault`'s braces.
+     * Ask the platform not to move the caret to the button, and then stop caring.
      *
-     * `preventDefault()` on the pointer-down is what SHOULD stop a tap moving focus, and for a
+     * `preventDefault()` on the pointer-down is what SHOULD suppress the focus change, and for a
      * mouse it always does. For a touch it is a weaker promise: focus on a phone is set by the
      * tap GESTURE, which the recognizer builds from touchstart/touchend, and cancelling
      * touchstart instead would take the synthesized `click` with it (Pointer Events exempts
-     * `click` from a cancelled pointerdown, `touchstart` does not). So the element that had the
-     * caret is remembered on the way down and handed it back on the way out if anything moved it.
-     * A no-op when the pointer-down did its job, which is the common case.
+     * `click` from a cancelled pointerdown, `touchstart` does not).
+     *
+     * This used to be half of a hold-and-restore pair. The restore is GONE (device round 3): a
+     * `focus()` back onto the engine's textarea is how Android summons the software keyboard, so
+     * the restore raised the keyboard on every tap, including immediately after the person had
+     * dismissed it. Nothing replaces it, because nothing needs to: a key is dispatched at the
+     * textarea whether or not it holds the caret.
      */
-    const caretRef = useRef<Element | null>(null);
-    const holdCaret = useCallback((event: { preventDefault: () => void }): void => {
+    const suppressFocus = useCallback((event: { preventDefault: () => void }): void => {
         event.preventDefault();
-        caretRef.current = typeof document === 'undefined' ? null : document.activeElement;
-    }, []);
-    const restoreCaret = useCallback((): void => {
-        const held = caretRef.current;
-        if (!(held instanceof HTMLElement) || !held.isConnected) return;
-        if (document.activeElement === held) return;
-        held.focus();
     }, []);
 
     // ── the keydown interceptor: latched modifiers, and named keys with no `code` ────
@@ -732,17 +796,62 @@ export function KeyBar({
         void write?.(text).catch(() => undefined);
     }, [offer, writeClipboard]);
 
+    // ── the keyboard toggle's state (device round 3) ────────────────────────────────
+    //
+    // OBSERVED, never assumed. The software keyboard is up when the engine's input holds the
+    // caret, and that is a fact about the DOM, not a flag this file can keep: the engine's own
+    // `touchend` raises the keyboard when the terminal is tapped (`terminal.ts:490-493`), the
+    // pane's focus effects move the caret for reasons of their own, and a platform can take it
+    // away without telling anyone. So the state is read off `document.activeElement` whenever
+    // focus moves anywhere inside the pane.
+    //
+    // "The engine's input" is a `<textarea>` inside the pane that is not C4's paste field: the
+    // engine opens exactly one (`renderer.ts` `engineKeyTarget` resolves the same node), and the
+    // paste field is the bar's own surface, which focuses itself on purpose and must not read as
+    // the terminal having the caret.
+    const isEngineCaret = useCallback((): boolean => {
+        const root = captureRoot.current;
+        if (root === null || typeof document === 'undefined') return false;
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement)) return false;
+        if (active === pasteFieldRef.current) return false;
+        return active.tagName === 'TEXTAREA' && root.contains(active);
+    }, [captureRoot]);
+
+    const [keyboardShown, setKeyboardShown] = useState(false);
+    const keyboardShownRef = useRef(false);
+    useEffect(() => {
+        const root = captureRoot.current;
+        if (root === null) return;
+        const sync = (): void => {
+            const shown = isEngineCaret();
+            keyboardShownRef.current = shown;
+            setKeyboardShown(shown);
+        };
+        sync();
+        // Capture phase, and both events: `focusout` is what says the caret LEFT (its
+        // `document.activeElement` is the body mid-dispatch, which is the answer we want), and
+        // `focusin` corrects it the moment something else takes the caret. Both bubble, so the
+        // pane root sees every move inside the pane, including the engine's own.
+        root.addEventListener('focusin', sync, true);
+        root.addEventListener('focusout', sync, true);
+        return () => {
+            root.removeEventListener('focusin', sync, true);
+            root.removeEventListener('focusout', sync, true);
+        };
+    }, [captureRoot, isEngineCaret]);
+
     const press = useCallback(
         (key: KeyBarKey): void => {
-            // The one key that must NOT get the caret back: dismissing the keyboard is exactly
-            // "let the caret go", and handing it back would put the keyboard straight up again.
-            if (key.action === 'hideKeyboard') {
+            // THE ONE FOCUS THE BAR IS ALLOWED, and only in one direction: the person tapped a
+            // key that says "Show", which is them asking for the keyboard. With the caret on the
+            // engine the same key is a dismiss, exactly as before.
+            if (key.action === 'toggleKeyboard') {
                 setLatch(NO_STICKY);
-                caretRef.current = null;
-                hideKeyboard();
+                if (keyboardShownRef.current) hideKeyboard();
+                else showKeyboard();
                 return;
             }
-            restoreCaret();
             if (key.modifier !== undefined) {
                 const current = stickyRef.current;
                 setLatch({ ...current, [key.modifier]: !current[key.modifier] });
@@ -757,7 +866,7 @@ export function KeyBar({
             setLatch(NO_STICKY);
             sendKeyRef.current(withSticky(key.init, latch));
         },
-        [hideKeyboard, requestPaste, restoreCaret, setLatch]
+        [hideKeyboard, requestPaste, setLatch, showKeyboard]
     );
 
     return (
@@ -781,8 +890,8 @@ export function KeyBar({
                         data-testid={`terminal-copy-pill-button-${paneID}`}
                         aria-label={`Copy ${String(offer.bytes)} bytes to the clipboard`}
                         title="A program in this pane copied text; tap to put it on this phone's clipboard"
-                        onPointerDown={holdCaret}
-                        onMouseDown={holdCaret}
+                        onPointerDown={suppressFocus}
+                        onMouseDown={suppressFocus}
                         onClick={takeOffer}
                         className="flex items-center justify-center rounded-full px-4 text-sm font-medium whitespace-nowrap shadow-lg"
                         style={{
@@ -887,29 +996,37 @@ export function KeyBar({
                 }}
             >
                 {KEY_BAR_KEYS.map((key) => {
-                    const pressed = key.modifier === undefined ? undefined : sticky[key.modifier];
+                    // The keyboard key is one button with two faces, and which one it wears comes
+                    // from where the caret actually is (device round 3). Its `aria-pressed` means
+                    // "the software keyboard is up", which is the state the label describes.
+                    const toggle = key.action === 'toggleKeyboard';
+                    const face = !toggle ? key : keyboardShown ? KEYBOARD_TOGGLE_HIDE : KEYBOARD_TOGGLE_SHOW;
+                    const pressed = toggle ? keyboardShown : key.modifier === undefined ? undefined : sticky[key.modifier];
+                    const lit = key.modifier !== undefined && pressed === true;
                     return (
                         <button
                             key={key.id}
                             type="button"
                             data-testid={`terminal-key-${key.id}-${paneID}`}
                             {...{ [KEY_ATTR]: key.id }}
-                            aria-label={key.name}
+                            aria-label={face.name}
                             aria-pressed={pressed}
-                            title={key.title}
+                            title={face.title}
                             /*
-                             * THE TAP MUST NOT TAKE THE CARET. A button that takes focus dismisses
-                             * the software keyboard and orphans the terminal, so the very first tap
-                             * on Esc would close the keyboard the bar exists to sit above.
-                             * `holdCaret` cancels the pointer-down (which is what suppresses the
-                             * focus change) and remembers who had the caret, so `press` can hand it
-                             * back if the platform moved it anyway. The `click` that follows is
-                             * unaffected by a cancelled pointer-down, which is why activation still
-                             * lives on `onClick`; `onMouseDown` covers a browser with no pointer
-                             * events.
+                             * THE TAP MUST NOT TAKE THE CARET, and if it takes it anyway nothing
+                             * breaks. `suppressFocus` cancels the pointer-down, which is what
+                             * suppresses the focus change on every platform that honours it, and
+                             * `tabIndex={-1}` keeps the key out of the sequential focus order for
+                             * the rest. There is no restore behind them any more: handing the
+                             * caret back is how the previous cut summoned the software keyboard on
+                             * every tap (device round 3), and a key reaches the engine whether or
+                             * not the textarea is focused. The `click` that follows is unaffected
+                             * by a cancelled pointer-down, which is why activation still lives on
+                             * `onClick`; `onMouseDown` covers a browser with no pointer events.
                              */
-                            onPointerDown={holdCaret}
-                            onMouseDown={holdCaret}
+                            tabIndex={-1}
+                            onPointerDown={suppressFocus}
+                            onMouseDown={suppressFocus}
                             onClick={() => press(key)}
                             className="flex shrink-0 items-center justify-center rounded text-sm font-medium whitespace-nowrap"
                             style={{
@@ -917,11 +1034,15 @@ export function KeyBar({
                                 height: KEY_BAR_KEY_SIZE_PX,
                                 padding: '0 8px',
                                 border: `1px solid ${tokens.divider}`,
-                                backgroundColor: pressed === true ? tokens.accent : tokens.surfaceBackground,
-                                color: pressed === true ? tokens.windowBackground : tokens.textPrimary
+                                // A key is a tap target and nothing else: no double-tap zoom, no
+                                // 300 ms wait for one, whatever the bar's own `pan-x` allows
+                                // around it.
+                                touchAction: 'manipulation',
+                                backgroundColor: lit ? tokens.accent : tokens.surfaceBackground,
+                                color: lit ? tokens.windowBackground : tokens.textPrimary
                             }}
                         >
-                            {key.label}
+                            {face.label}
                         </button>
                     );
                 })}

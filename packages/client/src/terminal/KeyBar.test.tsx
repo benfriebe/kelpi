@@ -325,7 +325,8 @@ describe('the soft keyboard: Android event shapes, end to end at the engine', ()
                 paneID="engine"
                 sendKey={(init) => renderer.dispatchKey(init)}
                 captureRoot={{ current: root }}
-                hideKeyboard={() => undefined}
+                hideKeyboard={() => area.blur()}
+                showKeyboard={() => area.focus()}
                 // C4's Paste seam, stubbed: this block is about what the SOFT KEYBOARD sends, and
                 // nothing in it taps Paste. C4's own tests own the paste path.
                 pasteText={() => true}
@@ -484,6 +485,79 @@ describe('the soft keyboard: Android event shapes, end to end at the engine', ()
             fireEvent.keyDown(area, { key: 'c', code: 'KeyC', keyCode: 67 });
         });
         expect(hex(out.join(''))).toBe('03');
+    });
+
+    // ── device round 3: the bar never focuses anything ──────────────────────────────
+
+    /**
+     * THE CLAIM THE WHOLE ROUND-3 FIX RESTS ON, measured rather than reasoned: a key dispatched
+     * at a BLURRED textarea is encoded exactly as one dispatched at a focused one.
+     *
+     * It holds because of where the engine listens. `input-handler.ts:261` binds `keydown` on the
+     * CONTAINER, not on the textarea, and nothing on that path consults focus at all: grepped
+     * 2026-09-04, `activeElement` has zero hits in `input-handler.ts` and exactly one in
+     * `terminal.ts`, inside a comment about `setFocused`, and `isTrusted` has zero hits in the
+     * whole shipped `dist/`. So the event bubbles from the blurred textarea to the container and
+     * is encoded there. The one thing focus decides is whether the PLATFORM sends anything, and
+     * on the phone the bar is the platform.
+     */
+    it('encodes a key dispatched at a blurred textarea, byte for byte', () => {
+        act(() => area.blur());
+        expect(document.activeElement).toBe(document.body);
+
+        for (const [init, expected] of [
+            [{ key: 'Escape', code: 'Escape' }, ESC],
+            [{ key: 'Enter', code: 'Enter' }, '\r'],
+            [{ key: 'ArrowUp', code: 'ArrowUp' }, `${ESC}[A`],
+            [{ key: 'c', code: 'KeyC', ctrlKey: true }, '']
+        ] as const) {
+            out.length = 0;
+            expect(renderer.dispatchKey(init)).toBe(true);
+            expect(`${init.key}: ${hex(out.join(''))}`).toBe(`${init.key}: ${hex(expected)}`);
+        }
+        // …and dispatching never took the caret back, which is the bug this replaces.
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('sends the same bytes blurred as focused, key for key', () => {
+        for (const key of KEY_BAR_KEYS) {
+            if (key.init === undefined) continue;
+            act(() => area.focus());
+            out.length = 0;
+            renderer.dispatchKey(key.init);
+            const focused = out.join('');
+
+            act(() => area.blur());
+            out.length = 0;
+            renderer.dispatchKey(key.init);
+            expect(`${key.id}: ${hex(out.join(''))}`).toBe(`${key.id}: ${hex(focused)}`);
+        }
+    });
+
+    it('taps a key without calling focus on the engine input', () => {
+        act(() => area.blur());
+        const focus = vi.spyOn(area, 'focus');
+        tap(key('esc'));
+        tap(key('up'));
+        tap(key('ctrl'));
+        expect(focus).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+        expect(hex(out.join(''))).toBe(hex(`${ESC}${ESC}[A`));
+        focus.mockRestore();
+    });
+
+    /** The one key that may: the person tapped something that says Show. */
+    it('focuses the engine input only through the keyboard toggle, and only to show', () => {
+        act(() => area.focus());
+        const focus = vi.spyOn(area, 'focus');
+        tap(key('hide-keyboard'));
+        expect(document.activeElement).toBe(document.body);
+        expect(focus).not.toHaveBeenCalled();
+
+        tap(key('hide-keyboard'));
+        expect(focus).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(area);
+        focus.mockRestore();
     });
 });
 
@@ -716,21 +790,37 @@ describe('KeyBar in a terminal pane', () => {
     });
 
     /**
-     * …and if the platform moves it anyway, the bar hands it straight back. A touch tap sets focus
-     * from the tap GESTURE, which a cancelled pointer-down does not always reach, so the caret the
-     * finger came down on is remembered and restored. Simulated here by focusing the button in
-     * the middle of the tap, which is exactly what the recognizer does.
+     * …and when the platform moves it anyway, THE BAR LEAVES IT WHERE THE PLATFORM PUT IT.
+     *
+     * This test used to assert the opposite: the caret was remembered at pointer-down and handed
+     * back, which on a desktop is invisible and on Android is the gesture that summons the
+     * software keyboard. Device round 3 (2026-09-04) measured the consequence - every tap raised
+     * the keyboard, including straight after the person had dismissed it - so the restore is
+     * gone. Simulated here by focusing the button in the middle of the tap, which is what the
+     * touch recognizer does: the key still lands, and nothing calls `focus()`.
      */
-    it('hands the caret back when the platform focuses the button anyway', async () => {
+    it('does not hand the caret back when the platform focuses the button', async () => {
         const h = await mountPane();
         const esc = h.key('esc');
+        const focus = vi.spyOn(h.area, 'focus');
         act(() => {
             fireEvent.pointerDown(esc);
             esc.focus();
             fireEvent.click(esc);
         });
-        expect(document.activeElement).toBe(h.area);
+        expect(document.activeElement).toBe(esc);
+        expect(focus).not.toHaveBeenCalled();
+        // …and the keystroke landed all the same, which is what makes the restore unnecessary.
         expect(h.renderers.last().keys).toEqual([expect.objectContaining({ key: 'Escape' })]);
+    });
+
+    /** The keys are out of the sequential focus order, so Tab never lands on one. */
+    it('gives every key tabIndex -1', async () => {
+        const h = await mountPane();
+        for (const button of h.bar?.querySelectorAll('button') ?? []) {
+            expect((button as HTMLButtonElement).tabIndex).toBe(-1);
+            expect((button as HTMLElement).style.touchAction).toBe('manipulation');
+        }
     });
 
     it('latches Ctrl, applies it to the next bar key, and releases', async () => {
@@ -1039,16 +1129,92 @@ describe('KeyBar in a terminal pane', () => {
         expect(h.renderers.last().keys).toEqual([]);
     });
 
-    it('hides the software keyboard by letting the caret go, and a tap on the terminal is the way back', async () => {
+    /**
+     * THE KEYBOARD KEY IS A TOGGLE (device round 3, 2026-09-04).
+     *
+     * It used to be a one-way dismiss, on the theory that the way back was the engine's own
+     * `touchend` focus (`terminal.ts:490-493`) and the bar never had to focus anything. That is
+     * still the way back from the terminal itself, but with the bar no longer restoring the caret
+     * a person who has hidden the keyboard needs a way to ask for it that is not "tap the pane
+     * you were reading". So the key reads the caret and does the other one.
+     */
+    it('hides the software keyboard when the engine holds the caret, and shows it when it does not', async () => {
         const h = await mountPane();
+        const key = h.key('hide-keyboard');
         expect(document.activeElement).toBe(h.area);
-        tap(h.key('hide-keyboard'));
+        expect(key.textContent).toBe('Hide');
+        expect(key.getAttribute('aria-label')).toBe('Hide keyboard');
+        expect(key.getAttribute('aria-pressed')).toBe('true');
+
+        tap(key);
         expect(document.activeElement).not.toBe(h.area);
-        // The return path is the ENGINE's own: its canvas focuses the textarea on `touchend`
-        // (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`). Nothing in the bar or the
-        // pane has to re-focus, which is why there is no "show keyboard" key.
-        h.area.focus();
+        expect(key.textContent).toBe('Show');
+        expect(key.getAttribute('aria-label')).toBe('Show keyboard');
+        expect(key.getAttribute('aria-pressed')).toBe('false');
+
+        // …and back, which is the ONE focus the bar may cause, because the person asked for it.
+        tap(key);
         expect(document.activeElement).toBe(h.area);
+        expect(key.textContent).toBe('Hide');
+        expect(key.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    /**
+     * The state is READ, not remembered: the engine's own `touchend` focus and the pane's focus
+     * effects move the caret without asking the bar, and the key has to say the truth afterwards.
+     */
+    it('follows the caret when something else moves it', async () => {
+        const h = await mountPane();
+        const key = h.key('hide-keyboard');
+        act(() => h.area.blur());
+        expect(key.textContent).toBe('Show');
+        act(() => h.area.focus());
+        expect(key.textContent).toBe('Hide');
+    });
+
+    /** THE BAR NEVER FOCUSES ANYTHING, except that one key. */
+    it('calls focus on nothing at all for an ordinary key, a modifier or Paste', async () => {
+        const h = await mountPane();
+        const focus = vi.spyOn(h.area, 'focus');
+        tap(h.key('esc'));
+        tap(h.key('ctrl'));
+        tap(h.key('up'));
+        tap(h.key('paste'));
+        expect(focus).not.toHaveBeenCalled();
+    });
+
+    /**
+     * …and every key still routes with the caret nowhere near the terminal, which is what makes
+     * the paragraph above affordable. The engine binds `keydown` on the CONTAINER, so an event
+     * dispatched at a blurred textarea still reaches it (measured against the real engine in the
+     * block above); here it is the PANE's own kitty interceptor that has to keep working.
+     */
+    it('routes every key with the caret on the body', async () => {
+        const h = await mountPane();
+        act(() => h.area.blur());
+        expect(document.activeElement).toBe(document.body);
+
+        tap(h.key('esc'));
+        tap(h.key('up'));
+        tap(h.key('ctrl'));
+        act(() => {
+            fireEvent.keyDown(h.area, { key: 'c', code: 'KeyC' });
+        });
+        expect(h.renderers.last().keys).toEqual([
+            expect.objectContaining({ key: 'Escape' }),
+            expect.objectContaining({ key: 'ArrowUp' }),
+            expect.objectContaining({ key: 'c', ctrlKey: true })
+        ]);
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('a blurred pane still encodes through the pane’s kitty interceptor', async () => {
+        const h = await mountPane();
+        h.setKittyFlags(1);
+        act(() => h.area.blur());
+        tap(h.key('esc'));
+        expect(h.pty.last().input).toEqual([`${ESC}[27u`]);
+        expect(document.activeElement).toBe(document.body);
     });
 
     /**
@@ -1146,6 +1312,7 @@ function mountBar(props: Partial<KeyBarProps> = {}): BarHarness {
             sendKey={() => true}
             captureRoot={{ current: root }}
             hideKeyboard={() => undefined}
+            showKeyboard={() => undefined}
             pasteText={(text) => {
                 pasted.push(text);
                 return true;

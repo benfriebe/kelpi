@@ -40,6 +40,47 @@
  *   - only the `keydown` is re-raised. The engine registers no `keyup` listener at all, so the
  *     legacy path cannot tell; an application that asked for kitty's report-event-types would see
  *     the release without the modifier.
+ *
+ * ## …and on Android the next key is not a `keydown` at all
+ *
+ * Measured on the owner's phone (device round 2, 2026-09-03, Android + Chrome + a Gboard-class
+ * keyboard, bytes read at the PTY through `stty -icanon -echo min 1; cat -v`): Esc, Tab, the
+ * arrows, Home, End, `-`, `/` and `|` all arrived byte-exact, and two things did not.
+ *
+ *   - **Ctrl then the soft keyboard's `c` arrived as a plain `c`**, and Alt then `x` as a plain
+ *     `x`. A soft keyboard's letter is not a `keydown` carrying that letter: Chrome raises
+ *     `keydown` with `keyCode` 229, `key` `'Unidentified'` and an EMPTY `code`, and the letter
+ *     itself arrives afterwards as `beforeinput` with `inputType` `'insertText'` and `data` `'c'`
+ *     (the engine inserts it from there, `input-handler.ts` `handleBeforeInput`). The latch above
+ *     listens on `keydown`, so it saw nothing it could modify and the letter went through plain.
+ *   - **The soft keyboard's Enter never arrived** (no `^M` at the PTY), while Backspace did
+ *     (`^?`) and typed text did. The engine maps keys by `event.code` through `KEY_MAP`
+ *     (`input-handler.ts:389`); Android delivers Enter either as a `keydown` with `key` `'Enter'`
+ *     and an empty `code`, or as `beforeinput` with `inputType` `'insertLineBreak'`. The first
+ *     falls off the mapped path and then off the vendor fallback below it, which rescues only a
+ *     single-scalar PRINTABLE (`:391-411`); the second is ignored, because `handleBeforeInput`
+ *     forwards `insertText` and nothing else. Backspace survives for the complementary reason:
+ *     the ONLY route in the engine that can emit `0x7f` is `KEY_MAP['Backspace']`, and the
+ *     printables-only fallback could never have produced it, so Chrome must be delivering the
+ *     soft keyboard's Backspace with a real `code` - which it does, because the engine's textarea
+ *     is always empty and Chrome sends a genuine key event for a delete on an empty field rather
+ *     than an IME edit. C2's `enterkeyhint="send"` on the textarea did not change any of it.
+ *
+ * So the bar handles the same keystroke in whichever of its two halves carries it, under the
+ * phone form factor only (this component only mounts there):
+ *
+ *   - a `keydown` with an EMPTY `code` whose `key` is one of {@link NAMED_KEYS_WITHOUT_CODE} is
+ *     cancelled and re-raised with the matching `code`, so the engine can map it;
+ *   - a `beforeinput` of `insertText` with single-character `data`, while a modifier is latched,
+ *     is cancelled and re-raised as the `keydown` that letter would have been, with the latch on
+ *     it and the `code` for that character (the engine needs a `code`, and it needs `key` too,
+ *     because the encoder takes the ctrl byte from the utf8);
+ *   - a `beforeinput` of {@link LINE_BREAK_INPUT_TYPES} becomes Enter the same way.
+ *
+ * A key that arrives with a real `code` - every physical keyboard, on the phone as much as on a
+ * desktop - is untouched by all of it and keeps the path it has today. So is an unmodified
+ * single-scalar key with no `code`: the engine's own vendor fallback already rescues that one,
+ * which is why plain typing on the phone worked before any of this.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
@@ -162,6 +203,109 @@ export interface KeyBarProps {
 const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'CapsLock']);
 
 /**
+ * The named keys a software keyboard delivers with an empty `code` (device round 2 - see the
+ * header). Each one is re-raised carrying its `code`, which for every key in this set is the same
+ * string as its `key`: that is the UI Events spec's own naming for the main-block Enter,
+ * Backspace, Tab, Escape, Delete, the four arrows, Home and End, and it is why the rescue needs a
+ * set rather than a table.
+ *
+ * Deliberately an ALLOWLIST and not "every key whose name is longer than one character": a key
+ * this bar cannot name is left exactly where it is rather than guessed at.
+ */
+export const NAMED_KEYS_WITHOUT_CODE: ReadonlySet<string> = new Set([
+    'Enter',
+    'Backspace',
+    'Tab',
+    'Escape',
+    'Delete',
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'Home',
+    'End'
+]);
+
+/**
+ * The `beforeinput` types that ARE the Enter key when no key event carried it.
+ *
+ * `insertLineBreak` is what a textarea reports; `insertParagraph` is what a contenteditable does,
+ * and some Android keyboards send it for a hidden input anyway. The engine forwards neither
+ * (`handleBeforeInput` takes `insertText` alone), so both are dropped today.
+ */
+export const LINE_BREAK_INPUT_TYPES: ReadonlySet<string> = new Set(['insertLineBreak', 'insertParagraph']);
+
+/**
+ * The US layout, as the one thing a character cannot tell you about itself: which physical key it
+ * came from.
+ *
+ * The engine maps `KeyboardEvent.code` to a USB HID key, so a letter arriving through
+ * `beforeinput` (which carries no `code` at all, only the character) has to be given one before
+ * it can be re-raised with a modifier on it. `shiftKey` comes with it for the same reason
+ * `KEY_BAR_KEYS` puts it on `|`: on a US keyboard the bar character IS Shift+Backslash, and the
+ * event a physical keyboard raises carries the modifier.
+ *
+ * US-only, and that is a bounded limit rather than an oversight: a `code` is a physical POSITION,
+ * so no table can be right for every layout, and the character itself still travels as `key`,
+ * which is what the encoder turns into bytes. The worst a wrong `code` can do here is name the
+ * wrong position for a modified punctuation key; the letters and digits, which is what a latched
+ * Ctrl or Alt is used with, are the same position on every Latin layout.
+ */
+const US_CHARACTER_KEYS: readonly (readonly [code: string, plain: string, shifted: string | null])[] = [
+    ['Backquote', '`', '~'],
+    ['Digit1', '1', '!'],
+    ['Digit2', '2', '@'],
+    ['Digit3', '3', '#'],
+    ['Digit4', '4', '$'],
+    ['Digit5', '5', '%'],
+    ['Digit6', '6', '^'],
+    ['Digit7', '7', '&'],
+    ['Digit8', '8', '*'],
+    ['Digit9', '9', '('],
+    ['Digit0', '0', ')'],
+    ['Minus', '-', '_'],
+    ['Equal', '=', '+'],
+    ['BracketLeft', '[', '{'],
+    ['BracketRight', ']', '}'],
+    ['Backslash', '\\', '|'],
+    ['Semicolon', ';', ':'],
+    ['Quote', "'", '"'],
+    ['Comma', ',', '<'],
+    ['Period', '.', '>'],
+    ['Slash', '/', '?'],
+    ['Space', ' ', null]
+];
+
+/** What a re-raised character needs beyond its own `key`. */
+export interface CharacterKey {
+    readonly code: string;
+    readonly shiftKey: boolean;
+}
+
+const CHARACTER_KEYS = ((): ReadonlyMap<string, CharacterKey> => {
+    const map = new Map<string, CharacterKey>();
+    for (let index = 0; index < 26; index++) {
+        const upper = String.fromCharCode(65 + index);
+        map.set(upper.toLowerCase(), { code: `Key${upper}`, shiftKey: false });
+        map.set(upper, { code: `Key${upper}`, shiftKey: true });
+    }
+    for (const [code, plain, shifted] of US_CHARACTER_KEYS) {
+        map.set(plain, { code, shiftKey: false });
+        if (shifted !== null) map.set(shifted, { code, shiftKey: true });
+    }
+    return map;
+})();
+
+/**
+ * The key a character comes from on a US layout, or null for anything not on one (an accented
+ * letter, an emoji, a CJK glyph). Null means "leave it alone": there is no `code` to give it, and
+ * an event with no `code` and a modifier on it is dropped by the engine outright.
+ */
+export function characterKey(character: string): CharacterKey | null {
+    return CHARACTER_KEYS.get(character) ?? null;
+}
+
+/**
  * How long after a consumed keydown its paired `beforeinput` is still recognisable as the same
  * keystroke. Deliberately the same order as the engine's own dedupe window
  * (`input-handler.ts` `BEFORE_INPUT_IGNORE_MS`), and for the same reason: it is a pairing
@@ -191,6 +335,17 @@ export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarPro
     sendKeyRef.current = sendKey;
     /** The last keystroke the interceptor consumed - read by the `beforeinput` effect below. */
     const consumedRef = useRef<{ data: string; at: number } | null>(null);
+    /**
+     * When an Enter `keydown` last travelled the pane root, consumed here or not.
+     *
+     * The line-break `beforeinput` below is the SAME keystroke when one has just gone past, and a
+     * second `\r` at the PTY is a second command. Recorded for every Enter rather than only for
+     * the ones this bar re-raised, so the engine's own handling of a physical Enter (which
+     * cancels the keydown, and therefore should raise no `beforeinput` at all) cannot be
+     * double-counted if a keyboard raises one anyway - which is exactly what a cancelled keydown
+     * was measured doing for the letter case on 2026-09-03.
+     */
+    const enterSeenRef = useRef<number | null>(null);
 
     const setLatch = useCallback((next: StickyModifiers): void => {
         stickyRef.current = next;
@@ -220,47 +375,87 @@ export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarPro
         held.focus();
     }, []);
 
-    const armed = sticky.ctrl || sticky.alt;
-
-    // ── the sticky-modifier interceptor ─────────────────────────────────────────────
+    // ── the keydown interceptor: latched modifiers, and named keys with no `code` ────
     //
-    // Bound only while something is armed, so a bar with nothing latched adds no listener to the
-    // pane at all and the ordinary typing path is byte-identical to a pane with no bar.
+    // Bound for the life of the bar, which is the phone form factor and nothing else: the pane
+    // only renders a bar when `formFactor === 'phone'` (TerminalPane's `showKeyBar`), so a
+    // desktop window, an Electron shell and a tablet never reach this listener at all. It used to
+    // be bound only while a modifier was armed; the soft keyboard's Enter (device round 2) is not
+    // a latch problem and arrives with nothing latched, so the binding follows the bar.
+    //
+    // What it does NOT touch is as load-bearing as what it does: an event that carries a real
+    // `code` and finds nothing latched returns on the first branch, so a PHYSICAL keyboard on the
+    // phone types exactly the path it types today.
     useEffect(() => {
         const root = captureRoot.current;
-        if (root === null || !armed) return;
-        const onKeyDown = (event: KeyboardEvent): void => {
-            const latch = stickyRef.current;
-            if (!latch.ctrl && !latch.alt) return;
-            // A modifier held on a hardware keyboard is not the key the latch is waiting for.
-            if (MODIFIER_KEYS.has(event.key)) return;
-            // Mid-composition the key belongs to the IME, which owns its own commit; taking it
-            // here would break Korean/Japanese input for the sake of a latch nobody armed for it.
-            if (event.isComposing || event.keyCode === 229) return;
+        if (root === null) return;
+
+        /** Cancel this keystroke and re-raise it at the engine as `init` says it should be. */
+        const reraise = (event: KeyboardEvent, key: string, code: string, shiftKey: boolean, latch: StickyModifiers): void => {
             event.preventDefault();
             // The immediate form, for the same reason §TERM-030 uses it: the engine may hold more
             // than one listener on the way down and only this guarantees none of them runs.
             event.stopImmediatePropagation();
             // Remember the character, so the `beforeinput` this keystroke may still raise can be
             // recognised as the SAME keystroke and dropped - see the effect below.
-            consumedRef.current = event.key.length === 1 ? { data: event.key, at: Date.now() } : null;
+            consumedRef.current = key.length === 1 ? { data: key, at: Date.now() } : null;
             // Clear BEFORE re-raising: the synthetic event walks past this listener again, and it
             // must find the latch already spent.
             setLatch(NO_STICKY);
             sendKeyRef.current({
-                key: event.key,
-                code: event.code,
+                key,
+                code,
                 ctrlKey: latch.ctrl || event.ctrlKey,
                 altKey: latch.alt || event.altKey,
-                shiftKey: event.shiftKey,
+                shiftKey,
                 metaKey: event.metaKey,
                 location: event.location,
                 repeat: event.repeat
             });
         };
+
+        const onKeyDown = (event: KeyboardEvent): void => {
+            // Before every early return: the line-break `beforeinput` this keystroke may raise
+            // has to know an Enter already went past, whoever ends up handling it.
+            if (event.key === 'Enter') enterSeenRef.current = Date.now();
+            const latch = stickyRef.current;
+            const latched = latch.ctrl || latch.alt;
+            // A modifier held on a hardware keyboard is not the key the latch is waiting for.
+            if (MODIFIER_KEYS.has(event.key)) return;
+            // Mid-composition the key belongs to the IME, which owns its own commit; taking it
+            // here would break Korean/Japanese input for the sake of a latch nobody armed for it.
+            // `keyCode === 229` is also the Android soft keyboard's placeholder for an ordinary
+            // letter, and it carries no letter of its own: that keystroke is answered at
+            // `beforeinput`, in the effect below, which is where the character actually is.
+            if (event.isComposing || event.keyCode === 229) return;
+
+            // A key the engine can already map. Only a latched modifier is a reason to touch it.
+            if (event.code !== '') {
+                if (!latched) return;
+                reraise(event, event.key, event.code, event.shiftKey, latch);
+                return;
+            }
+
+            // …and from here down the key has NO `code`, which is the soft keyboard's shape.
+            if (NAMED_KEYS_WITHOUT_CODE.has(event.key)) {
+                // Named keys are rescued whether or not anything is latched: with an empty `code`
+                // the engine drops them outright, which is why Enter never reached the PTY.
+                reraise(event, event.key, event.key, event.shiftKey, latch);
+                return;
+            }
+            const character = event.key.length === 1 ? characterKey(event.key) : null;
+            if (character !== null && latched) {
+                reraise(event, event.key, character.code, event.shiftKey || character.shiftKey, latch);
+                return;
+            }
+            // Nothing this bar can name. An unmodified printable is left to the engine's own
+            // fallback (`input-handler.ts:391-411`), which rescues exactly that case; a latch
+            // that cannot be applied is released rather than left armed to surprise the next key.
+            if (latched) setLatch(NO_STICKY);
+        };
         root.addEventListener('keydown', onKeyDown, true);
         return () => root.removeEventListener('keydown', onKeyDown, true);
-    }, [armed, captureRoot, setLatch]);
+    }, [captureRoot, setLatch]);
 
     /**
      * …and the OTHER half of a keystroke, which a cancelled keydown does not always take with it.
@@ -276,28 +471,87 @@ export function KeyBar({ paneID, sendKey, captureRoot, hideKeyboard }: KeyBarPro
      * same thing for its own reasons.
      *
      * Bound for the life of the bar rather than only while something is latched: the latch is
-     * spent inside the keydown, so by the time the `beforeinput` lands the armed effect has been
-     * torn down. It is inert unless a keystroke was consumed within the last
-     * {@link CONSUMED_INPUT_WINDOW_MS}, and it never touches a key nobody latched.
+     * spent inside the keydown, so by the time the `beforeinput` lands nothing is armed any more.
+     *
+     * It is also where the SOFT keyboard's keystrokes are answered, because for Android that is
+     * the half of the keystroke that carries the character at all (device round 2 - see the
+     * header): a latched modifier is applied to `insertText`, and a line break becomes Enter.
+     * Both re-raise a `keydown` at the engine rather than writing bytes, so DECCKM, the kitty
+     * protocol and the pane's own interceptor decide the encoding exactly as they do for a
+     * physical key. Everything else - plain typing, an IME's composition, a paste - is left
+     * alone, which is why the engine still inserts an unmodified letter itself.
      */
     useEffect(() => {
         const root = captureRoot.current;
         if (root === null) return;
         const onBeforeInput = (event: Event): void => {
+            const input = event as InputEvent;
+            const now = Date.now();
+
+            // 1. The other half of a keystroke the keydown listener already consumed.
             const consumed = consumedRef.current;
-            if (consumed === null) return;
-            if (Date.now() - consumed.at > CONSUMED_INPUT_WINDOW_MS) {
-                consumedRef.current = null;
+            if (consumed !== null) {
+                if (now - consumed.at > CONSUMED_INPUT_WINDOW_MS) consumedRef.current = null;
+                else if (input.data === consumed.data) {
+                    consumedRef.current = null;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    return;
+                }
+            }
+
+            // 2. A line break: the soft keyboard's Enter when no key event carried it.
+            if (LINE_BREAK_INPUT_TYPES.has(input.inputType)) {
+                // Cancelled either way. The engine ignores this input type, so letting it through
+                // sends nothing and only risks the textarea taking a newline of its own.
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                const seenAt = enterSeenRef.current;
+                if (seenAt !== null && now - seenAt <= CONSUMED_INPUT_WINDOW_MS) {
+                    // The keydown half of this same keystroke already went past; a second `\r` at
+                    // the PTY would be a second command.
+                    enterSeenRef.current = null;
+                    return;
+                }
+                const latch = stickyRef.current;
+                setLatch(NO_STICKY);
+                sendKeyRef.current({ key: 'Enter', code: 'Enter', ctrlKey: latch.ctrl, altKey: latch.alt });
                 return;
             }
-            if ((event as InputEvent).data !== consumed.data) return;
-            consumedRef.current = null;
+
+            // 3. A letter typed on the soft keyboard while a modifier is latched. This is the
+            //    whole of "Ctrl then c": the keydown that preceded it was keyCode 229 with an
+            //    empty `code` and `key` `'Unidentified'`, and the letter is here.
+            const latch = stickyRef.current;
+            if (!latch.ctrl && !latch.alt) return;
+            if (input.inputType !== 'insertText') return;
+            // A suggestion strip inserting a whole word, or a glyph no US key produces: there is
+            // no single key to put a modifier on, so the latch is released and the text is left
+            // to the engine, which inserts it itself.
+            const data = input.data;
+            if (data === null || data.length !== 1) {
+                setLatch(NO_STICKY);
+                return;
+            }
+            const character = characterKey(data);
+            if (character === null) {
+                setLatch(NO_STICKY);
+                return;
+            }
             event.preventDefault();
             event.stopImmediatePropagation();
+            setLatch(NO_STICKY);
+            sendKeyRef.current({
+                key: data,
+                code: character.code,
+                ctrlKey: latch.ctrl,
+                altKey: latch.alt,
+                shiftKey: character.shiftKey
+            });
         };
         root.addEventListener('beforeinput', onBeforeInput, true);
         return () => root.removeEventListener('beforeinput', onBeforeInput, true);
-    }, [captureRoot]);
+    }, [captureRoot, setLatch]);
 
     // A pane that loses its engine (or its bar) must not leave a latch behind for the next one.
     useEffect(() => () => setLatch(NO_STICKY), [setLatch]);

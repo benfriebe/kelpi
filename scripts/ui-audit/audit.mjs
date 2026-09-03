@@ -28892,11 +28892,18 @@ function buildFlows(ctx) {
          * workspace and no setting, leaves the shell it borrows back at a prompt, and clears the
          * emulation in a `finally`. The one thing it does leave behind is scrollback in a pane
          * that is about to be deleted by `mac-chrome` anyway.
+         *
+         * Since the owner's device round (2026-09-03) it also drives the two shapes a real
+         * Android soft keyboard sends and a physical keyboard never does - a keydown with an
+         * empty `code`, and a letter that arrives only as `Input.insertText`. Those are the two
+         * that failed on the phone while every key on the bar was byte-exact, so they are the
+         * half of this step that the unit suite cannot reach and a desktop keyboard cannot
+         * reproduce; see the block at the end of the run.
          */
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -29048,6 +29055,120 @@ function buildFlows(ctx) {
                         capture.includes('^C') ? '^C is on screen' : 'no ^C (ECHOCTL off?) - the prompt check above is the load-bearing one'
                     );
                     recorder.eyes('does the bar read as one row of keys above the keyboard, with Ctrl visibly latched and the prompt still legible?');
+
+                    /*
+                     * ── THE ANDROID SHAPES (owner device round 2, 2026-09-03) ──────────────
+                     *
+                     * Everything above types the way a PHYSICAL keyboard does: every keydown
+                     * carries a real `code`. The owner's phone does not. Chrome on Android hands
+                     * a Gboard-class keyboard's letter over as a placeholder keydown (keyCode
+                     * 229, `key` `'Unidentified'`, an EMPTY `code`) followed by the letter at
+                     * `beforeinput`, and its Enter as a keydown with `key` `'Enter'` and an empty
+                     * `code`. Measured at the PTY, that cost the phone its interrupt (a latched
+                     * Ctrl then `c` arrived as a plain `c`) and its Enter (nothing arrived at
+                     * all). CDP can raise both shapes exactly:
+                     *
+                     *   - `Input.dispatchKeyEvent` with `code: ''` is a keydown with no code,
+                     *     which is Enter's shape and the placeholder's;
+                     *   - `Input.insertText` is Chromium's own IME commit path, so it reaches the
+                     *     focused textarea as `beforeinput` / `insertText` with no key event of
+                     *     its own - which is exactly what a soft keyboard's letter is.
+                     *
+                     * What CDP cannot raise is the third shape, a `beforeinput` of
+                     * `insertLineBreak` or `insertParagraph`: no CDP command emits one (insertText
+                     * always reports `insertText`, and a keydown with text is consumed by the
+                     * engine's own keydown path before the editor sees it). That one is pinned in
+                     * jsdom in `KeyBar.test.tsx` instead, against the real engine.
+                     */
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+
+                    // 1. The soft keyboard's Enter. The command is typed but never submitted by a
+                    //    key that carries a `code`; only the empty-code Enter can run it.
+                    await view.type(`printf 'KB-%s\\n' $((6*8))`);
+                    await sleep(150);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'rawKeyDown',
+                        code: '',
+                        key: 'Enter',
+                        windowsVirtualKeyCode: 13,
+                        nativeVirtualKeyCode: 13,
+                        modifiers: 0
+                    });
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: '',
+                        key: 'Enter',
+                        windowsVirtualKeyCode: 13,
+                        nativeVirtualKeyCode: 13,
+                        modifiers: 0
+                    });
+                    await sleep(900);
+                    const afterEnter = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the soft keyboard’s Enter)', afterEnter.slice(-400));
+                    recorder.check(
+                        'a keydown with key Enter and NO code runs the command',
+                        afterEnter.includes('KB-48'),
+                        afterEnter.includes('KB-48') ? 'the shell evaluated $((6*8))' : 'no KB-48 - the empty-code Enter never reached the PTY'
+                    );
+
+                    // 2. The soft keyboard's letter under a latched Ctrl: the placeholder keydown
+                    //    the latch must NOT spend itself on, then the letter at `beforeinput`.
+                    await runInTerminal(view, 'cat', { settleMs: 700 });
+                    await view.type('ime-interrupt');
+                    await sleep(200);
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await sleep(200);
+                    const imeLatched = String(
+                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                    );
+                    recorder.check('Ctrl is latched again for the IME half', imeLatched === 'true', `aria-pressed=${imeLatched}`);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'rawKeyDown',
+                        code: '',
+                        key: 'Unidentified',
+                        windowsVirtualKeyCode: 229,
+                        nativeVirtualKeyCode: 229,
+                        modifiers: 0
+                    });
+                    await view.send('Input.insertText', { text: 'c' });
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: '',
+                        key: 'Unidentified',
+                        windowsVirtualKeyCode: 229,
+                        nativeVirtualKeyCode: 229,
+                        modifiers: 0
+                    });
+                    await sleep(800);
+                    const releasedAfterIme = String(
+                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                    );
+                    recorder.check(
+                        'the latch is spent by the letter, not by the placeholder keydown',
+                        releasedAfterIme === 'false',
+                        `aria-pressed=${releasedAfterIme}`
+                    );
+                    await runInTerminal(view, `printf 'KB-%s\\n' $((7*8))`, { settleMs: 900 });
+                    const afterIme = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the IME letter under a latched Ctrl)', afterIme.slice(-500));
+                    recorder.check(
+                        'a letter delivered by insertText under a latched Ctrl is the interrupt',
+                        afterIme.includes('KB-56'),
+                        afterIme.includes('KB-56') ? 'the shell evaluated $((7*8))' : 'no KB-56 - cat is probably still running, so the letter arrived plain'
+                    );
+                    recorder.check(
+                        'the letter was not ALSO inserted',
+                        !afterIme.includes('ime-interruptc'),
+                        afterIme.includes('ime-interruptc') ? 'the c reached the PTY as text as well as an interrupt' : 'no stray c after the marker'
+                    );
                 } finally {
                     await clearPhoneEmulation(view);
                 }

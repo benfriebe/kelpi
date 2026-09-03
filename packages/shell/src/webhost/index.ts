@@ -46,7 +46,7 @@ import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
-import { chordCommand } from './keys.js';
+import { chordCommand, setForwardedKeybindLines } from './keys.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
@@ -495,6 +495,17 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             return dispatcher.call(verb, args);
         },
         notify,
+        /**
+         * Issue #33: the chord relay's claimed set follows the user's `keybind` lines.
+         *
+         * `./keys.ts` holds the set as module state and starts it at the shipped defaults, so
+         * this is a refresh rather than an initialisation — a view created before the handshake
+         * lands still forwards the standard chords, and a rebind applied while the app is
+         * running reaches the relay on the `settings-changed` that carries it.
+         */
+        onKeybindLines: (lines) => {
+            setForwardedKeybindLines(lines);
+        },
         onRegistered: (hostID, superseded) => {
             log(`web host ready (${hostID}${superseded ? ', took over' : ''}) — waiting for pane-open replay`);
         },

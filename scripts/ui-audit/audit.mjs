@@ -1303,6 +1303,77 @@ async function clearPhoneEmulation(page) {
 }
 
 /**
+ * The window a phone step was handed, in the terms the next step will read it in.
+ *
+ * `outerWidth`/`outerHeight` are in the list on purpose and they are what caught the leak this
+ * function exists for: `Browser.getWindowBounds` is not implemented by this Electron's CDP
+ * ("'Browser.getWindowBounds' wasn't found", measured 2026-09-04), so the renderer's own view of
+ * the window frame is the only reading available, and a window that grew to the screen shows up
+ * there first. `visualViewport` is here because C2's keyboard-inset step shadows its `height` on
+ * the live instance, and a shadow left behind would make every later measurement lie.
+ */
+async function readPhoneFrame(page) {
+    return JSON.parse(
+        String(
+            await page.eval(
+                `JSON.stringify({
+                    inner: window.innerWidth,
+                    innerH: window.innerHeight,
+                    outer: window.outerWidth,
+                    outerH: window.outerHeight,
+                    dpr: window.devicePixelRatio,
+                    visual: window.visualViewport ? Math.round(window.visualViewport.width) : null,
+                    visualH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                    fields: document.querySelectorAll('[data-terminal-paste-field]').length,
+                    pills: document.querySelectorAll('[data-terminal-copy-pill]').length
+                })`
+            )
+        )
+    );
+}
+
+/**
+ * THE HAND-BACK, and it belongs to the step that emulated rather than to the step after it.
+ *
+ * Measured 2026-09-04: `phone-paste` was leaving the window at 2056x1329, the SCREEN's size,
+ * and the next step to read an absolute coordinate was `mac-chrome`, which read the inspector
+ * panel at x 1776 instead of 1000 and stayed green only because its own assertions are relative.
+ * A step that changes the window and hands it on broken should fail itself, so every phone step
+ * ends with this: the frame it was handed, the form factor it was handed, and none of its own
+ * surfaces left on screen.
+ *
+ * `visualViewport` is compared to `innerWidth` rather than to the handed-in number for width
+ * only, because a scrollbar can legitimately differ by a few px between reads; a shadow left on
+ * the instance shows up as a large mismatch, which is what this is looking for.
+ */
+async function checkPhoneHandback(page, recorder, handedIn) {
+    const after = await readPhoneFrame(page);
+    recorder.note(`handed in ${JSON.stringify(handedIn)}; handing back ${JSON.stringify(after)}`);
+    const sameFrame =
+        after.inner === handedIn.inner &&
+        after.innerH === handedIn.innerH &&
+        after.outer === handedIn.outer &&
+        after.outerH === handedIn.outerH &&
+        after.dpr === handedIn.dpr;
+    const noShadow =
+        after.visual !== null &&
+        Math.abs(Number(after.visual) - Number(after.inner)) <= 20 &&
+        after.visualH !== null &&
+        Math.abs(Number(after.visualH) - Number(after.innerH)) <= 20;
+    recorder.check(
+        'the window the next step inherits is the one this step was handed',
+        sameFrame && noShadow && after.coarse === false && after.formFactor === 'desktop' && after.bars === 0 && after.fields === 0 && after.pills === 0,
+        `${String(after.inner)}x${String(after.innerH)} inner (was ${String(handedIn.inner)}x${String(handedIn.innerH)}), ` +
+            `${String(after.outer)}x${String(after.outerH)} outer (was ${String(handedIn.outer)}x${String(handedIn.outerH)}), ` +
+            `@${String(after.dpr)}x, visual ${String(after.visual)}, coarse=${String(after.coarse)}, ` +
+            `form=${after.formFactor}, ${String(after.bars)} bars, ${String(after.fields)} fields, ${String(after.pills)} pills`
+    );
+}
+
+/**
  * The trigger the LIVE binding map holds for an action, read out of the Help overlay.
  *
  * Earlier steps rebind keys through Settings (run-H had `split_right` on ⌃⌥T by the time the
@@ -28903,7 +28974,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard key is a TOGGLE and the bar works with the keyboard down: tapping it drops the caret off the engine and the key reads Show, Esc and an arrow tapped in that state still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -28918,6 +28989,8 @@ function buildFlows(ctx) {
                 // to mount at all, and a clear screen makes the capture below readable.
                 await focusPaneBody(view, paneID);
                 await runInTerminal(view, 'clear', { settleMs: 400 });
+                // The window this step is handed, for the hand-back in the `finally`.
+                const handedIn = await readPhoneFrame(view);
 
                 try {
                     await emulatePhone(view);
@@ -29169,26 +29242,426 @@ function buildFlows(ctx) {
                         !afterIme.includes('ime-interruptc'),
                         afterIme.includes('ime-interruptc') ? 'the c reached the PTY as text as well as an interrupt' : 'no stray c after the marker'
                     );
+
+                    /*
+                     * ── THE BAR WITH THE KEYBOARD DOWN (owner device round 3, 2026-09-04) ──
+                     *
+                     * Round 3 found every tap raising the software keyboard, because the bar used
+                     * to hand the caret back to the engine's textarea after a tap and a `focus()`
+                     * on an editable IS how Android raises the keyboard. The bar no longer
+                     * focuses anything except its own Show key, so the case to drive here is the
+                     * one that was impossible before: the caret OFF the terminal, keys still
+                     * reaching the PTY.
+                     *
+                     * CDP cannot show or hide an Android software keyboard, and this is a Mac
+                     * running Electron in any case, so FOCUS IS THE PROXY: `document.activeElement`
+                     * being the engine's textarea is exactly the condition that makes a phone put
+                     * the keyboard up, and it is what the toggle acts on. The assertions below say
+                     * so where they are read.
+                     */
+                    const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+                    // A reader that echoes control bytes, started while the caret is still there.
+                    await runInTerminal(view, 'cat', { settleMs: 700 });
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${keyboardKey}');
+                            if (key !== null) key.scrollIntoView({ inline: 'end', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(keyboardKey);
+                    await sleep(250);
+                    const hidden = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
+                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`after tapping the keyboard key: ${JSON.stringify(hidden)}`);
+                    recorder.check(
+                        'the keyboard key drops the caret off the engine (the proxy for the keyboard going down; CDP cannot show an Android keyboard)',
+                        hidden.inHost === false,
+                        `activeElement=${hidden.caret} inside the terminal host=${String(hidden.inHost)}`
+                    );
+                    recorder.check(
+                        'and it turns into Show, because the same key is the way back',
+                        hidden.label === 'Show' && hidden.pressed === 'false',
+                        `label=${hidden.label} aria-pressed=${hidden.pressed}`
+                    );
+
+                    // …and NOW the keys, with the caret nowhere near the terminal.
+                    for (const id of ['esc', 'up']) {
+                        await view.eval(
+                            `(() => {
+                                const key = document.querySelector('${body} [data-terminal-key="${id}"]');
+                                if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                                return true;
+                            })()`
+                        );
+                        await sleep(120);
+                        await view.tap(`${body} [data-terminal-key="${id}"]`);
+                        await sleep(200);
+                    }
+                    await sleep(400);
+                    const blurredCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (keys tapped with the caret off the engine)', blurredCapture.slice(-400));
+                    /*
+                     * The tty echoes what it received, control bytes as `^X`: Esc is `^[` and the
+                     * arrow is `^[[A`, so `^[^[[A` on screen is both keys, in order, at the PTY.
+                     */
+                    recorder.check(
+                        'keys tapped with the caret off the engine still reach the PTY',
+                        blurredCapture.includes('^[^[[A'),
+                        blurredCapture.includes('^[^[[A')
+                            ? 'the tty echoed ^[ then ^[[A'
+                            : 'no ^[^[[A in the capture - the keys did not arrive with the caret away'
+                    );
+                    const stillBlurred = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false,
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'THE BAR NEVER FOCUSES ANYTHING: tapping keys did not put the caret back (which is what raised the keyboard in round 3)',
+                        stillBlurred.inHost === false && stillBlurred.label === 'Show',
+                        `activeElement=${stillBlurred.caret} inside the host=${String(stillBlurred.inHost)} key=${stillBlurred.label}`
+                    );
+
+                    // The way back, which is the one focus the bar may cause.
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${keyboardKey}');
+                            if (key !== null) key.scrollIntoView({ inline: 'end', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(keyboardKey);
+                    await sleep(250);
+                    const shown = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
+                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'tapping Show puts the caret back on the engine (the proxy for the keyboard coming up)',
+                        shown.caret === 'textarea' && shown.inHost === true && shown.label === 'Hide',
+                        `activeElement=${shown.caret} inside the host=${String(shown.inHost)} key=${shown.label}`
+                    );
+
+                    // Leave the pane at a prompt: Ctrl from the bar, `c` from the keyboard, which
+                    // also re-proves the latch survives the toggle.
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await sleep(200);
+                    await view.type('c');
+                    await sleep(700);
+                    await runInTerminal(view, `printf 'KB-%s\\n' $((8*8))`, { settleMs: 900 });
+                    const afterToggle = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.check(
+                        'the pane is back at a prompt with the keyboard back up',
+                        afterToggle.includes('KB-64'),
+                        afterToggle.includes('KB-64') ? 'the shell evaluated $((8*8))' : 'no KB-64 - cat is probably still running'
+                    );
                 } finally {
                     await clearPhoneEmulation(view);
-                }
 
-                // AND NOT ON DESKTOP: the same pane, the same window, no bar.
-                const afterClear = JSON.parse(
+                    // AND NOT ON DESKTOP: the same pane, the same window, no bar.
+                    const afterClear = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'the key bar is gone the moment the window is a desktop again',
+                        afterClear.bars === 0 && afterClear.formFactor === 'desktop',
+                        `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
+                    );
+                    // …and the window itself, which is what the step after this one inherits.
+                    // A phone step that leaves the frame changed must fail HERE, not three steps
+                    // later in whichever step is the first to read an absolute coordinate.
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
+            }
+        },
+
+        /**
+         * C4 - Paste from the key bar (docs/MOBILE-PLAN.md §4).
+         *
+         * The claim being measured is a byte one: the bar's Paste key produces exactly what ⌘V
+         * produces, envelope and all, because it goes through the ENGINE's own paste listener
+         * rather than writing bytes of its own. `terminal-drop-and-paste` owns that claim for the
+         * desktop chord; this owns it for a thumb.
+         *
+         * Both clipboard paths are covered, because on a phone both are real: a browser that lets
+         * `navigator.clipboard.readText()` run inside the tap pastes directly, and one that
+         * refuses (an insecure context, a dismissed iOS confirmation, a denied permission) gets
+         * the fallback field. The step takes whichever this Chromium gives it, says which in the
+         * report, and asserts the same bytes either way.
+         *
+         * Phone-lane clean: it borrows the shell pane already on screen, leaves it at a prompt
+         * with DEC 2004 back off, provisions nothing, moves no setting, and clears the emulation
+         * in a `finally`. It deliberately does NOT drive the OSC 52 Copy pill: that needs
+         * `clipboard-write = true`, `terminal-osc52` leaves the gate shut, and a phone step that
+         * moved a setting would belong in the spine. The pill is unit-tested and is on the owner's
+         * device checklist.
+         */
+        {
+            id: 'phone-paste',
+            expect:
+                'Under a phone viewport, tapping the key bar\'s Paste puts the clipboard into the terminal through the engine\'s own paste path: with DEC 2004 set the PTY receives `ESC [ 200 ~ <text> ESC [ 201 ~`, and with it cleared the same tap sends the text bare. When the browser refuses a clipboard read inside the tap, a focused paste field appears above the bar instead and pastes whatever lands in it.',
+            needsEyes: true,
+            async run(recorder) {
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-paste: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const PAYLOAD = 'KBPASTE1';
+
+                /**
+                 * Re-seeded before every tap, and that is not belt-and-braces: ghostty-web copies
+                 * the selection on mouse-up, so the click that FOCUSES a pane can replace the
+                 * system clipboard with whatever character was under the pointer.
+                 * `terminal-drop-and-paste` learned that the hard way and its note is worth
+                 * repeating here, because this step focuses the pane too.
+                 */
+                const seedClipboard = async () =>
                     String(
                         await view.eval(
-                            `JSON.stringify({
-                                bars: document.querySelectorAll('[data-terminal-key-bar]').length,
-                                formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
-                            })`
+                            `navigator.clipboard.writeText(${JSON.stringify(PAYLOAD)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
                         )
-                    )
-                );
-                recorder.check(
-                    'the key bar is gone the moment the window is a desktop again',
-                    afterClear.bars === 0 && afterClear.formFactor === 'desktop',
-                    `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
-                );
+                    );
+
+                /**
+                 * Tap Paste, and drive the fallback field with a real paste when it appears.
+                 * `shotLabel` photographs the field WHILE it is up, which is the only moment it
+                 * exists - it closes itself the instant it has pasted.
+                 */
+                const tapPaste = async (shotLabel = null) => {
+                    await seedClipboard();
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${body} [data-terminal-key="paste"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(150);
+                    await view.tap(`${body} [data-terminal-key="paste"]`);
+                    await sleep(400);
+                    const field = await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') !== null`);
+                    if (field !== true) return 'the clipboard read inside the tap';
+                    if (shotLabel !== null) await recorder.shot(view, shotLabel);
+                    // The fallback: the field is up and focused, so the platform's own paste is
+                    // what fills it - the same ⌘V + editing command a person would use.
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyDown',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta,
+                        commands: ['paste']
+                    });
+                    await sleep(40);
+                    await view.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta
+                    });
+                    await sleep(400);
+                    return 'the fallback paste field';
+                };
+
+                await focusPaneBody(view, paneID);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                // The window this step is handed, read before it changes anything, so the
+                // hand-back at the bottom compares against a fact rather than an expectation.
+                const handedIn = await readPhoneFrame(view);
+
+                let took = '(not reached)';
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('${body} [data-terminal-key="paste"]') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    recorder.check(
+                        'the Paste key is live now that C4 has landed',
+                        (await view.eval(`document.querySelector('${body} [data-terminal-key="paste"]').disabled === false`)) === true,
+                        'not disabled'
+                    );
+
+                    // Bracketed paste ON, then a reader that prints what the PTY received verbatim.
+                    await runInTerminal(view, `printf '\\033[?2004h'`, { settleMs: 400 });
+                    await runInTerminal(view, 'cat -v', { settleMs: 700 });
+                    took = await tapPaste();
+                    recorder.note(`the paste went through ${took}`);
+                    await view.key('Enter');
+                    await sleep(700);
+                    // The pane is ~170px wide under emulation, so `cat -v` wraps its echo; the
+                    // envelope is asserted on the JOINED capture, exactly as `terminal-long-line`
+                    // reads a wrapped row.
+                    const bracketedRaw = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const bracketed = bracketedRaw.replace(/\n/g, '');
+                    recorder.block('after tapping Paste with DEC 2004 set (cat -v)', bracketedRaw.slice(-400));
+                    recorder.check(
+                        `the tap put the clipboard into the terminal, via ${took}`,
+                        bracketed.includes(PAYLOAD),
+                        bracketed.includes(PAYLOAD) ? `${PAYLOAD} is at the PTY` : 'the payload never arrived'
+                    );
+                    recorder.check(
+                        'and it is WRAPPED, because the ENGINE decided that, not the key bar',
+                        bracketed.includes(`^[[200~${PAYLOAD}^[[201~`),
+                        JSON.stringify(bracketed.slice(Math.max(0, bracketed.indexOf('^[[200~') - 10), bracketed.indexOf('^[[201~') + 10))
+                    );
+                    await recorder.shot(view, 'bracketed');
+
+                    // …and the contrast: 2004 off, the same tap sends the text bare.
+                    await view.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                    await sleep(500);
+                    await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+                    await runInTerminal(view, 'cat -v', { settleMs: 700 });
+                    await tapPaste();
+                    await view.key('Enter');
+                    await sleep(700);
+                    const bare = (await cli.ok(['pane', 'capture', '--target', paneID])).replace(/\n/g, '');
+                    recorder.check(
+                        'with bracketed paste OFF the same tap sends the text with no envelope',
+                        bare.includes(PAYLOAD) && !bare.includes('^[[200~'),
+                        `text=${String(bare.includes(PAYLOAD))} envelope=${String(bare.includes('^[[200~'))}`
+                    );
+
+                    /*
+                     * …AND THE FALLBACK, forced.
+                     *
+                     * This Chromium lets `readText()` run inside the tap, so the path a real phone
+                     * hits most often - an insecure context, a dismissed iOS Paste confirmation, a
+                     * denied permission - would otherwise never be measured live. Making `readText`
+                     * reject is the smallest honest way to reach it: everything downstream of the
+                     * refusal is the product's own code, and the field is then filled by the
+                     * platform's real paste command, not by script. Restored immediately after.
+                     */
+                    await view.eval(
+                        `(() => {
+                            window.__kelpiRealReadText = navigator.clipboard.readText.bind(navigator.clipboard);
+                            navigator.clipboard.readText = () => Promise.reject(new Error('NotAllowedError'));
+                            return true;
+                        })()`
+                    );
+                    let fallbackTook = '(not reached)';
+                    try {
+                        fallbackTook = await tapPaste('fallback-field');
+                        recorder.check(
+                            'a refused clipboard read opens the fallback paste field instead',
+                            fallbackTook === 'the fallback paste field',
+                            `the tap went through ${fallbackTook}`
+                        );
+                        await view.key('Enter');
+                        await sleep(700);
+                        const viaField = (await cli.ok(['pane', 'capture', '--target', paneID])).replace(/\n/g, '');
+                        recorder.check(
+                            'the field pastes what lands in it, into the terminal',
+                            viaField.includes(PAYLOAD),
+                            viaField.includes(PAYLOAD) ? `${PAYLOAD} reached the PTY through the field` : 'the payload never arrived'
+                        );
+                        recorder.check(
+                            'and the field closes itself once it has pasted',
+                            (await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') === null`)) === true,
+                            'no field left on screen'
+                        );
+                    } finally {
+                        await view.eval(
+                            `(() => {
+                                navigator.clipboard.readText = window.__kelpiRealReadText;
+                                delete window.__kelpiRealReadText;
+                                return true;
+                            })()`
+                        );
+                    }
+                    recorder.eyes('is the Paste key legible at the bar\'s scroll position, and does the fallback field read as a field to paste into rather than as an error?');
+                } finally {
+                    // Leave the pane the way it was found: no `cat -v`, no DEC 2004, a prompt.
+                    await view.key('KeyD', { modifiers: MOD.ctrl, key: 'd' }).catch(() => {});
+                    await sleep(400);
+                    await clearPhoneEmulation(view);
+
+                    /*
+                     * FOCUS THE PANE BEFORE TYPING INTO IT, and this line is the whole fix for a
+                     * leak measured on 2026-09-04.
+                     *
+                     * The cleanup below types two commands. Since the key bar stopped restoring
+                     * the caret (device round 3 - a `focus()` back onto the engine's textarea is
+                     * how Android raises the software keyboard), the caret after a tapped Paste is
+                     * on the button, and when the bar unmounts with the emulation the caret falls
+                     * to `document.body`. Typing there is not typing into a terminal: it is typing
+                     * into the APP, where a bare keystroke is a binding or a menu accelerator.
+                     * Probed character by character, `printf` got as far as its `f` and the window
+                     * went from 1280 to 2056 wide, which is this display's full screen width, and
+                     * `mac-chrome` then read the inspector panel at x 1776 instead of 1000. No
+                     * client binding matches a bare `f`, so the actor is below the client; the
+                     * lesson is the general one, which every other terminal step already follows:
+                     * a step that types into a pane focuses the pane first.
+                     */
+                    await focusPaneBody(view, paneID).catch(() => {});
+                    await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+                    const restored = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                    fields: document.querySelectorAll('[data-terminal-paste-field]').length,
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'and NOT on desktop: no key bar, no paste field, back to a desktop window',
+                        restored.bars === 0 && restored.fields === 0 && restored.formFactor === 'desktop',
+                        `${String(restored.bars)} bars, ${String(restored.fields)} fields, data-form-factor=${restored.formFactor}`
+                    );
+                    // …and the last thing the step does, so it covers the cleanup above too.
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
             }
         },
 

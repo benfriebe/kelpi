@@ -69,6 +69,52 @@ export function parseClipboardWrite(message: Record<string, unknown>): Clipboard
     };
 }
 
+// ── the offer (C4, docs/MOBILE-PLAN.md §4) ──────────────────────────────────────────
+
+/**
+ * A copy a pane made, offered to anything on the page that can put it on the clipboard with a
+ * user gesture behind it.
+ *
+ * The write above is best-effort and on a PHONE it is mostly effort: every mobile browser gates
+ * `navigator.clipboard.writeText` on transient activation, and a pane's own output is by
+ * definition not a tap. So the phone key bar (C4) shows a Copy pill instead, and the pill's tap
+ * IS the gesture. This registry is the seam between the two: the handler knows an OSC 52 write
+ * arrived and for which pane, and the pane knows how to show a pill.
+ *
+ * **Owner-directed divergence from the shipped Swift app**: a Mac app writes the pasteboard
+ * directly and needs no pill. See `chrome/form-factor.ts` for the program-wide note.
+ *
+ * A module-level registry rather than an injected seam, deliberately and in company: the handler
+ * is built once inside `connectStore` and the panes that want the offer are mounted far away
+ * from it, exactly as `app/pane-focus.ts` holds one caret owner for the whole window and
+ * `terminal/fonts.ts` holds one font-ready signal. Listeners are per-page, so a test that
+ * subscribes must unsubscribe (every caller returns the unsubscribe and `TerminalPane` calls it
+ * on unmount).
+ */
+export interface ClipboardOffer {
+    readonly paneID: string;
+    readonly text: string;
+    /** The DECODED byte count the daemon measured, for the pill's label. */
+    readonly bytes: number;
+}
+
+const offerListeners = new Set<(offer: ClipboardOffer) => void>();
+
+/** Hear every OSC 52 copy, whatever the page then does with it. Returns an unsubscribe. */
+export function onClipboardOffer(listener: (offer: ClipboardOffer) => void): () => void {
+    offerListeners.add(listener);
+    return () => offerListeners.delete(listener);
+}
+
+/** Test seam: a page that never mounted a handler still starts from nothing. */
+export function resetClipboardOffersForTests(): void {
+    offerListeners.clear();
+}
+
+function publishOffer(offer: ClipboardOffer): void {
+    for (const listener of [...offerListeners]) listener(offer);
+}
+
 /** What happened, for the log line and for the tests. */
 export type ClipboardWriteOutcome =
     /** This page is a shell window's; the main process owns the write. */
@@ -111,6 +157,17 @@ export function createClipboardWriteHandler(
         if (request === null) return null;
         const short = request.paneID.slice(0, 8);
         const size = `${String(request.bytes)} bytes`;
+
+        /*
+         * C4 - offer it BEFORE any of the branches below, and regardless of which one runs.
+         *
+         * Not conditional on the write failing, for two reasons. The failure is asynchronous, so
+         * a pill that waited for it would appear a beat after the copy that caused it; and a
+         * silent success is indistinguishable from a silent failure to the person holding the
+         * phone, which is the whole problem a pill solves. Nothing renders unless a surface asked
+         * for the offer, and the only one that does is the phone key bar.
+         */
+        publishOffer(request);
 
         if (options.shellWindowID !== null) {
             // The shell's own status socket carries the same broadcast, and Electron's

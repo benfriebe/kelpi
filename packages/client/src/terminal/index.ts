@@ -36,13 +36,16 @@ export {
 // C1 (docs/MOBILE-PLAN.md §4): the phone key bar. Mounted by `TerminalPane` and by nothing else;
 // exported so the sibling phone lanes can lay out against `KEY_BAR_HEIGHT_PX` without guessing it.
 export {
+    COPY_PILL_ATTR,
+    COPY_PILL_TIMEOUT_MS,
     KEY_ATTR,
     KEY_BAR_ATTR,
     KEY_BAR_HEIGHT_PX,
     KEY_BAR_KEYS,
     KEY_BAR_KEY_SIZE_PX,
     KeyBar,
-    PASTE_PENDING_TITLE,
+    PASTE_FIELD_ATTR,
+    dispatchPaste,
     withSticky,
     type KeyBarKey,
     type KeyBarProps,

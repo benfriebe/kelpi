@@ -1,5 +1,5 @@
 /**
- * Issue #34 — a web pane's page comes back after the connection that placed it went away.
+ * Issue #34 - a web pane's page comes back after the connection that placed it went away.
  *
  * The defect is an assembly one: the reporter, the connection and the daemon each behave
  * correctly on their own terms, and the dead state exists only where the three meet. The
@@ -8,7 +8,7 @@
  * produces nothing. The view then sits in the shell's off-screen holder for ever.
  *
  * So this test drives the wire (drop the socket, hand back a fresh handshake) and reads the
- * wire (did a placement go out again) rather than reaching into the reporter — the reporter's
+ * wire (did a placement go out again) rather than reaching into the reporter - the reporter's
  * own rules are pinned in `webpane/geometry.test.ts`.
  */
 
@@ -57,7 +57,7 @@ interface Harness {
     settle(): void;
     /** Every geometry report this socket carried, oldest first. */
     reports(socket?: FakeWebSocket): Record<string, unknown>[];
-    /** Just the placements — `visible:true`, the ones that put a view on screen. */
+    /** Just the placements - `visible:true`, the ones that put a view on screen. */
     placements(socket?: FakeWebSocket): Record<string, unknown>[];
     /** Drop the socket the way a dead daemon does, and let the backoff redial. */
     drop(): Promise<FakeWebSocket>;
@@ -89,7 +89,7 @@ function setup(): Harness {
     /**
      * The issue is about a drop while the app is IDLE, and an idle client has no command in
      * flight. A command that is still outstanding when the socket goes rejects, and a rejected
-     * command raises a toast — which registers as a modal surface (H1) and legitimately parks
+     * command raises a toast - which registers as a modal surface (H1) and legitimately parks
      * every web pane's view for six seconds. That park is correct behaviour and would mask the
      * defect entirely, so the harness settles the handshake's commands first.
      */
@@ -182,8 +182,8 @@ describe('a web pane’s view survives the connection that placed it (issue #34)
         const next = await h.drop();
 
         // The daemon parked every view this client had placed when the old socket closed. The
-        // layout has not moved, so before issue #34 the re-render produced a deduped report —
-        // i.e. nothing — and the page stayed in the holder for ever.
+        // layout has not moved, so before issue #34 the re-render produced a deduped report -
+        // i.e. nothing - and the page stayed in the holder for ever.
         await waitFor(() => {
             expect(h.placements(next)).not.toHaveLength(0);
         });

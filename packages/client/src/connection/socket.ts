@@ -113,11 +113,11 @@ export interface AttentionMessage {
 }
 
 /**
- * "Say where your web panes are again" — the daemon, after a web-pane host registered
+ * "Say where your web panes are again" - the daemon, after a web-pane host registered
  * (`daemon/src/ws/sync.ts` `WEB_GEOMETRY_RESYNC_MESSAGE`).
  *
  * Issue #34's second path. A fresh host starts with no placements and the daemon stores none
- * to give it, so the placements can only come from the clients — and a client cannot see a
+ * to give it, so the placements can only come from the clients - and a client cannot see a
  * host come and go, which is why it has to be told. `windowID` is the host's own window when
  * it declared one, scoped like `reveal-pane`: the check is the CLIENT's, since it is the party
  * that knows which window it is running in.

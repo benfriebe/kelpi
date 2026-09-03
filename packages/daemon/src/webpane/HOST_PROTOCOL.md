@@ -147,8 +147,8 @@ Rules:
   content bounds — a pane can be scrolled or dragged partly off-screen, and a view must never be
   placed outside the window it lives in.
 - **Reports are facts about *now***, never stored: the daemon keeps no geometry, so a host that
-  registers gets none of it — it gets the placements back because the daemon **asks the clients
-  for them** (§3.5.1). Panes that never get one — every pane while no client is attached — keep
+  registers gets none of it - it gets the placements back because the daemon **asks the clients
+  for them** (§3.5.1). Panes that never get one (every pane while no client is attached) keep
   working exactly as before, off-screen: this whole section is additive to the automation
   surface.
 - **A client that vanishes releases what it placed.** A closed tab, a reload or a crash never
@@ -166,7 +166,7 @@ The rule above used to end differently: *"a host that reconnects gets nothing un
 next report (which its own re-render produces)"*. That parenthetical was wrong, and the bug it
 produced was a web pane with an empty hole where its page should be, the pane's chrome still
 drawn around it, that no reload, navigation, tab switch, workspace switch or window resize could
-recover — only closing the pane and opening a new one.
+recover - only closing the pane and opening a new one.
 
 A re-render does not produce a report. The client dedupes identical reports
 (`client/src/webpane/geometry.ts`, Rule 1) because the grid re-renders every pane on any layout
@@ -190,7 +190,7 @@ the last report of every pane it currently has **placed**, as an ordinary `web-g
 Panes it has parked say nothing, so a view that was meant to stay hidden stays hidden. Nothing
 is stored on this side: the daemon still owns no geometry, it just knows when to ask.
 
-`windowID` is scoped the way `reveal-pane`'s is — the check belongs to the client, since it is
+`windowID` is scoped the way `reveal-pane`'s is - the check belongs to the client, since it is
 the party that knows which window it renders into. A host is free to ignore the whole mechanism:
 what reaches it is `pane-geometry`, exactly as before.
 

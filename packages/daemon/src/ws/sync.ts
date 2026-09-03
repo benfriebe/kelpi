@@ -1039,15 +1039,15 @@ export const WEB_GEOMETRY_REPORT_MESSAGE = 'web-geometry-report';
 /**
  * Daemon → client: "say where your web panes are again" (issue #34).
  *
- * Sent when a web-pane host registers. The daemon keeps no geometry — that is the property
- * `webpane/HOST_PROTOCOL.md` §3.5 protects — so a fresh host has no placements and there is
+ * Sent when a web-pane host registers. The daemon keeps no geometry - that is the property
+ * `webpane/HOST_PROTOCOL.md` §3.5 protects - so a fresh host has no placements and there is
  * nothing here to hand it. Only the clients know where the holes are, and a client cannot see
  * a host come or go, so it has to be asked. Without this, every report made while the host
  * slot was empty was simply dropped (`webpane/service.ts` `notifyGeometry`) and the pages
  * stayed in the holder for ever: an empty hole with the pane's chrome still drawn round it.
  *
  * `windowID` carries the host's own window when it declared one, and the scoping is the
- * CLIENT's check for the same reason `reveal-pane`'s is — it is the party that knows which
+ * CLIENT's check for the same reason `reveal-pane`'s is - it is the party that knows which
  * window it renders into.
  */
 export const WEB_GEOMETRY_RESYNC_MESSAGE = 'web-geometry-resync';
@@ -1302,7 +1302,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     };
     /**
      * Issue #34: ask every client to re-state its web-pane placements, because the host that
-     * held them is new and holds nothing. Unfiltered, like `revealPane` — the window check
+     * held them is new and holds nothing. Unfiltered, like `revealPane` - the window check
      * belongs to the client, and a client with nothing placed answers with nothing.
      */
     const broadcastGeometryResync = (windowID: string | null): void => {
@@ -1325,7 +1325,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
      *
      * The case this exists for is a client that reconnected: `resync()` closes and redials at
      * once, so the new session's first reports can in principle reach the daemon before the
-     * old socket's close does — and the old session's release would then park exactly what the
+     * old socket's close does - and the old session's release would then park exactly what the
      * new one had just placed, which is the dead state of issue #34 by another route.
      */
     const panePlacedElsewhere = (paneID: string, windowID: string | null, except: SessionImpl): boolean => {
@@ -1648,7 +1648,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 return;
             }
             // Issue #34: a fresh host has blank pages AND no placements. `registerHost` replays
-            // the panes; only the clients can replay where they go, so they are asked here —
+            // the panes; only the clients can replay where they go, so they are asked here -
             // after the registration, so the `pane-open` frames are already on the host's wire
             // ahead of the geometry that follows them.
             broadcastGeometryResync(windowID ?? null);

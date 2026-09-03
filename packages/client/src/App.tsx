@@ -707,14 +707,14 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => () => webGeometry.dispose(), [webGeometry]);
 
     /**
-     * Issue #34 — re-state the placements whenever the party holding them has forgotten them.
+     * Issue #34 - re-state the placements whenever the party holding them has forgotten them.
      *
      * The reporter's dedupe is a claim about the far end ("the host already has this rect"),
      * and two events falsify it without changing anything this document can see:
      *
      *   - **this socket came back.** The daemon parks every view a closing connection had
      *     placed (`ws/sync.ts` `releaseGeometry`) and expects the NEXT client's first report to
-     *     re-place them — but a reconnect is not a next client. The page did not reload, so the
+     *     re-place them - but a reconnect is not a next client. The page did not reload, so the
      *     reporter is the same object with the same cache, and a still layout says nothing.
      *   - **a host registered.** Reports arriving while no host is attached are dropped
      *     outright (`webpane/service.ts` `notifyGeometry`), so a `kelpid` restart or the shell
@@ -727,7 +727,7 @@ function Shell(props: AppProps): ReactElement {
      * `welcome` rather than `status` because it is the frame that proves a daemon is on the
      * other end; the first `welcome` of a page has nothing to re-state, so subscribing after
      * the handshake costs nothing. `reassert` re-sends only what this client believes is
-     * PLACED, so a pane parked on purpose — a hidden workspace, a menu over it — stays parked.
+     * PLACED, so a pane parked on purpose (a hidden workspace, a menu over it) stays parked.
      */
     useEffect(() => {
         const offWelcome = runtime.connection.on('welcome', () => webGeometry.reassert());

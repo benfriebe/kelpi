@@ -22,7 +22,7 @@
  * The scheduler is injectable so tests drive it without timers, and `dispose()` exists because a
  * client that navigates away must not leave a pending send holding a socket.
  *
- * Rule 1 is a claim about the FAR END — "the host already has this placement" — so it is only
+ * Rule 1 is a claim about the FAR END ("the host already has this placement"), so it is only
  * true for as long as the chain that carries it stays up. Issue #34: it does not. The daemon
  * parks every view a closing connection had placed (`daemon/src/ws/sync.ts` `releaseGeometry`)
  * and drops reports outright while no host is registered
@@ -172,7 +172,7 @@ export function createGeometryReporter(options: GeometryReporterOptions): Geomet
          * Why this re-SENDS rather than just clearing `sent` and letting the next render
          * report for real: nothing guarantees a next render. `WebPane` is `memo`'d and its
          * publish is a layout effect with no dependency list, so "after every render" is the
-         * only change signal it has — and a reconnect with a still layout may produce no
+         * only change signal it has - and a reconnect with a still layout may produce no
          * render of that pane at all. Re-arming the cache would rest on exactly the assumption
          * that produced issue #34 in the first place ("its own re-render produces one").
          * Re-sending needs nothing from React, and lands in one frame rather than at the next
@@ -180,7 +180,7 @@ export function createGeometryReporter(options: GeometryReporterOptions): Geomet
          *
          * Only `visible` placements are re-stated, and that is the whole safety argument: a
          * pane parked on purpose either has no entry (`hide()` deletes it) or a `visible:false`
-         * one, and neither is re-sent — so this can never turn a deliberate hide back into a
+         * one, and neither is re-sent - so this can never turn a deliberate hide back into a
          * view on screen. A pending trailing send is left alone: it carries a NEWER position
          * and lands a few milliseconds later, on top of this.
          */

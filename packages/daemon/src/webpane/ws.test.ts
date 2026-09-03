@@ -467,7 +467,7 @@ describe('geometry reports → pane-geometry notifies', () => {
 
     /*
      * Issue #34's second path. The daemon stores no geometry, so a host that registers gets
-     * none with its `pane-open` replay — and every report made while the slot was empty was
+     * none with its `pane-open` replay - and every report made while the slot was empty was
      * dropped. The clients are the only party that knows where the holes are, so they are
      * asked; without the ask, a `kelpid` restart (or the shell host's own reconnect backoff)
      * loses every placement with no drop on the client side at all.

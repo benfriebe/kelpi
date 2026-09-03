@@ -164,7 +164,7 @@ describe('geometry reporter', () => {
     });
 
     /*
-     * Issue #34 — the fourth rule, and the one that makes Rule 1 safe: the dedupe cache is a
+     * Issue #34 - the fourth rule, and the one that makes Rule 1 safe: the dedupe cache is a
      * claim about what the FAR END holds, so it has to be re-stated whenever the far end has
      * been reset (a reconnect, or a fresh web-pane host).
      */
@@ -172,7 +172,7 @@ describe('geometry reporter', () => {
         const h = harness();
         h.reporter.report(report());
         expect(h.sent).toHaveLength(1);
-        // The re-render after a reconnect is deduped away — that is the defect.
+        // The re-render after a reconnect is deduped away - that is the defect.
         h.reporter.report(report());
         expect(h.sent).toHaveLength(1);
 
@@ -187,7 +187,7 @@ describe('geometry reporter', () => {
         h.reporter.reassert();
         expect(h.sent).toHaveLength(0);
 
-        // Hidden on purpose — the workspace switched, or a menu came up over it. `hide()`
+        // Hidden on purpose - the workspace switched, or a menu came up over it. `hide()`
         // forgets the pane, so there is nothing to re-state and the view stays in the holder.
         h.reporter.report(report());
         h.reporter.hide(PANE);
@@ -226,7 +226,7 @@ describe('geometry reporter', () => {
         h.advance(90);
         h.reporter.reassert();
         expect(h.sent).toHaveLength(2);
-        // A movement arriving right after is still throttled — the re-statement was a send.
+        // A movement arriving right after is still throttled - the re-statement was a send.
         h.reporter.report(report({ rect: { x: 4, y: 24, w: 800, h: 600 } }));
         expect(h.sent).toHaveLength(2);
         h.advance(100);

@@ -6,8 +6,9 @@
     "node": ">=24"
   },
   "scripts": {
+    "postinstall": "node scripts/node-pty-exec-bit.mjs",
     "typecheck": "tsc -b packages/protocol packages/core packages/daemon packages/cli && tsc -p packages/client/tsconfig.json && tsc -p packages/shell/tsconfig.json",
-    "test": "vitest run && pnpm --filter @kelpi/shell test",
+    "test": "node scripts/node-pty-exec-bit.mjs --check && vitest run && pnpm --filter @kelpi/shell test",
     "check": "pnpm typecheck && pnpm test",
     "dist": "pnpm --filter @kelpi/daemon build && pnpm --filter @kelpi/client build && pnpm --filter @kelpi/cli build && pnpm --filter @kelpi/shell build && pnpm --filter @kelpi/shell make"
   },

@@ -75,11 +75,68 @@ fs.writeFileSync(
     { mode: 0o755 }
 );
 
+// The built web UI. The daemon serves it only when it is told where it is: `resolveClientDistDir`
+// (packages/daemon/src/ws/http.ts) reads KELPID_CLIENT_DIR and returns undefined with no fallback,
+// and `serve` then answers every GET with the "client not built" placeholder page (#37).
+const clientDistDir = path.join(repoRoot, 'packages', 'client', 'dist');
+
 // ── build ───────────────────────────────────────────────────────────────────────────
 
 if (!noBuild) {
     console.log('[dev-instance] building the tree (skip with --no-build)…');
     await buildAll(repoRoot, { log: (line) => console.log(`[dev-instance] ${line}`) });
+}
+
+// ── guards ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Assert this daemon is actually serving the app, before a window opens on top of the answer.
+ *
+ * #37 is worth a guard rather than just its one-line fix because the broken state is invisible
+ * from everything you would normally check: /healthz is healthy, the control socket answers,
+ * `pane list` / `pane create` / `web open` all succeed, and the web panes' native views load their
+ * pages perfectly well, because the shell's webhost drives those from daemon state rather than
+ * from the client. The only tell is the window itself, and a reviewer who does not recognise the
+ * placeholder concludes the change under test is what is broken. That cost about an hour once.
+ *
+ * Two assertions, because they fail for different reasons and want different advice: the build
+ * being absent is the developer's to fix, while the daemon serving `x-kelpi-client: not-built`
+ * (packages/daemon/src/ws/http.ts) with a build present and KELPID_CLIENT_DIR set means the
+ * plumbing regressed, which is the bug this guard exists to catch.
+ *
+ * Deliberately NOT a fallback inside `resolveClientDistDir` itself, which was the other option on
+ * the issue. That would change daemon behaviour for every caller: `packages/shell/scripts/
+ * web-smoke.mjs` leaves KELPID_CLIENT_DIR unset on purpose so the shell window loads the
+ * placeholder instead of a real client that would race its own probe for pane geometry, and a
+ * daemon that located the repo and served `packages/client/dist` anyway would break it. A packaged
+ * daemon has no repo to find, so the fallback would also be dead weight exactly where the app
+ * ships. The check belongs where the wrong environment is built, not in the daemon that trusts it.
+ */
+async function assertServingTheClient(base, distDir) {
+    if (!fs.existsSync(path.join(distDir, 'index.html'))) {
+        throw new Error(
+            [
+                `the client build is missing: ${path.join(distDir, 'index.html')}`,
+                '  build it with:  pnpm --filter @kelpi/client build',
+                '  (or drop --no-build and let this script build the tree for you)'
+            ].join('\n')
+        );
+    }
+
+    const response = await fetch(`${base}/`, { redirect: 'manual' });
+    const marker = response.headers.get('x-kelpi-client');
+    await response.text(); // drain, so the socket does not sit open behind the rest of the boot
+    if (marker === 'not-built') {
+        throw new Error(
+            [
+                'the daemon is serving its "client not built" placeholder, not the app (#37).',
+                `  KELPID_CLIENT_DIR was set to: ${distDir}`,
+                `  and ${path.join(distDir, 'index.html')} exists`,
+                '  so the daemon is not reading it: see resolveClientDistDir in',
+                '  packages/daemon/src/ws/http.ts, and check the daemon build is current.'
+            ].join('\n')
+        );
+    }
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
@@ -114,7 +171,11 @@ const sandbox = {
         KELPID_HTTP_PORT: String(httpPort),
         KELPID_HTTP_HOST: '127.0.0.1',
         KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
-        KELPID_HELPERS_DIR: helpersDir
+        KELPID_HELPERS_DIR: helpersDir,
+        // Without this the window that comes up is the daemon's placeholder page rather than the
+        // app, and nothing else about the instance looks wrong (#37). The env is deliberately
+        // clean, so anything the daemon needs has to be listed here by name.
+        KELPID_CLIENT_DIR: clientDistDir
         // Deliberately NO KELPI_HARNESS: this instance should outlive a crashed launcher the way
         // the real one outlives its shell — kill it with Ctrl-C here, or `kelpid stop` with the
         // env above.
@@ -130,12 +191,32 @@ clearBackgroundTaskPolicy(daemon.child?.pid);
 await waitForHealthz(sandbox.base);
 console.log(`[dev-instance] daemon up: ${sandbox.base}  (control tcp ${String(controlPort)})`);
 
+// Before the window, not after: a placeholder page is much harder to notice once there is
+// something on screen that looks like a running app (#37).
+try {
+    await assertServingTheClient(sandbox.base, clientDistDir);
+    console.log(`[dev-instance] client: serving ${clientDistDir}`);
+} catch (error) {
+    console.error(`[dev-instance] ${error instanceof Error ? error.message : String(error)}`);
+    try {
+        await daemon.stop();
+    } catch {
+        /* already gone */
+    }
+    sandbox.cleanup();
+    process.exit(1);
+}
+
 const shell = startShell(sandbox, { repoRoot, packaged, verbose: false });
 clearBackgroundTaskPolicy(shell.child?.pid);
 console.log(`[dev-instance] shell up (${packaged ? 'packaged Kelpi.app' : 'dev electron'})`);
 console.log('[dev-instance]');
 console.log(`[dev-instance]   talk to it:   KELPI_SOCKET=tcp:127.0.0.1:${String(controlPort)} kelpi pane list`);
 console.log(`[dev-instance]   run dir:      ${sandbox.runDir}`);
+// The shell's remote debugging port, printed because it is how you tell a window that is the app
+// from one that is the placeholder: with the client served, its renderer shows up here as a page
+// target beside the web panes' WebContentsView targets (#37).
+console.log(`[dev-instance]   debug targets: curl -s http://127.0.0.1:${String(debugPort)}/json/list`);
 console.log('[dev-instance]');
 console.log('[dev-instance] Ctrl-C to stop.');
 

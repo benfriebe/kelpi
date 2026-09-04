@@ -249,13 +249,19 @@ const stop = async () => {
     if (stopping) return;
     stopping = true;
     console.log('\n[dev-instance] stopping…');
+    // `shell.quit()`, not `shell.stop?.()`: `startShell` exposes `quit` and `startDaemon` exposes
+    // `stop`, and the optional call on the wrong name silently did nothing, so Ctrl-C printed
+    // "stopping…", exited, and left a live Electron window behind on the screen every single time
+    // (its daemon did stop, so the orphan was a window with no instance under it). Called without
+    // `?.` on purpose: a future rename should throw into the catch rather than quietly orphan a
+    // window again.
     try {
-        await shell.stop?.();
+        await shell.quit();
     } catch {
         /* already gone */
     }
     try {
-        await daemon.stop?.();
+        await daemon.stop();
     } catch {
         /* already gone */
     }

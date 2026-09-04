@@ -52,7 +52,7 @@ import {
     type PosterController,
     type PosterStyle
 } from './poster';
-import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
+import { chromeTextIsFocused, releaseWebChromeCaret, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import { useLoadProgress, type LoadProgressTimings } from './progress';
 import type { BatchDestination, WebBatchSession, WebFavourite } from './state';
 import { StoragePanel } from './StoragePanel';
@@ -527,6 +527,9 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         input.select();
     }, [focusURLToken]);
 
+    /** The pane's subtree: every chrome text field it can put a caret in is a descendant. */
+    const paneRef = useRef<HTMLDivElement | null>(null);
+
     // ── WEB-033: the loading strip, and WEB-043's focus handoff ─────────────────────
 
     const loading = props.loading === true;
@@ -613,6 +616,34 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         wasFocused.current = true;
         void commands.focusView(paneID, liveTabID);
     }, [focused, embedded, liveTabID, blankTab, commands, paneID]);
+
+    /**
+     * Issue #32 - and the pane that LOSES focus lets go of its chrome caret.
+     *
+     * The effect above is the claim; this is its opposite number, and the port only had the claim.
+     * Pane surfaces already resign on `true -> false` (`releasePaneCaret`, `PlainTextEditor`'s
+     * `area.blur()`), because the next pane's `shouldGrabFocus` may not take a caret held by
+     * chrome. The URL bar is chrome, so the ring moved and the caret did not.
+     *
+     * Two things that must NOT release, and both look the same from in here:
+     *
+     *   - the PAGE in this pane taking focus, or a URL landing under a draft: the ring stays here,
+     *     `focused` never changes, and WEB-043's exemption keeps the edit alive;
+     *   - a BACKGROUND pane's bar being filled by WEB-002 (`useBlankWebPaneURLFocus` grants the
+     *     caret to a blank pane whether or not it wears the ring). Hence the true -> false
+     *     transition rather than `!focused`, which would re-fire on that pane's next tab change.
+     *
+     * Releasing ends the edit, the way a browser's address bar reverts when it loses focus.
+     */
+    const heldPaneFocus = useRef(false);
+    useEffect(() => {
+        const lost = heldPaneFocus.current && !focused;
+        heldPaneFocus.current = focused;
+        if (!lost) return;
+        // Subtree-scoped, so the find bar, pickup panel and storage panel are covered by the same
+        // rule and a caret that landed elsewhere in this commit is not undone.
+        releaseWebChromeCaret(paneRef.current);
+    }, [focused]);
 
     // ── §S43: the nav row's own width ───────────────────────────────────────────────
 
@@ -923,6 +954,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
 
     return (
         <div
+            ref={paneRef}
             data-testid={`web-pane-${paneID}`}
             data-embedded={embedded ? 'true' : 'false'}
             className="flex h-full w-full flex-col overflow-hidden"

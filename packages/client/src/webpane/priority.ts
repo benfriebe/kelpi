@@ -173,6 +173,27 @@ export function chromeTextIsFocused(active: unknown): boolean {
     return (element.closest as (selector: string) => unknown)(`[${WEB_CHROME_TEXT_ATTRIBUTE}]`) !== null;
 }
 
+/**
+ * Issue #32 - the release half of the chrome-text rule: a web pane that has lost PANE FOCUS lets
+ * go of whichever of its own chrome text fields holds the caret.
+ *
+ * `chromeTextIsFocused` above is the protective half, and it was the only half there was. Because
+ * `shouldGrabFocus` never takes a caret held by chrome, nothing else can release this one, and the
+ * ring moved to the next pane while every keystroke stayed in the address bar.
+ *
+ * Keyed on the pane, never on the caret: `releaseFocusedPaneCaret` (`app/pane-focus.ts`) also fires
+ * on a click into the PAGE, which leaves the ring here and must not cancel a half-typed address
+ * (WEB-043). Scoped to `root` and to marked chrome text, so a caret that has already moved
+ * elsewhere in the same commit is not undone and a focused chrome button is left alone.
+ */
+export function releaseWebChromeCaret(root: HTMLElement | null): void {
+    if (root === null) return;
+    const active = root.ownerDocument.activeElement;
+    if (active === null || !root.contains(active)) return;
+    if (!chromeTextIsFocused(active)) return;
+    (active as { blur?: () => void }).blur?.();
+}
+
 // ── chords forwarded from an embedded page ──────────────────────────────────────────
 
 /**

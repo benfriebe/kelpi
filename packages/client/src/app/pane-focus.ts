@@ -295,6 +295,9 @@ export function undoSurfaceAutoFocus(host: HTMLElement | null, previous?: Elemen
  * Only a *pane surface* is released, never chrome: a sidebar rename, the palette or the URL bar
  * holding the caret is the same "is NSText" case the Swift guard protected, and blurring it here
  * would cancel an edit the user is in the middle of.
+ *
+ * A web pane's chrome must still let go when the PANE loses focus (issue #32). Not here, because
+ * this also runs on the page-click path: see `releaseWebChromeCaret` in `webpane/priority.ts`.
  */
 export function releaseFocusedPaneCaret(): void {
     if (typeof document === 'undefined') return;

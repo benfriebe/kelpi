@@ -254,3 +254,88 @@ describe('a click in a web pane’s page (§N29)', () => {
         expect(focusedPaneID()).toBe(SHELL_PANE);
     });
 });
+
+/**
+ * Issue #32 - the caret leaves a web pane's URL bar when the PANE does.
+ *
+ * The suite above is §N29's direction, where the page takes focus and the ring follows it here.
+ * This is the one the port had no rule for: `shouldGrabFocus` will not take a caret held by chrome,
+ * so the web pane has to let go itself or the terminal draws as focused and every keystroke keeps
+ * landing in an address bar the user has left. Assembly-level because the defect is about the caret
+ * and the RING agreeing, and no single component holds both.
+ */
+describe('the caret follows the ring OUT of a web pane (issue #32)', () => {
+    /** Put the ring on the web pane and the caret in its URL bar - the state the bug needs. */
+    async function editingTheAddress(h: Harness): Promise<HTMLInputElement> {
+        act(() => {
+            h.socket().emit(viewFocus());
+        });
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(WEB_PANE);
+        });
+        const url = screen.getByTestId(`web-url-${WEB_PANE}`) as HTMLInputElement;
+        url.focus();
+        expect(document.activeElement).toBe(url);
+        return url;
+    }
+
+    /** Move the ring to the terminal the way its body click does. */
+    async function focusTheTerminal(h: Harness): Promise<void> {
+        const terminal = document.querySelector(`[data-pane-id="${SHELL_PANE}"] [data-terminal-status]`);
+        expect(terminal).not.toBeNull();
+        fireEvent.mouseDown(terminal as Element);
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(SHELL_PANE);
+        });
+    }
+
+    it('lets go of the URL bar when another pane takes the ring', async () => {
+        const h = setup();
+        const url = await editingTheAddress(h);
+
+        await focusTheTerminal(h);
+
+        expect(document.activeElement).not.toBe(url);
+    });
+
+    // The knock-on the issue names: while chrome text holds the caret the dispatcher refuses every
+    // non-menu-bar binding (`chrome/keys.ts`, `MENU_BAR_ACTIONS`). Applied to a caret the user has
+    // left behind, that killed the pane keymap on the pane they had moved TO.
+    it('gives the keymap back to the pane that now wears the ring', async () => {
+        const h = setup();
+        await editingTheAddress(h);
+        await focusTheTerminal(h);
+
+        // Dispatched at whatever holds the caret: a real keystroke's target IS `activeElement`, and
+        // firing at `window` would hand the dispatcher a target no `editable()` test can fail.
+        act(() => {
+            fireEvent.keyDown(document.activeElement ?? window, {
+                code: 'BracketRight',
+                key: ']',
+                metaKey: true
+            });
+        });
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(WEB_PANE);
+        });
+    });
+
+    // The suite above proves a page click keeps the caret; this proves it keeps the DRAFT, which is
+    // what the user actually loses if the page-focus and pane-focus paths are ever confused.
+    it('a click into the page does not cancel a URL edit in the same pane (WEB-043)', async () => {
+        const h = setup();
+        const url = screen.getByTestId(`web-url-${WEB_PANE}`) as HTMLInputElement;
+        url.focus();
+        fireEvent.change(url, { target: { value: 'half-typed-add' } });
+
+        act(() => {
+            h.socket().emit(viewFocus());
+        });
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(WEB_PANE);
+        });
+
+        expect(document.activeElement).toBe(url);
+        expect(url.value).toBe('half-typed-add');
+    });
+});

@@ -1292,7 +1292,7 @@ registries instead); nothing persists to a per-app preferences store.
    color when no theme + background opacity slider (ghostty keys, `set-ghostty-setting`);
    search-highlight colours (`search-match-*`); status-bar system stats (per-metric
    toggles, sparkline style/color/width).
-3. **Repositories** — the repo registry (`packages/client/src/settings/RepositoriesTab.tsx`):
+3. **Repositories**: the repo registry (`packages/client/src/settings/RepositoriesTab.tsx`):
    a filter field and a "Show auto-detected" toggle (`:162-186`), a path field with a
    native directory chooser when the shell provides one (`:124-126`, `:199-203`), an
    editable name per row (`:273`) and the "Auto-detect from pane directories" toggle

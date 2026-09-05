@@ -658,7 +658,7 @@ mode (DECCKM).
 Resize the resolved pane against its immediate split sibling. Guard: pane-target triple
 AND **exactly one** of `ratio` (number, absolute target share of the addressed pane,
 0<r<1) / `delta` (number, signed share adjustment; grow positive, shrink negative) —
-both or neither drops the message. The handler maps the pane to its enclosing split,
+both or neither is answered `{"ok":false,"error":"pane-resize requires exactly one of ratio / delta"}` and the connection is closed (`packages/protocol/src/wire/decode.ts:243`), the same shape as every other guard failure on an allowlisted command. The handler maps the pane to its enclosing split,
 converts the requested pane *share* to the split's stored first-child ratio (a
 second-child pane's share is `1 - ratio`), clamps the effective share to `[0.1, 0.9]`,
 and resets any tracked predefined-layout index. Refuses a sole-leaf pane (no sibling:

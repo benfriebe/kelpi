@@ -47,6 +47,18 @@
  *     `focus_next_pane`): inside a page they are back/forward, which the page may itself want
  *     (SET-189). Only ⌘⇧[ / ⌘⇧] - tab cycling - are Kelpi's.
  *
+ * ## The native menu gets there first, for sixteen of them (#47)
+ *
+ * `../menu.ts` derives the application menu's accelerators from the same binding map, and a
+ * native menu accelerator outranks the page: for the 16 `MENU_BAR_ACTIONS` (⌘N, ⌘O, ⌘⇧O, ⌘⇧G,
+ * ⌘P, ⌘1-9, ⌘⇧S, ⌘I) the keystroke is taken by the menu and never reaches `before-input-event`,
+ * so the relay never sees it. Those chords stay in the set anyway, and it is not redundancy for
+ * its own sake: #47 gives an action NO accelerator when it is unbound or when its first trigger
+ * has no Electron spelling, and says such an action "still fires through the client dispatcher".
+ * From a focused page this relay IS that dispatcher's only route, so the set is the fallback for
+ * exactly the cases the menu declines. Narrowing it to "everything except the menu-bar actions"
+ * would re-open #33 for those cases and put a second literal back.
+ *
  * ## Why only ⌘ chords cross
  *
  * The relay's wire format is `web-chord:<code>[:shift]` and the client decodes it with

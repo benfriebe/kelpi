@@ -53,10 +53,16 @@ export interface WebHostClientOptions {
      * The daemon's `keybind` line values, from `welcome.settings` and every `settings-changed`.
      *
      * Issue #33: the chord relay's claimed set is derived from the binding map, and this is the
-     * connection that can see it. The renderer's copy is no use - the whole point of the relay
-     * is the keystrokes the renderer never gets - and the main process's status socket
-     * deliberately narrows the snapshot to what its own native surfaces need
-     * (`../status.ts` ▸ `ShellDaemonSettings`), so the host reads its own.
+     * connection that can see it. The renderer's copy is no use - the whole point of the relay is
+     * the keystrokes the renderer never gets.
+     *
+     * The status socket also carries these lines now (`../status.ts` ▸ `ShellDaemonSettings`,
+     * added by #47 for the menu accelerators), so this is a second reader in the same process
+     * rather than the only one. Deliberately still its own read: the two sockets have independent
+     * lifetimes - this one must work before the window has loaded, while it is reloading and
+     * while it is closed (see the module header), and a status resync must not be able to disturb
+     * the host - so coupling the relay's set to the status connection's would trade a duplicated
+     * three-line parse for a dependency the composition root exists to avoid.
      *
      * Fires on every (re)connect, not only on a write: a host that reconnects to a daemon whose
      * config changed while it was away must not keep forwarding the old set.

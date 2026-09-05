@@ -783,8 +783,10 @@ type DropTarget =
   dragging*, so sibling rows shift out of the way in real time (the reorder itself is
   the drop indicator). `ontoGroupHeader` is **preview-only** (the cursor transits headers
   constantly): it renders as an accent @ 0.18 tint over the header band, and the grabbed
-  row previews a nested indent (depth ≥ 1) while it's the target. A between-rows target
-  that is not live-applied renders a 2pt accent line at the insertion y.
+  row previews a nested indent (depth ≥ 1) while it's the target. Kelpi never draws an
+  insertion line: every between-rows target is live-applied against the client-local shadow
+  model, so the gap the reorder opens is the only slot indicator and the header tint is the
+  only `ontoGroupHeader` indicator (`packages/client/src/chrome/Sidebar.tsx:903-906`, `:921-937`).
 - **Spring-loading:** hovering a *collapsed* group (header or its would-be children) for
   **650ms** transiently expands it for the rest of the drag (persisted `isCollapsed`
   untouched). Leaving the group cancels/collapses. On release the spring-loaded group
@@ -797,11 +799,16 @@ type DropTarget =
   in/out, the "No workspaces" placeholder stays/reappears under the dragged row so the
   group's total height is constant while the cursor sweeps it (no layout jumps). Walker
   math mirrors this phantom placeholder exactly.
-- **Landing animation:** releasing a single row onto a collapsed group header that stays
-  collapsed (setting `expandGroupOnWorkspaceDrop` off and not spring-loaded) animates the
-  row to the header's y, shrinking to 0.2 scale at 15% opacity ("falls into the group"),
-  then commits the move; the preview state clears ~400ms later. Otherwise release simply
-  springs everything home while committing.
+- **Landing animation:** Kelpi plays none. Every release, including a drop onto a
+  collapsed group header, seeds one spring settle for the released row
+  (`applyDropSettle(settleSeed)`) and commits the move (`commitDrop`), and the row springs
+  home while the FLIP pass adds the commit's layout delta on top
+  (`packages/client/src/chrome/Sidebar.tsx:2911-2944`). The original's "falls into the
+  group" script (row pinned to the header's y, shrinking to 0.2 scale at 15% opacity,
+  commit ~400ms later) only ran with its `expandGroupOnWorkspaceDrop` setting off; that
+  setting has no client counterpart, and the port drops the script deliberately so the
+  default configuration plays a single animation (`Sidebar.tsx:2893-2910`). A drop with
+  that setting off is a knowing divergence.
 - **Multi-drag:** grabbing a row that belongs to a ≥2 multi-selection drags the whole
   selection: the grabbed row shows a `+N` accent capsule at its trailing edge; the other
   selected rows collapse to zero height (hidden) for the duration. During the drag only
@@ -1388,7 +1395,9 @@ interface Pane {                      // fields the shell UI reads
   scratchpadContent?: string;
   agentSessionID?: string;
   agentKind?: AgentKind;
-  agentStartedAt?: string;            // ISO; drives elapsed badges
+  agentStartedAt?: number | null;     // epoch MILLISECONDS (Date.now()), NOT the Unix-seconds
+                                      // encoding of createdAt/lastActivityAt; drives elapsed
+                                      // badges (packages/core/src/layout/pane.ts:78)
   backgroundTaskCount: number;        // transient; "· N running"
   markdownFontSize: number;
 }
@@ -1427,6 +1436,8 @@ interface ChromeStatusSummary { running: number; waiting: number; inactive: numb
 interface StatusBarItem {   // status-bar count popover rows (§8)
   workspaceName: string; workspaceColor: WorkspaceColor;
   paneTitle: string; paneID: UUID; workspaceID: UUID; status: PaneStatus;
+  agentStartedAt?: number | null;   // epoch milliseconds; elapsed label in the popover row
+                                    // (packages/client/src/chrome/StatusFooter.tsx:201-210)
 }
 
 // Pane-grid drag & drop

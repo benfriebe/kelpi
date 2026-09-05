@@ -45,7 +45,7 @@ export interface CliResult {
 }
 
 export interface CliOptions {
-    /** Exported as `NEX_PANE_ID` — set it only when the case is about caller-pane scoping. */
+    /** Exported as `KELPI_PANE_ID` + `NEX_PANE_ID` — set it only when the case is about caller-pane scoping. */
     readonly paneID?: string | undefined;
     readonly cwd?: string | undefined;
     readonly env?: Record<string, string> | undefined;
@@ -113,7 +113,11 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
                     HOME: home,
                     KELPI_SOCKET: `tcp:127.0.0.1:${String(port)}`,
                     NEX_SOCKET: `tcp:127.0.0.1:${String(port)}`,
-                    ...(options.paneID !== undefined ? { NEX_PANE_ID: options.paneID } : {}),
+                    // Both spellings, like the socket pair above: the Swift nex reads NEX_PANE_ID,
+                    // a KELPI_COMPAT_CLI pointed at our own bundle reads KELPI_PANE_ID (#46).
+                    ...(options.paneID !== undefined
+                        ? { KELPI_PANE_ID: options.paneID, NEX_PANE_ID: options.paneID }
+                        : {}),
                     ...options.env
                 },
                 stdio: ['pipe', 'pipe', 'pipe']

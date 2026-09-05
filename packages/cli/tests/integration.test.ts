@@ -185,6 +185,34 @@ describe('request/response', () => {
         });
     });
 
+    /**
+     * cli.md §9.1: `pane id` is the one way a script inside a pane learns its own id. It read
+     * the pre-rename NEX_PANE_ID after the port, which the daemon never injects, so it exited 1
+     * inside every Kelpi pane while every other command saw the pane (#46). Pinned end to end:
+     * the same KELPI_PANE_ID the harness gives every caller-pane case, and no socket traffic.
+     */
+    it('prints KELPI_PANE_ID from `pane id` and exits 1 outside a pane, never touching the socket', async () => {
+        const inside = await runCLI(['pane', 'id'], { port: server.port, paneID: PANE });
+        expect(inside.code).toBe(0);
+        expect(inside.stdout).toBe(`${PANE}\n`);
+        expect(inside.stderr).toBe('');
+
+        const outside = await runCLI(['pane', 'id'], { port: server.port });
+        expect(outside.code).toBe(1);
+        expect(outside.stdout).toBe('');
+
+        // Set-but-empty counts as unset (§9.1 says "set and non-empty").
+        const empty = await runCLI(['pane', 'id'], { port: server.port, paneID: '' });
+        expect(empty.code).toBe(1);
+        expect(empty.stdout).toBe('');
+
+        // The pre-rename variable is not a fallback: the daemon injects KELPI_* only (§4).
+        const legacy = await runCLI(['pane', 'id'], { port: server.port, env: { NEX_PANE_ID: PANE } });
+        expect(legacy.code).toBe(1);
+        expect(legacy.stdout).toBe('');
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('rejects a positional pane target instead of falling back to the caller', async () => {
         const result = await runCLI(['pane', 'capture', PANE], { port: server.port, paneID: OTHER });
         expect(result.code).toBe(1);
@@ -593,7 +621,9 @@ describe('web', () => {
 
         const none = await runCLI(['web', 'capture'], { port: server.port });
         expect(none.code).toBe(1);
-        expect(none.stderr).toBe('kelpi web capture: no --target supplied and NEX_PANE_ID is not set\n');
+        // The error names the variable the CLI reads (cli.md §15.1); the pre-rename NEX_PANE_ID
+        // wording pointed users at a variable nothing honours (#46).
+        expect(none.stderr).toBe('kelpi web capture: no --target supplied and KELPI_PANE_ID is not set\n');
         expect(server.requests).toHaveLength(0);
     });
 

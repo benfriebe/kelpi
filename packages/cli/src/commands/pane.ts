@@ -6,7 +6,7 @@
  *     positional used to fall through to "the calling pane", which closed the caller (#108)
  *     or captured the wrong screen (#237);
  *   - **outside-pane guards**: `split`/`create`/`name`/`resize` need `--target`/`--workspace`
- *     when `NEX_PANE_ID` is absent and say so, while the caller-subject verbs (`close` with no
+ *     when `KELPI_PANE_ID` is absent and say so, while the caller-subject verbs (`close` with no
  *     target, directional `move`, `move-to-workspace`, `list --current`, `capture` with no
  *     target) silently exit 0 instead.
  *
@@ -23,7 +23,7 @@ import {
     parseDouble,
     rejectLeftoverArgs
 } from '../args.js';
-import { envValue, homeDirectory, originPaneID, requirePaneID } from '../env.js';
+import { homeDirectory, originPaneID, requirePaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asNumber, asString, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
@@ -122,10 +122,14 @@ export async function handlePane(args: string[]): Promise<void> {
     }
 }
 
-/** Local only — never touches the socket. */
+/**
+ * Local only, never touches the socket. Reads the same `KELPI_PANE_ID` every other command
+ * does (cli.md §9.1, §4): this used to read the pre-rename `NEX_PANE_ID`, which the daemon
+ * never injects, so `kelpi pane id` exited 1 inside every Kelpi pane (#46).
+ */
 function handlePaneID(): void {
-    const paneID = envValue('NEX_PANE_ID');
-    if (paneID === undefined || paneID.length === 0) exit(1);
+    const paneID = originPaneID();
+    if (paneID === undefined) exit(1);
     printLine(paneID);
 }
 

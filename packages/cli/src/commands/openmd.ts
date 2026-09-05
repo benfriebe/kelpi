@@ -11,7 +11,7 @@
  *   3. anything else is a usage error pointing at `kelpi md` / `kelpi web open`.
  *
  * `kelpi md` skips step 1 entirely — it is the escape hatch that forces a markdown pane on any
- * file. Both forward `NEX_PANE_ID` even when it is an EMPTY string (a plain `if let` in the
+ * file. Both forward `KELPI_PANE_ID` even when it is an EMPTY string (a plain `if let` in the
  * Swift source, no `isEmpty` check), unlike everything else in the CLI.
  */
 

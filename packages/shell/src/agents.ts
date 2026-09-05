@@ -47,7 +47,7 @@ export interface AgentCounts {
     readonly workspaces: readonly WorkspaceAgents[];
     /** Every non-idle pane, sorted by workspace name then title. */
     readonly panes: readonly AgentPane[];
-    /** Pane ids currently waiting — the bounce edge is computed against this set. */
+    /** Pane ids currently waiting: §AGNT-077's toast withdrawal is computed against this set. */
     readonly waitingPaneIDs: readonly string[];
     /**
      * §AGNT-113: non-idle **parked** panes, counted separately.
@@ -428,27 +428,17 @@ export function trayTooltip(counts: AgentCounts, connected: boolean): string {
 }
 
 /**
- * The bounce edge (§7.1 `shouldBounce`): panes that are waiting NOW and were not waiting
- * before. The window-focus half of the rule lives in `./status.ts`; the daemon has already
- * applied the background-work suppression before it emits the status change.
- */
-export function newlyWaitingPanes(
-    previous: Iterable<string>,
-    next: Iterable<string>
-): readonly string[] {
-    const before = new Set(previous);
-    return [...next].filter((paneID) => !before.has(paneID));
-}
-
-/**
- * §AGNT-077's other direction: panes that STOPPED waiting.
+ * §AGNT-077: panes that STOPPED waiting.
  *
  * `NotificationService.removeNotification(for:)` withdraws a pane's delivered notification when
  * its waiting status is cleared — which is what visiting the pane does. The client half of that
  * already works (the in-app toast is dismissed on focus); the native toast had nothing to act
  * on, because the daemon publishes a notification but never a retraction. It does not need one:
- * a pane leaving the waiting set IS the retraction, and the shell already tracks that set for
- * the dock bounce.
+ * a pane leaving the waiting set IS the retraction, so the shell tracks that set.
+ *
+ * There is deliberately no "newly waiting" counterpart (#55): a pane entering the set is not
+ * the dock-bounce signal. The bounce is stop-only and the daemon decides it
+ * (docs/agent-lifecycle.md §7.1, §14 invariant 6), broadcast as `attention-request`.
  */
 export function noLongerWaitingPanes(
     previous: Iterable<string>,

@@ -38,7 +38,6 @@ import {
     AgentModel,
     EMPTY_COUNTS,
     dockBadgeLabel,
-    newlyWaitingPanes,
     noLongerWaitingPanes,
     trayIndicator,
     trayMenuRows,
@@ -72,8 +71,6 @@ const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
 const RECONNECT_FACTOR = 2;
 const RECONNECT_JITTER = 0.2;
-/** At most one dock bounce per burst of waiting transitions. */
-const BOUNCE_COOLDOWN_MS = 3_000;
 
 export interface StatusHost {
     /**
@@ -295,13 +292,6 @@ export function createStatusController(options: StatusOptions): StatusController
 
     let counts: AgentCounts = EMPTY_COUNTS;
     let waiting: ReadonlySet<string> = new Set();
-    /**
-     * False until the first publish after a (re)connect. Attaching to a daemon that already
-     * has waiting agents is not a *transition* — bouncing the dock for state that has been
-     * true for an hour would make every reconnect feel like an event.
-     */
-    let primed = false;
-    let lastBounceAt = 0;
     let indicator: IconIndicator | null = null;
     let tray: Tray | null = null;
     /** Last logged tray-menu shape, so an unchanged menu does not re-log on every delta. */
@@ -601,28 +591,24 @@ export function createStatusController(options: StatusOptions): StatusController
         }
 
         const nextWaiting = new Set(counts.waitingPaneIDs);
-        // Until the attach snapshot has been folded in, every "waiting" pane is pre-existing
-        // state, not a transition (`primed` is set by the snapshot handler).
-        const newlyWaiting = primed ? newlyWaitingPanes(waiting, nextWaiting) : [];
         // §AGNT-077: a pane that stopped waiting withdraws its toast. Visiting the pane is what
         // clears the status, so this is the native half of "focus dismisses the notification" —
-        // the in-app toast is already dropped client-side. Unconditional on `primed`: a
-        // notification can only exist if we posted it, and one whose pane is no longer waiting
-        // is stale whether or not the transition happened before we attached.
+        // the in-app toast is already dropped client-side. Not gated on whether the transition
+        // happened before we attached: a notification can only exist if we posted it, and one
+        // whose pane is no longer waiting is stale either way.
         for (const paneID of noLongerWaitingPanes(waiting, nextWaiting)) {
             liveNotifications.get(`kelpi-${paneID}`)?.close();
         }
         waiting = nextWaiting;
 
-        // §7.1 `shouldBounce`: only when the app is not the frontmost thing the user is
-        // looking at. The daemon has already applied the background-work suppression.
-        if (newlyWaiting.length > 0 && !host.isWindowFocused()) {
-            const now = Date.now();
-            if (now - lastBounceAt > BOUNCE_COOLDOWN_MS) {
-                lastBounceAt = now;
-                bounce();
-            }
-        }
+        // Deliberately NO dock bounce here (#55). A pane entering the waiting set is not the
+        // bounce signal: `notification`, `error` and a manual `set-pane-status` all flip a pane
+        // to `waitingForInput` too, and docs/agent-lifecycle.md §7.2 / §7.3 / §14 invariant 6
+        // say the bounce is stop-only, gated on `!isAppActive && !hasBackgroundWork` (§7.1).
+        // The daemon owns that decision and broadcasts `attention-request` when it holds
+        // (`handlers/app/events.ts`), which is the one path that bounces below. Deriving a
+        // second edge from the status stream bounced on every attention request and twice on
+        // an unfocused stop.
         updateTray();
     }
 
@@ -734,7 +720,6 @@ export function createStatusController(options: StatusOptions): StatusController
             // basis for a ⌘Q than falling back to a legacy file the user may never have touched.
             model.reset();
             waiting = new Set();
-            primed = false;
             publish();
             if (wasReady) log(`status ws disconnected (${String(code)})`);
             scheduleReconnect();
@@ -784,8 +769,6 @@ export function createStatusController(options: StatusOptions): StatusController
                 // where it is used rather than trusted here.
                 model.applySnapshot(state as unknown as JsonObject);
                 publish();
-                // From here on, a pane entering "waiting" really is a transition.
-                primed = true;
                 log(`snapshot workspaces=${String(counts.workspaces.length)} running=${String(counts.running)} waiting=${String(counts.waiting)}`);
                 break;
             }
@@ -869,6 +852,10 @@ export function createStatusController(options: StatusOptions): StatusController
                 break;
             }
             case 'attention-request':
+                // The ONLY bounce path (#55; docs/agent-lifecycle.md §7.1, §14 invariant 6).
+                // The daemon has already applied §7.1's rule (stop only, app inactive, no
+                // background work); the focus check is this window's own half of `isAppActive`,
+                // so a bounce never lands on a window the user is looking at.
                 if (!host.isWindowFocused()) bounce();
                 break;
             case 'workspace-selection': {
@@ -937,7 +924,6 @@ export function createStatusController(options: StatusOptions): StatusController
         dropSocket();
         model.reset();
         waiting = new Set();
-        primed = false;
         publish();
         open();
     }
@@ -1092,8 +1078,8 @@ export function createStatusController(options: StatusOptions): StatusController
              *
              * `publish()` rather than a bare re-`setBadge`: the same `updateExternalIndicators`
              * repaints the tray too, and re-running the whole publish is safe by construction —
-             * the waiting SET is unchanged, so `newlyWaitingPanes` is empty and nothing bounces
-             * or re-notifies.
+             * the waiting SET is unchanged, so no toast is withdrawn, and a publish never
+             * bounces (only the daemon's `attention-request` does, #55).
              */
             setBadge('');
             publish();

@@ -1,18 +1,23 @@
 # Socket command handlers — behavioral specification
 
-Source of truth: `Nex/AppReducer+Socket.swift` (the socket reduce-block), plus the shared
-helpers it calls in `Nex/AppReducer.swift` (`resolvePaneTarget`, `resolveWorkspace`,
-`resolveGroup`, `paneSendText`, `tailLines`, graft handlers, `handlePing`),
-`Nex/AppReducer+RepoGit.swift` (`performWorktreeAdd`, `worktreeErrorMessage`),
-`Nex/Services/SocketServer.swift` (`ReplyHandle`), and the model helpers referenced below.
+Implementation: the pane handlers under `packages/daemon/src/handlers/pane/` (`create.ts`,
+`lifecycle.ts`, `input.ts`, `geometry.ts`, `sync.ts`, `list.ts`, with the shared reply and
+resolution helpers plus `tailLines` in `support.ts`), the app handlers under
+`packages/daemon/src/handlers/app/` (`events.ts`, `workspaces.ts`, `groups.ts`, `files.ts`,
+`layout.ts`, `graft.ts`, `ping.ts`, with `ok`/`fail` in `context.ts` and the reply orderings in
+`common.ts`), the name-or-id resolvers in `packages/core/src/resolve/` (`workspace.ts`,
+`pane-target.ts`, `ids.ts`), the git helpers in `packages/daemon/src/git/` (`service.ts`,
+`names.ts` for `worktreeErrorMessage`), and the reply handle in
+`packages/daemon/src/control/reply.ts` (seam declared in `packages/daemon/src/seams.ts`).
 
 This document specifies how every wire command is **handled** once it has been parsed off the
 socket. Wire framing/parsing (newline-delimited JSON, `"command"` key, the
 `replyCommandAllowlist`) is specced in the socket-server doc; this doc picks up at the point
 where the daemon holds a decoded message plus an optional reply handle.
 
-Audience: TypeScript implementers of the new headless daemon. The `kelpi` CLI must keep working
-unchanged, so every reply key, error string, and resolution rule below is normative.
+Audience: anyone changing the daemon's command handlers or the `kelpi` CLI. The CLI, the hook
+scripts and saved state depend on every reply key, error string, and resolution rule below, so
+all of them are normative.
 
 ---
 
@@ -23,14 +28,22 @@ commands in the reply allowlist; all other commands (and messages from pre-reque
 CLIs) get `null`.
 
 ```ts
-interface ReplyHandle {
-  id: number;                      // unique per connection slot
-  send(json: object): void;        // writes ONE newline-terminated JSON line to the client FD
-  close(): void;                   // cancels the client read source -> client sees EOF
-  sendAndClose(json: object): void; // send + close
-  error(message: string): void;    // sendAndClose({ ok: false, error: message })
+interface ReplyHandle {                          // packages/daemon/src/seams.ts:14
+  send(payload: object): void;   // writes ONE newline-terminated JSON line; no-op after close/disconnect
+  close(): void;                 // ends the connection -> client sees EOF; idempotent
+  readonly closed: boolean;      // true once closed or the peer disconnected
+  onDisconnect(cb: () => void): void; // fires once when the client hangs up
 }
 ```
+
+The transport implementation is `createReplyHandle` in `packages/daemon/src/control/reply.ts:43`.
+`onDisconnect` registers a callback the transport fires exactly once when the client
+connection drops; registering on a handle that is already dead runs the callback
+immediately. There is no `id`, `sendAndClose` or `error` member. Handlers do not call
+`send`/`close` directly: the pane family uses `sendOK`/`sendError`
+(`packages/daemon/src/handlers/pane/support.ts:46`) and the app family uses `ok`/`fail`
+(`packages/daemon/src/handlers/app/context.ts:187`), each of which sends exactly one line and
+then closes.
 
 Rules:
 
@@ -38,9 +51,8 @@ Rules:
   exactly once, then `close`. One JSON line, then EOF.
 - **Streaming mode**: call `send` repeatedly without `close`. The daemon holds the handle
   (e.g. in the web-console subscriber map) and writes newline-delimited JSON lines as events
-  arrive. The stream ends when the *client* disconnects; the transport layer then delivers a
-  synthetic `socketSubscriberDisconnected(replyID)` message so the daemon can release the
-  held handle.
+  arrive. The stream ends when the *client* disconnects; the transport then fires the
+  handle's `onDisconnect` callbacks so the daemon can release the held handle (see §11).
 - **Legacy fire-and-forget** (`reply == null`): all guards and validations still run. On
   success the side effect is still performed; on failure the command is silently dropped
   (no error is deliverable). Old CLIs keep working against a new server this way.
@@ -52,19 +64,24 @@ Rules:
 ### Reply-before-effect ordering
 
 Many handlers send the success reply **before** the side effect actually executes
-(`pane-split`, `pane-create`, `pane-close`, `pane-send`, `pane-send-key`, `pane-resize`,
-`pane-move-adjacent`, `pane-name`, `pane-sync`, `pane-sync-exclude`, the non-worktree
-`workspace-create`, `workspace-delete`). The ack is optimistic: new-entity UUIDs are minted
-up front and threaded into the effect so the acked id is guaranteed to be the real one.
-Async handlers (`pane-capture`, `graft-*`, worktree `workspace-create`) reply only after the
-async work resolves.
+(`pane-split`, `pane-create`, `pane-close`, `pane-send`, `pane-send-key`,
+`pane-move-adjacent`, the non-worktree `workspace-create`, `workspace-delete`). The ack is
+optimistic: new-entity UUIDs are minted up front and threaded into the effect so the acked
+id is guaranteed to be the real one. Handlers whose reply describes the resulting state
+(`pane-name`, `pane-resize`, `pane-sync`, `pane-sync-exclude`, `workspace-label`) apply the
+change first and reply from post-mutation state (`handlers/pane/lifecycle.ts:56`,
+`geometry.ts:87`, `sync.ts:87`). Async handlers (`pane-capture`, `graft-*`, worktree
+`workspace-create`) reply only after the async work resolves.
 
 ---
 
 ## 2. Name-or-id resolution semantics
 
 There are **two different workspace resolvers** in the codebase with different matching
-rules. This asymmetry is load-bearing for CLI compatibility.
+rules. This asymmetry is load-bearing for CLI compatibility. Both live in
+`packages/core/src/resolve/workspace.ts` (`resolveWorkspaceStrict`, `resolveGroupStrict`,
+`resolveWorkspaceLenient`, `resolveGroupMember`); the pane resolvers are in
+`packages/core/src/resolve/pane-target.ts`.
 
 ### 2.1 `resolveWorkspace(nameOrID)` — the strict instance resolver
 
@@ -117,7 +134,7 @@ The shared resolver behind `pane close`, `send`, `send-key`, `capture`, `name`, 
 `move-adjacent` (moved pane), `sync exclude/include`, and the `--target` branches of
 `split`/`create`. Inputs:
 
-- `paneID` — the caller's own pane UUID, forwarded from `NEX_PANE_ID` (may be absent).
+- `paneID` — the caller's own pane UUID, forwarded from `KELPI_PANE_ID` (may be absent).
 - `target` — the `--target <name-or-uuid>` value (may be absent).
 - `workspaceFilter` — the `--workspace <name-or-id>` value (may be absent).
 
@@ -151,7 +168,7 @@ resolvePaneTarget(paneID, target, workspaceFilter):
         origin     = that workspace                              // the caller's own workspace
         candidates = origin.panes where label == target
         originName = origin.name
-      else if paneID != null:                                    // stale NEX_PANE_ID
+      else if paneID != null:                                    // stale KELPI_PANE_ID
         return error("origin pane '{paneID}' no longer exists; pass --workspace <name-or-id> to address a pane in another workspace")
       else:
         return error("label '{target}' requires --workspace <name-or-id> when called from outside a Kelpi pane")
@@ -226,7 +243,9 @@ resolvers above, which search `panes` only.
 ## 3. Agent lifecycle handlers (fire-and-forget)
 
 These have no reply handle. All of them route via `workspaceContainingPane` (parked panes
-included) and silently drop the event when no workspace owns the pane.
+included) and silently drop the event when no workspace owns the pane. The handlers are in
+`packages/daemon/src/handlers/app/events.ts`; the per-pane status machine they feed is
+`packages/core/src/agent/machine.ts`.
 
 Pane status values: `"idle" | "running" | "waitingForInput"`.
 
@@ -247,7 +266,7 @@ Pane status values: `"idle" | "running" | "waitingForInput"`.
 
 ```
 isFocused        = (activeWorkspaceID == ws.id) && (ws.focusedPaneID == paneID)
-isAppActive      = <is the app frontmost?>         // web port: is any client window focused
+isAppActive      = <is any attached client window visible?>   // deps.isAppActive, boot/compose.ts:1099
 hasBackgroundWork = backgroundTaskCount > 0
 shouldNotify     = (!isFocused || !isAppActive) && !hasBackgroundWork
 shouldBounce     = !isAppActive && !hasBackgroundWork
@@ -261,9 +280,10 @@ Effects, in order:
 2. Refresh external indicators.
 3. If `shouldNotify`: post a desktop notification `title` / body
    `"Agent is waiting for input"` tagged with `paneID` + `workspaceID` (clicking it focuses
-   the pane).
-4. If `shouldBounce`: request user attention (macOS dock bounce; web port: equivalent
-   attention affordance).
+   the pane). The daemon broadcasts it as a `notification` event to the attached clients,
+   which display it (`events.ts:77`).
+4. If `shouldBounce`: request user attention by broadcasting an `attention-request` event
+   to the attached clients (the Electron shell bounces the dock) (`events.ts:89`).
 
 The suppression while background work is in flight kills the notification churn from the
 repeat Stops Claude fires as each background shell/subagent completes.
@@ -290,11 +310,20 @@ rule applies (a Notification arriving mid-background-work keeps the pane `runnin
 Forward to the workspace (binds `agentSessionID`, updates `agentKind`) and refresh
 external indicators.
 
+The wire message also carries an optional non-empty `profile` (the `KELPI_PROFILE` the hook
+saw in the agent's own environment; `packages/protocol/src/wire/decode.ts:175`). The handler
+forwards it (`events.ts:126`) and the pane records it as `agentProfileName`; an event without
+one (an older CLI) keeps the last-known value (`packages/core/src/agent/machine.ts:139`). A
+later resume spawn reads it back so the pane gets the environment the session actually ran
+in (`handlers/pane/support.ts:151`).
+
 ### 3.6 `session-end` → sessionEnded(paneID, sessionID)
 
 Forward to the workspace (clears the pane's tracked session id **only when it still equals
 the ending `sessionID`**, issue #178) and then **persist state** — the cleared id must
-survive the next launch or a restart would `--resume` a dead session.
+survive the next launch or a restart would `--resume` a dead session. A matching end also
+clears `agentProfileName` together with the id, so a later resume can never spawn under a
+stale profile (`machine.ts:164`).
 
 ---
 
@@ -302,15 +331,16 @@ survive the next launch or a restart would `--resume` a dead session.
 
 ### 4.1 `pane-split` → handlePaneSplit
 
-Inputs: `paneID?` (NEX_PANE_ID), `direction?` (`horizontal`/`vertical`; default
+Inputs: `paneID?` (KELPI_PANE_ID), `direction?` (`horizontal`/`vertical`; default
 horizontal), `path?` (`--path`), `name?` (`--name`, the label), `target?`, `workspaceFilter?`.
+Implemented in `packages/daemon/src/handlers/pane/create.ts`.
 
 Routing precedence (identical for `pane-create`):
 
 ```
 if target == null and workspaceFilter != null:
   // --workspace alone selects the DESTINATION workspace outright,
-  // beating the caller's forwarded NEX_PANE_ID.
+  // beating the caller's forwarded KELPI_PANE_ID.
   ws = resolveWorkspace(workspaceFilter)
        or error("workspace not found: {workspaceFilter}")
   source = ws.focusedPaneID ?? ws.panes.first?.id
@@ -373,8 +403,12 @@ Resolve via `resolvePaneTarget`. On error: `{ok:false,error}`. On success:
 ### 4.4 `pane-name` → handlePaneName
 
 Resolve via `resolvePaneTarget` (works with no `--target` = rename the caller pane).
-`newLabel = name == "" ? null : name` — an empty string **clears** the label. Mutates the
-pane's label synchronously, replies:
+`newLabel = name == "" ? null : name` — an empty string **clears** the label. Note the wire
+decoder rejects `pane-name` without a non-empty `name`
+(`pane-name requires a non-empty name`, `packages/protocol/src/wire/decode.ts:219`;
+wire-protocol.md §6), so over the socket a label can only be replaced, never cleared; the
+clear branch is kept for in-process callers (`handlers/pane/lifecycle.ts:52`). Dispatches the
+label change synchronously, replies:
 
 ```json
 {"ok": true, "pane_id": "<uuid>", "workspace_id": "<uuid>", "workspace_name": "dev", "label": "new-name"}
@@ -391,12 +425,18 @@ Resolve via `resolvePaneTarget`. Success reply (sent **before** the PTY write):
 {"ok": true, "pane_id": "<uuid>", "workspace_id": "<uuid>", "workspace_name": "dev", "bare": false, "label": "worker-1"}
 ```
 
-Then write to the pane's PTY:
-- `bare == true`: write the text bytes verbatim (no trailing Enter). Bracketed-paste
-  wrapping, if any, is the terminal write path's concern.
-- `bare == false`: write the text then an Enter keystroke, so the receiver runs it as a
-  command.
+Then write to the pane's PTY through the paste pipeline (`sendText` in
+`packages/daemon/src/pty/input.ts:136`; terminal-surface.md §9.1). Both bare and non-bare
+text go through `encodePasteText` (`pty/input.ts:97`): embedded `ESC[200~`/`ESC[201~`
+markers are removed, `\r\n`/`\n` become `\r`, remaining C0 controls and DEL are dropped (TAB
+and CR survive), and the result is wrapped in `ESC[200~ ... ESC[201~` only when the pane's
+live VT has bracketed paste on. The text is therefore never written verbatim: a `--bare`
+payload containing an escape sequence is silently filtered.
+- `bare == true`: write the filtered text alone (no trailing Enter).
+- `bare == false`: write the filtered text, then `\r` as a second, separate write outside the
+  envelope, so the receiver runs it as a command (a TUI sees a real submit).
 
+The write goes through `writeDirect`, so it is never mirrored to sync-group siblings.
 The same write helper is reused by the web-pane element picker (which defaults to bare).
 
 ### 4.6 `pane-send-key` → handlePaneSendKey
@@ -433,14 +473,22 @@ Validation order:
 1. `lines != null && lines <= 0` → `error("lines must be a positive integer (got {lines})")`.
    (The CLI pre-validates, but raw socket clients can send anything.)
 2. `resolvePaneTarget` (no `--target` ⇒ capture the caller's own pane, requires
-   NEX_PANE_ID).
+   KELPI_PANE_ID).
 3. Defensive pane lookup → `error("pane not found: {uuid}")`.
 4. Pane type must be `shell` → `error("pane is not a terminal (type: markdown)")` (the
    actual type raw value: `markdown`/`scratchpad`/`diff`/`web`).
+5. Flush a deferred first spawn: a pane whose first spawn is still waiting for a client's
+   geometry has no server-side terminal yet, so the handler runs that spawn now
+   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:95`) rather than answering with
+   an empty screen. A no-op for every other pane.
 
-Then asynchronously read the pane's terminal contents (viewport, or viewport + full
-scrollback when `includeScrollback`). If the surface died mid-read →
-`{ok:false,error:"pane closed during capture"}`. Apply `tailLines` when `lines` given:
+Without a reply handle the command is a no-op (a pure read has nothing to drop;
+`input.ts:74`). Then asynchronously read the pane's terminal contents (viewport, or viewport
++ full scrollback when `includeScrollback`). If the surface died mid-read →
+`{ok:false,error:"pane closed during capture"}`; if the read throws while the pane still
+exists (an emulator fault) → `{ok:false,error:"pane capture failed: <error>"}`
+(`input.ts:136`). Either way the client gets a line rather than waiting for an EOF that
+never comes. Apply `tailLines` when `lines` given:
 
 ```
 tailLines(text, n):
@@ -507,7 +555,11 @@ pane; they differ when the pane is the second child.)
 ### 4.10 `pane-move-adjacent` → handlePaneMoveAdjacent
 
 The CLI form of GUI drag-and-drop. Inputs: `paneID?`, `target` (moved pane), `anchor`
-(pane to dock against), `zone` (`top|bottom|left|right`), `workspaceFilter?`.
+(pane to dock against), `zone` (`above|below|left-of|right-of`, the wire vocabulary of
+wire-protocol.md §5.4; the CLI sends exactly those names and the decoder rejects anything
+else with `pane-move-adjacent requires zone above|below|left-of|right-of`,
+`packages/protocol/src/wire/decode.ts:259`), `workspaceFilter?`. Implemented in
+`packages/daemon/src/handlers/pane/geometry.ts`.
 
 1. Resolve the moved pane via `resolvePaneTarget`.
 2. Resolve the anchor via `resolvePaneInWorkspace(movedPane's workspace, anchor)` — the
@@ -515,8 +567,8 @@ The CLI form of GUI drag-and-drop. Inputs: `paneID?`, `target` (moved pane), `an
    Failure → `error("no pane matching '{anchor}' in workspace '{ws.name}'")` (covers
    missing, other-workspace, and ambiguous-label anchors alike).
 3. `anchorID == movedID` → `error("cannot move a pane adjacent to itself")`.
-4. Zone name mapping for the reply: `top→"above"`, `bottom→"below"`, `left→"left-of"`,
-   `right→"right-of"`.
+4. The reply echoes `zone` exactly as received; the handler converts it to the layout's
+   internal edge only for the move itself (`dropZoneForWireEdge`, `geometry.ts:173`).
 5. Reply (before the move):
 
 ```json
@@ -635,19 +687,23 @@ Workspace resolution (note: **not** `resolvePaneTarget`):
 1. `workspaceFilter` given → strict `resolveWorkspace` or
    `error("workspace not found: {filter}")`.
 2. else `paneID` given → `workspaceContainingPane(paneID)` (**parked panes count** here).
-3. else → `error("pane sync requires --workspace or NEX_PANE_ID")`.
+3. else → `error("pane sync requires --workspace or NEX_PANE_ID")`. (The error text is
+   contract and still names the legacy variable, `handlers/pane/sync.ts:28`; the variable a
+   pane actually carries is `KELPI_PANE_ID`.)
 
 `action` lowercased: `on` → nextActive true; `off` → false; `toggle` → `!current`;
 `status` → reply the current snapshot and stop (read-only, no mutation); anything else →
 `error("unknown sync action '{action}' (valid: on, off, toggle, status)")`.
 
-For the mutating verbs, the reply is a **predicted post-change snapshot** built before
-dispatch: copy the workspace, set `isSyncInputActive = nextActive`, and clear the excluded
-set when `nextActive == false`. Then dispatch the actual state change. (The real reducer
-clears the excluded set on **every** activation change and no-ops when the value is
-unchanged — so a `sync on` while already on keeps exclusions, and exclusions staged while
-sync was off are wiped on the next transition. The reply snapshot can diverge from final
-state only in the staged-while-off corner case; see Port notes.)
+For the mutating verbs the handler dispatches the activation change first
+(`set-sync-input-active`, `handlers/pane/sync.ts:87`) and replies with the snapshot of the
+resulting state, read back from the store (`replyWithCurrentSync`, `sync.ts:117`). The
+reducer clears the excluded set on **every** activation change and no-ops when the value is
+unchanged (`store/reducers/agent.ts:115`) — so a `sync on` while already on keeps
+exclusions, and exclusions staged while sync was off are wiped on the next transition. The
+reply therefore always equals final state; the predictive reply of the pre-port app, which
+could disagree in the staged-while-off corner case, is deliberately not reproduced (see
+Compatibility rationale, item 6).
 
 Sync status reply shape (shared by `status`, `on/off/toggle`, and `exclude/include`):
 
@@ -670,10 +726,11 @@ itself); non-shell panes are always filtered out.
 ### 4.14 `pane-sync-exclude` (exclude/include) → handlePaneSyncExclude
 
 Inputs: `paneID?`, `target` (required), `workspaceFilter?`, `excluded` (bool).
-Resolve via `resolvePaneTarget` (same scoping as `pane send`). Build the predicted
-snapshot (insert/remove the pane id in the excluded set), reply with the sync-status shape
-above, then dispatch the exclusion change (the reducer additionally no-ops when the pane
-id isn't in that workspace's visible panes, and refreshes the broadcast group).
+Resolve via `resolvePaneTarget` (same scoping as `pane send`). Dispatch the exclusion
+change (`set-sync-input-excluded`, `sync.ts:108`; the reducer no-ops when the pane id isn't
+in that workspace's visible panes or when the flag is unchanged), then reply with the
+sync-status shape above computed from the updated workspace, and refresh the broadcast
+group.
 
 ---
 
@@ -685,12 +742,14 @@ id isn't in that workspace's visible panes, and refreshes the broadcast group).
   get this for free (the workspace reducer does it); `pane-move-to-workspace` mutates
   state directly and therefore pushes snapshots for **both** source and target workspaces
   explicitly.
-- **persistState**: state persistence is debounced (500 ms full-state serialize). Handlers
-  that mutate app state inline emit an explicit persist: `pane-name`, `pane-resize`,
-  `pane-move-adjacent`, `pane-move-to-workspace`, `workspace-label`, `group-create`,
-  `group-reorder`/`group-sort`, `session-end`. Handlers that only dispatch workspace/app
-  actions rely on those actions' own persistence (`close-pane`, `split`, `create`,
-  `delete-workspace`, `move-workspace-to-group`, …).
+- **persistState**: state persistence is debounced (500 ms full-state serialize) and is
+  triggered by the store itself: boot subscribes the persistence layer to every store
+  change (`packages/daemon/src/boot/compose.ts:883`), so every dispatched action schedules a
+  save and no handler needs an explicit persist (the pane handlers never call one; the app
+  handlers' `deps.persist()` calls are redundant with the subscription). The one exception
+  is `session-end`, which forces an immediate flush via `persistNow`
+  (`handlers/app/events.ts:60`) so a cleared session id survives a crash before the next
+  launch (issue #178).
 - **sidebarScrollTarget**: creating a workspace or group over the socket records it as the
   sidebar scroll target so the GUI scrolls the new row into view (issue #187). Web port:
   same UX — scroll the sidebar to the newly created entity.
@@ -757,16 +816,24 @@ Three branches, checked in this order:
    - `worktreeBranch = branch (if non-empty) else worktree`;
      `safeBranch = sanitize(worktreeBranch)` or `error("\"{worktreeBranch}\" isn't a usable branch name")`
 4. Find the source repo in the repo registry by standardized path, or mint a new
-   `Repo{ id: uuid(), path, name: lastPathComponent }` (registered on success).
+   `Repo{ id: uuid(), path, name: lastPathComponent }` (registered on success). On success
+   an already-registered source repo is marked manually kept (`isAutoDiscovered = false`)
+   so the registry GC can never collect the parent of a worktree the user built on purpose;
+   a new repo is registered the same way (`handlers/app/workspaces.ts:300`, §GIT-103).
 5. `worktreePath = resolvedWorktreeBasePath(repoPath) + "/" + folderName`. The base path
    setting expands `~` and a `<repo>` placeholder (`<repo>` at the start ⇒ the full repo
    path; elsewhere ⇒ the repo's directory name).
-6. Pre-mint the workspace id. Then **asynchronously**:
-   - `updateMain == false`: `git worktree add <worktreePath> -b <safeBranch>` off current
-     HEAD.
+6. Pre-mint the workspace id. Then **asynchronously** (`worktreeAdd` in
+   `packages/daemon/src/git/service.ts:326`):
+   - `updateMain == false`: first try `git worktree add <worktreePath> <safeBranch>`, which
+     attaches the worktree to an already-existing local branch of that name; only if that
+     fails, `git worktree add -b <safeBranch> <worktreePath>` off current HEAD
+     (`service.ts:312`). It is this second command's stderr that feeds
+     `worktreeErrorMessage`. Net effect: a pre-existing branch named like the worktree is
+     reused rather than failing with "a branch named ... already exists".
    - `updateMain == true`: resolve the repo's default branch (via
-     `git ls-remote --symref`), `git fetch origin`, then create the worktree branched off
-     `origin/<default>`.
+     `git ls-remote --symref`), `git fetch origin`, then
+     `git worktree add -b <safeBranch> <worktreePath> origin/<default>`.
    - On success: dispatch workspace creation seeded with the worktree (name, color,
      `repos:[sourceRepo]`, resolved groupID, profile, the pre-minted id, and a worktree
      seed `{path, branchName}` so the first pane opens in the worktree and a repo
@@ -794,7 +861,14 @@ Pre-mint the id, **reply immediately** —
 
 — then dispatch workspace creation with `name`, `color`, `workingDirectory = path`,
 `profileName = profile`, and the pre-minted id (that action appends the workspace with one
-pane, spawns its surface, activates it, persists).
+pane, spawns its surface, activates it, persists). After every successful branch of this
+command the handler also broadcasts `{type: "reveal-pane", workspaceID, paneID}` to the
+attached clients (`revealCreatedWorkspace`, `handlers/app/workspaces.ts:207`): the active
+workspace is per client, and the reducer's `lastActiveWorkspaceID` moves only what
+`workspace list` calls active, so without the reveal a create issued from a terminal would
+leave every open window on the old workspace. Clients treat it as "activate the workspace,
+then focus the pane"; the issuing client reveals itself from the reply as well, and arriving
+twice is idempotent.
 
 #### (c) Group branch (no worktree, non-blank `group`)
 
@@ -820,14 +894,24 @@ pane, spawns its surface, activates it, persists).
 8. Effects: (i) spawn the first pane's terminal surface with env resolved from the
    assigned profile (falling back to the built-in `default` profile), and (ii) dispatch
    move-workspace-to-group(workspaceID, groupID, index) — which itself persists, so no
-   explicit persist here (it would race).
+   explicit persist here (it would race). Placing the workspace into the group also
+   force-expands the target group (`isCollapsed: false`,
+   `store/reducers/workspaces.ts:139`), so the new row is visible in the sidebar. The
+   `reveal-pane` broadcast described under (b) fires here too.
 
 ### 6.3 `workspace-move` → handleSocketWorkspaceMove (fire-and-forget)
 
 Inputs: `nameOrID`, `group?`, `index?`. Strict `resolveWorkspace`; null ⇒ silent no-op.
-`group == null` targets the top level; non-null must resolve via `resolveGroup` (creation
-deliberately unsupported here — that's `workspace-create --group`), null ⇒ silent no-op.
-Dispatch move-workspace-to-group(workspaceID, groupID-or-null, index).
+`group == null` (or an empty string, `handlers/app/workspaces.ts:522`) targets the top
+level; non-null must resolve via `resolveGroup` (creation deliberately unsupported here —
+that's `workspace-create --group`), null ⇒ silent no-op. Dispatch
+move-workspace-to-group(workspaceID, groupID-or-null, index, expandOnDrop).
+
+`expandOnDrop` carries the `expand-group-on-workspace-drop` setting (SET-012, default on;
+read live through `deps.expandGroupOnDrop`, `handlers/app/context.ts:70`). With the setting
+off, moving a workspace into a collapsed group leaves the group collapsed around the row it
+just swallowed (`workspaces.ts:528`). The sidebar's drag-and-drop is this same verb, so the
+setting is applied at the verb rather than at the gesture and governs the CLI form as well.
 
 ### 6.4 `workspace-delete` → handleWorkspaceDelete
 
@@ -858,6 +942,14 @@ if !force and n > 0:
   // literal noun: "agent" when n == 1, "agents" otherwise
   return
 ```
+
+The last-workspace guard has one caller allowed past it: the handler takes an `allowLast`
+flag and the guard is `state.workspaces.length <= 1 && !allowLast`
+(`handlers/app/workspaces.ts:475`). `allow_last` is deliberately **not** a wire field: the
+decoder never reads it (`packages/protocol/src/wire/decode.ts:325`), so nothing arriving over
+the control socket can set it and `kelpi workspace delete` still refuses. The GUI's own
+`delete-workspace` verb sets it when ⌘W closes the last pane of the last workspace, so that
+path runs through this handler and can reach zero workspaces (§WS-156 / §APP-067).
 
 Success reply, sent before the delete executes:
 
@@ -989,13 +1081,23 @@ The CLI's `kelpi open`/`kelpi md` markdown route. If `paneID` is set and some wo
 `panes` contain it: focus that pane, then open the markdown file in that workspace —
 reusing the caller's pane (converting it in place) when `reuse` is true, else opening a
 new markdown pane. Otherwise fall back to the active workspace (no reuse); with no active
-workspace, drop.
+workspace, drop. Afterwards refresh the workspace's sync group (`--here` parks a shell,
+which changes the broadcast group) (`handlers/app/files.ts:90`).
+
+A relative `path` is resolved before the open (`resolveAgainstPane`, `files.ts:54`,
+§CONT-130/131): it is joined onto the originating pane's working directory, else onto the
+target workspace's focused pane's; absolute and `~`-prefixed paths are left exactly as they
+came. The `kelpi` CLI absolutises before it sends, so this chain only affects raw socket
+clients and the shell's `open-file` forward, which would otherwise resolve against the
+daemon's own cwd.
 
 ### 8.2 `diff` → openDiff(repoPath, targetPath?, paneID?)
 
 Same routing shape: with a known `paneID`, focus it and open the diff pane in its
 workspace; else the active workspace. `repoPath` is the repo to diff, `targetPath` the
-optional path scope. Never reuses a pane.
+optional path scope. Never reuses a pane. Both `repo_path` and `target_path` go through the
+same relative-path resolution as `open` (`files.ts:100`), and the sync group is refreshed
+afterwards (`files.ts:120`).
 
 ### 8.3 `layout-cycle` → layoutCycle(paneID)
 
@@ -1014,6 +1116,12 @@ silently drop. Dispatch select-layout.
 
 Graft mirrors a worktree's changes onto its parent repo checkout via a background sync
 service. Sessions are keyed by **association id** (the workspace↔repo association's UUID).
+Handlers: `packages/daemon/src/handlers/app/graft.ts`.
+
+Every `ok:false` reply from the three verbs also carries a machine-readable `error_kind`
+(scope failures use `"scope"`, engine failures `graftErrorKind(err)`), and a partial start
+adds `partial_error_kind` (`graft.ts:8`). These fields are additive: the CLI ignores them,
+so future clients can branch on them without parsing prose.
 
 ### 9.1 Scope resolution — `resolveGraftAssociations(workspaceFilter, repoFilter, paneID)`
 
@@ -1030,6 +1138,8 @@ else if repoFilter != null:
   scope = ALL workspaces
 else:
   failure("graft requires --workspace, --repo, or NEX_PANE_ID")
+  // contract text; it still names the legacy variable (graft.ts:41) though the pane's
+  // env var is KELPI_PANE_ID
 
 results = []
 for ws in scope, for assoc in ws.repoAssociations:
@@ -1053,9 +1163,9 @@ order, ask the graft service to start a session. Collect successes as
 ```
 
 Reply:
-- all failed → `{"ok": false, "error": "<last error's description>"}` (fallback
-  `"graft start failed"` if no error text);
-- partial → `{"ok": true, "started": [...], "partial_error": "<last error>"}`;
+- all failed → `{"ok": false, "error": "<last error's description>", "error_kind": …}`
+  (fallback `"graft start failed"` if no error text) (`graft.ts:144`);
+- partial → `{"ok": true, "started": [...], "partial_error": "<last error>", "partial_error_kind": …}`;
 - all succeeded → `{"ok": true, "started": [...]}`.
 
 ### 9.3 `graft-stop`
@@ -1082,9 +1192,15 @@ if repoFilter != null:
 
 if targetIDs empty: reply {"ok": true, "stopped": []}    // NOT an error
 else:
-  stop each; collect successes (uuid strings) and failures {"association_id", "error"}
+  stop each; collect successes (uuid strings) and failures {"association_id", "error", "error_kind"}
   reply {"ok": <failures empty>, "stopped": [...], "failed": [...]?}   // "failed" only when non-empty
 ```
+
+A partial or full stop failure additionally carries a top-level summary `error` (the single
+failure's text, or `"N graft sessions failed to stop: <errors joined by '; '>"`) plus
+`error_kind` from the first failure (`graft.ts:247`). The shipped CLI runs its generic
+envelope check first and would otherwise print "unknown error" without ever rendering the
+`failed` list; `failed` stays for clients that do render it.
 
 ### 9.4 `graft-status`
 
@@ -1116,17 +1232,36 @@ Always succeeds:
 {"ok": true, "version": "0.32.0", "build": "123", "pid": 48213}
 ```
 
-`version`/`build` from the app's version metadata (`"unknown"` fallback); `pid` is the
+`version`/`build` from the daemon's version metadata (`"unknown"` fallback); `pid` is the
 server process id (used by `kelpi doctor` to triage stale socket files and CLI/app drift).
+
+The reply carries further additive blocks (`packages/daemon/src/handlers/app/ping.ts:33`),
+read by `kelpid status` and `kelpi doctor`:
+
+- `protocol`: the wire protocol version.
+- `tcp {requested, host, bound?, error?}`: present when a TCP listener was configured; a
+  daemon whose `tcp-port` never bound still answers on the Unix socket, and this block is
+  where that stops being invisible (§SET-021 / §AGNT-005).
+- `compat {path, error}`: present when the shared compatibility socket could not be bound
+  (for example because another Kelpi owns it).
+- `pane_route`: the `KELPI_SOCKET` value injected into panes.
+- `persistence {ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:
+  the persistence layer's health.
 
 ---
 
 ## 11. `socketSubscriberDisconnected(replyID)`
 
-Synthetic message from the transport whenever a client connection carrying a reply handle
-drops. Fires for **every** dropped handle, not just streaming ones — the handler must be a
-cheap no-op for ordinary request/response calls. Behavior: remove `replyID` from every
-pane's web-console subscriber map, then drop panes whose subscriber maps became empty.
+There is no synthetic message and nothing is dispatched. Disconnect is a callback on the
+reply handle: `onDisconnect(cb)` registers a callback, and when the peer vanishes the
+transport calls the handle's `peerGone()`, which fires every registered callback exactly
+once (`packages/daemon/src/control/reply.ts:48`, `:92`); registering on a handle that is
+already dead runs the callback immediately. A streaming handler (today only
+`web-console --follow`) sends the drain as line 1, keeps the handle open, and does
+`reply.onDisconnect(unsubscribe)` so its console subscriber slot is released when the
+client hangs up; when the pane closes the service's `end` callback closes the handle
+instead (`packages/daemon/src/webpane/handlers.ts:470`). Ordinary request/response
+handlers register nothing and pay nothing.
 
 ---
 
@@ -1137,11 +1272,12 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (the only streaming command), `web-inspect`,
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
-`web-cookies-delete`, `web-click`, `web-type`, `web-qtext`, `web-qattr`, `web-qcount`,
-`web-qexists`, `web-qdom`, `web-wait`, `web-select`, `web-scroll`, `web-hover`, `web-key`,
-`web-exec`. All of them (except `web-open`, which takes only `paneID`/`url`/`isPrivate`)
-scope their target via the tuple `{paneID?, target?, workspaceFilter?}` with resolution
-semantics analogous to `resolvePaneTarget` but restricted to web panes.
+`web-cookies-delete`, `web-click`, `web-type`, `web-q-text`, `web-q-attr`, `web-q-count`,
+`web-q-exists`, `web-q-dom`, `web-wait`, `web-select`, `web-scroll`, `web-hover`, `web-key`,
+`web-exec` (handler table in `packages/daemon/src/webpane/handlers.ts`). All of them (except
+`web-open`, which takes only `paneID`/`url`/`isPrivate`) scope their target via the tuple
+`{paneID?, target?, workspaceFilter?}` with resolution semantics analogous to
+`resolvePaneTarget` but restricted to web panes.
 
 ---
 
@@ -1165,10 +1301,10 @@ semantics analogous to `resolvePaneTarget` but restricted to web panes.
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |
-| graft-start | `started: [...]`, `partial_error?` |
-| graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed) |
+| graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |
+| graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
-| ping | `version`, `build`, `pid` |
+| ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `persistence?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,
@@ -1176,83 +1312,89 @@ Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directiona
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-Things the TypeScript daemon must get right, or may deliberately do differently:
+These items record quirks that Kelpi preserves on purpose so the pre-port `kelpi` CLI, the
+hook scripts and saved state keep working; each explains why the code does something odd.
 
 1. **Two workspace resolvers with different semantics.** The strict resolver
    (UUID-wins → case-sensitive exact unique name → null) backs almost everything; the
-   lenient static resolver (UUID → case-insensitive **first-match** name → slug) backs only
-   `pane-move-to-workspace` and graft's `--workspace`. Port both as-is for CLI
-   compatibility; consider unifying later behind a flag, but note the lenient one has **no
-   ambiguity guard** — two workspaces named "Dev"/"dev" resolve to whichever comes first
-   in state order.
+   lenient resolver (UUID → case-insensitive **first-match** name → slug) backs only
+   `pane-move-to-workspace` and graft's `--workspace`. Both are kept as-is for CLI
+   compatibility (`packages/core/src/resolve/workspace.ts`); they could be unified later
+   behind a flag, but note the lenient one has **no ambiguity guard** — two workspaces named
+   "Dev"/"dev" resolve to whichever comes first in state order.
 2. **Error strings are contract.** The CLI prints them verbatim and scripts grep them
-   (e.g. the delete flow keys off `active_agents`, doctor keys off ping fields). Copy them
-   character-for-character, including the backticked repair hints and the smart em-dash
-   free phrasing shown above.
+   (e.g. the delete flow keys off `active_agents`, doctor keys off ping fields). The daemon
+   emits them character-for-character, including the backticked repair hints and the em-dash
+   free phrasing shown above. This is also why two of them (`pane sync requires --workspace
+   or NEX_PANE_ID`, `graft requires --workspace, --repo, or NEX_PANE_ID`) still name the
+   legacy `NEX_PANE_ID` variable even though the pane's env var is `KELPI_PANE_ID`.
 3. **Reply-before-effect + pre-minted UUIDs.** `pane-split`/`pane-create` ack with a pane
-   id that does not exist yet; the id is threaded into the creation path. The daemon must
-   guarantee the created pane gets exactly the acked id (single-threaded state mutation
-   makes this trivial in Node; do not introduce an await between mint and enqueue that
-   could let another command interleave a conflicting layout change).
-4. **`reply == null` legacy path.** Every handler must run its guards and perform the
-   side effect on success even with no reply handle. Do not make the reply handle
-   load-bearing for the mutation.
+   id that does not exist yet; the id is threaded into the creation path. The daemon
+   guarantees the created pane gets exactly the acked id (single-threaded state mutation
+   makes this trivial in Node; there is no await between mint and dispatch that could let
+   another command interleave a conflicting layout change).
+4. **`reply == null` legacy path.** Every handler runs its guards and performs the side
+   effect on success even with no reply handle. The reply handle is never load-bearing for
+   the mutation (`sendOK`/`ok` are no-ops on a null handle).
 5. **Parked-pane asymmetry.** Agent lifecycle routing, `pane-sync`'s implicit scope, and
-   graft's pane scope use the parked-inclusive lookup; every user pane command
-   (`resolvePaneTarget`, list, capture, etc.) sees only visible panes. If the new
-   architecture drops the parked-pane concept, the lifecycle handlers can share one
-   lookup — but `pane list` must still never show a non-layout pane.
-6. **`pane-sync` reply is a prediction.** The reply snapshot clears exclusions only when
-   turning sync **off**, while the authoritative state change clears them on *every*
-   activation transition and no-ops when unchanged. Divergence is visible only when
-   exclusions were staged while sync was off and the caller then runs `sync on` — the
-   reply would report them excluded though the final state cleared them. A port may fix
-   this by computing the reply from post-mutation state (recommended), since the current
-   behavior is arguably a bug, but be aware the Swift app ships the predictive version.
-7. **NSApp.isActive / dock bounce.** The stop/notification suppression logic depends on
-   "is the app frontmost" and "is this pane focused in the active workspace". In the
-   daemon+web world, define `isAppActive` as "any connected client has window focus" (or
-   per-client) and route the attention request (dock bounce) to the Electron shell;
-   desktop notifications go through whichever client(s) can display them. Keep the
-   background-task suppression rule exactly: count > 0 ⇒ pane stays `running`, no
-   synthetic notification, no bounce.
-8. **ISO 8601 formatting differs by handler.** `pane-list` uses the internet date-time
-   option; `workspace-list` and graft use default ISO 8601 formatting. In practice both
-   emit `YYYY-MM-DDThh:mm:ssZ`; in TS, `new Date().toISOString()` adds milliseconds —
-   strip them (`.replace(/\.\d{3}Z$/, "Z")`) to match.
+   graft's pane scope use the parked-inclusive lookup (`workspaceContainingPane`); every user
+   pane command (`resolvePaneTarget`, list, capture, etc.) sees only visible panes
+   (`workspaceContainingVisiblePane`). `pane list` never shows a non-layout pane.
+6. **`pane-sync` reply is computed from post-mutation state.** The pre-port app replied with
+   a prediction that cleared exclusions only when turning sync **off**, while the
+   authoritative state change clears them on *every* activation transition and no-ops when
+   unchanged; the two diverged when exclusions were staged while sync was off and the caller
+   then ran `sync on` (the reply reported them excluded though the final state cleared
+   them). Kelpi dispatches first and reads the workspace back (`handlers/pane/sync.ts:117`),
+   so the reply always matches final state. The reducer's clear-on-every-transition and
+   no-op-when-unchanged rules are unchanged.
+7. **App-active / dock bounce.** The stop/notification suppression logic depends on "is the
+   app frontmost" and "is this pane focused in the active workspace". In the daemon+client
+   world `isAppActive` is "any attached client window is visible" (`boot/compose.ts:1099`),
+   `isFocused` comes from the client-aware `deps.isPaneFocused` when one is wired (else the
+   daemon's last-active workspace + focused pane), the attention request is broadcast to the
+   attached clients and the Electron shell bounces the dock, and desktop notifications are
+   broadcast to whichever client(s) can display them. The background-task suppression rule
+   is kept exactly: count > 0 ⇒ pane stays `running`, no synthetic notification, no bounce.
+8. **ISO 8601 formatting is uniform.** `pane-list`, `workspace-list` and graft all emit
+   `YYYY-MM-DDThh:mm:ssZ` at seconds precision; `wireTimestamp` in
+   `handlers/app/common.ts` strips the milliseconds `toISOString()` would add so the output
+   matches what scripts already parse.
 9. **Stable orderings in replies.** `synced_pane_ids` and the `excluded` array are sorted
    by UUID string; `pane-list` follows layout-tree leaf order; `workspace-list`/`group-list`
    follow sidebar order with a dedupe + never-hide append; `group-reorder`'s reply filters
-   dangling ids while the stored order keeps them at the tail. Scripts diff these outputs;
-   preserve the sorts.
+   dangling ids while the stored order keeps them at the tail. Scripts diff these outputs,
+   so the sorts are preserved.
 10. **The split-path encoding** (`"d"` + `L`/`R` per level, first-child ratio storage,
     clamp [0.1, 0.9]) leaks into the `pane-resize` reply (`split_path`, `ratio`,
-    `target_share`). The port's layout tree must expose the same addressing or translate
-    at the reply boundary.
+    `target_share`). The layout tree exposes the same addressing
+    (`handlers/pane/geometry.ts`, pane-layout.md §12.5).
 11. **Worktree create is the only handler that mutates git.** It is async, replies late,
-    and must not create groups (ambiguous/unknown group is rejected up front, before the
+    and never creates groups (ambiguous/unknown group is rejected up front, before the
     worktree add, precisely so a failure can't orphan a group). Error text mining from git
-    stderr (last `fatal:`/`error:` line) is part of the UX.
+    stderr (last `fatal:`/`error:` line, `git/names.ts:85`) is part of the UX.
 12. **Preset back-fill on labels** dispatches one add-preset per introduced label with the
     gray default and relies on add-preset being a no-op for existing names. `add` marks
     *all* normalized values as introduced (even already-present ones) — harmless because
-    of the no-op, but keep it or dedupe consciously.
-13. **Persistence triggers.** Inline-mutating handlers (§5 list) must schedule a persist;
-    dispatched-action handlers rely on the target action persisting. When porting to a
-    single state store, the simplest faithful model is: any handler that changed state
-    schedules the debounced persist.
+    of the no-op, and kept as-is.
+13. **Persistence triggers.** With a single state store the model is the simplest faithful
+    one: any dispatched action schedules the debounced persist, because boot subscribes the
+    persistence layer to the store (`boot/compose.ts:883`). The explicit `deps.persist()`
+    calls in the app handlers are redundant with that subscription; `session-end` alone
+    forces an immediate flush.
 14. **The `notification` command mutates status.** It is not just a toast: it routes
     through the agent-stopped state machine with the background count. Dropping that
     coupling would break the "awaiting input" status on Claude permission prompts.
-15. **`pane-capture` is the only pane command with an async read**; handle the
-    surface-died race with the exact `"pane closed during capture"` error. In the port,
-    the terminal state lives in-process (ghostty-vt), so the race window shrinks but the
-    pane can still close between resolution and read.
+15. **`pane-capture` is the only pane command with an async read**; the surface-died race
+    answers with the exact `"pane closed during capture"` error. The terminal state lives
+    in-process (ghostty-vt), so the race window is small, but the pane can still close
+    between resolution and read, and a read that throws while the pane still exists gets
+    the distinct `"pane capture failed: …"` line instead.
 16. **Zoom interactions.** `pane-resize` refuses while zoomed (specific error), and
     `pane-move-to-workspace` un-zooms by restoring the saved layout minus the moved pane.
-    Any port of zoom must preserve these two touch points.
+    Both touch points are preserved.
 17. **`workspace-delete --prune-worktree` is client-side.** The server's only contribution
-    is the `path` field (first shell pane's cwd). Keep emitting it or the CLI flag
-    silently stops working.
+    is the `path` field (first shell pane's cwd). It keeps emitting it; otherwise the CLI
+    flag would silently stop working.

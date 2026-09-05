@@ -5109,6 +5109,28 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
      * per-rect one — the window behind it is not to be read while it is up.
      */
     useModalPresence();
+    /*
+     * kelpi#53 (shell-ui.md §12): "All confirmations put Cancel as the default/Return button".
+     * This dialog had no key handling at all, so Return and Escape were inert in the
+     * workspace, bulk and group deletes while `AgentDeleteGate` (App.tsx, H18) and
+     * `QuitConfirmDialog` already answered both. Same contract as those two: Escape AND Return
+     * take the safe answer, and the suppression box is honoured on the way out exactly as a
+     * Cancel click would (macOS HIG, `WorkspaceDeleteGate.swift:78`). Capture phase, so a
+     * pane's own key handling cannot swallow the way out of a modal.
+     */
+    const { onCancel } = props;
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.key !== 'Escape' && event.key !== 'Enter') return;
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel(suppress);
+        };
+        globalThis.window.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            globalThis.window.removeEventListener('keydown', onKeyDown, true);
+        };
+    }, [onCancel, suppress]);
     const container = globalThis.document?.body;
     if (container === undefined || container === null) return null;
     const isGroup = props.confirm.kind === 'group';

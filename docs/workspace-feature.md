@@ -131,14 +131,22 @@ interface Pane {
                                     // closed-pane snapshots so reopen keeps it)
   parkedSourcePaneID: string | null; // set on panes created by `kelpi open --here`:
                                     // points at the parked source pane. TRANSIENT.
-  agentStartedAt: string | null;    // ISO timestamp; when the current run entered
-                                    // "running". Drives the "claude · mm:ss" badge.
+  agentStartedAt: EpochMilliseconds | null; // epoch MILLISECONDS (JS `Date.now()`,
+                                    // packages/core/src/layout/pane.ts:43,78; the agent
+                                    // machine stamps it with `now` in ms,
+                                    // packages/core/src/agent/machine.ts:89). NOT the
+                                    // Unix-seconds encoding of createdAt/lastActivityAt:
+                                    // mixing the two silently renders a "0s" badge.
+                                    // When the current run entered "running". Drives
+                                    // the "claude · mm:ss" badge.
                                     // TRANSIENT (a restored running pane shows no timer
                                     // until the agent re-emits a start).
   backgroundTaskCount: number;      // default 0; Claude Code background units still in
                                     // flight after the last Stop. TRANSIENT.
-  createdAt: string;                // ISO timestamp
-  lastActivityAt: string;           // ISO timestamp; bumped on title/cwd changes
+  createdAt: EpochSeconds;          // Unix seconds (float), the persistence encoding
+                                    // (packages/core/src/layout/pane.ts:35,81)
+  lastActivityAt: EpochSeconds;     // Unix seconds (float); bumped on title/cwd changes
+                                    // (packages/core/src/layout/pane.ts:82)
 }
 
 const DEFAULT_MARKDOWN_FONT_SIZE = 14;

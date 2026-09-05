@@ -1,6 +1,6 @@
 /**
  * General settings parsing.
- * Spec: docs/current/config-keybindings.md §1.2, §10, §11, §12, §8.1.
+ * Spec: docs/config-keybindings.md §1.2, §10, §11, §12, §8.1.
  */
 
 import { parseConfigLines } from './lines.js';

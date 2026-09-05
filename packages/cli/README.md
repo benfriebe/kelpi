@@ -5,7 +5,7 @@ A TypeScript rewrite of the shipped Swift `nex` binary (`nex 0.32.0`, bundled at
 the same streams, and exits with the same codes, so it is a drop-in replacement for scripts,
 agents and the Claude Code / Codex hooks.
 
-Contract: [`docs/current/cli.md`](../../docs/current/cli.md). Measured deltas of the shipped
+Contract: [`docs/cli.md`](../../docs/cli.md). Measured deltas of the shipped
 binary: [`docs/compat-status.md`](../../docs/compat-status.md).
 
 ## Install

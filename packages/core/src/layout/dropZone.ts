@@ -1,6 +1,6 @@
 /**
  * Drag-and-drop drop zones and the `movingPane` primitive.
- * Spec: docs/current/pane-layout.md §5, §7.5.
+ * Spec: docs/pane-layout.md §5, §7.5.
  */
 
 import type { PaneID, PaneLayout, Point, Rect, SplitDirection } from './types.js';

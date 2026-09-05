@@ -1,5 +1,5 @@
 /**
- * The system-wide global hotkey (docs/current/config-keybindings.md §8).
+ * The system-wide global hotkey (docs/config-keybindings.md §8).
  *
  * Port note 8 of that doc puts this squarely in the Electron shell: the daemon has no OS
  * focus to steal and a browser tab cannot register a system hotkey. What has to survive the

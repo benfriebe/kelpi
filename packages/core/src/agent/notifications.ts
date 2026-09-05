@@ -1,6 +1,6 @@
 /**
  * The notification / attention suppression matrix.
- * Spec: docs/current/agent-lifecycle.md §7.1–7.3, invariant 6.
+ * Spec: docs/agent-lifecycle.md §7.1–7.3, invariant 6.
  *
  * The daemon supplies focus + visibility (multi-client: `isAppActive` = any connected
  * client is visible/focused, `isFocused` = that pane is the focused pane of the active

@@ -1,6 +1,6 @@
 /**
  * `normalizeURLInput` — shared by web-pane open / navigate / tab-open.
- * Spec: docs/current/workspace-feature.md §7.6.
+ * Spec: docs/workspace-feature.md §7.6.
  */
 
 const SCHEME_CHARS = /^[A-Za-z][A-Za-z0-9+\-.]*$/;

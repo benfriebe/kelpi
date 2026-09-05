@@ -1,6 +1,6 @@
 /**
  * `profile = <name>:<KEY>=<value>` line parsing and serialization.
- * Spec: docs/current/config-keybindings.md §1.5, §1.6.
+ * Spec: docs/config-keybindings.md §1.5, §1.6.
  */
 
 import { parseConfigLines } from './lines.js';

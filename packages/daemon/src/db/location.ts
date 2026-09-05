@@ -1,7 +1,7 @@
 /**
  * Where the daemon's database lives.
  *
- * Spec: docs/current/persistence.md §1 (the Mac app's `~/Library/Application Support/Nex/nex.db`,
+ * Spec: docs/persistence.md §1 (the Mac app's `~/Library/Application Support/Nex/nex.db`,
  * directory created on startup) and Port notes ("a headless daemon should choose an XDG-style
  * path … on first run MIGRATE by copying the legacy macOS path's file if present").
  *

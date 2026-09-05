@@ -76,7 +76,7 @@ Three channels, one source of truth:
 1. **Control protocol (compat)** — the existing newline-JSON `{"command": …}` protocol on
    `/tmp/nex.sock` + optional TCP, byte-compatible with the current CLI: same commands, same
    reply framing (`{"ok":true,…}` / `{"ok":false,"error":…}`), same fire-and-forget vs
-   request/response split. Spec: `docs/current/wire-protocol.md` + `socket-handlers.md`.
+   request/response split. Spec: `docs/wire-protocol.md` + `socket-handlers.md`.
 2. **State sync (WS)** — clients receive a full snapshot on attach, then ordered deltas
    (JSON patches of the domain store). Client sends commands (the same verbs as the control
    protocol, plus UI-only ones like focus). Includes a protocol-version hello; too-old clients
@@ -102,7 +102,7 @@ ring buffer (default ~1MB/pane, spooling to disk optional later).
 ## Client
 
 - **Rendering**: ghostty-web per terminal pane; DOM/CSS grid for the layout tree (ported
-  `PaneLayout` algorithms, spec in `docs/current/pane-layout.md`); markdown/diff panes render
+  `PaneLayout` algorithms, spec in `docs/pane-layout.md`); markdown/diff panes render
   client-side from daemon-provided file content + change events.
 - **State**: a thin store that mirrors daemon state (snapshot + deltas). No client-side domain
   logic beyond optimistic echo; every mutation is a command to the daemon.

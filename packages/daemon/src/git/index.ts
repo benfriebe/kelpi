@@ -1,8 +1,8 @@
 /**
  * WP2.5b — the daemon's minimal git service.
  *
- * Spec: docs/current/graft-git.md §3 (process conventions + API), §8 (worktree flows);
- * docs/current/app-state-core.md §4.2 (worktree create), §4.2.1–4.2.3 (name/path/error helpers).
+ * Spec: docs/graft-git.md §3 (process conventions + API), §8 (worktree flows);
+ * docs/app-state-core.md §4.2 (worktree create), §4.2.1–4.2.3 (name/path/error helpers).
  */
 
 export {

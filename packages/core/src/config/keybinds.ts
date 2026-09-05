@@ -1,6 +1,6 @@
 /**
  * `keybind = <trigger>=<action>` line parsing.
- * Spec: docs/current/config-keybindings.md §1.4.
+ * Spec: docs/config-keybindings.md §1.4.
  */
 
 import { parseKeybindValue } from './bindings.js';

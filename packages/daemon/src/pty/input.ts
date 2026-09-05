@@ -1,9 +1,9 @@
 /**
  * TerminalInput — programmatic input encoding for `pane send` / `pane send-key`.
  *
- * Spec: docs/current/terminal-surface.md §9.1 (paste framing + Enter-as-keystroke),
+ * Spec: docs/terminal-surface.md §9.1 (paste framing + Enter-as-keystroke),
  * §9.2 (named-key table, DECCKM-aware arrows, raw-byte ctrl-c), §15.5–15.6;
- * docs/current/wire-protocol.md §5.6 (vocabulary + the exact unknown-key error string).
+ * docs/wire-protocol.md §5.6 (vocabulary + the exact unknown-key error string).
  *
  * Both paths must work with **zero clients attached**, so every byte is produced here, in
  * the daemon, from the pane's live VT modes. Neither path mirrors to sync siblings: §8.2

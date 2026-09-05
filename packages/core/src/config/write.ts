@@ -1,7 +1,7 @@
 /**
  * Config writers as pure text transforms: take the current file contents (null when the
  * file does not exist) and return the new contents. The daemon owns mkdir + atomic write.
- * Spec: docs/current/config-keybindings.md §1.3, §1.6.
+ * Spec: docs/config-keybindings.md §1.3, §1.6.
  */
 
 import { KELPI_ACTIONS, UNBIND_ACTION } from './actions.js';

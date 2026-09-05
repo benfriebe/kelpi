@@ -2,7 +2,7 @@
  * Group lifecycle: create (with the exact anchor math), rename/color/icon, collapse, delete
  * (promote or cascade), top-level move, and child-order reorder/sort.
  *
- * Spec: docs/current/app-state-core.md §5; docs/current/socket-handlers.md §7.4
+ * Spec: docs/app-state-core.md §5; docs/socket-handlers.md §7.4
  * (`group-reorder` / `group-sort` semantics, including the dangling-id preservation rule).
  */
 

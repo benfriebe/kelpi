@@ -210,7 +210,7 @@ resort, not the first.
   auto-update — is in the repo README's *Install and run* section.
 - **Visual web panes**: the host (above) is a headless automation surface; putting the views on
   screen at the pane's rect needs a client→shell channel (there is deliberately no preload
-  bridge yet) and the chrome from `docs/current/web-pane.md` §16 in the client.
+  bridge yet) and the chrome from `docs/web-pane.md` §16 in the client.
 - **The GUI-only web surfaces**: element-pickup batch mode (§12), favourites (§14) and the
   find-in-page bar (§10) have no wire verbs today; `webhost/dispatch.ts` already answers `find`
   and `zoom` so wiring them daemon-side is a handler, not a port.

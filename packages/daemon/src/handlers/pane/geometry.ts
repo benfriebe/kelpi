@@ -1,7 +1,7 @@
 /**
  * Layout-affecting pane commands: `pane-resize`, `pane-move` (directional),
  * `pane-move-adjacent` and `pane-move-to-workspace`.
- * Spec: docs/current/socket-handlers.md §4.8–§4.11, pane-layout.md §12.5 (share ↔ ratio).
+ * Spec: docs/socket-handlers.md §4.8–§4.11, pane-layout.md §12.5 (share ↔ ratio).
  *
  * `pane-move` and `pane-move-to-workspace` are fire-and-forget: every guard still runs, but a
  * failure is silent because there is nobody to tell.

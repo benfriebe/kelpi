@@ -1,6 +1,6 @@
 /**
  * Agent state model.
- * Spec: docs/current/agent-lifecycle.md §1, workspace-feature.md §7.10.
+ * Spec: docs/agent-lifecycle.md §1, workspace-feature.md §7.10.
  */
 
 /** Serialized verbatim (DB `status` column and `pane list --json`'s `status`). */

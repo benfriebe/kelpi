@@ -1,5 +1,5 @@
 /**
- * The transient rules (docs/current/persistence.md §7.1–7.3) applied to a decoded legacy
+ * The transient rules (docs/persistence.md §7.1–7.3) applied to a decoded legacy
  * snapshot. The load-bearing one: statuses go, session ids stay.
  */
 

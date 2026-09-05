@@ -1,8 +1,8 @@
 /**
  * Derived reads over `DaemonState` — no mutation, no IO.
  *
- * Specs: docs/current/app-state-core.md §2.2 (visibleWorkspaceOrder), §9.4 (summaries),
- * §15 (resolution helpers); docs/current/workspace-feature.md §1.10 (syncedPaneIDs,
+ * Specs: docs/app-state-core.md §2.2 (visibleWorkspaceOrder), §9.4 (summaries),
+ * §15 (resolution helpers); docs/workspace-feature.md §1.10 (syncedPaneIDs,
  * activeAgentCount), §3.6 (pane lookup across lanes).
  */
 

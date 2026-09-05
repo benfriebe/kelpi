@@ -6,7 +6,7 @@
  * from two numbers: how many panes are running an agent and how many are waiting for input.
  * That drives the dock badge, the dock bounce, the tray icon + menu, and the quit dialog.
  *
- * Rules taken verbatim from docs/current/agent-lifecycle.md §8:
+ * Rules taken verbatim from docs/agent-lifecycle.md §8:
  *   - **§8.1 aggregation** walks all workspaces × VISIBLE panes. Parked panes are excluded
  *     here (they ARE counted by the quit/delete gates — a different rule, §10.3).
  *   - **§8.2 waiting-wins precedence**: the indicator shows waiting whenever waiting > 0,

@@ -1,6 +1,6 @@
 /**
  * Structural queries and mutations over the layout tree.
- * Spec: docs/current/pane-layout.md §3, §4, §6.1.
+ * Spec: docs/pane-layout.md §3, §4, §6.1.
  *
  * Every mutation returns a NEW tree; inputs are never modified.
  * Sharp edges (silent pane loss in `movingPane`, one-way rename in

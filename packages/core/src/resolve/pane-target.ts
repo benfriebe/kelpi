@@ -1,6 +1,6 @@
 /**
  * Pane resolution: `resolvePaneTarget`, the anchor resolver, and the lifecycle lookup.
- * Spec: docs/current/socket-handlers.md §2.4–2.7, wire-protocol.md §5.7,
+ * Spec: docs/socket-handlers.md §2.4–2.7, wire-protocol.md §5.7,
  * app-state-core.md §15.2.
  *
  * The error strings below are WIRE CONTRACT - the CLI surfaces them verbatim as

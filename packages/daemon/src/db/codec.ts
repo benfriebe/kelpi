@@ -1,7 +1,7 @@
 /**
  * Row ↔ domain mapping for `PersistedSnapshot`.
  *
- * Spec: docs/current/persistence.md §2 (columns), §3 (JSON encodings), §5.4 (save-side field
+ * Spec: docs/persistence.md §2 (columns), §3 (JSON encodings), §5.4 (save-side field
  * mapping), §6.1 (read + decode), §6.3 (slug backfill), §9 items 5–8 (graceful degradation).
  *
  * Every encoded column goes through `@kelpi/core/codec` — the Swift-compatible codecs — and

@@ -1,8 +1,8 @@
 /**
  * The persisted projection of `DaemonState` plus the boot-time reset.
  *
- * Specs: docs/current/persistence.md §2 (schema), §6 (load path), §7 (persisted vs transient);
- * docs/current/app-state-core.md §12.3 (stateLoaded); docs/current/workspace-feature.md §1.9.
+ * Specs: docs/persistence.md §2 (schema), §6 (load path), §7 (persisted vs transient);
+ * docs/app-state-core.md §12.3 (stateLoaded); docs/workspace-feature.md §1.9.
  *
  * `PersistedSnapshot` is deliberately DB-agnostic: it is the exact set of fields that survive a
  * restart, in domain shapes. WP2.6 maps it onto the SQLite rows (JSON columns via

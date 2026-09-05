@@ -6,7 +6,7 @@
  * mirroring, kill-escalation, and registry logic testable with a stub transport while the
  * real integration tests spawn real shells through the same code path.
  *
- * Spec: docs/current/terminal-surface.md §1.2 (registry), §2 (spawn config), §8 (sync).
+ * Spec: docs/terminal-surface.md §1.2 (registry), §2 (spawn config), §8 (sync).
  */
 
 /** One live pseudoterminal. Listener registration is single-consumer (the manager). */

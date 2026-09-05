@@ -1,6 +1,6 @@
 /**
  * Pane layout module — pure, dependency-free layout tree + geometry.
- * Spec: docs/current/pane-layout.md
+ * Spec: docs/pane-layout.md
  *
  * Consumed by the daemon (pane-* / layout-* wire commands), the client (frame
  * and divider geometry, drag-drop) and persistence. Frame math must be

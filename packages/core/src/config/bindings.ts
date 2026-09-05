@@ -1,6 +1,6 @@
 /**
  * The keybinding map: defaults, override application, lookups.
- * Spec: docs/current/config-keybindings.md §1.4, §5.1, §5.2.
+ * Spec: docs/config-keybindings.md §1.4, §5.1, §5.2.
  */
 
 import { isKelpiAction, UNBIND_ACTION } from './actions.js';

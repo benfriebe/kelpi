@@ -2,7 +2,7 @@
  * The import itself: read a legacy database, convert it, write it into a TARGET daemon
  * database through the existing `db/` layer — one transaction, nothing hand-rolled.
  *
- * Spec: docs/current/persistence.md §5.3 (clear + reinsert inside ONE transaction — which is
+ * Spec: docs/persistence.md §5.3 (clear + reinsert inside ONE transaction — which is
  * exactly what `SqlitePersistence.saveNow` does), §6 (load), Port notes ("on first run MIGRATE
  * by copying the legacy macOS path's file if present so existing users keep their workspaces").
  *

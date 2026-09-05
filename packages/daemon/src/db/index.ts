@@ -4,7 +4,7 @@
  * `createPersistence()` is the seam (`Persistence<PersistedSnapshot>`); everything else is
  * exported for boot-time diagnostics, the M8 legacy-import utility, and tests.
  *
- * Spec: docs/current/persistence.md.
+ * Spec: docs/persistence.md.
  */
 
 export {

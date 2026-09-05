@@ -1,9 +1,9 @@
 /**
  * Boot step: the one-shot legacy-label → preset back-fill.
  *
- * Spec: docs/current/app-state-core.md §6.5 (the gate and what it does), §6.4 (`addLabelPreset`
+ * Spec: docs/app-state-core.md §6.5 (the gate and what it does), §6.4 (`addLabelPreset`
  * is idempotent by name), §13 note 13 ("the marker must be set on fresh installs too, or a
- * later launch resurrects deleted presets"); docs/current/persistence.md §6.2 step 9 (where in
+ * later launch resurrects deleted presets"); docs/persistence.md §6.2 step 9 (where in
  * the restore sequence it runs). Swift: `AppReducer.migrateLabelsToPresets` +
  * `PresetsFeature.applyMigratedLabels` + `LabelPresetsStorage.migratedKey`.
  *

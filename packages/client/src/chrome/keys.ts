@@ -1,7 +1,7 @@
 /**
  * The single keydown interceptor (WP3.5).
  *
- * Spec: docs/current/config-keybindings.md §7.2 (the pane-shortcut monitor pipeline) and §5
+ * Spec: docs/config-keybindings.md §7.2 (the pane-shortcut monitor pipeline) and §5
  * (the binding map). The map itself is NOT re-implemented here — `@kelpi/core/config` owns the
  * defaults, the override application and the trigger identity, so the client and the daemon
  * agree on what a config file means by construction.

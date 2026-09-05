@@ -1,6 +1,6 @@
 /**
  * The five tmux-style predefined layouts, plus cycling order.
- * Spec: docs/current/pane-layout.md §10, §11.
+ * Spec: docs/pane-layout.md §10, §11.
  *
  * The FIRST id is the "main" pane for the main-* kinds. buildLayout does not
  * clamp: predefined layouts may produce shares below 0.1 (e.g. 1/12) — only

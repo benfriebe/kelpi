@@ -1,7 +1,7 @@
 /**
  * A thin, synchronous SQLite adapter.
  *
- * Spec: docs/current/persistence.md §1 (WAL + `foreign_keys=ON`), §5.3 (one transaction per
+ * Spec: docs/persistence.md §1 (WAL + `foreign_keys=ON`), §5.3 (one transaction per
  * save), Port notes ("`node:sqlite` behind a thin adapter, better-sqlite3 as swap-in").
  *
  * Everything above this file talks to `SqlDatabase`, never to `node:sqlite` — the concrete

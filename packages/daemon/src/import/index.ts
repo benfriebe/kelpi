@@ -1,7 +1,7 @@
 /**
  * M8 — legacy database import (`kelpid import`).
  *
- * Spec: docs/current/persistence.md (the entire legacy schema, its 18 migrations, the
+ * Spec: docs/persistence.md (the entire legacy schema, its 18 migrations, the
  * Swift-Codable encodings and the load-degradation rules).
  *
  *   reader.ts    open a Swift `nex.db` READ-ONLY, verify the ledger, decode every table with

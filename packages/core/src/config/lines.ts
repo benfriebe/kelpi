@@ -1,6 +1,6 @@
 /**
  * Line syntax shared by every `~/.config/nex/config` parser and writer.
- * Spec: docs/current/config-keybindings.md §1.1.
+ * Spec: docs/config-keybindings.md §1.1.
  */
 
 export interface ConfigLine {

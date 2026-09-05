@@ -1,6 +1,6 @@
 /**
  * Persisted layout JSON — Swift's auto-synthesized Codable enum encoding.
- * Spec: docs/current/pane-layout.md §2, §15.2.
+ * Spec: docs/pane-layout.md §2, §15.2.
  *
  * Shape: one key naming the case; the unlabeled associated value is keyed `_0`
  * (direction for split, UUID for leaf); labeled values keep their labels.

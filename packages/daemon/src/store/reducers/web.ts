@@ -1,7 +1,7 @@
 /**
  * Web-pane reducers: the tab list, the active tab, the private flag and the pane-header title.
  *
- * Spec: docs/current/web-pane.md §5 (tabs), §4.2/§4.4 (navigate + URL/title mirroring),
+ * Spec: docs/web-pane.md §5 (tabs), §4.2/§4.4 (navigate + URL/title mirroring),
  * §6 (private mode), §17 (invariants).
  *
  * The split of ownership in the port: **the daemon owns this state** (it persists, it is what

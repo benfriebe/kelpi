@@ -98,6 +98,7 @@ import {
     createStore,
     emptyDaemonState,
     fromSnapshot,
+    nextRandomColor,
     toSnapshot,
     visiblePane,
     workspaceContainingVisiblePane,
@@ -246,6 +247,11 @@ export interface DaemonOptions {
     readonly now?: (() => number) | undefined;
     /** Id source for handlers + the fresh-install workspace (tests). */
     readonly uuid?: (() => string) | undefined;
+    /**
+     * Unit-interval source for `nextRandomColor` (tests). Shared by the handlers and the
+     * fresh-install workspace so both palette picks come from the one injected stream (#56).
+     */
+    readonly random?: (() => number) | undefined;
     /** Install SIGTERM/SIGINT handlers. `kelpid start` sets it; tests do not. */
     readonly installSignalHandlers?: boolean | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -1165,7 +1171,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // at boot — flipping it in Settings changes the very next drop.
         expandGroupOnDrop: () => settings.snapshot.general.expandGroupOnWorkspaceDrop,
         ...(options.now !== undefined ? { now: options.now } : {}),
-        ...(options.uuid !== undefined ? { uuid: options.uuid } : {})
+        ...(options.uuid !== undefined ? { uuid: options.uuid } : {}),
+        ...(options.random !== undefined ? { random: options.random } : {})
     });
 
     const dispatcher = createDispatcher<PaneHandlerContext>({
@@ -1176,16 +1183,26 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     // ── boot steps 3–5 ──────────────────────────────────────────────────────
 
-    /** §12.2: a fresh install (or an unreadable DB) comes up with one "Default" workspace. */
+    /**
+     * §12.2: a fresh install (or an unreadable DB) comes up with one "Default" workspace.
+     *
+     * The colour is resolved HERE, not left to the reducer: `create-workspace` carries its colour
+     * on the action and the reducer's `?? 'blue'` is only a fallback, so omitting it made every
+     * fresh install blue. §12.2 gives "Default" the full 4.1 create semantics, whose step 3 is
+     * `nextRandomColor()` (docs/app-state-core.md §4.1; docs/persistence.md §6.2 Case A), the
+     * same pick the socket/GUI path makes (`handlers/app/workspaces.ts`). Issue #56.
+     */
     const ensureDefaultWorkspace = (): void => {
-        if (store.getState().workspaces.length > 0) return;
+        const state = store.getState();
+        if (state.workspaces.length > 0) return;
         const mint = options.uuid ?? newUUID;
         store.dispatch({
             type: 'create-workspace',
             id: mint(),
             paneID: mint(),
             name: DEFAULT_WORKSPACE_NAME,
-            now: (options.now ?? Date.now)()
+            now: (options.now ?? Date.now)(),
+            color: nextRandomColor(state, options.random ?? Math.random)
         });
     };
 

@@ -156,6 +156,22 @@ describe('createDaemon', () => {
         expect(readBack(paths.dbPath)?.workspaces.map((workspace) => workspace.name)).toEqual(['Default']);
     }, 20_000);
 
+    it('gives the fresh-install Default workspace a palette pick, not the reducer fallback (#56)', async () => {
+        // §12.2 creates "Default" with the full §4.1 semantics, whose step 3 is `nextRandomColor()`
+        // (persistence.md §6.2 Case A says the same). The reducer's `?? 'blue'` must never be what
+        // decides it. With no trailing workspace the pool is the whole 10-colour palette, so 0.35
+        // lands on index 3: green, which also proves the injected stream reaches boot.
+        const paths = scratch();
+        const daemon = daemonFor(paths, { random: () => 0.35 });
+        await daemon.start();
+
+        expect(daemon.store.getState().workspaces[0]?.color).toBe('green');
+
+        await daemon.restored;
+        await daemon.stop();
+        expect(readBack(paths.dbPath)?.workspaces[0]?.color).toBe('green');
+    }, 20_000);
+
     it('holds every write back until the resume commands have gone out (§12.3 step 9)', async () => {
         const paths = scratch();
         seedDatabase(paths.dbPath, paths.home, 'sess-keepme');

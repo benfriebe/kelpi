@@ -937,7 +937,7 @@ async function domPaneIDs(page) {
  *
  * On-screen (i.e. in the active workspace's grid) answers the third, `type === 'shell'` the
  * first, and widest the second. It is a harness-targeting rule, not a product rule: narrow-pane
- * behaviour is a separate question, recorded in docs/PARITY.md's ledger as N3.
+ * behaviour is a separate question, recorded in ../kelpi-docs/PARITY.md's ledger as N3.
  */
 async function widestShellPane(page, cli) {
     const domIDs = new Set(await domPaneIDs(page));
@@ -5260,7 +5260,7 @@ function buildFlows(ctx) {
                  * so close them and even what is left, which leaves the web pane ~640 px.
                  *
                  * The narrow-pane clipping itself is a real (minor) finding and is recorded in
-                 * docs/PARITY.md's ledger as N3 — it is not what these steps are for.
+                 * ../kelpi-docs/PARITY.md's ledger as N3 — it is not what these steps are for.
                  */
                 const spare = (await cli.json(['pane', 'list', '--json'])).filter(
                     (pane) =>

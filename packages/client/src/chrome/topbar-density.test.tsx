@@ -1,5 +1,5 @@
 /**
- * The title bar's density pack — `docs/SPACING-REVIEW.md` S4, S22, S55, S58.
+ * The title bar's density pack — `../kelpi-docs/SPACING-REVIEW.md` S4, S22, S55, S58.
  *
  * The register's own three legs are Swift source, port source and a live measurement; jsdom can
  * only hold the third one honest by proxy, so every block here asserts the *declaration* the

@@ -8,7 +8,7 @@
  *     API — the fidelity bet in ARCHITECTURE.md.
  *   - **@xterm/xterm** (fallback): selected with `VITE_TERMINAL_ENGINE=xterm` at build time,
  *     the escape hatch for the ghostty-web gaps catalogued in
- *     `docs/research/ghostty-web-spike.md`.
+ *     `../kelpi-docs/research/ghostty-web-spike.md`.
  *
  * The adapter itself is engine-agnostic: it codes strictly to `XtermLikeTerminal`, the subset
  * both engines implement identically. Anything engine-specific (cell metrics, forced repaint,

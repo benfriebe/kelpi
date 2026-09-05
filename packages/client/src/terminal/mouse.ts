@@ -1,7 +1,7 @@
 /**
  * DEC mouse reporting, implemented in the PORT'S layer rather than the engine's.
  *
- * Why this file exists at all (docs/capabilities/00-INDEX.md gap #1, §TERM-037…§TERM-039):
+ * Why this file exists at all (../kelpi-docs/capabilities/00-INDEX.md gap #1, §TERM-037…§TERM-039):
  * `ghostty-web@0.4.0` parses DECSET 9 / 1000 / 1002 / 1003 / 1005 / 1006 / 1015 and then
  * **ignores** them — its canvas `mousedown` starts a text selection, `mousemove` extends it,
  * `mouseup` copies it, and `hasMouseTracking()` is never consulted by the input path. A real

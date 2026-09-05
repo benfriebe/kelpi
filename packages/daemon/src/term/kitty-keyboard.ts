@@ -4,7 +4,7 @@
  * Why this lives here rather than in a renderer, and why it looks exactly like
  * `mouse-modes.ts`: the engine will not do it. `ghostty-web 0.4.0-nex.2` registers **one**
  * `keydown` listener and **zero** `keyup` listeners, and its `setKittyFlags` has no call site
- * anywhere in the bundle (docs/capabilities/01 §TERM-030, re-measured on the vendored bundle).
+ * anywhere in the bundle (../kelpi-docs/capabilities/01 §TERM-030, re-measured on the vendored bundle).
  * A protocol whose whole point is press/repeat/release cannot be implemented by a layer that
  * never sees a release, so the port implements it in its OWN layer — the daemon tracks the
  * negotiated flags off the VT stream (every PTY byte already flows through `@xterm/headless`

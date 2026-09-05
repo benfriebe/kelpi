@@ -10,7 +10,7 @@
  *     `path` the delete reply carries: `git worktree remove` is deliberately non-forcing, so a
  *     dirty worktree degrades to a `Warning:` and never changes the exit code.
  *
- * These were the two flows `docs/compat-status.md` listed as "not exercised (git flows, M7)".
+ * These were the two flows `../kelpi-docs/compat-status.md` listed as "not exercised (git flows, M7)".
  */
 
 import fs from 'node:fs';

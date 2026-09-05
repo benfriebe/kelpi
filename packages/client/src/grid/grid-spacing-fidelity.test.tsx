@@ -1,8 +1,8 @@
 /**
- * The SPACING-REVIEW pane-grid rows — `docs/SPACING-REVIEW.md` S8, S16, S19, S20, S30, S40.
+ * The SPACING-REVIEW pane-grid rows — `../kelpi-docs/SPACING-REVIEW.md` S8, S16, S19, S20, S30, S40.
  *
  * The register is a DENSITY one: every row here is a control that measured correctly against
- * `docs/UI-FIDELITY.md` and still read wrong on screen, because a padding, a line box or a
+ * `../kelpi-docs/UI-FIDELITY.md` and still read wrong on screen, because a padding, a line box or a
  * missing floor collapsed under the squeeze. So each block names the Swift line the port is
  * being held to, quotes the number measured on the running app before the fix, and asserts the
  * declared value that produces the number after it — never "something changed".

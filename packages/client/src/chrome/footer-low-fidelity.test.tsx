@@ -1,5 +1,5 @@
 /**
- * The LOW-POLISH status-bar / title-bar items — `docs/UI-FIDELITY.md` L49…L56.
+ * The LOW-POLISH status-bar / title-bar items — `../kelpi-docs/UI-FIDELITY.md` L49…L56.
  *
  * One suite per surface, as the campaign allows for metric-only rows: every block names the Swift
  * line the port had drifted from and asserts the number, tone or structure THAT line specifies.

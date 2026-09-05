@@ -128,7 +128,7 @@ fetches the cookie-store key from the macOS login keychain before its network se
 anything; on an ad-hoc-signed build — whose code identity changes with every build — that call
 blocks forever inside `SecItemAdd → makeLoginAuthUI → AuthorizationCopyRights`, waiting on an
 authorization dialog nothing can answer. The window then never loads, with no `did-fail-load` and
-nothing in the log (`docs/PARITY.md` ▸ Known gaps #9). So it turns on in the same step as the
+nothing in the log (`../kelpi-docs/PARITY.md` ▸ Known gaps #9). So it turns on in the same step as the
 Developer ID, and `packaged-smoke.mjs` asserts that rule from the fuse wire in phase 1.
 
 Nothing is signed or notarized (ad-hoc only, as arm64 requires); the repo README's *Install and
@@ -193,7 +193,7 @@ Note the shell is **not** part of the repo-root vitest projects or the root `typ
 
 ## Security posture
 
-Per docs/research/stack.md §1, the daemon URL is treated as remote content even though it is
+Per ../kelpi-docs/research/stack.md §1, the daemon URL is treated as remote content even though it is
 ours: `contextIsolation` + `sandbox` on, `nodeIntegration` off, `webviewTag` off, navigation
 allowlisted to the daemon origin, `setWindowOpenHandler` → `shell.openExternal` for validated
 http(s) only, permissions limited to clipboard + notifications on the daemon origin.

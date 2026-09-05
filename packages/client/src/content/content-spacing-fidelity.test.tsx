@@ -1,9 +1,9 @@
 /**
- * The SPACING-REVIEW content-pane rows — `docs/SPACING-REVIEW.md` S9, S21, S54, S63 (and a
+ * The SPACING-REVIEW content-pane rows — `../kelpi-docs/SPACING-REVIEW.md` S9, S21, S54, S63 (and a
  * pointer to S42, whose stylesheet is the daemon's).
  *
  * The register is a DENSITY one, so every row here is something that measured correctly against
- * `docs/UI-FIDELITY.md` and still read wrong on screen: a bar anchored to the wrong box, two
+ * `../kelpi-docs/UI-FIDELITY.md` and still read wrong on screen: a bar anchored to the wrong box, two
  * menu rows whose hover fills touched, a scroller that took layout width the shipped app spends
  * none on, a document inset sized for a full-width window in an app that lives in splits.
  *

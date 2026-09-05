@@ -117,7 +117,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: kelpi event', () => {
         // ...but the synthesized session-start that follows it resets the count, so the
         // number never reaches `pane list`. The Swift app does exactly the same thing
         // (WorkspaceFeature.sessionStarted zeroes backgroundTaskCount), so this is bug-for-bug
-        // compatible rather than a daemon defect. See docs/compat-status.md.
+        // compatible rather than a daemon defect. See ../kelpi-docs/compat-status.md.
         expect('background_tasks' in current).toBe(false);
     }, 60_000);
 

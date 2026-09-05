@@ -15,7 +15,7 @@
  *   4. open the main process's own status WebSocket for the tray/badge (`./status.ts`);
  *   5. register the config file's global hotkey, install the quit gate.
  *
- * Security posture (docs/research/stack.md §1 "BrowserWindow settings"): the daemon URL is
+ * Security posture (../kelpi-docs/research/stack.md §1 "BrowserWindow settings"): the daemon URL is
  * treated as remote content even though it is ours. `contextIsolation` and `sandbox` stay on,
  * `nodeIntegration` stays off, and there is **no preload script at all** — the renderer needs
  * nothing from the shell, because the main process gets its state from its own daemon socket

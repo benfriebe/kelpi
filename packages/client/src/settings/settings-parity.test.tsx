@@ -3,7 +3,7 @@
  *
  * Every case below names the Swift line it is measuring against, because each one is a claim
  * about a metric, an order or a control KIND rather than about behaviour — the class of
- * divergence a capability test cannot see and the reason `docs/UI-FIDELITY.md` exists.
+ * divergence a capability test cannot see and the reason `../kelpi-docs/UI-FIDELITY.md` exists.
  *
  *   M40  the Labels preview chip is the chip it previews (a capsule, medium, 10 px);
  *   M41  zebra striping on the Keybindings table and the Labels preset list;

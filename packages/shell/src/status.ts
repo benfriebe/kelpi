@@ -2,7 +2,7 @@
  * The main process's own connection to the daemon (M4).
  *
  * This is a **second** WebSocket, entirely separate from the one the renderer opens. Two
- * reasons, both from docs/research/stack.md §1:
+ * reasons, both from ../kelpi-docs/research/stack.md §1:
  *
  *   - the preload surface stays empty — the shell's native features (dock badge, bounce,
  *     tray, notifications) never have to ask the renderer for state, so there is no IPC and

@@ -1,5 +1,5 @@
 /**
- * The command palette's density pack — `docs/SPACING-REVIEW.md` S23, S32.
+ * The command palette's density pack — `../kelpi-docs/SPACING-REVIEW.md` S23, S32.
  *
  * `CommandPaletteView.swift:114-155` is the whole reference: an `HStack(spacing: 10)` whose
  * `Spacer()` is a stack MEMBER (so the stack spends 10 pt on both sides of it), and two trailing

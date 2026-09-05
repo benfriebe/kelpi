@@ -1,5 +1,5 @@
 /**
- * The LOW-POLISH pane-grid items — `docs/UI-FIDELITY.md` L22…L40 and L47.
+ * The LOW-POLISH pane-grid items — `../kelpi-docs/UI-FIDELITY.md` L22…L40 and L47.
  *
  * Individually these are a point of type, two pixels of padding, a hover state nobody asked for.
  * Collectively they are the register's whole thesis: the port read as a rebuild rather than as

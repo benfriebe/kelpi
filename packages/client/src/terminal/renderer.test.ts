@@ -954,7 +954,7 @@ describe('a poisoned engine (run-F N1)', () => {
  * exists (its dimensions stay 0 — there is no 2D context — which is exactly why `cellSize()`
  * falls back to the font estimate). ghostty-web cannot be smoke-tested here: `init()` loads
  * its WASM fine, but `open()` throws `Failed to get 2D rendering context`
- * (docs/research/ghostty-web-spike.md §"jsdom").
+ * (../kelpi-docs/research/ghostty-web-spike.md §"jsdom").
  */
 describe('xterm engine (real, jsdom)', () => {
     it('opens, writes, resizes and reports input through the adapter', async () => {

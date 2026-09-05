@@ -139,7 +139,7 @@ module.exports = {
          *
          * This is also what makes `app.on('open-file')` reachable at all: the handler has shipped
          * since M4 (`src/main.ts` `forwardOpen`), but with no declared type Finder never sent it
-         * a file (docs/capabilities 06 ▸ CONT-124's "gated behind CONT-123").
+         * a file (../kelpi-docs/capabilities 06 ▸ CONT-124's "gated behind CONT-123").
          */
         extendInfo: {
             CFBundleDocumentTypes: [

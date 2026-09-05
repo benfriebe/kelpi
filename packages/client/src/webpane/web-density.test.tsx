@@ -1,7 +1,7 @@
 /**
- * The web pane's DENSITY pack — `docs/SPACING-REVIEW.md` S12, S28, S29, S34, S35, S36, S37, S43.
+ * The web pane's DENSITY pack — `../kelpi-docs/SPACING-REVIEW.md` S12, S28, S29, S34, S35, S36, S37, S43.
  *
- * The register asks a different question from `docs/UI-FIDELITY.md`: not "does it look like the
+ * The register asks a different question from `../kelpi-docs/UI-FIDELITY.md`: not "does it look like the
  * shipped app" but "does it feel cramped". Every case below therefore asserts the *number* the
  * cited Swift line specifies — a padding, a frame, a fill — rather than "something changed", and
  * every one of them is a metric that was measured wrong on a live boot before the fix:

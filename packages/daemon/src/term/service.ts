@@ -4,7 +4,7 @@
  * One `@xterm/headless` Terminal per pane, fed every PTY byte, plus a bounded raw ring
  * buffer as belt-and-braces. This is what makes `pane capture`, reattach snapshots and
  * DECCKM-aware named keys work with **zero clients attached**
- * (`docs/terminal-surface.md` §9, `docs/research/ghostty-web.md` §3c/§4).
+ * (`docs/terminal-surface.md` §9, `../kelpi-docs/research/ghostty-web.md` §3c/§4).
  *
  * Notes on the emulator:
  * - `@xterm/headless` ships CJS (`main: lib-headless/xterm-headless.js`) with no `exports`

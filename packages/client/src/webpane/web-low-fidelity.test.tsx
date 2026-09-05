@@ -1,5 +1,5 @@
 /**
- * The LOW-POLISH web-pane fidelity items — `docs/UI-FIDELITY.md` L62…L78.
+ * The LOW-POLISH web-pane fidelity items — `../kelpi-docs/UI-FIDELITY.md` L62…L78.
  *
  * The behavioural rows carry their own guards in the suites that own them (`webui.test.tsx` for
  * the storage panel's L58/L59/L60/L61/L73/L74 and the bookmarks menu's L63/L64/L65,

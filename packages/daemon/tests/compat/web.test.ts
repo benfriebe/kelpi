@@ -283,7 +283,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
     }, 90_000);
 
     it('has no --json on capture in 0.32.0 (the flag is silently ignored)', async () => {
-        // DELTA, recorded in docs/compat-status.md: `cli.md` §15.6 documents `--mode dom|all`
+        // DELTA, recorded in ../kelpi-docs/compat-status.md: `cli.md` §15.6 documents `--mode dom|all`
         // and a `--json` envelope dump, but the SHIPPED 0.32.0 binary offers neither — its help
         // lists `--mode meta|text|screenshot` only, and its capture parser drops unknown flags
         // instead of rejecting them. The daemon accepts the full documented mode set

@@ -118,7 +118,7 @@ VITE_TERMINAL_ENGINE=xterm pnpm --filter @kelpi/client build
 Both engines sit behind `TerminalRenderer` (`src/terminal/renderer.ts`) and are code-split, so
 only the selected one is downloaded. The xterm build additionally pulls in
 `@xterm/xterm/css/xterm.css`, which `main.tsx` imports **only** for that engine. Known
-ghostty-web gaps are catalogued in `docs/research/ghostty-web-spike.md`.
+ghostty-web gaps are catalogued in `../kelpi-docs/research/ghostty-web-spike.md`.
 
 ## Terminal font
 

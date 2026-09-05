@@ -1098,7 +1098,13 @@ sequence:
   notification the moment that pane leaves the waiting set (any status change away from
   `waitingForInput`, `clearPaneStatus` included; `packages/shell/src/status.ts:589`), so acting on
   a pane retracts its stale "waiting for input" notification the same way.
-- Permission is requested once at app launch.
+- Permission is requested from a user gesture, not at launch: the browser client registers a
+  one-shot `pointerdown` listener and the first click in the window calls
+  `runtime.notifications?.request()` (`packages/client/src/App.tsx:622`; browsers grant
+  notification permission only from a user gesture, and `request()` is a no-op once the state is
+  no longer `default`, `packages/client/src/state/notifications.ts:135`). The Electron shell makes
+  no permission request at all: `Notification.isSupported()` is the whole gate
+  (`packages/shell/src/notify.ts:26`).
 
 ### 9.3 updateExternalIndicators
 

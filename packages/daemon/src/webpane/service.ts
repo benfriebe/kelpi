@@ -488,6 +488,11 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (session !== null && session.visible) {
             const item = { id: newID(), result, comment: '' };
             batchState.add(event.paneID, item);
+            // Issue #50 (web-26), §12.1: a `kelpi web inspect --submit` arm whose pick the batch
+            // absorbs hands its `--submit` to the session, so Send presses Enter (WEB-134).
+            // The flag lived on the arm alone: Send's disarm dropped it, `setSubmit` had no
+            // caller, and every batch send wrote bare. The session is the vehicle now.
+            if (arm.submit) batchState.setSubmit(event.paneID, true);
             publishBatch(event.paneID);
             host.notify('batch-highlight', {
                 paneID: event.paneID,

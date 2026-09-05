@@ -956,6 +956,8 @@ export type WebPaneChannel = Pick<
     | 'retargetFind'
     | 'find'
     | 'batch'
+    // Batch hide disarms the picker in daemon state as well as on the page (§12.1, issue #50).
+    | 'inspect'
     | 'armBatch'
     | 'publishBatch'
     | 'focusBatchItem'

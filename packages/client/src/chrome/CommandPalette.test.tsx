@@ -163,6 +163,25 @@ describe('rendering', () => {
         expect(props.onDismiss).toHaveBeenCalledOnce();
     });
 
+    /**
+     * shell-ui.md §7: "Selected row = accent @ 0.2 background" and a NEUTRAL `workspace` chip.
+     * Both were literal dark-preset hexes (issue #57 shellui-28), so a light chrome or an
+     * `accent` override reached every other surface but not the palette. The token reads
+     * `var(--kelpi-…)`, which `withAlpha` turns into a `color-mix` rather than an rgba.
+     */
+    it('paints the selected row and the workspace chip from theme tokens, not fixed hexes', () => {
+        render(<CommandPalette {...baseProps()} />);
+        const selected = screen
+            .getAllByTestId('palette-row')
+            .find((row) => row.dataset['selected'] === 'true') as HTMLElement;
+        expect(selected.style.background).toMatch(/^color-mix\(in srgb, var\(--kelpi-accent,[^)]*\) 20%/);
+        expect(selected.style.background).not.toContain('111, 155, 216');
+        const chip = Array.from(selected.querySelectorAll('span')).find(
+            (span) => span.textContent === 'workspace'
+        ) as HTMLElement;
+        expect(chip.style.background).toMatch(/^color-mix\(in srgb, var\(--kelpi-fg,[^)]*\) 8%/);
+    });
+
     it('shows "No results" for a query that matches nothing', () => {
         render(<CommandPalette {...baseProps()} query="zzz" />);
         expect(screen.getByTestId('palette-no-results')).toBeDefined();

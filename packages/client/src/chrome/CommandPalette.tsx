@@ -393,7 +393,10 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                        selection background with NO radius — a band, not a pill. */
                                     className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left"
                                     style={{
-                                        background: isSelected ? withAlpha('#6F9BD8', 0.2) : 'transparent'
+                                        /* shell-ui.md §7 "accent @ 0.2" through the theme token
+                                           (issue #57 shellui-28): a literal dark-column hex
+                                           ignored a light chrome and an `accent` override. */
+                                        background: isSelected ? withAlpha(tokens.accent, 0.2) : 'transparent'
                                     }}
                                     onMouseEnter={() => {
                                         setSelected(rowIndex);
@@ -460,7 +463,10 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                                had half of it. */
                                             className="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
                                             style={{
-                                                background: withAlpha('#E6E6EA', 0.08),
+                                                /* The neutral chip is the foreground at 0.08, read
+                                                   off the token so it inverts with the theme
+                                                   (issue #57 shellui-28). */
+                                                background: withAlpha(tokens.textPrimary, 0.08),
                                                 color: tokens.textTertiary
                                             }}
                                         >

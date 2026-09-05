@@ -773,9 +773,12 @@ Every keystroke in the main window can be seen by two surfaces; the division of 
 
 Menus and their items (`packages/shell/src/menu.ts`, assembled in
 `packages/shell/src/main.ts`; shortcut = FIRST trigger of the action, in configString sort
-order; if the trigger's key can't be represented as a menu key-equivalent — F-keys and
-`forward_delete` cannot, the item simply has no displayed shortcut, and the binding still
-fires through the client dispatcher, which handles menu-bar actions too, section 7.2):
+order, derived from the daemon's `keybindLines` by `menuAccelerators` in `menu.ts`, the same
+override list and parser the client dispatcher resolves its map from; an action left with no
+trigger (an `unbind` line) has no displayed shortcut, and so does one whose first trigger has
+no Electron accelerator spelling (`acceleratorForTrigger`, `packages/shell/src/hotkey.ts`),
+and either way the binding still fires through the client dispatcher, which handles menu-bar
+actions too, section 7.2):
 
 - **File-ish group (replaces "New")**: New Workspace, New Group, Preview Markdown…,
   New Web Pane, Command Palette, divider, Switch to Workspace 1–9, divider,
@@ -786,12 +789,19 @@ fires through the client dispatcher, which handles menu-bar actions too, section
   Help overlay through the daemon.
 - App menu: "Check for Updates…" (unbound).
 - Unpackaged (dev) builds only (`app.isPackaged` is false): Debug ▸ Seed Test Group.
+- Rows outside the map, whose chords are FIXED: File ▸ Close (⌘W: it routes to the page's
+  `close_pane`, which is deliberately not a menu-bar action, and keeps the platform's Close
+  chord whatever `close_pane` is bound to; shell-ui.md §13) and View ▸ Reload, Force Reload
+  (⌥⌘R), Toggle Developer Tools, Toggle Full Screen (Electron roles).
 
 Behavior details:
 - "New Group" creates immediately with a unique placeholder name (`New Group`,
   `New Group 2`, …) and drops into inline rename.
 - "New Web Pane" opens a fresh web pane with empty URL and the URL bar focused.
-- Menu shortcuts update live when bindings change (they read the current map).
+- Menu shortcuts update live when bindings change (they read the current map): the shell
+  re-derives the set on the `welcome` handshake and on every `settings-changed`, and rebuilds
+  the application menu only when a menu-bar chord actually moved (a rebuild drops an open
+  menu). Until the daemon has spoken, the launch-time menu carries the shipped defaults.
 
 ### 7.2 Pane-shortcut monitor pipeline
 

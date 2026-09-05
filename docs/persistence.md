@@ -424,10 +424,13 @@ UPSERT appState rows               (the five keys in §2.4)
   and on a 5 s floor while saves are being dropped; `packages/daemon/src/boot/compose.ts:390-400`,
   `863-870`), `ping` / `kelpid status` report it (`packages/daemon/src/handlers/app/ping.ts:54-55`),
   and shutdown logs "kelpid stopped (state NOT saved)" and exits 1 (`compose.ts:1305`, `1322`).
-- Pane row insert order doubles as the de-facto pane ordering on load (there is no ORDER BY on
-  panes; SQLite returns them in rowid ≈ insert order). Display order actually comes from the
-  layout tree, but list surfaces (`pane list`) reflect array order, which round-trips through
-  insert order in practice.
+- Pane row insert order doubles as the de-facto order of the in-memory `panes` array on load
+  (there is no ORDER BY on panes; SQLite returns them in rowid ≈ insert order). That array
+  order is not user-visible: display order comes from the layout tree, and the `pane-list`
+  reply enumerates each workspace's panes in layout order too (`allPaneIDs(workspace.layout)`,
+  skipping ids with no backing pane; `packages/daemon/src/handlers/pane/list.ts:79-81`,
+  `packages/core/src/layout/tree.ts:14`), workspaces in state order. The `panes` array order
+  is never consulted for `pane-list` (wire-protocol §6.2, socket-handlers §4.12).
 
 ### 5.4 Field mapping notes on save
 

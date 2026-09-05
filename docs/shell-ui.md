@@ -1286,7 +1286,9 @@ route taken is logged.
 
 Deleting a single workspace from the sidebar always confirms: `Delete "<name>"?` with
 Cancel / Delete (destructive) (`packages/client/src/chrome/Sidebar.tsx:3894-3907`,
-`:5153-5195`). When the workspace has active agents (running/waiting panes) AND the
+`:5175-5217`; Return and Escape both take Cancel via a capture-phase keydown at `:5112-5133`,
+which the bulk and group dialogs below share). When the workspace has active agents
+(running/waiting panes) AND the
 `confirmWorkspaceDeleteWhenActive` setting is on, the dialog adds the line "This workspace
 has N active agent(s). Deleting it will terminate it/them." and a "Don't ask again" checkbox
 that writes the same setting. With no active agents, or the setting off, the plain

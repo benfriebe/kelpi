@@ -266,6 +266,11 @@ export async function webPaneGuiCommand(
             const outcome = channel.batch.toggle(paneID);
             if (outcome === 'hidden') {
                 channel.publishBatch(paneID);
+                // Issue #50 (web-07), §12.1: Hide disarms the picker in STATE as well as on the
+                // page. Only the page was told before, so `armOf` kept reporting the batch's
+                // sticky arm (a nonce the page could no longer post) until something replaced
+                // it, and `kelpi web inspect` described an arm that could never fire.
+                channel.inspect.disarm(paneID);
                 // Fire-and-forget: a disarm for a pane whose views are gone has nothing to do,
                 // and the reply is the batch, not the page's opinion of it.
                 void channel.call('inspect-disarm', { paneID }).catch(() => undefined);

@@ -8,7 +8,7 @@
  *
  * The §9.5 rules that are easy to lose and are therefore enforced in `model.ts` rather than in
  * a handler: `default` is pinned first, synthesized when absent, its name locked and its lines
- * omitted from the file while it has no vars; every other profile carries a `NEX_PROFILE`
+ * omitted from the file while it has no vars; every other profile carries a `KELPI_PROFILE`
  * marker var so a name-only profile survives the round-trip; `:` and `=` are stripped from
  * names as typed and `=` from var keys, because either would break the line format.
  *

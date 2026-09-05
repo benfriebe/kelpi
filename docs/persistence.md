@@ -526,7 +526,7 @@ daemon boots as a fresh install (§6.2 Case A; `loadOutcome` returns status `unr
 
 (`fromSnapshot`, `packages/daemon/src/store/snapshot.ts:228`, performs steps 1-3;
 `applyLoadReset`, `snapshot.ts:312`, steps 4-5; `packages/daemon/src/boot/resume.ts` steps 6-7;
-`packages/daemon/src/boot/compose.ts:1188-1215` step 8.)
+`packages/daemon/src/boot/compose.ts:1205-1232` step 8.)
 
 Case A — **zero workspaces loaded** (fresh install or wiped DB):
 
@@ -924,7 +924,7 @@ declined.
   inheritance, what happens when the command exits), so Kelpi emulates the "type into an
   interactive shell" behavior (§6.2 step 7).
 - **Settings/keybindings/profiles are NOT in this DB**: they live in `~/.config/kelpi/config`
-  (`resolveConfigPath`, `packages/daemon/src/boot/config.ts:42-50`, with a `KELPID_CONFIG_PATH`
+  (`resolveConfigPath`, `packages/daemon/src/boot/config.ts:48-56`, with a `KELPID_CONFIG_PATH`
   override; `kelpid import` copies a legacy `~/.config/nex/config` there once when no Kelpi
   config exists, `packages/daemon/src/main.ts:903-910`) and, for the legacy app, UserDefaults.
   The daemon config story is a separate subsystem; nothing in `kelpi.db` absorbs it silently.

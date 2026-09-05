@@ -38,14 +38,22 @@ const OFF: VtModes = { applicationCursorKeys: false, bracketedPaste: false };
 const DECCKM: VtModes = { applicationCursorKeys: true, bracketedPaste: false };
 const BRACKETED: VtModes = { applicationCursorKeys: false, bracketedPaste: true };
 
-/** Records what reached the PTY, in order. */
-function recorder(): { pty: Pick<PtyManager, 'writeDirect'>; writes: string[] } {
+/** Records what reached the PTY, in order; `mirrored` is the subset that took `write` (§8.2). */
+function recorder(): { pty: Pick<PtyManager, 'write' | 'writeDirect'>; writes: string[]; mirrored: string[] } {
     const writes: string[] = [];
+    const mirrored: string[] = [];
+    const decode = (data: Uint8Array | string): string =>
+        typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
     return {
         writes,
+        mirrored,
         pty: {
+            write(_paneID: string, data: Uint8Array | string): void {
+                writes.push(decode(data));
+                mirrored.push(decode(data));
+            },
             writeDirect(_paneID: string, data: Uint8Array | string): void {
-                writes.push(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
+                writes.push(decode(data));
             }
         }
     };
@@ -239,6 +247,20 @@ describe('sendText (§9.1: text-as-paste, then Enter-as-keystroke)', () => {
         input.sendText('pane-1', 'b', { bare: true });
 
         expect(writes).toEqual(['a', `${BRACKETED_PASTE_START}b${BRACKETED_PASTE_END}`]);
+    });
+
+    it('mirror: true takes the sync-group write, with the same paste framing (§8.2 item 2, #51)', () => {
+        const { pty, writes, mirrored } = recorder();
+        const input = createTerminalInput({ pty, modes: () => BRACKETED });
+
+        // The drag-drop route: text committed outside a keystroke is paste-piped AND mirrored.
+        input.sendText('pane-1', '/tmp/a\\ b', { bare: true, mirror: true });
+        expect(mirrored).toEqual([`${BRACKETED_PASTE_START}/tmp/a\\ b${BRACKETED_PASTE_END}`]);
+        // Default and explicit false stay un-mirrored: `pane send` is a programmatic send.
+        input.sendText('pane-1', 'x', { bare: true });
+        input.sendText('pane-1', 'y', { bare: true, mirror: false });
+        expect(mirrored).toHaveLength(1);
+        expect(writes).toHaveLength(3);
     });
 
     it('never mirrors to sync siblings — programmatic sends target one pane (§8.2)', () => {

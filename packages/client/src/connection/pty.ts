@@ -63,8 +63,14 @@ export interface PtySubscription {
 
 export interface PtyStreamHandle {
     readonly paneID: string;
-    /** Keyboard / paste bytes upstream. */
+    /** Keyboard / paste bytes upstream (mirrored to sync siblings, terminal-surface.md §8.2). */
     write(data: Uint8Array | string): void;
+    /**
+     * Bytes for THIS pane only: client-encoded mouse reports and kitty key releases, which
+     * §8.2 / §11 keep out of the sync-group fan-out. Rides its own frame type so the daemon
+     * can take the un-mirrored write without inspecting the bytes (#51).
+     */
+    writeDirect(data: Uint8Array | string): void;
     /** Client-measured geometry; the daemon resizes the PTY and its server-side VT. */
     resize(cols: number, rows: number): void;
     /** Report consumed bytes (only needed with `autoAck: false`). */
@@ -249,6 +255,9 @@ export class PtyClient {
             write(data: Uint8Array | string): void {
                 client.write(paneID, data);
             },
+            writeDirect(data: Uint8Array | string): void {
+                client.writeDirect(paneID, data);
+            },
             resize(cols: number, rows: number): void {
                 client.resize(paneID, cols, rows);
             },
@@ -268,6 +277,12 @@ export class PtyClient {
         const bytes = typeof data === 'string' ? encoder.encode(data) : data;
         if (bytes.length === 0) return;
         this.sendFrame(PTY_FRAME_TYPES.input, paneID, bytes);
+    }
+
+    writeDirect(paneID: string, data: Uint8Array | string): void {
+        const bytes = typeof data === 'string' ? encoder.encode(data) : data;
+        if (bytes.length === 0) return;
+        this.sendFrame(PTY_FRAME_TYPES.inputDirect, paneID, bytes);
     }
 
     resize(paneID: string, cols: number, rows: number): void {

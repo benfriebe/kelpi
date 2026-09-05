@@ -956,12 +956,12 @@ Debounces (all keyed and restartable - a newer schedule cancels the pending one)
 
 1. Race guards: setting still on; workspace exists; pane exists; the pane's current pwd
    (standardized AND symlink-resolved on both sides, `isPathInside`,
-   `packages/daemon/src/git/autodetect.ts:85`) is still `worktreeRoot` or inside it
+   `packages/daemon/src/git/autodetect.ts:115`) is still `worktreeRoot` or inside it
    (`pwd == root || pwd.startsWith(root + "/")`). Any failure = silent skip. Resolving symlinks
    is what makes a shell reporting `/var/...` match the `/private/var/...` that `git rev-parse`
    answers with.
 2. Find-or-create the parent repo by canonical path equality (symlinks resolved, so `/var/...`
-   and `/private/var/...` are one repo; `packages/daemon/src/git/autodetect.ts:175`). Created
+   and `/private/var/...` are one repo; `packages/daemon/src/git/autodetect.ts:205`). Created
    repos get `{name: lastPathComponent(parentRepoRoot), isAutoDiscovered: true}`. The WS repo
    verbs key the registry the same way (`canonicalizeUserPath`, `packages/daemon/src/ws/repos.ts:190`).
 3. If the workspace does not already have an association with `worktreePath == worktreeRoot`:
@@ -974,7 +974,9 @@ Debounces (all keyed and restartable - a newer schedule cancels the pending one)
 ### 7.7 Auto-unlink and repo GC
 
 `autoUnlinkUnusedRepos(workspaceID)` (fires after the 5 s debounce; also re-scheduled on pane
-close, pane process termination, and directory changes):
+close, pane process termination, and directory changes: all three reach it through the
+store reconciler `RepoAutoDetectService.start()` installs, which schedules the pass for a
+workspace whenever a pane vanishes from it or moves; issue #48):
 
 1. Candidates = the workspace's associations with `isAutoDetected == true` (manual associations
    are never auto-removed).
@@ -1004,7 +1006,7 @@ is what the inspector asks for when it opens or when a HEAD moved.
   `getCurrentBranch(worktreePath)` (`git rev-parse --abbrev-ref HEAD`; null on failure/empty) ->
   `repoAssociationBranchResolved` (writes `branchName`, persists).
 - `startGitStatusTimer`: an app-lifetime 30 s repeating timer dispatching `refreshGitStatus`.
-  Started once at boot (`repoWatch.start()`, `packages/daemon/src/boot/compose.ts:1518`);
+  Started once at boot (`repoWatch.start()`, `packages/daemon/src/boot/compose.ts:1527`);
   restart-safe (starting again cancels the prior timer).
 - Triggers for an immediate refresh: workspace activation (3.1), inspector open (`toggleInspector`
   refreshes when turning ON), worktree created, command palette confirm, workspace create with a
@@ -1094,7 +1096,7 @@ sequence:
 - Notifications are shown even while the app is frontmost (banner + sound); the focus-based
   suppression happens before posting, not at presentation time.
 - Retraction: the daemon publishes notifications but never an explicit `removeNotification`
-  (`packages/shell/src/agents.ts:449`). The shell closes a pane's live `kelpi-<paneID>`
+  (`packages/shell/src/agents.ts:450`). The shell closes a pane's live `kelpi-<paneID>`
   notification the moment that pane leaves the waiting set (any status change away from
   `waitingForInput`, `clearPaneStatus` included; `packages/shell/src/status.ts:589`), so acting on
   a pane retracts its stale "waiting for input" notification the same way.
@@ -1102,7 +1104,7 @@ sequence:
   one-shot `pointerdown` listener and the first click in the window calls
   `runtime.notifications?.request()` (`packages/client/src/App.tsx:622`; browsers grant
   notification permission only from a user gesture, and `request()` is a no-op once the state is
-  no longer `default`, `packages/client/src/state/notifications.ts:135`). The Electron shell makes
+  no longer `default`, `packages/client/src/state/notifications.ts:140`). The Electron shell makes
   no permission request at all: `Notification.isSupported()` is the whole gate
   (`packages/shell/src/notify.ts:26`).
 
@@ -1267,7 +1269,7 @@ while the app is already running, the window is raised and activated (an open in
 minimized/hidden app must be visible); on cold launch the OS activates the app anyway.
 
 Stage 2 is unnecessary: the daemon creates the default workspace before it starts any listener
-(`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, called at `:1432` "BEFORE
+(`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1186`, called at `:1449` "BEFORE
 any listener"), so an `open` never arrives without an active workspace; if one somehow does it is
 dropped (11.1 step 1). `pendingFileOpens` does not exist; the shell queue above is the only parking
 place, and it is transient by construction.
@@ -1311,12 +1313,12 @@ starting the socket server.
 ### 12.2 stateLoaded - fresh install (zero workspaces)
 
 Effects, in order: `createWorkspace(name: "Default")` (full 4.1 semantics; becomes active;
-`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, runs BEFORE any listener so
+`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1186`, runs BEFORE any listener so
 a CLI that connects the instant the socket appears never sees an empty daemon); hand off to graft
 launch (empty parent-root list); run the label-preset migration, which finds nothing and sets the
 marker (6.5).
 
-An unreadable database takes the same path: `initialState` (`packages/daemon/src/boot/compose.ts:333`)
+An unreadable database takes the same path: `initialState` (`packages/daemon/src/boot/compose.ts:338`)
 returns an empty state with status `unreadable` when the snapshot cannot be loaded (the file is
 never deleted), and `ensureDefaultWorkspace` creates "Default" for it. On the restore branch, a
 persisted active id that names a workspace which no longer exists falls back to the first
@@ -1402,7 +1404,7 @@ terminate), owned by the Electron shell (`packages/shell/src/quit.ts`):
    - Title: `Quit Kelpi?`
    - Body: `<N> agent(s) across <M> workspace(s) are still active. They keep running in the
      background - quitting only closes this window. Reopen Kelpi to attach again.` (proper
-     singular/plural; `quitConfirmDetail`, `packages/shell/src/agents.ts:490`). The dialog is only
+     singular/plural; `quitConfirmDetail`, `packages/shell/src/agents.ts:491`). The dialog is only
      shown when at least one agent is active; with none, the shell quits immediately (the daemon
      and its sessions outlive the window either way).
    - Buttons: "Cancel" is the DEFAULT (Return key) - Cmd+Q is the accidental keystroke being
@@ -1593,7 +1595,7 @@ departs from the legacy macOS app:
    as the legacy app did.
 
 4. **Effect debounces/cancellation keys** are preserved: auto-link 500 ms per pane, auto-unlink
-   5 s per workspace (`packages/daemon/src/git/autodetect.ts:49`), HEAD-changed 150 ms per
+   5 s per workspace (`packages/daemon/src/git/autodetect.ts:59-61`), HEAD-changed 150 ms per
    association (`packages/daemon/src/graft/head-watcher.ts`), git-status timer 30 s singleton,
    palette focus handoff 200 ms singleton (`packages/client/src/chrome/CommandPalette.tsx:29`),
    persistence write 500 ms (`packages/daemon/src/db/persistence.ts:39`). Each keyed effect

@@ -250,7 +250,7 @@ describe('L80 — the six missing `.help()` tooltips', () => {
         render(
             <ProfilesTab
                 profiles={[
-                    { name: 'work', env: { NEX_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }
+                    { name: 'work', env: { KELPI_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }
                 ]}
                 actions={actions()}
                 paths={DEFAULT_SETTINGS_PATHS}

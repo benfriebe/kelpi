@@ -134,8 +134,10 @@ describe('TerminalPane — kitty keyboard protocol', () => {
         fireEvent.keyDown(h.engine, { key: 'ArrowUp', code: 'ArrowUp' });
         fireEvent.keyUp(h.engine, { key: 'ArrowUp', code: 'ArrowUp' });
         // The press is `CSI A` in both protocols and stays the engine's (only it knows DECCKM);
-        // the release has no legacy form at all, so it is ours.
-        expect(h.pty.last().input).toEqual([esc('[1;1:3A')]);
+        // the release has no legacy form at all, so it is ours. It rides the UN-mirrored frame:
+        // terminal-surface.md §8.2 mirrors only the press that carries the input (#51).
+        expect(h.pty.last().directInput).toEqual([esc('[1;1:3A')]);
+        expect(h.pty.last().input).toEqual([]);
         expect(h.engineEvents).toEqual(['keydown']);
     });
 
@@ -145,12 +147,9 @@ describe('TerminalPane — kitty keyboard protocol', () => {
         fireEvent.keyUp(h.engine, { key: 'Shift', code: 'ShiftLeft', location: 1 });
         fireEvent.keyDown(h.engine, { key: 'Control', code: 'ControlRight', location: 2, ctrlKey: true });
         fireEvent.keyUp(h.engine, { key: 'Control', code: 'ControlRight', location: 2 });
-        expect(h.pty.last().input).toEqual([
-            esc('[57441;2u'),
-            esc('[57441;1:3u'),
-            esc('[57448;5u'),
-            esc('[57448;1:3u')
-        ]);
+        // Presses on the mirrored stream, releases on the un-mirrored one (§8.2, #51).
+        expect(h.pty.last().input).toEqual([esc('[57441;2u'), esc('[57448;5u')]);
+        expect(h.pty.last().directInput).toEqual([esc('[57441;1:3u'), esc('[57448;1:3u')]);
         expect(h.engineEvents).toEqual([]);
     });
 

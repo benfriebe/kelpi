@@ -162,3 +162,62 @@ describe('workspace delete gate', () => {
         expect(screen.queryByTestId('confirm-dialog')).toBeNull();
     });
 });
+
+/**
+ * kelpi#53 (shell-ui.md §12): Cancel is the default/Return button of every confirmation, so
+ * the sidebar's dialog answers Escape and Return the way `AgentDeleteGate` and
+ * `QuitConfirmDialog` do. The keys are dispatched on `window` because the real listener is
+ * capture-phase there, ahead of any pane's own key handling.
+ */
+describe('workspace delete gate keys', () => {
+    it('Escape cancels and deletes nothing', () => {
+        const onDeleteWorkspace = vi.fn();
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 0} />);
+        openDelete();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(onDeleteWorkspace).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    });
+
+    it('Return takes the default answer, Cancel, even with an active-agent warning up', () => {
+        const onDeleteWorkspace = vi.fn();
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 2} />);
+        openDelete();
+        fireEvent.keyDown(window, { key: 'Enter' });
+        expect(onDeleteWorkspace).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    });
+
+    it('honours "Don’t ask again" when Escape ends the dialog', () => {
+        const onDeleteWorkspace = vi.fn();
+        const onSuppressDeleteConfirm = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                onDeleteWorkspace={onDeleteWorkspace}
+                activeAgentCount={() => 1}
+                onSuppressDeleteConfirm={onSuppressDeleteConfirm}
+            />
+        );
+        openDelete();
+        fireEvent.click(screen.getByTestId('confirm-suppress'));
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(onSuppressDeleteConfirm).toHaveBeenCalledTimes(1);
+        expect(onDeleteWorkspace).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    });
+
+    it('stops listening once the dialog is closed', () => {
+        const onDeleteWorkspace = vi.fn();
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 0} />);
+        openDelete();
+        fireEvent.click(screen.getByTestId('confirm-cancel'));
+        expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+        // A second Escape with no dialog up must not be swallowed by a stale listener.
+        const seen = vi.fn();
+        window.addEventListener('keydown', seen);
+        fireEvent.keyDown(window, { key: 'Escape' });
+        window.removeEventListener('keydown', seen);
+        expect(seen).toHaveBeenCalledTimes(1);
+    });
+});

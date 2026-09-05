@@ -101,6 +101,8 @@ describe('spawnEnvVars', () => {
         expect(logs).toHaveLength(1);
         expect(logs[0]).toContain('"ghost"');
         expect(logs[0]).toContain('dev');
+        // The hint names the file and marker Kelpi really uses, not the pre-port ones (#46).
+        expect(logs[0]).toContain('~/.config/kelpi/config; only KELPI_PROFILE will be set');
     });
 
     it('never warns about an empty default profile, which is the expected state', () => {

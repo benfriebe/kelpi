@@ -183,9 +183,12 @@ export function spawnEnvVars(
             sessionProfileName !== undefined && sessionProfileName !== null
                 ? `pane ${paneID} resumes its agent session under profile "${profileName}"`
                 : `workspace "${workspace.name}" uses profile "${profileName}"`;
+        // Names what actually happens: the file `resolveConfigPath` reads and the marker
+        // `resolveProfileEnv` injects. The line used to say `~/.config/nex/config` and
+        // `NEX_PROFILE`, neither of which Kelpi touches (#46).
         ctx.onLog?.(
             `${subject}, which has no ` +
-                'profile = lines in ~/.config/nex/config; only NEX_PROFILE will be set'
+                'profile = lines in ~/.config/kelpi/config; only KELPI_PROFILE will be set'
         );
     }
     const profileEnv = resolveProfileEnv(profiles, profileName);

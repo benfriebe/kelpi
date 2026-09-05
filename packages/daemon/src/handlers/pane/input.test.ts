@@ -48,7 +48,7 @@ describe('pane-send', () => {
             bare: false,
             label: 'worker-1'
         });
-        expect(h.input.texts).toEqual([{ paneID: P2, text: 'ls -al', bare: false }]);
+        expect(h.input.texts).toEqual([{ paneID: P2, text: 'ls -al', bare: false, mirror: false }]);
     });
 
     it('carries --bare through to the reply and the write', () => {
@@ -61,7 +61,8 @@ describe('pane-send', () => {
         });
 
         expect(reply.only()).toMatchObject({ bare: true, pane_id: P2 });
-        expect(h.input.texts).toEqual([{ paneID: P2, text: 'ls /tm', bare: true }]);
+        // Never mirrored: a programmatic send targets one pane (terminal-surface.md §8.2, #51).
+        expect(h.input.texts).toEqual([{ paneID: P2, text: 'ls /tm', bare: true, mirror: false }]);
     });
 
     it('never writes when resolution fails', () => {

@@ -86,10 +86,14 @@ import {
     closeRouteLogLine,
     debugMenuSection,
     fileMenuTemplate,
+    menuAccelerators,
+    menuAcceleratorsLogLine,
     menuLogLine,
     routeCloseRequest,
+    sameMenuAccelerators,
     viewMenuTemplate,
-    workspaceSelectionLogLine
+    workspaceSelectionLogLine,
+    type MenuAccelerators
 } from './menu.js';
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
@@ -1008,10 +1012,37 @@ function applyCliInstallPolicy(): void {
  * §WS-151: the last workspace multi-selection count this window's client reported.
  *
  * Kept here rather than read at build time because it outlives a menu: `buildMenu()` runs at
- * launch and on nothing else, while a selection changes with every ⌘-click. It is also what a
- * REBUILD would have to seed the row from, so the two facts stay one variable.
+ * launch and when a keybind write moves a menu chord (#47), while a selection changes with
+ * every ⌘-click. It is also what a REBUILD seeds the row from, so the two facts stay one
+ * variable.
  */
 let workspaceSelectionCount = 0;
+
+/**
+ * config-keybindings.md §7.1 / #47: the accelerator set the LIVE application menu was built
+ * from, or null before the first build.
+ *
+ * The menu is built at launch, before the daemon has spoken, on the shipped defaults; the
+ * `welcome` handshake and every `settings-changed` then re-derive the set from the daemon's
+ * `keybindLines` and rebuild ONLY when a menu-bar chord actually moved. A native accelerator
+ * outranks the page, so a menu left on the defaults would keep firing New Workspace on ⌘N after
+ * the user rebound it; but a rebuild drops an open menu, so an unrelated settings write (a
+ * theme, a profile) must not trigger one.
+ */
+let liveMenuAccelerators: MenuAccelerators | null = null;
+
+/** The menu-bar chords the daemon's current `keybind` lines resolve to (defaults until told). */
+function currentMenuAccelerators(): MenuAccelerators {
+    return menuAccelerators(status?.daemonSettings.keybindLines ?? []);
+}
+
+/** Rebuild the application menu if a settings delivery moved a menu-bar chord (#47). */
+function refreshMenuAccelerators(): void {
+    if (liveMenuAccelerators !== null && sameMenuAccelerators(liveMenuAccelerators, currentMenuAccelerators())) {
+        return;
+    }
+    buildMenu();
+}
 
 /**
  * Move File ▸ Deselect All Workspaces to match the reported selection.
@@ -1067,9 +1098,13 @@ function buildMenu(): void {
     // Every PRODUCT row lives in `./menu.ts`, where its click can be exercised without an
     // Electron process; what is left here is the wiring — the relay, the native panel fallback,
     // and the two menus (Edit, Window) that are pure roles.
+    // #47 / §7.1: every product row's chord comes from the binding map, not from a constant.
+    const accelerators = currentMenuAccelerators();
+    liveMenuAccelerators = accelerators;
     const relay = {
         sendMenuRequest: (command: string) => status?.sendMenuRequest(command) === true,
-        onUndelivered: (command: string) => warn(`menu: no window took "${command}"`)
+        onUndelivered: (command: string) => warn(`menu: no window took "${command}"`),
+        accelerators
     };
     // §APP-026: read once, here, and reported in the log line below — the row is greyed in a dev
     // or unsigned build exactly as Sparkle's was when `canCheckForUpdates` was false.
@@ -1100,7 +1135,7 @@ function buildMenu(): void {
                 platform: process.platform,
                 // N14: ⌘W asks the page to close a PANE before this process closes a window.
                 closeFocusedPane: () => closeFocusedPaneOrWindow(),
-                // A rebuild (there is only the launch one today) must not un-grey a row the
+                // A rebuild (the launch one, or a keybind change's) must not un-grey a row the
                 // client has already told us belongs greyed.
                 hasWorkspaceSelection: workspaceSelectionCount > 0
             })
@@ -1145,6 +1180,9 @@ function buildMenu(): void {
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
     log(menuLogLine({ canCheckForUpdates: updatesAvailable, isPackaged: app.isPackaged }));
+    // #47: the line above names the shipped chords; this one says which rows the binding map
+    // moved, so a rebind that reached the menu is observable from outside the process.
+    log(menuAcceleratorsLogLine(accelerators));
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
@@ -1204,6 +1242,9 @@ function startStatusController(): void {
                  * runs once per install and never again.
                  */
                 daemonSettingsReady: () => {
+                    // #47 / §7.1: the launch menu was built on the shipped defaults; the
+                    // handshake is the first moment the user's `keybind` lines are known.
+                    refreshMenuAccelerators();
                     // §SET-200/§SET-201: this fires on every (re)connect, which is the only
                     // moment the launch-time registration outcome can actually be delivered —
                     // it happened before there was a socket. Re-sending on a reconnect is
@@ -1279,6 +1320,9 @@ function startStatusController(): void {
                 settingsChanged: () => {
                     registerGlobalHotkey('settings');
                     applyAppearanceSettings();
+                    // #47 / §7.1: "Menu shortcuts update live when bindings change". A no-op
+                    // unless a menu-bar chord moved, for the same reason the hotkey swap is.
+                    refreshMenuAccelerators();
                 },
                 /**
                  * §WS-151: the sidebar's multi-selection, arriving from the page the long way

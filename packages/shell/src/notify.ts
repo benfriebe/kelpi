@@ -25,7 +25,9 @@
  *     ORDER is what the app controls, which is why "Open" is first in both.
  *   - **No permission request.** `UNUserNotificationCenter.requestAuthorization` has no Electron
  *     equivalent (`Notification.isSupported()` is the whole gate); the browser client asks from
- *     a user gesture instead (`client/src/state/notifications.ts`), a deliberate constraint.
+ *     a user gesture instead (the first `pointerdown` in the window, `client/src/App.tsx`,
+ *     through `client/src/state/notifications.ts`'s `request()`; agent-lifecycle.md §7.5), a
+ *     deliberate constraint.
  */
 
 /** The Swift's `NotificationService.categoryID`, kept verbatim. */

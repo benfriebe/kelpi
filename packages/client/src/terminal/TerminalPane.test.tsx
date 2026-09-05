@@ -1442,7 +1442,11 @@ describe('TerminalPane — mouse reporting', () => {
         fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
         fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
 
-        expect(h.pty.last().input).toEqual([esc('[<0;5;4M'), esc('[<32;9;5M'), esc('[<0;9;5m')]);
+        // On the UN-mirrored frame (terminal-surface.md §8.2 / §11, #51): a report carries this
+        // pane's cell coordinates and must never fan out to a sync sibling, so the mirrored
+        // `input` stream stays empty.
+        expect(h.pty.last().directInput).toEqual([esc('[<0;5;4M'), esc('[<32;9;5M'), esc('[<0;9;5m')]);
+        expect(h.pty.last().input).toEqual([]);
     });
 
     it('the engine never sees an event that was reported', async () => {
@@ -1465,6 +1469,7 @@ describe('TerminalPane — mouse reporting', () => {
         fireEvent.wheel(h.engine, { clientX: 45, clientY: 61, deltaX: 0, deltaY: -60 });
 
         expect(h.pty.last().input).toEqual([]);
+        expect(h.pty.last().directInput).toEqual([]);
         expect(h.engineEvents).toEqual(['mousedown', 'mousemove', 'mouseup', 'wheel']);
         expect(h.root.dataset['terminalMouse']).toBe('none');
     });
@@ -1477,6 +1482,7 @@ describe('TerminalPane — mouse reporting', () => {
         fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0, shiftKey: true });
 
         expect(h.pty.last().input).toEqual([]);
+        expect(h.pty.last().directInput).toEqual([]);
         expect(h.engineEvents).toEqual(['mousedown', 'mousemove', 'mouseup']);
     });
 
@@ -1485,7 +1491,7 @@ describe('TerminalPane — mouse reporting', () => {
 
         fireEvent.wheel(h.engine, { clientX: 45, clientY: 61, deltaX: 0, deltaY: -40 });
 
-        expect(h.pty.last().input).toEqual([esc('[<64;5;4M'), esc('[<64;5;4M')]);
+        expect(h.pty.last().directInput).toEqual([esc('[<64;5;4M'), esc('[<64;5;4M')]);
         expect(h.engineEvents).toEqual([]);
     });
 
@@ -1508,7 +1514,7 @@ describe('TerminalPane — mouse reporting', () => {
         fireEvent.mouseMove(outside, { clientX: 2000, clientY: 61, button: 0 });
         fireEvent.mouseUp(outside, { clientX: 2000, clientY: 61, button: 0 });
 
-        expect(h.pty.last().input).toEqual([esc('[<0;5;4M'), esc('[<32;80;4M'), esc('[<0;80;4m')]);
+        expect(h.pty.last().directInput).toEqual([esc('[<0;5;4M'), esc('[<32;80;4M'), esc('[<0;80;4m')]);
         outside.remove();
     });
 
@@ -1521,7 +1527,7 @@ describe('TerminalPane — mouse reporting', () => {
         });
         fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
 
-        expect(h.pty.last().input).toEqual([esc('[<0;5;4M')]);
+        expect(h.pty.last().directInput).toEqual([esc('[<0;5;4M')]);
         expect(h.engineEvents).toEqual(['mousemove']);
     });
 });
@@ -1588,7 +1594,7 @@ describe('TerminalPane — selection read (§TERM-034)', () => {
         fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
         fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
 
-        expect(h.pty.last().input.length).toBeGreaterThan(0);
+        expect(h.pty.last().directInput.length).toBeGreaterThan(0);
         expect(h.root.dataset['terminalSelection']).toBe('0');
     });
 });

@@ -7,7 +7,10 @@
  *
  * Both paths must work with **zero clients attached**, so every byte is produced here, in
  * the daemon, from the pane's live VT modes. Neither path mirrors to sync siblings: §8.2
- * lists programmatic sends as explicitly not mirrored, hence `writeDirect`.
+ * lists programmatic sends as explicitly not mirrored, hence `writeDirect`. The one caller
+ * that opts into `write` is the client's drag-drop (`ws/desktop.ts` `drop-text`), because
+ * §8.2 item 2 / §12.4 treat a dropped path like any other text committed outside a
+ * keystroke: paste-piped here, then mirrored (#51).
  */
 
 import { parseNamedKey, unknownNamedKeyError } from '@kelpi/protocol';
@@ -113,14 +116,17 @@ export function encodePasteText(text: string, modes: VtModes): string {
 export type VtModesLookup = (paneID: string) => VtModes;
 
 export interface TerminalInputOptions {
-    /** Only `writeDirect` is used: programmatic sends never mirror to sync siblings (§8.2). */
-    readonly pty: Pick<PtyManager, 'writeDirect'>;
+    /**
+     * `writeDirect` for everything programmatic (never mirrored, §8.2); `write` only when a
+     * caller passes `mirror: true`, which is the drag-drop text path (§8.2 item 2, #51).
+     */
+    readonly pty: Pick<PtyManager, 'write' | 'writeDirect'>;
     /** Live VT modes for the pane (bracketed paste + DECCKM); missing pane → defaults. */
     readonly modes: VtModesLookup;
 }
 
 class TerminalInputImpl implements TerminalInput {
-    private readonly pty: Pick<PtyManager, 'writeDirect'>;
+    private readonly pty: Pick<PtyManager, 'write' | 'writeDirect'>;
     private readonly lookupModes: VtModesLookup;
 
     constructor(options: TerminalInputOptions) {
@@ -133,10 +139,13 @@ class TerminalInputImpl implements TerminalInput {
      * §9.1. Two writes, never one: with bracketed paste on, the Enter must land outside the
      * envelope so a TUI treats it as a real submit.
      */
-    sendText(paneID: string, text: string, opts: { bare: boolean }): void {
+    sendText(paneID: string, text: string, opts: { bare: boolean; mirror?: boolean }): void {
         const payload = encodePasteText(text, this.modesFor(paneID));
-        if (payload !== '') this.pty.writeDirect(paneID, payload);
-        if (!opts.bare) this.pty.writeDirect(paneID, ENTER_BYTES);
+        // `mirror` is the drag-drop case only (§12.4): the same paste framing, but through the
+        // sync-group fan-out, exactly as a Cmd+V paste in the client already is (#51).
+        const write = opts.mirror === true ? this.pty.write : this.pty.writeDirect;
+        if (payload !== '') write.call(this.pty, paneID, payload);
+        if (!opts.bare) write.call(this.pty, paneID, ENTER_BYTES);
     }
 
     /** Validation happens before any write; unknown names throw (§9.2, wire §5.6). */

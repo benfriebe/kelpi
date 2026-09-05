@@ -493,7 +493,9 @@ in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
   `RATIO_COMMIT_INTERVAL_MS` (50 ms, leading edge, with a trailing flush on release so the
   last position always wins; `throttleTrailing` in `divider.ts`). The commit's wire spelling
   depends on the split (`dividerCommit` in `divider.ts`, `onSetRatio` in
-  `packages/client/src/App.tsx:4198-4209`):
+  `packages/client/src/App.tsx:4198-4209`; a REMOTE daemon's workspace, §1.7, applies the
+  same two spellings to that daemon's own commands in
+  `packages/client/src/app/RemoteWorkspaceView.tsx`, #54):
   - if the split has a leaf child, `pane-resize --ratio` for that pane with the pane's own
     share (`share = paneIsFirst ? ratio : 1 - ratio`; `dividerPaneTarget` prefers `first`,
     else `second`), the same `resizePaneShare` pipeline as §12.5

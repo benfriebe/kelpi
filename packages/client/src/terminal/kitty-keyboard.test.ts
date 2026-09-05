@@ -322,10 +322,14 @@ describe('encodeKittyKey — report all keys as escape codes (0b1000)', () => {
 describe('createKittyKeyboard', () => {
     it('writes the encoded bytes and reports whether the engine still owns the key', () => {
         const written: string[] = [];
+        const releases: boolean[] = [];
         let flags = 0;
         const keyboard = createKittyKeyboard({
             flags: () => flags,
-            write: (bytes) => written.push(decoder.decode(bytes))
+            write: (bytes, release) => {
+                written.push(decoder.decode(bytes));
+                releases.push(release);
+            }
         });
 
         expect(keyboard.active).toBe(false);
@@ -339,6 +343,9 @@ describe('createKittyKeyboard', () => {
         // Plain typing is still the engine's, even with the protocol on.
         expect(keyboard.key(event('keydown', 'a'))).toBe(false);
         expect(written).toEqual(['\x1b[27u', '\x1b[27;1:3u']);
+        // Only the press is a mirror candidate (terminal-surface.md §8.2, #51): the release is
+        // flagged so the pane host can keep it out of the sync-group fan-out.
+        expect(releases).toEqual([false, true]);
 
         // The getter is read per event, so a pop mid-session takes effect immediately.
         flags = 0;

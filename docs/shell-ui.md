@@ -1095,7 +1095,7 @@ height 11) when `showSystemStatGraphs` is on and ≥2 samples exist.
   measures the row, keeps 220px for the left cluster and the counts + clock, and
   `fitStatGauges` renders only the canonical-order prefix that fits (cpu, memory, load, …),
   unmounting later gauges rather than clipping them, because each gauge's hover popover is
-  drawn above the footer and cannot be clipped (`packages/client/src/chrome/StatusFooter.tsx:480-502`,
+  drawn above the footer and cannot be clipped (`packages/client/src/chrome/StatusFooter.tsx:484-506`,
   `:656-692`). Until a measurement exists, all enabled gauges render. Samples come from the
   daemon at 2s with a 60-sample history (`packages/protocol/src/ws/stats.ts:73-76`).
 
@@ -1265,7 +1265,7 @@ quitting only closes the window.
 - Title "Quit Kelpi?".
 - Body: "N agent(s) across M workspace(s) are still active. They keep running in the
   background - quitting only closes this window. Reopen Kelpi to attach again."
-  (`quitConfirmDetail`, `packages/shell/src/agents.ts:490-497`).
+  (`quitConfirmDetail`, `packages/shell/src/agents.ts:491-498`).
 - Buttons Quit (destructive) / Cancel (default; Return and Escape;
   `settings.ts:141-150`). "Don't ask again" writes the daemon's `confirm-quit-when-active`
   setting (falling back to the shell's local settings file when the daemon is unreachable,
@@ -1286,7 +1286,9 @@ route taken is logged.
 
 Deleting a single workspace from the sidebar always confirms: `Delete "<name>"?` with
 Cancel / Delete (destructive) (`packages/client/src/chrome/Sidebar.tsx:3894-3907`,
-`:5153-5195`). When the workspace has active agents (running/waiting panes) AND the
+`:5175-5217`; Return and Escape both take Cancel via a capture-phase keydown at `:5112-5133`,
+which the bulk and group dialogs below share). When the workspace has active agents
+(running/waiting panes) AND the
 `confirmWorkspaceDeleteWhenActive` setting is on, the dialog adds the line "This workspace
 has N active agent(s). Deleting it will terminate it/them." and a "Don't ask again" checkbox
 that writes the same setting. With no active agents, or the setting off, the plain
@@ -1333,7 +1335,7 @@ Finder file-opens are forwarded as the ordinary `open` control command; cold-lau
 are parked and replayed in arrival order once the daemon connection is up, a parked file
 raises no window, and only markdown paths are forwarded (`launch.ts` `createOpenFileQueue`).
 
-Desktop notifications (`packages/shell/src/notify.ts:26-50`,
+Desktop notifications (`packages/shell/src/notify.ts:26-52`,
 `packages/shell/src/status.ts:583-654`): the Electron shell makes no permission request
 (`Notification.isSupported()` is the whole gate; the browser client asks from a user
 gesture). Every agent notification carries the `kelpi-agent` actions Open / Dismiss; a body
@@ -1437,7 +1439,7 @@ interface StatusBarItem {   // status-bar count popover rows (§8)
   workspaceName: string; workspaceColor: WorkspaceColor;
   paneTitle: string; paneID: UUID; workspaceID: UUID; status: PaneStatus;
   agentStartedAt?: number | null;   // epoch milliseconds; elapsed label in the popover row
-                                    // (packages/client/src/chrome/StatusFooter.tsx:201-210)
+                                    // (packages/client/src/chrome/StatusFooter.tsx:205-214)
 }
 
 // Pane-grid drag & drop

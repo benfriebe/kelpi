@@ -4,7 +4,7 @@
  * Three invariants this path must never break, because it fires on every agent turn on
  * machines where Kelpi may not even be running:
  *   - exit 0 on every transport problem, with warnings suppressed unless `KELPI_VERBOSE_HOOKS`;
- *   - silent exit 0 when `NEX_PANE_ID` is unset (running outside a pane is not an error);
+ *   - silent exit 0 when `KELPI_PANE_ID` is unset (running outside a pane is not an error);
  *   - a typo'd `--agent` is LOUD (exit 1) — a silently-degraded agent kind is worse than a
  *     visible failure, because it would mislabel the pane and pick the wrong resume command.
  *

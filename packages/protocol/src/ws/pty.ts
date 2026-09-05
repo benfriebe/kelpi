@@ -15,14 +15,25 @@
 export const PTY_FRAME_TYPES = {
     /** server → client: live PTY output. */
     output: 0x01,
-    /** client → server: keyboard / paste bytes. */
+    /** client → server: keyboard / paste bytes (mirrored to sync siblings, terminal-surface.md §8.2). */
     input: 0x02,
     /** client → server: bytes consumed since the last ack (uint32 BE). */
     ack: 0x03,
     /** client → server: cols/rows (two uint16 BE). */
     resize: 0x04,
     /** server → client: attach replay (snapshot bytes) sent before the first `output`. */
-    replay: 0x05
+    replay: 0x05,
+    /**
+     * client → server: input bytes that belong to THIS pane only and are never mirrored into
+     * a synchronise-input sibling: client-encoded mouse reports and kitty key releases
+     * (terminal-surface.md §8.2, §10.2, §11; issue #51). A mouse report carries cell
+     * coordinates measured against the source pane's grid, and a sibling in a different
+     * mouse mode (or none) would receive them as typed garbage, so the split is made on the
+     * wire rather than by inspecting bytes in the daemon. An older daemon ignores the type
+     * (forward-compat rule in `decodePtyFrame`), which degrades to "no mouse reporting"
+     * rather than to fan-out.
+     */
+    inputDirect: 0x06
 } as const;
 
 export type PtyFrameTypeName = keyof typeof PTY_FRAME_TYPES;

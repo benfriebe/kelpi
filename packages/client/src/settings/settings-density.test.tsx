@@ -278,7 +278,7 @@ describe('S26 — the Profiles add affordance is a strip under a rule', () => {
     it('separates the add control from the last rail row with a full-width rule', () => {
         render(
             <ProfilesTab
-                profiles={[{ name: 'work', env: { NEX_PROFILE: 'work' } }]}
+                profiles={[{ name: 'work', env: { KELPI_PROFILE: 'work' } }]}
                 actions={actions()}
                 paths={DEFAULT_SETTINGS_PATHS}
             />

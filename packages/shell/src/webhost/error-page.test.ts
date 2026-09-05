@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
     ERROR_PAGE_MARKER,
     isWebErrorPageURL,
+    reportedTabURL,
     webErrorMessage,
     webErrorPageDataURL,
     webErrorPageHTML
@@ -99,5 +100,34 @@ describe('the error card', () => {
         expect(isWebErrorPageURL('https://example.com/')).toBe(false);
         expect(isWebErrorPageURL('data:text/html,<h1>hi</h1>')).toBe(false);
         expect(isWebErrorPageURL('about:blank')).toBe(false);
+    });
+});
+
+/**
+ * §4.3 / §8.2, issue #50 (web-01). The card is a `data:` URL, and the engine reports it as the
+ * page; `web-url`, `web-capture` and the console line all read `TabController.url()`, so the
+ * failed address has to be reported from there or an agent polling `kelpi web url` after a bad
+ * navigate gets the card itself.
+ */
+describe('the URL a tab reports', () => {
+    const card = webErrorPageDataURL(FAILED);
+
+    it('is the failed address while the card is showing, never the card', () => {
+        expect(reportedTabURL(card, FAILED.url, true)).toBe(FAILED.url);
+        // The card can be up with `failedLoad` already cleared by a later `navigate`; it is still
+        // not a page, so it is still not reported.
+        expect(reportedTabURL(card, 'https://next.example/', false)).toBe('https://next.example/');
+        // ...and a failure whose card has not committed yet (or could not load, leaving
+        // Chromium's own page) reports the address rather than what Chromium holds.
+        expect(reportedTabURL('chrome-error://chromewebdata/', FAILED.url, true)).toBe(FAILED.url);
+    });
+
+    it('is the live URL for a page, and keeps §4.4 placeholders from wiping the address', () => {
+        expect(reportedTabURL('https://example.com/', 'https://example.com/', false)).toBe('https://example.com/');
+        expect(reportedTabURL('', 'https://example.com/', false)).toBe('https://example.com/');
+        expect(reportedTabURL('about:blank', 'https://example.com/', false)).toBe('https://example.com/');
+        // A tab that was never asked for anything reports what it has, placeholder included.
+        expect(reportedTabURL('about:blank', '', false)).toBe('about:blank');
+        expect(reportedTabURL('', '', false)).toBe('');
     });
 });

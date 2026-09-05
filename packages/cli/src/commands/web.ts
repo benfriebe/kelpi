@@ -50,7 +50,7 @@ function resolveWebArg(argument: string): string {
 }
 
 /**
- * `--target` / `--workspace` / `NEX_PANE_ID` scoping, enforced CLIENT-side so a scope mistake
+ * `--target` / `--workspace` / `KELPI_PANE_ID` scoping, enforced CLIENT-side so a scope mistake
  * never costs a socket round trip (cli.md §15.1).
  */
 function attachWebTargetScope(
@@ -72,7 +72,9 @@ function attachWebTargetScope(
         exit(1);
     }
     if (target === null && !hasOrigin) {
-        errLine(`kelpi web ${command}: no --target supplied and NEX_PANE_ID is not set`);
+        // Names the variable `originPaneID()` actually reads (cli.md §15.1, §4); the pre-rename
+        // `NEX_PANE_ID` wording sent users exporting a variable nothing honours (#46).
+        errLine(`kelpi web ${command}: no --target supplied and KELPI_PANE_ID is not set`);
         exit(1);
     }
 }

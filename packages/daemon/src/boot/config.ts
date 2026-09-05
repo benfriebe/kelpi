@@ -2,13 +2,19 @@
  * Reading `~/.config/nex/config` on the daemon's behalf.
  *
  * Spec: docs/config-keybindings.md §1 (the file lives at literally `~/.config/nex/config`
- * with `~` expanded to `$HOME` — no XDG lookup), §1.5 (profiles), §10 (`tcp-port`).
+ * with `~` expanded to `$HOME`, no XDG lookup), §1.5 (profiles), §12 (`tcp-port`).
  * Parsing itself is `@kelpi/core/config`; this module only does the IO and the "missing file is
  * not an error" policy.
  *
  * Two consumers, two lifetimes:
- *  - general settings are read ONCE at boot (`tcp-port` picks the control listener, and the
- *    listener cannot be re-bound under a live CLI anyway);
+ *  - general settings are read here once at boot, and only to pick the INITIAL control
+ *    listener (`configuredTcpPort` feeds `resolveControlEndpoints`). Every later read is the
+ *    settings service's (`settings/service.ts`: a file watcher plus a re-read after each
+ *    write), and `tcp-port` is applied LIVE by that service's subscriber in `compose.ts`
+ *    (`applyTcpPortSetting`: `stopTCP` then a fresh bind on the owning control server, the
+ *    Unix socket serving throughout; config-keybindings.md §12, pinned by `compose.test.ts`
+ *    "binds, re-binds and tears down"). Nothing about the listener waits for the next daemon
+ *    start (issue #58 retired the claim that it could not be re-bound under a live CLI);
  *  - profiles are re-read PER SPAWN (workspace-feature.md §3.4: definitions stay fresh without
  *    a watcher), which `createProfileReader` provides. Boot passes a single batch-cached read
  *    to the restore path instead, per app-state-core.md §12.3 step 7 ("cache per launch batch").

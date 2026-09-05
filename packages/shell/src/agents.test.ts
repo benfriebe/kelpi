@@ -10,7 +10,6 @@ import {
     activitySummary,
     dockBadgeLabel,
     middleTruncate,
-    newlyWaitingPanes,
     noLongerWaitingPanes,
     paneDisplayTitle,
     quitConfirmDetail,
@@ -212,13 +211,7 @@ describe('derivations', () => {
         expect(trayTooltip(counts(0, 0), false)).toBe('Kelpi - daemon not reachable');
     });
 
-    it('reports only the panes that newly entered waiting', () => {
-        expect(newlyWaitingPanes(['a'], ['a', 'b'])).toEqual(['b']);
-        expect(newlyWaitingPanes(['a', 'b'], ['a'])).toEqual([]);
-        expect(newlyWaitingPanes([], [])).toEqual([]);
-    });
-
-    /** §AGNT-077: the other direction — whose toast is now stale. */
+    /** §AGNT-077: whose toast is now stale. */
     it('reports the panes that stopped waiting', () => {
         expect(noLongerWaitingPanes(['a', 'b'], ['a'])).toEqual(['b']);
         expect(noLongerWaitingPanes(['a'], ['a', 'b'])).toEqual([]);

@@ -21,6 +21,8 @@ export function textOf(data: Uint8Array): string {
 export interface StubPty {
     readonly manager: PtyManager;
     readonly writes: { paneID: string; data: string }[];
+    /** The subset of `writes` that took the un-mirrored `writeDirect` path (§8.2, #51). */
+    readonly directWrites: { paneID: string; data: string }[];
     readonly resizes: { paneID: string; cols: number; rows: number }[];
     readonly spawns: PtySpawnOptions[];
     /** Simulate PTY output. */
@@ -32,6 +34,7 @@ export function stubPty(): StubPty {
     const dataListeners = new Set<(paneID: string, data: Uint8Array) => void>();
     const exitListeners = new Set<(paneID: string, code: number) => void>();
     const writes: { paneID: string; data: string }[] = [];
+    const directWrites: { paneID: string; data: string }[] = [];
     const resizes: { paneID: string; cols: number; rows: number }[] = [];
     const spawns: PtySpawnOptions[] = [];
     const live = new Set<string>();
@@ -46,7 +49,9 @@ export function stubPty(): StubPty {
             writes.push({ paneID, data: typeof data === 'string' ? data : textOf(data) });
         },
         writeDirect(paneID, data) {
-            writes.push({ paneID, data: typeof data === 'string' ? data : textOf(data) });
+            const entry = { paneID, data: typeof data === 'string' ? data : textOf(data) };
+            writes.push(entry);
+            directWrites.push(entry);
         },
         resize(paneID, cols, rows) {
             resizes.push({ paneID, cols, rows });
@@ -71,6 +76,7 @@ export function stubPty(): StubPty {
     return {
         manager,
         writes,
+        directWrites,
         resizes,
         spawns,
         emit(paneID, data) {

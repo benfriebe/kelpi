@@ -391,7 +391,12 @@ export function sanitizeKittyFlags(value: number | undefined): number {
 export interface KittyKeyboardOptions {
     /** The pane's live flags, read through a getter so the handlers never go stale. */
     readonly flags: () => number;
-    readonly write: (bytes: Uint8Array) => void;
+    /**
+     * `release` is true for a `keyup` encoding (`CSI …:3u`). terminal-surface.md §8.2 mirrors
+     * only the press that carries the input into sync siblings, so the pane host routes a
+     * release down the un-mirrored path and everything else down the mirrored one (#51).
+     */
+    readonly write: (bytes: Uint8Array, release: boolean) => void;
 }
 
 export interface KittyKeyboard {
@@ -409,7 +414,7 @@ export function createKittyKeyboard(options: KittyKeyboardOptions): KittyKeyboar
         key(event: KittyKeyEventLike): boolean {
             const bytes = encodeKittyKey(event, options.flags());
             if (bytes === null) return false;
-            options.write(bytes);
+            options.write(bytes, event.type === 'keyup');
             return true;
         }
     };

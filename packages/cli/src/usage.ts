@@ -112,7 +112,7 @@ Codex problems never fail the run: exit code follows the Claude half.
 `;
 
 export const paneCloseUsage = `Usage:
-  kelpi pane close                          # close the calling pane (requires NEX_PANE_ID)
+  kelpi pane close                          # close the calling pane (requires KELPI_PANE_ID)
   kelpi pane close --target <name-or-uuid>  # close a specific pane by label or UUID
 
 Options:
@@ -135,7 +135,7 @@ Writes text to a pane's PTY and (unless --bare) presses Enter so it runs.
 
 Options:
   --target <name-or-uuid>     Pane to write to. A UUID resolves globally; a
-                              label needs a workspace scope (NEX_PANE_ID or
+                              label needs a workspace scope (KELPI_PANE_ID or
                               --workspace) so it can't route to the wrong pane.
   --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
   --bare                      Write the text without the trailing Enter (pair
@@ -143,7 +143,7 @@ Options:
   --json                      Print the structured reply instead of the ack.
   -h, --help                  Show this help.
 
-Works from outside a Kelpi pane (no NEX_PANE_ID needed) when --target is a UUID
+Works from outside a Kelpi pane (no KELPI_PANE_ID needed) when --target is a UUID
 or --workspace is given. Exit codes: 0 on success, non-zero on failure.
 
 `;
@@ -200,7 +200,7 @@ Options:
   --json                      Print the structured reply instead of the ack.
   -h, --help                  Show this help.
 
-Without --target the calling pane is renamed (requires NEX_PANE_ID). The new
+Without --target the calling pane is renamed (requires KELPI_PANE_ID). The new
 label is the sole positional argument. Exit codes: 0 on success, non-zero on
 failure.
 
@@ -211,7 +211,7 @@ export const paneMoveUsage = `Usage:
   kelpi pane move --target X --below Y                    # dock pane X under pane Y
   kelpi pane move --target X --right-of Y                 # dock pane X beside pane Y
 
-The directional form moves the calling pane (requires NEX_PANE_ID) toward its
+The directional form moves the calling pane (requires KELPI_PANE_ID) toward its
 neighbour. The adjacent form is the CLI equivalent of GUI drag-and-drop: it
 re-parents pane X onto an edge of pane Y (both name-or-uuid, resolved in the
 same workspace).
@@ -238,7 +238,7 @@ export const paneResizeUsage = `Usage:
   kelpi pane resize --target worker-1 --shrink 0.1      # shrink by 0.1
 
 Adjusts a pane's share of its immediate split against its sibling. Without
---target the calling pane is resized (requires NEX_PANE_ID).
+--target the calling pane is resized (requires KELPI_PANE_ID).
 
 Options:
   --target <name-or-uuid>     Pane to resize (UUID = global, label needs scope).
@@ -258,7 +258,7 @@ export const paneCaptureUsage = `Usage:
   kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
 
 Prints a pane's terminal contents to stdout. Without --target, captures the
-calling pane (requires NEX_PANE_ID).
+calling pane (requires KELPI_PANE_ID).
 
 Options:
   --target <name-or-uuid>     Pane to read (UUID = global, label needs scope).
@@ -280,7 +280,7 @@ Lists panes as a table (or a JSON array with --json).
 
 Options:
   --workspace <name-or-uuid>  Only panes in this workspace.
-  --current                   Only the calling pane's workspace (requires NEX_PANE_ID).
+  --current                   Only the calling pane's workspace (requires KELPI_PANE_ID).
   --json                      Print a JSON array instead of the table.
   --no-header                 Omit the table header row.
   -h, --help                  Show this help.
@@ -305,7 +305,7 @@ Excludes are ephemeral within a single on-cycle: any \`on\` / \`off\` /
 \`sync exclude --target <pane>\`; running exclude while sync is off has
 no effect on the next on-cycle.
 
-Workspace defaults to the calling pane's workspace (via NEX_PANE_ID)
+Workspace defaults to the calling pane's workspace (via KELPI_PANE_ID)
 when --workspace is not supplied.
 
 `;
@@ -497,7 +497,7 @@ export const graftUsage = `Usage:
   kelpi graft status [--json]
 
 With no filters, start/stop default to the caller's workspace
-(requires NEX_PANE_ID). Use --repo to target a single
+(requires KELPI_PANE_ID). Use --repo to target a single
 association; use --workspace to scope across every association
 in another workspace.
 

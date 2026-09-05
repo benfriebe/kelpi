@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_KEYBIND_LINES } from '@kelpi/core/config';
+import { DEFAULT_KEYBIND_LINES, MENU_BAR_ACTIONS } from '@kelpi/core/config';
 
 import {
     CHECK_FOR_UPDATES_LABEL,
@@ -11,6 +11,7 @@ import {
     COMMAND_PALETTE_COMMAND,
     COMMAND_PALETTE_LABEL,
     DEBUG_MENU_LABEL,
+    DEFAULT_MENU_ACCELERATORS,
     DESELECT_ALL_WORKSPACES_COMMAND,
     DESELECT_ALL_WORKSPACES_LABEL,
     DESELECT_ALL_WORKSPACES_MENU_ID,
@@ -25,6 +26,7 @@ import {
     NEW_WORKSPACE_ACCELERATOR,
     NEW_WORKSPACE_COMMAND,
     NEW_WORKSPACE_LABEL,
+    OPEN_FILE_ACCELERATOR,
     OPEN_FILE_COMMAND,
     OPEN_FILE_LABEL,
     SEED_TEST_GROUP_COMMAND,
@@ -46,8 +48,11 @@ import {
     debugMenuSection,
     debugMenuTemplate,
     fileMenuTemplate,
+    menuAccelerators,
+    menuAcceleratorsLogLine,
     menuLogLine,
     routeCloseRequest,
+    sameMenuAccelerators,
     switchWorkspaceAccelerator,
     switchWorkspaceCommand,
     switchWorkspaceLabel,
@@ -74,11 +79,11 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
             'separator',
             'togglefullscreen'
         ]);
-        expect(template[0]?.accelerator).toBe('CommandOrControl+Shift+S');
+        expect(template[0]?.accelerator).toBe('Shift+CommandOrControl+S');
         expect(template[1]?.accelerator).toBe('CommandOrControl+I');
         // …which are `toggle_sidebar`'s and `toggle_inspector`'s own default triggers, so each
         // menu row and the chord in the page are the same shortcut rather than two that drift.
-        expect(TOGGLE_SIDEBAR_ACCELERATOR).toBe('CommandOrControl+Shift+S');
+        expect(TOGGLE_SIDEBAR_ACCELERATOR).toBe('Shift+CommandOrControl+S');
         expect(TOGGLE_INSPECTOR_ACCELERATOR).toBe('CommandOrControl+I');
     });
 
@@ -185,9 +190,9 @@ describe('File menu (§APP-018 / §WS-151)', () => {
         const template = fileMenuTemplate(fileDeps());
         expect(template.slice(0, 5).map((item) => item.accelerator)).toEqual([
             'CommandOrControl+N',
-            'CommandOrControl+Shift+G',
+            'Shift+CommandOrControl+G',
             'CommandOrControl+O',
-            'CommandOrControl+Shift+O',
+            'Shift+CommandOrControl+O',
             'CommandOrControl+P'
         ]);
 
@@ -197,9 +202,8 @@ describe('File menu (§APP-018 / §WS-151)', () => {
          * the client resolve (`@kelpi/core/config`). A default that moved and a menu that did not
          * would show a user a shortcut that no longer fires.
          *
-         * (The map is read at BUILD time rather than per keystroke — a rebind moves the chord in
-         * the page immediately and this row at the next launch. That is divergence #15's own
-         * shape, and it is the same choice ⌘N and ⌘O already ship with under §APP-018.)
+         * (With no `accelerators` handed in, the template is built on those defaults; a user's
+         * rebind reaches it through `menuAccelerators`, pinned in its own block below, #47.)
          */
         const defaults = new Map(
             DEFAULT_KEYBIND_LINES.map((line) => {
@@ -212,8 +216,8 @@ describe('File menu (§APP-018 / §WS-151)', () => {
         expect(defaults.get('open_file')).toBe('super+o');
         expect(defaults.get('open_web_pane')).toBe('shift+super+o');
         expect(defaults.get('command_palette')).toBe('super+p');
-        expect(NEW_GROUP_ACCELERATOR).toBe('CommandOrControl+Shift+G');
-        expect(NEW_WEB_PANE_ACCELERATOR).toBe('CommandOrControl+Shift+O');
+        expect(NEW_GROUP_ACCELERATOR).toBe('Shift+CommandOrControl+G');
+        expect(NEW_WEB_PANE_ACCELERATOR).toBe('Shift+CommandOrControl+O');
         expect(COMMAND_PALETTE_ACCELERATOR).toBe('CommandOrControl+P');
     });
 
@@ -793,5 +797,119 @@ describe('the app menu’s Check for Updates… (§APP-026)', () => {
         expect(line).toContain('New Workspace (⌘N)');
         expect(line).toContain('View ▸ Toggle Sidebar (⌘⇧S)');
         expect(line).toContain('Toggle Inspector (⌘I)');
+    });
+});
+
+/**
+ * #47 / config-keybindings.md §7.1: "shortcut = FIRST trigger of the action, in configString
+ * sort order … Menu shortcuts update live when bindings change (they read the current map)".
+ *
+ * A native accelerator outranks the page, so a menu pinned to the shipped defaults kept firing
+ * New Workspace on ⌘N after the user had rebound or unbound it, and showed a chord the config
+ * file no longer had. These pin the derivation the menu is now built from.
+ */
+describe('menu accelerators follow the binding map (#47, §7.1)', () => {
+    const fileDeps = (overrides: Partial<Parameters<typeof fileMenuTemplate>[0]> = {}) => ({
+        sendMenuRequest: () => true,
+        promptOpenFile: () => undefined,
+        platform: 'darwin',
+        closeFocusedPane: () => undefined,
+        ...overrides
+    });
+
+    it('derives the shipped defaults to exactly the constants the smoke line names', () => {
+        const defaults = menuAccelerators([]);
+        expect(defaults).toEqual({
+            new_workspace: NEW_WORKSPACE_ACCELERATOR,
+            open_file: OPEN_FILE_ACCELERATOR,
+            open_web_pane: NEW_WEB_PANE_ACCELERATOR,
+            new_group: NEW_GROUP_ACCELERATOR,
+            ...Object.fromEntries(
+                Array.from({ length: SWITCH_WORKSPACE_ROWS }, (_unused, index) => [
+                    `switch_to_workspace_${String(index + 1)}`,
+                    switchWorkspaceAccelerator(index + 1)
+                ])
+            ),
+            toggle_sidebar: TOGGLE_SIDEBAR_ACCELERATOR,
+            toggle_inspector: TOGGLE_INSPECTOR_ACCELERATOR,
+            command_palette: COMMAND_PALETTE_ACCELERATOR
+        });
+        expect(DEFAULT_MENU_ACCELERATORS).toEqual(defaults);
+        // Every one of the 16 menu-bar actions ships with a displayable chord (§4).
+        for (const action of MENU_BAR_ACTIONS) expect(defaults[action]).toBeDefined();
+    });
+
+    it('moves a rebound action to its FIRST trigger in configString order', () => {
+        // `shift+super+n` sorts before `super+n`, so the row shows the added chord even while the
+        // default is still bound too: §5.1's `triggers(action)` order, not "whichever came last".
+        const accel = menuAccelerators(['shift+super+n=new_workspace']);
+        expect(accel.new_workspace).toBe('Shift+CommandOrControl+N');
+        // …and nothing else moved (`create_scratchpad` lost that chord, but it is not a row).
+        expect(accel.new_group).toBe(NEW_GROUP_ACCELERATOR);
+    });
+
+    it('gives an unbound action NO accelerator, so the chord is free for the page', () => {
+        const accel = menuAccelerators(['super+n=unbind', 'shift+super+s=unbind']);
+        expect(accel.new_workspace).toBeUndefined();
+        expect(accel.toggle_sidebar).toBeUndefined();
+
+        // The rows stay (they are menu entries, not shortcuts) but carry no `accelerator` key at
+        // all: `exactOptionalPropertyTypes`, and Electron treats an undefined one as none.
+        const file = fileMenuTemplate(fileDeps({ accelerators: accel }));
+        expect(file[0]?.label).toBe(NEW_WORKSPACE_LABEL);
+        expect('accelerator' in (file[0] ?? {})).toBe(false);
+        const view = viewMenuTemplate({ sendMenuRequest: () => true, accelerators: accel });
+        expect(view[0]?.label).toBe(TOGGLE_SIDEBAR_LABEL);
+        expect('accelerator' in (view[0] ?? {})).toBe(false);
+    });
+
+    it('builds every product row from the map it is handed, never from the constants', () => {
+        const accel = menuAccelerators([
+            'ctrl+alt+n=new_workspace',
+            'super+n=unbind',
+            'shift+super+m=open_file',
+            'super+o=unbind',
+            'super+9=switch_to_workspace_1',
+            'super+1=unbind',
+            'alt+super+i=toggle_inspector',
+            'super+i=unbind'
+        ]);
+        const file = fileMenuTemplate(fileDeps({ accelerators: accel }));
+        expect(file[0]?.accelerator).toBe('Control+Alt+N');
+        expect(file[2]?.accelerator).toBe('Shift+CommandOrControl+M');
+        // Switch to Workspace 1 took ⌘9, which Switch to Workspace 9 therefore no longer has.
+        expect(file[6]?.accelerator).toBe('CommandOrControl+9');
+        expect(file[6 + SWITCH_WORKSPACE_ROWS - 1]?.accelerator).toBeUndefined();
+        // Untouched rows keep their defaults.
+        expect(file[1]?.accelerator).toBe(NEW_GROUP_ACCELERATOR);
+        const view = viewMenuTemplate({ sendMenuRequest: () => true, accelerators: accel });
+        expect(view[1]?.accelerator).toBe('Alt+CommandOrControl+I');
+        // Close is outside the map by N14's design (§7.1's fixed rows): ⌘W stays whatever
+        // `close_pane` is bound to.
+        expect(file.at(-1)?.accelerator).toBe(CLOSE_ACCELERATOR);
+    });
+
+    it('ignores unparseable lines, exactly as the client dispatcher does', () => {
+        expect(menuAccelerators(['garbage', 'super+n=not_an_action', 'nokey=new_workspace'])).toEqual(
+            DEFAULT_MENU_ACCELERATORS
+        );
+    });
+
+    it('says whether two sets differ, so main.ts rebuilds only when a menu chord moved', () => {
+        expect(sameMenuAccelerators(DEFAULT_MENU_ACCELERATORS, menuAccelerators([]))).toBe(true);
+        // A rebind of a non-menu action is not a reason to drop an open menu.
+        expect(sameMenuAccelerators(DEFAULT_MENU_ACCELERATORS, menuAccelerators(['super+k=split_right']))).toBe(
+            true
+        );
+        expect(sameMenuAccelerators(DEFAULT_MENU_ACCELERATORS, menuAccelerators(['super+n=unbind']))).toBe(false);
+    });
+
+    it('logs which rows moved, or that none did', () => {
+        expect(menuAcceleratorsLogLine(DEFAULT_MENU_ACCELERATORS)).toBe(
+            'menu: accelerators from the binding map: all defaults'
+        );
+        expect(menuAcceleratorsLogLine(menuAccelerators(['super+n=unbind', 'shift+super+m=open_file']))).toBe(
+            'menu: accelerators from the binding map: new_workspace=(none), open_file=Shift+CommandOrControl+M'
+        );
     });
 });

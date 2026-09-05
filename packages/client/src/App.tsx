@@ -1319,7 +1319,12 @@ function Shell(props: AppProps): ReactElement {
                 const ids = selectVisibleWorkspaceIDs(store.getState());
                 if (ids.length === 0) return false;
                 const at = ids.indexOf(activeWorkspaceID() ?? '');
-                const id = ids[(((at < 0 ? 0 : at) + delta + ids.length) % ids.length)];
+                // app-state-core.md §3.2: a no-op when the active workspace is not in the
+                // visible order (its group just got collapsed) or there is none (issue #57
+                // asc-06). Stepping from index 0 instead jumped to an unrelated row at the top
+                // of the sidebar.
+                if (at < 0) return false;
+                const id = ids[(at + delta + ids.length) % ids.length];
                 if (id === undefined) return false;
                 // §WS-100: next/previous workspace, which is exactly the case where the row
                 // being activated can be off the bottom of a long sidebar.
@@ -2124,10 +2129,12 @@ function Shell(props: AppProps): ReactElement {
 
             /**
              * TERM-040 — a path dropped onto a terminal is TYPED, not opened. Bare, because the
-             * user is composing a command around it, and that is what the Swift drop did.
+             * user is composing a command around it, and that is what the Swift drop did. Via
+             * `drop-text`, not `pane-send --bare`: a drop is mirrored into sync siblings like a
+             * paste (terminal-surface.md §8.2 / §12.4), a `pane send` never is (#51).
              */
             typeDroppedPaths(paneID: string, text: string): boolean {
-                return run('Drop path', commands.sendText({ target: paneID, text, bare: true }));
+                return run('Drop path', commands.dropText({ paneID, text }));
             },
 
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */

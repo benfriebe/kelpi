@@ -311,6 +311,8 @@ export interface FakePaneStream {
     readonly handle: PtyStreamHandle;
     /** Bytes the pane sent upstream, decoded. */
     readonly input: string[];
+    /** Bytes sent on the un-mirrored `inputDirect` frame: mouse reports, kitty releases (#51). */
+    readonly directInput: string[];
     readonly resizes: { cols: number; rows: number }[];
     unsubscribed: boolean;
     /** Push a daemon replay frame at the pane. */
@@ -340,17 +342,22 @@ export function createFakePtyApi(): FakePtyApi {
     const api: FakePtyApi = {
         subscribe(paneID: string, subscription: PtySubscription): PtyStreamHandle {
             const input: string[] = [];
+            const directInput: string[] = [];
             const resizes: { cols: number; rows: number }[] = [];
             const stream: FakePaneStream = {
                 paneID,
                 subscription,
                 input,
+                directInput,
                 resizes,
                 unsubscribed: false,
                 handle: {
                     paneID,
                     write(data: Uint8Array | string): void {
                         input.push(asText(data));
+                    },
+                    writeDirect(data: Uint8Array | string): void {
+                        directInput.push(asText(data));
                     },
                     resize(cols: number, rows: number): void {
                         resizes.push({ cols, rows });

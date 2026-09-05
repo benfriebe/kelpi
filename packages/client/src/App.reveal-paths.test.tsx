@@ -40,9 +40,25 @@ function snapshotState(): JsonObject {
     return store.getState() as unknown as JsonObject;
 }
 
+const G1 = 'CCCCCCCC-0000-4000-8000-000000000001';
+
+/** gamma is the active workspace AND sits inside a collapsed group, so it is not visible. */
+function hiddenActiveState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'alpha', color: 'blue', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'beta', color: 'green', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W3, paneID: PANE_C, name: 'gamma', color: 'red', now: NOW });
+    store.dispatch({ type: 'create-group', id: G1, name: 'squad', now: NOW });
+    store.dispatch({ type: 'move-workspace-to-group', id: W3, groupID: G1 });
+    // Activate FIRST: activation expands the group (§3.1 step 3), the collapse must win.
+    store.dispatch({ type: 'set-active-workspace', id: W3, now: NOW });
+    store.dispatch({ type: 'set-group-collapsed', id: G1, collapsed: true });
+    return store.getState() as unknown as JsonObject;
+}
+
 let scrolled: Element[] = [];
 
-function mount(): { store: ReturnType<typeof createKelpiStore> } {
+function mount(state: JsonObject = snapshotState()): { store: ReturnType<typeof createKelpiStore> } {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({
@@ -57,7 +73,7 @@ function mount(): { store: ReturnType<typeof createKelpiStore> } {
     });
     render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} />);
     act(() => {
-        completeHandshake(sockets.last(), { state: snapshotState() });
+        completeHandshake(sockets.last(), { state });
     });
     scrolled.length = 0;
     return { store };
@@ -113,6 +129,25 @@ describe('every activation path queues the sidebar reveal (§WS-100)', () => {
         await waitFor(() => {
             expect(revealed('alpha')).toBe(true);
         });
+    });
+
+    /**
+     * app-state-core.md §3.2: next/previous is a no-op when the active workspace is not in the
+     * visible order, e.g. its group just got collapsed (issue #57 asc-06). The port used to
+     * treat the missing index as 0 and jump to the second visible row.
+     */
+    it('next / previous are inert while the active workspace sits in a collapsed group', () => {
+        const { store } = mount(hiddenActiveState());
+        expect(store.getState().ui.activeWorkspaceID).toBe(W3);
+        act(() => {
+            fireEvent.keyDown(window, { code: 'ArrowDown', key: 'ArrowDown', metaKey: true, altKey: true });
+        });
+        expect(store.getState().ui.activeWorkspaceID).toBe(W3);
+        act(() => {
+            fireEvent.keyDown(window, { code: 'ArrowUp', key: 'ArrowUp', metaKey: true, altKey: true });
+        });
+        expect(store.getState().ui.activeWorkspaceID).toBe(W3);
+        expect(scrolled).toHaveLength(0);
     });
 
     it('a plain click on a sidebar row', async () => {

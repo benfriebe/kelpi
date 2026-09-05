@@ -19,9 +19,11 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
+import { createAttentionSignal } from './chrome/attention';
 import { setAssetCredentialToken } from './content/asset-credential';
 import { createKelpiRuntime } from './state';
 import { configuredTerminalEngine, loadTerminalFonts } from './terminal';
+import { readShellWindowID } from './webpane/shell-window';
 import './styles.css';
 
 // Start the bundled terminal font before anything renders. `@font-face` is lazy, and a pane
@@ -47,10 +49,18 @@ if (configuredTerminalEngine() === 'xterm') {
     await import('@xterm/xterm/css/xterm.css');
 }
 
+// agent-lifecycle.md §7.1 (issue #57 agl-m2): the daemon's `attention-request` is the dock
+// bounce's trigger, and a plain browser tab has no dock. Its equivalent is a one-shot title
+// flash while the tab is unfocused (`chrome/attention.ts`). Browser only: inside the Electron
+// shell the same broadcast already bounces the dock (`shell/status.ts`), and that window's
+// title is the shell's to manage.
+const attention = readShellWindowID() === null ? createAttentionSignal() : null;
+
 const runtime = createKelpiRuntime({
     url: target.url,
     token: target.token,
-    client: { kind: 'browser', name: 'kelpi-web' }
+    client: { kind: 'browser', name: 'kelpi-web' },
+    ...(attention === null ? {} : { onAttention: () => attention.request() })
 });
 
 const container = document.getElementById('root');

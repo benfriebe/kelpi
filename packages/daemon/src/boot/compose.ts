@@ -98,6 +98,7 @@ import {
     createStore,
     emptyDaemonState,
     fromSnapshot,
+    nextRandomColor,
     toSnapshot,
     visiblePane,
     workspaceContainingVisiblePane,
@@ -246,6 +247,11 @@ export interface DaemonOptions {
     readonly now?: (() => number) | undefined;
     /** Id source for handlers + the fresh-install workspace (tests). */
     readonly uuid?: (() => string) | undefined;
+    /**
+     * Unit-interval source for `nextRandomColor` (tests). Shared by the handlers and the
+     * fresh-install workspace so both palette picks come from the one injected stream (#56).
+     */
+    readonly random?: (() => number) | undefined;
     /** Install SIGTERM/SIGINT handlers. `kelpid start` sets it; tests do not. */
     readonly installSignalHandlers?: boolean | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -452,13 +458,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * without any caller knowing the gate is there (`withSpawnGate`).
      */
     const pty = withSpawnGate(rawPty, spawnGate);
-    /** Assigned once the store, the settings and auto-detect exist (just below `term`). */
+    /** Assigned once the store and the settings exist (just below `term`). */
     let onPaneDirectory: (paneID: string, directory: string) => void = () => {};
     /**
      * OSC 7 is the port's pwd producer (terminal-panes.md §TERM-048): the shell reports where
-     * it is, the pane's `workingDirectory` follows, and repo auto-detect gets its trigger
-     * (graft-git.md §GIT-075). `autoDetect` is created further down — this closure defers to
-     * it, so the ordering between the two is not load-bearing.
+     * it is, the pane's `workingDirectory` follows, and repo auto-detect picks the move up from
+     * the store (graft-git.md §GIT-075). `store` is created further down; this closure defers
+     * to it, so the ordering between the two is not load-bearing.
      */
     /** Assigned beside `onPaneDirectory`, and deferred for the same reason. */
     let onPaneTitle: (paneID: string, title: string) => void = () => {};
@@ -1017,7 +1023,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     /**
      * Repo auto-detect (graft-git.md §GIT-074…§GIT-081). Gated on the config file's
      * `auto-detect-repos`, read through the settings service so a Settings toggle takes effect
-     * on the next pwd report without re-wiring anything.
+     * on the next pwd report without re-wiring anything. It watches the store (started below,
+     * beside `repoWatch`), so a pane created inside a checkout links and a closed pane unlinks
+     * without an OSC 7 report (issue #48, graft-git.md §8.9 / app-state-core.md §7.7).
      */
     const autoDetect = createRepoAutoDetect({
         store,
@@ -1025,14 +1033,22 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         enabled: () => settings.snapshot.general.autoDetectRepos,
         uuid: options.uuid ?? newUUID,
         persist,
+        // app-state-core.md §7.8 / terminal-surface.md §7.2 (issue #48): a pwd landing inside
+        // an association's worktree re-reads that row now, the same read a HEAD change makes.
+        refreshAssociation: (associationID) => {
+            void repoWatch.refresh(associationID).catch((error: unknown) => {
+                report(error, `git status refresh ${associationID}`);
+            });
+        },
         ...(options.now !== undefined ? { now: options.now } : {}),
         ...(onError !== undefined ? { onError } : {})
     });
 
     /**
      * One OSC 7 report: the pane's working directory moves (which is what `pane list`'s CWD
-     * column, the footer and `--prune-worktree` read), and auto-detect gets its trigger. The
-     * store is the single writer, so a client sees the change as the same delta a spawn does.
+     * column, the footer and `--prune-worktree` read), and auto-detect sees the move through
+     * its store subscription. The store is the single writer, so a client sees the change as
+     * the same delta a spawn does.
      */
     onPaneDirectory = (paneID, directory) => {
         const state = store.getState();
@@ -1052,7 +1068,6 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             directory,
             now: (options.now ?? Date.now)()
         });
-        autoDetect.paneDirectoryChanged({ workspaceID: workspace.id, paneID, directory });
     };
 
     /**
@@ -1156,7 +1171,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // at boot — flipping it in Settings changes the very next drop.
         expandGroupOnDrop: () => settings.snapshot.general.expandGroupOnWorkspaceDrop,
         ...(options.now !== undefined ? { now: options.now } : {}),
-        ...(options.uuid !== undefined ? { uuid: options.uuid } : {})
+        ...(options.uuid !== undefined ? { uuid: options.uuid } : {}),
+        ...(options.random !== undefined ? { random: options.random } : {})
     });
 
     const dispatcher = createDispatcher<PaneHandlerContext>({
@@ -1167,16 +1183,26 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     // ── boot steps 3–5 ──────────────────────────────────────────────────────
 
-    /** §12.2: a fresh install (or an unreadable DB) comes up with one "Default" workspace. */
+    /**
+     * §12.2: a fresh install (or an unreadable DB) comes up with one "Default" workspace.
+     *
+     * The colour is resolved HERE, not left to the reducer: `create-workspace` carries its colour
+     * on the action and the reducer's `?? 'blue'` is only a fallback, so omitting it made every
+     * fresh install blue. §12.2 gives "Default" the full 4.1 create semantics, whose step 3 is
+     * `nextRandomColor()` (docs/app-state-core.md §4.1; docs/persistence.md §6.2 Case A), the
+     * same pick the socket/GUI path makes (`handlers/app/workspaces.ts`). Issue #56.
+     */
     const ensureDefaultWorkspace = (): void => {
-        if (store.getState().workspaces.length > 0) return;
+        const state = store.getState();
+        if (state.workspaces.length > 0) return;
         const mint = options.uuid ?? newUUID;
         store.dispatch({
             type: 'create-workspace',
             id: mint(),
             paneID: mint(),
             name: DEFAULT_WORKSPACE_NAME,
-            now: (options.now ?? Date.now)()
+            now: (options.now ?? Date.now)(),
+            color: nextRandomColor(state, options.random ?? Math.random)
         });
     };
 
@@ -1518,6 +1544,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         repoWatch.start();
         // §GIT-091: resolve a branch for every restored pane, then keep resolving as panes move.
         branchWatch.start();
+        // Issue #48 (graft-git.md §8.9, app-state-core.md §7.7): auto-link every restored pane
+        // sitting in a checkout, then link on creation / unlink on close as the pane set moves.
+        autoDetect.start();
         // persistence.md §6.2 step 9 / app-state-core.md §6.5: the one-shot legacy-label →
         // preset back-fill, one launch only. Runs AFTER `ensureDefaultWorkspace` above, so the
         // fresh-install path reaches it too and sets the marker with nothing to migrate —

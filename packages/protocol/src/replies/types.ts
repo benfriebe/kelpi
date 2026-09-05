@@ -38,8 +38,14 @@ export interface PaneSendKeyReply extends PaneMutationReply {
 }
 
 export interface PaneResizeReply extends PaneMutationReply {
-    /** 0/1 child indices from the layout root to the enclosing split. */
-    readonly split_path: readonly number[];
+    /**
+     * Split-path string of the enclosing split (pane-layout.md §7.3, wire-protocol.md §6.2):
+     * `"d"` is the root split, each appended `L`/`R` steps into a split's first/second
+     * child (`"dL"`, `"dLR"`). The daemon copies `ResizeResult.splitPath` onto the wire
+     * unchanged, so this is the same path `set-split-ratio` and `layout-select` accept;
+     * it is NOT an index array (issue #49: this field once lied as `number[]`).
+     */
+    readonly split_path: string;
     /** The split's stored first-child ratio after the write. */
     readonly ratio: number;
     /** The clamped share of the addressed pane. */

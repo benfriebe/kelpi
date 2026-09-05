@@ -199,6 +199,63 @@ describe('the whole loop', () => {
         expect(queued[0]?.comment).toBe('this one');
     });
 
+    /**
+     * §12.1 / issue #50 (web-26). `kelpi web inspect --submit` over a visible batch re-arms the
+     * picker with `submit`; the pick lands in the batch, not the single-shot queue, and the
+     * only place the flag can survive to Send is the session. Before this row `setSubmit` had
+     * no caller at all, so a batch send was bare no matter how the picker had been armed.
+     */
+    it('carries a `web inspect --submit` arm onto the batch, so Send presses Enter (WEB-134)', async () => {
+        const harness = webHarness({ nonce: () => 'NONCE' });
+        const host = attachFakeHost(harness.service);
+        const started = webPaneGuiCommand(harness.service, harness.store, 'web-batch-toggle', WEB_PANE, {});
+        host.answer({ ok: true }, 'inspect-arm');
+        await started;
+        expect(harness.service.batch.sessionOf(WEB_PANE)?.submit).toBe(false);
+
+        // What the `web-inspect` handler records after `kelpi web inspect --submit` (§11.2).
+        harness.service.inspect.arm({
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            nonce: 'NONCE-SUBMIT',
+            sendTo: null,
+            submit: true
+        });
+        host.emit('inspect', WEB_PANE, { ...pickPayload('#one'), nonce: 'NONCE-SUBMIT' }, WEB_TAB);
+        expect(harness.service.batch.sessionOf(WEB_PANE)?.items).toHaveLength(1);
+        expect(harness.service.batch.sessionOf(WEB_PANE)?.submit).toBe(true);
+
+        await webPaneGuiCommand(harness.service, harness.store, 'web-batch-send', WEB_PANE, {
+            send_to: SHELL_PANE
+        });
+        expect(harness.pasted).toHaveLength(1);
+        expect(harness.pasted[0]?.bare).toBe(false);
+        // Send consumed the flag with the session: nothing lingers for a later batch.
+        expect(harness.service.batch.sessionOf(WEB_PANE)).toBeNull();
+    });
+
+    /**
+     * §12.1 / issue #50 (web-07). Hide is "disarm the picker (state + page)": the page's own
+     * arm is dropped by the `inspect-disarm` notify, and the daemon's record must go with it,
+     * or `armOf` keeps naming a nonce the page can no longer post. Items survive, as before.
+     */
+    it('hide disarms the picker in daemon state as well as on the page (WEB-127)', async () => {
+        const harness = webHarness({ nonce: () => 'NONCE' });
+        const host = attachFakeHost(harness.service);
+        const started = webPaneGuiCommand(harness.service, harness.store, 'web-batch-toggle', WEB_PANE, {});
+        host.answer({ ok: true }, 'inspect-arm');
+        await started;
+        host.emit('inspect', WEB_PANE, pickPayload('#one'), WEB_TAB);
+        expect(harness.service.inspect.armOf(WEB_PANE)).not.toBeNull();
+
+        await expect(
+            webPaneGuiCommand(harness.service, harness.store, 'web-batch-toggle', WEB_PANE, {})
+        ).resolves.toMatchObject({ ok: true, armed: false, toggled: 'hidden' });
+        expect(harness.service.inspect.armOf(WEB_PANE)).toBeNull();
+        expect(host.calls.filter((call) => call.verb === 'inspect-disarm')).toHaveLength(1);
+        expect(harness.service.batch.sessionOf(WEB_PANE)?.items).toHaveLength(1);
+    });
+
     it('an empty batch just tears down (WEB-135)', async () => {
         const harness = webHarness({ nonce: () => 'NONCE' });
         const host = attachFakeHost(harness.service);

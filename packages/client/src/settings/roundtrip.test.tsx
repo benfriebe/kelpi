@@ -38,7 +38,7 @@ interface SettingsInput {
 function settingsPayload(input: SettingsInput = {}): Record<string, unknown> {
     return {
         keybindLines: input.keybindLines ?? [],
-        profiles: input.profiles ?? [{ name: 'work', env: { NEX_PROFILE: 'work', A: '1' } }],
+        profiles: input.profiles ?? [{ name: 'work', env: { KELPI_PROFILE: 'work', A: '1' } }],
         general: {
             focusFollowsMouse: false,
             focusFollowsMouseDelay: 100,
@@ -364,7 +364,7 @@ describe('the other tabs on the wire', () => {
             fireEvent.click(screen.getByTestId('profile-var-remove-0'));
         });
         expect(sent(h, 'set-profiles')).toEqual([
-            { command: 'set-profiles', profiles: [{ name: 'work', env: { NEX_PROFILE: 'work' } }] }
+            { command: 'set-profiles', profiles: [{ name: 'work', env: { KELPI_PROFILE: 'work' } }] }
         ]);
     });
 

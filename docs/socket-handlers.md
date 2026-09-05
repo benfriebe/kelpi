@@ -633,6 +633,10 @@ FINALLY:
   push fresh sync-group snapshots for BOTH source and target to the
   keystroke-broadcast layer (the direct state mutation bypasses the
   per-workspace bookkeeping that normally does this)
+  broadcast reveal-pane { workspaceID: targetWSID, paneID }   // the port's active workspace is
+                                                              // per client, so "the app switches"
+                                                              // is this untargeted fan-out, exactly
+                                                              // as workspace-create (§6.2); #52
   persist state
 ```
 
@@ -750,9 +754,19 @@ group.
   is `session-end`, which forces an immediate flush via `persistNow`
   (`handlers/app/events.ts:60`) so a cleared session id survives a crash before the next
   launch (issue #178).
-- **sidebarScrollTarget**: creating a workspace or group over the socket records it as the
-  sidebar scroll target so the GUI scrolls the new row into view (issue #187). Web port:
-  same UX — scroll the sidebar to the newly created entity.
+- **sidebarScrollTarget**: the Swift recorded a workspace or group created over the socket
+  as the sidebar scroll target so the GUI scrolled the new row into view (issue #187). The
+  daemon has no sidebar, so the port reaches clients two different ways (issue #57 sh-13):
+  - `workspace-create` broadcasts `reveal-pane` to EVERY attached client
+    (`handlers/app/workspaces.ts:207`), and each client's reveal handler activates the
+    workspace and queues the scroll (`packages/client/src/App.tsx:450`). A create has an
+    obvious destination and later commands land there, so every window follows.
+  - `group-create` scrolls only the client that issued the request, off the reply's
+    `group_id` (`packages/client/src/App.tsx:1225`). A new group is an empty header that
+    activates nothing, so other windows are left where they are. The `deps.scrollTarget`
+    call in `handlers/app/groups.ts:89` is the Swift seam kept for an in-process consumer;
+    boot wires none (`handlers/app/context.ts:173` defaults it to a no-op), so over the
+    socket it is inert by design.
 
 ---
 

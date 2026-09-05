@@ -3,7 +3,7 @@
  * load/write transforms, and label-preset usage.
  *
  * Everything here is a total function over data the daemon already sent. Keeping it out of the
- * components is what lets the awkward rules — §9.5's `default` synthesis, the `NEX_PROFILE`
+ * components is what lets the awkward rules (§9.5's `default` synthesis, the `KELPI_PROFILE`
  * marker round-trip, §5.4's "differs from its default list" reset predicate — be tested
  * directly rather than through a click.
  */
@@ -15,6 +15,7 @@ import {
     type KeyBindingMap,
     type KelpiAction
 } from '@kelpi/core/config';
+import { KELPI_PROFILE_ENV_KEY } from '@kelpi/core/env';
 import type { WsProfile } from '@kelpi/protocol';
 
 import { displayKeyTrigger } from '../chrome';
@@ -82,8 +83,17 @@ export function hasCustomBindings(bindings: KeyBindingMap): boolean {
 
 /** Reserved name; always exists, pinned first, never renamed or removed. */
 export const DEFAULT_PROFILE_NAME = 'default';
-/** The derived marker var: rendered locked, never editable, re-added on write. */
-export const PROFILE_MARKER_VAR = 'NEX_PROFILE';
+/**
+ * The derived marker var: rendered locked, never editable, re-added on write. Bound to the
+ * daemon's canonical `KELPI_PROFILE` (config-keybindings.md §9.3, §9.5) rather than spelled
+ * here, so the two can never drift again: after the rename the editor kept writing the
+ * pre-port `NEX_PROFILE`, which `resolveProfileEnv` neither reserves nor overrides, so the
+ * "always matches the profile name" row was injected verbatim as an ordinary var and a
+ * rename left a stale marker beside the real one (#46). A legacy `NEX_PROFILE` line (from
+ * an imported pre-port config) is deliberately NOT special-cased: it is an ordinary var to
+ * the daemon, so the editor shows it as one and the user can delete it.
+ */
+export const PROFILE_MARKER_VAR: string = KELPI_PROFILE_ENV_KEY;
 
 export interface ProfileVarDraft {
     readonly key: string;
@@ -92,7 +102,7 @@ export interface ProfileVarDraft {
 
 export interface ProfileDraft {
     readonly name: string;
-    /** Editable vars only — the `NEX_PROFILE` marker is stripped on load, re-added on write. */
+    /** Editable vars only, the `KELPI_PROFILE` marker is stripped on load, re-added on write. */
     readonly vars: readonly ProfileVarDraft[];
 }
 
@@ -108,7 +118,7 @@ export function sanitizeVarKey(raw: string): string {
 
 /**
  * §9.5 load: `default` pinned FIRST (moved there if present, synthesized empty if not), the
- * `NEX_PROFILE` marker filtered out of the editable rows, vars sorted by key.
+ * `KELPI_PROFILE` marker filtered out of the editable rows, vars sorted by key.
  */
 export function profileDrafts(profiles: readonly WsProfile[]): ProfileDraft[] {
     const drafts: ProfileDraft[] = [];
@@ -132,7 +142,7 @@ export function profileDrafts(profiles: readonly WsProfile[]): ProfileDraft[] {
 /**
  * §9.5 write-through: trim keys, drop blank ones, last duplicate wins; omit `default` while it
  * has no vars (it is re-synthesized on load, which keeps the file free of a marker-only line);
- * give every other profile its `NEX_PROFILE = <trimmed name>` so a name-only profile still has
+ * give every other profile its `KELPI_PROFILE = <trimmed name>` so a name-only profile still has
  * a line and survives the round-trip.
  */
 export function profilesForWrite(drafts: readonly ProfileDraft[]): WsProfile[] {

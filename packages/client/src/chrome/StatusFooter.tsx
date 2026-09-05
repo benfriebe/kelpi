@@ -197,7 +197,11 @@ export interface AgentCountSummary {
     readonly inactive: number;
 }
 
-/** One row of a bucket popover (agent-lifecycle.md §9.3 / §8.1 `StatusBarItem`). */
+/**
+ * One row of a bucket popover. The shape is shell-ui.md §14 `StatusBarItem` (the count popover
+ * rows of §8); what the rows DO is agent-lifecycle.md §9.3 (bucket membership, elapsed label
+ * on the running list only, click = switch workspace then focus pane per §8.5).
+ */
 export interface StatusBarItem {
     readonly paneID: string;
     readonly workspaceID: string;

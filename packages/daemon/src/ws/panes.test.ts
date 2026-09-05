@@ -143,7 +143,7 @@ describe('reopen-closed-pane', () => {
         expect(f.h.input.texts).toHaveLength(0);
         expect(f.sleeps).toEqual([2000]);
         await f.settle();
-        expect(f.h.input.texts).toEqual([{ paneID: NEW, text: 'codex resume abc-123', bare: false }]);
+        expect(f.h.input.texts).toEqual([{ paneID: NEW, text: 'codex resume abc-123', bare: false, mirror: false }]);
     });
 
     it('spawns the reopened pane under the profile the snapshot session recorded', async () => {

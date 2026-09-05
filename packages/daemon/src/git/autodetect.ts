@@ -28,6 +28,16 @@
  *
  * The gate is the daemon settings' `autoDetectRepos` (`auto-detect-repos` in the config file),
  * read through a callback so a settings change takes effect without re-wiring anything.
+ *
+ * **Triggers come from a store reconciler, not from the OSC 7 handler alone** (issue #48). The
+ * spec asks for auto-link on pane cwd change AND pane creation (graft-git.md §8.9) and for
+ * auto-unlink on pane close, pane process termination and cwd change (app-state-core.md
+ * §7.7). Driving everything off a cwd REPORT missed the paths that never report: a pane spawned
+ * with its cwd already inside a checkout (`pane create --cwd`, a split, a restore) reports the
+ * directory it was created with, which compose.ts drops as unchanged, and a closed pane reports
+ * nothing at all, so its association outlived it until some other pane moved. Subscribing once
+ * and diffing the pane set makes every spawn, close, exit and move the same event, the way
+ * `graft/associations.ts` and `git/branch.ts` already work.
  */
 
 import path from 'node:path';
@@ -67,13 +77,33 @@ export interface CreateRepoAutoDetectOptions {
     readonly persist?: (() => void) | undefined;
     readonly linkDebounceMs?: number | undefined;
     readonly unlinkDebounceMs?: number | undefined;
+    /**
+     * The directory-change fast path (app-state-core.md §7.8, terminal-surface.md §7.2; issue
+     * #48): a pane's pwd landed inside this association's worktree, so re-read its branch +
+     * status NOW rather than at the 30 s poll (`cd ../other-worktree` moves the sidebar badge
+     * at once). Called for every association of the pane's workspace that contains the new pwd,
+     * manual or auto-detected, and NOT gated on `enabled`: it is a refresh of a row that
+     * already exists, not auto-detect.
+     */
+    readonly refreshAssociation?: ((associationID: string) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
 export interface RepoAutoDetectService {
     /**
+     * Subscribe to the store and diff the pane set on every event batch (issue #48): a pane
+     * that appears with a directory (creation, split, restore) schedules auto-link; a pane that
+     * vanishes (close, shell exit, parked source reaped, workspace delete) schedules its
+     * workspace's auto-unlink; a pane whose directory moved does both, plus the association
+     * refresh fast path. Panes already in the store when this is called are treated as created
+     * (auto-link only, no refresh: `graft/associations.ts` reads every association at ITS
+     * start), so a restored pane sitting in a checkout gets linked without a `cd`.
+     */
+    start(): void;
+    /**
      * A pane reported a new working directory. Schedules the two debounced passes exactly the
-     * way the Swift reducer's `paneDirectoryChanged` interception does.
+     * way the Swift reducer's `paneDirectoryChanged` interception does. The reconciler behind
+     * `start` calls this for a moved pane; it stays public as the explicit trigger (tests).
      */
     paneDirectoryChanged(input: { workspaceID: string; paneID: string; directory: string }): void;
     /** Test seam: settle everything currently in flight (timers already fired). */
@@ -271,40 +301,138 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         persist?.();
     };
 
+    /** §GIT-075: per pane, cancel-in-flight. The setting is checked at schedule time too. */
+    const scheduleLink = (workspaceID: string, paneID: string, directory: string): void => {
+        if (stopped || !enabled()) return;
+        const existingLink = linkTimers.get(paneID);
+        if (existingLink !== undefined) clearTimeout(existingLink);
+        linkTimers.set(
+            paneID,
+            setTimeout(() => {
+                linkTimers.delete(paneID);
+                track(
+                    link(workspaceID, paneID, directory).catch((error: unknown) => {
+                        report(error, 'auto-link');
+                    })
+                );
+            }, linkDebounceMs)
+        );
+    };
+
+    /** §GIT-080: per workspace, cancel-in-flight. */
+    const scheduleUnlink = (workspaceID: string): void => {
+        if (stopped || !enabled()) return;
+        const existingUnlink = unlinkTimers.get(workspaceID);
+        if (existingUnlink !== undefined) clearTimeout(existingUnlink);
+        unlinkTimers.set(
+            workspaceID,
+            setTimeout(() => {
+                unlinkTimers.delete(workspaceID);
+                try {
+                    unlink(workspaceID);
+                } catch (error) {
+                    report(error, 'auto-unlink');
+                }
+            }, unlinkDebounceMs)
+        );
+    };
+
+    /**
+     * app-state-core.md §7.8 / terminal-surface.md §7.2 (issue #48): the new pwd is inside an
+     * association the workspace already has, so its badge should move now, not at the poll.
+     * Runs BEFORE the auto-detect gate on purpose: a manual association refreshes too.
+     */
+    const refreshContaining = (workspaceID: string, directory: string): void => {
+        const refresh = options.refreshAssociation;
+        if (refresh === undefined) return;
+        const state = store.getState();
+        const workspace = workspaceOf(state, workspaceID);
+        if (workspace === undefined) return;
+        for (const association of workspace.repoAssociations) {
+            if (!isPathInside(directory, association.worktreePath, state.homeDirectory)) continue;
+            refresh(association.id);
+        }
+    };
+
+    /**
+     * paneID → where the reconciler last saw it. A pane that has not moved costs nothing on a
+     * store event, which is what makes this safe to run on every batch (including the ones
+     * auto-link's own dispatches produce).
+     */
+    const seen = new Map<string, { workspaceID: string; directory: string }>();
+
+    /** The Swift `paneDirectoryChanged` interception: refresh, then both debounced passes. */
+    const moved = (workspaceID: string, paneID: string, directory: string): void => {
+        if (stopped) return;
+        seen.set(paneID, { workspaceID, directory });
+        refreshContaining(workspaceID, directory);
+        // The Swift scheduler checks the setting when it SCHEDULES as well as when it fires;
+        // with it off, a pwd change costs nothing at all.
+        if (!enabled()) return;
+        scheduleLink(workspaceID, paneID, directory);
+        scheduleUnlink(workspaceID);
+    };
+
+    let unsubscribe: (() => void) | null = null;
+
+    const reconcile = (): void => {
+        if (stopped) return;
+        const state = store.getState();
+        const live = new Set<string>();
+        for (const workspace of state.workspaces) {
+            // Visible AND parked: a parked pane keeps its PTY and its directory (§GIT-080).
+            for (const pane of [...workspace.panes, ...workspace.parkedPanes]) {
+                live.add(pane.id);
+                const previous = seen.get(pane.id);
+                if (previous === undefined) {
+                    // Pane creation (§8.9), or a restored pane on the initial pass: auto-link
+                    // only. A new pane cannot make an association unused, and the refresh
+                    // fast path is for a pwd CHANGE (a restore's associations are read by the
+                    // association watcher's own start).
+                    seen.set(pane.id, { workspaceID: workspace.id, directory: pane.workingDirectory });
+                    scheduleLink(workspace.id, pane.id, pane.workingDirectory);
+                    continue;
+                }
+                if (previous.workspaceID !== workspace.id) {
+                    // A pane moved between workspaces: gone from the old one (unlink there),
+                    // created in the new one (link here).
+                    scheduleUnlink(previous.workspaceID);
+                    seen.set(pane.id, { workspaceID: workspace.id, directory: pane.workingDirectory });
+                    scheduleLink(workspace.id, pane.id, pane.workingDirectory);
+                    continue;
+                }
+                if (previous.directory === pane.workingDirectory) continue;
+                moved(workspace.id, pane.id, pane.workingDirectory);
+            }
+        }
+        for (const [paneID, previous] of [...seen]) {
+            if (live.has(paneID)) continue;
+            // Pane close, shell exit, a reaped parked source, or the whole workspace going
+            // (§8.9 / §7.7's "pane close" and "process termination" triggers). A link still
+            // pending for the dead pane would bail on its own re-validation; cancel it anyway.
+            seen.delete(paneID);
+            const pending = linkTimers.get(paneID);
+            if (pending !== undefined) {
+                clearTimeout(pending);
+                linkTimers.delete(paneID);
+            }
+            linkGeneration.delete(paneID);
+            scheduleUnlink(previous.workspaceID);
+        }
+    };
+
     return {
+        start() {
+            if (stopped || unsubscribe !== null) return;
+            unsubscribe = store.subscribe(() => {
+                reconcile();
+            });
+            // The seeding pass: every pane already in the store counts as created.
+            reconcile();
+        },
+
         paneDirectoryChanged({ workspaceID, paneID, directory }) {
-            if (stopped) return;
-            // The Swift scheduler checks the setting when it SCHEDULES as well as when it
-            // fires; with it off, a pwd change costs nothing at all.
-            if (!enabled()) return;
-
-            const existingLink = linkTimers.get(paneID);
-            if (existingLink !== undefined) clearTimeout(existingLink);
-            linkTimers.set(
-                paneID,
-                setTimeout(() => {
-                    linkTimers.delete(paneID);
-                    track(
-                        link(workspaceID, paneID, directory).catch((error: unknown) => {
-                            report(error, 'auto-link');
-                        })
-                    );
-                }, linkDebounceMs)
-            );
-
-            const existingUnlink = unlinkTimers.get(workspaceID);
-            if (existingUnlink !== undefined) clearTimeout(existingUnlink);
-            unlinkTimers.set(
-                workspaceID,
-                setTimeout(() => {
-                    unlinkTimers.delete(workspaceID);
-                    try {
-                        unlink(workspaceID);
-                    } catch (error) {
-                        report(error, 'auto-unlink');
-                    }
-                }, unlinkDebounceMs)
-            );
+            moved(workspaceID, paneID, directory);
         },
 
         async idle() {
@@ -313,10 +441,13 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
 
         stop() {
             stopped = true;
+            unsubscribe?.();
+            unsubscribe = null;
             for (const timer of linkTimers.values()) clearTimeout(timer);
             for (const timer of unlinkTimers.values()) clearTimeout(timer);
             linkTimers.clear();
             unlinkTimers.clear();
+            seen.clear();
         }
     };
 }

@@ -111,8 +111,11 @@ export interface TerminalStateService {
 /** Encodes pane-send / pane-send-key semantics on top of PtyManager + VT modes. */
 export interface TerminalInput {
   /** Paste pipeline (bracketed-paste wrap when the app requested it, control-byte
-   *  filtering), then Enter as a separate keystroke unless bare. */
-  sendText(paneID: string, text: string, opts: { bare: boolean }): void;
+   *  filtering), then Enter as a separate keystroke unless bare. `mirror` (default false)
+   *  sends the bytes through the sync-group fan-out too: text committed outside a keystroke
+   *  such as a drag-drop is mirrored (terminal-surface.md §8.2 item 2, §12.4, #51), while
+   *  programmatic sends never are. */
+  sendText(paneID: string, text: string, opts: { bare: boolean; mirror?: boolean }): void;
   /** Named keys per wire-protocol.md §5.6; arrows consult live DECCKM state. */
   sendNamedKey(paneID: string, key: string): void;
 }

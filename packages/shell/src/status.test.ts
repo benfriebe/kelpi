@@ -364,6 +364,81 @@ describe('the tray gesture (§AGNT-086 / §APP-088 — UI-FIDELITY U2)', () => {
     });
 });
 
+describe('the dock bounce is stop-only, decided by the daemon (#55; agent-lifecycle §7.1, §14 inv. 6)', () => {
+    let host: ReturnType<typeof createHost>;
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+    let bounce: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        bounce = vi.spyOn(electronMock.dock, 'bounce');
+        host = createHost();
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host,
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+        socket.emit('message', WAITING_SNAPSHOT, false);
+    });
+
+    afterEach(() => {
+        controller.stop();
+        bounce.mockRestore();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    /** A pane flipping to waiting on the status stream: what `notification`, `error` and a manual override all look like from here. */
+    function paneStartsWaiting(paneID: string): void {
+        const delta = {
+            type: 'delta',
+            events: [
+                {
+                    kind: 'agent-status-changed',
+                    workspaceID: 'w1',
+                    paneID,
+                    status: 'waitingForInput',
+                    agentSessionID: null,
+                    agentKind: 'claude',
+                    agentStartedAt: null
+                }
+            ]
+        };
+        socket.emit('message', JSON.stringify(delta), false);
+    }
+
+    it('does not bounce when a pane enters waiting, even with the window unfocused', () => {
+        // The snapshot's pre-existing waiting pane did not bounce on attach...
+        expect(bounce).not.toHaveBeenCalled();
+        // ...and neither does a live transition. §7.2 (`notification`) and §7.3 (`error`) flip
+        // the pane to waitingForInput too and say "no dock bounce"; the shell cannot tell those
+        // apart from a stop on the status stream, so the stream is not the signal at all.
+        paneStartsWaiting('p2');
+        paneStartsWaiting('p3');
+        expect(bounce).not.toHaveBeenCalled();
+    });
+
+    it('bounces exactly once per attention-request, and only while the window is unfocused', () => {
+        const request = JSON.stringify({ type: 'attention-request', paneID: 'p2', workspaceID: 'w1' });
+        // The daemon has already applied §7.1 (stop only, app inactive, no background work),
+        // so one request is one bounce: the status-stream edge that used to fire alongside it
+        // made an unfocused stop bounce twice.
+        paneStartsWaiting('p2');
+        socket.emit('message', request, false);
+        expect(bounce).toHaveBeenCalledTimes(1);
+        expect(bounce).toHaveBeenCalledWith('informational');
+
+        host.isWindowFocused.mockReturnValue(true);
+        socket.emit('message', request, false);
+        expect(bounce).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe('the tray gesture — no handler creeps back in anywhere else (N16 sweep)', () => {
     it('no file in the shell registers a Tray event handler', () => {
         const src = path.dirname(fileURLToPath(import.meta.url));
@@ -394,5 +469,72 @@ describe('the tray gesture — no handler creeps back in anywhere else (N16 swee
         // so any new one has to be argued against `StatusBarController.swift:32-39,117-126`
         // first (UI-FIDELITY U2 / N16), and this test is where that argument gets written down.
         expect(offenders).toEqual([]);
+    });
+});
+
+/**
+ * #47 / config-keybindings.md §7.1: the application menu derives its accelerators from the
+ * daemon's `keybindLines`, so the main process has to be TOLD them, on the handshake and on
+ * every write. The same defensive shape as `confirmQuitWhenActive`: null until said, and a
+ * payload that carries no list leaves the last answer standing.
+ */
+describe('the keybind lines the menu reads (#47, §7.1)', () => {
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+
+    beforeEach(() => {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host: createHost(),
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+    });
+
+    afterEach(() => {
+        controller.stop();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    it('is null until the daemon has said, then takes them from `welcome` (strings only)', () => {
+        expect(controller.daemonSettings.keybindLines).toBeNull();
+        socket.emit('open');
+        socket.emit(
+            'message',
+            JSON.stringify({
+                type: 'welcome',
+                daemon: { version: '0.0.0-test', pid: 1 },
+                settings: { keybindLines: ['shift+super+n=new_workspace', 42] }
+            }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['shift+super+n=new_workspace']);
+    });
+
+    it('follows a `settings-changed` write, and keeps the last answer when a payload carries none', () => {
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+        // The handshake above carried no list: still "not told".
+        expect(controller.daemonSettings.keybindLines).toBeNull();
+
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'settings-changed', settings: { keybindLines: ['super+n=unbind'] } }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['super+n=unbind']);
+
+        // A write that names only the quit flag must not snap the menu back to the defaults,
+        // and must not lose the flag either (the two readers are independent).
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'settings-changed', settings: { general: { confirmQuitWhenActive: false } } }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['super+n=unbind']);
+        expect(controller.daemonSettings.confirmQuitWhenActive).toBe(false);
     });
 });

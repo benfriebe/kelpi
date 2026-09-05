@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildPaneListEntry, buildWorkspaceListEntry } from './build.js';
 import { errorReply, serializeError, serializeReply } from './serialize.js';
-import type { PaneSyncReply, PingReply } from './types.js';
+import type { PaneResizeReply, PaneSyncReply, PingReply } from './types.js';
 
 describe('serializeReply', () => {
     it('writes one compact JSON line terminated by a newline', () => {
@@ -48,6 +48,28 @@ describe('serializeReply', () => {
             excluded: [{ id: 'C', label: 'logs' }]
         };
         expect(JSON.parse(serializeReply(reply))).toEqual(reply);
+    });
+
+    it('carries pane-resize split_path as the d/L/R path string, not an index array', () => {
+        // Pins issue #49: the daemon copies `ResizeResult.splitPath` ("d", "dL", "dLR": the
+        // pane-layout.md §7.3 encoding) onto the wire verbatim, and wire-protocol.md §6.2
+        // documents that string. The literal below only compiles while `split_path` is typed
+        // `string`, so a regression back to `number[]` fails `pnpm typecheck` here.
+        const reply: PaneResizeReply = {
+            ok: true,
+            pane_id: 'A',
+            workspace_id: 'W',
+            workspace_name: 'main',
+            split_path: 'dL',
+            ratio: 0.7,
+            target_share: 0.7,
+            label: 'coordinator'
+        };
+        const line = serializeReply(reply);
+        expect(line).toBe(
+            '{"ok":true,"pane_id":"A","workspace_id":"W","workspace_name":"main","split_path":"dL","ratio":0.7,"target_share":0.7,"label":"coordinator"}\n'
+        );
+        expect(JSON.parse(line)['split_path']).toMatch(/^d[LR]*$/);
     });
 });
 

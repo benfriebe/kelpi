@@ -149,6 +149,20 @@ describe('client → daemon frames', () => {
         await h.session.attach(PANE_A);
         h.session.handleFrame(encodePtyFrame(PTY_FRAME_TYPES.input, PANE_A, bytes('ls\r')) as Uint8Array);
         expect(h.pty.writes).toEqual([{ paneID: PANE_A, data: 'ls\r' }]);
+        expect(h.pty.directWrites).toEqual([]);
+    });
+
+    it('writes inputDirect bytes un-mirrored: mouse reports and kitty releases stay in their pane (#51)', async () => {
+        // terminal-surface.md §8.2 lists mouse input and key releases as NOT mirrored; the
+        // manager mirrors whatever `write` receives, so the frame type must pick `writeDirect`.
+        const h = harness();
+        await h.session.attach(PANE_A);
+        h.session.handleFrame(encodePtyFrame(PTY_FRAME_TYPES.inputDirect, PANE_A, bytes('\x1b[<0;3;4M')) as Uint8Array);
+        expect(h.pty.directWrites).toEqual([{ paneID: PANE_A, data: '\x1b[<0;3;4M' }]);
+        expect(h.pty.writes).toEqual([{ paneID: PANE_A, data: '\x1b[<0;3;4M' }]);
+        // An empty payload is dropped, exactly as an empty `input` frame is.
+        h.session.handleFrame(encodePtyFrame(PTY_FRAME_TYPES.inputDirect, PANE_A) as Uint8Array);
+        expect(h.pty.directWrites).toHaveLength(1);
     });
 
     it('applies resize frames to the PTY and the terminal state', async () => {

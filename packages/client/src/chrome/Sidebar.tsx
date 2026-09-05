@@ -2142,6 +2142,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     /**
+     * app-state-core.md §2.8's `selectAllWorkspaces`: every id INCLUDING collapsed-group members
+     * (§WS-045), and the range anchor moved to the LAST workspace in the flat list (issue #57
+     * asc-26). The four Select All gestures (menu bar, both context menus, the selection strip)
+     * share this one closure so none of them can leave the anchor on whatever row was toggled
+     * before, which is where a later shift-click used to range from. `workspaceByID` is built
+     * in sidebar order, so its last key is that workspace.
+     */
+    const selectAllWorkspaces = useCallback((): void => {
+        const ids = [...workspaceByID.keys()];
+        setSelection(new Set(ids), ids[ids.length - 1] ?? null);
+    }, [setSelection, workspaceByID]);
+
+    /**
      * §SET-186 / §APP-109's predicate, published to assembly's key dispatcher.
      *
      * Precedence, in the order the checks run: an open overlay owns the key (a macOS menu eats
@@ -2181,7 +2194,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         selectionCommandsRefProp.current = {
             selectAll: (): boolean => {
                 if (workspaceByID.size === 0) return false;
-                setSelection(new Set(workspaceByID.keys()));
+                selectAllWorkspaces();
                 return true;
             },
             deselectAll: (): boolean => {
@@ -2193,7 +2206,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return () => {
             selectionCommandsRefProp.current = null;
         };
-    }, [selectionCommandsRefProp, selectionSize, setSelection, workspaceByID]);
+    }, [selectAllWorkspaces, selectionCommandsRefProp, selectionSize, setSelection, workspaceByID]);
 
     /**
      * §WS-151: an unmounting sidebar has no selection any more, and says so ONCE.
@@ -3654,7 +3667,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 label: 'Select All Workspaces',
                 disabled: count >= total,
                 onSelect: () => {
-                    setSelection(new Set(workspaceByID.keys()));
+                    selectAllWorkspaces();
                 }
             },
             {
@@ -3676,7 +3689,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             }
         ];
-    }, [baseModel, bucket, groupIDForWorkspace, groups, orderedSelection, presets, props, setSelection, workspaceByID]);
+    }, [
+        baseModel,
+        bucket,
+        groupIDForWorkspace,
+        groups,
+        orderedSelection,
+        presets,
+        props,
+        selectAllWorkspaces,
+        setSelection,
+        workspaceByID
+    ]);
 
     const workspaceMenuItems = useCallback(
         (workspaceID: string): MenuItemSpec[] => {
@@ -3871,7 +3895,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Select All Workspaces',
                     disabled: selection.size >= workspaceByID.size,
                     onSelect: () => {
-                        setSelection(new Set(workspaceByID.keys()));
+                        selectAllWorkspaces();
                     }
                 },
                 ...(selection.size === 0
@@ -3917,6 +3941,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             iconSubmenu,
             presets,
             props,
+            selectAllWorkspaces,
             selection,
             setSelection,
             workspaceByID
@@ -4592,7 +4617,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                button, not the strip's own secondary body colour. */
                             style={{ color: tokens.accent, ...SELECTION_ACTION_HIT_BOX }}
                             onClick={() => {
-                                setSelection(new Set(workspaceByID.keys()));
+                                selectAllWorkspaces();
                             }}
                         >
                             Select All
@@ -5109,6 +5134,28 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
      * per-rect one — the window behind it is not to be read while it is up.
      */
     useModalPresence();
+    /*
+     * kelpi#53 (shell-ui.md §12): "All confirmations put Cancel as the default/Return button".
+     * This dialog had no key handling at all, so Return and Escape were inert in the
+     * workspace, bulk and group deletes while `AgentDeleteGate` (App.tsx, H18) and
+     * `QuitConfirmDialog` already answered both. Same contract as those two: Escape AND Return
+     * take the safe answer, and the suppression box is honoured on the way out exactly as a
+     * Cancel click would (macOS HIG, `WorkspaceDeleteGate.swift:78`). Capture phase, so a
+     * pane's own key handling cannot swallow the way out of a modal.
+     */
+    const { onCancel } = props;
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.key !== 'Escape' && event.key !== 'Enter') return;
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel(suppress);
+        };
+        globalThis.window.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            globalThis.window.removeEventListener('keydown', onKeyDown, true);
+        };
+    }, [onCancel, suppress]);
     const container = globalThis.document?.body;
     if (container === undefined || container === null) return null;
     const isGroup = props.confirm.kind === 'group';

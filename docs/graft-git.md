@@ -1454,17 +1454,22 @@ Every path that drops associations dispatches, per removed association id, BOTH 
 Not graft-specific but it feeds graft's association set
 (`packages/daemon/src/git/autodetect.ts`):
 
-- On pane cwd change (and pane creation), debounce **500ms**, then
+- On pane cwd change (and pane creation, including a restored pane and a pane spawned
+  with its cwd already inside a checkout: the triggers come from a store reconciler,
+  `RepoAutoDetectService.start()`, that diffs the pane set on every event batch, not
+  from the OSC 7 report alone; issue #48), debounce **500ms**, then
   `resolveRepoRoot(cwd)`; if resolved and the pane is still in that directory tree
-  (`isPathInside`, `autodetect.ts:97-103`: exact-or-prefix match on canonicalized
+  (`isPathInside`, `autodetect.ts:127-133`: exact-or-prefix match on canonicalized
   paths, i.e. standardized and then symlinks resolved on both sides, so `/tmp` and
   `/private/tmp` spellings match) and the auto-detect setting is on: find-or-create a
-  Repo whose canonicalized path equals `parentRepoRoot` (`autodetect.ts:175-179`;
+  Repo whose canonicalized path equals `parentRepoRoot` (`autodetect.ts:205-209`;
   marked `isAutoDiscovered: true` when created), and add a
   `RepoAssociation {worktreePath: worktreeRoot, isAutoDetected: true}` to the pane's
   workspace unless one for that worktree already exists. Follow-ups: resolve branch +
   status async, start a HEAD watcher, resolve the repo's remote URL, persist once.
-- Auto-unlink: on pane close/cwd changes, debounce **5s**, then remove every
+- Auto-unlink: on pane close/cwd changes (also a shell exit, a reaped parked source or
+  a workspace delete: any pane vanishing from the store, via the same reconciler;
+  issue #48), debounce **5s**, then remove every
   `isAutoDetected` association whose worktree no longer contains any pane's cwd
   (exact-or-prefix match on canonicalized paths, standardized and then symlinks
   resolved on both sides, so `/tmp` and `/private/tmp` spellings match; including

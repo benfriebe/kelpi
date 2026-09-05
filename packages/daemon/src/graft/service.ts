@@ -44,6 +44,22 @@ import { watchRecursive, type RecursiveWatcher, type RecursiveWatchFn } from './
 /** §5: a clean shutdown gets this long to unwind every session before breadcrumbs take over. */
 export const GRAFT_SHUTDOWN_GRACE_MS = 2_000;
 
+/**
+ * How long after the watch attaches to run ONE catch-up sync pass (§9.1).
+ *
+ * The recursive `fs.watch` is FSEvents on macOS, and an FSEvents stream delivers nothing for
+ * a change made before the stream is actually live on libuv's CF thread. `start` publishes the
+ * session and replies as soon as the watch is CREATED, so a caller that writes to the worktree
+ * the moment `graft start` returns can land inside that window, and the change is then never
+ * observed: the session says `watching`, nothing mirrors, and no later event repairs it. Under
+ * load the window widens; the compat test that writes immediately after start failed three
+ * promotes in a row exactly this way while passing standalone every time. One delayed pass
+ * through the serial consumer closes the window at the cost of one extra write-tree/read-tree
+ * per session start. The timer is cancelled by `stop` and `shutdown`, because a pass that fired
+ * after the restore would re-apply the worktree over the restored parent.
+ */
+export const GRAFT_WATCH_CATCH_UP_MS = 1_500;
+
 /** The auto-stash message tag, so the stash is identifiable in `git stash list`. */
 export function stashMessageFor(associationID: string): string {
     return `kelpi-graft:${associationID}`;
@@ -100,6 +116,8 @@ export interface CreateGraftServiceOptions {
     /** Injected FS watcher (tests); defaults to the recursive `fs.watch` wrapper. */
     readonly watch?: RecursiveWatchFn | undefined;
     readonly debounceMs?: number | undefined;
+    /** Delay before the post-attach catch-up pass (tests); see `GRAFT_WATCH_CATCH_UP_MS`. */
+    readonly catchUpMs?: number | undefined;
     readonly shutdownGraceMs?: number | undefined;
     /** Injected `realpath` for canonicalization (tests). */
     readonly realpath?: RealpathFn | undefined;
@@ -123,6 +141,8 @@ interface WatcherEntry {
     readonly watcher: RecursiveWatcher;
     /** A batch arrived while a pass was running; drain it when the pass finishes. */
     pending: boolean;
+    /** The one-shot post-attach catch-up pass, until it fires or the session stops. */
+    catchUp: ReturnType<typeof setTimeout> | null;
 }
 
 function snapshot(session: MutableSession): GraftSession {
@@ -152,6 +172,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
     const now = options.now ?? ((): number => Date.now());
     const mintID = options.uuid ?? ((): string => newUUID());
     const graceMs = options.shutdownGraceMs ?? GRAFT_SHUTDOWN_GRACE_MS;
+    const catchUpMs = options.catchUpMs ?? GRAFT_WATCH_CATCH_UP_MS;
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
     };
@@ -258,7 +279,20 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
             ...(options.watch !== undefined ? { watch: options.watch } : {}),
             ...(options.onError !== undefined ? { onError: options.onError } : {})
         });
-        watchers.set(session.id, { watcher, pending: false });
+        const entry: WatcherEntry = { watcher, pending: false, catchUp: null };
+        watchers.set(session.id, entry);
+        // The catch-up pass (see GRAFT_WATCH_CATCH_UP_MS): a change made before the OS watch
+        // went live would otherwise never be seen. Routed through `pending` + `pump` so it is
+        // serialised with real batches exactly like one of them.
+        const timer = setTimeout(() => {
+            const live = watchers.get(session.id);
+            if (live !== entry) return; // stopped and possibly restarted in the meantime
+            live.catchUp = null;
+            live.pending = true;
+            pump(session.id);
+        }, catchUpMs);
+        timer.unref?.();
+        entry.catchUp = timer;
     };
 
     // ── start ───────────────────────────────────────────────────────────────
@@ -435,6 +469,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
         // 1. Cancel the watcher FIRST so no new pass can begin. Runs even for unknown ids.
         const entry = watchers.get(associationID);
         watchers.delete(associationID);
+        if (entry?.catchUp !== null && entry?.catchUp !== undefined) clearTimeout(entry.catchUp);
         entry?.watcher.close();
 
         // 2. Await the pass already in flight — a read-tree that survives the cancel would
@@ -602,6 +637,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
             // Whatever could not finish in time falls back to breadcrumb recovery; the OS
             // watches must still go, or the process cannot exit.
             for (const [id, entry] of [...watchers]) {
+                if (entry.catchUp !== null) clearTimeout(entry.catchUp);
                 entry.watcher.close();
                 watchers.delete(id);
             }

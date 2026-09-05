@@ -25,16 +25,29 @@ interface Harness {
     readonly store: KelpiStore;
     readonly detect: RepoAutoDetectService;
     readonly persists: () => number;
+    /** Every `refreshAssociation` call, in order (#48's directory-change fast path). */
+    readonly refreshes: string[];
     setEnabled(value: boolean): void;
     /** Run the debounced link pass (timers are 0 ms here) and settle its async half. */
     settle(): Promise<void>;
 }
 
-function harness(git: Partial<GitService> = {}, options: { enabled?: boolean } = {}): Harness {
+function harness(
+    git: Partial<GitService> = {},
+    options: { enabled?: boolean; paneDirectory?: string; start?: boolean } = {}
+): Harness {
     const store = createStore(emptyDaemonState(HOME));
-    store.dispatch({ type: 'create-workspace', id: W1, paneID: P1, name: 'w1', now: NOW });
+    store.dispatch({
+        type: 'create-workspace',
+        id: W1,
+        paneID: P1,
+        name: 'w1',
+        now: NOW,
+        ...(options.paneDirectory !== undefined ? { workingDirectory: options.paneDirectory } : {})
+    });
     let enabled = options.enabled ?? true;
     let persists = 0;
+    const refreshes: string[] = [];
     const detect = createRepoAutoDetect({
         store,
         git: { ...stubGitService(), ...git },
@@ -44,13 +57,21 @@ function harness(git: Partial<GitService> = {}, options: { enabled?: boolean } =
         persist: () => {
             persists += 1;
         },
+        refreshAssociation: (associationID) => {
+            refreshes.push(associationID);
+        },
         linkDebounceMs: 0,
         unlinkDebounceMs: 0
     });
+    // The store subscription is what production runs (#48); the explicit
+    // `paneDirectoryChanged` calls in the older tests below are then a harmless double-arm of
+    // the same debounce, and they keep pinning the explicit seam.
+    if (options.start ?? true) detect.start();
     return {
         store,
         detect,
         persists: () => persists,
+        refreshes,
         setEnabled(value) {
             enabled = value;
         },
@@ -271,5 +292,149 @@ describe('auto-unlink + GC (§GIT-080/§GIT-081)', () => {
         await h.settle();
 
         expect(associationsOf(h.store)).toHaveLength(1);
+    });
+});
+
+describe('store-driven triggers (issue #48: graft-git.md §8.9, app-state-core.md §7.7)', () => {
+    const inRepo = {
+        resolveRepoRoot: async () => ({ worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' })
+    };
+
+    it('auto-links a pane created inside a checkout that never reports a cwd (graft-07)', async () => {
+        const h = harness(inRepo);
+        // `kelpi pane create --cwd ~/code/repo`: the pane is born in the tree, and the shell's
+        // first OSC 7 repeats that directory, which compose.ts drops as unchanged.
+        h.store.dispatch({
+            type: 'create-pane',
+            workspaceID: W1,
+            paneID: P2,
+            now: NOW,
+            workingDirectory: '/work/wt/src'
+        });
+        await h.settle();
+
+        expect(associationsOf(h.store)).toHaveLength(1);
+        expect(associationsOf(h.store)[0]).toMatchObject({ worktreePath: '/work/wt', isAutoDetected: true });
+        expect(h.store.getState().repos).toHaveLength(1);
+    });
+
+    it('auto-links a restored pane already in the store when the reconciler starts (graft-07)', async () => {
+        const h = harness(inRepo, { paneDirectory: '/work/wt', start: false });
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(0);
+
+        h.detect.start();
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(1);
+        // A restore's associations are read by the association watcher's own start, so the
+        // seeding pass must not double that read through the fast path.
+        expect(h.refreshes).toEqual([]);
+    });
+
+    it('schedules auto-unlink when the last pane inside the worktree is closed (graft-26, asc-15)', async () => {
+        const h = harness(inRepo);
+        setPaneDirectory(h.store, P1, '/work/wt');
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(1);
+
+        // A second pane elsewhere keeps the workspace alive once P1 goes.
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/elsewhere' });
+        await h.settle();
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        await h.settle();
+
+        expect(associationsOf(h.store)).toHaveLength(0);
+        expect(h.store.getState().repos).toHaveLength(0);
+    });
+
+    it('schedules auto-unlink when the shell inside the worktree exits (asc-15)', async () => {
+        const h = harness(inRepo);
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/work/wt' });
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(1);
+
+        h.store.dispatch({ type: 'pane-process-terminated', paneID: P2 });
+        await h.settle();
+
+        expect(associationsOf(h.store)).toHaveLength(0);
+        expect(h.store.getState().repos).toHaveLength(0);
+    });
+
+    it('keeps the association while another pane in the workspace is still inside (§GIT-080)', async () => {
+        const h = harness(inRepo);
+        setPaneDirectory(h.store, P1, '/work/wt');
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/work/wt/src' });
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(1);
+
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P2 });
+        await h.settle();
+
+        expect(associationsOf(h.store)).toHaveLength(1);
+    });
+
+    it('does not arm a link for a pane created while the setting is off (§GIT-074)', async () => {
+        const h = harness(inRepo, { enabled: false });
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/work/wt' });
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(0);
+    });
+});
+
+describe('directory-change fast path (issue #48: app-state-core.md §7.8, terminal-surface.md §7.2)', () => {
+    const MANUAL_REPO = 'BBBBBBBB-0000-4000-8000-000000000001';
+    const MANUAL_ASSOCIATION = 'CCCCCCCC-0000-4000-8000-000000000001';
+
+    function withManualAssociation(h: Harness): void {
+        h.store.dispatch({
+            type: 'add-repo',
+            repo: {
+                id: MANUAL_REPO,
+                path: '/manual/repo',
+                name: 'repo',
+                remoteURL: null,
+                lastAccessedAt: NOW / 1000,
+                isAutoDiscovered: false
+            }
+        });
+        h.store.dispatch({
+            type: 'add-repo-association',
+            workspaceID: W1,
+            association: {
+                id: MANUAL_ASSOCIATION,
+                repoID: MANUAL_REPO,
+                worktreePath: '/manual/repo',
+                branchName: 'main',
+                isAutoDetected: false
+            }
+        });
+    }
+
+    it('refreshes every association whose worktree contains the new pwd, and no other (asc-16, tsurf-27)', () => {
+        const h = harness();
+        withManualAssociation(h);
+        setPaneDirectory(h.store, P1, '/manual/repo/src/deep');
+        expect(h.refreshes).toEqual([MANUAL_ASSOCIATION]);
+
+        // `cd` out again: nothing contains the new pwd, so nothing is re-read.
+        setPaneDirectory(h.store, P1, '/elsewhere');
+        expect(h.refreshes).toEqual([MANUAL_ASSOCIATION]);
+        // A sibling that merely shares a prefix is not inside.
+        setPaneDirectory(h.store, P1, '/manual/repo-other');
+        expect(h.refreshes).toEqual([MANUAL_ASSOCIATION]);
+    });
+
+    it('is not gated on the auto-detect setting: a manual association still refreshes', () => {
+        const h = harness({}, { enabled: false });
+        withManualAssociation(h);
+        setPaneDirectory(h.store, P1, '/manual/repo');
+        expect(h.refreshes).toEqual([MANUAL_ASSOCIATION]);
+    });
+
+    it('fires on a pwd change, not on pane creation', () => {
+        const h = harness();
+        withManualAssociation(h);
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/manual/repo' });
+        expect(h.refreshes).toEqual([]);
     });
 });

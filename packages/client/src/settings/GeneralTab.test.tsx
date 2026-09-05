@@ -154,9 +154,18 @@ describe('Settings ▸ General', () => {
         expect(screen.queryByTestId('tcp-port-apply')).toBeNull();
     });
 
-    it('says the TCP listener applies on the next daemon start rather than pretending it rebinds', () => {
-        renderTab({ tcpPort: 19400 });
-        expect(screen.getByTestId('general-network').textContent).toContain('next daemon start');
+    // Issue #58 / config-keybindings.md §12: the daemon re-binds the listener live from a
+    // settings write (`compose.test.ts` "binds, re-binds and tears down"), so the section must
+    // not tell the user to restart. "Next daemon start" is reserved for the one case the spec
+    // names: a daemon that spoke and reports no TCP listener at all.
+    it('says a port change re-binds live, and reserves "next daemon start" for a daemon with no listener', () => {
+        renderTab({ tcpPort: 19400 }, { tcp: { requested: 19400, host: '127.0.0.1', bound: 19400, error: null } });
+        const section = screen.getByTestId('general-network').textContent ?? '';
+        expect(section).toContain('re-binds the listener straight away');
+        expect(section).not.toContain('next daemon start');
+        cleanup();
+        renderTab({ tcpPort: 19400 }, { tcp: null });
+        expect(screen.getByTestId('tcp-listener-row').textContent).toContain('next daemon start');
     });
 
     // SET-018: the quit confirmation moved into the daemon settings store (config key

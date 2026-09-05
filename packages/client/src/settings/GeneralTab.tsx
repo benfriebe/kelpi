@@ -7,12 +7,17 @@
  * the daemon reads each one through the settings service on every command rather than at boot,
  * and the write is the same `set-general-setting` verb the rest of Settings uses.
  *
- * One row stays read-only, and says so rather than pretending:
+ * One row reports an outcome rather than a value:
  *
- *   - **TCP port** — the control listener binds at daemon start. SET-022's Swift behaviour is
- *     stop → start → *then* write, so a failed bind writes nothing; a daemon cannot rebind a
- *     live control socket under a connected CLI, so the field writes the key and states that
- *     it takes effect on the next daemon start. Claiming a live rebind would be the lie.
+ *   - **TCP port**: writing the key re-binds the listener LIVE (config-keybindings.md §12):
+ *     the daemon's settings subscriber runs `applyTcpPortSetting` (`daemon/src/boot/compose.ts`),
+ *     `stopTCP` then a fresh bind on the control server that owns the port, with the Unix
+ *     socket and its connections serving throughout, which is what makes it safe under a
+ *     connected CLI. SET-022's Swift order was stop → start → *then* write, so a failed bind
+ *     wrote nothing; here the key is written regardless and the failed bind lands on the
+ *     listener status instead. The "takes effect on the next daemon start" wording survives
+ *     only in `tcpListenerDetail`'s last branch, for a daemon that reports no TCP listener at
+ *     all (issue #58 retired the header's claim that a live socket could not be re-bound).
  *
  *     What it no longer does is *guess the outcome*. §SET-021 asked for "Port N is unavailable"
  *     under the Network section, and the daemon now reports what its listener actually did
@@ -201,7 +206,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
 
             <SettingsSection
                 title="Network"
-                hint="The control socket's optional TCP listener on 127.0.0.1, for dev containers and SSH tunnels. It binds when the daemon starts, so a change here applies on the next daemon start."
+                hint="The control socket's optional TCP listener on 127.0.0.1, for dev containers and SSH tunnels. A change here re-binds the listener straight away; the Unix socket and its clients are unaffected."
                 testID="general-network"
             >
                 <SettingsRow

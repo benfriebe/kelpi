@@ -431,10 +431,12 @@ export function trayTooltip(counts: AgentCounts, connected: boolean): string {
  * §AGNT-077: panes that STOPPED waiting.
  *
  * `NotificationService.removeNotification(for:)` withdraws a pane's delivered notification when
- * its waiting status is cleared — which is what visiting the pane does. The client half of that
- * already works (the in-app toast is dismissed on focus); the native toast had nothing to act
- * on, because the daemon publishes a notification but never a retraction. It does not need one:
- * a pane leaving the waiting set IS the retraction, so the shell tracks that set.
+ * its waiting status is cleared, which is what visiting the pane does. The browser client's
+ * half is its focus report: `client/src/state/bridge.ts` `focusPane` calls `clear(paneID)`,
+ * which closes the Web Notification and drops the in-app toast (agent-lifecycle.md §7.5). The
+ * native toast had nothing to act on, because the daemon publishes a notification but never a
+ * retraction. It does not need one: a pane leaving the waiting set IS the retraction (consumed
+ * in `./status.ts`), so the shell tracks that set.
  *
  * There is deliberately no "newly waiting" counterpart (#55): a pane entering the set is not
  * the dock-bounce signal. The bounce is stop-only and the daemon decides it

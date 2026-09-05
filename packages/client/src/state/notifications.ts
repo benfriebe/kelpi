@@ -13,11 +13,16 @@
  *     re-implements it by keying on the same string.
  *   - **Open → navigate**: clicking activates the client, switches to the notification's
  *     workspace and focuses its pane (ordering matters — workspace first, pane last, §8.5).
- *   - **Removal on acknowledgment**: when the user visits a pane, its notification and toast
- *     go away (`clear(paneID)`), so no stale "waiting" banner survives.
+ *   - **Removal on acknowledgment** (§7.5): the daemon never sends a retraction, so each
+ *     presenter withdraws on its own trigger. This client's is the focus report: `bridge.ts`
+ *     `focusPane` calls `clear(paneID)` the moment the user focuses the pane, unconditionally
+ *     and before the dwell, dropping the delivered notification AND its toast so no stale
+ *     "waiting" banner survives. (The Electron shell's native toast withdraws on a different
+ *     trigger, the pane leaving the waiting set: `shell/src/status.ts`.)
  *
  * Permission is never requested on import: browsers only grant it from a user gesture, so the
- * host calls `requestNotificationPermission()` from a click and we post nothing until then.
+ * host (`App.tsx`) calls `request()` from the first `pointerdown` in the window, once, and
+ * everything before the grant is rendered as an in-app toast (§7.5 permission; issue #58).
  */
 
 import type { WsNotificationMessage } from '@kelpi/protocol';

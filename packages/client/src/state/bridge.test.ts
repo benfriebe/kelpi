@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
 import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { connectStore, createKelpiRuntime, isTokenRejection } from './bridge';
-import { createNotificationManager } from './notifications';
+import { createNotificationManager, type NotificationApi } from './notifications';
 import { createKelpiStore, type KelpiStoreApi } from './store';
 
 const HOME = '/Users/test';
@@ -350,6 +350,56 @@ describe('kelpi runtime', () => {
             { type: 'visibility-report', workspaceID: W1, visiblePaneIDs: [P1], documentVisible: true },
             { type: 'visibility-report', workspaceID: W1, visiblePaneIDs: [P1], documentVisible: true }
         ]);
+    });
+
+    /**
+     * agent-lifecycle.md §7.5 removal: the daemon never retracts a notification, so THIS
+     * client's focus report is what withdraws it, unconditionally and before any dwell. The
+     * headers of `notifications.ts` and the shell's `agents.ts` describe this trigger, so it
+     * is pinned here rather than left to prose (issue #58).
+     */
+    it('clears a pane’s delivered notification and its toast when the user focuses it', () => {
+        const sockets = createFakeSocketFactory();
+        const store = createKelpiStore();
+        const closed: string[] = [];
+        const dismissed: string[] = [];
+        const api: NotificationApi = {
+            permission: 'granted',
+            requestPermission: () => Promise.resolve('granted'),
+            create: (_title, init) => ({
+                onclick: null,
+                close: () => {
+                    closed.push(init.tag ?? '');
+                }
+            })
+        };
+        const runtime = createKelpiRuntime({
+            url: 'ws://daemon.test/ws',
+            token: 't',
+            socketFactory: sockets.factory,
+            heartbeatIntervalMs: 0,
+            store,
+            notifications: createNotificationManager({ api, onDismissToast: (id) => dismissed.push(id) })
+        });
+        runtime.connect();
+        completeHandshake(sockets.last(), { state: snapshotState() as never });
+        sockets.last().emit({
+            type: 'notification',
+            kind: 'agent-waiting',
+            paneID: P1,
+            workspaceID: W1,
+            title: 'alpha',
+            body: 'Agent is waiting for input',
+            dedupeKey: `kelpi-${P1}`
+        });
+        expect(runtime.notifications?.activeTags).toEqual([`kelpi-${P1}`]);
+        expect(closed).toEqual([]);
+
+        runtime.focusPane(W1, P1);
+
+        expect(closed).toEqual([`kelpi-${P1}`]);
+        expect(dismissed).toEqual([`kelpi-${P1}`]);
+        expect(runtime.notifications?.activeTags).toEqual([]);
     });
 
     it('echoes focus locally before the daemon confirms it', () => {

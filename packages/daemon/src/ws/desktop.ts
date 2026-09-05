@@ -68,7 +68,8 @@ export const DESKTOP_COMMANDS = [
     'restart-control-server',
     'open-terminal-target',
     'markdown-external-editor',
-    'paste-image'
+    'paste-image',
+    'drop-text'
 ] as const;
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number];
 
@@ -502,12 +503,41 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         return { ok: true, pane_id: paneID, path: target, bytes: bytes.byteLength };
     };
 
+    /**
+     * TERM-040 (issue #51): paths dropped onto a terminal pane, already shell-escaped and
+     * space-joined by the client (`app/open-file.ts` `terminalDropText`).
+     *
+     * Not `pane-send --bare`, which is what the client used to call: terminal-surface.md §12.4
+     * says a drop takes the outside-keystroke text path, and §8.2 item 2 says that path is
+     * paste-piped AND mirrored to sync siblings, like a Cmd+V paste (the engine's paste rides
+     * the mirrored PTY stream). `pane send` is a programmatic send and is exempt from
+     * mirroring by §8.2 / §9, so a drop needs its own verb to reach `sendText` with
+     * `mirror: true`. Bare, because the user is composing a command around the path, exactly
+     * as the Swift drop did (`SurfaceView.swift:660-701`).
+     */
+    const dropText = async (payload: Record<string, unknown>): Promise<JsonObject> => {
+        const paneID = text(payload['pane_id']);
+        if (paneID === undefined) return failure('drop-text requires pane_id');
+        const dropped = text(payload['text']);
+        if (dropped === undefined || dropped === '') return failure('drop-text requires non-empty text');
+
+        const state = ctx.store.getState();
+        const workspace = workspaceContainingVisiblePane(state, paneID);
+        const pane = workspace === null ? null : visiblePane(workspace, paneID);
+        if (pane === null) return failure(`pane not found: ${paneID}`);
+        if (pane.type !== 'shell') return failure(`pane '${paneID}' is not a terminal pane`);
+
+        ctx.input.sendText(paneID, dropped, { bare: true, mirror: true });
+        return { ok: true, pane_id: paneID };
+    };
+
     return {
         async run(command, payload) {
             if (command === 'shell-action') return shellAction(payload);
             if (command === 'restart-control-server') return restartControlServer();
             if (command === 'open-terminal-target') return openTerminalTarget(payload);
             if (command === 'paste-image') return pasteImage(payload);
+            if (command === 'drop-text') return dropText(payload);
             return markdownExternalEditor(payload);
         }
     };

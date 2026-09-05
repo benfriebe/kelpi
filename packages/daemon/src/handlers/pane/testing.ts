@@ -159,11 +159,11 @@ export class StubTerminalState implements TerminalStateService {
 }
 
 export class StubTerminalInput implements TerminalInput {
-    readonly texts: { paneID: string; text: string; bare: boolean }[] = [];
+    readonly texts: { paneID: string; text: string; bare: boolean; mirror: boolean }[] = [];
     readonly keys: { paneID: string; key: string }[] = [];
 
-    sendText(paneID: string, text: string, opts: { bare: boolean }): void {
-        this.texts.push({ paneID, text, bare: opts.bare });
+    sendText(paneID: string, text: string, opts: { bare: boolean; mirror?: boolean }): void {
+        this.texts.push({ paneID, text, bare: opts.bare, mirror: opts.mirror === true });
     }
 
     sendNamedKey(paneID: string, key: string): void {

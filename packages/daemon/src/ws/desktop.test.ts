@@ -74,12 +74,13 @@ function fixture(
 }
 
 describe('isDesktopCommand', () => {
-    it('names exactly the five verbs', () => {
+    it('names exactly the six verbs', () => {
         expect(isDesktopCommand('shell-action')).toBe(true);
         expect(isDesktopCommand('restart-control-server')).toBe(true);
         expect(isDesktopCommand('open-terminal-target')).toBe(true);
         expect(isDesktopCommand('markdown-external-editor')).toBe(true);
         expect(isDesktopCommand('paste-image')).toBe(true);
+        expect(isDesktopCommand('drop-text')).toBe(true);
         expect(isDesktopCommand('pane-close')).toBe(false);
         expect(isDesktopCommand('reveal-path')).toBe(false);
     });
@@ -381,7 +382,8 @@ describe('paste-image (TERM-043)', () => {
         expect(f.h.input.texts.at(-1)).toEqual({
             paneID: P0,
             text: shellEscapePath(written),
-            bare: true
+            bare: true,
+            mirror: false
         });
         fs.rmSync(written, { force: true });
     });
@@ -416,6 +418,35 @@ describe('paste-image (TERM-043)', () => {
         const reply = await f.channel.run('paste-image', { pane_id: P0, data: huge });
         expect(reply['ok']).toBe(false);
         expect(String(reply['error'])).toContain('limit');
+    });
+});
+
+describe('drop-text (TERM-040, #51)', () => {
+    it('types the dropped paths bare AND mirrored, the outside-keystroke text path of §8.2 / §12.4', async () => {
+        const f = fixture();
+        const reply = await f.channel.run('drop-text', { pane_id: P0, text: '/tmp/a\\ b.txt /tmp/c.txt' });
+        expect(reply).toEqual({ ok: true, pane_id: P0 });
+        // Bare (the user is composing a command around the path) and mirror: true, which is
+        // the whole reason this is not `pane-send --bare` (programmatic sends never mirror).
+        expect(f.h.input.texts).toEqual([{ paneID: P0, text: '/tmp/a\\ b.txt /tmp/c.txt', bare: true, mirror: true }]);
+    });
+
+    it('refuses empty text, a missing pane and a non-terminal pane without typing anything', async () => {
+        const f = fixture();
+        expect(await f.channel.run('drop-text', { text: '/tmp/a' })).toMatchObject({ ok: false });
+        expect(await f.channel.run('drop-text', { pane_id: P0 })).toMatchObject({ ok: false });
+        expect(await f.channel.run('drop-text', { pane_id: P0, text: '' })).toMatchObject({ ok: false });
+        expect(await f.channel.run('drop-text', { pane_id: 'nope', text: '/tmp/a' })).toMatchObject({ ok: false });
+
+        f.h.store.dispatch({
+            type: 'open-markdown-pane',
+            workspaceID: W1,
+            paneID: NEW,
+            filePath: '/tmp/work/a.md',
+            now: 1
+        });
+        expect(await f.channel.run('drop-text', { pane_id: NEW, text: '/tmp/a' })).toMatchObject({ ok: false });
+        expect(f.h.input.texts).toEqual([]);
     });
 });
 

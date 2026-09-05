@@ -2124,10 +2124,12 @@ function Shell(props: AppProps): ReactElement {
 
             /**
              * TERM-040 — a path dropped onto a terminal is TYPED, not opened. Bare, because the
-             * user is composing a command around it, and that is what the Swift drop did.
+             * user is composing a command around it, and that is what the Swift drop did. Via
+             * `drop-text`, not `pane-send --bare`: a drop is mirrored into sync siblings like a
+             * paste (terminal-surface.md §8.2 / §12.4), a `pane send` never is (#51).
              */
             typeDroppedPaths(paneID: string, text: string): boolean {
-                return run('Drop path', commands.sendText({ target: paneID, text, bare: true }));
+                return run('Drop path', commands.dropText({ paneID, text }));
             },
 
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */

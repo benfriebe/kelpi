@@ -996,6 +996,16 @@ export class CommandClient {
         );
     }
 
+    /**
+     * TERM-040 (issue #51): paths dropped onto a terminal pane, typed bare. Its own verb
+     * rather than `pane-send --bare` because a drop is text committed outside a keystroke,
+     * which terminal-surface.md §8.2 / §12.4 mirror into sync siblings, whereas `pane send`
+     * is a programmatic send and never mirrors (§9).
+     */
+    dropText(input: { paneID: string; text: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('drop-text', { pane_id: input.paneID, text: input.text }), options ?? {});
+    }
+
     // ── terminal search (⌘F over a shell pane) ────────────────────────────────────
     //
     // One verb with an `action` field (`daemon/src/ws/search.ts`). The needle, the total and the

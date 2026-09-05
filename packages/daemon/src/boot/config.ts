@@ -2,7 +2,7 @@
  * Reading `~/.config/nex/config` on the daemon's behalf.
  *
  * Spec: docs/config-keybindings.md §1 (the file lives at literally `~/.config/nex/config`
- * with `~` expanded to `$HOME` — no XDG lookup), §1.5 (profiles), §12 (`tcp-port`).
+ * with `~` expanded to `$HOME`, no XDG lookup), §1.5 (profiles), §12 (`tcp-port`).
  * Parsing itself is `@kelpi/core/config`; this module only does the IO and the "missing file is
  * not an error" policy.
  *

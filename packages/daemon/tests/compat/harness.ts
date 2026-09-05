@@ -45,7 +45,7 @@ export interface CliResult {
 }
 
 export interface CliOptions {
-    /** Exported as `KELPI_PANE_ID` + `NEX_PANE_ID` — set it only when the case is about caller-pane scoping. */
+    /** Exported as `KELPI_PANE_ID` + `NEX_PANE_ID`, set it only when the case is about caller-pane scoping. */
     readonly paneID?: string | undefined;
     readonly cwd?: string | undefined;
     readonly env?: Record<string, string> | undefined;

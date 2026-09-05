@@ -151,7 +151,7 @@ describe('the profile editor’s write transform (§9.5)', () => {
         ).toEqual([{ name: 'work', env: { A: '2', [PROFILE_MARKER_VAR]: 'work' } }]);
     });
 
-    it('never writes a user-supplied KELPI_PROFILE — the marker is always derived', () => {
+    it('never writes a user-supplied KELPI_PROFILE, the marker is always derived', () => {
         const written = profilesForWrite([
             { name: DEFAULT_PROFILE_NAME, vars: [] },
             { name: 'work', vars: [{ key: PROFILE_MARKER_VAR, value: 'spoofed' }] }

@@ -41,7 +41,7 @@ const clientDist = path.join(clientRoot, 'dist');
 const SWIFT_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
 
 /** Frame layout from `@kelpi/protocol` `ws/pty.ts` (kept in sync by `smoke.test.ts`). */
-const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
+const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05, inputDirect: 0x06 };
 const FRAME_HEADER_BYTES = 17;
 const PROTOCOL_VERSION = 1;
 

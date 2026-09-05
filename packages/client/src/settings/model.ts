@@ -3,7 +3,7 @@
  * load/write transforms, and label-preset usage.
  *
  * Everything here is a total function over data the daemon already sent. Keeping it out of the
- * components is what lets the awkward rules — §9.5's `default` synthesis, the `KELPI_PROFILE`
+ * components is what lets the awkward rules (§9.5's `default` synthesis, the `KELPI_PROFILE`
  * marker round-trip, §5.4's "differs from its default list" reset predicate — be tested
  * directly rather than through a click.
  */
@@ -102,7 +102,7 @@ export interface ProfileVarDraft {
 
 export interface ProfileDraft {
     readonly name: string;
-    /** Editable vars only — the `KELPI_PROFILE` marker is stripped on load, re-added on write. */
+    /** Editable vars only, the `KELPI_PROFILE` marker is stripped on load, re-added on write. */
     readonly vars: readonly ProfileVarDraft[];
 }
 

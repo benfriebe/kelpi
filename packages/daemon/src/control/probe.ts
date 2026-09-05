@@ -45,7 +45,7 @@ export interface ControlPingProbe {
     readonly tcp?: ControlPingTcp | undefined;
     /** The CLI-compat socket is degraded (another Kelpi owns it). Undefined = serving. */
     readonly compat?: ControlPingCompat | undefined;
-    /** The `NEX_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
+    /** The `KELPI_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
     readonly paneRoute?: string | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;

@@ -23,7 +23,7 @@ export interface SettingsActions {
     setKeybinding(action: KelpiAction, trigger: string | null): void;
     /** `reset-keybindings`. `null` = the whole map back to the shipped defaults (§5.4). */
     resetKeybindings(action: KelpiAction | null): void;
-    /** `set-general-setting` — one `key = value` line in `~/.config/nex/config` (§1.3). */
+    /** `set-general-setting` — one `key = value` line in `~/.config/kelpi/config` (§1.3). */
     setGeneralSetting(key: string, value: string): void;
     /**
      * `set-ghostty-setting` — one `key = value` in `~/.config/ghostty/config`, the file ghostty
@@ -89,7 +89,7 @@ export interface SettingsPaths {
 }
 
 export const DEFAULT_SETTINGS_PATHS: SettingsPaths = {
-    kelpiConfig: '~/.config/nex/config',
+    kelpiConfig: '~/.config/kelpi/config',
     ghosttyConfig: '~/.config/ghostty/config'
 };
 

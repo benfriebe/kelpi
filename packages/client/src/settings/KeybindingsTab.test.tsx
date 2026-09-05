@@ -26,7 +26,7 @@ function setup(lines: readonly string[] = [], globalHotkey?: string | null) {
         <KeybindingsTab
             bindings={clientKeyBindings(lines)}
             actions={bound}
-            configPath="~/.config/nex/config"
+            configPath="~/.config/kelpi/config"
             {...(globalHotkey === undefined ? {} : { globalHotkey })}
         />
     );

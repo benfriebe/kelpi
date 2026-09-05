@@ -25,7 +25,7 @@ There are two ways to work:
 ### 1. `vite dev` against a running daemon (fast iteration)
 
 ```bash
-# terminal 1 — a development daemon on its own paths (never /tmp/nex.sock, which the
+# terminal 1, a development daemon on its own paths (never /tmp/kelpi.sock, which the
 # shipped Swift app owns on a dev machine)
 pnpm --filter @kelpi/daemon build
 KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock \
@@ -98,7 +98,7 @@ node packages/client/scripts/smoke.mjs --no-build --verbose
 ```
 
 It boots a throwaway daemon (its own tmp socket, DB, run dir and HOME — **never**
-`/tmp/nex.sock`) and asserts the things only a live system can prove: the page and its bundle
+`/tmp/kelpi.sock`) and asserts the things only a live system can prove: the page and its bundle
 are served, the WS handshake completes, a snapshot arrives, a workspace created with the **real
 Swift `kelpi` CLI** shows up as a delta on the socket, an attached pane replays before it streams,
 and `echo …` typed as PTY input comes back as output. Exit code 0 means every check passed.

@@ -899,7 +899,7 @@ describe('caller-pane scoping', () => {
         expect(server.requests).toHaveLength(0);
     });
 
-    it('uses the caller pane as the subject when NEX_PANE_ID is set', async () => {
+    it('uses the caller pane as the subject when KELPI_PANE_ID is set', async () => {
         server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, panes: [], text: '' }] }));
         await runCLI(['pane', 'capture'], { port: server.port, paneID: PANE });
         expect(await lastRequest()).toEqual({ command: 'pane-capture', pane_id: PANE });

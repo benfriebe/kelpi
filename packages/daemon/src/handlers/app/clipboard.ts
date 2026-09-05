@@ -24,7 +24,7 @@
  *
  * The gate is read through a CALLBACK rather than captured, which is the live-apply path: the
  * value is taken at the moment the sequence arrives, so a Settings toggle (or a hand edit of
- * `~/.config/nex/config`) governs the very next OSC 52 with no restart, exactly as
+ * `~/.config/kelpi/config`) governs the very next OSC 52 with no restart, exactly as
  * `auto-detect-repos` does for the repo watcher.
  */
 

@@ -8,7 +8,7 @@
  * exact bytes that reach the socket.
  *
  * The fake server is TCP on an ephemeral port, reached through `KELPI_SOCKET`. **Never
- * `/tmp/nex.sock`**: that path is hardcoded in the CLI and belongs to whatever Kelpi is running
+ * `/tmp/kelpi.sock`**: that path is hardcoded in the CLI and belongs to whatever Kelpi is running
  * on the developer's machine, so a test that used it would talk to the user's real app.
  * The child's environment is built from scratch for the same reason — inheriting a real
  * `KELPI_PANE_ID` would silently change what several commands do.

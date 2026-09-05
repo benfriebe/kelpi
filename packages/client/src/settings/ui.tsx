@@ -755,7 +755,7 @@ export function SettingsEmptyState(props: SettingsEmptyStateProps): ReactElement
     );
 }
 
-/** The "Config: ~/.config/nex/config" strip every file-backed tab ends with (§13.1). */
+/** The "Config: ~/.config/kelpi/config" strip every file-backed tab ends with (§13.1). */
 export function SettingsFooterNote(props: { readonly children: ReactNode }): ReactElement {
     return (
         <p

@@ -1,7 +1,7 @@
 /**
  * Settings sync over the client socket (M8).
  *
- * The daemon is the settings authority: it reads `~/.config/nex/config` (keybinds + general
+ * The daemon is the settings authority: it reads `~/.config/kelpi/config` (keybinds + general
  * settings) and `~/.config/ghostty/config` (appearance), watches both, and pushes a
  * `SettingsSnapshot` to every attached client. Clients render from that snapshot and mutate
  * through three WS-only verbs that write THROUGH the config file — the file stays the source
@@ -18,7 +18,7 @@
  * predates it ignores the field and the broadcast.
  */
 
-/** `~/.config/nex/config` general settings a client can act on (config-keybindings.md §10, §11). */
+/** `~/.config/kelpi/config` general settings a client can act on (config-keybindings.md §10, §11). */
 export interface WsGeneralSettings {
     /** §10. */
     readonly focusFollowsMouse: boolean;
@@ -116,7 +116,7 @@ export interface WsGeneralSettings {
  * **Additive to config-keybindings.md §1.3's key list, and deliberately so.** The Swift app
  * keeps every one of these in `UserDefaults`, which a multi-client daemon has no equivalent of
  * — the same reasoning shell-ui.md's port note already applied to the two suppression flags.
- * The daemon's settings store is `~/.config/nex/config`, so each one becomes a documented
+ * The daemon's settings store is `~/.config/kelpi/config`, so each one becomes a documented
  * `key = value` line there; a hand-edit and a Settings click land in the same place, and two
  * attached windows cannot disagree about the palette.
  *

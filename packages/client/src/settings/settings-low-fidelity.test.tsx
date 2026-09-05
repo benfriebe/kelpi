@@ -521,7 +521,7 @@ describe('L90 — arming a keybinding row does not move the row', () => {
             <KeybindingsTab
                 bindings={clientKeyBindings([])}
                 actions={actions()}
-                configPath="~/.config/nex/config"
+                configPath="~/.config/kelpi/config"
             />
         );
         const slot = screen.getByTestId('keybinding-cancel-slot-split_right');

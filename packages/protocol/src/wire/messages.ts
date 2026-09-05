@@ -605,7 +605,7 @@ export type WireCommandName = WireMessage['command'];
 
 /**
  * Stage 1 of the parse pipeline (§3): commands matched by name BEFORE the mandatory
- * `pane_id` guard, which is why they work from a plain shell with no `NEX_PANE_ID`.
+ * `pane_id` guard, which is why they work from a plain shell with no `KELPI_PANE_ID`.
  */
 export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-create',

@@ -188,11 +188,11 @@ describe.skipIf(!swiftCLIAvailable())('compat: graft (M7)', () => {
     }, 60_000);
 
     it('reports the scope error verbatim when called with no scope at all', async () => {
-        // No `--workspace`, no `--repo` and no NEX_PANE_ID: the daemon's error string is what
+        // No `--workspace`, no `--repo` and no KELPI_PANE_ID: the daemon's error string is what
         // the shipped CLI prints, so it is contract.
         const result = await kelpi.run(['graft', 'start'], { timeoutMs: 15_000 });
         expect(result.code).toBe(1);
-        expect(result.stderr).toContain('graft requires --workspace, --repo, or NEX_PANE_ID');
+        expect(result.stderr).toContain('graft requires --workspace, --repo, or KELPI_PANE_ID');
     }, 60_000);
 
     it('answers `graft stop --repo <unknown>` with "no active sessions"', async () => {

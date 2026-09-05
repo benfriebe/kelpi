@@ -1,5 +1,5 @@
 /**
- * M5 end to end: a real daemon (private paths — never `/tmp/nex.sock`), the real `open` / `diff`
+ * M5 end to end: a real daemon (private paths, never `/tmp/kelpi.sock`), the real `open` / `diff`
  * wire commands, a real WebSocket client speaking the `content-*` verbs, the real HTTP asset
  * route, and the shutdown flush landing an unsaved scratchpad in SQLite.
  *

@@ -8,7 +8,7 @@
  * user's own ghostty config already resolved.
  *
  * It lives in `@kelpi/core` rather than beside the Settings picker that renders it because the
- * DAEMON needs the same table: §SET-105's `theme` key is read from `~/.config/nex/config`, and
+ * DAEMON needs the same table: §SET-105's `theme` key is read from `~/.config/kelpi/config`, and
  * the daemon is what turns the two config files into one settings snapshot. Two copies of a
  * case-sensitive filename list is exactly the kind of drift this package exists to prevent.
  */

@@ -1,5 +1,5 @@
 /**
- * KeyTrigger parsing / serialization for `~/.config/nex/config`.
+ * KeyTrigger parsing / serialization for `~/.config/kelpi/config`.
  * Spec: docs/config-keybindings.md §3.
  *
  * Key identity is the macOS virtual keyCode (physical key). The config file stays the

@@ -6,7 +6,7 @@
  * resume tuples and clears session ids + non-idle statuses BEFORE anything spawns):
  *
  *   3. spawn a PTY for every visible SHELL pane, with the owning workspace's profile env
- *      resolved from a single per-launch read of `~/.config/nex/config` — except a pane whose
+ *      resolved from a single per-launch read of `~/.config/kelpi/config`, except a pane whose
  *      resume tuple recorded the session's launch profile AND whose session id passes the
  *      shell-safety allowlist, which spawns under the recorded profile instead;
  *   4. if any resume tuples exist, wait ~2 s (shells need to reach a prompt), then type

@@ -41,8 +41,8 @@ type RouteResult = { readonly ok: true; readonly route: CreationRoute } | { read
  * §4.1 routing precedence, identical for both verbs:
  *
  *   `--workspace` WITHOUT `--target` picks the destination workspace outright; it beats the
- *   caller's forwarded `NEX_PANE_ID`, so a pane in workspace alpha can create into beta.
- *   Otherwise `--target`/`NEX_PANE_ID` go through `resolvePaneTarget` (which scopes a label
+ *   caller's forwarded `KELPI_PANE_ID`, so a pane in workspace alpha can create into beta.
+ *   Otherwise `--target`/`KELPI_PANE_ID` go through `resolvePaneTarget` (which scopes a label
  *   by `--workspace`). With none of the three the caller is outside Kelpi and gets a usage error.
  */
 function routeCreation(

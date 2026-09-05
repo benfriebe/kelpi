@@ -43,7 +43,7 @@ export type EpochSeconds = number;
 export type EpochMilliseconds = number;
 
 export interface Pane {
-    /** Keys the layout leaf, the PTY surface, `--target`, `NEX_PANE_ID`. */
+    /** Keys the layout leaf, the PTY surface, `--target`, `KELPI_PANE_ID`. */
     id: PaneID;
     label: string | null;
     type: PaneType;

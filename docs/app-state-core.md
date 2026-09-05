@@ -1554,9 +1554,9 @@ Only VISIBLE panes resolve (parked panes are not user-addressable).
   `packages/daemon/src/handlers/app/graft.ts`): scope = one workspace via
   `workspaceFilter` (lenient resolution) OR the caller pane's workspace OR - only when a
   `repoFilter` is present - all workspaces; error otherwise
-  (`graft requires --workspace, --repo, or NEX_PANE_ID`; the error text still names the legacy
-  variable for the old CLI's benefit, while the pane origin itself is the `pane_id` the CLI reads
-  from `KELPI_PANE_ID`, `packages/cli/src/env.ts:36`). `repoFilter` matches an association's
+  (`graft requires --workspace, --repo, or KELPI_PANE_ID`, `handlers/app/graft.ts:41`; the pane
+  origin is the `pane_id` the CLI reads from `KELPI_PANE_ID`, `packages/cli/src/env.ts:36`).
+  `repoFilter` matches an association's
   `worktreePath`, its last path component, or the repo's registry name. Empty result ->
   `no repo associations matched the requested scope`. `graft stop` additionally falls back to the
   SERVICE's live session list, matching orphaned sessions by canonicalized worktree/parent paths

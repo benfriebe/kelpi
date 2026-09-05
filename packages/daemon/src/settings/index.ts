@@ -1,5 +1,5 @@
 /**
- * M8 — settings sync: the daemon as the authority over `~/.config/nex/config` and
+ * M8, settings sync: the daemon as the authority over `~/.config/kelpi/config` and
  * `~/.config/ghostty/config`.
  *
  *   `ghostty.ts` — the minimal ghostty appearance parser (5 keys, nothing else)

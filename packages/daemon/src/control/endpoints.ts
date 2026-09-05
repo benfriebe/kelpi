@@ -2,7 +2,7 @@
  * Where the control transport listens.
  *
  * `/tmp/kelpi.sock` is the production path, and it is Kelpi's alone: the Swift app keeps
- * `/tmp/nex.sock`, and the two run side by side with nothing shared — moving data between
+ * `/tmp/kelpi.sock`, and the two run side by side with nothing shared, moving data between
  * them is `kelpid import`'s job. The two env overrides exist for development, where another
  * Kelpi owns the shared endpoints on this machine:
  *
@@ -30,7 +30,7 @@ export interface ControlEndpoints {
 export interface ControlEndpointDefaults {
     /** From the config file, if the caller read one. */
     readonly socketPath?: string | undefined;
-    /** `tcp-port = <port>` from `~/.config/nex/config`. */
+    /** `tcp-port = <port>` from `~/.config/kelpi/config`. */
     readonly tcpPort?: number | undefined;
 }
 

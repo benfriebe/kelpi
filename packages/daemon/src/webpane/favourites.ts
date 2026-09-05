@@ -13,7 +13,7 @@
  *     ISO-8601), so a legacy `web.favourites` value can be dropped in verbatim — which the
  *     app-state row could not do without a schema decision it does not need;
  *   - a favourite is a user preference, and preferences in this port live in files the user can
- *     read and edit (`~/.config/nex/config`, and now this), not inside a SQLite blob;
+ *     read and edit (`~/.config/kelpi/config`, and now this), not inside a SQLite blob;
  *   - it costs the domain store nothing: no new `DomainEvent`, no delta kind, no mirror
  *     hydration. Clients get the list from a WS verb and a `web-favourites` broadcast.
  *

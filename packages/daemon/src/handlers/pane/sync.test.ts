@@ -114,11 +114,11 @@ describe('pane-sync', () => {
         });
         expect(h.run({ command: 'pane-sync', action: 'on' }).only()).toEqual({
             ok: false,
-            error: 'pane sync requires --workspace or NEX_PANE_ID'
+            error: 'pane sync requires --workspace or KELPI_PANE_ID'
         });
         expect(h.run({ command: 'pane-sync', pane_id: testID('F', 9), action: 'on' }).only()).toEqual({
             ok: false,
-            error: 'pane sync requires --workspace or NEX_PANE_ID'
+            error: 'pane sync requires --workspace or KELPI_PANE_ID'
         });
         expect(h.run({ command: 'pane-sync', pane_id: P1, action: 'ON!' }).only()).toEqual({
             ok: false,

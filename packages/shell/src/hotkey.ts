@@ -35,7 +35,7 @@ import { expandTilde } from '@kelpi/daemon/lifecycle';
 
 export const CONFIG_PATH_ENV = 'KELPID_CONFIG_PATH';
 
-/** `~/.config/nex/config`, or `KELPID_CONFIG_PATH`. Never creates anything. */
+/** `~/.config/kelpi/config`, or `KELPID_CONFIG_PATH`. Never creates anything. */
 export function resolveConfigPath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
     const override = env[CONFIG_PATH_ENV]?.trim();
     if (override !== undefined && override.length > 0) return path.resolve(expandTilde(override, home));

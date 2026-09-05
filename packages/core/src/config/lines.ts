@@ -1,5 +1,5 @@
 /**
- * Line syntax shared by every `~/.config/nex/config` parser and writer.
+ * Line syntax shared by every `~/.config/kelpi/config` parser and writer.
  * Spec: docs/config-keybindings.md §1.1.
  */
 

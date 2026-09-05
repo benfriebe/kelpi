@@ -2,7 +2,7 @@
  * Appearance + Workspaces.
  *
  * Appearance is now the tab that writes the most, and to TWO files: the chrome palette and the
- * status-bar gauges go to `~/.config/nex/config` via `set-general-setting`, while the terminal
+ * status-bar gauges go to `~/.config/kelpi/config` via `set-general-setting`, while the terminal
  * theme, background, opacity and font go to `~/.config/ghostty/config` via
  * `set-ghostty-setting`. Every assertion below is about which file a control reaches and what
  * exact value it writes — the two things a picker can get subtly, silently wrong.
@@ -186,7 +186,7 @@ describe('Settings ▸ Appearance', () => {
         renderAppearance();
         const note = screen.getByTestId('settings-footer-note').textContent ?? '';
         expect(note).toContain('~/.config/ghostty/config');
-        expect(note).toContain('~/.config/nex/config');
+        expect(note).toContain('~/.config/kelpi/config');
     });
 });
 

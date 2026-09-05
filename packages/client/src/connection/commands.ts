@@ -2,7 +2,7 @@
  * Command RPC over the sync socket (WP3.1).
  *
  * A client `command` message carries a minted id and a **control-protocol request object** —
- * the exact same `{"command": …}` payload the `kelpi` CLI writes to `/tmp/nex.sock`. The daemon
+ * the exact same `{"command": …}` payload the `kelpi` CLI writes to `/tmp/kelpi.sock`. The daemon
  * decodes it through `decodeWireObject` and dispatches it into the same handler table
  * (`daemon/src/ws/sync.ts` → `boot/dispatch.ts`), so the UI cannot drift from the CLI: if a
  * verb is not in `@kelpi/protocol`'s `WIRE_COMMANDS`, it does not exist here either.
@@ -166,7 +166,7 @@ export const WORKTREE_COMMAND_TIMEOUT_MS = 120_000;
 
 /** The shared pane-addressing triple (`PaneTargetScope`, wire §5.7). */
 export interface PaneScope {
-    /** The calling pane (`NEX_PANE_ID` equivalent); must be a canonical UUID. */
+    /** The calling pane (`KELPI_PANE_ID` equivalent); must be a canonical UUID. */
     readonly paneID?: string | undefined;
     /** A pane label or UUID. UUIDs resolve globally; labels need a workspace scope. */
     readonly target?: string | undefined;
@@ -927,7 +927,7 @@ export class CommandClient {
 
     /**
      * APP-054 — "Restart Socket Server". Closes and re-binds the daemon's control listeners,
-     * clearing a wedged `/tmp/nex.sock` and any client FDs hanging off it. Every PTY survives:
+     * clearing a wedged `/tmp/kelpi.sock` and any client FDs hanging off it. Every PTY survives:
      * this touches the CLI transport only, never the sessions.
      */
     restartControlServer(options?: SendOptions): Promise<CommandReply> {
@@ -1372,7 +1372,7 @@ export class CommandClient {
 
     // ── settings verbs (M8) ────────────────────────────────────────────────────────
     //
-    // The daemon owns `~/.config/nex/config`: each verb applies a `@kelpi/core/config` writer to
+    // The daemon owns `~/.config/kelpi/config`: each verb applies a `@kelpi/core/config` writer to
     // the file's current contents, re-reads it, and answers `{ok, settings}` with the re-read
     // snapshot — so the reply is the truth, not an optimistic echo. A `settings-changed`
     // broadcast follows for every OTHER attached client; this client can apply the reply

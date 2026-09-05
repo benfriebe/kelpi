@@ -3,7 +3,7 @@
  *
  * Isolation is non-negotiable — a developer machine is running the real Kelpi (and, right now,
  * the user's own dev stack on 19733/19734/9223 and /tmp/kelpid-dev*). Every path lives under a
- * fresh `mkdtemp`, the control socket is `<tmp>/kelpid.sock` and never `/tmp/nex.sock`, ports are
+ * fresh `mkdtemp`, the control socket is `<tmp>/kelpid.sock` and never `/tmp/kelpi.sock`, ports are
  * ephemeral and explicitly re-drawn if they collide with the reserved dev ports, and Electron
  * gets its own `--user-data-dir`. The pattern is lifted from
  * `packages/shell/scripts/web-smoke.mjs`, which has the same constraints.
@@ -204,7 +204,9 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
     fs.mkdirSync(work, { recursive: true });
 
     const socketPath = path.join(root, 'kelpid.sock');
-    if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
+    // The live app's socket AND the legacy app's: the rename moved the live one to
+    // /tmp/kelpi.sock and this guard had only ever named /tmp/nex.sock (#61).
+    if (socketPath === '/tmp/kelpi.sock' || socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
         throw new Error('refusing to touch a non-sandbox socket path');
     }
 

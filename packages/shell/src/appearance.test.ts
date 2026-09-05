@@ -172,7 +172,7 @@ describe('readSearchPalette (SET-219)', () => {
         });
     });
 
-    it('takes the user’s overrides from ~/.config/nex/config', () => {
+    it('takes the user’s overrides from ~/.config/kelpi/config', () => {
         const file = tempFile('config', 'search-match-color = #00ff00\nsearch-match-current-color = #0000ff\n');
         expect(readSearchPalette({ KELPID_CONFIG_PATH: file }, '/Users/test')).toEqual({
             match: '#00ff00',

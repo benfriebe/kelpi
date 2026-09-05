@@ -171,7 +171,7 @@ describe('spawnRestoredPanes', () => {
         expect(term.attached).toEqual([P1]);
     });
 
-    it('injects the workspace profile env plus NEX_PANE_ID, and never a leading ":" in PATH', () => {
+    it('injects the workspace profile env plus KELPI_PANE_ID, and never a leading ":" in PATH', () => {
         const { state } = restored(snapshotOf(workspace([pane({ id: P1 })], leaf(P1), 'work')));
         const pty = fakePty();
 

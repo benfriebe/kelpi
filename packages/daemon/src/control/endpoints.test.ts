@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONTROL_SOCKET_PATH, resolveControlEndpoints } from './endpoints.js';
 
 describe('control endpoints', () => {
-    it('defaults to the CLI-hardcoded /tmp/nex.sock with no TCP listener', () => {
+    it('defaults to the CLI-hardcoded /tmp/kelpi.sock with no TCP listener', () => {
         const endpoints = resolveControlEndpoints({});
         expect(endpoints.socketPath).toBe(DEFAULT_CONTROL_SOCKET_PATH);
         expect(endpoints.tcpPort).toBeUndefined();

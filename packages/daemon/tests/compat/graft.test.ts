@@ -12,7 +12,7 @@
  *     handlers and come back through the CLI's own renderers (`started …`, `stopped …`,
  *     `<branch> [<status>] <path>`, `--json`);
  *   - scope precedence as the CLI sends it: `--workspace`, `--repo`, and the implicit
- *     `NEX_PANE_ID` default scope;
+ *     `KELPI_PANE_ID` default scope;
  *   - the sync itself: an edit in the worktree reaches the parent's working tree while the
  *     session watches, and `graft stop` restores the parent (HEAD, tracked files, auto-stash);
  *   - the error contracts: no scope, unknown workspace, unmatched repo, no association, double
@@ -136,7 +136,7 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
     it('refuses a start with no scope and no calling pane', async () => {
         const result = await kelpi.run(['graft', 'start']);
         expect(result.code).toBe(1);
-        expect(result.stderr).toContain('graft requires --workspace, --repo, or NEX_PANE_ID');
+        expect(result.stderr).toContain('graft requires --workspace, --repo, or KELPI_PANE_ID');
         expect(result.stdout).toBe('');
     }, 60_000);
 
@@ -313,7 +313,7 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
         expect(byRepoStop.code, byRepoStop.stderr).toBe(0);
         expect(await sessions()).toEqual([]);
 
-        // No filters + NEX_PANE_ID = the caller's workspace.
+        // No filters + KELPI_PANE_ID = the caller's workspace.
         const byPane = await kelpi.run(['graft', 'start'], { paneID, timeoutMs: 60_000 });
         expect(byPane.code, byPane.stderr).toBe(0);
         expect(await sessions()).toHaveLength(1);

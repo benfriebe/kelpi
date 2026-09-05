@@ -21,13 +21,13 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
             const health = ctx.persistenceHealth?.();
             // §SET-021 / §AGNT-005: additive for the same reason `persistence` is. A daemon whose
             // `tcp-port` never bound answers `ping` on the Unix socket perfectly well while every
-            // dev-container `NEX_SOCKET=tcp:…` client times out; the reply is where that stops
+            // dev-container `KELPI_SOCKET=tcp:…` client times out; the reply is where that stops
             // being invisible (`kelpid status` prints it, Settings ▸ Network shows it).
             const transport = ctx.controlTransport?.();
             const tcp = transport?.tcp ?? null;
             // `compat` / `pane_route` are additive too. A compat socket owned by another Kelpi
             // (the Swift app) never answers here, so THIS reply — reached via the run-dir
-            // socket or a pane's injected NEX_SOCKET — is where a doctor learns why.
+            // socket or a pane's injected KELPI_SOCKET, is where a doctor learns why.
             const compat = transport?.compat ?? null;
             const paneRoute = transport?.paneRoute ?? null;
             ok(reply, {

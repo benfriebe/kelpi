@@ -479,7 +479,9 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
 
         const noTarget = await kelpi.run(['web', 'capture'], { timeoutMs: 15_000 });
         expect(noTarget.code).toBe(1);
-        expect(noTarget.stderr).toContain('no --target supplied and NEX_PANE_ID is not set');
+        // The shipped Swift binary says NEX_PANE_ID, this repo's CLI says KELPI_PANE_ID (#46, #61);
+        // the suite runs against either (packages/cli/README.md, Parity statement).
+        expect(noTarget.stderr).toMatch(/no --target supplied and (?:KELPI|NEX)_PANE_ID is not set/);
 
         expect(host.calls).toHaveLength(calls);
         // The pane is untouched by either refusal.

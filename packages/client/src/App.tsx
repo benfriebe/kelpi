@@ -1319,7 +1319,12 @@ function Shell(props: AppProps): ReactElement {
                 const ids = selectVisibleWorkspaceIDs(store.getState());
                 if (ids.length === 0) return false;
                 const at = ids.indexOf(activeWorkspaceID() ?? '');
-                const id = ids[(((at < 0 ? 0 : at) + delta + ids.length) % ids.length)];
+                // app-state-core.md §3.2: a no-op when the active workspace is not in the
+                // visible order (its group just got collapsed) or there is none (issue #57
+                // asc-06). Stepping from index 0 instead jumped to an unrelated row at the top
+                // of the sidebar.
+                if (at < 0) return false;
+                const id = ids[(at + delta + ids.length) % ids.length];
                 if (id === undefined) return false;
                 // §WS-100: next/previous workspace, which is exactly the case where the row
                 // being activated can be off the bottom of a long sidebar.

@@ -554,19 +554,22 @@ OSC 0 and OSC 2 to the one `onTitleChange` hook, `service.ts:777`):
 - sets `pane.title = title`
 - bumps `pane.lastActivityAt = now`
 - a repeat of the current title is dropped before the dispatch, so an app that re-asserts
-  its title every redraw does not become a delta per frame (`compose.ts:1058-1067`)
+  its title every redraw does not become a delta per frame (`compose.ts:1067-1076`)
 - (title shows in pane header chrome; `lastActivityAt` drives workspace sorting/`last_activity_at` in `workspace list`)
 
 ### 7.2 Working-directory change (`PWD`, from OSC 7 via shell integration)
 
 → `pane-directory-changed` (`packages/daemon/src/store/reducers/agent.ts:84-94`, dispatched
-by `onPaneDirectory`, `compose.ts:1037-1056`; an unchanged directory is dropped):
+by `onPaneDirectory`, `compose.ts:1047-1065`; an unchanged directory is dropped):
 - sets `pane.workingDirectory = directory` (this is why splits inherit the *live* cwd)
 - bumps `pane.lastActivityAt`
 - async: re-detects the git branch for the new directory → `pane.gitBranch`
 - additionally, app-level: if the new pwd falls inside any repo-association worktree of the
-  pane's workspace (path-prefix match on standardized paths), immediately refresh that
-  association's git HEAD status (instant sidebar update on `cd ../other-worktree`).
+  pane's workspace (exact-or-prefix match on canonicalized paths, `isPathInside`), immediately
+  refresh that association's git HEAD status, branch and dirtiness (instant sidebar update on
+  `cd ../other-worktree`). The auto-detect store reconciler spots the move and calls its
+  `refreshAssociation` hook, which compose.ts wires to `repoWatch.refresh` (the same read a
+  HEAD change makes); it is not gated on the auto-detect setting (issue #48).
 
 ### 7.3 Close / child exit
 

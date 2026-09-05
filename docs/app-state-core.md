@@ -956,12 +956,12 @@ Debounces (all keyed and restartable - a newer schedule cancels the pending one)
 
 1. Race guards: setting still on; workspace exists; pane exists; the pane's current pwd
    (standardized AND symlink-resolved on both sides, `isPathInside`,
-   `packages/daemon/src/git/autodetect.ts:85`) is still `worktreeRoot` or inside it
+   `packages/daemon/src/git/autodetect.ts:115`) is still `worktreeRoot` or inside it
    (`pwd == root || pwd.startsWith(root + "/")`). Any failure = silent skip. Resolving symlinks
    is what makes a shell reporting `/var/...` match the `/private/var/...` that `git rev-parse`
    answers with.
 2. Find-or-create the parent repo by canonical path equality (symlinks resolved, so `/var/...`
-   and `/private/var/...` are one repo; `packages/daemon/src/git/autodetect.ts:175`). Created
+   and `/private/var/...` are one repo; `packages/daemon/src/git/autodetect.ts:205`). Created
    repos get `{name: lastPathComponent(parentRepoRoot), isAutoDiscovered: true}`. The WS repo
    verbs key the registry the same way (`canonicalizeUserPath`, `packages/daemon/src/ws/repos.ts:190`).
 3. If the workspace does not already have an association with `worktreePath == worktreeRoot`:
@@ -974,7 +974,9 @@ Debounces (all keyed and restartable - a newer schedule cancels the pending one)
 ### 7.7 Auto-unlink and repo GC
 
 `autoUnlinkUnusedRepos(workspaceID)` (fires after the 5 s debounce; also re-scheduled on pane
-close, pane process termination, and directory changes):
+close, pane process termination, and directory changes: all three reach it through the
+store reconciler `RepoAutoDetectService.start()` installs, which schedules the pass for a
+workspace whenever a pane vanishes from it or moves; issue #48):
 
 1. Candidates = the workspace's associations with `isAutoDetected == true` (manual associations
    are never auto-removed).
@@ -1004,7 +1006,7 @@ is what the inspector asks for when it opens or when a HEAD moved.
   `getCurrentBranch(worktreePath)` (`git rev-parse --abbrev-ref HEAD`; null on failure/empty) ->
   `repoAssociationBranchResolved` (writes `branchName`, persists).
 - `startGitStatusTimer`: an app-lifetime 30 s repeating timer dispatching `refreshGitStatus`.
-  Started once at boot (`repoWatch.start()`, `packages/daemon/src/boot/compose.ts:1518`);
+  Started once at boot (`repoWatch.start()`, `packages/daemon/src/boot/compose.ts:1527`);
   restart-safe (starting again cancels the prior timer).
 - Triggers for an immediate refresh: workspace activation (3.1), inspector open (`toggleInspector`
   refreshes when turning ON), worktree created, command palette confirm, workspace create with a
@@ -1593,7 +1595,7 @@ departs from the legacy macOS app:
    as the legacy app did.
 
 4. **Effect debounces/cancellation keys** are preserved: auto-link 500 ms per pane, auto-unlink
-   5 s per workspace (`packages/daemon/src/git/autodetect.ts:49`), HEAD-changed 150 ms per
+   5 s per workspace (`packages/daemon/src/git/autodetect.ts:59-61`), HEAD-changed 150 ms per
    association (`packages/daemon/src/graft/head-watcher.ts`), git-status timer 30 s singleton,
    palette focus handoff 200 ms singleton (`packages/client/src/chrome/CommandPalette.tsx:29`),
    persistence write 500 ms (`packages/daemon/src/db/persistence.ts:39`). Each keyed effect

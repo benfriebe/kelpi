@@ -1269,7 +1269,7 @@ while the app is already running, the window is raised and activated (an open in
 minimized/hidden app must be visible); on cold launch the OS activates the app anyway.
 
 Stage 2 is unnecessary: the daemon creates the default workspace before it starts any listener
-(`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, called at `:1432` "BEFORE
+(`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1186`, called at `:1449` "BEFORE
 any listener"), so an `open` never arrives without an active workspace; if one somehow does it is
 dropped (11.1 step 1). `pendingFileOpens` does not exist; the shell queue above is the only parking
 place, and it is transient by construction.
@@ -1313,12 +1313,12 @@ starting the socket server.
 ### 12.2 stateLoaded - fresh install (zero workspaces)
 
 Effects, in order: `createWorkspace(name: "Default")` (full 4.1 semantics; becomes active;
-`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, runs BEFORE any listener so
+`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1186`, runs BEFORE any listener so
 a CLI that connects the instant the socket appears never sees an empty daemon); hand off to graft
 launch (empty parent-root list); run the label-preset migration, which finds nothing and sets the
 marker (6.5).
 
-An unreadable database takes the same path: `initialState` (`packages/daemon/src/boot/compose.ts:333`)
+An unreadable database takes the same path: `initialState` (`packages/daemon/src/boot/compose.ts:338`)
 returns an empty state with status `unreadable` when the snapshot cannot be loaded (the file is
 never deleted), and `ensureDefaultWorkspace` creates "Default" for it. On the restore branch, a
 persisted active id that names a workspace which no longer exists falls back to the first

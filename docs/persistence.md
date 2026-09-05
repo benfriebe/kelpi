@@ -526,7 +526,7 @@ daemon boots as a fresh install (§6.2 Case A; `loadOutcome` returns status `unr
 
 (`fromSnapshot`, `packages/daemon/src/store/snapshot.ts:228`, performs steps 1-3;
 `applyLoadReset`, `snapshot.ts:312`, steps 4-5; `packages/daemon/src/boot/resume.ts` steps 6-7;
-`packages/daemon/src/boot/compose.ts:1188-1215` step 8.)
+`packages/daemon/src/boot/compose.ts:1205-1232` step 8.)
 
 Case A — **zero workspaces loaded** (fresh install or wiped DB):
 

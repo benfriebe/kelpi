@@ -191,7 +191,10 @@ Every spawn path injects this env identically through `spawnEnvVars` / `restoreE
 3. daemon-restart restore of persisted shell panes (per-workspace profile; profiles are read
    once per launch batch, and a pane with a recorded resume tuple spawns under the tuple's
    profile instead, see 2.3)
-4. markdown ⌘E external-editor surface (with `command`)
+4. markdown external-editor surface (with `command`): spawned by the "$EDITOR" chip's wire
+   command `markdown-external-editor {pane_id, action:'open'}`
+   (`packages/daemon/src/ws/desktop.ts:338-341`), never by ⌘E, whose binding only toggles
+   the built-in editor or closes a running session (`packages/client/src/App.tsx:1186-1195`)
 5. reopen-closed-pane (restores a shell pane; then, if an agent session id was captured,
    types the resume command — see 2.3)
 6. ~~lazy view-mount fallback~~ (none: a client's `attach-pane` never creates a PTY; it only
@@ -266,9 +269,10 @@ spawn path therefore settles the birth grid before it spawns:
   pane reported. The file is a cache, never a source of truth; a missing or corrupt one costs
   exactly the fixed-grid behaviour, and nothing here throws into a spawn path.
 - **Deferred spawn** (`packages/daemon/src/pty/spawn-gate.ts`): a pane the cache has never
-  seen (a fresh install's first pane, a split's child, a markdown pane's first ⌘E) is offered
-  to the gate, which holds the spawn until the client's first geometry report for that pane
-  (`report()` runs it synchronously at that size, before the attach that carried it snapshots),
+  seen (a fresh install's first pane, a split's child, a markdown pane's first "$EDITOR"
+  session) is offered to the gate, which holds the spawn until the client's first geometry
+  report for that pane (`report()` runs it synchronously at that size, before the attach that
+  carried it snapshots),
   a hard timeout (`DEFAULT_SPAWN_DEFER_TIMEOUT_MS`, 2 s, then the caller's fallback size), or a
   demand (`flush()`: a keystroke, a `pane send`, a resume command, or a `pane capture`, which
   flushes explicitly, `packages/daemon/src/handlers/pane/input.ts:95-98`). `cancel()` is wired
@@ -585,9 +589,14 @@ Behavior on `pane-process-terminated` (`paneProcessTerminated`,
    surface): flip the pane back to preview mode (`isEditing=false`,
    `externalEditorCommand=null`), destroy the surface, keep the pane. (The markdown file
    watcher then reloads any changes the editor wrote.)
-3. Else, if the pane is a **shell** pane: **close the pane** (normal `closePane` flow, 
-   collapses the split, may close the workspace if it was the last pane, destroys the
-   surface). A non-shell pane whose PTY exits after it has already left external-editor mode
+3. Else, if the pane is a **shell** pane: **close the pane** (the normal `closePane` flow,
+   `closePaneInWorkspace`, `panes.ts:185-229`: collapses the split, destroys the surface).
+   The reducer never deletes the workspace: when the exiting shell was its last pane the
+   workspace is left with `panes = []`, an empty layout and `focusedPaneID = null`
+   (`panes.ts:314`; boot's exit listener dispatches nothing further,
+   `compose.ts:890-899`). Only the client's close-pane keybinding maps "close the last
+   pane" to workspace deletion (`closeFocused`, `packages/client/src/App.tsx:1364-1380`).
+   A non-shell pane whose PTY exits after it has already left external-editor mode
    (⌘E out of a live editor session) is left untouched (`panes.ts:305-315`); boot's exit
    listener only releases its terminal state (`term.dispose`) so the next `$EDITOR` session
    starts from a clean screen rather than replaying the last one's.
@@ -622,8 +631,14 @@ parsed by `packages/daemon/src/term/osc-notify.ts:53-86`):
   - **Dismiss** → nothing
   - notifications are shown even when the app is foreground (banner + sound) — suppression is
     purely the focus rule above
-  - `removeNotification(paneID)` clears delivered+pending notifications for a pane (called
-    when the user visits the pane, so stale notifications don't linger).
+  - there is no `removeNotification` on the wire: the daemon publishes a notification but
+    never a retraction (`packages/shell/src/agents.ts:443-451`). Each client withdraws its
+    own. The Electron shell closes the live `kelpi-<paneID>` notification only when the pane
+    leaves the waiting set (`noLongerWaitingPanes`, `packages/shell/src/status.ts:583-591`),
+    so a native OSC toast on an idle pane is never retracted by visiting it. The browser
+    client closes its notification and toast when the user focuses the pane
+    (`packages/client/src/state/bridge.ts:390-391`,
+    `packages/client/src/state/notifications.ts:182-194`).
 
 **Location**: daemon parses the OSC (`term/osc-notify.ts`) and applies the suppression rule
 using its per-client focus knowledge, then fans out to clients: Electron shell → native
@@ -889,39 +904,43 @@ the kitty keyboard protocol (section 10.2). The observable contract:
    capture listener that has already run and consumed anything that is a Kelpi binding, so a
    bound ⌘ chord never reaches the terminal. Modifier handling such as `option-as-alt`
    follows the ghostty config the engine was given.
-2. The event runs through the browser's **text input system** (IME/dead keys, DOM
-   composition events). Outcomes:
-   - **Committed text** (one or more strings — a dead-key failure like `'` + `s` on US-Intl
-     commits two strings in one keystroke): each string is written to the PTY as text.
-   - **No committed text** (bare key like arrows/enter, or still composing): the engine
-     encodes the key from its keymap, with `composing` reflecting whether a preedit is in
-     progress (or was just cleared by this event).
-3. **Text filter**: text that rides on a key event is written only when it is real text:
-   - empty → nothing
-   - a C0 control as the first byte → nothing, so the engine's keymap encodes the proper
-     sequence instead (e.g. Shift+Tab must become `ESC [ Z`, not a raw 0x19). Emoji/astral
-     text passes through untouched.
-   - function keys (arrows, F-keys) carry no text; the keymap encodes them.
-4. **Key event fields** the engine needs to encode correctly:
-   - `action`: press / repeat / release
-   - `key` / `code`: the produced key and the physical key code
-   - `mods`: shift/ctrl/alt/super
-   - which modifiers the text-input system already consumed producing the text (everything
-     except ctrl and cmd, so shift/option are marked consumed): this is what lets the engine
-     avoid double-applying shift to a translated character while still encoding ctrl combos.
-   - `composing`: IME preedit flag.
-   - `text`: filtered committed text or nothing.
-5. **keyup** → release event (no bytes in the legacy encoding; a release is encoded only when
-   an application negotiated kitty `report event types`, section 10.2). Modifier-only
-   transitions produce no bytes; they are suppressed entirely while composing.
+2. The engine's `keydown` listener takes it (the vendored engine,
+   `vendor/ghostty-web-patched/source/lib/input-handler.ts:260-283`, registers `keydown`,
+   `paste`, `beforeinput` and the three composition events, and no `keyup`). A keystroke the
+   browser marks as composing (`event.isComposing` or `keyCode === 229`) is dropped
+   (`:338-340`); the key that ends a composition is queued and replayed after
+   `compositionend`, as text and only when it is a single character (`:345-350`,
+   `:579-590`).
+3. **Browser-owned chords**: Ctrl/Cmd+V is left to the browser so the `paste` event fires
+   (section 12.2) and Cmd+C is left to the selection manager (`:374-385`); neither is
+   encoded.
+4. **Encode**: `event.code` is mapped to a ghostty key (`mapKeyCode`, `:389`). An event with
+   no mappable code (a synthetic or virtual-keyboard event) is written as text only when it
+   is an unmodified single Unicode scalar, else dropped (`:390-412`). Otherwise the engine
+   calls the WASM key encoder with `{action: PRESS, key, mods, utf8}` (`:461-466`): `mods`
+   is read off the event (`extractModifiers`, `:314`, `:414`) and `utf8` is `event.key` only
+   when that is a single Unicode scalar, so named keys (`Enter`, `ArrowUp`, `F1`, `Dead`)
+   carry none (`:424-429`). DECCKM and DECNKM are synced into the encoder before every
+   encode (`:436-439`). There is no text filter and no consumed-modifier computation:
+   `KeyEvent.consumedMods` exists in the type
+   (`vendor/ghostty-web-patched/source/lib/types.ts:346`) but nothing in the engine
+   populates it. A mapped key always has its browser default prevented, even when the
+   encoding comes back empty (`:456-457`); non-empty output is written to the PTY
+   (`:473-475`).
+5. **Text outside the encoder**: composed text is written by `compositionend` (`:562-567`),
+   and any other text the hidden textarea inserts (`beforeinput` with `inputType ===
+   'insertText'`) is written by a bridge that skips it when the last keydown already emitted
+   the same bytes within 100 ms (`:515-530`). No `keyup` listener exists, so the legacy path
+   never sees a release; a release is encoded only by Kelpi's own kitty layer when an
+   application negotiated `report event types` (section 10.2).
 6. After local delivery, the bytes written to the source PTY are mirrored to sync siblings
    (section 8).
 
 ### 10.1 IME / preedit
 
-- Marked text (preedit) is tracked client-side. Inside a keystroke, preedit state is conveyed
-  via the key event's `composing` flag; `compositionstart` / `compositionend` on the pane host
-  bracket it (`TerminalPane.tsx:929-963`), and the kitty encoder is bypassed for the whole
+- Marked text (preedit) is tracked client-side. The engine's key path never encodes a
+  composing keystroke (section 10, step 2); `compositionstart` / `compositionend` on the pane
+  host bracket it (`TerminalPane.tsx:929-963`), and the kitty encoder is bypassed for the whole
   composition (`event.isComposing` or `keyCode === 229` counts as composing too).
 - Committed text arriving **outside** a keystroke (a composed string committed by
   `compositionend`, drag-drop) goes through the plain text path.
@@ -990,8 +1009,13 @@ Kelpi's own layer on both sides of the wire:
   button codes with the `+4/+8/+16` modifier bits and the `+32` motion bit, motion reported
   only when the cell changed, X10's 223-cell ceiling, and raw bytes (not UTF-8) on the wire
   for the X10 and URXVT formats. Turning reporting on suppresses the engine's selection for
-  the same events, which is what a real terminal does; `mouseTracking: 'none'` resets the
-  reporter.
+  the same events, which is what a real terminal does, with ghostty's
+  `mouse-shift-capture = false` default as the escape hatch (`mouse.ts:440-450`): a
+  shift-held button press or release is recorded as held but not reported and is handed to
+  the engine, so shift-drag still selects while an application owns the mouse (`:459-465`,
+  `:503-510`); shift-held motion bypasses reporting only while a button is down, so a bare
+  shift+move under mode 1003 still reports (`:477-481`); shift+wheel is still reported, with
+  the shift bit set (`:519-544`). `mouseTracking: 'none'` resets the reporter.
 - No mouse mirroring to sync groups.
 
 **Location**: client. Encoded reports are produced against daemon-side mode state, which the

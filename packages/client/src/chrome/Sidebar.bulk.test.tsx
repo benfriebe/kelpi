@@ -244,6 +244,33 @@ describe('bulk context menu', () => {
         // Every workspace, INCLUDING the one inside the group (§WS-045).
         expect(onSelectionChange).toHaveBeenCalledWith(new Set([W1, W2, W3]));
     });
+
+    /**
+     * app-state-core.md §2.8: Select All moves the range anchor to the LAST workspace in the
+     * flat list (issue #57 asc-26). The selection is controlled and held EMPTY by the parent so
+     * the shift-click that follows ranges purely from the anchor: from gamma (the last row) it
+     * lands on beta..gamma, whereas the stale anchor from the earlier ⌘-click on alpha gave
+     * alpha..beta.
+     */
+    it('Select All moves the shift-range anchor to the last workspace (§2.8)', () => {
+        const onSelectionChange = vi.fn();
+        render(
+            <Sidebar
+                {...base()}
+                entries={entries()}
+                selectedWorkspaceIDs={new Set()}
+                onSelectionChange={onSelectionChange}
+            />
+        );
+        const rows = (): HTMLElement[] => screen.getAllByTestId('workspace-row');
+        fireEvent.click(rows()[0] as HTMLElement, { metaKey: true });
+        expect(onSelectionChange).toHaveBeenLastCalledWith(new Set([W1]));
+        fireEvent.contextMenu(rows()[0] as HTMLElement);
+        fireEvent.click(screen.getByText('Select All Workspaces'));
+        expect(onSelectionChange).toHaveBeenLastCalledWith(new Set([W1, W2, W3]));
+        fireEvent.click(rows()[1] as HTMLElement, { shiftKey: true });
+        expect(onSelectionChange).toHaveBeenLastCalledWith(new Set([W2, W3]));
+    });
 });
 
 describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () => {

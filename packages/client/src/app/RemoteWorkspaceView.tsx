@@ -96,11 +96,19 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             onSplitPane={(paneID, direction) => void runtime.commands.splitPane({ paneID, direction })}
             onRenamePane={(paneID, name) => void runtime.commands.renamePane({ paneID, name })}
             onToggleZoom={(paneID) => void runtime.commands.toggleZoom({ paneID })}
-            onSetRatio={(_path, _ratio, commit) => {
-                // `paneID === null` = a divider between two nested splits; no wire verb can
-                // express that resize (the primary window has the same limitation via a
-                // WS-only verb this view stages behind splits/close/zoom).
-                if (commit.paneID !== null) void runtime.commands.setSplitRatio(commit.paneID, commit.share);
+            onSetRatio={(splitPath, ratio, commit) => {
+                // Same two spellings as the primary window (pane-layout.md §7.4, App.tsx
+                // `onSetRatio`): `paneID === null` is a divider whose two children are BOTH
+                // splits (the root of a 2×2 tiled layout), which `pane-resize` cannot name, so it
+                // goes by split path over the WS-only `set-split-ratio` verb (§LAY-061). The
+                // remote runtime's `commands` is the same CommandClient over that daemon's own
+                // socket, so the verb reaches it exactly as `toggleZoom` above does. Dropping the
+                // commit here made the divider preview and snap back on release (#54).
+                if (commit.paneID === null) {
+                    void runtime.commands.setSplitRatioAtPath({ workspaceID, splitPath, ratio });
+                    return;
+                }
+                void runtime.commands.setSplitRatio(commit.paneID, commit.share);
             }}
         />
     );

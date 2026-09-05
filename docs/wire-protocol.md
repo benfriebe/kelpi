@@ -678,9 +678,9 @@ first child of the root split, `"dLR"` the second child of that). Kelpi builds i
 `enclosingSplitPath` (`packages/core/src/layout/ratio.ts:61-77`), returns it as
 `ResizeResult.splitPath: string` (`packages/core/src/layout/ratio.ts:80,118`) and copies
 it onto the wire unchanged (`packages/daemon/src/handlers/pane/geometry.ts:98`). It is the
-same path shape `layout-select` and pane-layout §7.3 use. (`PaneResizeReply.split_path`
-in `packages/protocol/src/replies/types.ts:41-42` still declares `readonly number[]`;
-the bytes on the wire are the string.) `ratio` is the stored first-child ratio after the
+same path shape `layout-select` and pane-layout §7.3 use, and `PaneResizeReply.split_path`
+(`packages/protocol/src/replies/types.ts`) is typed `string` to match (issue #49; the
+protocol serialize test pins the shape). `ratio` is the stored first-child ratio after the
 write; `target_share` is the clamped share of the addressed pane.
 
 #### `pane-move` (F&F)

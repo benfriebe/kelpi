@@ -126,11 +126,15 @@ function watchControl(): WatchControl {
 
 function service(
     gitService: GitService,
-    watch?: WatchControl
+    watch?: WatchControl,
+    extra: { catchUpMs?: number } = {}
 ): GraftService {
     return createGraftService({
         git: gitService,
         debounceMs: 1,
+        // Tests drive batches by hand; keep the real catch-up pass out of their way unless a
+        // test asks for it, so timing assertions about "no pass happened" stay meaningful.
+        catchUpMs: extra.catchUpMs ?? 60_000,
         ...(watch !== undefined ? { watch: watch.fn } : {})
     });
 }
@@ -302,6 +306,38 @@ describe.skipIf(!HAS_GIT)('graft start → sync', () => {
         expect(fs.readFileSync(path.join(f.parent, 'wip.txt'), 'utf8')).toBe('half-merged\n');
 
         await graft.stop(session.id);
+    }, 60_000);
+
+    it('mirrors a write that lands before the OS watch is live: the post-attach catch-up pass', async () => {
+        // The real watcher is FSEvents, which delivers nothing for a change made before its
+        // stream is live; a caller writing the instant `start` returns can land in that window.
+        // The fake watch here never fires at all, which is the worst case of the same thing.
+        const f = fixture('catch-up');
+        const watch = watchControl();
+        const graft = service(createGitService(), watch, { catchUpMs: 40 });
+        const session = await graft.start(f.association);
+
+        fs.writeFileSync(path.join(f.worktree, 'late.txt'), 'before the watch was live\n');
+        // No watch.fire(): only the catch-up pass can carry this across.
+        // waitFor throws if the catch-up pass never mirrors it.
+        await waitFor(() => fs.existsSync(path.join(f.parent, 'late.txt')), 5_000);
+        expect(fs.readFileSync(path.join(f.parent, 'late.txt'), 'utf8')).toBe('before the watch was live\n');
+        expect(graft.session(session.id)?.status).toEqual({ kind: 'watching' });
+
+        await graft.stop(session.id);
+    }, 60_000);
+
+    it('cancels the catch-up pass on stop, so it can never re-apply the worktree over the restore', async () => {
+        const f = fixture('catch-up-stop');
+        const watch = watchControl();
+        const graft = service(createGitService(), watch, { catchUpMs: 60 });
+        const session = await graft.start(f.association);
+
+        fs.writeFileSync(path.join(f.worktree, 'late.txt'), 'must not land\n');
+        await graft.stop(session.id);
+        await settle(200);
+        expect(fs.existsSync(path.join(f.parent, 'late.txt'))).toBe(false);
+        expect(graft.claimedRoots()).toEqual([]);
     }, 60_000);
 
     it('syncs on a watcher batch (debounced) and keeps passes serial', async () => {

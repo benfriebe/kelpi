@@ -1551,6 +1551,16 @@ a recursive non-persistent `fs.watch` on the worktree root). Semantics:
   and the watcher stays unattached (`watching = false`, `watcher.ts:129-141`). The
   session is already published and stays live but unwatched; no batch will fire, and
   a later pass (a retry through stop/start) reports `missingWorktree` honestly.
+- **Post-attach catch-up pass**: the recursive `fs.watch` is FSEvents on macOS, and an
+  FSEvents stream delivers nothing for a change made before the stream is live on
+  libuv's CF thread. `start` publishes the session as soon as the watch is created, so a
+  write made the instant `graft start` returns can fall inside that window and would
+  otherwise never be observed (the session says `watching`, nothing mirrors, and no later
+  event repairs it). So `startWatcher` arms one delayed pass, `GRAFT_WATCH_CATCH_UP_MS`
+  (1500 ms, `service.ts:61`), routed through the same `pending` + `pump` path as a real
+  batch so it is serialised with them (`service.ts:287`). `stop` and `shutdown` cancel it
+  (`service.ts:472`, `service.ts:640`): a pass that fired after the restore would re-apply
+  the worktree over the restored parent.
 
 ### 9.2 GitHeadWatcher (drives sidebar branch/status refresh)
 

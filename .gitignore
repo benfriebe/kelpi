@@ -6,6 +6,13 @@ dist/
 out/
 *.tsbuildinfo
 
-# The parity campaign is over: its records, contracts and audit artifacts stay on disk
-# (and in the pre-scrub mirror) but out of the repo.
-docs/
+# The living specs in docs/ ARE committed: 106 comments across 81 source files cite them by
+# section as the normative behaviour, and `pnpm test` checks the wire protocol against
+# docs/wire-protocol.md. A spec the repo does not carry cannot be reviewed beside the change
+# that alters it, and a fresh clone could not run the suite at all.
+#
+# What stays out is the parity campaign's records and the audit artifacts. The campaign docs
+# (PARITY, UI-FIDELITY, SPACING-REVIEW, MOBILE-*, PLAN-retired, compat-status, capabilities/,
+# research/) now live OUTSIDE the repo, at ../kelpi-docs, and are referenced by hand. Only the
+# generated audit output still lands under docs/, so only it is ignored here.
+docs/audit/

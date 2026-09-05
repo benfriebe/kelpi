@@ -149,3 +149,24 @@ export function webErrorPageDataURL(input: WebErrorPageInput): string {
 export function isWebErrorPageURL(url: string): boolean {
     return url.startsWith('data:text/html') && url.includes(ERROR_PAGE_MARKER);
 }
+
+/**
+ * The URL a tab REPORTS: `TabController.url()`, and through it `web-url`, every `web-capture`
+ * reply's `url` and the console line's fallback `url` (issue #50, web-01; §4.3, §8.2).
+ *
+ * The Swift's `baseURL` trick kept the engine's own URL on the failed address. The `data:` card
+ * above cannot (see the header), so the report is made here instead: while the card is what the
+ * view holds, or a failed load is still waiting for its card (or the card itself could not
+ * load and Chromium's page sits there), the tab's URL is the address that failed. Without this
+ * an agent polling `kelpi web url` after a bad navigate got the card, a multi-KB data URL, where
+ * it expected the address it asked for. `""`/`about:blank` are §4.4's placeholders, guarded at
+ * the source for the same reason: they show up early in a load and after a failure and must not
+ * wipe what the caller asked for. A tab that was never asked for anything reports the live value
+ * as-is, placeholder included.
+ */
+export function reportedTabURL(live: string, lastAttemptedURL: string, failedLoad: boolean): string {
+    if (lastAttemptedURL === '') return live;
+    if (live === '' || live === 'about:blank') return lastAttemptedURL;
+    if (failedLoad || isWebErrorPageURL(live)) return lastAttemptedURL;
+    return live;
+}

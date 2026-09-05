@@ -69,7 +69,7 @@ import {
 } from './console-format.js';
 import { POSTER_JPEG_QUALITY } from './caps.js';
 import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
-import { isWebErrorPageURL, webErrorPageDataURL } from './error-page.js';
+import { isWebErrorPageURL, reportedTabURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
 import { forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
@@ -676,12 +676,27 @@ class ElectronTab implements HostTab {
         });
         contents.on('did-finish-load', () => {
             this.applyZoom();
+            // §10 / §12, issue #50 (web-23): the daemon re-applies an open find and re-pushes
+            // the batch badges on every `page-state` that carries a url. `did-navigate` sends
+            // one at COMMIT, when the new document may have no body yet: `search` then answers
+            // `{0,-1}` without marking, `__kelpiBatchSetMarkers` skips selectors that do not
+            // resolve, and nothing ran again. The spec's moment is didFinish, so the same event
+            // goes out once more when the DOM is there (the store side is a no-op: same url).
+            // Not for the card (§4.3: "not the error stub") nor the bootstrap `about:blank`.
+            const url = contents.getURL();
+            if (this.failedLoad || isWebErrorPageURL(url) || url === '' || url === 'about:blank') return;
+            this.events.pageState(this.paneID, this.tabID, { url });
         });
         contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
             // -3 is ERR_ABORTED: a navigation that was replaced (redirect, a second loadURL, a
             // user-cancelled load). WKWebView never reported those, and neither do we.
             if (!isMainFrame || code === -3) return;
             this.failedLoad = true;
+            // Issue #50 (web-01): the address that failed is what the tab reports while the
+            // card is up (`url()`), and what a reload retries. A link click or a redirect can
+            // fail at a URL nobody asked for through `navigate`, so it is taken from the event,
+            // the same value the card names and its Retry anchor targets.
+            if (url !== '') this.lastAttemptedURL = url;
             warn(`web pane ${this.paneID} tab ${this.tabID}: load failed ${url} (${String(code)} ${description})`);
             // A failure ends the load as surely as a success: without this the strip would sit
             // at "loading" forever on a dead host (`did-stop-loading` does fire, but only after
@@ -893,11 +908,11 @@ class ElectronTab implements HostTab {
 
     url(): string {
         if (this.disposed || this.contents.isDestroyed()) return this.lastAttemptedURL;
-        const live = this.contents.getURL();
-        // §4.4's placeholder guard, applied at the source: an empty/about:blank URL shows up
-        // early in a load and after a failure, and must not wipe what the caller asked for.
-        if (live === '' || live === 'about:blank') return this.lastAttemptedURL === '' ? live : this.lastAttemptedURL;
-        return live;
+        // §4.4's placeholder guard and §4.3's error card, applied at the source (issue #50,
+        // web-01): the card is a `data:` URL the engine reports as the page, and the daemon
+        // would pass it straight into `web-url` and every capture reply. `reportedTabURL`
+        // carries the rule so it can be asserted without an Electron process.
+        return reportedTabURL(this.contents.getURL(), this.lastAttemptedURL, this.failedLoad);
     }
 
     title(): string {

@@ -148,7 +148,7 @@ with an **ordered** list built as follows (`mergedEnvVars`,
 ```
 
 - **Reserved keys**: `KELPI_PANE_ID`, `KELPI_SOCKET`, `PATH` (`RESERVED_ENV_KEYS`,
-  `merged-env.ts:18-23`). Profile entries with these names are silently dropped — built-ins
+  `merged-env.ts:18-23`). Profile entries with these names are silently dropped, built-ins
   always win.
 - `helpersDir` is the directory containing the bundled `kelpi` CLI, handed to the daemon by
   the shell as `KELPID_HELPERS_DIR` (`packages/daemon/src/boot/compose.ts:157`). Its purpose:
@@ -204,7 +204,7 @@ Every spawn path injects this env identically through `spawnEnvVars` / `restoreE
 
 - `workingDirectory` is passed straight to the PTY spawn as `cwd`. Defaults: new pane model
   defaults to the user's home directory; splits inherit the source pane's current
-  `workingDirectory` (which tracks live pwd via OSC — section 7.2); `pane create --path` /
+  `workingDirectory` (which tracks live pwd via OSC, section 7.2); `pane create --path` /
   `pane split --path` override. A requested directory that is missing or not a directory
   would make the child die instantly (the spawn's chdir fails), so `resolveSpawnCwd`
   (`packages/daemon/src/pty/manager.ts:100-110`) falls back to `$HOME`, then to `/` if even
@@ -523,7 +523,7 @@ follows exactly **one client at a time**, the *size owner*:
 - **Polite focus** (view-mount path, `shouldGrabFocus`,
   `packages/client/src/app/pane-focus.ts:59-77`): when the focused pane's surface (re)mounts
   it grabs focus *unless* a text editor outside any pane currently holds it (sidebar rename
-  field, command palette input) — two guards: an app-level "sidebar editing" flag suppresses
+  field, command palette input): two guards: an app-level "sidebar editing" flag suppresses
   the grab, and a final check bails if the current focus owner is an editable element that is
   not another pane's surface. Prevents re-renders from stealing the caret mid-typing.
 - Focus-related quirk worth preserving: raising the window restores its previous
@@ -585,7 +585,7 @@ Behavior on `pane-process-terminated` (`paneProcessTerminated`,
    surface): flip the pane back to preview mode (`isEditing=false`,
    `externalEditorCommand=null`), destroy the surface, keep the pane. (The markdown file
    watcher then reloads any changes the editor wrote.)
-3. Else, if the pane is a **shell** pane: **close the pane** (normal `closePane` flow —
+3. Else, if the pane is a **shell** pane: **close the pane** (normal `closePane` flow, 
    collapses the split, may close the workspace if it was the last pane, destroys the
    surface). A non-shell pane whose PTY exits after it has already left external-editor mode
    (⌘E out of a live editor session) is left untouched (`panes.ts:305-315`); boot's exit
@@ -719,7 +719,7 @@ its own frames.
 - The group is refreshed on every action that mutates the pane set while sync is active
   (create/split/close/open/reopen/process-terminated), so new panes join and dead panes drop
   out automatically.
-- `isSyncing(paneID)` — membership query for the pane-header badge (`KelpiPtyManager`,
+- `isSyncing(paneID)`: membership query for the pane-header badge (`KelpiPtyManager`,
   `manager.ts:50-61`).
 - `syncTargetIDs(sourcePaneID)` — union of all groups containing the source, minus the
   source. (Groups are per-workspace, so in practice at most one group matches.)
@@ -756,7 +756,7 @@ modes (e.g. one in DECCKM) receive the source's encoding.
 
 ## 9. Programmatic input (CLI-driven)
 
-These are the daemon-critical paths — they work with **no client attached**. Both are
+These are the daemon-critical paths, they work with **no client attached**. Both are
 implemented by `TerminalInput` (`packages/daemon/src/pty/input.ts`) from the pane's live VT
 modes, and both use `writeDirect` so nothing here is mirrored to sync siblings (section 8.2).
 A send into a pane whose first spawn the gate is still holding flushes the spawn first
@@ -823,11 +823,11 @@ Two crucial nuances:
   deliver SIGINT. Rule: for byte-mapped keys, write the raw byte(s) to the PTY.
 - **Arrow keys are encoded by terminal mode**: application cursor keys (DECCKM on) →
   `ESC O A/B/D/C`; normal mode → `ESC [ A/B/D/C`. The daemon consults the pane's live
-  DECCKM state (`modes()` on the terminal state service) when encoding arrows — hardcoding
+  DECCKM state (`modes()` on the terminal state service) when encoding arrows, hardcoding
   `\x1b[A` breaks TUIs that enable DECCKM (vim, less, claude). A pane with no terminal state
   yet encodes with both modes off (`DEFAULT_VT_MODES`).
 - Why not send these via the paste path: the paste pipeline drops control bytes and applies
-  bracketed-paste wrapping — exactly what a keystroke must not get.
+  bracketed-paste wrapping, exactly what a keystroke must not get.
 
 ### 9.3 Capture — `pane capture` (`captureContents` / `readText`)
 
@@ -931,7 +931,7 @@ the kitty keyboard protocol (section 10.2). The observable contract:
 
 **Location**: client (ghostty-web owns key translation + IME using DOM composition events;
 the pane's own encoders cover kitty keyboard and mouse reporting). The daemon needs the
-resulting bytes only — EXCEPT the named-key and sync-broadcast paths (sections 9.2, 8.2),
+resulting bytes only, EXCEPT the named-key and sync-broadcast paths (sections 9.2, 8.2),
 which are reproduced server-side.
 
 ### 10.2 Kitty keyboard protocol
@@ -972,8 +972,8 @@ Kelpi's own layer on both sides of the wire:
 - Coordinates are top-left-origin, in CSS pixels relative to the pane.
 - Left button: position update + press/release (with mods). Mouse-down also focuses
   the pane first.
-- Right button: position + press/release (with mods). No app context menu on terminal panes
-  — right-click goes to the terminal (which may report it to the PTY app or do its own
+- Right button: position + press/release (with mods). No app context menu on terminal panes:
+  right-click goes to the terminal (which may report it to the PTY app or do its own
   thing, e.g. selection extension per ghostty config).
 - Drag / move: position updates with mods (enables hover reporting + drag-selection).
 - Scroll: delta x/y, with trackpad pixel-precise scrolling distinguished from wheel-line
@@ -1226,11 +1226,11 @@ hook scripts and saved state keep working, and why the layer is split the way it
 - **daemon / node-pty**: spawn (cwd, merged env, shell-or-command), resize (cols/rows),
   kill with SIGHUP→SIGKILL escalation, exit events. Section 2 is the spec; `mergedEnvVars`
   is a pure tested function (`packages/core/src/env/merged-env.ts`).
-- **daemon / `@xterm/headless` (server-side emulator state — non-negotiable)**: grid +
+- **daemon / `@xterm/headless` (server-side emulator state, non-negotiable)**: grid +
   scrollback, modes (DECCKM, bracketed paste, mouse reporting, kitty keyboard flags), OSC
   parsing (title, pwd, desktop notification, OSC 52 clipboard), region text reads for
   `pane capture`, search over the buffer. Server-side emulation is what makes capture,
-  sync-input, named keys, and multi-client attach work with zero clients connected — the
+  sync-input, named keys, and multi-client attach work with zero clients connected, the
   defining constraint of the architecture.
 - **daemon logic**: registry + idempotent create, sync groups + byte mirroring, named-key
   table (with DECCKM-aware arrows), `sendText` (paste framing + Enter-as-keystroke),

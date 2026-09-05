@@ -134,7 +134,7 @@ The shared resolver behind `pane close`, `send`, `send-key`, `capture`, `name`, 
 `move-adjacent` (moved pane), `sync exclude/include`, and the `--target` branches of
 `split`/`create`. Inputs:
 
-- `paneID` — the caller's own pane UUID, forwarded from `KELPI_PANE_ID` (may be absent).
+- `paneID`: the caller's own pane UUID, forwarded from `KELPI_PANE_ID` (may be absent).
 - `target` — the `--target <name-or-uuid>` value (may be absent).
 - `workspaceFilter` — the `--workspace <name-or-id>` value (may be absent).
 
@@ -403,7 +403,7 @@ Resolve via `resolvePaneTarget`. On error: `{ok:false,error}`. On success:
 ### 4.4 `pane-name` → handlePaneName
 
 Resolve via `resolvePaneTarget` (works with no `--target` = rename the caller pane).
-`newLabel = name == "" ? null : name` — an empty string **clears** the label. Note the wire
+`newLabel = name == "" ? null : name`: an empty string **clears** the label. Note the wire
 decoder rejects `pane-name` without a non-empty `name`
 (`pane-name requires a non-empty name`, `packages/protocol/src/wire/decode.ts:219`;
 wire-protocol.md §6), so over the socket a label can only be replaced, never cleared; the
@@ -699,7 +699,7 @@ For the mutating verbs the handler dispatches the activation change first
 (`set-sync-input-active`, `handlers/pane/sync.ts:87`) and replies with the snapshot of the
 resulting state, read back from the store (`replyWithCurrentSync`, `sync.ts:117`). The
 reducer clears the excluded set on **every** activation change and no-ops when the value is
-unchanged (`store/reducers/agent.ts:115`) — so a `sync on` while already on keeps
+unchanged (`store/reducers/agent.ts:115`): so a `sync on` while already on keeps
 exclusions, and exclusions staged while sync was off are wiped on the next transition. The
 reply therefore always equals final state; the predictive reply of the pre-port app, which
 could disagree in the staged-while-off corner case, is deliberately not reproduced (see
@@ -903,7 +903,7 @@ twice is idempotent.
 
 Inputs: `nameOrID`, `group?`, `index?`. Strict `resolveWorkspace`; null ⇒ silent no-op.
 `group == null` (or an empty string, `handlers/app/workspaces.ts:522`) targets the top
-level; non-null must resolve via `resolveGroup` (creation deliberately unsupported here —
+level; non-null must resolve via `resolveGroup` (creation deliberately unsupported here, 
 that's `workspace-create --group`), null ⇒ silent no-op. Dispatch
 move-workspace-to-group(workspaceID, groupID-or-null, index, expandOnDrop).
 
@@ -1322,7 +1322,7 @@ hook scripts and saved state keep working; each explains why the code does somet
    lenient resolver (UUID → case-insensitive **first-match** name → slug) backs only
    `pane-move-to-workspace` and graft's `--workspace`. Both are kept as-is for CLI
    compatibility (`packages/core/src/resolve/workspace.ts`); they could be unified later
-   behind a flag, but note the lenient one has **no ambiguity guard** — two workspaces named
+   behind a flag, but note the lenient one has **no ambiguity guard**, two workspaces named
    "Dev"/"dev" resolve to whichever comes first in state order.
 2. **Error strings are contract.** The CLI prints them verbatim and scripts grep them
    (e.g. the delete flow keys off `active_agents`, doctor keys off ping fields). The daemon

@@ -325,7 +325,7 @@ Both are tinted `textSecondary`, 13pt, 14pt apart.
 
 Renders the active workspace's `PaneLayout` tree as absolutely-positioned pane views plus
 divider handles, computed mathematically from the tree (`paneFrames` / `splitDividers` in
-`packages/core/src/layout/frames.ts`). Pane view identity is stable across layout changes —
+`packages/core/src/layout/frames.ts`). Pane view identity is stable across layout changes, 
 panes are only moved/resized, never re-created (critical for keeping terminal state alive:
 the DOM nodes stay stable across layout mutations, `packages/client/src/grid/PaneGrid.tsx`).
 
@@ -348,8 +348,8 @@ frame, with these overlays:
 
 Body by pane type:
 
-- `shell` — the terminal surface (ghostty-web).
-- `markdown` — preview (rendered HTML in a sandboxed content frame,
+- `shell`: the terminal surface (ghostty-web).
+- `markdown`: preview (rendered HTML in a sandboxed content frame,
   `packages/client/src/content/ContentFrame.tsx`) or, in edit mode, either the built-in
   plain-text editor or an embedded terminal running the user's `$EDITOR`.
 - `scratchpad` — plain-text editor bound to `pane.scratchpadContent`.
@@ -932,7 +932,7 @@ the name (click to rename inline; Enter commits, Esc cancels;
 `packages/client/src/chrome/Inspector.tsx:382-420`); "N pane(s)" caption; the ten-color
 swatch row (the current color outlined); the workspace's applied label chips; a **Profile**
 dropdown (built-in `default` first, then config profiles, plus the currently-assigned name
-even if it vanished from the config; selecting dispatches `setProfile` — applies to future
+even if it vanished from the config; selecting dispatches `setProfile`, applies to future
 pane spawns only). The header row shows a "reading git…" indicator while a repo-status read
 is in flight (`Inspector.tsx:358-362`).
 
@@ -1501,7 +1501,7 @@ debounces (other subsystem); 0.15s palette transition; ~0.35s spring for sidebar
 reorders; 0.22s scroll-reveal.
 
 **Terminal-surface identity.** The grid's contract — pane DOM/view instances are stable
-across every layout mutation, only repositioned — is essential for ghostty-web.
+across every layout mutation, only repositioned, is essential for ghostty-web.
 Panes render as absolutely-positioned siblings keyed by pane id, with frames computed from
 the layout tree into a flat coordinate space (`packages/core/src/layout/frames.ts`,
 `packages/client/src/grid/PaneGrid.tsx`) rather than nested flex containers, so moves/splits

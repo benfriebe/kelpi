@@ -404,7 +404,7 @@ Modifier name aliases (all map into the 4-flag set):
 Two output formats:
 
 **Config string** (`configString`; `keyTriggerConfigString` and `KEY_CODE_TO_CONFIG_NAME`,
-`packages/core/src/config/keys.ts:53-73`) — what gets written to the file. Modifiers in the
+`packages/core/src/config/keys.ts:53-73`): what gets written to the file. Modifiers in the
 fixed order `ctrl`, `alt`, `shift`, `super`, joined with `+`, then the key name:
 
 - printable keys use their character (`d`, `1`, `[`, `=`, `-`, `;`, `'`, `` ` ``, `,`,
@@ -427,7 +427,7 @@ emits the canonical names above. Round-trip through the Settings UI therefore no
 alias spellings.
 
 **Display string** (`displayString`; `keyTriggerDisplayString`, `MODIFIER_DISPLAY_ORDER`,
-`packages/core/src/config/keys.ts:84-119`) — for UI. macOS symbol order `⌃ ⌥ ⇧ ⌘`
+`packages/core/src/config/keys.ts:84-119`): for UI. macOS symbol order `⌃ ⌥ ⇧ ⌘`
 concatenated (no separator), then the key: uppercased character, or display name (`Return`,
 `Tab`, `Esc`, `Delete`, `Space`, `Fwd Del`, `←`, `→`, `↓`, `↑`, `F1`…`F12`), or `?` for
 unknown. Example: the chord ⌘⇧D renders as `⇧⌘D`; ⌃⌥Space renders as `⌃⌥Space`.
@@ -497,7 +497,7 @@ trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/client/src/App.tsx`.
 
 Legend:
-- **Layer** — `menu` = one of the 16 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
+- **Layer**: `menu` = one of the 16 `MENU_BAR_ACTIONS` (section 7.1: carried by the shell's
   native menu, and the only actions the client dispatcher fires while a chrome text field has
   focus), `monitor` = dispatched only by the client's keydown interceptor (section 7.2).
 - **Condition** — extra runtime condition in the monitor before the action fires; when the
@@ -746,7 +746,7 @@ At daemon start (`packages/daemon/src/boot/compose.ts`):
    chosen in step 1 (section 12).
 
 The binding map (daemon snapshot) and the global hotkey (shell report) reach a client
-independently and in either order — this is why the "global hotkey shadows an in-app
+independently and in either order, this is why the "global hotkey shadows an in-app
 binding" warning is a DERIVED/computed value, not set at load time (section 8.5).
 
 ---
@@ -774,7 +774,7 @@ Every keystroke in the main window can be seen by two surfaces; the division of 
 Menus and their items (`packages/shell/src/menu.ts`, assembled in
 `packages/shell/src/main.ts`; shortcut = FIRST trigger of the action, in configString sort
 order; if the trigger's key can't be represented as a menu key-equivalent — F-keys and
-`forward_delete` cannot — the item simply has no displayed shortcut, and the binding still
+`forward_delete` cannot, the item simply has no displayed shortcut, and the binding still
 fires through the client dispatcher, which handles menu-bar actions too, section 7.2):
 
 - **File-ish group (replaces "New")**: New Workspace, New Group, Preview Markdown…,
@@ -853,7 +853,7 @@ panes while the same keys keep their global meaning in every other pane type. (T
 why the 11 `web_*` actions can ship unbound.)
 
 `urlBarIsEditing` = a chrome text field has focus (the URL bar; `isChromeTextEditing` in
-`packages/client/src/webpane/priority.ts`) — i.e. the user is typing in the URL bar.
+`packages/client/src/webpane/priority.ts`): i.e. the user is typing in the URL bar.
 
 | keys | effect | notes |
 |---|---|---|
@@ -1111,10 +1111,10 @@ stored client-side:
 - **Load**: the snapshot's UNEXPANDED parse (`expandTilde: false`, section 1.5) so `~`
   values round-trip unmodified. The stored `KELPI_PROFILE` var is filtered out of the
   editable rows (it's rendered as a locked, derived row instead). Vars display sorted by
-  key. The `default` profile is pinned FIRST in the list — moved there if present in the
+  key. The `default` profile is pinned FIRST in the list, moved there if present in the
   file, synthesized (empty) if not.
 - **Locked marker row**: every profile's var list is headed by a non-editable
-  `KELPI_PROFILE = <name>` row with a lock icon and tooltip "Injected automatically —
+  `KELPI_PROFILE = <name>` row with a lock icon and tooltip "Injected automatically, 
   always matches the profile name".
 - **Name field**: characters `:` and `=` are stripped as typed (they'd break the line
   format). Renaming any profile TO the literal name `default` is refused (input
@@ -1143,7 +1143,7 @@ stored client-side:
 - **Deselect**: clicking the rail's empty space, or Escape while focus is in the rail with
   a selection, clears the selection and shows the "No profile selected" placeholder; with
   nothing selected Escape falls through and closes Settings (`ProfilesTab.tsx:160-176`).
-- Footer: "Config: ~/.config/kelpi/config" + "Changes apply to panes opened afterwards —
+- Footer: "Config: ~/.config/kelpi/config" + "Changes apply to panes opened afterwards, 
   live panes keep the env they were born with."
 - Empty state copy explains what a profile is and points at the workspace context
   menu/inspector for assignment.
@@ -1272,7 +1272,7 @@ registries instead); nothing persists to a per-app preferences store.
      note at the foot of General points there rather than duplicating a control (two
      switches for one value is how they drift).
    - Persistence: every row → the config file via this subsystem.
-2. **Appearance** (`packages/client/src/settings/AppearanceTab.tsx`) — chrome theming,
+2. **Appearance** (`packages/client/src/settings/AppearanceTab.tsx`), chrome theming,
    persisted to the config file's chrome family (section 1.2; the `chrome-*` and
    `sidebar-*` keys are Kelpi-owned and never reach the ghostty file): preset chrome-theme
    gallery; export/import as `.nextheme` file or copy/paste share code; light/dark/system
@@ -1312,7 +1312,7 @@ registries instead); nothing persists to a per-app preferences store.
 ### 13.1 Keybindings tab
 
 - **Global section** (`packages/client/src/settings/GlobalHotkeySection.tsx`):
-  global-hotkey row — recorded combo shown as a chip (`⌃⌥Space` style) with an "x" clear
+  global-hotkey row, recorded combo shown as a chip (`⌃⌥Space` style) with an "x" clear
   button (writes `global-hotkey = none`), or "—" when unset; a Record button; subtitle
   "Works from any app. No Accessibility permission required."; "Press again to hide"
   toggle (bound to `global-hotkey-hide-on-repress`, disabled while no hotkey is set); a

@@ -1010,7 +1010,7 @@ validation happens in the handler, silently.
 
 ### 6.6 File / diff commands (both F&F)
 
-**`open`** — open a markdown pane for `path` (required non-empty).
+**`open`**: open a markdown pane for `path` (required non-empty).
 `pane_id` optional (originating pane); `reuse` (bool, default false) = replace the
 originating pane in place (`kelpi open --here` / `kelpi md --here`).
 

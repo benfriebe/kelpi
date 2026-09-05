@@ -116,7 +116,7 @@ interface Favourite {
 
 ### 2.1 RingBuffer (console)
 
-Fixed-capacity buffer (`packages/daemon/src/webpane/ring.ts`) pairing each value with a monotonically increasing `seq` (uint64, never recycled — even after eviction or `clear()`).
+Fixed-capacity buffer (`packages/daemon/src/webpane/ring.ts`) pairing each value with a monotonically increasing `seq` (uint64, never recycled, even after eviction or `clear()`).
 
 ```ts
 class RingBuffer<T> {
@@ -444,13 +444,13 @@ All `web-*` commands are **request/response**: the server holds the client FD, t
 
 Every command except `web-open` carries the shared pane-target scope:
 
-- `pane_id` — the caller's own pane UUID (from `KELPI_PANE_ID`), optional.
+- `pane_id`: the caller's own pane UUID (from `KELPI_PANE_ID`), optional.
 - `target` — name(label)-or-UUID of the pane to address, optional.
 - `workspace` — name-or-UUID narrowing label resolution, optional.
 
 Wire-level parse (`packages/protocol/src/wire/decode.ts:147-150`): empty strings normalize to absent; **at least one of `pane_id`/`target` must be present**. A message with neither is answered `{"ok":false,"error":"<command> requires pane_id or target"}` and the handle closed (`packages/daemon/src/control/server.ts:162-169`: every `web-*` verb is a reply command, `packages/protocol/src/allowlist.ts:35-60`, so a guard rejection is answered rather than dropped). The CLI pre-validates, so this only hits foreign clients.
 
-Daemon-level resolution (`resolvePaneTarget`, `packages/core/src/resolve/pane-target.ts:90`, shared with `pane name` etc.): a UUID `target` resolves globally across all workspaces; a label `target` requires a scope — the `workspace` filter or the caller's own workspace via `pane_id`; ambiguous / unknown → error string. No `target` → the caller's own pane. Then `resolveWebPane` (`packages/daemon/src/webpane/resolve.ts:52`) layers web-specific checks, each a distinct `ok:false` error:
+Daemon-level resolution (`resolvePaneTarget`, `packages/core/src/resolve/pane-target.ts:90`, shared with `pane name` etc.): a UUID `target` resolves globally across all workspaces; a label `target` requires a scope, the `workspace` filter or the caller's own workspace via `pane_id`; ambiguous / unknown → error string. No `target` → the caller's own pane. Then `resolveWebPane` (`packages/daemon/src/webpane/resolve.ts:52`) layers web-specific checks, each a distinct `ok:false` error:
 
 - `pane not found: <uuid>`
 - `pane is not a web pane (type: shell)` (etc.)
@@ -496,7 +496,7 @@ Wire JSON keys use snake_case exactly as listed (`send_to`, `make_active`, `max_
 **Actuator dispatch** (shared by click/type/q-*/wait/select/scroll/hover/key; daemon side `handlers.ts:158-178`, host side `packages/shell/src/webhost/dispatch.ts:541-551`): resolve pane → require active tab → one host RPC `actuate` carrying the method name and argument list → the host builds the JS call `__kelpiAct.<method>(<json-literal args>)` wrapped in `try { if (!window.__kelpiAct) return JSON.stringify({ok:false,error:'actuator not installed'}); var r = await __kelpiAct.m(...); return JSON.stringify(r === undefined ? null : r); } catch (e) { return JSON.stringify({ok:false, error: e.message}) }` (`scripts.ts:1770-1780`) and evaluates it as an **async function whose returned Promise is awaited**: CDP `Runtime.evaluate` with `awaitPromise:true, returnByValue:true` (plain evaluation would serialize the pending Promise as `{}`). Argument literals are built by JSON-encoding each argument (JSON literals are valid JS). A view that is not on screen is laid out at the automation viewport first (§8.4). Outcomes:
 
 - tab's view is gone → `web pane has no live tab <uuid>`
-- evaluation returned a non-string / non-JSON-object / threw → `actuator evaluation failed: <detail>` (details: `actuator returned non-string reply`, `reply not JSON object`, or the engine's own exception text; `dispatch.ts:324-343`) — `exec` uses the label `exec` instead of `actuator`.
+- evaluation returned a non-string / non-JSON-object / threw → `actuator evaluation failed: <detail>` (details: `actuator returned non-string reply`, `reply not JSON object`, or the engine's own exception text; `dispatch.ts:324-343`), `exec` uses the label `exec` instead of `actuator`.
 - success → parse the JSON envelope, merge in `pane_id`, `workspace_id`, `tab_id`, send. Note `ok:false` envelopes (e.g. "no match for selector") flow through this same path — the CLI turns `ok:false` into exit 1.
 
 ### 8.3 `kelpi open` routing (CLI-side, reuses `web-open`)
@@ -512,7 +512,7 @@ Wire JSON keys use snake_case exactly as listed (`send_to`, `make_active`, `max_
 
 ### 8.4 Capture matrix (`web-capture`)
 
-Host side `packages/shell/src/webhost/dispatch.ts:422-471`; daemon side `handlers.ts:316-351`. Common fields in every reply: `ok, pane_id, workspace_id, tab_id, url, title, mode` — url/title snapshot from the live view (fallback to state's tab url/title).
+Host side `packages/shell/src/webhost/dispatch.ts:422-471`; daemon side `handlers.ts:316-351`. Common fields in every reply: `ok, pane_id, workspace_id, tab_id, url, title, mode`, url/title snapshot from the live view (fallback to state's tab url/title).
 
 | mode | extra fields |
 |---|---|
@@ -563,7 +563,7 @@ Two more daemon-authored failures exist once a host is attached: `web pane host 
 
 ### 9.1 Ingest
 
-Every console line the host reports (§7.1) → `ConsoleLine` → append to the pane's ring buffer (capacity 1000) → notify subscribers (`packages/daemon/src/webpane/console.ts:125-138`). Ordering: the append is committed first; the fan-out (§9.3) runs afterwards and reads the appended entry (this ordering is load-bearing — the fan-out must observe the appended line).
+Every console line the host reports (§7.1) → `ConsoleLine` → append to the pane's ring buffer (capacity 1000) → notify subscribers (`packages/daemon/src/webpane/console.ts:125-138`). Ordering: the append is committed first; the fan-out (§9.3) runs afterwards and reads the appended entry (this ordering is load-bearing, the fan-out must observe the appended line).
 
 ### 9.2 Poll drain — `web-console` (follow=false)
 
@@ -590,7 +590,7 @@ CLI (non-JSON): drops notice to stderr `(dropped N lines before this batch — b
 - The reply above (with `"follow":true`) is sent **without closing** the handle — it is line 1 of the stream (the catch-up drain, honoring `since`/`level`/`clear`).
 - The handle is registered in the pane's follower set (`console.ts` `subscribe`; daemon handler `packages/daemon/src/webpane/handlers.ts:451-483`).
 - On every subsequent appended line, fan-out pushes **one JSON object per line** to every live subscriber of that pane — the same shape as an entry of `lines` (seq, tab_id, level, message, url, captured_at, line?, column?). If drops accumulated since the last acknowledgement, the *next* pushed line carries an extra `"dropped": N` key (drops ride on a real line so ordering between the notice and the live lines is unambiguous), and the counter is acknowledged.
-- **Quirk, preserved deliberately (see Compatibility rationale):** streamed lines are NOT filtered by the `level` given at subscribe time — only the catch-up drain is.
+- **Quirk, preserved deliberately (see Compatibility rationale):** streamed lines are NOT filtered by the `level` given at subscribe time, only the catch-up drain is.
 - **WS twin**: GUI clients subscribe with `web-console-subscribe {pane_id, since?, level?, clear?}` (`packages/daemon/src/ws/sync.ts:2549-2585`). The reply is the same catch-up drain object (with `follow: true`), every later line arrives as its own `web-console-line {paneID, line}` message from the same per-pane follower set, and `web-console-unsubscribe` (or re-subscribing, which replaces the old handle so one pane never has two streams) ends it. Because the fan-out acknowledges drops once for all followers, a drop notice is delivered to whichever consumer's line goes out first, CLI `--follow` or a WS client.
 - Teardown: (a) client disconnects (EOF / Ctrl-C closes its socket) → the control server fires the reply handle's disconnect callbacks, which unsubscribe that follower (`handlers.ts:482`). (b) The pane closes → the pane's console buffer is disposed, every follower is ended (its handle closed) and the entry dropped (a closed pane can never catch the client up; `console.ts:177`, `service.ts:358-364`). Subscribers are never persisted.
 - CLI `--follow`: installs a SIGINT handler that closes the socket FD (so the server sees EOF) and exits 130; sends the request, disables the read timeout, and loops on newline-delimited JSON until EOF. First line: `ok:false` → error+exit; else print the drain (as in §9.2) + `(following — press Ctrl-C to stop)` on stderr; subsequent lines print `[seq] level: message` (with a stderr `(dropped N lines)` notice when the line carries `dropped`). `--json` prints each raw JSON line instead.
@@ -602,7 +602,7 @@ CLI (non-JSON): drops notice to stderr `(dropped N lines before this batch — b
 The pane search overlay is shared across pane types; for web panes it drives `__kelpiWebFind` on the **active tab** through the WS-only verb `web-find {pane_id, tab_id, action: search|next|prev|clear, needle}` (`packages/daemon/src/ws/web-ui.ts:223-234`, `packages/daemon/src/webpane/find.ts`, client `WebFindBar.tsx`). Find state is per-tab in the page (marks live in the DOM), but the bar is per-pane, so tab changes must migrate it. The remembered needle is daemon state rather than client chrome: two windows looking at the same pane are looking at the same marks.
 
 - Open: `toggle_search` (shortcut) works when the focused pane is shell, web, or non-editing markdown; sets `searchingPaneID`, clears needle/counts. ⌘F inside the page is forwarded to the client by the shell (§16.6).
-- Typing (`searchNeedleChanged`): run `search(needle)` on the active tab directly (no debounce — it's local JS). The daemon remembers the needle per pane (`find.ts`) so navigation/reload can re-apply; an empty needle clears highlights but keeps the bar open.
+- Typing (`searchNeedleChanged`): run `search(needle)` on the active tab directly (no debounce, it's local JS). The daemon remembers the needle per pane (`find.ts`) so navigation/reload can re-apply; an empty needle clears highlights but keeps the bar open.
 - Next/Prev: `next()`/`prev()` on the active tab (wrap-around).
 - Close: clear search state; `runFindClose(activeTab)` — clears marks AND forgets the remembered needle (navigations stop re-applying).
 - Result counts: every find pass returns `{total, current}`, and the `web-find` reply echoes the `tab_id` it was measured on; the UI **drops results from a tab that is not the pane's resolved active tab** (an outgoing tab's `clear()` during a switch would otherwise clobber the incoming tab's count), then feeds total (and current when ≥ 0) into the overlay ("current+1/total"-style display; total 0 clears the selection).
@@ -627,7 +627,7 @@ Two modes share the in-page picker: **single-shot** (CLI-armed, one click) and *
 Handler: `packages/daemon/src/webpane/handlers.ts:486-537`.
 
 - `disarm:true` path: reply `{ok:true, pane_id, workspace_id, armed:false}`; clear the daemon arm; notify the host `inspect-disarm` (fire-and-forget, so it works with no host attached). (No active-tab requirement.)
-- Arm path: require active tab. If `send_to` given, resolve it via the standard pane-target rules **up front** and require the destination to be a `.shell` pane (only shell panes have a PTY to paste into) — failures reply `--send-to: <resolution error>` / `--send-to: pane not found: …` / `--send-to: destination must be a shell pane (got: markdown)`. No host → `no web pane host connected` (§8.7).
+- Arm path: require active tab. If `send_to` given, resolve it via the standard pane-target rules **up front** and require the destination to be a `.shell` pane (only shell panes have a PTY to paste into), failures reply `--send-to: <resolution error>` / `--send-to: pane not found: …` / `--send-to: destination must be a shell pane (got: markdown)`. No host → `no web pane host connected` (§8.7).
 - Mint the nonce and arm the page picker through the host (`inspect-arm {tabID, nonce, sticky:false}`); failure → the host's own error, or `failed to arm inspector for active tab` when it named none (the page answers false when the picker script never installed, e.g. an `about:` URL with no document). Record the arm (+ `submit` when `--submit`). Reply:
 
 ```json
@@ -643,7 +643,7 @@ Re-arming before a click is clean (the new arm replaces nonce + page listeners).
 Page click → host binding (main frame only) → daemon validates armed tab + nonce (`packages/daemon/src/webpane/service.ts:461-468`) → the raw payload is sanitised (`sanitizeInspectPayload`, `inspect.ts:191`, §11.6) into an `InspectResult` → routed by `service.ts`:
 
 - **Batch visible** (`batchInspect.panelVisible == true`): wrap in a new `BatchInspectItem` (fresh UUID, empty comment), append to the batch, re-sync page markers, and focus the new item with origin `page` (ring + badge pulse, no scroll — the element is already under the cursor; the panel scrolls its row into view and focuses its comment field). Picker stays armed (sticky). No paste happens until Send.
-- **Otherwise (single-shot; includes a hidden/paused batch)**: read `sendTo` and `submit` from the arm (then disarm, which clears both); enqueue the result on the pane's `inspectResultQueue` (cap 32, oldest dropped); and if `sendTo` is set, paste `formatForPaste(result)` into that pane's PTY — bare write when `submit` is false (default: paste only), command-write (text + Enter) when true (`packages/daemon/src/boot/compose.ts:615-618`).
+- **Otherwise (single-shot; includes a hidden/paused batch)**: read `sendTo` and `submit` from the arm (then disarm, which clears both); enqueue the result on the pane's `inspectResultQueue` (cap 32, oldest dropped); and if `sendTo` is set, paste `formatForPaste(result)` into that pane's PTY, bare write when `submit` is false (default: paste only), command-write (text + Enter) when true (`packages/daemon/src/boot/compose.ts:615-618`).
 
 A hidden batch is deliberately "paused": `kelpi web inspect --send-to` can arm a single-shot pick on top of it without hijacking the batch.
 
@@ -719,8 +719,8 @@ Done/Esc in the page popover (`{dismiss:{id}}` marker message): clear `focusedIt
 
 ### 12.3 Comment editing, both sides
 
-- Panel field edit → `web-batch-comment {item_id, comment, tab_id}` (state) + a `batch-comment` push to the page (`web-ui.ts:297-316`) — the page updates its record and the popover textarea only when its textarea isn't focused.
-- Page popover edit (per keystroke) → `commentChanged` marker message → state update only (no push back — bouncing the value into the page would clobber the textarea cursor).
+- Panel field edit → `web-batch-comment {item_id, comment, tab_id}` (state) + a `batch-comment` push to the page (`web-ui.ts:297-316`), the page updates its record and the popover textarea only when its textarea isn't focused.
+- Page popover edit (per keystroke) → `commentChanged` marker message → state update only (no push back, bouncing the value into the page would clobber the textarea cursor).
 - Page popover Remove → `{remove:{id}}` marker message → item removed + marker re-sync. Panel row ✕ → `web-batch-remove {item_id}`, same.
 
 ### 12.4 Panel UI (recreate in web client)
@@ -749,7 +749,7 @@ Toggled by the chrome lock button (filled + accent when private; accent fill whi
 
 ### 13.2 Cookie wire commands
 
-All operate on the pane's cookie store via the host (`packages/shell/src/webhost/sessions.ts`); **if no host is attached, reads return empty and deletes return 0** — no error (`packages/daemon/src/webpane/handlers.ts:606-609`, §8.7).
+All operate on the pane's cookie store via the host (`packages/shell/src/webhost/sessions.ts`); **if no host is attached, reads return empty and deletes return 0**, no error (`packages/daemon/src/webpane/handlers.ts:606-609`, §8.7).
 
 - `web-cookies-list` →
 
@@ -764,7 +764,7 @@ All operate on the pane's cookie store via the host (`packages/shell/src/webhost
 
 CLI table `DOMAIN(24) NAME(20) VALUE(40)` sorted by domain then name, or `(no cookies)`; `--json` prints the cookies array.
 
-- `web-cookies-clear` `{domain?, all?}` — `--all` + `--domain` rejected client- and server-side (`--all and --domain are mutually exclusive`). `all:true` → remove every site-data type (cookies, caches, local storage, IndexedDB) since epoch (`session.clearStorageData()`, `sessions.ts:104-105`); reply `{ok, …, "cleared_site_data": true}` (count unknowable). Else delete cookies matching the canonical domain (or every cookie when no domain); reply `{ok, …, "deleted": N[, "domain": "<as passed>"]}`. CLI prints `cleared all site data` / `deleted N cookies[ for d]`.
+- `web-cookies-clear` `{domain?, all?}`: `--all` + `--domain` rejected client- and server-side (`--all and --domain are mutually exclusive`). `all:true` → remove every site-data type (cookies, caches, local storage, IndexedDB) since epoch (`session.clearStorageData()`, `sessions.ts:104-105`); reply `{ok, …, "cleared_site_data": true}` (count unknowable). Else delete cookies matching the canonical domain (or every cookie when no domain); reply `{ok, …, "deleted": N[, "domain": "<as passed>"]}`. CLI prints `cleared all site data` / `deleted N cookies[ for d]`.
 - `web-cookies-delete` `{name, domain?}` — delete cookies with exactly that name (optionally domain-scoped, canonical compare); reply `{ok, …, "deleted": N, "name": "…"[, "domain": "…"]}`. CLI exits 1 when N==0.
 
 Domain matching everywhere uses `canonicalDomain` = strip one leading `.`.
@@ -774,7 +774,7 @@ Domain matching everywhere uses `canonicalDomain` = strip one leading `.`.
 ## 14. Favourites
 
 - Storage: **`favourites.json`** beside the daemon database (`packages/daemon/src/webpane/favourites.ts:9-22`, `packages/daemon/src/boot/compose.ts:327-329`; in memory when the database is `:memory:`), a JSON array of `{id, url, title, createdAt(ISO8601)}`, the same row shape as the legacy `web.favourites` payload so an old value can be dropped in verbatim. Loaded at daemon start; every mutation rewrites the whole file synchronously and immediately (no debounce). Clients read and mutate it over WS (`packages/daemon/src/ws/web-ui.ts:28-37, 71-129`): `web-favourites-list`, `web-favourite-toggle {url, title}`, `web-favourite-remove {id}`, `web-favourite-rename {id, title}`, `web-favourite-move {from, to}`; these are the only web verbs with no pane. Every reply carries the post-mutation list (each entry with an extra `label` and `created_at`), and a `web-favourites` broadcast keeps every window's star and menu in step.
-- Matching (`favourites.ts:40`): normalize both sides — trim, lowercase **scheme and host only** (paths/queries stay case-sensitive), strip all trailing `/` — and compare exactly. Used for the star state.
+- Matching (`favourites.ts:40`): normalize both sides, trim, lowercase **scheme and host only** (paths/queries stay case-sensitive), strip all trailing `/`, and compare exactly. Used for the star state.
 - Actions: `toggleFavourite(url, title)` — trimmed-empty URL is a no-op; existing match → remove; else append `{uuid, url, title, now}`. `renameFavourite(id, title)`, `removeFavourite(id)`, `moveFavourite(from, to)` (reorder).
 - Chrome: a star embedded at the trailing edge of the URL bar — filled yellow when the displayed URL matches a favourite; disabled (30% opacity, unclickable) when the URL is empty. Toggling saves the *currently displayed* URL + title pair (title tracked from the same state-change event as the URL, so a stale title is never saved under a new URL). A book icon opens the favourites menu: each favourite as a menu item (label = title || host || url, mid-truncated at 50 chars — head 25 + "…" + tail 24 — so both host and page name survive), clicking navigates the **current pane's active tab** (does not open a new pane); empty state "No favourites yet / Click the star to save the current page"; "Manage favourites…" opens Settings → Web tab (deep-link survives cold-open of the settings window).
 - Settings → Web (`packages/client/src/settings/WebTab.tsx`): list with drag-reorder plus ↑/↓ buttons beside each row (a drag with no keyboard equivalent is unreachable for some users), inline title rename (commit on submit/blur, trimmed, no-op when unchanged), per-row remove.
@@ -828,7 +828,7 @@ Narrow panes (owner-directed, `WebPane.tsx:228-295`): the row measures itself an
 
 The bar shows `displayedURL` (live engine URL, filtered: empty/`about:blank` updates are ignored so a failed load keeps showing what the user tried). Reconciliation rules (`packages/client/src/webpane/WebPane.tsx:457-489`):
 
-- Track `lastWritten` = what the client last wrote into the field. When the underlying URL changes: if the field is focused AND its content differs from `lastWritten` (user mid-edit), do NOT overwrite — stash as `pending` and apply it when editing ends (blur), so an abandoned draft doesn't stick around. Otherwise overwrite immediately (tab switches update the bar even while focused-but-untouched; mere focus via ⌘L/click is not "editing").
+- Track `lastWritten` = what the client last wrote into the field. When the underlying URL changes: if the field is focused AND its content differs from `lastWritten` (user mid-edit), do NOT overwrite, stash as `pending` and apply it when editing ends (blur), so an abandoned draft doesn't stick around. Otherwise overwrite immediately (tab switches update the bar even while focused-but-untouched; mere focus via ⌘L/click is not "editing").
 - Enter submits the raw field text → navigate (normalization happens downstream); any pending URL is discarded (the navigation will surface the canonical URL).
 - ⌘L (focus token bump): focus the field and select all.
 - Placeholder "Enter URL"; monospaced 11pt.
@@ -838,7 +838,7 @@ The bar shows `displayedURL` (live engine URL, filtered: empty/`about:blank` upd
 A 2px accent strip pinned to the chrome block's bottom edge (`packages/client/src/webpane/progress.ts`, `WebPane.tsx:988-1013`). Electron reports no load fraction, so the strip is indeterminate: the host emits `nav-state {loading, can_go_back, can_go_forward}` per tab (`did-start-loading` opens the bracket, `did-stop-loading`/`did-fail-load` close it; identical consecutive reports are dropped; nothing is reported before the tab's first real navigate, `tab.ts:718-737`), the daemon broadcasts it as `web-nav-state {paneID, tabID, loading, can_go_back, can_go_forward}` (`packages/daemon/src/webpane/service.ts:433-442`, `packages/daemon/src/boot/compose.ts:635-644`), nothing is stored, and the client keeps the last report per (pane, tab).
 - On loading=true: cancel any fade-out; the strip appears immediately (the head-start that used to be `max(progress, 0.05)` exists so the click registers) and a 40%-wide sweep animates.
 - On loading=false: snap to full width (the one real width there is), hold 300ms, fade out (~300ms), then after another 150ms settle reset to idle (guards against a stale event redrawing a full bar for a frame).
-- Reports are filtered to the pane's active tab. On tab switch, snap to the incoming tab's last report (sweeping if it's loading, else hidden) with no animation from the old tab's state — otherwise a strip frozen mid-load leaks across tabs.
+- Reports are filtered to the pane's active tab. On tab switch, snap to the incoming tab's last report (sweeping if it's loading, else hidden) with no animation from the old tab's state, otherwise a strip frozen mid-load leaks across tabs.
 - The strip is positioned out of the layout flow, so its appearance never moves the page hole (the shell would otherwise re-place the native view for each frame). The same report dims Back/Forward (§16.1).
 
 ### 16.4 Tab strip & pills
@@ -882,8 +882,8 @@ Tab-less pane (fresh blank open, or a restored private pane): globe glyph, "New 
 1. Pane/tab UUIDs are minted by the *initiator* (reducer or socket handler) before any effect runs, so CLI replies can echo real ids; duplicate tab ids are rejected on open.
 2. `activeTab` is always resolved with a `tabs.first` fallback — `activeTabID` may be momentarily stale after a close; every consumer (chrome, host, wire replies) must share this fallback.
 3. `webPanes[paneID]` exists iff the pane exists with type web; it is created in `openWebPane`, removed in `closePane`, restored by persistence/reopen. `web pane state missing` is an invariant-violation error, not a user error.
-4. Wire replies are optimistic: they are sent before (or independent of) the underlying navigation/effect (`web-navigate` waits for the host's ack, never for the load). Failures surface via later reads (`web-url`, `web-capture`), the error page, or the console — not via the ack. The exception is a daemon with no host attached, which fails the verbs that need a live page up front (§8.7).
-5. Console `seq` is monotonic per pane and survives `clear`; `droppedSinceLastDrain` is reset by exactly two paths — a poll drain's acknowledge and the follow fan-out that attached the count to a line (one fan-out serves both `--follow` and WS `web-console-subscribe`, so the notice reaches whichever consumer's line goes out first, §9.3).
+4. Wire replies are optimistic: they are sent before (or independent of) the underlying navigation/effect (`web-navigate` waits for the host's ack, never for the load). Failures surface via later reads (`web-url`, `web-capture`), the error page, or the console, not via the ack. The exception is a daemon with no host attached, which fails the verbs that need a live page up front (§8.7).
+5. Console `seq` is monotonic per pane and survives `clear`; `droppedSinceLastDrain` is reset by exactly two paths, a poll drain's acknowledge and the follow fan-out that attached the count to a line (one fan-out serves both `--follow` and WS `web-console-subscribe`, so the notice reaches whichever consumer's line goes out first, §9.3).
 6. Inspector nonce: every arm mints a new nonce; a payload without the current nonce (or from a non-main frame, or from a non-armed tab) is silently dropped. Disarm on: delivery (single-shot), Esc-cancel, explicit `--disarm`, batch hide/cancel/send, tab destroy of the armed tab.
 7. Text/HTML/attribute reads are byte-clamped on UTF-8 boundaries with explicit truncation markers (`[truncated]` / `<!-- truncated -->` / `... [truncated]` / `truncated:true` flags) so a consumer can always tell content was cut.
 8. Everything pasted into a PTY passes through the ANSI/C0 sanitiser (§11.6).

@@ -350,7 +350,12 @@ Used by `pane-close`, `pane-capture`, `pane-send`, `pane-send-key`, `pane-name`,
 - `workspace` (optional string): name-or-UUID of a workspace to scope label lookup.
 
 Parse-time guard (shared): at least one of `pane_id` (valid UUID) / `target` must be
-present or the message is dropped. Empty-string `target`/`workspace` count as absent.
+present. Every command that carries the triple is in the reply allowlist (§4), so a
+message with neither is answered `{"ok":false,"error":"<command> requires pane_id or
+target"}` and the connection closed, not dropped
+(`packages/protocol/src/wire/decode.ts:146-150`,
+`packages/daemon/src/control/server.ts:159-170`). Empty-string `target`/`workspace`
+count as absent.
 
 Resolution algorithm (server-side, produces either a pane or an error string):
 
@@ -664,12 +669,19 @@ zoomed`, followed by an un-zoom hint; `packages/daemon/src/handlers/pane/geometr
 ```json
 {"command":"pane-resize","target":"coordinator","workspace":"main","ratio":0.7}
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
-   "split_path":[0,1],"ratio":0.7,"target_share":0.7,"label":"coordinator"}
+   "split_path":"dL","ratio":0.7,"target_share":0.7,"label":"coordinator"}
 ```
 
-`split_path` is an array of 0/1 child indices from the layout root to the enclosing
-split; `ratio` is the stored first-child ratio after the write; `target_share` is the
-clamped share of the addressed pane.
+`split_path` is the split-path **string** of the enclosing split: `"d"` is the root
+split and each appended `L`/`R` steps into a split's first/second child (so `"dL"` is the
+first child of the root split, `"dLR"` the second child of that). Kelpi builds it in
+`enclosingSplitPath` (`packages/core/src/layout/ratio.ts:61-77`), returns it as
+`ResizeResult.splitPath: string` (`packages/core/src/layout/ratio.ts:80,118`) and copies
+it onto the wire unchanged (`packages/daemon/src/handlers/pane/geometry.ts:98`). It is the
+same path shape `layout-select` and pane-layout §7.3 use. (`PaneResizeReply.split_path`
+in `packages/protocol/src/replies/types.ts:41-42` still declares `readonly number[]`;
+the bytes on the wire are the string.) `ratio` is the stored first-child ratio after the
+write; `target_share` is the clamped share of the addressed pane.
 
 #### `pane-move` (F&F)
 
@@ -1166,7 +1178,7 @@ Parse guards and defaults (beyond the shared triple):
 
 | command | guards | defaults |
 |---|---|---|
-| `web-open` | `url` non-empty (else drop); pane-target NOT required | `private:false` |
+| `web-open` | `url` non-empty (else `{"ok":false,"error":"web-open requires a non-empty url"}`, `packages/protocol/src/wire/decode.ts:419`); pane-target NOT required | `private:false` |
 | `web-navigate` | `url` non-empty | — |
 | `web-reload` | — | `hard:false` |
 | `web-capture` | — | `mode:"meta"` (empty string also → `"meta"`; values: `meta`, `text`, `screenshot`, `dom`, `all`; anything else → `{"ok":false,"error":"unknown capture mode '<mode>' (allowed: meta, text, screenshot, dom, all)"}` before the host is contacted, `packages/daemon/src/webpane/handlers.ts:316-325`) |
@@ -1175,7 +1187,7 @@ Parse guards and defaults (beyond the shared triple):
 | `web-console` | — | `since:0` (full buffer), `level:null` (empty → null), `clear:false`, `follow:false` |
 | `web-inspect` | — | `send_to:null` (empty → null), `submit:false`, `disarm:false` |
 | `web-inspect-result` | — | `clear:false` |
-| `web-private` | `private` **must be present** (bool) else drop | — |
+| `web-private` | `private` **must be present** (bool) else `{"ok":false,"error":"web-private requires private"}` (`packages/protocol/src/wire/decode.ts:508`) | — |
 | `web-cookies-clear` | `all:true` together with a `domain` → `{"ok":false,"error":"--all and --domain are mutually exclusive"}`; without a connected host → `{"ok":true,…,"deleted":0}` (`packages/daemon/src/webpane/handlers.ts:599-611`) | `domain:null` (empty → null), `all:false` |
 | `web-cookies-delete` | `name` non-empty | `domain:null` |
 | `web-click` | `selector` non-empty | `double:false`, `right:false`; `at_x`/`at_y` both optional doubles (both must be present to apply; else element center) |
@@ -1183,7 +1195,7 @@ Parse guards and defaults (beyond the shared triple):
 | `web-q-text` / `web-q-dom` | `selector` non-empty | `max_bytes:null` (JS default) |
 | `web-q-attr` | `selector` and `attribute` non-empty | — |
 | `web-q-count` / `web-q-exists` / `web-hover` | `selector` non-empty | — |
-| `web-wait` | exactly one of `selector` / `url_match` non-empty (neither or both → drop) | `for:null` (empty → null), `timeout_ms:0` (0/absent → JS default 10000) |
+| `web-wait` | exactly one of `selector` / `url_match` non-empty (neither or both → `{"ok":false,"error":"web-wait requires exactly one of selector / url_match"}`, `packages/protocol/src/wire/decode.ts:586`) | `for:null` (empty → null), `timeout_ms:0` (0/absent → JS default 10000) |
 | `web-select` | `selector` non-empty; `value_or_label` present (empty allowed) | — |
 | `web-scroll` | `selector` non-empty | `block:"center"` (∈ start/center/end), `behavior:"instant"` (∈ instant/smooth) |
 | `web-key` | `key` non-empty | `selector:null` (empty → null; null = document.activeElement) |

@@ -69,7 +69,7 @@ interface PaneAgentFields {
   agentKind: AgentKind | null;     // persisted; NEVER cleared on load (last-known display value)
   agentProfileName: string | null; // persisted; NOT cleared on load — effective KELPI_PROFILE
                                    // the session was launched under (null = unknown/legacy CLI)
-  agentStartedAt: Date | null;     // transient (in-memory only) — wall-clock start of current run
+  agentStartedAt: EpochMilliseconds | null; // transient (in-memory only): epoch ms start of current run
   backgroundTaskCount: number;     // transient — default 0; count of in-flight background units
 }
 ```
@@ -86,7 +86,13 @@ interface PaneAgentFields {
 - `agentStartedAt` powers the elapsed badge ("claude · 4m 9s"). Because it is not
   persisted, a pane restored as `.running` (which cannot happen after §6.1's reset,
   but conceptually) or resumed after relaunch shows no elapsed clock until the agent
-  re-emits a start.
+  re-emits a start. Kelpi holds it as epoch **milliseconds** (`EpochMilliseconds`, the
+  JS `Date.now()` clock the state machine stamps it with:
+  `packages/core/src/layout/pane.ts:35-43`, `:76-77`,
+  `packages/core/src/agent/machine.ts:30`, `:89`), not the Unix-seconds `EpochSeconds`
+  encoding of the persisted `createdAt`/`lastActivityAt`
+  (`packages/daemon/src/store/types.ts:13-16`); mixing the two silently renders a "0s"
+  elapsed badge. No ISO string or `Date` is held in the model.
 - `backgroundTaskCount` is not persisted; reset to 0 on the next `start`, `error`,
   `session-start`, or manual status override.
 
@@ -504,8 +510,10 @@ if pane.status == waitingForInput: pane.status = idle
 
 - **Only** `waitingForInput` is cleared — never clobber `running` if the agent
   started again during the 600 ms window.
-- Side effects: persist, refresh external indicators, and **remove any delivered
-  desktop notification for that pane** (by its dedup identifier, §7.5).
+- Side effects: persist and refresh external indicators. The `idle` transition also
+  takes the pane out of the waiting set, which is what closes the Electron shell's
+  native `kelpi-<paneID>` toast (§7.5); the browser client's own toast was already
+  dropped at focus time, before this timer fired.
 
 The 600 ms delay exists so that briefly clicking through panes doesn't instantly
 swallow "waiting" badges, and so the user visibly sees what they're acknowledging.
@@ -696,12 +704,17 @@ like an agent notification. Unknown pane → ignored.
   suppression is decided at the call sites above, not by the presenter.
 - **Open / default click**: requires both `paneID` and `workspaceID` in the
   payload; activates the app, switches to that workspace, and focuses that pane.
-- **Removal**: `clearPaneStatus` (the 600 ms focus acknowledgment) removes the
-  pane's delivered + pending notification, so the notification center doesn't keep
-  stale "waiting" toasts for panes the user already visited (client: `clear(paneID)`
-  in `packages/client/src/state/notifications.ts`; Electron shell: a pane leaving the
-  waiting set closes its native toast, `noLongerWaitingPanes` in
-  `packages/shell/src/agents.ts`).
+- **Removal**: Kelpi never sends a retraction message: the daemon publishes a
+  notification and nothing else (`packages/shell/src/agents.ts:443-451`). The two
+  presenters withdraw on different triggers. The Electron shell closes the native
+  `kelpi-<paneID>` toast when that pane **leaves the waiting set** (any status change
+  away from `waitingForInput`, `clearPaneStatus` included; `noLongerWaitingPanes` in
+  `packages/shell/src/status.ts:583-591`), so a toast on a pane that is already `idle`
+  (an OSC toast on a plain terminal, §7.4) is not closed by visiting it. The browser
+  client instead calls `clear(paneID)`
+  (`packages/client/src/state/notifications.ts:182-190`) from its focus report the
+  moment the user focuses the pane, unconditionally and before the 600 ms dwell
+  (`packages/client/src/state/bridge.ts:390-391`).
 - **Permission**: the browser client asks on the first `pointerdown` in the window
   (browsers grant only from a user gesture; `packages/client/src/App.tsx:619-627`) and
   posts in-app toasts until granted. The Electron shell needs no permission request:
@@ -927,16 +940,24 @@ pane of a workspace** (which deletes the workspace instead of the pane;
 `allowLast: true`, so it is the one gesture that may delete the last workspace and
 reach the "No workspace selected" state (§11.2).
 
-Decision (`shouldDelete(workspaceName, activeAgentCount)`):
+Decision. `activeAgentCount` = panes + parked panes with status ≠ idle in that
+workspace. The `confirmWorkspaceDeleteWhenActive` setting defaults to true; it is a
+daemon general setting, config key `confirm-workspace-delete`
+(`packages/protocol/src/ws/settings.ts:29-38`), so dialogs and the Settings ▸
+Workspaces toggle (`packages/client/src/settings/WorkspacesTab.tsx`) stay in sync
+across clients. The two entry points apply it differently:
 
-- `activeAgentCount` = panes + parked panes with status ≠ idle in that workspace.
-- If `activeAgentCount == 0` OR the `confirmWorkspaceDeleteWhenActive` setting is
-  false → proceed immediately (return true). Default true; it is a daemon general
-  setting, config key `confirm-workspace-delete`
-  (`packages/protocol/src/ws/settings.ts:29-38`), so dialogs and the Settings ▸
-  Workspaces toggle (`packages/client/src/settings/WorkspacesTab.tsx`) stay in sync
-  across clients.
-- Otherwise a warning dialog:
+- The sidebar **Delete** item **always** opens the `Delete “<workspaceName>”?`
+  confirmation (`setConfirm({kind:'workspace', ...})`,
+  `packages/client/src/chrome/Sidebar.tsx:3894-3907`). It folds the count in only
+  when `activeAgentCount > 0` AND the setting is true; otherwise the dialog is the
+  plain confirmation with no agent line and no suppression box
+  (`Sidebar.tsx:5176-5195`).
+- The ⌘W last-pane path (`shouldDelete(workspaceName, activeAgentCount)`): if
+  `activeAgentCount == 0` OR the setting is false, delete immediately with no dialog
+  (`packages/client/src/App.tsx:1371-1384`); otherwise open the warning dialog below.
+  This is the one route that deletes without a dialog.
+- The warning dialog (the sidebar dialog with an active count, or the ⌘W gate):
   - Title: `Delete “<workspaceName>”?`
   - Body: `This workspace has <N> active agent(s). Deleting it will terminate
     it/them.` (singular/plural).

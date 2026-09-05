@@ -98,7 +98,8 @@ kelpi <subcommand> [args...]
 
 Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, `md`,
 `diff`, `graft`, `web`, `doctor`, `install-hooks` (section 17), plus the pseudo-subcommands
-`--version`/`version` and `--help`/`-h`/`help` (`packages/cli/src/cli.ts:76`).
+`--version`/`version` (`packages/cli/src/cli.ts:43`) and `--help`/`-h`/`help`
+(`packages/cli/src/cli.ts:47`, via `isHelpToken`, `packages/cli/src/args.ts:103`).
 
 - No arguments at all: print the global usage block to **stderr**, exit 1.
 - `kelpi --version` or `kelpi version`: print `kelpi <version>` to stdout, exit 0.
@@ -864,9 +865,14 @@ kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>] [--
   ```
 
 Behavioral contract (server): the sync group is workspace-wide over shell panes minus the
-excluded set, only "active" when >= 2 qualify; every `on`/`off`/`toggle` clears the
-exclusion set, so `exclude` must run after `on`. Scope defaults to the caller's workspace
-via `KELPI_PANE_ID`; `--workspace` overrides.
+excluded set, only "active" when >= 2 qualify. The CLI's `on`/`off`/`toggle` all dispatch
+`set-sync-input-active` (`packages/daemon/src/handlers/pane/sync.ts:78-90`), which is
+idempotent: it returns the workspace unchanged when the value does not change, and clears
+the exclusion set only on an actual on/off transition
+(`packages/daemon/src/store/reducers/agent.ts:115-121`). So a repeated `sync on` keeps
+existing exclusions, while `toggle` always transitions and therefore always clears them;
+an `exclude` staged while sync is off does not survive the next `on`. Scope defaults to
+the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 ---
 

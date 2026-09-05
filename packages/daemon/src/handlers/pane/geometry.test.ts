@@ -223,6 +223,9 @@ describe('pane-move-to-workspace', () => {
         expect(h.state().lastActiveWorkspaceID).toBe(W2);
         // Both broadcast groups are refreshed: the move bypasses per-workspace bookkeeping.
         expect(h.pty.syncGroupCalls.map((call) => call.workspaceID)).toEqual([W1, W2]);
+        // §4.11 "the app switches to the destination" (#52): the active workspace is per client,
+        // so the switch is an untargeted `reveal-pane` for the moved pane, as `workspace-create`.
+        expect(h.broadcasts).toEqual([{ type: 'reveal-pane', workspaceID: W2, paneID: P2 }]);
     });
 
     it('creates an EMPTY destination workspace when create is set', () => {
@@ -244,6 +247,8 @@ describe('pane-move-to-workspace', () => {
         expect(h.state().topLevelOrder.at(-1)).toEqual({ kind: 'workspace', id: NEWWS });
         // No placeholder pane, and therefore no stray PTY.
         expect(h.pty.spawns).toEqual([]);
+        // The implicitly created destination is revealed too (#52).
+        expect(h.broadcasts).toEqual([{ type: 'reveal-pane', workspaceID: NEWWS, paneID: P2 }]);
     });
 
     it('drops when the destination is unknown and create is not set', () => {
@@ -257,6 +262,8 @@ describe('pane-move-to-workspace', () => {
 
         expect(h.state().workspaces).toHaveLength(1);
         expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1, P2]);
+        // A dropped move reveals nothing: nobody should be yanked to a pane that did not move.
+        expect(h.broadcasts).toEqual([]);
     });
 
     it('drops a move onto the pane\'s own workspace and an unknown pane', () => {
@@ -266,5 +273,6 @@ describe('pane-move-to-workspace', () => {
 
         expect(h.state().workspaces).toHaveLength(1);
         expect(h.workspace(W1).panes.map((pane) => pane.id)).toEqual([P1, P2]);
+        expect(h.broadcasts).toEqual([]);
     });
 });

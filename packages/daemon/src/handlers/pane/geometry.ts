@@ -204,6 +204,18 @@ export const handlePaneMoveToWorkspace: CommandHandler<PaneHandlerContext> = (ms
     // The move mutates two workspaces at once, so BOTH broadcast groups are refreshed (§5).
     refreshSyncGroup(ctx, source.id);
     refreshSyncGroup(ctx, targetID);
+
+    // §4.11 "the app switches to the destination" (#52). The reducer's `lastActiveWorkspaceID`
+    // only moves what `kelpi workspace list` calls ACTIVE: the port's active workspace is PER
+    // CLIENT (the client selector prefers its own `ui.activeWorkspaceID`), so without this an
+    // attached window stayed on the source workspace and the pane the user just moved vanished
+    // from view. Same fan-out `workspace-create` uses for the same reason (`workspaces.ts`,
+    // run-B L3): untargeted `reveal-pane`, which clients implement as "activate the workspace,
+    // then focus the pane". Skipped if the reducer declined the move, so nothing is revealed
+    // that did not actually arrive.
+    const landed = workspaceByID(ctx.store.getState(), targetID);
+    if (landed === null || !landed.panes.some((pane) => pane.id === msg.pane_id)) return;
+    ctx.broadcast({ type: 'reveal-pane', workspaceID: targetID, paneID: msg.pane_id });
 };
 
 /**

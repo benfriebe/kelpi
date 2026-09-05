@@ -633,6 +633,10 @@ FINALLY:
   push fresh sync-group snapshots for BOTH source and target to the
   keystroke-broadcast layer (the direct state mutation bypasses the
   per-workspace bookkeeping that normally does this)
+  broadcast reveal-pane { workspaceID: targetWSID, paneID }   // the port's active workspace is
+                                                              // per client, so "the app switches"
+                                                              // is this untargeted fan-out, exactly
+                                                              // as workspace-create (§6.2); #52
   persist state
 ```
 

@@ -127,6 +127,26 @@ describe('web-open (§3.3)', () => {
         });
     });
 
+    /**
+     * §3.1/§3.2, issue #50 (web-02). The GUI's New Web Pane is a blank open, and the wire's
+     * non-empty `url` rule (§8.2) makes `about:blank` its stand-in. The pane it opens must be the
+     * blank one §3.2 describes (tab url `""`, so the URL bar takes the caret), not a tab holding
+     * an `about:blank` page: `normalizeURLInput` keeps opaque schemes verbatim, so the mapping
+     * has to be the handler's.
+     */
+    it('opens `about:blank` as a BLANK pane, the way the GUI means it', () => {
+        const paneID = id('bbbbbbbb', 1);
+        const tabID = id('bbbbbbbb', 2);
+        const h = webHarness({ ids: [paneID, tabID] });
+        const reply = h.reply({ command: 'web-open', url: 'about:blank', pane_id: SHELL_PANE });
+        expect(reply).toMatchObject({ ok: true, pane_id: paneID, tab_id: tabID, url: '' });
+        expect(h.state().workspaces[0]?.webPanes[paneID]).toEqual({
+            tabs: [{ id: tabID, url: '', title: '' }],
+            activeTabID: tabID,
+            isPrivate: false
+        });
+    });
+
     it('announces the new pane to a connected host', () => {
         const h = webHarness();
         const host = attachFakeHost(h.service);

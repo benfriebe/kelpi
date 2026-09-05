@@ -204,11 +204,22 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                     : undefined;
             const paneID = uuid();
             const tabID = uuid();
+            /*
+             * Issue #50 (web-02), §3.1/§3.2: the GUI's New Web Pane (globe, context menu, ⌘⇧O)
+             * is a BLANK open, but the wire requires a non-empty url (§8.2), so the client
+             * sends `about:blank` as its stand-in. It is mapped to the empty url here so the
+             * pane lands the way §3.2 says: one blank tab whose URL bar takes the caret
+             * (`useBlankWebPaneURLFocus` skips any tab that has a url, and WEB-043's claim
+             * would otherwise hand the keyboard to an `about:blank` page). `normalizeURLInput`
+             * keeps opaque schemes verbatim, so it cannot do this. `kelpi web open about:blank`
+             * means the same thing, and the reply echoes the blank the pane was given.
+             */
+            const url = msg.url === 'about:blank' ? '' : msg.url;
             // §3.3: the reply goes out BEFORE the pane exists, carrying the real ids.
             ok(reply, {
                 pane_id: uuidOut(paneID),
                 tab_id: uuidOut(tabID),
-                url: normalizeURLInput(msg.url),
+                url: normalizeURLInput(url),
                 private: msg.private,
                 workspace_id: uuidOut(workspaceID)
             });
@@ -217,7 +228,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 workspaceID,
                 paneID,
                 tabID,
-                url: msg.url,
+                url,
                 now: now(),
                 isPrivate: msg.private,
                 sourcePaneID,

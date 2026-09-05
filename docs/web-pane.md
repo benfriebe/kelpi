@@ -174,6 +174,7 @@ Blank-URL opens (`url === ""`) additionally make the client focus the fresh pane
 Implemented in `packages/daemon/src/webpane/handlers.ts:181-229`.
 
 - Target workspace: if the wire `pane_id` (caller's `KELPI_PANE_ID`) resolves to a pane, use *that pane's workspace*; else the active workspace. (So `kelpi web open` from a background-workspace pane lands next to the caller.) No workspace at all → `{"ok":false,"error":"no active workspace"}`.
+- Blank opens: the wire requires a non-empty `url` (§8.2), so the GUI's New Web Pane (globe, context menu, ⌘⇧O) sends `url: "about:blank"` as its stand-in; the handler maps `about:blank` to `""` before the reply and the reducer, so the pane is the blank one §3.2 describes (one tab with url `""`, URL bar focused) rather than a tab holding an `about:blank` page (`handlers.ts`, issue #50). `kelpi web open about:blank` means the same thing.
 - Optional `target` + `direction` (`packages/protocol/src/wire/decode.ts:417-431`): `target` names the pane to split off, honoured only when it is a visible pane of the routed workspace, otherwise the focused pane is split (`handlers.ts:188-204`); `direction` defaults to horizontal and an unrecognised value reads as absent, so a typo never drops the open. The client's globe button (click = `horizontal`, ⇧-click = `vertical`) and pane context menu send both (`packages/client/src/App.tsx:1651-1660`); the CLI never does (§8.6).
 - Mint `newPaneID`, `newTabID`; reply **immediately** (before the state mutation):
 
@@ -873,7 +874,7 @@ The `</>` button toggles a docked web inspector for the active tab. It sends the
 
 ### 16.7 Empty state
 
-Tab-less pane (fresh blank open, or a restored private pane): globe glyph, "New web pane", "Type a URL above and press Return".
+Tab-less pane (a restored private pane, or a pane whose last tab was closed): globe glyph, "New web pane", "Type a URL above and press Return". A fresh blank open is not tab-less: §3.2 always builds one tab (url `""`), so it shows an empty page area with the URL bar's placeholder and the caret in the bar.
 
 ---
 

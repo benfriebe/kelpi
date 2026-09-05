@@ -3,7 +3,7 @@
  *
  * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
  * no ghostty, so it reads the seven keys that actually change how Kelpi draws — and nothing else.
- * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/nex/config`,
+ * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/kelpi/config`,
  * so the line splitter is `@kelpi/core/config`'s: one parser, one set of quirks.
  *
  * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:

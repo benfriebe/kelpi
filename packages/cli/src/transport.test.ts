@@ -117,10 +117,10 @@ describe('describeTransportFailure', () => {
 
     it('names the missing socket and points at the app', () => {
         const [line, repair] = describeTransportFailure(
-            { kind: 'unixSocketMissing', path: '/tmp/nex.sock' },
+            { kind: 'unixSocketMissing', path: '/tmp/kelpi.sock' },
             'kelpi pane close'
         );
-        expect(line).toBe('kelpi pane close: cannot reach Kelpi — socket /tmp/nex.sock does not exist.');
+        expect(line).toBe('kelpi pane close: cannot reach Kelpi — socket /tmp/kelpi.sock does not exist.');
         expect(repair).toBe(
             'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set KELPI_SOCKET=tcp:<host>:<port>.'
         );
@@ -160,7 +160,7 @@ describe('printTransportFailure', () => {
     it('prints Error + Repair for request/response commands', () => {
         const err: string[] = [];
         setIO({ out: () => undefined, err: (text) => err.push(text) });
-        setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/nex.sock' });
+        setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/kelpi.sock' });
         printTransportFailure('kelpi pane list');
         expect(err.join('').split('\n')[0]?.startsWith('Error: ')).toBe(true);
         expect(err.join('')).toContain('\nRepair: ');
@@ -169,7 +169,7 @@ describe('printTransportFailure', () => {
     it('switches the prefix to Warning for fire-and-forget commands', () => {
         const err: string[] = [];
         setIO({ out: () => undefined, err: (text) => err.push(text) });
-        setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/nex.sock' });
+        setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/kelpi.sock' });
         printTransportFailure('kelpi event stop', { fireAndForget: true });
         expect(err.join('').startsWith('Warning: ')).toBe(true);
     });

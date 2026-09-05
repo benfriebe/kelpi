@@ -1,7 +1,7 @@
 /**
- * Reading `~/.config/nex/config` on the daemon's behalf.
+ * Reading `~/.config/kelpi/config` on the daemon's behalf.
  *
- * Spec: docs/config-keybindings.md §1 (the file lives at literally `~/.config/nex/config`
+ * Spec: docs/config-keybindings.md §1 (the file lives at literally `~/.config/kelpi/config`
  * with `~` expanded to `$HOME`, no XDG lookup), §1.5 (profiles), §12 (`tcp-port`).
  * Parsing itself is `@kelpi/core/config`; this module only does the IO and the "missing file is
  * not an error" policy.
@@ -44,7 +44,7 @@ export interface ConfigLookup {
     readonly home?: string | undefined;
 }
 
-/** `~/.config/nex/config`, or whatever `KELPID_CONFIG_PATH` names. Does not create anything. */
+/** `~/.config/kelpi/config`, or whatever `KELPID_CONFIG_PATH` names. Does not create anything. */
 export function resolveConfigPath(lookup: ConfigLookup = {}): string {
     const env = lookup.env ?? process.env;
     const home = lookup.home ?? homedir();

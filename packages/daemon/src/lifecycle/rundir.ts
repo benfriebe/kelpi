@@ -138,7 +138,7 @@ export interface PidRecord {
     readonly protocol: number;
     /** ISO 8601 UTC. */
     readonly started_at: string;
-    /** The daemon's control socket (the run-dir one, not `/tmp/nex.sock`). */
+    /** The daemon's control socket (the run-dir one, not `/tmp/kelpi.sock`). */
     readonly socket?: string | undefined;
     /** HTTP/WS listener port, once bound. */
     readonly http_port?: number | undefined;

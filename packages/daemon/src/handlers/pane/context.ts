@@ -5,7 +5,7 @@
  * for the `pane-*` family, widened (never narrowed) with the few extra seams these handlers
  * need and that boot supplies:
  *
- *  - `profiles()`: the parsed `~/.config/nex/config` profile list, re-read per call so
+ *  - `profiles()`: the parsed `~/.config/kelpi/config` profile list, re-read per call so
  *    definitions stay fresh without a watcher (workspace-feature.md §3.4); used to build the
  *    spawn env of every shell pane these handlers create.
  *  - `spawn`: the process-level spawn defaults (helpers dir for `PATH`, login shell, the
@@ -38,9 +38,9 @@ export interface PaneSpawnDefaults {
     /** Directory holding the bundled `kelpi` CLI; prepended to `PATH` when present. */
     readonly helpersDir?: string | undefined;
     /**
-     * The `NEX_SOCKET` value routing this pane's `kelpi` CLI back at THIS daemon
+     * The `KELPI_SOCKET` value routing this pane's `kelpi` CLI back at THIS daemon
      * (`tcp:127.0.0.1:<port>`), read at env-build time so it reflects the live listener.
-     * Without it a hook firing inside the pane resolves the shared `/tmp/nex.sock` — which on
+     * Without it a hook firing inside the pane resolves the shared `/tmp/kelpi.sock`, which on
      * a machine also running the Swift app is somebody else's daemon. Null = no injection.
      */
     readonly controlRoute?: (() => string | null) | undefined;

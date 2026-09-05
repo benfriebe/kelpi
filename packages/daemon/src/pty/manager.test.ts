@@ -170,7 +170,7 @@ describe('PtyManager registry (§1.2)', () => {
             paneID: 'pane-a',
             cwd: '/tmp',
             env: [
-                ['NEX_PANE_ID', 'PANE-A'],
+                ['KELPI_PANE_ID', 'PANE-A'],
                 ['FOO', 'one'],
                 ['FOO', 'two']
             ],
@@ -181,7 +181,7 @@ describe('PtyManager registry (§1.2)', () => {
 
         const env = spawned[0]?.request.env ?? {};
         expect(env['KELPI_TEST_INHERITED']).toBe('inherited');
-        expect(env['NEX_PANE_ID']).toBe('PANE-A');
+        expect(env['KELPI_PANE_ID']).toBe('PANE-A');
         expect(env['FOO']).toBe('two'); // later pair wins, matching the ordered overlay
         expect(env['TERM']).toBe(DEFAULT_TERM);
         expect(spawned[0]?.request.name).toBe(DEFAULT_TERM);
@@ -574,7 +574,7 @@ describe('real node-pty integration', () => {
             paneID,
             cwd,
             env: [
-                ['NEX_PANE_ID', paneID],
+                ['KELPI_PANE_ID', paneID],
                 ['PS1', ''],
                 ['KELPI_TEST_MARKER', 'marker-value']
             ] as ReadonlyArray<readonly [string, string]>,

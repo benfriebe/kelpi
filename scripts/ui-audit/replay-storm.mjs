@@ -7,7 +7,7 @@
  * no window at all, so it can ask it two hundred times:
  *
  *   - a SANDBOX daemon (`mkdtemp` + `KELPID_*` + ephemeral non-reserved ports — never the dev
- *     stack, never `/tmp/nex.sock`), with a real PTY running a real zsh,
+ *     stack, never `/tmp/kelpi.sock`), with a real PTY running a real zsh,
  *   - a headless client speaking the real pane-stream protocol (`attach-pane`, `resize-pane`,
  *     binary `ack`/`input` frames),
  *   - every `replay` / `output` frame fed through the REAL client ingest

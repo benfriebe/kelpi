@@ -3,7 +3,7 @@
  *
  * Two files, one snapshot:
  *
- *   `~/.config/nex/config`      keybind lines + general settings   (config-keybindings.md §1)
+ *   `~/.config/kelpi/config`      keybind lines + general settings   (config-keybindings.md §1)
  *   `~/.config/ghostty/config`  appearance                          (content-panes.md §3.1/§3.8)
  *
  * Both are watched; any change re-reads BOTH (they are cheap, and a single code path cannot
@@ -17,7 +17,7 @@
  * truth in both directions: there is no in-memory map that a hand-edit could contradict.
  *
  * Deliberate divergence from the Swift app, noted because it is user-visible: the Swift app
- * has **no watcher** on `~/.config/nex/config` ("hand-edits to `keybind` lines require an app
+ * has **no watcher** on `~/.config/kelpi/config` ("hand-edits to `keybind` lines require an app
  * restart", §1.4). A daemon whose clients are long-lived browser tabs cannot ask for a
  * restart, so it watches. Everything the watcher produces is otherwise identical to what a
  * relaunch would have produced.
@@ -94,7 +94,7 @@ export function resolveGhosttyConfigPath(lookup: SettingsPathLookup = {}): strin
 }
 
 export interface SettingsServiceOptions extends SettingsPathLookup {
-    /** Use this `~/.config/nex/config` path verbatim (otherwise resolved from env/home). */
+    /** Use this `~/.config/kelpi/config` path verbatim (otherwise resolved from env/home). */
     readonly configPath?: string | undefined;
     /** Use this ghostty config path verbatim. */
     readonly ghosttyPath?: string | undefined;

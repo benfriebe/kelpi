@@ -12,7 +12,7 @@ import { resolveWorkspaceStrict } from './workspace.js';
 import type { PaneScope, ResolvablePane, ResolvableWorkspace } from './types.js';
 
 export interface PaneTargetRequest {
-    /** The caller's own pane (`NEX_PANE_ID`). Addressed pane only when `target` is absent. */
+    /** The caller's own pane (`KELPI_PANE_ID`). Addressed pane only when `target` is absent. */
     readonly paneID?: string | null | undefined;
     /** `--target <name-or-uuid>`; wins over `paneID`. */
     readonly target?: string | null | undefined;

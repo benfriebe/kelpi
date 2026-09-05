@@ -25,7 +25,7 @@ import {
 import type { PaneHandlerContext } from './context.js';
 import { labelField, refreshSyncGroup, resolveTarget, sendError, sendOK } from './support.js';
 
-const SYNC_SCOPE_ERROR = 'pane sync requires --workspace or NEX_PANE_ID';
+const SYNC_SCOPE_ERROR = 'pane sync requires --workspace or KELPI_PANE_ID';
 
 /** The shape shared by `status`, `on/off/toggle` and `exclude/include`. */
 function syncSnapshot(workspace: WorkspaceState): Record<string, unknown> {

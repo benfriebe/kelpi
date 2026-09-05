@@ -408,7 +408,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
                     paneID,
                     cwd: pane.workingDirectory,
                     // CONT-089: the editor's PTY gets the workspace profile env every terminal
-                    // pane gets — same `mergedEnvVars` call, same `NEX_PANE_ID`, same overlay.
+                    // pane gets, same `mergedEnvVars` call, same `KELPI_PANE_ID`, same overlay.
                     env: (after === null ? [] : spawnEnvVars(ctx, paneID, after)).map(
                         (entry) => [entry.key, entry.value] as const
                     ),

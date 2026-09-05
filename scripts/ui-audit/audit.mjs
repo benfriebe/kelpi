@@ -21,7 +21,7 @@
  *     node scripts/ui-audit/audit.mjs --no-build --keep --verbose
  *
  * Isolation: everything lives under a fresh `mkdtemp` with ephemeral ports. It never touches
- * `/tmp/nex.sock`, `/tmp/kelpid-dev*`, or ports 19733/19734/9223 — the developer's own stack.
+ * `/tmp/kelpi.sock`, `/tmp/kelpid-dev*`, or ports 19733/19734/9223, the developer's own stack.
  *
  * Concurrency: every bundle (daemon, CLI, client, shell) is rebuilt from source at the START of
  * a run, so the screenshots always describe the working tree as it is at that moment, even
@@ -10620,7 +10620,7 @@ function buildFlows(ctx) {
              * degrade that one listener, not the daemon — and panes must still route via their
              * injected KELPI_SOCKET. This boots its OWN daemon-only sandbox with a decoy
              * ping-answering server pre-bound at the sandbox's compat path (never the real
-             * `/tmp/nex.sock`), so the shared audit stack is untouched.
+             * `/tmp/kelpi.sock`), so the shared audit stack is untouched.
              */
             id: 'agent-coexistence',
             expect:
@@ -18646,7 +18646,7 @@ function buildFlows(ctx) {
         {
             id: 'settings-live-apply',
             expect:
-                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `kelpi workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014). The repaint reaches the CELL AREA, not just the margin around it: the theme\u2019s background is the most-painted colour on the engine\u2019s own canvas on arrival AND after a full-screen redraw \u2014 or, under `background-opacity < 1`, the cell area is CLEARED and carries no opaque pixel of the previous background (\u00a7N18).',
+                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/kelpi/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `kelpi workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014). The repaint reaches the CELL AREA, not just the margin around it: the theme\u2019s background is the most-painted colour on the engine\u2019s own canvas on arrival AND after a full-screen redraw \u2014 or, under `background-opacity < 1`, the cell area is CLEARED and carries no opaque pixel of the previous background (\u00a7N18).',
             needsEyes: true,
             async run(recorder) {
                 /*

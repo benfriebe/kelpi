@@ -333,7 +333,7 @@ describe('real PTY input pipeline', () => {
         manager.spawn({
             paneID: 'pane-1',
             cwd: dir,
-            env: [['NEX_PANE_ID', 'pane-1']],
+            env: [['KELPI_PANE_ID', 'pane-1']],
             cols: 80,
             rows: 24,
             shell: FALLBACK_SHELL
@@ -368,7 +368,7 @@ describe('real PTY input pipeline', () => {
         manager.spawn({
             paneID: 'pane-1',
             cwd: dir,
-            env: [['NEX_PANE_ID', 'pane-1']],
+            env: [['KELPI_PANE_ID', 'pane-1']],
             cols: 80,
             rows: 24,
             shell: FALLBACK_SHELL

@@ -642,7 +642,7 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
                     probe.compat === undefined
                         ? null
                         : { path: probe.compat.path, error: probe.compat.error },
-                // The NEX_SOCKET value panes carry; null = the daemon did not report one.
+                // The KELPI_SOCKET value panes carry; null = the daemon did not report one.
                 pane_route: probe.paneRoute ?? null,
                 ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
             })
@@ -662,7 +662,7 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(`  version: ${probe.version ?? 'unknown'} (build ${probe.build ?? 'unknown'})`);
     io.out(`  protocol: ${String(paths.protocol)}`);
     // A degraded compat socket is not a degraded daemon — panes route via their injected
-    // NEX_SOCKET — but this line is where a user learns their plain-terminal `kelpi` commands
+    // KELPI_SOCKET, but this line is where a user learns their plain-terminal `kelpi` commands
     // on the default socket are reaching a DIFFERENT app (typically the Swift one).
     io.out(
         probe.compat === undefined
@@ -671,7 +671,7 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     );
     if (probe.paneRoute !== undefined) io.out(`  pane route: ${probe.paneRoute}`);
     // §SET-021 / §AGNT-005: a `tcp-port` that never bound used to be a log line inside the
-    // daemon, so every `NEX_SOCKET=tcp:…` client just timed out with nothing to read. Printed
+    // daemon, so every `KELPI_SOCKET=tcp:…` client just timed out with nothing to read. Printed
     // only when TCP was actually asked for — silence still means "Unix socket only".
     if (tcp !== undefined) {
         io.out(

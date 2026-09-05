@@ -38,7 +38,7 @@ import {
 import { forCommand } from './common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from './context.js';
 
-export const GRAFT_SCOPE_REQUIRED_ERROR = 'graft requires --workspace, --repo, or NEX_PANE_ID';
+export const GRAFT_SCOPE_REQUIRED_ERROR = 'graft requires --workspace, --repo, or KELPI_PANE_ID';
 /** `error_kind` for a failure that never reached the engine (bad/absent scope). */
 export const GRAFT_SCOPE_ERROR_KIND = 'scope';
 export const GRAFT_NO_MATCH_ERROR = 'no repo associations matched the requested scope';

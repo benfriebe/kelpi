@@ -1,5 +1,5 @@
 /**
- * Chrome styling + status-bar settings, parsed out of `~/.config/nex/config`.
+ * Chrome styling + status-bar settings, parsed out of `~/.config/kelpi/config`.
  *
  * Spec: shell-ui.md §2 (chrome palette, sidebar tint knobs), §8.1 (status-bar gauges), and the
  * Swift `SettingsFeature.State` fields these mirror (`SettingsFeature.swift:52-77`).

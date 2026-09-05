@@ -39,7 +39,7 @@ describe('wireTimestamp', () => {
 });
 
 describe('spawnEnvVars', () => {
-    it('orders NEX_PANE_ID, PATH, then the profile vars sorted by key', () => {
+    it('orders KELPI_PANE_ID, PATH, then the profile vars sorted by key', () => {
         const h = harness();
         seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
         const ctx = {

@@ -191,7 +191,7 @@ describe('Settings ▸ Keybindings', () => {
             <KeybindingsTab
                 bindings={clientKeyBindings([])}
                 actions={actions()}
-                configPath="~/.config/nex/config"
+                configPath="~/.config/kelpi/config"
                 globalHotkey={globalHotkey}
             />
         );
@@ -277,7 +277,7 @@ describe('Settings ▸ Keybindings', () => {
         expect(scroller.contains(footer)).toBe(false);
         expect(footer.className).toContain('shrink-0');
         expect(footer.style.borderTop).toContain('--kelpi-border');
-        expect(screen.getByTestId('settings-footer-note').textContent).toContain('~/.config/nex/config');
+        expect(screen.getByTestId('settings-footer-note').textContent).toContain('~/.config/kelpi/config');
         // Reset is INSIDE the footer, and it is the footer's trailing control.
         const reset = screen.getByTestId('reset-all-keybindings');
         expect(footer.contains(reset)).toBe(true);

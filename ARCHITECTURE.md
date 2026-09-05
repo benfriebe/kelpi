@@ -26,7 +26,7 @@ Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libgh
 │  ├─ Terminal state (ghostty-vt / headless VT + ring buffer per pane)     │
 │  ├─ Domain store (workspaces, groups, panes, layout, agents, labels)     │
 │  ├─ Persistence (SQLite)                                                 │
-│  ├─ Control listener: unix socket /tmp/nex.sock (+ optional TCP)         │
+│  ├─ Control listener: unix socket /tmp/kelpi.sock (+ optional TCP)         │
 │  │    └─ existing kelpi CLI protocol, byte-compatible                      │
 │  └─ HTTP+WS listener: 127.0.0.1:<port> (+ tailnet bind)                  │
 │       ├─ serves the web client (static assets, versioned with daemon)    │

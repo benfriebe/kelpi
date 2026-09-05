@@ -34,7 +34,7 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const SOCKET_MODE = 0o600;
 
 export interface ControlServerOptions {
-    /** Unix domain socket path (production: `/tmp/nex.sock`, hardcoded in the CLI). */
+    /** Unix domain socket path (production: `/tmp/kelpi.sock`, hardcoded in the CLI). */
     readonly socketPath: string;
     /** Optional TCP listener; `0` binds an ephemeral port (tests). */
     readonly tcpPort?: number | undefined;

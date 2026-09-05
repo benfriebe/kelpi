@@ -365,9 +365,9 @@ export interface WsTransportStatus {
     readonly tcp: WsTcpTransportStatus | null;
     /**
      * The CLI-compat socket's bind failure (typically another Kelpi — the Swift app — owning
-     * `/tmp/nex.sock`), or null/absent while it serves. Additive: an older client ignores it.
+     * `/tmp/kelpi.sock`), or null/absent while it serves. Additive: an older client ignores it.
      * A degraded compat socket is not a degraded daemon (panes route via their injected
-     * `NEX_SOCKET`), but Settings ▸ Network must be able to say where plain-terminal `kelpi`
+     * `KELPI_SOCKET`), but Settings ▸ Network must be able to say where plain-terminal `kelpi`
      * commands are going.
      */
     readonly compat?: { readonly path: string; readonly error: string } | null;

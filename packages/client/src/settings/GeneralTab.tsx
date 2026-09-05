@@ -23,7 +23,7 @@
  *     under the Network section, and the daemon now reports what its listener actually did
  *     (`welcome.transport`, backed by `daemon/src/control/server.ts`'s `tcpStatus`), so the row
  *     reads "Listening on 127.0.0.1:19400" or "Port 19400 unavailable: …" — the failed-bind
- *     case that used to be a daemon log line nobody saw while every `NEX_SOCKET=tcp:…` client
+ *     case that used to be a daemon log line nobody saw while every `KELPI_SOCKET=tcp:…` client
  *     timed out against nothing.
  *
  * Panes ▸ focus-follows-mouse and the two confirmation suppressions (workspace delete, quit)
@@ -247,7 +247,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                 ) : null}
                 {/*
                  * §SET-021: the failed bind, in the destructive tone, under the Network section
-                 * — the one place a user goes looking when `NEX_SOCKET=tcp:…` stops answering.
+                 *, the one place a user goes looking when `KELPI_SOCKET=tcp:…` stops answering.
                  */}
                 {bindError === null ? null : (
                     <p
@@ -261,7 +261,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                 {/*
                  * The routing fix's coexistence state: another Kelpi (the Swift app) owns the
                  * shared CLI-compat socket. Not destructive-toned — panes are unaffected
-                 * (their NEX_SOCKET is injected at spawn) — but the one place a user goes
+                 * (their KELPI_SOCKET is injected at spawn), but the one place a user goes
                  * looking when plain-terminal `kelpi` commands answer as the wrong app.
                  */}
                 {props.transport?.compat == null ? null : (

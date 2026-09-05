@@ -691,9 +691,7 @@ Workspace resolution (note: **not** `resolvePaneTarget`):
 1. `workspaceFilter` given → strict `resolveWorkspace` or
    `error("workspace not found: {filter}")`.
 2. else `paneID` given → `workspaceContainingPane(paneID)` (**parked panes count** here).
-3. else → `error("pane sync requires --workspace or NEX_PANE_ID")`. (The error text is
-   contract and still names the legacy variable, `handlers/pane/sync.ts:28`; the variable a
-   pane actually carries is `KELPI_PANE_ID`.)
+3. else → `error("pane sync requires --workspace or KELPI_PANE_ID")` (`handlers/pane/sync.ts:28`).
 
 `action` lowercased: `on` → nextActive true; `off` → false; `toggle` → `!current`;
 `status` → reply the current snapshot and stop (read-only, no mutation); anything else →
@@ -1151,9 +1149,7 @@ else if paneID != null:
 else if repoFilter != null:
   scope = ALL workspaces
 else:
-  failure("graft requires --workspace, --repo, or NEX_PANE_ID")
-  // contract text; it still names the legacy variable (graft.ts:41) though the pane's
-  // env var is KELPI_PANE_ID
+  failure("graft requires --workspace, --repo, or KELPI_PANE_ID")   // graft.ts:41
 
 results = []
 for ws in scope, for assoc in ws.repoAssociations:
@@ -1341,9 +1337,7 @@ hook scripts and saved state keep working; each explains why the code does somet
 2. **Error strings are contract.** The CLI prints them verbatim and scripts grep them
    (e.g. the delete flow keys off `active_agents`, doctor keys off ping fields). The daemon
    emits them character-for-character, including the backticked repair hints and the em-dash
-   free phrasing shown above. This is also why two of them (`pane sync requires --workspace
-   or NEX_PANE_ID`, `graft requires --workspace, --repo, or NEX_PANE_ID`) still name the
-   legacy `NEX_PANE_ID` variable even though the pane's env var is `KELPI_PANE_ID`.
+   free phrasing shown above.
 3. **Reply-before-effect + pre-minted UUIDs.** `pane-split`/`pane-create` ack with a pane
    id that does not exist yet; the id is threaded into the creation path. The daemon
    guarantees the created pane gets exactly the acked id (single-threaded state mutation

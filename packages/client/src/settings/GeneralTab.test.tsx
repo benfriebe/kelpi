@@ -252,11 +252,11 @@ describe('Settings ▸ General', () => {
                 { tcpPort: 0 },
                 {
                     tcp: null,
-                    compat: { path: '/tmp/nex.sock', error: 'already owned by a live daemon (pid 5)' }
+                    compat: { path: '/tmp/kelpi.sock', error: 'already owned by a live daemon (pid 5)' }
                 }
             );
             const note = screen.getByTestId('compat-degraded-note');
-            expect(note.textContent).toContain('Another Kelpi owns /tmp/nex.sock');
+            expect(note.textContent).toContain('Another Kelpi owns /tmp/kelpi.sock');
             expect(note.textContent).toContain('Panes are unaffected');
         });
 

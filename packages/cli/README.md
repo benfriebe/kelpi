@@ -163,10 +163,10 @@ where the agent CLIs run, which stays correct when the daemon lives elsewhere.
 
 ## Transport
 
-`NEX_SOCKET` selects the transport, exactly as before: absent (or any value not starting with
-`tcp:`) is the **hardcoded** Unix socket `/tmp/nex.sock`; `tcp:<host>:<port>` is TCP. A
+`KELPI_SOCKET` selects the transport: absent (or any value not starting with
+`tcp:`) is the **hardcoded** Unix socket `/tmp/kelpi.sock`; `tcp:<host>:<port>` is TCP. A
 malformed `tcp:` value falls back to the Unix socket silently. Other environment variables:
-`NEX_PANE_ID`, `KELPI_REPLY_TIMEOUT` (seconds, default 5), `KELPI_SILENT`, `KELPI_VERBOSE_HOOKS`,
+`KELPI_PANE_ID`, `KELPI_REPLY_TIMEOUT` (seconds, default 5), `KELPI_SILENT`, `KELPI_VERBOSE_HOOKS`,
 `HOME`.
 
 Failures are categorized (`unixSocketMissing`, `unixConnectRefused`, `tcpResolveFailed`,

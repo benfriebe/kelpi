@@ -1064,9 +1064,8 @@ else if paneID:
 else if repoFilter:
   scope = allWorkspaces                      // repo-only filter searches everywhere
 else:
-  FAIL "graft requires --workspace, --repo, or NEX_PANE_ID"
-       // literal reply text kept from the legacy CLI era (handlers/app/graft.ts:41);
-       // the CLI itself reads KELPI_PANE_ID (§7.5)
+  FAIL "graft requires --workspace, --repo, or KELPI_PANE_ID"
+       // literal reply text (handlers/app/graft.ts:41); the CLI reads KELPI_PANE_ID (§7.5)
 
 results = []
 for ws in scope, assoc in ws.repoAssociations:

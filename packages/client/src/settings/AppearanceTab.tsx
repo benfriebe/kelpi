@@ -7,7 +7,7 @@
  * them is the organising idea of the whole tab:
  *
  *   - **kelpi-owned** — the chrome palette, the sidebar tint knobs and the status-bar gauges are
- *     `key = value` lines in `~/.config/nex/config`, written with `set-general-setting`
+ *     `key = value` lines in `~/.config/kelpi/config`, written with `set-general-setting`
  *     (`@kelpi/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
  *     our file.
  *   - **ghostty-owned** — background, opacity, font and terminal theme belong to ghostty's

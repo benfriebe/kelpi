@@ -679,7 +679,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     /**
      * Why the CLI-compat socket is not serving (typically: another Kelpi — the Swift app — owns
      * `/tmp/nex.sock`), or null while it is. A degraded compat socket never takes the daemon
-     * down: panes reach it via their injected `NEX_SOCKET`, and this is what `ping` reports so
+     * down: panes reach it via their injected `KELPI_SOCKET`, and this is what `ping` reports so
      * `kelpi doctor` can say where plain-terminal commands are going instead.
      */
     let compatDegraded: string | null = null;
@@ -701,7 +701,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         return status;
     };
 
-    /** The `NEX_SOCKET` value pane environments carry, or null before/without a TCP bind. */
+    /** The `KELPI_SOCKET` value pane environments carry, or null before/without a TCP bind. */
     const paneRouteValue = (): string | null => {
         const status = runControl?.tcpStatus ?? null;
         return status !== null && status.bound !== null
@@ -731,10 +731,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // file at boot — `resolveControlEndpoints` says so — and it has to keep outranking it
         // afterwards. Without this guard the first unrelated Settings write would read
         // `tcp-port = 0` out of the file and tear down a listener the operator asked for on the
-        // command line, taking every `NEX_SOCKET=tcp:…` client with it.
+        // command line, taking every `KELPI_SOCKET=tcp:…` client with it.
         if (endpoints.source.tcpPort === 'env') return;
         // The configured `tcp-port` always lives on the compat server when one exists — the
-        // run-dir server's TCP listener is the pane route (injected `NEX_SOCKET`), and a
+        // run-dir server's TCP listener is the pane route (injected `KELPI_SOCKET`), and a
         // config change must never tear THAT down under the live panes carrying its port.
         const owner = compatControl ?? runControl;
         if (owner === undefined) return;
@@ -753,12 +753,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                       : `control tcp listener FAILED on port ${String(next.requested)}: ${String(next.error)}`
             );
             // No compat server means the configured TCP shares `runControl` with the pane
-            // route; disabling it would strand every live pane's injected NEX_SOCKET, so the
+            // route; disabling it would strand every live pane's injected KELPI_SOCKET, so the
             // route falls back to a fresh ephemeral (new panes pick it up at spawn).
             if (owner === runControl && next === null) {
                 const rebound = await owner.startTCP(0);
                 if (rebound?.bound != null) {
-                    log(`pane-route tcp listener rebound on ${rebound.host}:${String(rebound.bound)}; existing panes keep their old NEX_SOCKET until respawned`);
+                    log(`pane-route tcp listener rebound on ${rebound.host}:${String(rebound.bound)}; existing panes keep their old KELPI_SOCKET until respawned`);
                 }
             }
         } catch (error) {
@@ -835,7 +835,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 await runControl.startTCP(0);
                 log(
                     `pane-route tcp port ${String(previousRoutePort)} was taken during the rebind; ` +
-                        `now on ${String(runControl.tcpPort)} — existing panes keep their old NEX_SOCKET until respawned`
+                        `now on ${String(runControl.tcpPort)} — existing panes keep their old KELPI_SOCKET until respawned`
                 );
             }
         }
@@ -1462,11 +1462,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         bootDeferUntil = (options.now ?? Date.now)() + (options.bootDeferWindowMs ?? DEFAULT_BOOT_DEFER_WINDOW_MS);
 
         // The run-dir control server binds BEFORE the restored panes spawn: their env is
-        // built eagerly (`boot/resume.ts`), and the NEX_SOCKET route it embeds is this
+        // built eagerly (`boot/resume.ts`), and the KELPI_SOCKET route it embeds is this
         // server's TCP port. That listener is always on — the configured `tcp-port` when this
         // path IS the compat path, an ephemeral loopback port otherwise — because `tcp:` is
-        // the only NEX_SOCKET form both CLIs honor (anything else silently falls back to the
-        // shared `/tmp/nex.sock`, which may belong to another Kelpi entirely). A busy RUN-DIR
+        // the only KELPI_SOCKET form the kelpi CLI honors (anything else silently falls back to the
+        // shared `/tmp/kelpi.sock`, which may belong to another Kelpi entirely). A busy RUN-DIR
         // socket stays fatal: that is the "a daemon of this protocol is already running" case
         // the discover-or-spawn flow depends on.
         runControl = createControlServer({
@@ -1500,7 +1500,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 ...(endpoints.tcpPort !== undefined ? { tcpPort: endpoints.tcpPort } : {}),
                 ...(onError !== undefined ? { onError } : {})
             });
-            // Best-effort by design: another Kelpi owning `/tmp/nex.sock` degrades this socket,
+            // Best-effort by design: another Kelpi owning `/tmp/kelpi.sock` degrades this socket,
             // it does not take the daemon down (`startCompat`).
             await startCompat(compatControl);
         }

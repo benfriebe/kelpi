@@ -791,8 +791,8 @@ excluded set, and only when ≥2 qualify.
 `action` is lowercased before matching; an unknown value →
 `{"ok":false,"error":"unknown sync action '<action>' (valid: on, off, toggle, status)"}`.
 With neither a resolvable `workspace` nor a `pane_id` that some workspace contains →
-`pane sync requires --workspace or NEX_PANE_ID` (the error text still names the legacy
-variable; `packages/daemon/src/handlers/pane/sync.ts:28`). The caller lookup is
+`pane sync requires --workspace or KELPI_PANE_ID` (`packages/daemon/src/handlers/pane/sync.ts:28`).
+The caller lookup is
 parked-inclusive (a parked shell still belongs to its workspace), and the reply is computed
 from post-mutation state (`sync.ts:61-85`).
 

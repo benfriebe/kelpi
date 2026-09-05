@@ -705,20 +705,20 @@ like an agent notification. Unknown pane → ignored.
 - **Open / default click**: requires both `paneID` and `workspaceID` in the
   payload; activates the app, switches to that workspace, and focuses that pane.
 - **Removal**: Kelpi never sends a retraction message: the daemon publishes a
-  notification and nothing else (`packages/shell/src/agents.ts:443-451`). The two
+  notification and nothing else (`packages/shell/src/agents.ts:443-452`). The two
   presenters withdraw on different triggers. The Electron shell closes the native
   `kelpi-<paneID>` toast when that pane **leaves the waiting set** (any status change
   away from `waitingForInput`, `clearPaneStatus` included; `noLongerWaitingPanes` in
   `packages/shell/src/status.ts:583-591`), so a toast on a pane that is already `idle`
   (an OSC toast on a plain terminal, §7.4) is not closed by visiting it. The browser
   client instead calls `clear(paneID)`
-  (`packages/client/src/state/notifications.ts:182-190`) from its focus report the
+  (`packages/client/src/state/notifications.ts:187-195`) from its focus report the
   moment the user focuses the pane, unconditionally and before the 600 ms dwell
   (`packages/client/src/state/bridge.ts:390-391`).
 - **Permission**: the browser client asks on the first `pointerdown` in the window
   (browsers grant only from a user gesture; `packages/client/src/App.tsx:619-627`) and
   posts in-app toasts until granted. The Electron shell needs no permission request:
-  `Notification.isSupported()` is the only gate (`notify.ts:26-28`).
+  `Notification.isSupported()` is the only gate (`notify.ts:26-30`).
 - Suppression is decided in the daemon (`packages/core/src/agent/notifications.ts`,
   fed by client focus/visibility reports), which simply does not broadcast a
   notification a client should not show; everything that arrives at a client is
@@ -906,7 +906,7 @@ procedure:
    fallback (`quit.ts:139-142`), so a ⌘Q while the daemon is unreachable still honours a
    suppression the user set.
 3. Compute the **activity summary** over all workspaces (`activitySummary`,
-   `packages/shell/src/agents.ts:470-480`):
+   `packages/shell/src/agents.ts:471-481`):
    - `agentCount` = Σ per-workspace `activeAgentCount`, where a workspace's count
      is its panes **plus parked panes** with status ≠ `idle` (running or waiting).
    - `workspaceCount` = number of workspaces with count > 0 (a workspace whose only

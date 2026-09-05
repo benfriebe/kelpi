@@ -1096,7 +1096,7 @@ sequence:
 - Notifications are shown even while the app is frontmost (banner + sound); the focus-based
   suppression happens before posting, not at presentation time.
 - Retraction: the daemon publishes notifications but never an explicit `removeNotification`
-  (`packages/shell/src/agents.ts:449`). The shell closes a pane's live `kelpi-<paneID>`
+  (`packages/shell/src/agents.ts:450`). The shell closes a pane's live `kelpi-<paneID>`
   notification the moment that pane leaves the waiting set (any status change away from
   `waitingForInput`, `clearPaneStatus` included; `packages/shell/src/status.ts:589`), so acting on
   a pane retracts its stale "waiting for input" notification the same way.
@@ -1104,7 +1104,7 @@ sequence:
   one-shot `pointerdown` listener and the first click in the window calls
   `runtime.notifications?.request()` (`packages/client/src/App.tsx:622`; browsers grant
   notification permission only from a user gesture, and `request()` is a no-op once the state is
-  no longer `default`, `packages/client/src/state/notifications.ts:135`). The Electron shell makes
+  no longer `default`, `packages/client/src/state/notifications.ts:140`). The Electron shell makes
   no permission request at all: `Notification.isSupported()` is the whole gate
   (`packages/shell/src/notify.ts:26`).
 
@@ -1404,7 +1404,7 @@ terminate), owned by the Electron shell (`packages/shell/src/quit.ts`):
    - Title: `Quit Kelpi?`
    - Body: `<N> agent(s) across <M> workspace(s) are still active. They keep running in the
      background - quitting only closes this window. Reopen Kelpi to attach again.` (proper
-     singular/plural; `quitConfirmDetail`, `packages/shell/src/agents.ts:490`). The dialog is only
+     singular/plural; `quitConfirmDetail`, `packages/shell/src/agents.ts:491`). The dialog is only
      shown when at least one agent is active; with none, the shell quits immediately (the daemon
      and its sessions outlive the window either way).
    - Buttons: "Cancel" is the DEFAULT (Return key) - Cmd+Q is the accidental keystroke being

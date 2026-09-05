@@ -162,7 +162,7 @@ with an **ordered** list built as follows (`mergedEnvVars`,
   default socket for anything else.
 - The profile env dict arrives with `KELPI_PROFILE=<profileName>` already merged in by the
   profile resolver (`resolveProfileEnv`, `merged-env.ts:57-66`): the profile reader
-  (`createProfileReader`, `packages/daemon/src/boot/config.ts:94-101`) reads
+  (`createProfileReader`, `packages/daemon/src/boot/config.ts:100-107`) reads
   `~/.config/kelpi/config` fresh on every call (no caching), the resolver takes the named
   profile's vars (empty for the virtual `default` profile unless the user defined vars), and
   sets `KELPI_PROFILE=<name>` **last** so a config line spoofing `KELPI_PROFILE` loses.
@@ -635,13 +635,13 @@ parsed by `packages/daemon/src/term/osc-notify.ts:53-86`):
   - notifications are shown even when the app is foreground (banner + sound) — suppression is
     purely the focus rule above
   - there is no `removeNotification` on the wire: the daemon publishes a notification but
-    never a retraction (`packages/shell/src/agents.ts:443-451`). Each client withdraws its
+    never a retraction (`packages/shell/src/agents.ts:443-452`). Each client withdraws its
     own. The Electron shell closes the live `kelpi-<paneID>` notification only when the pane
     leaves the waiting set (`noLongerWaitingPanes`, `packages/shell/src/status.ts:583-591`),
     so a native OSC toast on an idle pane is never retracted by visiting it. The browser
     client closes its notification and toast when the user focuses the pane
     (`packages/client/src/state/bridge.ts:390-391`,
-    `packages/client/src/state/notifications.ts:182-194`).
+    `packages/client/src/state/notifications.ts:187-199`).
 
 **Location**: daemon parses the OSC (`term/osc-notify.ts`) and applies the suppression rule
 using its per-client focus knowledge, then fans out to clients: Electron shell → native

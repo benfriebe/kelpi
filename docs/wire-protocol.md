@@ -56,7 +56,7 @@ Each server listens on two transports simultaneously (the second is optional):
 ### 1.2 TCP listener (optional)
 
 - Enabled by the config line `tcp-port = <port>` in `~/.config/kelpi/config`
-  (`KELPID_CONFIG_PATH` overrides the location, `packages/daemon/src/boot/config.ts:42-50`;
+  (`KELPID_CONFIG_PATH` overrides the location, `packages/daemon/src/boot/config.ts:48-56`;
   `tcp-port = 0` or absent = no listener, `config.ts:103-105`). The daemon binds it at
   startup and re-binds it on config reload (stopping any previous TCP listener first; the
   Unix socket stays up: `packages/daemon/src/control/server.ts:420-450`).

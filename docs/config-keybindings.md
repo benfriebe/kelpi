@@ -36,7 +36,7 @@ for:
 - remote daemons: `remote-daemon = <name>:<url>` (section 1.7)
 
 Path resolution: literally `~/.config/kelpi/config` with `~` expanded to `$HOME`
-(`packages/daemon/src/boot/config.ts:41-50`). It is NOT XDG-aware beyond that (no
+(`packages/daemon/src/boot/config.ts:47-56`). It is NOT XDG-aware beyond that (no
 `$XDG_CONFIG_HOME` lookup). `KELPID_CONFIG_PATH` overrides the location for the daemon and
 the shell alike (tilde-expanded, then resolved; `packages/shell/src/hotkey.ts:38-50`). It is
 a dev/test affordance so a dev daemon or a test never reads the developer's real config. The
@@ -224,7 +224,7 @@ One environment variable per line. Split rules on the value:
    `packages/core/src/config/profiles.ts:25-31`), but only when the caller requests it
    (`expandTilde: true`, the default, together with a `home`; expansion is a no-op without
    one, and the daemon passes `os.homedir()` at boot and per spawn,
-   `packages/daemon/src/boot/config.ts:86,100`). The settings snapshot the Settings profile
+   `packages/daemon/src/boot/config.ts:92,106`). The settings snapshot the Settings profile
    editor reads carries the UNEXPANDED parse (`expandTilde: false`) so a UI round-trip never
    rewrites the user's `~` paths in the file. Env resolution at PTY spawn uses the expanding
    parse.
@@ -1003,7 +1003,7 @@ interface WorkspaceProfilesAPI {
 ```
 
 `resolveEnv(name)` (`resolveProfileEnv`, `packages/core/src/env/merged-env.ts:57-65`, over
-the daemon's `createProfileReader`, `packages/daemon/src/boot/config.ts:93-103`):
+the daemon's `createProfileReader`, `packages/daemon/src/boot/config.ts:99-109`):
 
 ```
 profiles = parseProfiles(configFile, expandTilde = true, home)   // fresh read, every spawn
@@ -1096,7 +1096,7 @@ produces a typed resume command (`resume.ts:128-137`); every other pane belongs 
 workspace's current assignment. A non-`default` name with no `profile` lines behind it is
 logged as a warning (the marker is still injected; an empty `default` is never warned
 about). Ordinary spawns re-read the file (section 9.1); boot restore instead resolves every
-restored pane from a single per-launch read (`packages/daemon/src/boot/config.ts:9-14`).
+restored pane from a single per-launch read (`packages/daemon/src/boot/config.ts:9-20`).
 
 ### 9.4 Assignment surfaces
 
@@ -1235,7 +1235,7 @@ Appearance ▸ Terminal writes `theme` to the GHOSTTY config (`set-ghostty-setti
 `tcp-port = <port>` (1–65535) enables the localhost TCP transport for the CLI wire
 protocol (dev containers / SSH tunnels; binds 127.0.0.1 only). 0/absent = disabled.
 
-Settings ▸ General ▸ Network (`packages/client/src/settings/GeneralTab.tsx:202-255`): an
+Settings ▸ General ▸ Network (`packages/client/src/settings/GeneralTab.tsx:207-260`): an
 on/off toggle (turning on seeds port 19400; turning off writes `0`) + port field with an
 Apply button (shown when the field differs from the applied port; blur/Enter commit too). A
 non-numeric or out-of-range entry falls back to 19400 rather than writing a value the parser
@@ -1252,11 +1252,11 @@ connected CLI. `tcp-port` is written regardless of whether the port can bind: a 
 is not an error, it lands on the listener status. The bind OUTCOME travels separately from
 `settings-changed` (which carries what the FILE says), on `welcome.transport.tcp` at attach
 and `transport-changed` after each re-bind (`requested`, `bound`, `host`, `error`;
-`compose.ts:761`), and the row renders it (`tcpListenerDetail`, `GeneralTab.tsx:54-79`):
+`compose.ts:761`), and the row renders it (`tcpListenerDetail`, `GeneralTab.tsx:59-84`):
 "Listening on 127.0.0.1:N", "Port N unavailable: …" (destructive tone; Unix-socket clients
 are unaffected), "Disabled" when the file asks for nothing and nothing is bound, or "takes
 effect on the next daemon start" only when the daemon reports no TCP listener at all
-(`GeneralTab.tsx:78`). `KELPID_TCP_PORT` (or an explicit option) outranks the file for a dev
+(`GeneralTab.tsx:83`). `KELPID_TCP_PORT` (or an explicit option) outranks the file for a dev
 daemon, at boot and afterwards: a config write never tears down an env-requested listener
 (`compose.ts:729`), so a listener can be up that the config file does not name; the row says
 so rather than reporting "Disabled". When no compat server exists, the configured port shares

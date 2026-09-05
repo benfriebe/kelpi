@@ -924,7 +924,7 @@ declined.
   inheritance, what happens when the command exits), so Kelpi emulates the "type into an
   interactive shell" behavior (§6.2 step 7).
 - **Settings/keybindings/profiles are NOT in this DB**: they live in `~/.config/kelpi/config`
-  (`resolveConfigPath`, `packages/daemon/src/boot/config.ts:42-50`, with a `KELPID_CONFIG_PATH`
+  (`resolveConfigPath`, `packages/daemon/src/boot/config.ts:48-56`, with a `KELPID_CONFIG_PATH`
   override; `kelpid import` copies a legacy `~/.config/nex/config` there once when no Kelpi
   config exists, `packages/daemon/src/main.ts:903-910`) and, for the legacy app, UserDefaults.
   The daemon config story is a separate subsystem; nothing in `kelpi.db` absorbs it silently.

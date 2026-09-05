@@ -1228,18 +1228,27 @@ Apply button (shown when the field differs from the applied port; blur/Enter com
 non-numeric or out-of-range entry falls back to 19400 rather than writing a value the parser
 would silently ignore.
 
-Writing the key never restarts the listener: general settings are read ONCE at boot for the
-listener (`packages/daemon/src/boot/config.ts:9-12`), and a live control socket cannot be
-re-bound under a connected CLI, so the row states that the value takes effect on the next
-daemon start, and `tcp-port` is written regardless of whether the port can bind. The bind
-OUTCOME travels separately, on `welcome.transport.tcp` (`requested`, `bound`, `host`,
-`error`), and the row renders it (`tcpListenerDetail`, `GeneralTab.tsx:54-79`): "Listening
-on 127.0.0.1:N", "Port N unavailable: …" (destructive tone; Unix-socket clients are
-unaffected), "Disabled" when the file asks for nothing and nothing is bound, or "takes effect
-on the next daemon start" when the file and the running daemon disagree. `KELPID_TCP_PORT`
-(or an explicit option) outranks the file for a dev daemon
-(`packages/daemon/src/boot/compose.ts:724`), so a listener can be up that the config file
-does not name; the row says so rather than reporting "Disabled".
+Writing the key re-binds the listener live: `tcp-port` is the one general setting whose
+effect is a listener, so the daemon's settings subscriber applies every change rather than
+filing it away for the next start (`applyTcpPortSetting`,
+`packages/daemon/src/boot/compose.ts:595`, `:723-761`). The re-bind is `stopTCP` then a fresh
+bind on the control server that owns the configured port
+(`packages/daemon/src/control/server.ts:427-451`); only the TCP listener moves, the Unix
+socket and the connections it is serving stay up, which is what makes it safe under a
+connected CLI. `tcp-port` is written regardless of whether the port can bind: a failed bind
+is not an error, it lands on the listener status. The bind OUTCOME travels separately from
+`settings-changed` (which carries what the FILE says), on `welcome.transport.tcp` at attach
+and `transport-changed` after each re-bind (`requested`, `bound`, `host`, `error`;
+`compose.ts:761`), and the row renders it (`tcpListenerDetail`, `GeneralTab.tsx:54-79`):
+"Listening on 127.0.0.1:N", "Port N unavailable: …" (destructive tone; Unix-socket clients
+are unaffected), "Disabled" when the file asks for nothing and nothing is bound, or "takes
+effect on the next daemon start" only when the daemon reports no TCP listener at all
+(`GeneralTab.tsx:78`). `KELPID_TCP_PORT` (or an explicit option) outranks the file for a dev
+daemon, at boot and afterwards: a config write never tears down an env-requested listener
+(`compose.ts:729`), so a listener can be up that the config file does not name; the row says
+so rather than reporting "Disabled". When no compat server exists, the configured port shares
+the run-dir server with the pane route, so disabling it re-binds an ephemeral port instead of
+stranding the injected `KELPI_SOCKET` (`compose.ts:752-757`).
 
 ---
 
@@ -1283,7 +1292,13 @@ registries instead); nothing persists to a per-app preferences store.
    color when no theme + background opacity slider (ghostty keys, `set-ghostty-setting`);
    search-highlight colours (`search-match-*`); status-bar system stats (per-metric
    toggles, sparkline style/color/width).
-3. **Repositories** — the repo registry (default branch, paths).
+3. **Repositories** — the repo registry (`packages/client/src/settings/RepositoriesTab.tsx`):
+   a filter field and a "Show auto-detected" toggle (`:162-186`), a path field with a
+   native directory chooser when the shell provides one (`:124-126`, `:199-203`), an
+   editable name per row (`:273`) and the "Auto-detect from pane directories" toggle
+   (`:369-375`). No branch control exists: the default branch is not a registry field,
+   the git service resolves it on demand for worktree creation (`defaultBranch`,
+   `packages/daemon/src/git/service.ts:74`, `:287`).
 4. **Labels** — label presets (name + color) management; every label applied anywhere
    must exist here (gray default when CLI-created). With no presets, the placeholder sits
    at the vertical centre of the panel below the header row; the caption and the

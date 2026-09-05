@@ -751,17 +751,27 @@ bytes to the source PTY and then the *exact same bytes* to every sibling from
 `syncTargetIDs`. `writeDirect` is the un-mirrored path. What rides the mirrored path:
 
 1. **Key events**: the bytes the client engine produced for a key press, sent on the pane's
-   PTY stream and written with `write`. The event is translated once, against the source
-   pane, and the same result is replayed into each sibling. keyUp and modifier-only
-   transitions carry no bytes in the legacy encoding, so only the press that carries the
-   input is mirrored.
-2. **Text payloads**: text committed outside a keystroke (IME composition, drag-drop) is
-   mirrored the same way.
+   PTY stream as an `input` frame and written with `write`. The event is translated once,
+   against the source pane, and the same result is replayed into each sibling. keyUp and
+   modifier-only transitions carry no bytes in the legacy encoding, so only the press that
+   carries the input is mirrored; a kitty-protocol release (section 10.2) does carry bytes
+   and is kept off the mirror by the frame type below.
+2. **Text payloads**: text committed outside a keystroke is mirrored the same way: an IME
+   composition through the engine's paste path, a drag-drop through the `drop-text` desktop
+   command (`packages/daemon/src/ws/desktop.ts`), which paste-pipes the text and then calls
+   `sendText(..., {bare: true, mirror: true})`, the one `TerminalInput` call that uses `write`
+   rather than `writeDirect` (`packages/daemon/src/pty/input.ts`, section 12.4).
 
-Not mirrored: mouse input, scroll, IME preedit updates, programmatic sends
-(`pane send` / `pane send-key` target one pane only and use `writeDirect`,
+Not mirrored: mouse input, kitty key releases, scroll, IME preedit updates, programmatic
+sends (`pane send` / `pane send-key` target one pane only and use `writeDirect`,
 `packages/daemon/src/pty/input.ts:7-10`), replay, resume typing, and the kitty keyboard
-query reply (section 10.2).
+query reply (section 10.2). Mouse reports and kitty releases are encoded on the client and
+would be indistinguishable from keystrokes by their bytes, so the client sends them as a
+separate `inputDirect` PTY frame (`packages/protocol/src/ws/pty.ts`,
+`PtyStreamHandle.writeDirect`), which the stream handler routes to `writeDirect`
+(`packages/daemon/src/ws/streams.ts`); the `input` frame is the only client frame that
+mirrors. A sibling in another mouse mode (or none) would otherwise receive the source's cell
+coordinates as typed text (issue #51).
 
 Overhead when sync is off: a single map lookup per keystroke.
 
@@ -985,7 +995,10 @@ Kelpi's own layer on both sides of the wire:
   `flags === 0` nothing is intercepted, and even with flags set a key whose kitty encoding is
   its legacy encoding is handed back to the engine (only the engine knows whether DECCKM
   applies), so plain typing stays byte-identical by construction. Lock modifiers (caps/num
-  lock) are never reported. Composition bypasses the encoder entirely (section 10.1).
+  lock) are never reported. Composition bypasses the encoder entirely (section 10.1). A
+  press or repeat encoding is written as a mirrored `input` frame; a release encoding
+  (`:3u`) is written as the un-mirrored `inputDirect` frame, so only the press that carries
+  the input reaches a synchronise-input sibling (section 8.2).
 
 ---
 
@@ -1019,7 +1032,8 @@ Kelpi's own layer on both sides of the wire:
   `:503-510`); shift-held motion bypasses reporting only while a button is down, so a bare
   shift+move under mode 1003 still reports (`:477-481`); shift+wheel is still reported, with
   the shift bit set (`:519-544`). `mouseTracking: 'none'` resets the reporter.
-- No mouse mirroring to sync groups.
+- No mouse mirroring to sync groups: every report is written as the un-mirrored
+  `inputDirect` PTY frame (section 8.2), never as `input`.
 
 **Location**: client. Encoded reports are produced against daemon-side mode state, which the
 daemon streams to every attached client so the engine and the daemon vt agree.
@@ -1105,7 +1119,11 @@ Accepted content: file paths only (`terminalDropText` / `pathsFromDrop`,
 - A drag offering neither (an `http(s)://` URL, arbitrary text) is refused: nothing is typed
   and the window-level open route is not consulted either.
 - Insertion uses the outside-keystroke text path (so it is paste-piped AND mirrored to sync
-  siblings, section 8.2).
+  siblings, section 8.2): the client sends the joined text as the `drop-text` desktop
+  command (`commands.dropText`, `packages/daemon/src/ws/desktop.ts`), never as
+  `pane-send --bare`, because `pane send` is a programmatic send and is exempt from
+  mirroring (section 9). The daemon applies the section 9.1 paste pipeline and writes bare
+  (no Enter) with `mirror: true`.
 
 **Location**: split. Copy/paste UX is client-side (browser clipboard API); image paste
 round-trips through the daemon because the temp PNG must exist on the machine where the PTY

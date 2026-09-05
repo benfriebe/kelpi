@@ -13,6 +13,7 @@
  *   node scripts/dev-instance.mjs --no-build      # reuse the current dists
  *   node scripts/dev-instance.mjs --packaged      # run the packaged Kelpi.app instead
  *   node scripts/dev-instance.mjs --state ~/tmp/kelpi-candidate   # persistent state dir
+ *   node scripts/dev-instance.mjs --verbose      # echo the daemon's and shell's own logs
  *
  * Ctrl-C stops the instance. A throwaway state dir is deleted on exit; a --state dir is kept
  * (config and DB survive, so a candidate can be tested against accumulated state).
@@ -44,6 +45,15 @@ const value = (flag) => {
 const stateDir = value('--state');
 const packaged = has('--packaged');
 const noBuild = has('--no-build');
+/*
+ * `--verbose` echoes the daemon's and the shell's own logs onto this process's stderr.
+ *
+ * Without it they go nowhere: `startShell` buffers the child's output in memory and only writes
+ * it out when told to, so a candidate build's log lines - the chord relay's "forwarding ⌘KeyD",
+ * an embed's "owner=main", a focus handoff - are invisible to the person testing the candidate.
+ * That is the one thing this script exists to make possible, so it is a flag rather than a patch.
+ */
+const verbose = has('--verbose');
 const persistent = stateDir !== undefined;
 
 // ── the instance root ───────────────────────────────────────────────────────────────
@@ -210,7 +220,7 @@ const sandbox = {
 };
 
 console.log(`[dev-instance] state: ${root}${persistent ? ' (persistent)' : ' (throwaway)'}`);
-const daemon = startDaemon(sandbox, { repoRoot, verbose: false });
+const daemon = startDaemon(sandbox, { repoRoot, verbose });
 clearBackgroundTaskPolicy(daemon.child?.pid);
 await waitForHealthz(sandbox.base);
 console.log(`[dev-instance] daemon up: ${sandbox.base}  (control tcp ${String(controlPort)})`);
@@ -231,7 +241,7 @@ try {
     process.exit(1);
 }
 
-const shell = startShell(sandbox, { repoRoot, packaged, verbose: false });
+const shell = startShell(sandbox, { repoRoot, packaged, verbose });
 clearBackgroundTaskPolicy(shell.child?.pid);
 console.log(`[dev-instance] shell up (${packaged ? 'packaged Kelpi.app' : 'dev electron'})`);
 console.log('[dev-instance]');

@@ -197,24 +197,41 @@ export function releaseWebChromeCaret(root: HTMLElement | null): void {
 // ── chords forwarded from an embedded page ──────────────────────────────────────────
 
 /**
- * `web-chord:<code>[:shift]` — the relay the shell uses when a page swallowed one of our chords
- * (`shell/webhost/keys.ts`). It arrives as an ordinary `menu-command`, so no new message type is
- * owed to the protocol, and it is replayed through the SAME layer a real keystroke takes: the
- * synthesised event carries `metaKey` and the physical `code`, and the layer's own rules (URL-bar
- * deferral, the single-tab ⌘W fall-through) apply unchanged.
+ * `web-chord:<code>[:<modifier>]*` - the relay the shell uses when a page swallowed one of our
+ * chords (`shell/webhost/keys.ts`). It arrives as an ordinary `menu-command`, so no new message
+ * type is owed to the protocol, and it is replayed through the SAME layer a real keystroke takes:
+ * the synthesised event carries the physical `code` and its modifiers, and the layer's own rules
+ * (URL-bar deferral, the single-tab ⌘W fall-through) apply unchanged.
+ *
+ * Two spellings, because ⌘ used to be implied and one caller still relies on that:
+ *
+ *   - **legacy**, `web-chord:KeyW` or `web-chord:BracketRight:shift` - no `meta`/`ctrl`/`alt`
+ *     token, so ⌘ is assumed. `CLOSE_PANE_CHORD_COMMAND` (`app/shell-close.ts`) is written this
+ *     way by hand, and the shell still sends it for every ⌘-only chord;
+ *   - **explicit**, `web-chord:ArrowLeft:ctrl:shift` - names every modifier held, so a chord
+ *     without ⌘ can be said at all. `move_pane_left` is ⌃⇧← and holds no ⌘; before this existed
+ *     it had no encoding, and relaying it as `:shift` would have replayed ⌘⇧← and navigated the
+ *     page (issue #33).
+ *
+ * The presence of `meta`, `ctrl` or `alt` is what tells them apart, which is why the explicit
+ * form always names `meta` when it is held: without that rule ⌘⇧D and ⌃⇧D would encode alike.
+ * Unknown tokens are ignored rather than rejected, so a newer shell talking to an older client
+ * degrades to the modifiers this one understands instead of dropping the chord.
  */
 export const WEB_CHORD_COMMAND_PREFIX = 'web-chord:';
 
 export function parseChordCommand(command: string): KeyEventLike | null {
     if (!command.startsWith(WEB_CHORD_COMMAND_PREFIX)) return null;
-    const [code, modifier] = command.slice(WEB_CHORD_COMMAND_PREFIX.length).split(':');
+    const [code, ...modifiers] = command.slice(WEB_CHORD_COMMAND_PREFIX.length).split(':');
     if (code === undefined || code === '') return null;
+    const held = new Set(modifiers);
+    const explicit = held.has('meta') || held.has('ctrl') || held.has('alt');
     return {
         code,
-        metaKey: true,
-        shiftKey: modifier === 'shift',
-        ctrlKey: false,
-        altKey: false
+        metaKey: explicit ? held.has('meta') : true,
+        shiftKey: held.has('shift'),
+        ctrlKey: held.has('ctrl'),
+        altKey: held.has('alt')
     };
 }
 
@@ -242,7 +259,9 @@ export function replayChordCommand(command: string, target?: EventTarget): boole
     return !node.dispatchEvent(
         new KeyboardEvent('keydown', {
             code: chord.code,
-            metaKey: true,
+            metaKey: chord.metaKey,
+            ctrlKey: chord.ctrlKey,
+            altKey: chord.altKey,
             shiftKey: chord.shiftKey,
             bubbles: true,
             cancelable: true

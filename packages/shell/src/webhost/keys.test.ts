@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     chordCommand,
+    chordLabel,
     claimedChords,
     claimedChordsForLines,
     forwardedChord,
@@ -42,6 +43,11 @@ const DEFAULTS = claimedChords(DEFAULT_KEYBINDINGS);
 
 function takes(code: string, shift = false): boolean {
     return forwardedChord(input(code, { shift }), DEFAULTS) !== null;
+}
+
+/** A non-⌘ chord, the kind that had no encoding at all before. */
+function takesWith(code: string, overrides: Partial<ChordInput>): boolean {
+    return forwardedChord(input(code, overrides), DEFAULTS) !== null;
 }
 
 describe('the derived set', () => {
@@ -87,7 +93,7 @@ describe('the derived set', () => {
         // so a derived set gets it for free - and loses it if the user unbinds it, which is the
         // right answer rather than a carve-out.
         expect(takes('KeyF')).toBe(true);
-        expect(claimedChordsForLines(['super+f=unbind']).has('KeyF')).toBe(false);
+        expect(claimedChordsForLines(['super+f=unbind']).has('meta+KeyF')).toBe(false);
     });
 
     it('takes ⌘, and ⌘/ ⌘?, which open Settings and Help outside the binding map', () => {
@@ -110,11 +116,15 @@ describe('what stays with the page', () => {
         expect(takes('KeyF', true)).toBe(false);
     });
 
-    it('leaves bare ⌘[ / ⌘] to the page (they are back/forward there, SET-189)', () => {
-        // Both ARE in the binding map (focus_previous_pane / focus_next_pane), so this is the
-        // one place the derived set is deliberately narrower than the map.
-        expect(takes('BracketLeft')).toBe(false);
-        expect(takes('BracketRight')).toBe(false);
+    it('takes bare ⌘[ / ⌘] as focus prev/next pane (issue #229, NOT page back/forward)', () => {
+        // The old carve-out left these to the page "because inside a page they are
+        // back/forward". config-keybindings.md 7.3 says the opposite in as many words - "back/
+        // forward are ⌘←/⌘→, NOT ⌘[/⌘], so ⌘[/⌘] keep meaning focus-previous/next-pane even
+        // inside a web pane" - and nothing implements ⌘[ as back inside a WebContentsView
+        // anyway, so the carve-out dropped the keys rather than handing them over.
+        expect(takes('BracketLeft')).toBe(true);
+        expect(takes('BracketRight')).toBe(true);
+        // ⌘⇧[ / ⌘⇧] remain the priority layer's tab cycling, unchanged.
         expect(takes('BracketLeft', true)).toBe(true);
         expect(takes('BracketRight', true)).toBe(true);
     });
@@ -123,20 +133,32 @@ describe('what stays with the page', () => {
         // `escape=close_search` is a real default. Forwarding it would steal Escape from every
         // page in the app - a dialog that will not close is not a fix.
         expect(DEFAULTS.has('Escape')).toBe(false);
+        expect(DEFAULTS.has('meta+Escape')).toBe(false);
         expect(forwardedChord(input('Escape', { meta: false }), DEFAULTS)).toBeNull();
         expect(forwardedChord(input('Escape'), DEFAULTS)).toBeNull();
     });
 
-    it('ignores anything without ⌘, and anything with ⌃ or ⌥', () => {
-        expect(forwardedChord(input('KeyF', { meta: false }), DEFAULTS)).toBeNull();
-        expect(forwardedChord(input('KeyF', { control: true }), DEFAULTS)).toBeNull();
-        expect(forwardedChord(input('KeyF', { alt: true }), DEFAULTS)).toBeNull();
-        // The two default chord families the relay cannot encode: `move_pane_*` is
-        // ctrl+shift+arrow and `focus_*_pane` / workspace nav are alt+super+arrow. They are
-        // refused rather than mistranslated - `web-chord:ArrowLeft:shift` would replay ⌘⇧← and
-        // navigate the page back. See the module header.
-        expect(forwardedChord(input('ArrowLeft', { meta: false, control: true, shift: true }), DEFAULTS)).toBeNull();
-        expect(forwardedChord(input('ArrowRight', { alt: true }), DEFAULTS)).toBeNull();
+    it('takes ⌃ and ⌥ chords now that the wire can spell them (issue #33)', () => {
+        // `move_pane_*` is ctrl+shift+arrow and holds no ⌘ at all; the ⌥⌘ arrows are
+        // focus_*_pane and workspace nav. Both families were refused while the relay could only
+        // say ⌘, because the alternative was mistranslating them.
+        expect(takesWith('ArrowLeft', { meta: false, control: true, shift: true })).toBe(true);
+        expect(takesWith('ArrowRight', { meta: false, control: true, shift: true })).toBe(true);
+        expect(takesWith('ArrowUp', { meta: false, control: true, shift: true })).toBe(true);
+        expect(takesWith('ArrowDown', { meta: false, control: true, shift: true })).toBe(true);
+        expect(takesWith('ArrowLeft', { alt: true })).toBe(true);
+        expect(takesWith('ArrowRight', { alt: true })).toBe(true);
+        expect(takesWith('ArrowUp', { alt: true })).toBe(true);
+        expect(takesWith('ArrowDown', { alt: true })).toBe(true);
+    });
+
+    it('still refuses a chord whose exact modifier set nothing claims', () => {
+        // ⌃⇧← is `move_pane_left`; ⌃← alone is not bound, and on macOS it is Mission Control's.
+        expect(takesWith('ArrowLeft', { meta: false, control: true })).toBe(false);
+        // ⌥← without ⌘ is "previous word" in any text field on the page.
+        expect(takesWith('ArrowLeft', { meta: false, alt: true })).toBe(false);
+        // Shift alone is how a page's user types a capital, never a claim.
+        expect(takesWith('KeyD', { meta: false, shift: true })).toBe(false);
     });
 
     it('forwards key-downs only — a key-up would fire the binding twice', () => {
@@ -149,20 +171,23 @@ describe('what stays with the page', () => {
 describe('the set follows the config file', () => {
     it('moves a rebound action with its new trigger, and drops the old one', () => {
         const rebound = claimedChordsForLines(['super+d=unbind', 'shift+super+j=split_right']);
-        expect(rebound.has('KeyD')).toBe(false);
-        expect(rebound.has('shift+KeyJ')).toBe(true);
+        expect(rebound.has('meta+KeyD')).toBe(false);
+        expect(rebound.has('shift+meta+KeyJ')).toBe(true);
         // ⇧⌘D is a separate line (`split_down`) and is untouched by rebinding `split_right`.
-        expect(rebound.has('shift+KeyD')).toBe(true);
+        expect(rebound.has('shift+meta+KeyD')).toBe(true);
     });
 
     it('hands a chord back to the page when the user unbinds the action', () => {
-        expect(claimedChordsForLines(['super+p=unbind']).has('KeyP')).toBe(false);
+        expect(claimedChordsForLines(['super+p=unbind']).has('meta+KeyP')).toBe(false);
     });
 
-    it('keeps the carve-out even when the user rebinds the bracket keys', () => {
-        const rebound = claimedChordsForLines(['super+[=command_palette', 'super+]=toggle_zoom']);
-        expect(rebound.has('BracketLeft')).toBe(false);
-        expect(rebound.has('BracketRight')).toBe(false);
+    it('lets the bracket keys move with the map like any other binding', () => {
+        const rebound = claimedChordsForLines(['super+[=unbind', 'super+]=unbind']);
+        expect(rebound.has('meta+BracketLeft')).toBe(false);
+        expect(rebound.has('meta+BracketRight')).toBe(false);
+        // Tab cycling is the priority layer, not the map, so unbinding cannot touch it.
+        expect(rebound.has('shift+meta+BracketLeft')).toBe(true);
+        expect(rebound.has('shift+meta+BracketRight')).toBe(true);
     });
 
     it('drops an unparseable line rather than the whole map', () => {
@@ -177,46 +202,56 @@ describe('the set follows the config file', () => {
         // chord SILENTLY added: nothing in the app says "Kelpi ate your ⌘K". Any change to what
         // a page gives up has to be typed out here, next to the reason.
         expect([...DEFAULTS].sort()).toEqual([
-            'ArrowLeft', // web priority: back
-            'ArrowRight', // web priority: forward
-            'Comma', // Settings (window listener, not a KelpiAction)
-            'Digit0', // reset_markdown_font_size / web priority: zoom reset
-            'Digit1',
-            'Digit2',
-            'Digit3',
-            'Digit4',
-            'Digit5',
-            'Digit6',
-            'Digit7',
-            'Digit8',
-            'Digit9', // switch_to_workspace_1…9
-            'Equal', // increase_markdown_font_size / web priority: zoom in
-            'KeyD', // split_right
-            'KeyE', // toggle_markdown_edit
-            'KeyF', // toggle_search (Kelpi's find bar over a web pane)
-            'KeyI', // toggle_inspector
-            'KeyL', // web priority: focus the URL bar
-            'KeyN', // new_workspace
-            'KeyO', // open_file
-            'KeyP', // command_palette
-            'KeyR', // web priority: reload
-            'KeyT', // web priority: new tab
-            'KeyW', // close_pane / web priority: close tab
-            'Minus', // decrease_markdown_font_size / web priority: zoom out
-            'Slash', // Help (window listener)
-            'shift+BracketLeft', // web priority: previous tab
-            'shift+BracketRight', // web priority: next tab
-            'shift+Enter', // toggle_zoom
-            'shift+Equal', // web priority: zoom in (⌘+ is a shifted `=`)
-            'shift+KeyD', // split_down
-            'shift+KeyG', // new_group
-            'shift+KeyN', // create_scratchpad
-            'shift+KeyO', // open_web_pane
-            'shift+KeyR', // rename_workspace
-            'shift+KeyS', // toggle_sidebar (bare ⌘S is the page's save, and stays there)
-            'shift+KeyT', // reopen_closed_pane
-            'shift+Slash', // Help, on the key the user sees (⌘?)
-            'shift+Space' // cycle_layout
+            'alt+meta+ArrowDown', // next_workspace
+            'alt+meta+ArrowLeft', // focus_previous_pane
+            'alt+meta+ArrowRight', // focus_next_pane
+            'alt+meta+ArrowUp', // previous_workspace
+            'ctrl+shift+ArrowDown', // move_pane_down
+            'ctrl+shift+ArrowLeft', // move_pane_left
+            'ctrl+shift+ArrowRight', // move_pane_right
+            'ctrl+shift+ArrowUp', // move_pane_up
+            'meta+ArrowLeft', // web priority: back
+            'meta+ArrowRight', // web priority: forward
+            'meta+BracketLeft', // focus_previous_pane (issue #229: NOT page back)
+            'meta+BracketRight', // focus_next_pane (issue #229: NOT page forward)
+            'meta+Comma', // Settings (window listener, not a KelpiAction)
+            'meta+Digit0', // reset_markdown_font_size / web priority: zoom reset
+            'meta+Digit1',
+            'meta+Digit2',
+            'meta+Digit3',
+            'meta+Digit4',
+            'meta+Digit5',
+            'meta+Digit6',
+            'meta+Digit7',
+            'meta+Digit8',
+            'meta+Digit9', // switch_to_workspace_1…9
+            'meta+Equal', // increase_markdown_font_size / web priority: zoom in
+            'meta+KeyD', // split_right
+            'meta+KeyE', // toggle_markdown_edit
+            'meta+KeyF', // toggle_search (Kelpi's find bar over a web pane)
+            'meta+KeyI', // toggle_inspector
+            'meta+KeyL', // web priority: focus the URL bar
+            'meta+KeyN', // new_workspace
+            'meta+KeyO', // open_file
+            'meta+KeyP', // command_palette
+            'meta+KeyR', // web priority: reload
+            'meta+KeyT', // web priority: new tab
+            'meta+KeyW', // close_pane / web priority: close tab
+            'meta+Minus', // decrease_markdown_font_size / web priority: zoom out
+            'meta+Slash', // Help (window listener)
+            'shift+meta+BracketLeft', // web priority: previous tab
+            'shift+meta+BracketRight', // web priority: next tab
+            'shift+meta+Enter', // toggle_zoom
+            'shift+meta+Equal', // web priority: zoom in (⌘+ is a shifted `=`)
+            'shift+meta+KeyD', // split_down
+            'shift+meta+KeyG', // new_group
+            'shift+meta+KeyN', // create_scratchpad
+            'shift+meta+KeyO', // open_web_pane
+            'shift+meta+KeyR', // rename_workspace
+            'shift+meta+KeyS', // toggle_sidebar (bare ⌘S is the page's save, and stays there)
+            'shift+meta+KeyT', // reopen_closed_pane
+            'shift+meta+Slash', // Help, on the key the user sees (⌘?)
+            'shift+meta+Space' // cycle_layout
         ]);
     });
 });
@@ -224,27 +259,60 @@ describe('the set follows the config file', () => {
 describe('the live set', () => {
     it('starts at the shipped defaults, so a view created before the handshake still works', () => {
         expect(forwardedChordKeys()).toEqual(DEFAULTS);
-        expect(forwardedChord(input('KeyD'))).toEqual({ code: 'KeyD', shift: false });
+        expect(forwardedChord(input('KeyD'))).toEqual({ code: 'KeyD', meta: true, ctrl: false, alt: false, shift: false });
     });
 
     it('is replaced by the daemon’s lines, and restored by an empty one', () => {
         setForwardedKeybindLines(['super+d=unbind']);
         expect(forwardedChord(input('KeyD'))).toBeNull();
         setForwardedKeybindLines([]);
-        expect(forwardedChord(input('KeyD'))).toEqual({ code: 'KeyD', shift: false });
+        expect(forwardedChord(input('KeyD'))).toEqual({ code: 'KeyD', meta: true, ctrl: false, alt: false, shift: false });
     });
 });
 
 describe('the relay command', () => {
-    it('encodes what the client parses back', () => {
-        expect(chordCommand({ code: 'KeyF', shift: false })).toBe('web-chord:KeyF');
-        expect(chordCommand({ code: 'BracketRight', shift: true })).toBe('web-chord:BracketRight:shift');
+    it('keeps the legacy ⌘-implied spelling, which a hand-written constant depends on', () => {
+        // `CLOSE_PANE_CHORD_COMMAND` in `client/src/app/shell-close.ts` is literally
+        // 'web-chord:KeyW'. Byte-identical output for every ⌘-only chord keeps it parsing.
+        expect(chordCommand({ code: 'KeyF', meta: true, ctrl: false, alt: false, shift: false })).toBe(
+            'web-chord:KeyF'
+        );
+        expect(chordCommand({ code: 'BracketRight', meta: true, ctrl: false, alt: false, shift: true })).toBe(
+            'web-chord:BracketRight:shift'
+        );
+    });
+
+    it('spells every modifier out once ⌃ or ⌥ is involved', () => {
+        expect(chordCommand({ code: 'ArrowLeft', meta: false, ctrl: true, alt: false, shift: true })).toBe(
+            'web-chord:ArrowLeft:ctrl:shift'
+        );
+        expect(chordCommand({ code: 'ArrowRight', meta: true, ctrl: false, alt: true, shift: false })).toBe(
+            'web-chord:ArrowRight:meta:alt'
+        );
+    });
+
+    it('always names meta in the explicit form, or ⌘⇧D and ⌃⇧D would encode alike', () => {
+        const metaShift = chordCommand({ code: 'KeyD', meta: true, ctrl: true, alt: false, shift: true });
+        const ctrlShift = chordCommand({ code: 'KeyD', meta: false, ctrl: true, alt: false, shift: true });
+        expect(metaShift).toBe('web-chord:KeyD:meta:ctrl:shift');
+        expect(ctrlShift).toBe('web-chord:KeyD:ctrl:shift');
+        expect(metaShift).not.toBe(ctrlShift);
     });
 
     it('carries shift through for ⌘⇧= (which is ⌘+, zoom in)', () => {
         expect(forwardedChord(input('Equal', { shift: true }), DEFAULTS)).toEqual({
             code: 'Equal',
+            meta: true,
+            ctrl: false,
+            alt: false,
             shift: true
         });
+    });
+
+    it('labels a chord the way the forwarding log prints it', () => {
+        expect(chordLabel({ code: 'ArrowLeft', meta: false, ctrl: true, alt: false, shift: true })).toBe(
+            '⌃⇧ArrowLeft'
+        );
+        expect(chordLabel({ code: 'KeyD', meta: true, ctrl: false, alt: false, shift: false })).toBe('⌘KeyD');
     });
 });

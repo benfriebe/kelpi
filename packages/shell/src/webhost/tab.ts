@@ -72,7 +72,7 @@ import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
 import { isWebErrorPageURL, reportedTabURL, webErrorPageDataURL } from './error-page.js';
 import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
-import { forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
+import { chordLabel, forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
 import {
     BATCH_MARKER_CHANNEL,
     BINDING_NAME,
@@ -555,7 +555,7 @@ class ElectronTab implements HostTab {
                 // `preventDefault` the page would ALSO act on it (⌘F would open Chromium's own
                 // find alongside ours).
                 event.preventDefault();
-                log(`web pane ${this.paneID}: forwarding meta${chord.shift ? '+shift' : ''}+${chord.code} to the Kelpi window`);
+                log(`web pane ${this.paneID}: forwarding ${chordLabel(chord)} to the Kelpi window`);
                 forward(chord);
             });
         }

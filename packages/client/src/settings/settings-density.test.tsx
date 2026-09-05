@@ -1,7 +1,7 @@
 /**
- * Settings' DENSITY pack — `docs/SPACING-REVIEW.md` S15, S24, S25, S26, S33, S57, S59, S60, S64.
+ * Settings' DENSITY pack — `../kelpi-docs/SPACING-REVIEW.md` S15, S24, S25, S26, S33, S57, S59, S60, S64.
  *
- * `docs/UI-FIDELITY.md` asks whether the window looks like the shipped one; the density register
+ * `../kelpi-docs/UI-FIDELITY.md` asks whether the window looks like the shipped one; the density register
  * asks whether it feels cramped, and these nine rows are where the two answers differed. Each
  * case names the Swift line (or, for the port-only rows, the port's own rhythm) and asserts the
  * number rather than "something changed" — and each number replaced one that was measured on a

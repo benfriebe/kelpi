@@ -1,8 +1,8 @@
 /**
  * Layout, focus, zoom and search reducers.
  *
- * Spec: docs/current/workspace-feature.md §7.8 (focus), §7.12 (layout/zoom), §7.14 (search);
- * docs/current/pane-layout.md §11 (cycling + `currentLayoutIndex` reset rule).
+ * Spec: docs/workspace-feature.md §7.8 (focus), §7.12 (layout/zoom), §7.14 (search);
+ * docs/pane-layout.md §11 (cycling + `currentLayoutIndex` reset rule).
  */
 
 import {

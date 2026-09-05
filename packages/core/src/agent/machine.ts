@@ -1,6 +1,6 @@
 /**
  * The pane agent status machine as a pure reducer.
- * Spec: docs/current/agent-lifecycle.md §5, workspace-feature.md §7.10.
+ * Spec: docs/agent-lifecycle.md §5, workspace-feature.md §7.10.
  *
  *                  agentStarted            agentStopped(bg=0)
  *         idle ------------------> running -------------------> waitingForInput

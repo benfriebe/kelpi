@@ -5,7 +5,7 @@
 /**
  * Conformance against the spec text itself: the allowlist block (§4), the command summary
  * table (§6.0) and the wire-field dictionary (§7) are parsed out of
- * `docs/current/wire-protocol.md` so drift between the doc and this package fails loudly.
+ * `docs/wire-protocol.md` so drift between the doc and this package fails loudly.
  */
 
 import { readFileSync } from 'node:fs';
@@ -15,7 +15,7 @@ import { isReplyCommand, REPLY_COMMANDS } from '../allowlist.js';
 import { WIRE_FIELD_TYPES, type WireFieldKind } from './fields.js';
 import { isWireCommand, WIRE_COMMANDS } from './messages.js';
 
-const SPEC = readFileSync(new URL('../../../../docs/current/wire-protocol.md', import.meta.url), 'utf8');
+const SPEC = readFileSync(new URL('../../../../docs/wire-protocol.md', import.meta.url), 'utf8');
 
 function allowlistFromSpec(): string[] {
     const section = SPEC.split('## 4. Reply allowlist')[1];

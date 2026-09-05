@@ -1,6 +1,6 @@
 /**
  * KeyTrigger parsing / serialization for `~/.config/nex/config`.
- * Spec: docs/current/config-keybindings.md §3.
+ * Spec: docs/config-keybindings.md §3.
  *
  * Key identity is the macOS virtual keyCode (physical key). The config file stays the
  * canonical storage format; clients match it against `KeyboardEvent.code`.

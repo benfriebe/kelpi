@@ -2,7 +2,7 @@
  * Shared reducer plumbing: workspace addressing, the focus bookkeeping rules, zoom restore,
  * search clearing and pane mutation across the visible/parked lanes.
  *
- * Spec: docs/current/workspace-feature.md §3.5 (focus), §3.6 (lanes), §5.1 (restoreZoomIfNeeded),
+ * Spec: docs/workspace-feature.md §3.5 (focus), §3.6 (lanes), §5.1 (restoreZoomIfNeeded),
  * §5.2 (clearSearchIfTargets).
  */
 

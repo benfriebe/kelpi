@@ -1,7 +1,7 @@
 /**
  * Legacy state → the daemon's `PersistedSnapshot`.
  *
- * Spec: docs/current/persistence.md §5.4 (web-pane field mapping), §6.2 steps 3–5 (the load
+ * Spec: docs/persistence.md §5.4 (web-pane field mapping), §6.2 steps 3–5 (the load
  * fixups the app performs), §7.1–7.3 (persisted vs transient, and the resume contract),
  * §9.4/§9.10 (repo uniqueness, private web panes).
  *

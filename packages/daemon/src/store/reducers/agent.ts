@@ -1,8 +1,8 @@
 /**
  * Agent lifecycle, live pane metadata and synchronise-input reducers.
  *
- * Spec: docs/current/workspace-feature.md §7.10 (agent status), §7.11 (title/cwd/branch),
- * §7.15 (sync input); docs/current/agent-lifecycle.md §5 (the state machine itself, which
+ * Spec: docs/workspace-feature.md §7.10 (agent status), §7.11 (title/cwd/branch),
+ * §7.15 (sync input); docs/agent-lifecycle.md §5 (the state machine itself, which
  * lives in @kelpi/core/agent — this module only routes and applies it).
  */
 

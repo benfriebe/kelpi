@@ -1,5 +1,5 @@
 /**
- * The LOW-POLISH sidebar fidelity items — `docs/UI-FIDELITY.md` L1…L21.
+ * The LOW-POLISH sidebar fidelity items — `../kelpi-docs/UI-FIDELITY.md` L1…L21.
  *
  * Metrics, tones, glyph weights and the three behaviours hiding among them (the filter's clear
  * button yielding focus, the flexible right-click spacer, the spring-load's fast reveal). Every

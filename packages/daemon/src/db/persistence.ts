@@ -1,7 +1,7 @@
 /**
  * `Persistence<PersistedSnapshot>` over SQLite.
  *
- * Spec: docs/current/persistence.md §5 (debounced save, clear-and-reinsert in ONE transaction,
+ * Spec: docs/persistence.md §5 (debounced save, clear-and-reinsert in ONE transaction,
  * appState upsert), §6 (load + degradation), §9 (invariants); Port notes ("a daemon can and
  * should flush the pending debounced write on graceful shutdown").
  *

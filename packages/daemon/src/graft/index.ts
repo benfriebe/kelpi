@@ -1,7 +1,7 @@
 /**
  * M7 — the graft engine and the git long tail.
  *
- * Spec: docs/current/graft-git.md. The engine (`service.ts`) owns sessions, the tree-based
+ * Spec: docs/graft-git.md. The engine (`service.ts`) owns sessions, the tree-based
  * sync, breadcrumbs and the derived root claim; `watcher.ts` / `head-watcher.ts` own watcher
  * discipline; `associations.ts` bridges the store's repo associations to both watchers and to
  * the unconditional force-stop every removal path owes graft; `wire.ts` renders the `graft-*`

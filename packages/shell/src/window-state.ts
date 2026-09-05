@@ -1,5 +1,5 @@
 /**
- * Window frame persistence + the off-screen clamp (docs/current/shell-ui.md §1
+ * Window frame persistence + the off-screen clamp (docs/shell-ui.md §1
  * "Window frame persistence (Electron shell)").
  *
  * The macOS app keeps the windowed frame in UserDefaults, skipping saves while it is in (or

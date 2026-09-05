@@ -1,5 +1,5 @@
 /**
- * The alert dialogs' density pack — `docs/SPACING-REVIEW.md` S53.
+ * The alert dialogs' density pack — `../kelpi-docs/SPACING-REVIEW.md` S53.
  *
  * `QuitGate.swift:81-105` is an `NSAlert`, and the macOS push button it stands in for is ≥20 pt
  * tall with ~10 pt of side padding and a ~68 pt minimum width. The port wrote `rounded px-2 py-1`

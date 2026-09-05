@@ -1,6 +1,6 @@
 /**
  * Workspace / group name-or-id resolution.
- * Spec: docs/current/socket-handlers.md §2.1–2.3, §2.6; app-state-core.md §15.1.
+ * Spec: docs/socket-handlers.md §2.1–2.3, §2.6; app-state-core.md §15.1.
  *
  * TWO workspace resolvers exist with different matching rules and both are load-bearing
  * for CLI compatibility - they are deliberately kept separate here.

@@ -1,6 +1,6 @@
 /**
  * Layout tree types + geometry primitives.
- * Spec: docs/current/pane-layout.md §1, §1.1, §7.
+ * Spec: docs/pane-layout.md §1, §1.1, §7.
  *
  * All geometry is top-left origin, y increases downward (DOM-native).
  */

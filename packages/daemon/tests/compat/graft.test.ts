@@ -357,7 +357,7 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
     }, 120_000);
 
     it('clobbers an untracked parent file rather than refusing the sync', async () => {
-        // Documented delta (see docs/compat-status.md): graft-git.md §4.6 treats "Untracked
+        // Documented delta (see ../kelpi-docs/compat-status.md): graft-git.md §4.6 treats "Untracked
         // working tree file" as the routine sync failure, but `git read-tree --reset -u`
         // (git 2.50) overwrites the untracked file instead of erroring. The engine's error
         // *formatting* for that case still exists; git just never produces it on this path.

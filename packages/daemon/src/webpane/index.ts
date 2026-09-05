@@ -1,7 +1,7 @@
 /**
  * M6 — web panes, daemon half.
  *
- * Spec: docs/current/web-pane.md (wire contract) + `./HOST_PROTOCOL.md` (the daemon↔shell RPC
+ * Spec: docs/web-pane.md (wire contract) + `./HOST_PROTOCOL.md` (the daemon↔shell RPC
  * the Electron host implements).
  *
  * Shape of the subsystem:

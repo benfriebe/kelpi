@@ -1,7 +1,7 @@
 /**
  * Identifier helpers shared by the resolvers.
- * Specs: docs/current/app-state-core.md §1.2 (makeSlug), §6.1 (normalizeLabel),
- * docs/current/workspace-feature.md §3.1/§3.3, docs/current/wire-protocol.md §5.7
+ * Specs: docs/app-state-core.md §1.2 (makeSlug), §6.1 (normalizeLabel),
+ * docs/workspace-feature.md §3.1/§3.3, docs/wire-protocol.md §5.7
  * (UUID parsing = Foundation's `UUID(uuidString:)`).
  */
 

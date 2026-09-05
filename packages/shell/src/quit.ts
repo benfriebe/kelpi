@@ -1,5 +1,5 @@
 /**
- * The quit gate (docs/current/agent-lifecycle.md §10, re-derived for the daemon architecture).
+ * The quit gate (docs/agent-lifecycle.md §10, re-derived for the daemon architecture).
  *
  * The Swift gate existed because quitting the app KILLED every agent: it flushed pending
  * autosaves, stopped graft sessions, and then warned that "Quitting will terminate all

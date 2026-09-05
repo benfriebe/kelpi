@@ -1,6 +1,6 @@
 /**
  * Reading a legacy Swift `nex.db`: the ledger check, every degradation rule in
- * docs/current/persistence.md §9 items 5–8, and the promise that the source file is never
+ * docs/persistence.md §9 items 5–8, and the promise that the source file is never
  * touched.
  *
  * Fixtures are built from the spec's §8 DDL (`testing.ts`) and carry real column values

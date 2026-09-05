@@ -1,7 +1,7 @@
 /**
  * M5 — content panes (markdown / diff / scratchpad), daemon half.
  *
- * Spec: docs/current/content-panes.md. The daemon owns file reading, file watching, git
+ * Spec: docs/content-panes.md. The daemon owns file reading, file watching, git
  * invocation, the markdown/diff → HTML transformation (to the doc's exact HTML/CSS contract)
  * and the authoritative edit buffer; clients own scroll state, find-in-page, the copy-button JS
  * and the clipboard (port note 1).

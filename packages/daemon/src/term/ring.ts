@@ -1,7 +1,7 @@
 /**
  * Bounded raw-output ring buffer (belt-and-braces next to the headless VT).
  *
- * `docs/research/ghostty-web.md` §3c: a raw ring buffer alone is NOT sufficient for
+ * `../kelpi-docs/research/ghostty-web.md` §3c: a raw ring buffer alone is NOT sufficient for
  * `pane capture` (that needs a VT interpreter server-side), but it is a cheap complement:
  * byte-perfect "last N bytes" replay for debugging, and a fallback tail if the VT ever
  * gets wedged. One per pane, default 1 MiB, oldest bytes evicted on overflow.

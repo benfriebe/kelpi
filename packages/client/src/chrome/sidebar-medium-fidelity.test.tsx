@@ -1,5 +1,5 @@
 /**
- * The MEDIUM sidebar fidelity items — `docs/UI-FIDELITY.md` M1…M10.
+ * The MEDIUM sidebar fidelity items — `../kelpi-docs/UI-FIDELITY.md` M1…M10.
  *
  * Every block below names the Swift line the port had drifted from, and asserts the number or the
  * string that line specifies rather than "something changed". Nothing here re-tests behaviour the

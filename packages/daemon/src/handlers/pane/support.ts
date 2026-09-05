@@ -1,8 +1,8 @@
 /**
  * Shared plumbing for the `pane-*` handlers.
  *
- * Spec: docs/current/socket-handlers.md §1 (reply contract), §2 (resolution), §4, §5
- * (refreshSyncGroup); docs/current/wire-protocol.md §6 (reply framing + key names).
+ * Spec: docs/socket-handlers.md §1 (reply contract), §2 (resolution), §4, §5
+ * (refreshSyncGroup); docs/wire-protocol.md §6 (reply framing + key names).
  *
  * Two rules drive the shapes here:
  *  - a reply is ONE JSON line then EOF, and every failure is exactly

@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/current/config-keybindings.md §4 (51 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (51 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 

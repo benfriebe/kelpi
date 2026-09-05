@@ -10,7 +10,7 @@
  * **real Swift CLI** through the daemon and observe both ends of every web verb: what the CLI
  * printed and exited with, and what the host was asked to do. The real Electron host is
  * exercised separately by `packages/shell/scripts/web-smoke.mjs` (real Chromium, real CDP,
- * same CLI) — see `docs/compat-status.md` for why the split exists.
+ * same CLI) — see `../kelpi-docs/compat-status.md` for why the split exists.
  *
  * Nothing here touches the production daemon: the socket comes from a `startCompatDaemon()`
  * instance with its own tmp everything.

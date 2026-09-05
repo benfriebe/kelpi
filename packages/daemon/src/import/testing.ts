@@ -1,7 +1,7 @@
 /**
  * Fixture builder for legacy Swift `nex.db` files.
  *
- * The DDL below is docs/current/persistence.md §8 verbatim — deliberately NOT the daemon's own
+ * The DDL below is docs/persistence.md §8 verbatim — deliberately NOT the daemon's own
  * `db/schema.ts`. If the two ever drift, these fixtures keep testing what the Swift app
  * actually writes rather than what the port happens to create, which is the whole point of an
  * importer test.
@@ -93,7 +93,7 @@ export function realTopLevelOrder(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Schema (docs/current/persistence.md §8)
+// Schema (docs/persistence.md §8)
 // ---------------------------------------------------------------------------
 
 const WORKSPACE_COLUMNS_V18 = [

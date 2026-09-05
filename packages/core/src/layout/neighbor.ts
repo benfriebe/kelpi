@@ -1,6 +1,6 @@
 /**
  * Spatial pane navigation.
- * Spec: docs/current/pane-layout.md §6.2.
+ * Spec: docs/pane-layout.md §6.2.
  *
  * Resolution-independent: computed over fixed canonical 10000x10000 bounds so
  * "focus left" means the same thing at every window size.

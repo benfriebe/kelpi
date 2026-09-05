@@ -1,6 +1,6 @@
 /**
  * The minimal readonly projection of daemon state the resolvers need.
- * Spec: docs/current/socket-handlers.md §2, docs/current/app-state-core.md §15.
+ * Spec: docs/socket-handlers.md §2, docs/app-state-core.md §15.
  *
  * Panes are a flat list keyed by `workspaceID`; per-workspace pane order is the order
  * of that filtered list (it only affects which pane wins a 1-candidate label lookup).

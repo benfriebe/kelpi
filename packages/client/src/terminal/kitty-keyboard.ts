@@ -1,7 +1,7 @@
 /**
  * The kitty keyboard protocol, encoded in the PORT'S layer rather than the engine's.
  *
- * Why this file exists (docs/capabilities/01 §TERM-030): `ghostty-web 0.4.0-nex.2` registers
+ * Why this file exists (../kelpi-docs/capabilities/01 §TERM-030): `ghostty-web 0.4.0-nex.2` registers
  * **one** `keydown` listener and **zero** `keyup` listeners, and its `setKittyFlags` has no call
  * site anywhere in the bundle. A protocol whose entire subject is press / repeat / **release**
  * cannot be implemented by a layer that never sees a release, so the port does what it did for

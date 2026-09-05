@@ -1,6 +1,6 @@
 /**
  * The Pane record.
- * Spec: docs/current/pane-layout.md §13.
+ * Spec: docs/pane-layout.md §13.
  *
  * The layout tree stores pane IDs only; this is the metadata the workspace's
  * pane collection holds alongside it. The two can legitimately disagree

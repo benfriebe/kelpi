@@ -2,8 +2,8 @@
  * Pane reducers: creation, splitting, closing, parking, moving, resizing, and the content-pane
  * opening actions (records + layout only — rendering lands in M5).
  *
- * Spec: docs/current/workspace-feature.md §7.2–§7.9, §7.11; docs/current/pane-layout.md §12;
- * docs/current/socket-handlers.md §4.11 (pane-move-to-workspace).
+ * Spec: docs/workspace-feature.md §7.2–§7.9, §7.11; docs/pane-layout.md §12;
+ * docs/socket-handlers.md §4.11 (pane-move-to-workspace).
  *
  * Swift quirks are preserved deliberately (PLAN.md lists no fixes for them) and flagged QUIRK:
  *  - `create-pane` replaces the whole layout unconditionally (only correct on an empty

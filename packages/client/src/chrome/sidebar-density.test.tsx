@@ -1,5 +1,5 @@
 /**
- * The sidebar's density pack — `docs/SPACING-REVIEW.md` S18, S38, S39, S52, S61.
+ * The sidebar's density pack — `../kelpi-docs/SPACING-REVIEW.md` S18, S38, S39, S52, S61.
  *
  * Each block names the Swift line the number comes from (or, for `S39`, the owner-directed
  * divergence from it) and the figure the sandbox measured before the fix, so a future sweep can

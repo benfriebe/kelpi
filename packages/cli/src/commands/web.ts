@@ -13,7 +13,7 @@
  * Two deliberate divergences from `cli.md`, both documented in the package README:
  *   - **`capture` keeps the SHIPPED 0.32.0 flag set** (`--mode meta|text|screenshot`, no
  *     `--json`). `cli.md` §15.6 documents `dom`/`all`/`--json`, but the binary that ships
- *     rejects them, the compat suite pins that refusal (docs/compat-status.md delta 8), and a
+ *     rejects them, the compat suite pins that refusal (../kelpi-docs/compat-status.md delta 8), and a
  *     drop-in replacement must behave like the thing it replaces.
  *   - **`console --follow` IS implemented** (the shipped binary predates it). It is the one
  *     documented extension this port adds, and the daemon has spoken it since M6.

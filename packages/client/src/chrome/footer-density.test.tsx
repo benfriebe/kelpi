@@ -1,5 +1,5 @@
 /**
- * The status footer's density pack — `docs/SPACING-REVIEW.md` S31.
+ * The status footer's density pack — `../kelpi-docs/SPACING-REVIEW.md` S31.
  *
  * One row, one number, and the arithmetic behind it: `AgentStatusDetailPopover` is
  * `.padding(12).frame(width: 252)` (`StatusBarView.swift:367-368`), i.e. a **228 pt content

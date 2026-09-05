@@ -1,7 +1,7 @@
 /**
  * Pure helpers around worktree naming and git error text.
  *
- * Spec: docs/current/app-state-core.md §4.2.1–4.2.3, docs/current/graft-git.md §8.1–8.2, §8.6.
+ * Spec: docs/app-state-core.md §4.2.1–4.2.3, docs/graft-git.md §8.1–8.2, §8.6.
  * These strings reach the user verbatim (CLI reply / GUI alert), so the shapes are contract.
  */
 

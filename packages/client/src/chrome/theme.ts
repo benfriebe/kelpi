@@ -1,7 +1,7 @@
 /**
  * ChromeTheme (WP3.5) — the chrome palette as CSS custom properties.
  *
- * Spec: docs/current/shell-ui.md §2. The chrome palette is deliberately independent of the
+ * Spec: docs/shell-ui.md §2. The chrome palette is deliberately independent of the
  * terminal (ghostty) theme and is **resolved, never stored**: appearance preference + OS color
  * scheme + per-bucket user overrides in, one flat token set out. Port note from §15: "hex
  * colors are canonical — implement `resolve(appearance, system, overrides)` as a pure function
@@ -12,7 +12,7 @@
  *   - **chrome** light/dark comes from the appearance preference / OS scheme (this module's
  *     `resolveChromeTheme`);
  *   - **content-pane** light/dark comes from the ghostty background color's *luminance*, not
- *     the OS theme (docs/current/content-panes.md §3.1 + port note 9) — `ghosttyBucket` below.
+ *     the OS theme (docs/content-panes.md §3.1 + port note 9) — `ghosttyBucket` below.
  *
  * Everything is a plain sRGB hex or `rgba()` string so the whole theme is assignable straight
  * onto a container's inline style as `--kelpi-*` variables.

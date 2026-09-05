@@ -1,7 +1,7 @@
 /**
  * PtyManager — one node-pty child per shell pane, owned by the daemon.
  *
- * Spec: docs/current/terminal-surface.md
+ * Spec: docs/terminal-surface.md
  *   §1.2  registry semantics: idempotent create (first caller wins), explicit destroy
  *   §1.3  teardown hazard: SIGHUP → short grace → SIGKILL, never blocking, never
  *         serializing one stuck teardown behind another (the flaw the port must not keep)

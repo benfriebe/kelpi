@@ -1,5 +1,5 @@
 /**
- * The tray icon, drawn in code (docs/current/agent-lifecycle.md §8.2).
+ * The tray icon, drawn in code (docs/agent-lifecycle.md §8.2).
  *
  * The glyph is the Kelpi mark itself — the kelpie head the app icon strokes, rendered from
  * the same flattened vector data in `@kelpi/core/icon` — with a 6px status dot in the

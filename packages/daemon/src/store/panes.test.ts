@@ -524,7 +524,7 @@ describe('content panes', () => {
      *
      * This is the `--here` machinery markdown uses, carried by `openWebPane` for the same reason
      * the Swift reducer carries it: the branch is written, correct, and — in **both** apps — has
-     * no caller (`docs/current/web-pane.md` §3.2 step 4 says so verbatim: "currently no caller
+     * no caller (`docs/web-pane.md` §3.2 step 4 says so verbatim: "currently no caller
      * passes it"). What has to hold is that a web pane taking a terminal's slot PARKS it rather
      * than destroying it, arrives with its own sidecar, and hands the slot back on close. A
      * silent regression here would lose a live PTY, so it is pinned even though the branch is

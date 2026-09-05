@@ -1,6 +1,6 @@
 /**
  * Frame + divider geometry.
- * Spec: docs/current/pane-layout.md §7.
+ * Spec: docs/pane-layout.md §7.
  *
  * No rounding, no clamping, no minimum sizes: sizes are fractional floats and
  * absurd ratios / tiny bounds may produce negative extents. The frame math must

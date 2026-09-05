@@ -1,7 +1,7 @@
 /**
  * M5 — content panes (markdown / diff / scratchpad), client half.
  *
- * Spec: docs/current/content-panes.md. The daemon owns the file, the watcher, git, the
+ * Spec: docs/content-panes.md. The daemon owns the file, the watcher, git, the
  * markdown/diff → HTML transformation and the authoritative edit buffer (port note 1); this
  * package owns what only a client can: the sandboxed viewport, scroll position, the copy
  * button's clipboard hop, the caret, and the subscription lifecycle that keeps the daemon from

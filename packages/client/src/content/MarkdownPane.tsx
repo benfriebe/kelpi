@@ -58,7 +58,7 @@ export interface MarkdownPaneProps {
      * external editor whenever one resolved, but this port ships a real built-in editor the
      * whole audit exercises, and silently swapping it for `vim` on a machine where `$EDITOR`
      * happens to be set would be a worse surprise than an extra button. Both routes end in the
-     * same pane state; only the entry points differ (noted in docs/PARITY.md).
+     * same pane state; only the entry points differ (noted in ../kelpi-docs/PARITY.md).
      */
     readonly onOpenExternalEditor?: ((paneID: string) => void) | undefined;
 }

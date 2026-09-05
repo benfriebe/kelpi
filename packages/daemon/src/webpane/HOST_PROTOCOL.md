@@ -6,7 +6,7 @@ render a page. Anything that needs a real browser is forwarded to a **host** —
 Electron shell, which owns one `WebContentsView` per tab plus its CDP session.
 
 This document is the contract. The daemon side is `packages/daemon/src/webpane/`; the wire
-behaviour the whole thing exists to preserve is `docs/current/web-pane.md` (referenced below as
+behaviour the whole thing exists to preserve is `docs/web-pane.md` (referenced below as
 §n). Message types live in `@kelpi/protocol` (`ws/messages.ts`).
 
 ---

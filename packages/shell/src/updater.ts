@@ -1,7 +1,7 @@
 /**
  * Auto-update wiring — **off by default, and off in every packaged build we currently make.**
  *
- * docs/research/stack.md §1 picks `update-electron-app` 3.3.0 over a hand-rolled feed: on macOS
+ * ../kelpi-docs/research/stack.md §1 picks `update-electron-app` 3.3.0 over a hand-rolled feed: on macOS
  * Electron's `autoUpdater` *is* Squirrel.Mac, and the only real decision is who manages the
  * feed. `update-electron-app` points Squirrel at `update.electronjs.org`, which reads GitHub
  * Releases and serves the Squirrel-compatible JSON for free.

@@ -2,7 +2,7 @@
  * The round trip that the whole feature exists for: a legacy Swift `nex.db` on disk, one
  * `kelpid import`, and a REAL daemon booting on the result — workspaces, groups, labels, layout
  * trees and panes all where they were, and a pane that had an agent session resuming it
- * exactly as a Kelpi.app restart would (docs/current/persistence.md §6.2 steps 4–8, §7.3).
+ * exactly as a Kelpi.app restart would (docs/persistence.md §6.2 steps 4–8, §7.3).
  *
  * Everything runs against private paths in a tmp directory: its own run dir, its own control
  * socket, its own database, its own HOME.

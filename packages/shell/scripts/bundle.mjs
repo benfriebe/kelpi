@@ -13,7 +13,7 @@
  *   - `electron` stays external: it is provided by the runtime, not npm.
  *   - `ws` and the workspace packages are inlined, so `dist/` plus Electron is self-contained.
  *     No native modules are bundled — node-pty lives in the daemon process, never here
- *     (docs/research/stack.md §2: "keep *all* native modules out of the shell").
+ *     (../kelpi-docs/research/stack.md §2: "keep *all* native modules out of the shell").
  *
  * ## The second output
  *

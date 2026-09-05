@@ -2,7 +2,7 @@
  * One web-pane tab: an Electron `WebContentsView` plus its CDP session.
  *
  * This is the only module in the host that touches Electron, and it is where every "port note"
- * in `docs/current/web-pane.md` lands:
+ * in `docs/web-pane.md` lands:
  *
  *   - **Injection** is `Page.addScriptToEvaluateOnNewDocument`, which runs in *all* frames, so
  *     the scripts carry their own `window !== window.top` guards (`./scripts.ts`). The same

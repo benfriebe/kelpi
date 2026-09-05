@@ -1,6 +1,6 @@
 /**
  * Agent kind mapping, the session-id safety allowlist, and resume commands.
- * Spec: docs/current/agent-lifecycle.md §1.2, §6; workspace-feature.md §1.2.
+ * Spec: docs/agent-lifecycle.md §1.2, §6; workspace-feature.md §1.2.
  */
 
 import type { AgentKind, PaneAgentState } from './types.js';

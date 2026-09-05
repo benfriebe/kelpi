@@ -3,7 +3,7 @@
  *
  * Why this lives here rather than in a renderer: `ghostty-web@0.4.0` parses DECSET
  * 9/1000/1002/1003/1005/1006/1015/1016 and then **ignores** them — its canvas handlers drive
- * text selection and `hasMouseTracking()` is never consulted (docs/capabilities/01 §TERM-037,
+ * text selection and `hasMouseTracking()` is never consulted (../kelpi-docs/capabilities/01 §TERM-037,
  * proven by run-I's mouse step). So the port implements mouse reporting in its OWN layer, which
  * means the client needs the modes as state rather than as engine behaviour. Every PTY byte
  * already flows through `@xterm/headless` here, so this is where the modes are known first.

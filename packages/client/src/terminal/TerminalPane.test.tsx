@@ -22,7 +22,7 @@ import {
 
 /**
  * jsdom has no canvas, so no engine can `open()` here (verified: ghostty-web throws
- * "Failed to get 2D rendering context"; docs/research/ghostty-web-spike.md). Every component
+ * "Failed to get 2D rendering context"; ../kelpi-docs/research/ghostty-web-spike.md). Every component
  * test therefore injects the fake renderer behind the adapter interface — the seam exists for
  * exactly this reason.
  */

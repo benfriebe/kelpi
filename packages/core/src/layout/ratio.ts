@@ -1,6 +1,6 @@
 /**
  * Split addressing by path: locate, read and update ratios.
- * Spec: docs/current/pane-layout.md §8, §9, §12.5.
+ * Spec: docs/pane-layout.md §8, §9, §12.5.
  *
  * Path encoding (§7.3): "d" is the root split, "L" descends into `first`,
  * "R" into `second`. Paths are positional and go stale after any structural

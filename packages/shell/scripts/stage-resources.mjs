@@ -13,7 +13,7 @@
  *             its own payload and this script needs no knowledge of node-pty's internals.
  *   client/   `packages/client/dist` — the built web UI. The daemon serves it; the shell hands
  *             it over as `KELPID_CLIENT_DIR` at spawn time (`src/daemon.ts` `daemonSpawnEnv`).
- *   node      a Node 24 runtime for the daemon. NOT Electron: docs/research/stack.md is
+ *   node      a Node 24 runtime for the daemon. NOT Electron: ../kelpi-docs/research/stack.md is
  *             explicit that `ELECTRON_RUN_AS_NODE` is the wrong answer here (it fights the fuse
  *             hardening and couples the daemon's lifetime to the app bundle), and option 1 of
  *             its "what runs the detached daemon" list is "bundle an official Node binary".

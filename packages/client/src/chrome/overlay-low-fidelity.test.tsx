@@ -1,5 +1,5 @@
 /**
- * The LOW-POLISH overlay / global-chrome items — `docs/UI-FIDELITY.md` L94…L105.
+ * The LOW-POLISH overlay / global-chrome items — `../kelpi-docs/UI-FIDELITY.md` L94…L105.
  *
  * The command palette's card and rows, graft's banner / dot / toggle, the sidebar handle, and the
  * one stylesheet rule that was leaking a focus ring onto every text field in the app. Each block

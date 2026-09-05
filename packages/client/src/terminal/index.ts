@@ -10,7 +10,7 @@
  *   `TerminalPane.tsx`— the React component: engine + PTY stream + resize/focus/visibility
  *   `mount-policy.ts` — which panes may hold a live renderer (cap + LRU eviction)
  *
- * Hands-on engine gaps: `docs/research/ghostty-web-spike.md`.
+ * Hands-on engine gaps: `../kelpi-docs/research/ghostty-web-spike.md`.
  *
  * Note for assembly: the `xterm` fallback engine needs `@xterm/xterm/css/xterm.css` loaded by
  * the host page; ghostty-web needs no stylesheet.

@@ -5,8 +5,8 @@ A TypeScript rewrite of the shipped Swift `nex` binary (`nex 0.32.0`, bundled at
 the same streams, and exits with the same codes, so it is a drop-in replacement for scripts,
 agents and the Claude Code / Codex hooks.
 
-Contract: [`docs/current/cli.md`](../../docs/current/cli.md). Measured deltas of the shipped
-binary: [`docs/compat-status.md`](../../docs/compat-status.md).
+Contract: [`docs/cli.md`](../../docs/cli.md). Measured deltas of the shipped
+binary: `../kelpi-docs/compat-status.md` (kept beside the repo, not in it).
 
 ## Install
 
@@ -119,7 +119,7 @@ How this is measured, and what "parity" is worth:
    `--mode dom|all` and a `--json` envelope dump; the binary that ships accepts
    `--mode meta|text|screenshot` only, refuses the others client-side with
    `unknown --mode '<m>' (allowed: meta, text, screenshot)`, and silently drops `--json`
-   (docs/compat-status.md delta 8, pinned by `web.test.ts`). A drop-in replacement has to
+   (../kelpi-docs/compat-status.md delta 8, pinned by `web.test.ts`). A drop-in replacement has to
    behave like the thing it replaces, so the client-side narrowing is reproduced; the daemon
    still accepts the full documented mode set.
 

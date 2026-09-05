@@ -1,9 +1,9 @@
 /**
  * Workspace lifecycle, sidebar placement, labels, label presets and the repo registry.
  *
- * Spec: docs/current/app-state-core.md §3 (active workspace), §4 (workspace lifecycle),
- * §6 (labels + presets), §7 (repos); docs/current/workspace-feature.md §7.1 (metadata);
- * docs/current/socket-handlers.md §6.6 (`workspace label` + preset back-fill).
+ * Spec: docs/app-state-core.md §3 (active workspace), §4 (workspace lifecycle),
+ * §6 (labels + presets), §7 (repos); docs/workspace-feature.md §7.1 (metadata);
+ * docs/socket-handlers.md §6.6 (`workspace label` + preset back-fill).
  */
 
 import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';

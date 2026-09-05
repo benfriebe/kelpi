@@ -33,7 +33,7 @@
  *     "the innermost thing that is open": with a profile selected the rail consumes the key and
  *     clears it, and with nothing selected the key falls through and Settings closes.
  *
- * Recorded as a divergence in `docs/capabilities/09-settings-config.md` §SET-080 rather than
+ * Recorded as a divergence in `../kelpi-docs/capabilities/09-settings-config.md` §SET-080 rather than
  * claimed as parity: it is the same end state as the Swift, reached by a gesture this port had
  * to choose.
  */

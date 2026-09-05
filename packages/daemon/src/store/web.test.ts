@@ -1,7 +1,7 @@
 /**
  * The web-pane sidecar reducers (store/reducers/web.ts).
  *
- * Spec: docs/current/web-pane.md §4.2/§4.4 (navigate, URL/title mirroring), §5 (tabs),
+ * Spec: docs/web-pane.md §4.2/§4.4 (navigate, URL/title mirroring), §5 (tabs),
  * §6 (private), §17 (the activeTab fallback and the duplicate-id rule).
  */
 

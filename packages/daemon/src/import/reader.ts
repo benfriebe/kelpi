@@ -1,7 +1,7 @@
 /**
  * Read a legacy Swift-app `nex.db` — strictly READ-ONLY.
  *
- * Spec: docs/current/persistence.md §2 (every table + column), §3 (Swift-Codable JSON
+ * Spec: docs/persistence.md §2 (every table + column), §3 (Swift-Codable JSON
  * encodings), §4 (the 18 migrations + the ledger), §6.1 (read + decode), §6.3 (slug backfill),
  * §9 items 5–8 (the graceful-degradation table).
  *

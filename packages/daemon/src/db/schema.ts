@@ -1,7 +1,7 @@
 /**
  * Schema + the GRDB migration ledger.
  *
- * Spec: docs/current/persistence.md §2 (tables), §4 (all 18 migrations, in order, with the
+ * Spec: docs/persistence.md §2 (tables), §4 (all 18 migrations, in order, with the
  * column-existence guards), §8 (post-v18 DDL), Port notes ("run/verify the same migration
  * ledger … only applying migrations whose identifiers are absent").
  *

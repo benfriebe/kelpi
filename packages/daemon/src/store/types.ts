@@ -1,9 +1,9 @@
 /**
  * Daemon domain state, actions and delta events.
  *
- * Specs: docs/current/workspace-feature.md (per-workspace state + actions),
- * docs/current/app-state-core.md (app-level state, groups, sidebar order, labels, boot),
- * docs/current/pane-layout.md (layout invariants — algorithms live in @kelpi/core/layout).
+ * Specs: docs/workspace-feature.md (per-workspace state + actions),
+ * docs/app-state-core.md (app-level state, groups, sidebar order, labels, boot),
+ * docs/pane-layout.md (layout invariants — algorithms live in @kelpi/core/layout).
  *
  * Everything here is data only: the reducers (`./reducers/`) are pure
  * `(state, action) => state`, the store (`./store.ts`) turns each dispatch into a batch of

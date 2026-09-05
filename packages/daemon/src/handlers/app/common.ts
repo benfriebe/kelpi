@@ -2,7 +2,7 @@
  * Small shared readers for the app handlers: wire timestamp formatting, the reply orderings
  * (sidebar order with dedupe + never-hide append) and command narrowing.
  *
- * Spec: docs/current/socket-handlers.md §6.1, §7.1, port notes 8 and 9.
+ * Spec: docs/socket-handlers.md §6.1, §7.1, port notes 8 and 9.
  */
 
 import {

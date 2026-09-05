@@ -1,17 +1,24 @@
 # Workspace Feature: Behavioral Specification
 
-Source of truth: `Nex/Features/Workspace/WorkspaceFeature.swift` (plus the model types it
-depends on: `Pane.swift`, `PaneType.swift`, `PaneLayout.swift`, `WorkspaceColor.swift`,
-`RepoAssociation.swift`, `GroupIcon.swift`, `WebPaneState.swift`,
-`WorkspaceProfilesClient.swift`, and the sync-group surface of `SurfaceManager.swift`).
+Implemented by the daemon's per-workspace reducers:
+`packages/daemon/src/store/reducers/panes.ts` (pane creation, splitting, closing, parking,
+reopen, content panes), `packages/daemon/src/store/reducers/layout.ts` (focus, layout,
+zoom, search), `packages/daemon/src/store/reducers/web.ts` (the web sidecar),
+`packages/daemon/src/store/reducers/agent.ts` with `packages/core/src/agent/machine.ts`
+(agent status), `packages/daemon/src/store/reducers/workspaces.ts` (metadata, labels,
+repo associations); the model types in `packages/core/src/layout/pane.ts`,
+`packages/core/src/layout/types.ts`, `packages/core/src/codec/icon.ts` and
+`packages/daemon/src/store/types.ts`; the profile env in
+`packages/core/src/env/merged-env.ts`; and the sync-group surface of
+`packages/daemon/src/pty/manager.ts`.
 
 This document specifies the **per-workspace reducer**: the state a single workspace owns
-and the exact behavior of every action it handles. In the current app there is one
-`WorkspaceFeature` instance per workspace, addressed by the parent `AppReducer` via the
-workspace's UUID. The TS daemon should reproduce this as a per-workspace state machine:
-`(state, action) -> (state', effects[])`, where effects are async jobs (spawn a PTY,
-run `git`, drive a web view, push a sync group to the input broadcaster) that may
-dispatch follow-up actions.
+and the exact behavior of every action it handles. Kelpi keeps one `WorkspaceState` per
+workspace inside the daemon's single store (`packages/daemon/src/store/store.ts`),
+addressed by the workspace's UUID. The reducers are pure functions
+`(state, action) -> state'`; the effects described below (spawn a PTY, run `git`, drive a
+web view, push a sync group to the input broadcaster) are async jobs run by the handlers
+and services around the store, and they may dispatch follow-up actions.
 
 Terminology used throughout:
 
@@ -58,9 +65,9 @@ type PredefinedLayout =
 `GroupIcon` (used for the optional workspace avatar override):
 
 ```ts
-type GroupIcon =
-  | { kind: "systemName"; name: string }  // SF Symbol id, e.g. "star.fill"; tinted
-  | { kind: "emoji"; emoji: string };     // single grapheme; renders untinted
+type GroupIcon =                        // `IconRef` in packages/core/src/codec/icon.ts
+  | { kind: "system"; name: string }      // SF Symbol id, e.g. "star.fill"; tinted
+  | { kind: "emoji"; grapheme: string };  // single grapheme; renders untinted
 // Storage encoding (DB TEXT column): "system:<name>" or "emoji:<grapheme>".
 // Unknown prefix or empty payload parses to null (falls back to default rendering:
 // first letter of the workspace name / tinted folder for groups).
@@ -114,18 +121,32 @@ interface Pane {
   agentSessionID: string | null;    // last known agent session id (persisted)
   agentKind: AgentKind | null;      // last known agent CLI (persisted; null = never seen;
                                     // display fallback is "claude")
+  agentProfileName: string | null;  // effective KELPI_PROFILE the agent session was
+                                    // launched under, as reported by the session-start
+                                    // hook (persisted; never cleared on load, like
+                                    // agentKind). Null = unknown; a resume then uses the
+                                    // workspace's current profile. Exists so a resume can
+                                    // rebuild the session's environment, not for display.
   markdownFontSize: number;         // default 14; in-memory only (but captured in
                                     // closed-pane snapshots so reopen keeps it)
   parkedSourcePaneID: string | null; // set on panes created by `kelpi open --here`:
                                     // points at the parked source pane. TRANSIENT.
-  agentStartedAt: string | null;    // ISO timestamp; when the current run entered
-                                    // "running". Drives the "claude · mm:ss" badge.
+  agentStartedAt: EpochMilliseconds | null; // epoch MILLISECONDS (JS `Date.now()`,
+                                    // packages/core/src/layout/pane.ts:43,78; the agent
+                                    // machine stamps it with `now` in ms,
+                                    // packages/core/src/agent/machine.ts:89). NOT the
+                                    // Unix-seconds encoding of createdAt/lastActivityAt:
+                                    // mixing the two silently renders a "0s" badge.
+                                    // When the current run entered "running". Drives
+                                    // the "claude · mm:ss" badge.
                                     // TRANSIENT (a restored running pane shows no timer
                                     // until the agent re-emits a start).
   backgroundTaskCount: number;      // default 0; Claude Code background units still in
                                     // flight after the last Stop. TRANSIENT.
-  createdAt: string;                // ISO timestamp
-  lastActivityAt: string;           // ISO timestamp; bumped on title/cwd changes
+  createdAt: EpochSeconds;          // Unix seconds (float), the persistence encoding
+                                    // (packages/core/src/layout/pane.ts:35,81)
+  lastActivityAt: EpochSeconds;     // Unix seconds (float); bumped on title/cwd changes
+                                    // (packages/core/src/layout/pane.ts:82)
 }
 
 const DEFAULT_MARKDOWN_FONT_SIZE = 14;
@@ -148,6 +169,8 @@ interface ClosedPaneSnapshot {
   agentSessionID: string | null;   // used ONLY to type the resume command; not restored
                                    // onto the reopened pane's state
   agentKind: AgentKind | null;     // picks `claude --resume` vs `codex resume`
+  agentProfileName: string | null; // the profile the recorded session was launched
+                                   // under; reopen spawns the resume PTY with it (7.9)
   markdownFontSize: number;        // default 14
   webState: WebPaneState | null;   // web panes only; null for private web panes
                                    // (private tabs are deliberately dropped at close)
@@ -265,8 +288,18 @@ The ratio stored is always the FIRST child's share of the available space. The c
 ### 1.8 WebPaneState (sidecar for `.web` panes)
 
 Kept in a dictionary keyed by pane id, NOT on the Pane struct, so non-web code paths
-never touch it. Persisted parts: `tabs`, `activeTabID`, `isPrivate` (the tab list
-survives restart). Everything else is transient runtime state.
+never touch it. The reducer sidecar (`WebPaneState` in `packages/daemon/src/store/types.ts`)
+holds ONLY the persisted parts: `tabs`, `activeTabID`, `isPrivate` (the tab list survives
+restart), EXCEPT that a private pane persists only `isPrivate`: its tabs are withheld by
+`persistPane` in `packages/daemon/src/store/snapshot.ts`, so it restores blank (an empty
+tab list, seeded by `restoreWebPanes`) but still private, mirroring the close-time
+snapshot rule in 1.4. The transient runtime state (console ring buffer, inspector
+arm/nonce/result queue, batch-annotate session, last batch target) lives outside the
+store in the daemon's web-pane service (`packages/daemon/src/webpane/service.ts`,
+`ring.ts`, `console.ts`, `inspect.ts`, `batch.ts`) and is specified in web-pane.md; the
+records below describe that service's per-pane runtime state, and the console,
+element-inspector and batch-annotate entries under 7.6 describe its contract, not
+reducer actions.
 
 ```ts
 interface WebTab {
@@ -305,11 +338,14 @@ interface BatchInspectState {
   panelVisible: boolean;         // default true
 }
 
-interface WebPaneState {
+interface WebPaneState {                   // the reducer sidecar: persisted parts only
   tabs: WebTab[];
   activeTabID: string | null;
   isPrivate: boolean;
-  // transient:
+}
+
+interface WebPaneRuntime {                 // the web-pane service's transient record,
+                                           // keyed by pane id; never in the store
   consoleBuffer: RingBuffer<ConsoleLine>;  // capacity 1000; oldest dropped when full,
                                            // drops counted in droppedSinceLastDrain
   inspectorArmed: boolean;                 // single-shot element picker armed
@@ -368,11 +404,24 @@ interface WorkspaceState {
 `createdAt`, `lastAccessedAt`, `labels`, `webPanes` (tab list/active/private),
 `profileName`. Everything else initializes to its default on restore.
 
-Within `Pane`, the transient fields are `externalEditorCommand`, `parkedSourcePaneID`,
-`agentStartedAt`, `backgroundTaskCount` (and `markdownFontSize` is documented as
-in-memory only). `agentSessionID` and `agentKind` persist; note the app-level restore
-flow clears `agentSessionID` after capturing resume tuples (see the app-reducer doc),
-while `agentKind` is deliberately NOT cleared (it is a last-known display value).
+`layout` is written as `savedLayout ?? layout` (`persistWorkspace` in
+`packages/daemon/src/store/snapshot.ts`): a workspace saved while zoomed persists its
+pre-zoom tree, never the zoomed single leaf, so restore always comes back un-zoomed with
+every visible pane reachable (`zoomedPaneID` and `savedLayout` themselves stay transient
+and reset to null).
+
+Within `Pane`, the transient fields (`PANE_TRANSIENT_FIELDS` in
+`packages/core/src/layout/pane.ts`) are `title`, `gitBranch`, `isEditing`,
+`externalEditorCommand`, `markdownFontSize`, `parkedSourcePaneID`, `agentStartedAt`,
+`backgroundTaskCount`: `restorePane` sets `title` and `gitBranch` to null (the branch
+reconciler in 7.11 re-resolves them) and derives `isEditing = (type === "scratchpad")`.
+`status` is written to the DB and restored verbatim, then the boot load step
+(`applyLoadReset` in `packages/daemon/src/store/snapshot.ts`) forces any non-idle status
+back to `idle` after capturing resume tuples, since a status describes a live PTY.
+`agentSessionID`, `agentKind` and `agentProfileName` persist; the same load step clears
+`agentSessionID` after capturing the resume tuples (see app-state-core.md), while
+`agentKind` and `agentProfileName` are deliberately NOT cleared (they are last-known
+values the tuples already captured).
 
 ### 1.10 Computed properties
 
@@ -423,9 +472,19 @@ newWorkspace(id = newUUID(), name, color = "blue", createdAt = now):
 
 A brand-new workspace always has exactly one shell pane.
 
-Color choice for an appended workspace (helper used by the caller): pick a uniformly
-random `WorkspaceColor` EXCLUDING the color of the current last workspace in the list,
-so neighbors in the sidebar are visually distinct; fall back to `"blue"` if the filter
+The `create-workspace` action (`packages/daemon/src/store/types.ts`, reduced in
+`packages/daemon/src/store/reducers/workspaces.ts`) carries the pre-minted workspace and
+pane ids plus optional `workingDirectory`, `color`, `profileName`, `groupID`, `labels`,
+`placement` and `repoAssociations`. The first pane's cwd is `workingDirectory` when it is
+non-empty, else the home directory; `profileName` goes through `normalizedAssignment`
+(3.4); `labels` and `repoAssociations` default to empty. Group membership and sidebar
+placement are app-state-core.md's domain.
+
+Color choice for an appended workspace (`nextRandomColor` in
+`packages/daemon/src/store/derived.ts`, applied by the handler; the reducer itself
+defaults to `"blue"` when the action carries no color): pick a uniformly random
+`WorkspaceColor` EXCLUDING the color of the current last workspace in the list, so
+neighbors in the sidebar are visually distinct; fall back to `"blue"` if the filter
 somehow empties the pool.
 
 ### 2.2 Restore from persistence
@@ -488,10 +547,15 @@ normalizedAssignment(raw: string | null): string | null
 
 `null` IS the "default" profile: the built-in baseline that always exists. At PTY spawn
 time the effective profile name is `profileName ?? "default"`, and the resolved env is
-the profile's parsed vars from `~/.config/nex/config` plus a canonical
-`NEX_PROFILE=<name>` marker merged last (so a config line spoofing NEX_PROFILE loses).
-A named profile with no config definitions resolves to just the marker (logged as a
-warning; the virtual `default` profile skips the warning).
+the profile's parsed vars from `~/.config/kelpi/config` (or the file named by
+`KELPID_CONFIG_PATH`; `resolveConfigPath` in `packages/daemon/src/boot/config.ts`) plus a
+canonical `KELPI_PROFILE=<name>` marker merged last (so a config line spoofing
+KELPI_PROFILE loses; `resolveProfileEnv` in `packages/core/src/env/merged-env.ts`).
+Profile lines that define `KELPI_PANE_ID`, `KELPI_SOCKET` or `PATH` are silently dropped
+(`RESERVED_ENV_KEYS`). A named profile with no config definitions resolves to just the
+marker (logged as a warning by `spawnEnvVars` in
+`packages/daemon/src/handlers/pane/support.ts`; the virtual `default` profile skips the
+warning).
 
 ### 3.5 Focus bookkeeping
 
@@ -529,6 +593,22 @@ Surface/agent lifecycle events target panes in EITHER lane (a parked pane's agen
 reports status). User commands (send/split/close/...) intentionally look only at the
 visible lane; that filtering happens in the socket/App layer, not here.
 
+Two reducer actions move a pane between the lanes directly (`parkPane` / `unparkPane` in
+`packages/daemon/src/store/reducers/panes.ts`; no wire verb or GUI path dispatches them
+today, only tests):
+
+- `park-pane(paneID)`: guard a visible pane, else no-op. clearSearchIfTargets(paneID);
+  restoreZoomIfNeeded(); remove the pane from `panes` and push it onto `parkedPanes`;
+  `layout = removing(layout, paneID)`; `currentLayoutIndex = null`; scrub `paneID` from
+  `focusHistory`; if it was focused, refocus via popFocusFromHistory, else the first id
+  in layout order, else null. Its PTY stays alive.
+- `unpark-pane(paneID, replacePaneID?)`: guard a parked pane, else no-op.
+  restoreZoomIfNeeded(); move the pane back to `panes` with `parkedSourcePaneID = null`;
+  `currentLayoutIndex = null`. If `replacePaneID` names a visible pane, replace that leaf
+  with `leaf(paneID)`; otherwise split the focused pane (falling back to the first pane in
+  layout order) horizontally with the unparked pane second; on an empty layout it becomes
+  the root leaf. Then `setFocus(paneID)`.
+
 ### 3.7 syncWebPaneHeader(state, paneID)
 
 ```
@@ -557,8 +637,8 @@ Returned by any action that mutates `panes` or the sync fields (see 6 and 7.11).
 
 ## 4. The sync-input broadcast contract (external to the reducer)
 
-The reducer owns the *membership*; the input layer owns the *mirroring*. Contract the
-port must reproduce:
+The reducer owns the *membership*; the input layer owns the *mirroring*. The contract,
+implemented by the PTY manager (`packages/daemon/src/pty/manager.ts`):
 
 - Broadcaster state: `syncGroups: Map<workspaceID, Set<paneID>>`.
 - `setSyncGroup(wsID, ids)`: empty -> delete entry; else replace.
@@ -566,9 +646,10 @@ port must reproduce:
 - `syncTargetIDs(sourcePaneID)`: union of all groups containing the source, minus the
   source itself. (In practice a pane is in at most one group since groups are keyed by
   workspace and panes belong to one workspace.)
-- On a keystroke in a synced pane, mirror the identical key event to every target
-  (best-effort; targets whose terminal is gone are skipped). Text-insertion payloads
-  (paste, dictation, drag-drop) are mirrored as text via the same target set.
+- On input to a synced pane, `write(paneID, bytes)` writes the identical bytes to every
+  target (best-effort; targets whose PTY has exited are skipped silently). Key events and
+  text-insertion payloads (paste, dictation, drag-drop) arrive as bytes at the same entry
+  point, so both are mirrored via the same target set.
 - Mirroring never echoes back to the source and never crosses workspaces.
 
 ---
@@ -610,13 +691,18 @@ Creating a terminal-backed pane produces an async effect:
 
 ```
 env = resolveProfileEnv(state.profileName ?? "default")   // section 3.4
-spawnSurface(paneID, workingDirectory, backgroundOpacity: ghosttyConfig.backgroundOpacity,
-             command?: string, env)
+spawnSurface(paneID, workingDirectory, command?: string, env)
 ```
 
-The env snapshot is taken at dispatch time (spawn-time only; live PTYs keep their birth
-env). Every spawn path threads env, including lazy/fallback spawn paths in the view
-layer; if any path skips it, profiles get flaky.
+The env is composed at spawn time (`spawnPaneIfShell` / `spawnEnvVars` in
+`packages/daemon/src/handlers/pane/support.ts`), which, when the spawn is held by the
+pane-geometry gate (`packages/daemon/src/pty/spawn-gate.ts`), can be a couple of seconds
+after the dispatch: the deferred spawn re-reads the workspace and its `profileName` as of
+that moment rather than capturing them, and the profile definitions are re-read from the
+config file per spawn (`createProfileReader` in `packages/daemon/src/boot/config.ts`). A
+`workspace profile` change landing inside the gate window is therefore what the new pane
+gets; live PTYs keep their birth env. Every spawn path threads env, including the boot
+restore and the markdown `$EDITOR` spawn; if any path skips it, profiles get flaky.
 
 ---
 
@@ -665,8 +751,17 @@ state change and no effect.
 **removeLabel(label)** - remove all exact matches from `labels`.
 
 **setLabels(raw: string[])**
-- Normalize each entry; drop empties; dedupe keeping FIRST occurrence order;
-  replace `labels` wholesale.
+- Normalize each entry; drop empties; if nothing survives, no-op (the handler reports an
+  error rather than silently wiping); dedupe keeping FIRST occurrence order; replace
+  `labels` wholesale.
+
+**clearLabels** - `labels = []` (the `clear` op of `workspace-labels`).
+
+All four are ops of the one `workspace-labels` action
+(`packages/daemon/src/store/reducers/workspaces.ts`). `setLabels` and `addLabel` also
+back-fill a gray label preset for each newly introduced label (app-state-core.md §6.4)
+unless the action carries `backfillPresets: false`; the CLI paths back-fill, the GUI
+bulk-apply does not.
 
 ### 7.2 Pane creation: createPane / splitPane / splitPaneAtPath
 
@@ -689,9 +784,10 @@ effect: spawn surface (5.3) for id at resolvedDir
 WARNING / invariant: `createPane` blindly replaces the layout with a single leaf. It is
 only correct when the workspace is empty (no visible panes). Dispatching it on a
 populated workspace would orphan every existing pane from the layout (they remain in
-`panes` but are unreachable). Callers (socket handler for `pane create`) must route
-populated workspaces to `splitPane`/`splitPaneAtPath` instead; the port should either
-preserve this caller contract or add a guard.
+`panes` but are unreachable). Callers (socket handler for `pane create`,
+`packages/daemon/src/handlers/pane/create.ts`) must route populated workspaces to
+`splitPane`/`splitPaneAtPath` instead; Kelpi preserves this caller contract rather than
+adding a guard (flagged QUIRK in `packages/daemon/src/store/reducers/panes.ts`).
 
 `newPaneID` threading (issue #117): the CLI mints the id, replies to the client with it
 immediately, and passes it in so the created pane really has that id. The same
@@ -769,8 +865,8 @@ id = newUUID()                                 // never injected
 dir = dirname(filePath); fileName = basename(filePath)
 pane = { id, type: "markdown", label: fileName, title: fileName,
          workingDirectory: dir, filePath, createdAt/lastActivityAt: now }
-branchEffect = async: b = gitCurrentBranch(dir) catch null
-               dispatch paneBranchChanged(id, b)
+branchEffect = none here: the branch reconciler (7.11) observes the new pane's
+               directory and dispatches paneBranchChanged(id, ...) itself
 
 if (reusePaneID != null AND oldPane = visible pane with reusePaneID):
   clearSearchIfTargets(reusePaneID)
@@ -797,43 +893,70 @@ Caveat (faithful to current behavior): the split branch does NOT run
 restoreZoomIfNeeded(). Opening a markdown file while zoomed splits the zoomed leaf; the
 stale `savedLayout` (which lacks the markdown pane) is still restored by the next
 un-zoom-restoring action, which silently drops the markdown pane from the layout while
-leaving it in `panes`. The port may fix this by adding the restore, but note the
-divergence.
+leaving it in `panes`. Kelpi keeps this behavior (flagged QUIRK in
+`packages/daemon/src/store/reducers/panes.ts`; see Compatibility rationale 5).
 
-**toggleMarkdownEdit(paneID)** (bound to a key, markdown panes only)
+**toggleMarkdownEdit(paneID)** (⌘E, markdown panes only)
+
+The client decides which of two paths ⌘E takes (`toggleMarkdownEdit` in
+`packages/client/src/App.tsx`); both land on the `set-markdown-editing` reducer action
+(`packages/daemon/src/store/reducers/panes.ts`). ⌘E never launches `$EDITOR`.
 
 ```
 guard pane = visible pane with paneID AND pane.type === "markdown" else no-op
 
-if (pane.isEditing):                       // edit -> view
-  wasExternal = pane.externalEditorCommand != null
-  pane.isEditing = false; pane.externalEditorCommand = null
-  if (wasExternal) effect: destroySurface(paneID)   // tears down the $EDITOR PTY
+if (pane.externalEditorCommand != null):   // an external editor session is live: END it
+  effect: destroySurface(paneID)           // kill the $EDITOR PTY, drop its terminal
+                                           // state (markdown-external-editor action=close,
+                                           // packages/daemon/src/ws/desktop.ts)
+  pane.isEditing = false; pane.externalEditorCommand = null   // back to preview
   return
 
-// view -> edit
+// otherwise toggle the BUILT-IN editor (content service setMode(view|edit),
+// packages/daemon/src/content/service.ts, which dispatches set-markdown-editing
+// without a command)
+if (pane.isEditing):                       // edit -> view
+  pane.isEditing = false; pane.externalEditorCommand = null
+  return
 wasSearching = (searchingPaneID === paneID)
 if (wasSearching) clearSearchIfTargets(paneID)      // the preview is being replaced;
                                                     // a floating find bar would no-op
-cmd = pane.filePath ? editorService.buildCommand(pane.filePath) : null
-// buildCommand: resolves the user's $VISUAL/$EDITOR (and login PATH) from a cached
-// background resolution; returns a POSIX shell command that opens the file (file path
-// single-quote-escaped, editor run via `env PATH=...` so it is findable from an app
-// bundle's minimal environment). Null when no editor resolves.
-if (cmd != null):
-  pane.isEditing = true; pane.externalEditorCommand = cmd
-  effect: [ if wasSearching close the markdown find UI for paneID ]
-          spawn surface (5.3) for THIS pane id, cwd = pane.workingDirectory,
-          command = cmd     // the surface hosts the editor, not a shell
-else:
-  pane.isEditing = true; pane.externalEditorCommand = null   // built-in text editor
-  if (wasSearching) effect: close the markdown find UI for paneID
+pane.isEditing = true                      // externalEditorCommand stays null
+if (wasSearching) effect: close the markdown find UI for paneID
 ```
 
-**increaseMarkdownFontSize(paneID)** - guard visible, markdown, NOT editing;
-`markdownFontSize = min(size + 1, 32)`.
-**decreaseMarkdownFontSize(paneID)** - same guards; `max(size - 1, 8)`.
-**resetMarkdownFontSize(paneID)** - same guards; set to 14.
+**openExternalEditor(paneID)** (the explicit "Open in $EDITOR" action:
+`markdown-external-editor` with `action: "open"`, served by
+`packages/daemon/src/ws/desktop.ts`)
+
+```
+guard pane = visible pane with paneID AND pane.type === "markdown" else error
+guard pane.filePath non-empty else error
+cmd = resolve the user's $VISUAL/$EDITOR (and login PATH) from the cached background
+      resolution (packages/daemon/src/content/external-editor.ts); error when none resolves.
+      The result is a POSIX shell command that opens the file (file path
+      single-quote-escaped, editor run via `env PATH=...` so it is findable from an
+      app bundle's minimal environment).
+effect: destroy any stale surface for paneID   // a clean VT per session; re-entering
+                                               // must not replay the last screen
+pane.isEditing = true; pane.externalEditorCommand = cmd   // set-markdown-editing with
+                                                          // the command; entering edit
+                                                          // runs clearSearchIfTargets
+effect: spawn surface (5.3) for THIS pane id, cwd = pane.workingDirectory,
+        command = cmd, env = the workspace profile env   // the surface hosts the
+                                                         // editor, not a shell; the
+                                                         // spawn is held by the
+                                                         // geometry gate for the
+                                                         // client's measurement
+if the spawn fails: pane.isEditing = false; pane.externalEditorCommand = null
+```
+
+**setMarkdownFontSize(paneID, size)** - guard visible, markdown, NOT editing;
+`markdownFontSize = clamp(round(size), 8, 32)` (`set-markdown-font-size` in
+`packages/daemon/src/store/reducers/panes.ts`). The increase (+1), decrease (-1) and
+reset (14) keybindings compute the absolute size client-side
+(`packages/client/src/content/client.ts`) and dispatch this one action through the
+content service's `setFontSize`.
 
 ### 7.5 Diff panes
 
@@ -846,7 +969,7 @@ scopeName = (targetPath non-null and non-empty) ? basename(targetPath)
 pane = { id, type: "diff", label: scopeName, title: `diff: ${scopeName}`,
          workingDirectory: repoPath, filePath: targetPath ?? null,
          createdAt/lastActivityAt: now }
-branchEffect = async git branch of repoPath -> paneBranchChanged(id, ...)
+branchEffect = none here: the branch reconciler (7.11) resolves repoPath
 
 reuse branch: identical to openMarkdownFile's reuse branch (park the source).
 
@@ -904,15 +1027,22 @@ scheme = isLocalOrInternalHost(host) ? "http" : "https"
 return `${scheme}://${t}`
 
 isLocalOrInternalHost(h): h.lower() is "localhost" | "127.0.0.1" | "0.0.0.0" | "::1",
-  or ends with ".local" / ".localhost", or contains no "." (single-label -> internal).
+  or ends with ".local" / ".localhost", or is a well-formed dotted quad in 10/8,
+  172.16-31/12, 192.168/16 or 169.254/16 (isPrivateIPv4: a LAN address is a dev server
+  far more often than a TLS endpoint; malformed quads with leading zeros, an octet > 255
+  or the wrong part count do not match), or contains no "." (single-label -> internal).
 ```
+
+(`packages/daemon/src/store/reducers/url.ts`.)
 
 **webPaneNavigate(paneID, url)**
 - Guard `webPanes[paneID]` exists AND it has a resolved active tab, else no-op.
-- Normalize the URL; optimistically write it into the active tab's `url` in state (so a
-  persistence save right now captures the intent before the web view reports back).
-- Effect: tell the web-view coordinator (created on demand, honoring `isPrivate`) to
-  load the URL in that tab.
+- Normalize the URL; no-op when the normalized URL is empty or equals the active tab's
+  current URL; otherwise optimistically write it into the active tab's `url` in state (so
+  a persistence save right now captures the intent before the web view reports back) and
+  syncWebPaneHeader(paneID).
+- Effect: tell the web-pane host (the Electron shell, driven through
+  `packages/daemon/src/webpane/`, honoring `isPrivate`) to load the URL in that tab.
 
 **webPaneBack(paneID) / webPaneForward(paneID) / webPaneReload(paneID, hard = false)**
 - Guard sidecar + active tab; effect only: coordinator goBack / goForward /
@@ -928,10 +1058,11 @@ isLocalOrInternalHost(h): h.lower() is "localhost" | "127.0.0.1" | "0.0.0.0" | "
   and on reverts after failed navigations), KEEP the stored URL; otherwise take the
   reported one.
 - If neither url nor title actually changed: no-op.
-- Write url/title into the tab.
-- Header echo: if `title` is non-empty AND `tabID` is the RESOLVED active tab's id
-  (activeTab falls back to tabs[0] when activeTabID is stale, so compare against the
-  resolved one) AND the pane's title differs, set the pane title.
+- Write url/title into the tab, then syncWebPaneHeader(paneID): the pane title always
+  mirrors the RESOLVED active tab's display label (title -> URL host -> raw url ->
+  "New Tab"; activeTab falls back to tabs[0] when activeTabID is stale, so the resolved
+  one is what counts), so a tab whose title is still empty shows its host rather than
+  keeping the old pane title (`packages/daemon/src/store/reducers/web.ts`).
 
 **webPaneTabOpen(paneID, tabID, url, makeActive = true)**
 - Guard sidecar exists; guard `tabID` NOT already present (caller must mint fresh ids).
@@ -939,12 +1070,15 @@ isLocalOrInternalHost(h): h.lower() is "localhost" | "127.0.0.1" | "0.0.0.0" | "
 - If `makeActive`: `activeTabID = tabID`; syncWebPaneHeader(paneID).
 
 **webPaneTabClose(paneID, tabID)**
-- Guard sidecar exists.
-- If `tabs.length <= 1`: re-dispatch **closePane(paneID)** instead (single-tab close IS
-  pane close, so the full close flow runs: focus history, layout removal, snapshot,
-  coordinator teardown). Return.
-- Guard the tab exists. `wasActive = (activeTabID === tabID)`. Remove the tab at its
-  index `idx`.
+- Guard sidecar exists and the tab exists.
+- If `tabs.length === 1`: no-op. The reducer never converts a tab close into a pane close
+  (`packages/daemon/src/store/reducers/web.ts`); the `web-tab-close` wire verb refuses a
+  single-tab close with an error before dispatching
+  (`packages/daemon/src/webpane/handlers.ts`), and the GUI does not send one: ⌘W on a
+  single-tab web pane falls through to the ordinary close-pane binding
+  (`packages/client/src/webpane/priority.ts`), so the full closePane flow (focus history,
+  layout removal, snapshot, host teardown) runs from there.
+- `wasActive = (resolved active tab id === tabID)`. Remove the tab at its index `idx`.
 - If wasActive: `activeTabID = tabs[max(idx - 1, 0)].id` (prefer the left neighbor;
   the new first tab when the closed tab was first); syncWebPaneHeader.
 - Effect: destroy the closed tab's web view.
@@ -960,11 +1094,13 @@ isLocalOrInternalHost(h): h.lower() is "localhost" | "127.0.0.1" | "0.0.0.0" | "
   live find marks; this keeps `searchClose` (which targets the active tab) a complete
   teardown and prevents background tabs from resurrecting marks.
 
-**webPaneTabCycle(paneID, offset)** (`+1` next, `-1` previous, wraps)
-- Guard sidecar exists and `tabs.length > 1`.
-- `activeID = activeTabID ?? tabs[0].id`; guard it resolves to an index.
-- `nextIdx = ((currentIdx + offset) % n + n) % n`; set active; syncWebPaneHeader;
-  retarget find as in select.
+**webPaneTabCycle(paneID, offset)** (`+1` next, `-1` previous, wraps; ⌘⇧[ / ⌘⇧])
+- Client-side, not a reducer action (`cycleTab` in `packages/client/src/App.tsx`, wired
+  by `packages/client/src/webpane/priority.ts`).
+- Over the mirrored sidecar: guard `tabs.length > 1`; `currentIdx` = index of
+  `activeTabID`, defaulting to 0 when it does not resolve.
+- `nextIdx = ((currentIdx + offset) % n + n) % n`; send `webPaneTabSelect(paneID,
+  tabs[nextIdx].id)`, whose handler does the header sync and the find retarget.
 
 **webPaneTabReorder(paneID, orderedTabIDs)**
 - Guard sidecar exists; no-op when the order is unchanged.
@@ -972,15 +1108,19 @@ isLocalOrInternalHost(h): h.lower() is "localhost" | "127.0.0.1" | "0.0.0.0" | "
   count); otherwise drop the action entirely (never truncate or drop tabs).
 - Reorder `tabs` to match.
 
+The console, element-inspector and batch-annotate operations below are the contract of
+the daemon's web-pane service (`packages/daemon/src/webpane/service.ts`, `console.ts`,
+`inspect.ts`, `batch.ts`), which keeps this state outside the store (1.8); none of them
+is a reducer action. They are listed here because they are per-pane and guarded by the
+sidecar's existence. web-pane.md is the owning spec.
+
 **Console buffer** (per pane, ring buffer capacity 1000, oldest dropped, drops counted):
 - `webConsoleLineReceived(paneID, line)`: guard sidecar; append to the ring buffer;
-  then dispatch `webConsoleLineAppended(paneID)`.
-- `webConsoleLineAppended(paneID)`: no-op AT THIS LEVEL. It exists purely as an
-  ordering hook: the PARENT reducer reacts to it (not to `...Received`) to fan the new
-  line out to streaming console subscribers, because the parent's handler for
-  `...Received` would otherwise run before this reducer's append. In the TS port, if
-  the daemon appends and fans out in one place, this two-step can collapse; keep the
-  guarantee "subscribers see the line only after it is in the buffer".
+  then fan the line out to streaming console subscribers.
+- The append and the fan-out happen in one place (`packages/daemon/src/webpane/console.ts`),
+  so there is no separate `webConsoleLineAppended` step; the guarantee "subscribers see
+  the line only after it is in the buffer" holds because the append runs first
+  (Compatibility rationale 4).
 - `webConsoleClear(paneID)`: guard sidecar; clear the buffer (the line sequence number
   keeps counting; used by `kelpi web console --clear`).
 - `webConsoleAcknowledgeDrops(paneID)`: guard sidecar; reset the buffer's
@@ -1102,7 +1242,11 @@ Three branches, checked in order:
      effect: destroySurface(paneID)          // the file watcher picks up saved changes
      return
 
-3. Otherwise (a shell exited): dispatch closePane(paneID).
+3. Otherwise, only if the pane is a SHELL pane (or names no visible pane): dispatch
+   closePane(paneID). A non-shell pane whose process exits is left open (a markdown
+   pane is already back in preview by branch 2, or by an explicit editor close); the
+   daemon merely releases its terminal state so the next `$EDITOR` session starts on a
+   clean VT (`packages/daemon/src/store/reducers/panes.ts`, `packages/daemon/src/boot/compose.ts`).
 ```
 
 ### 7.8 Focus
@@ -1116,9 +1260,10 @@ real ids).
   current id present and >= 2 panes), else no-op.
 - Target = allPaneIDs order, +1 / -1 with wraparound. `setFocus(target)`.
 
-`clearPaneStatus` interaction: the view layer starts a 600ms timer when a
-`waitingForInput` pane gains focus and then dispatches `clearPaneStatus` (7.10), so
-merely looking at a waiting pane acknowledges it.
+`clearPaneStatus` interaction: the client's pane grid starts a 600ms timer when a
+`waitingForInput` pane gains focus and then sends `clear-pane-status` (`dwellClear` in
+`packages/client/src/App.tsx`), which dispatches `clearPaneStatus` (7.10), so merely
+looking at a waiting pane acknowledges it.
 
 ### 7.9 Reopen closed pane
 
@@ -1127,8 +1272,9 @@ merely looking at a waiting pane acknowledges it.
 ```
 snapshot = recentlyClosedPanes.pop()          // LIFO; guard non-empty else no-op
 guard focusedPaneID != null else no-op
-// EDGE: the snapshot is popped BEFORE the focus guard, so with no focused pane the
-// snapshot is consumed and permanently lost. Faithful to current behavior.
+// EDGE (kept): the snapshot is popped BEFORE the focus guard, so with no focused pane
+// the snapshot is consumed and permanently lost; the wire reply
+// (packages/daemon/src/ws/panes.ts) is an error rather than a pane id.
 
 id = newUUID()
 pane = { id, label: snapshot.label, type: snapshot.type,
@@ -1136,6 +1282,7 @@ pane = { id, label: snapshot.label, type: snapshot.type,
          isEditing: snapshot.type === "scratchpad",       // scratchpads reopen editing
          scratchpadContent: snapshot.scratchpadContent,
          agentKind: snapshot.agentKind,                   // display continuity
+         agentProfileName: snapshot.agentProfileName,     // same kind of last-known value
          markdownFontSize: snapshot.markdownFontSize }
 // note: agentSessionID is NOT restored onto the pane; title/gitBranch/status reset.
 
@@ -1145,35 +1292,45 @@ if (snapshot.type === "web" AND snapshot.webState != null):
   webPanes[id] = snapshot.webState
   // EDGE: a private web pane closed earlier has webState null, so the reopened pane
   // gets NO sidecar entry: a web pane with no tabs. The UI must tolerate a missing
-  // sidecar (treat as a blank tab); the port should normalize this (see Port notes).
+  // sidecar (treat as a blank tab); kept, see Compatibility rationale 5.
 setFocus(id); currentLayoutIndex = null
 
 if (snapshot.type is markdown | scratchpad | diff | web): no effects; done.
 
-// shell: respawn and optionally resume the agent
+// shell: respawn and optionally resume the agent (the reopen channel in
+// packages/daemon/src/ws/panes.ts reads the snapshot BEFORE dispatching, since the
+// reducer pops it and the restored pane does not carry agentSessionID)
 effect:
-  env = resolveProfileEnv(profileName ?? "default")   // resume inherits the profile,
-                                                       // so the agent stays on the
-                                                       // workspace's account
-  spawnSurface(id, pane.workingDirectory, opacity, env)
   cmd = snapshot.agentSessionID != null
         ? resumeCommand(snapshot.agentKind ?? "claude", snapshot.agentSessionID)
         : null
+  env = resolveProfileEnv(cmd != null && snapshot.agentProfileName != null
+        ? snapshot.agentProfileName     // a resume runs under the profile the session
+        : profileName ?? "default")     // was launched under (spawnPaneIfShell's
+                                        // sessionProfileName); unrecorded -> the
+                                        // workspace's, so the agent stays on the
+                                        // workspace's account
+  spawnSurface(id, pane.workingDirectory, env)
   if (cmd != null):            // null = unsafe session id; skip resume silently
-    sleep 2 seconds            // let the shell finish starting
-    typeIntoPane(id, cmd); pressEnter(id)   // sendCommand = text + Enter keystroke
+    sleep 2 seconds            // REOPEN_RESUME_SETTLE_MS: let the shell finish starting
+    if the PTY is gone (pane closed again meanwhile): skip
+    typeIntoPane(id, cmd); pressEnter(id)   // sendText, bare: false = text + Enter
 ```
 
-(The parallel "restart-restore" flow that resumes agents after an APP restart lives in
-the app-level reducer: it captures resume tuples from persisted panes at state load,
-clears `agentSessionID`s, and types the same `resumeCommand` into respawned panes. This
+(The parallel "restart-restore" flow that resumes agents after a DAEMON restart lives in
+the boot restore (`applyLoadReset` in `packages/daemon/src/store/snapshot.ts`, see
+app-state-core.md): it captures resume tuples from persisted panes at state load, clears
+`agentSessionID`s, and types the same `resumeCommand` into respawned panes. This
 workspace reducer contributes `sessionEnded`'s clearing, which is what prevents an
-already-exited session from being resumed, and `agentKind`, which picks the command.)
+already-exited session from being resumed, `agentKind`, which picks the command, and
+`agentProfileName`, which picks the env.)
 
 ### 7.10 Agent lifecycle and status
 
 All of these use `mutatePane` (3.6): they apply to VISIBLE OR PARKED panes, and no-op
-for unknown ids.
+for unknown ids. The transitions are `reduceAgentEvent` in
+`packages/core/src/agent/machine.ts`, applied by
+`packages/daemon/src/store/reducers/agent.ts`.
 
 Status state machine:
 
@@ -1183,14 +1340,16 @@ Status state machine:
          ^                        ^   |                            |    ^
          |     clearPaneStatus    |   | agentStopped(bg>0)         |    | agentError
          +------------------------+   +--(stays running)----------+    | (from any)
-              (only from waiting)     agentStarted (re-entry, no timer reset)
+              (only from waiting)     agentStarted (re-entry, timer restarts)
 setPaneStatus(any) = manual override, shell panes only
+notification(bg)   = same transition as agentStopped(bg)
 ```
 
 **agentStarted(paneID, agent = "claude")**
 (fired by the `start` lifecycle event: Claude `UserPromptSubmit` hook, etc.)
-- If `status !== "running"`: `agentStartedAt = now` (fresh run starts the elapsed
-  clock; repeated starts within one run do NOT reset it).
+- `agentStartedAt = now` on EVERY start, including one that arrives while already
+  `running`: a start mid-run means the previous stop was missed, so it is treated as a
+  fresh run and the elapsed clock restarts.
 - `status = "running"`.
 - `agentKind = agent`.
 - `backgroundTaskCount = 0` (a fresh turn supersedes any background snapshot).
@@ -1209,6 +1368,14 @@ setPaneStatus(any) = manual override, shell panes only
 Self-recovery: when background work finishes it re-invokes the agent, producing
 `agentStarted` (resets count to 0), and the eventual final Stop arrives with count 0.
 
+**notification(paneID, title, body, backgroundTaskCount)**
+(fired by the `notification` lifecycle event: the Claude `Notification` hook)
+- Takes exactly the `agentStopped` transition with the same count (shared `applyStop`):
+  count > 0 keeps `status = "running"`, count 0 sets `"waitingForInput"`.
+- Additionally raises an `agentNotification` pending notification carrying the hook's
+  title and body (in place of the generic "waiting for input" one that `agentStopped`
+  raises). agent-lifecycle.md is the owning spec.
+
 **agentError(paneID)**
 - `status = "waitingForInput"` (an errored agent needs attention, same visual state as
   awaiting input; NOT idle).
@@ -1222,18 +1389,24 @@ Self-recovery: when background work finishes it re-invokes the agent, producing
 - `backgroundTaskCount = 0` (a manual override takes control; a stale "N running"
   badge must not linger).
 
-**sessionStarted(paneID, sessionID, agent = "claude")**
+**sessionStarted(paneID, sessionID, agent = "claude", profileName?)**
 (fired by the `session-start` event, i.e. the SessionStart hook; also dual-fired by
 other hooks that carry a session_id)
 - `agentSessionID = sessionID`.
 - `agentKind = agent`. (This is why untagged dual-fires from codex would flip the kind
   back to claude; the CLI tags every fire.)
+- `agentProfileName = profileName` when the event carries a non-empty one (the hook
+  reports the `KELPI_PROFILE` of the agent's own environment); an event without one
+  (an older CLI) keeps the last-known value.
 - `backgroundTaskCount = 0` (a brand-new session inherits no background work; also
-  bounds a stuck "running" if the final empty Stop was lost while the app was down).
+  bounds a stuck "running" if the final empty Stop was lost while the daemon was down).
 - Does NOT touch `status` or `agentStartedAt` (status rides `agentStarted`).
 
 **sessionEnded(paneID, sessionID)** (SessionEnd hook; issue #178)
-- If `agentSessionID === sessionID`: set it to null. Otherwise leave it alone.
+- If `agentSessionID === sessionID`: set `agentSessionID = null` AND
+  `agentProfileName = null` (a profile with no session to resume must not pin the pane's
+  next spawn; an older CLI never reports a new one, so "keep last-known" would hold a
+  stale name forever). Otherwise leave both alone.
 - The match guard matters: `/clear` and compaction fire SessionEnd(oldID) alongside
   SessionStart(newID) and the two can arrive in EITHER order; the guard keeps the live
   session tracked regardless. Clearing prevents an exited session from being
@@ -1253,16 +1426,23 @@ other hooks that carry a session_id)
 
 **paneDirectoryChanged(paneID, directory)** (terminal reported a pwd change, OSC 7)
 - mutatePane: `workingDirectory = directory; lastActivityAt = now`.
-- Effect: `branch = gitCurrentBranch(directory) catch null;`
-  dispatch `paneBranchChanged(paneID, branch)`.
+- No effect of its own: the branch reconciler below observes the change.
 
 **paneBranchChanged(paneID, branch: string | null)**
 - mutatePane: `gitBranch = branch`. (Null clears the badge, e.g. cwd left the repo or
   git errored.)
 
-Branch detection therefore happens: at markdown-pane open (parent dir), at diff-pane
-open (repo path), and on every cwd change of any pane. It is best-effort; failures
-resolve to null, never to an error.
+Branch detection is one store reconciler (`packages/daemon/src/git/branch.ts`, the only
+producer of `paneBranchChanged`) rather than per-call-site effects: every change to a
+pane's working directory (an OSC 7 report, a split inheriting a cwd, markdown/diff open
+setting the parent dir or repo path, a boot restore) schedules
+`git rev-parse --abbrev-ref HEAD` in that directory, debounced 120 ms per pane
+(`BRANCH_RESOLVE_DEBOUNCE_MS`) and cached 3 s per directory (`BRANCH_CACHE_TTL_MS`); a
+watched worktree's HEAD change (graft-git.md) re-resolves every pane inside it.
+`paneBranchChanged` is dispatched only when the result differs from the pane's current
+`gitBranch`, and only if the pane still has the directory that was looked up. Detached
+HEAD yields the literal `"HEAD"`. It is best-effort; a non-checkout or a git failure
+resolves to null, never to an error.
 
 ### 7.12 Layout actions
 
@@ -1341,26 +1521,26 @@ null.
 - Else: `searchingPaneID = focusedPaneID; searchNeedle = ""; searchTotal = null;
   searchSelected = null`.
 
-**ghosttySearchStarted(paneID, needle)** (the terminal itself initiated a search, e.g.
-a native ghostty keybinding)
-- Guard the visible pane exists and is `"shell"`.
-- Adopt it: `searchingPaneID = paneID; searchNeedle = needle; searchTotal = null;
-  searchSelected = null`. (Replaces any bar open on another pane.)
+There is no terminal-initiated search (no equivalent of a native terminal keybinding
+adopting or ending a search behind the reducer's back): the daemon owns the terminal
+search, so nothing opens or closes a bar except the actions in this section.
 
-**ghosttySearchEnded(paneID)**
-- Guard `searchingPaneID === paneID`; clear all four search fields.
-
-**searchNeedleChanged(needle)**
-- `searchNeedle = needle; searchSelected = null`.
-- Guard a search is open; route by the searched pane's type:
+**searchNeedleChanged(needle)** (`set-search-needle` in
+`packages/daemon/src/store/reducers/layout.ts`)
+- Guard a search is open (`searchingPaneID != null`), else no-op.
+- `searchNeedle = needle; searchSelected = null`; route the effect by the searched pane's
+  type:
   - web: effect drives find on the ACTIVE TAB with the needle. Latest-wins
     cancellation (an in-flight previous run is cancelled), no artificial delay.
   - markdown: effect updates the markdown find controller. Latest-wins, no delay.
-  - shell: needle == "" -> immediately clear the terminal search
-    (`search:` with empty payload); needle length < 3 -> wait 300ms then run
-    `search:<needle>` (debounce, cancelled by the next change); length >= 3 -> run
-    immediately (still cancels any in-flight predecessor). All three share one
-    cancellation key.
+  - shell: needle == "" -> immediately clear the terminal search; needle length < 3 ->
+    wait 300ms then run the search (debounce, cancelled by the next change); length >= 3
+    -> run immediately (still cancels any in-flight predecessor). All three share one
+    cancellation key. The debounce lives in the client
+    (`packages/client/src/app/search-needle.ts`); the daemon's `terminal-search` channel
+    (`packages/daemon/src/ws/search.ts`) computes `searchTotal` only for shell panes and
+    publishes `total: null` for web and markdown panes, whose counts arrive from the
+    client's own find backend via searchTotalUpdated/searchSelectedUpdated.
 
 **searchNavigateNext / searchNavigatePrevious**
 - Guard a search is open; route by type: web -> find-next/previous on the active tab;
@@ -1425,7 +1605,44 @@ broadcaster entry even though `isSyncInputActive` stays true; opening another sh
 pane re-materializes the group.
 
 Sync flag lifecycle: `isSyncInputActive` and `syncInputExcluded` are transient and
-reset to off/empty on app restart.
+reset to off/empty on daemon restart.
+
+### 7.16 Other reducer actions on workspace state
+
+Actions that touch `WorkspaceState` but sit outside the catalogue above
+(`packages/daemon/src/store/types.ts`):
+
+**setPaneLabel(paneID, label: string | null)** (`set-pane-label`; the `pane-name` wire
+verb, `packages/daemon/src/handlers/pane/lifecycle.ts`)
+- mutate the VISIBLE pane: `label = label`. The handler maps an empty name to null, so
+  an empty name clears the label. Unknown ids no-op.
+
+**movePaneToWorkspace(paneID, toWorkspaceID)** (`move-pane-to-workspace`; specified in
+socket-handlers.md §4.11)
+- Guard the pane is visible in some workspace, the target exists, and it is not the
+  source, else no-op.
+- Source: remove the pane from `panes`, `syncInputExcluded` and the layout; carry a web
+  pane's sidecar across (delete it from the source); `currentLayoutIndex = null`; scrub
+  and, if it was focused, refocus via popFocusFromHistory / layout order; clear a search
+  on it; if it was the zoomed pane, un-zoom onto `savedLayout` minus the pane.
+- Target: append the pane; split the focused pane (falling back to the first in layout
+  order) horizontally with the moved pane second, or make it the root leaf of an empty
+  layout; restore the sidecar; `currentLayoutIndex = null`; `setFocus(paneID)`.
+- `lastActiveWorkspaceID = toWorkspaceID`.
+
+**resizePane(paneID, share)** (`resize-pane`; `kelpi pane resize`,
+`packages/daemon/src/handlers/pane/geometry.ts`)
+- `resizePaneShare` (`packages/core/src/layout/ratio.ts`): find the enclosing split (1.6);
+  none -> no-op (the handler already replied "no sibling to resize against"); clamp the
+  share to [0.1, 0.9]; convert to the first-child ratio (`share` when the pane is first,
+  `1 - share` when second); apply through `updatingSplitRatio` (1.7).
+- `currentLayoutIndex = null`, exactly like a divider drag (6).
+
+**setWorkspaceIcon(icon: GroupIcon | null)** (`set-workspace-icon`) sets `icon`;
+**setRepoAssociationBranch(associationID, branchName)** (`set-repo-association-branch`)
+updates one association's `branchName` in place. Both belong to other specs
+(app-state-core.md and graft-git.md's HEAD-watcher refresh respectively; see 10.10) and
+are listed here only so the action set on `WorkspaceState` is complete.
 
 ---
 
@@ -1455,8 +1672,9 @@ reset to off/empty on app restart.
    while off (see 7.15).
 10. `backgroundTaskCount > 0` implies `status === "running"` (enforced by agentStopped;
     agentStarted/sessionStarted/agentError/setPaneStatus all reset the count).
-11. `agentStartedAt` is set on every non-running -> running transition and never reset
-    mid-run.
+11. `agentStartedAt` is set on every `agentStarted` (including one that arrives mid-run,
+    which restarts the clock) and on every non-running -> running transition via
+    agentStopped(bg>0) / notification(bg>0) / setPaneStatus.
 12. Session ids only ever reach a PTY through `resumeCommand`, which enforces the
     safety allowlist. Never interpolate a raw wire string into a shell command.
 13. Splits created by user actions always start at ratio 0.5 with the pre-existing pane
@@ -1474,12 +1692,14 @@ reset to off/empty on app restart.
   workspace-delete when triggered from the close-pane keybinding.
 - `reopenClosedPane` with no focused pane: the snapshot is consumed and lost.
 - Reopened private web pane: pane exists, no `webPanes` entry.
-- `webPaneTabClose` on the last tab: becomes `closePane`.
+- `webPaneTabClose` on the last tab: reducer no-op; the wire verb answers with an
+  error and ⌘W in the GUI runs the ordinary close-pane binding instead.
 - `movePane` onto itself: layout unchanged, but focus set and layout index reset.
 - `movePaneInDirection` while zoomed: no-op (does not un-zoom).
 - Out-of-order SessionEnd(old)/SessionStart(new): the match guard in `sessionEnded`
   keeps the new id either way.
-- Repeated `agentStarted` during one run: status stays running, timer NOT reset.
+- Repeated `agentStarted` during one run: status stays running, timer restarts (the
+  previous stop is assumed missed).
 - Repeated `agentStopped(bg>0)`: idempotent (stays running, count updated).
 - Codex: no SessionEnd -> stale codex session id may persist after exit (restart may
   resume an old session; pane sits in the waiting bucket). Accepted limitation.
@@ -1494,78 +1714,91 @@ reset to off/empty on app restart.
 
 ---
 
-## 10. Port notes
+## 10. Compatibility rationale
+
+These notes record the quirks and shapes Kelpi keeps on purpose so the pre-port kelpi CLI,
+hook scripts and saved state keep working, and why the code does what it does where that
+is not obvious from the rules above.
 
 1. **Effects model.** Every behavior above is expressed as pure state transitions plus
-   a list of effects. The TS daemon should keep that shape: a workspace reducer
-   returning `{ state, effects }` where effects are: `spawnPty(paneID, cwd, env,
-   command?)`, `destroyPty(paneID)`, `gitBranch(dir) -> dispatch paneBranchChanged`,
-   `setSyncGroup(wsID, ids)`, web-view commands, `typeIntoPane + Enter` (resume), and
-   timed follow-ups (2s resume delay, 300ms search debounce, the view-layer 600ms
-   clearPaneStatus dwell). Ghostty surface lifetime maps to daemon-owned PTY +
+   a list of effects. The daemon keeps that shape: the reducers are pure
+   (`packages/daemon/src/store/reducers/`), and the effects run in the handlers and
+   services around the store: `spawnPty(paneID, cwd, env, command?)` and
+   `destroyPty(paneID)` (`packages/daemon/src/pty/manager.ts`), the branch reconciler
+   (`packages/daemon/src/git/branch.ts`), `setSyncGroup(wsID, ids)`, web-pane host
+   commands (`packages/daemon/src/webpane/`), `typeIntoPane + Enter` (resume), and timed
+   follow-ups (the 2s resume delay, the client's 300ms search debounce, the client's
+   600ms clearPaneStatus dwell). A terminal surface is a daemon-owned PTY plus
    ghostty-vt terminal state; "destroySurface" = kill PTY + drop terminal state +
    broadcast pane-removed to clients.
 
-2. **Who renders vs who owns.** In the Swift app the reducer and the views live in one
-   process. In the port, this whole state machine belongs in the DAEMON (it must behave
-   identically for CLI-only usage with no client attached). Client-side things to
-   re-home: the 600ms focus-dwell timer that fires `clearPaneStatus` (either daemon-side
-   on focus events from clients, or client-sent), the markdown find controller and
-   web-view find (move to the web client; the daemon keeps only
-   searchingPaneID/needle/total/selected and relays), drag-drop DropZone hit-testing
-   (`DropZone.calculate` = nearest-edge quadrant test; keep it client-side, send
-   `movePane` with the resolved zone).
+2. **Who renders vs who owns.** This whole state machine lives in the DAEMON, so it
+   behaves identically for CLI-only usage with no client attached. Three things are
+   client-side by design: the 600ms focus-dwell timer that sends `clear-pane-status`
+   (the client knows which pane it is showing; the daemon owns the mutation, so the
+   cleared status reaches every other client as a delta), the markdown find controller
+   and web-view find (they run in the client's sandboxed frame and the host's
+   webContents; the daemon keeps only searchingPaneID/needle/total/selected and relays),
+   and drag-drop DropZone hit-testing (`packages/core/src/layout/dropZone.ts`, a
+   nearest-edge quadrant test; the client resolves the zone and sends `movePane` with
+   it).
 
-3. **The external-$EDITOR markdown mode is macOS-app-specific.** It spawns a PTY
-   running `$EDITOR file` inside the markdown pane. The port CAN reproduce it (the
-   daemon owns PTYs and the web client renders terminals anyway); if it does, keep the
-   exact rules: surface exists only while `externalEditorCommand != null`, editor exit
+3. **The external-$EDITOR markdown mode.** It spawns a PTY running `$EDITOR file`
+   inside the markdown pane (`packages/daemon/src/ws/desktop.ts`), which the daemon can
+   do because it owns PTYs and the client renders terminals anyway. The exact rules
+   hold: the surface exists only while `externalEditorCommand != null`, editor exit
    returns to preview (paneProcessTerminated branch 2), close while editing destroys
    the surface, and such panes are still excluded from sync groups.
 
-4. **Sequencing subtleties safe to simplify:**
-   - `webConsoleLineReceived` -> `webConsoleLineAppended` exists only to order the
-     parent's fan-out after the append; a single-owner daemon can append and fan out in
-     one step, preserving "subscribers see a line only after it is buffered".
+4. **Sequencing subtleties that were simplified:**
+   - The two-step `webConsoleLineReceived` -> `webConsoleLineAppended` existed only to
+     order a parent's fan-out after the append; the daemon's web-pane service appends
+     and fans out in one step (`packages/daemon/src/webpane/console.ts`), preserving
+     "subscribers see a line only after it is buffered".
    - The `newPaneID`/`tabID` pre-allocation exists so CLI replies can echo real ids.
-     Keep it: the wire handler mints the UUID, replies, then dispatches with the id.
+     It is kept: the wire handler mints the UUID, replies, then dispatches with the id.
 
-5. **Bugs/quirks preserved in this spec that the port may deliberately fix** (flag in
-   code if you do): openMarkdownFile's missing un-zoom restore in the split branch
-   (7.4); reopenClosedPane consuming the snapshot before the focus guard (7.9);
-   reopened private web panes lacking a sidecar (normalize to a blank tab);
-   `createPane`'s unconditional layout replacement (add an "only when empty" guard);
-   `movePane` self-target still resetting `currentLayoutIndex` and focus.
+5. **Bugs/quirks preserved deliberately** (each flagged QUIRK in
+   `packages/daemon/src/store/reducers/panes.ts`, so the pre-port CLI and saved state
+   see the same behavior): openMarkdownFile's missing un-zoom restore in the split
+   branch (7.4); reopenClosedPane consuming the snapshot before the focus guard (7.9;
+   the wire reply is an error rather than a phantom pane id); reopened private web
+   panes lacking a sidecar (the UI treats a missing sidecar as a blank tab);
+   `createPane`'s unconditional layout replacement (the caller contract, not a guard,
+   keeps it safe); `movePane` self-target still resetting `currentLayoutIndex` and
+   focus.
 
-6. **Persistence boundary.** Serialize exactly the fields listed in 1.9's persisted
-   set; everything marked TRANSIENT must reset on daemon restart. The app-level restore
-   flow (not this reducer) captures (paneID, agentSessionID, agentKind, cwd) resume
-   tuples BEFORE clearing session ids, then respawns and types resume commands; keep
-   `sessionEnded`'s match-guarded clearing and `agentKind`'s survival, or resume will
-   either re-attach dead sessions or run the wrong CLI.
+6. **Persistence boundary.** Exactly the fields listed in 1.9's persisted set are
+   serialized (`packages/daemon/src/store/snapshot.ts`); everything marked TRANSIENT
+   resets on daemon restart. The boot restore flow (`applyLoadReset`, not this reducer)
+   captures (paneID, agentSessionID, agentKind, agentProfileName, cwd) resume tuples
+   BEFORE clearing session ids, then respawns and types resume commands; `sessionEnded`'s
+   match-guarded clearing and `agentKind`'s survival are what keep resume from
+   re-attaching dead sessions or running the wrong CLI.
 
-7. **Concurrency.** The Swift version relies on TCA's serialized action processing:
-   all transitions above are atomic with respect to each other. The daemon must
-   serialize actions per workspace (a single event loop or per-workspace queue). Git
-   branch lookups and PTY spawns are async and re-enter via dispatched actions; they
-   must tolerate the pane having been closed meanwhile (all the mutate actions already
-   no-op on unknown ids, keep that).
+7. **Concurrency.** All transitions above are atomic with respect to each other: the
+   daemon's store (`packages/daemon/src/store/store.ts`) applies actions synchronously
+   on one event loop, and an action dispatched from a listener is queued and applied
+   after the current one drains, so per-workspace ordering is total. Git branch lookups
+   and PTY spawns are async and re-enter via dispatched actions; they tolerate the pane
+   having been closed meanwhile (all the mutate actions no-op on unknown ids, and the
+   deferred spawn and the branch resolver both re-read state before acting).
 
-8. **Sync input over the wire.** The broadcaster (section 4) currently mirrors
-   libghostty key events object-for-object. In the port, mirroring happens where input
-   enters: the daemon receives key/text input per pane from clients and, when the
-   source pane is in its workspace's sync group, writes the same bytes/key events to
-   every sibling PTY. Keep the rules: source excluded, shell panes only (enforced by
-   the membership computation, not the broadcaster), best-effort on dead PTYs, group
-   membership pushed eagerly by refreshSyncGroup rather than computed per keystroke.
+8. **Sync input over the wire.** Mirroring happens where input enters: the daemon
+   receives key/text input per pane from clients and, when the source pane is in its
+   workspace's sync group, writes the same bytes to every sibling PTY
+   (`write` in `packages/daemon/src/pty/manager.ts`). The rules hold: source excluded,
+   shell panes only (enforced by the membership computation, not the broadcaster),
+   best-effort on dead PTYs, group membership pushed eagerly by refreshSyncGroup rather
+   than computed per keystroke.
 
 9. **IDs and ordering.** `panes` order is append order and is user-visible only through
    layout traversal; `allPaneIDs(layout)` (DFS, first-then-second) is the canonical
-   order for focus cycling and predefined-layout rebuilds. Preserve both orderings in
-   the port's data structures.
+   order for focus cycling and predefined-layout rebuilds. Both orderings are preserved
+   in the store's data structures.
 
 10. **What is NOT here.** Workspace creation/deletion/reordering, groups, the socket
     protocol's request/response framing, label presets, notifications/dock badges, and
-    the git worktree flows live in the app-reducer / socket subsystem docs. This
-    reducer only ever sees already-resolved pane/workspace UUIDs; all name-or-id and
-    label resolution happens upstream.
+    the git worktree flows live in app-state-core.md, socket-handlers.md and
+    graft-git.md. This reducer only ever sees already-resolved pane/workspace UUIDs;
+    all name-or-id and label resolution happens upstream.

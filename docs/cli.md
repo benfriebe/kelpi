@@ -1,18 +1,20 @@
 # kelpi CLI: behavioral specification
 
-Source of truth: `/Users/ben/code/kelpi/Tools/nex-cli/nex.swift` (single-file Swift CLI, ~5300 lines),
-`/Users/ben/code/kelpi/scripts/install-hooks.sh`, `/Users/ben/code/kelpi/scripts/merge_hooks.py`.
+Source of truth: `packages/cli/src` (entry `packages/cli/src/cli.ts`, one module per command
+family under `packages/cli/src/commands/`), the installer under `packages/cli/src/install/`
+and the doctor checks under `packages/cli/src/doctor/`. The code comments cite this document
+by section number.
 
-This document is a contract. The new TypeScript daemon must keep this exact CLI working
-unchanged (same wire protocol, same reply envelopes), and a future TS rewrite of the CLI
-must reproduce every behavior described here: flags, parsing rules, stdout/stderr text,
-exit codes, timeouts, and routing heuristics.
+This document is a contract. The daemon keeps this exact CLI working unchanged (same wire
+protocol, same reply envelopes), and the CLI reproduces every behavior described here: flags,
+parsing rules, stdout/stderr text, exit codes, timeouts, and routing heuristics. Where the CLI
+keeps a quirk of the pre-port `kelpi` binary on purpose, section 20 records why.
 
 Terminology used throughout:
 
 - "fire-and-forget": the CLI opens a connection, writes one JSON line, closes, and exits 0
   regardless of what the server does. Transport failure does NOT change the exit code
-  (still 0), it only prints a `Warning:` to stderr (suppressible, see section 5.8).
+  (still 0), it only prints a `Warning:` to stderr (suppressible, see section 5.6).
 - "request/response": the CLI writes one JSON line, then reads until the server closes the
   connection (EOF), decodes the reply, and exits non-zero on any failure.
 - "the caller pane": the pane identified by the `KELPI_PANE_ID` environment variable, which
@@ -22,17 +24,17 @@ Terminology used throughout:
 
 ## 1. Scope and role
 
-`kelpi` is a standalone binary bundled inside the app at `Kelpi.app/Contents/Helpers/nex` and
-symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by `install-hooks.sh`. It has two
-jobs:
+`kelpi` is a single dependency-free Node bundle, `packages/cli/dist/kelpi.js` (shebang'd and
+executable), symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by
+`kelpi install-hooks --link` (section 17). It has two jobs:
 
 1. **Agent hook entrypoint** (`kelpi event ...`): Claude Code and Codex CLI lifecycle hooks
    call it on every Stop/Start/Notification/SessionStart/SessionEnd fire. These must be
    silent, fast, and never fail (exit 0 even when the app is not running).
 2. **Scripting/orchestration surface**: everything else (`pane`, `workspace`, `group`,
-   `layout`, `open`, `md`, `diff`, `graft`, `web`, `doctor`). These are used by humans and
-   by orchestrator agents (the `nex-agentic` skill), and mostly follow request/response
-   semantics with meaningful exit codes.
+   `layout`, `open`, `md`, `diff`, `graft`, `web`, `doctor`, `install-hooks`). These are used
+   by humans and by orchestrator agents (the `kelpi-agentic` skill), and mostly follow
+   request/response semantics with meaningful exit codes.
 
 The CLI has no local state. Everything is one process invocation: parse args, maybe read
 stdin, open a socket, write one newline-terminated JSON object, optionally read the reply,
@@ -40,9 +42,16 @@ print, exit.
 
 ### 1.1 Build/packaging (current)
 
-- Compiled with `swiftc -O -o kelpi nex.swift` (see `Tools/nex-cli/Makefile`); the app build
-  runs this as a post-build script and copies the binary into `Contents/Helpers/`.
-- `install-hooks.sh` symlinks it (symlink, not copy, so version resolution works; see 3.1).
+- Bundled with esbuild by `pnpm --filter @kelpi/cli build` (`packages/cli/scripts/bundle.mjs`):
+  entry `packages/cli/src/main.ts`, platform node, ESM, no external dependencies, a
+  `#!/usr/bin/env node` banner and mode 0755, so `dist/kelpi.js` runs from anywhere (a checkout
+  with no `node_modules` beside it included).
+- `kelpi install-hooks --link` symlinks it into the install directory (section 17). The symlink
+  is only a symlink: version identity is compiled in (see 3.1), so a copy would report the same
+  version.
+- The packaged app ships a launcher named `kelpi` that execs the bundle under the app's own
+  Node; `install-hooks` treats a `PATH` entry resolving to that launcher as "this binary"
+  (`packages/cli/src/install/self.ts:64`).
 
 ---
 
@@ -88,8 +97,9 @@ kelpi <subcommand> [args...]
 ```
 
 Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, `md`,
-`diff`, `graft`, `web`, `doctor`, plus the pseudo-subcommands `--version`/`version` and
-`--help`/`-h`/`help`.
+`diff`, `graft`, `web`, `doctor`, `install-hooks` (section 17), plus the pseudo-subcommands
+`--version`/`version` (`packages/cli/src/cli.ts:43`) and `--help`/`-h`/`help`
+(`packages/cli/src/cli.ts:47`, via `isHelpToken`, `packages/cli/src/args.ts:103`).
 
 - No arguments at all: print the global usage block to **stderr**, exit 1.
 - `kelpi --version` or `kelpi version`: print `kelpi <version>` to stdout, exit 0.
@@ -99,20 +109,15 @@ Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, 
 
 ### 3.1 Version resolution
 
-The reported version is derived from the app bundle the binary lives in:
+The CLI's identity is compiled in (`packages/cli/src/version.ts:17`): `CLI_VERSION` (kept in
+step with `packages/cli/package.json`) and `CLI_BUILD` (`"dev"` for a local build). The
+packaging step may override either at runtime through `KELPI_CLI_VERSION` / `KELPI_CLI_BUILD`
+(trimmed; empty means no override), so identity can be stamped without a rebuild.
+`kelpi --version` prints `kelpi <version>`, never `dev` (only the build falls back to it).
 
-1. Get own executable path (`_NSGetExecutablePath`), **resolve symlinks** (this is why
-   the installer uses `ln -s`, not `cp`: a copied binary cannot find the bundle).
-2. From `<...>/Kelpi.app/Contents/Helpers/nex`, go up two components to
-   `<...>/Kelpi.app/Contents/` and read `Info.plist` there.
-3. Use `CFBundleShortVersionString`. Any failure at any step yields the literal string
-   `"dev"`.
-
-The version participates in `kelpi doctor`'s `version` check (compared against the running
-app's version returned by `ping`).
-
-TS port: the daemon should return `version` from `ping`, and a TS CLI should resolve its
-own version from its package metadata; `"dev"` remains the fallback string.
+Version, build and the compiled wire `PROTOCOL_VERSION` (from `@kelpi/protocol`) together form
+the identity `kelpi doctor`'s `version` check (16.5) compares against the daemon's `ping`
+reply.
 
 ---
 
@@ -128,6 +133,11 @@ own version from its package metadata; `"dev"` remains the fallback string.
 | `HOME` | table rendering, doctor | Used to render `~`-relative cwd in `pane list`, and to resolve `~/.claude` / `~/.codex` in doctor's hooks checks (falls back to the passwd-database home directory when `HOME` is unset). |
 | `KELPI_REQUIRE_SOCKET` | transport selection | The sandbox-harness guard. If set (to anything), the silent unix fallback above becomes a refusal to dial at all: any invocation whose `KELPI_SOCKET` does not name a well-formed `tcp:` route fails with `requiredSocketUnmet` (request/response commands exit 1; fire-and-forget commands keep their exit-0 warning contract) and `/tmp/kelpi.sock` is never touched. Set by sandboxed harnesses (ui-audit, smokes, verify.mjs) so a stale or missing route env can never silently address the live daemon. Not for normal interactive use. |
 | `KELPI_PROFILE` | `kelpi event ...` only | The effective profile name the pane's PTY was spawned with (injected by the daemon). Hooks attach it beside `session_id` (the wire `profile` field) so the daemon can resume the session under the same profile (agent-lifecycle.md §6.1). Non-empty only; every other command ignores it. |
+| `KELPI_CLI_VERSION` / `KELPI_CLI_BUILD` | `--version`, doctor | Runtime overrides for the compiled-in `CLI_VERSION` / `CLI_BUILD` (3.1), for a packaging step to stamp identity without a rebuild. Trimmed; empty means no override (`packages/cli/src/version.ts:21`). |
+| `KELPID_RUN_DIR` | doctor's `process` check | Overrides the daemon run dir where the `daemon-v<PROTOCOL_VERSION>.pid` record is looked up (16.4). A leading `~` expands to `$HOME` (`packages/cli/src/doctor/checks.ts:192`). |
+| `XDG_RUNTIME_DIR` | doctor's `process` check | On non-macOS platforms only, and only when `KELPID_RUN_DIR` is unset: the run dir is `$XDG_RUNTIME_DIR/kelpid`, else `~/.local/state/kelpid/run` (`packages/cli/src/doctor/checks.ts:198`). |
+| `KELPI_INSTALL_DIR` | `kelpi install-hooks --link` | The symlink destination directory when `--install-dir` is not given; default `/usr/local/bin` (`packages/cli/src/commands/install-hooks.ts:95`). |
+| `PATH` | `kelpi install-hooks` | Read to decide whether a `kelpi` on `PATH` resolves to this binary (which selects the bare `kelpi` hook command, 17) and to warn when the link directory is not on `PATH` (`packages/cli/src/commands/install-hooks.ts:96`). |
 
 ### 4.1 `requirePaneID()` semantics
 
@@ -145,7 +155,7 @@ Commands that use `requirePaneID()` (silent exit 0 outside a pane): `event *` (a
 
 Commands that instead print a usage error and exit 1 when neither `KELPI_PANE_ID` nor an
 explicit target/workspace is available: `pane split`, `pane create`, `pane name`,
-`pane resize`, and all `web` verbs (via the target-scope rule, section 11.2).
+`pane resize`, and all `web` verbs (via the target-scope rule, section 15.1).
 
 ---
 
@@ -204,6 +214,7 @@ workspace delete, never surface a stale diagnostic), then stashes a category on 
 | `tcpConnectFailed(host, port, errno)` | TCP `connect` failed |
 | `createSocketFailed(errno)` | `socket(2)` failed (fd exhaustion etc.) |
 | `emptyReply(command)` | connected and sent, but `readUntilEOF` returned `nil` (read error before any byte, e.g. ECONNRESET). Note: a genuinely empty (0-byte) reply does NOT set this; it is handled by per-command empty-reply text. `command` is the wire `"command"` value from the payload when available, else the CLI label. |
+| `requiredSocketUnmet(raw)` | `KELPI_REQUIRE_SOCKET` is set and the resolved transport is the Unix socket (i.e. `KELPI_SOCKET` is absent or names no well-formed `tcp:` route). Detected at the single connect choke point before `socket(2)` is ever called; `raw` is the `KELPI_SOCKET` value, or absent (`packages/cli/src/transport.ts:205`). |
 
 ### 5.5 Failure rendering (`printTransportFailure`)
 
@@ -226,7 +237,7 @@ Exact error/repair text per category (with `\(command)` = the CLI-facing label l
   - Repair: `Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set KELPI_SOCKET=tcp:<host>:<port>.`
 - `unixConnectRefused`:
   - Error: `<command>: socket <path> exists but connect was refused — Kelpi is not listening (likely stale socket from a previous crash).`
-  - Repair: `Restart Kelpi (panes and workspaces are persisted to ~/Library/Application Support/Kelpi/nex.db so they will be restored). If the file remains after Kelpi quits, remove it with `rm <path>`.`
+  - Repair: `Restart Kelpi (panes and workspaces are persisted to ~/Library/Application Support/kelpid/kelpi.db so they will be restored). If the file remains after Kelpi quits, remove it with `rm <path>`.`
 - `unixConnectFailed`:
   - Error: `<command>: connect to <path> failed (errno N: <msg>).`
   - Repair: `Run `kelpi doctor` for full IPC diagnostics.`
@@ -235,13 +246,16 @@ Exact error/repair text per category (with `\(command)` = the CLI-facing label l
   - Repair: `Check the hostname in KELPI_SOCKET. From a dev container the usual value is `tcp:host.docker.internal:<port>`.`
 - `tcpConnectFailed`:
   - Error: `<command>: TCP connect to <host>:<port> failed (errno N: <msg>).`
-  - Repair: `Confirm Kelpi has `tcp-port = <port>` set in ~/.config/nex/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
+  - Repair: `Confirm Kelpi has `tcp-port = <port>` set in ~/.config/kelpi/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
 - `createSocketFailed`:
   - Error: `<command>: socket(2) failed (errno N: <msg>).`
   - Repair: `Process-level failure — check for FD exhaustion. Run `kelpi doctor` for diagnostics.`
 - `emptyReply`:
   - Error: `<command>: no response from Kelpi for `<wire-command>` (connected, then peer closed before replying).`
   - Repair: `Likely an older Kelpi that doesn't recognise the command, or the app is wedged. Run `kelpi doctor` to confirm. Restart Kelpi if the doctor reports the app pid is responsive but commands hang.`
+- `requiredSocketUnmet`:
+  - Error: `<command>: KELPI_REQUIRE_SOCKET is set but KELPI_SOCKET names no tcp route (value: "<raw>" | (unset)) — refusing to dial the default socket /tmp/kelpi.sock.` (the raw value is JSON-quoted; `(unset)` when the variable is absent).
+  - Repair: `This guard keeps sandboxed harnesses off the live daemon. Point KELPI_SOCKET=tcp:127.0.0.1:<port> at the sandbox daemon, or unset KELPI_REQUIRE_SOCKET for a command aimed at the real instance.`
 
 ### 5.6 Fire-and-forget failure path
 
@@ -321,7 +335,7 @@ These call the raw send and check `data.isEmpty` themselves before `parseReplyOr
 | Code | Meaning |
 |---|---|
 | 0 | Success. Also: fire-and-forget always (even on transport failure); `requirePaneID` silent exits; `kelpi web exists` when found. |
-| 1 | Usage errors, unknown targets/ambiguous labels (`ok:false`), transport failures on request/response commands, invalid JSON replies, `web exists` not found, `web attr` attribute absent, `web cookies delete` zero matches, `pane id` outside a pane, doctor with a FAILed check, any failed delete in a `workspace delete` batch. |
+| 1 | Usage errors, unknown targets/ambiguous labels (`ok:false`), transport failures on request/response commands, invalid JSON replies, `web exists` not found, `web attr` attribute absent, `web cookies delete` zero matches, `pane id` outside a pane, doctor with a FAILed check, any failed delete in a `workspace delete` batch. Also: `kelpi install-hooks` when the Claude Code hook file could not be written, when `--link` cannot resolve the CLI's own path, and (under `--json` only) when `--link` failed; the human path merely warns on a link failure (`packages/cli/src/commands/install-hooks.ts:141`, `:190`). Any uncaught exception: `kelpi: <message>` to stderr, exit 1 (`packages/cli/src/main.ts:29`). |
 | 2 | `kelpi doctor <unexpected arg>` only. |
 | 128+sig | Streaming loop terminated by signal (SIGINT => 130). |
 
@@ -330,8 +344,8 @@ These call the raw send and check `data.isEmpty` themselves before `parseReplyOr
 ## 7. Argument parsing primitives
 
 There is no general argv framework; parsing is done with four helpers plus per-command
-positional logic. A TS rewrite must reproduce their exact semantics because they interact
-(order of consumption matters).
+positional logic (`packages/cli/src/args.ts`). Their exact semantics matter because they
+interact (order of consumption matters).
 
 ### 7.1 `parseFlag(name, args) -> string | null`
 
@@ -380,7 +394,8 @@ silent fallthrough is dangerous for verbs whose no-target default is "the callin
 
 Commands wired to `rejectLeftoverArgs`: `pane split`, `pane create`, `pane resize`,
 `pane move` (adjacent form), `pane list`, `pane capture`, `workspace list`,
-`workspace create`, `workspace label`, `group reorder`, `group sort`. Several other
+`workspace create`, `workspace label`, `group reorder`, `group sort`, `install-hooks`
+(hint `this command takes options only`). Several other
 commands implement equivalent bespoke checks (`pane close`, `pane name`, `pane send-key`,
 `pane sync`, `workspace profile`, `workspace delete`, `group list`, `doctor`); commands
 NOT listed here silently ignore extra args (e.g. `diff`, `layout select`, `group create`,
@@ -392,7 +407,7 @@ most `web` verbs, `md`/`open` after the first positional).
   close, name, resize, send, move, capture, list), `pane sync` (also bare `help`),
   `workspace` (group-level and per subcommand), `group` (group-level, plus
   `reorder`/`sort`), `web` (group-level, also `help`), `web cookies`, `md`, `open`,
-  `graft`. Help goes to **stdout**, exit 0. (Exception: `graft` help goes to stderr and
+  `graft`, `install-hooks`. Help goes to **stdout**, exit 0. (Exception: `graft` help goes to stderr and
   exits 0; the top-level `kelpi --help` usage goes to stderr and exits 0.)
 - `event`, `layout`, `diff`, `group create/rename/delete`, `pane move-to-workspace`,
   `pane send-key`, `pane id` have no dedicated help flag handling; a `--help` there is
@@ -423,10 +438,12 @@ Parsing/validation order:
 
 ### 8.1 stdin JSON
 
-If stdin is **not a TTY** (`isatty == 0`), read the currently-available stdin data once and
-try to parse it as a JSON object. Claude Code and Codex both pipe a JSON payload with at
-least `session_id` to every hook. Parse failures / empty stdin are silently ignored
-(`stdinJSON = null`).
+If stdin is **not a TTY**, read it to EOF (`fs.readFileSync(0)`, retried up to five times
+with a 10 ms wait on `EAGAIN`, since a non-blocking pipe can answer before the writer's first
+flush; `packages/cli/src/commands/event.ts:69`) and try to parse it as a JSON object. Claude
+Code and Codex both pipe a JSON payload with at least `session_id` to every hook and close the
+pipe; a runner that leaves stdin open blocks the CLI. Large payloads are read whole. Parse
+failures / empty stdin are silently ignored (`stdinJSON = null`).
 
 ### 8.2 Notification title/body composition (only for `eventType == "notification"`)
 
@@ -496,6 +513,7 @@ The count is attached to the payload as `background_tasks` (a JSON **number**) o
   "title": "...",                       // only if resolved (flag or defaulting rules)
   "body": "...",                        // only if resolved
   "session_id": "...",                  // only if stdin carried one
+  "profile": "work",                    // only when session_id is present, the event is not session-end, and KELPI_PROFILE is non-empty (section 4; event.ts:159)
   "agent": "codex",                     // only if --agent was passed (absent = claude)
   "background_tasks": 2                 // only if count > 0
 }
@@ -773,6 +791,12 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   `workspace_name`, `status`, `agent_session_id?` (full UUID), `working_directory`,
   plus `agent?` (last-known agent kind), `background_tasks?`, `group_id?`/`group_name?`
   in the JSON (the table renderer only uses the columns below).
+  The daemon's entries (`packages/protocol/src/replies/build.ts:48`, fed by
+  `packages/daemon/src/handlers/pane/list.ts:82`) always also carry `workspace_id`,
+  `is_focused`, `is_active_workspace`, `created_at` and `last_activity_at` (ISO 8601), and
+  optionally `title`, `git_branch` and `file_path` (the file a markdown pane shows). The CLI
+  passes the array through unchanged under `--json` (`packages/cli/src/commands/pane.ts:540`),
+  and scripts rely on `file_path`, `workspace_id` and `created_at`, so they are contract.
 - `--json`: print the `panes` **array unwrapped**, compact JSON, sorted keys, exit 0.
 - Table rendering (`--no-header` omits the header row):
   - Columns: `ID  LABEL  TYPE  WORKSPACE  STATUS  SESSION  CWD`.
@@ -841,9 +865,14 @@ kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>] [--
   ```
 
 Behavioral contract (server): the sync group is workspace-wide over shell panes minus the
-excluded set, only "active" when >= 2 qualify; every `on`/`off`/`toggle` clears the
-exclusion set, so `exclude` must run after `on`. Scope defaults to the caller's workspace
-via `KELPI_PANE_ID`; `--workspace` overrides.
+excluded set, only "active" when >= 2 qualify. The CLI's `on`/`off`/`toggle` all dispatch
+`set-sync-input-active` (`packages/daemon/src/handlers/pane/sync.ts:78-90`), which is
+idempotent: it returns the workspace unchanged when the value does not change, and clears
+the exclusion set only on an actual on/off transition
+(`packages/daemon/src/store/reducers/agent.ts:115-121`). So a repeated `sync on` keeps
+existing exclusions, while `toggle` always transitions and therefore always clears them;
+an `exclude` staged while sync is off does not survive the next `on`. Scope defaults to
+the caller's workspace via `KELPI_PANE_ID`; `--workspace` overrides.
 
 ---
 
@@ -1369,18 +1398,23 @@ Same URL validation and `localFileURL` mapping. Payload
 
 ### 15.6 `kelpi web capture [--mode meta|text|screenshot|dom|all]`
 
-- Mode defaults to `meta`; invalid =>
-  `kelpi web capture: unknown --mode '<m>' (allowed: meta, text, screenshot, dom, all)`,
-  exit 1.
+- The accepted flag set is `--mode meta|text|screenshot` (`CAPTURE_MODES`,
+  `packages/cli/src/commands/web.ts:268`). Mode defaults to `meta`. Anything else, including
+  `dom` and `all` (which the daemon accepts on the wire, `packages/protocol/src/wire/vocab.ts:108`),
+  is refused client-side with
+  `kelpi web capture: unknown --mode '<m>' (allowed: meta, text, screenshot)`, exit 1, before
+  any socket traffic. There is no `--json`: the flag is silently dropped. This is the flag set
+  of the pre-port binary, kept so the CLI stays a drop-in replacement (section 20); the
+  integration and compat suites pin the refusal.
 - Payload `{"command":"web-capture","mode":...}` + scope.
 - Rendering by reply `mode`:
   - `text`: print reply `text` if present.
-  - `dom`: print reply `html` if present.
   - `screenshot`: print reply `path` if present, else `png_base64` (caller pipes to
     `base64 -D`).
-  - `all`: dump the whole reply as compact sorted JSON.
   - `meta` (default): `url:    <url>` line, then `title:  <t>` when non-empty, then
     `bytes:  <n>` when `byte_count` present.
+  - The renderer still understands a reply `mode` of `dom` (print `html` if present) and
+    `all` (dump the whole reply as compact sorted JSON), but no CLI flag reaches them.
 
 ### 15.7 Tabs
 
@@ -1550,8 +1584,11 @@ kelpi doctor [--json]
 
 - Any leftover argument: `kelpi doctor: unexpected argument: <x>` +
   `Usage: kelpi doctor [--json]`, exit **2**.
-- Runs seven checks in order, collecting `{name, status, detail, repair?}` records where
-  status is one of `PASS | WARN | FAIL | SKIP`.
+- Runs eight checks in order (`packages/cli/src/commands/doctor.ts:53`): `transport`,
+  `socket`/`resolve`, `ping`, `routing` (16.8), `process`, `version`, `hooks`, `codex-hooks`,
+  collecting `{name, status, detail, repair?}` records where status is one of
+  `PASS | WARN | FAIL | SKIP`. (The `Check N` labels in the headings below predate `routing`,
+  which runs fourth, between `ping` and `process`.)
 - Exit code: 1 if **any check FAILed**, else 0. WARNs never change the exit code (scripts
   gate on transport/app health, not advisory drift).
 - Human output: per check `[STATUS] <name>: <detail>`, plus a second line
@@ -1562,7 +1599,10 @@ kelpi doctor [--json]
 
 ### 16.1 Check 1: `transport`
 
-Always PASS; detail `Unix socket at /tmp/kelpi.sock` or `TCP <host>:<port> (from KELPI_SOCKET)`.
+Always PASS; detail `Unix socket at /tmp/kelpi.sock (the default; KELPI_SOCKET unset)`,
+`Unix socket at /tmp/kelpi.sock (from KELPI_SOCKET)` (the variable is set but named no
+well-formed `tcp:` route, so the silent fallback fired), or `TCP <host>:<port> (from KELPI_SOCKET)`
+(`packages/cli/src/doctor/checks.ts:44`).
 
 ### 16.2 Check 2: `socket` (unix) / `resolve` (tcp)
 
@@ -1588,36 +1628,64 @@ exercises the same dispatch path real commands use.
   repair `Rebuild and relaunch Kelpi if you're on a recent main; if `ping` still fails, restart the app.`
 - Not JSON or `ok != true`: FAIL `received malformed reply (<n> bytes).`,
   repair `Restart Kelpi. If reproducible, file an issue with the raw bytes.`
-- Otherwise PASS `round-trip ok (app pid <pid-or-?>)`, and stash `pid` and `version` from
-  the reply for the next two checks.
+- Otherwise PASS `round-trip ok (app pid <pid-or-?>)`, and stash `pid`, `version`, `build`,
+  `protocol`, `compat {path, error}` (only when both are strings) and `pane_route` from the
+  reply for the routing, process and version checks (`packages/cli/src/doctor/checks.ts:123`).
 
-Ping reply contract (daemon must implement):
-`{"ok":true,"version":"<short version>","build":"<build>","pid":<int>}`.
+Ping reply contract (`packages/daemon/src/handlers/app/ping.ts:33`):
+`{"ok":true,"version":"<short version>","build":"<build>","pid":<int>,"protocol":<int>}`,
+plus optional `tcp {requested, host, bound?, error?}`, `compat {path, error}` (the daemon's
+CLI-compat socket is degraded because another Kelpi owns it), `pane_route` (the `KELPI_SOCKET`
+value the daemon injects into pane environments) and `persistence {...}`. A reply without
+`protocol` came from the legacy Nex app (16.8).
 
 ### 16.4 Check 4: `process`
 
+Daemon-aware (`packages/cli/src/doctor/checks.ts:268`).
+
 - TCP transport: SKIP,
   detail `skipped (TCP transport — running Kelpi is on a remote host).`
-- Unix: run `/bin/ps -axo pid=,comm=`, keep rows whose comm **ends with**
-  `Kelpi.app/Contents/MacOS/Kelpi`, parse pids. (Deliberately `ps`, not `pgrep`: pgrep
-  matching is inconsistent across macOS sandbox contexts.)
-  - No pids: FAIL `no running Kelpi.app process found`,
-    repair `Launch Kelpi from /Applications (or wherever you installed it), then re-run `kelpi doctor`.`
-  - Ping pid known but not among the pids: WARN
+- Unix: any of the following counts as evidence, gathered in this order:
+  1. a **live pid record** `daemon-v<PROTOCOL_VERSION>.pid` in the daemon run dir
+     (`KELPID_RUN_DIR`, else `~/Library/Application Support/kelpid/run` on macOS, else
+     `$XDG_RUNTIME_DIR/kelpid`, else `~/.local/state/kelpid/run`; `checks.ts:192`), a JSON
+     object with a positive `pid` (plus `protocol?`, `version?`), cross-checked with
+     `kill(pid, 0)` so a stale record does not count;
+  2. a `/bin/ps -axo pid=,command=` row whose command line has a token `kelpid`, ending in
+     `/kelpid` or ending in `/kelpid.js` (a bundled daemon runs under `node`, so `comm` alone
+     never shows it; the CLI's own pid is excluded; `checks.ts:251`);
+  3. a `/bin/ps -axo pid=,comm=` row whose comm **ends with** `Kelpi.app/Contents/MacOS/Kelpi`
+     (`checks.ts:236`). (Deliberately `ps`, not `pgrep`: pgrep matching is inconsistent across
+     macOS sandbox contexts.)
+  - None found: FAIL `no running kelpid or Kelpi.app process found`,
+    repair `Start the daemon (`kelpid start`) or launch Kelpi from /Applications, then re-run `kelpi doctor`.`
+  - Ping pid known but not among the found pids (sorted ascending): WARN
     `found pids [..], but ping replied from pid N — multiple Kelpi instances?`,
     repair `Quit the stale instances (`kill <pid>`) and keep one running.`
-  - Else PASS `Kelpi.app running (pids: a, b)`.
+  - Live pid record: PASS `kelpid running (pid N, protocol P)[; Kelpi.app pids: a, b]`.
+  - Else PASS `kelpid running (pids: a, b)` when a kelpid process was seen, otherwise
+    `Kelpi.app running (pids: a, b)`.
 
 ### 16.5 Check 5: `version`
 
-- No version from ping: SKIP `skipped (ping did not return a version)`.
-- Exact string equality CLI vs app: PASS `CLI <v> matches app <v>`; else WARN
-  `CLI is <v>; app is <w>.`,
-  repair `Rebuild Kelpi (or relaunch from the latest build) so the bundled CLI matches the running app.`
+The CLI and the daemon are separate artifacts, so the check compares identities (3.1) rather
+than assuming one bundle shipped both (`packages/cli/src/doctor/checks.ts:330`):
+
+- No `version` from ping: SKIP `skipped (ping did not return a version)`.
+- Ping `protocol` present and != the CLI's compiled `PROTOCOL_VERSION`: WARN
+  `CLI speaks protocol <c>; kelpid <v> speaks protocol <p>.`,
+  repair `Protocol drift, not just version drift: rebuild both sides from the same checkout (`pnpm --filter @kelpi/cli build`, `pnpm --filter @kelpi/daemon build`) so they speak the same wire.`
+- Same `version` and (when ping sent one) same `build`: PASS `CLI <v> matches kelpid <v>`.
+- Otherwise WARN `CLI is <v> (build <b>); kelpid is <w>[ (build <x>)].`,
+  repair `Advisory only — the CLI and the daemon are separate artifacts and the wire protocol matches. Rebuild both from one checkout if they are meant to be the same release.`
+
+Neither WARN changes the exit code.
 
 ### 16.6 Check 6: `hooks` (Claude Code, local filesystem only)
 
-Expected hook set (kept in lockstep with `install-hooks.sh`; substring matching over the
+Expected hook set (kept in lockstep with `kelpi install-hooks`, whose table is
+`packages/cli/src/install/spec.ts:30`; the check lives in `packages/cli/src/doctor/hooks.ts:114`;
+substring matching over the
 accepted CLI spellings — `kelpi`, the pre-rename `nex`, and the entry-file forms `kelpi.js` /
 `nex.js` — so absolute paths, a hook that runs `/…/dist/kelpi.js event stop`, and extra flags
 all count):
@@ -1663,7 +1731,9 @@ Procedure (dir = `~/.claude` resolved through `$HOME`, passwd fallback):
    Problems: WARN
    `hook config drift in ~/.claude (checked <files>; project-level settings scopes not checked): <problems joined with "; ">`,
    repair
-   `Re-run the bundled installer (safe to re-run — it merges, dedupes, and normalises kelpi-managed hooks): /Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh`.
+   `Run the installer (safe to re-run — it merges, dedupes, and normalises kelpi-managed hooks): kelpi install-hooks`
+   (`packages/cli/src/doctor/hooks.ts:46`; the installer is the subcommand of section 17, no
+   shell script ships).
 
 Drift is always WARN, never FAIL: IPC is healthy; only agent tracking degrades.
 
@@ -1706,56 +1776,126 @@ Procedure (dir = `~/.codex`):
   `all kelpi Codex hooks wired in ~/.codex/hooks.json (trust state not verifiable — run /hooks inside codex if they don't fire; inline [hooks] in config.toml not checked)`.
   Missing: WARN
   `Codex hook config drift in ~/.codex/hooks.json (inline [hooks] in config.toml not checked): missing hook(s): <list>`.
-- Repair for all WARNs:
-  `Re-run the bundled installer (/Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh), then run /hooks inside codex once to trust the kelpi hooks.`
+- Repair for all WARNs (`packages/cli/src/doctor/hooks.ts:48`):
+  `Run `kelpi install-hooks`, then run /hooks inside codex once to trust the kelpi hooks.`
 
 Documented limitations: inline `[hooks]` tables in codex's `config.toml` are not parsed
 (can false-warn), and hook trust is not inspectable (a wired-but-untrusted hook passes the
 check but never fires), hence the `/hooks` step in every repair.
 
+### 16.8 Check: `routing` (runs fourth, between `ping` and `process`)
+
+Where agent events actually go, decided from the fields `ping` stashed
+(`packages/cli/src/doctor/checks.ts:157`). It exists because a CLI dialing the default socket
+on a machine that also runs the legacy Nex app reaches that app, and every pane event
+silently vanishes there.
+
+- Ping produced no pid (it failed): SKIP `no daemon answered ping`.
+- The ping reply carried no `protocol` field: WARN
+  `the answering daemon is the Swift Nex app (no `protocol` field in its ping reply), not this CLI's own daemon.`,
+  repair `Inside Kelpi panes, commands route automatically (the pane env carries KELPI_SOCKET). In plain terminals, unset KELPI_SOCKET to use /tmp/kelpi.sock, or point it at the Kelpi daemon's tcp: endpoint.`
+- The reply carried `compat {path, error}` (the daemon answered, but its CLI-compat socket is
+  owned by another app): WARN
+  `this daemon's CLI-compat socket <path> is degraded: <error>. Plain-terminal `kelpi` commands on the default socket reach a DIFFERENT app; panes are unaffected[ (their injected KELPI_SOCKET is <pane_route>)].`,
+  repair `Quit the other Kelpi app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set KELPI_SOCKET explicitly in plain terminals.`
+- Otherwise PASS `compat socket serving; panes carry KELPI_SOCKET=<pane_route>`, or
+  `compat socket serving; no pane route reported (older daemon)` when the reply had no
+  `pane_route`.
+
+Both WARNs are advisory and never change the exit code.
+
 ---
 
 ## 17. `install-hooks.sh`
 
-Bash, `set -euo pipefail`. Run after installing Kelpi.app; safe to re-run (idempotent by way
-of `merge_hooks.py` dedupe). Steps:
+The installer is the `kelpi install-hooks` subcommand
+(`packages/cli/src/commands/install-hooks.ts:70`); no shell script ships. It is what doctor's
+hook repairs (16.6, 16.7) name. The heading keeps the historical name.
 
-1. **Locate the app bundle**: `/Applications/Nex.app`, else `./Kelpi.app`; neither => error
-   message and exit 1. The kelpi binary must exist at `<app>/Contents/Helpers/nex` (else
-   error, exit 1).
-2. **Install the CLI**: `mkdir -p $INSTALL_DIR` (default `/usr/local/bin`, overridable via
-   `KELPI_INSTALL_DIR`), then `ln -sf <bundle-binary> $INSTALL_DIR/kelpi` (symlink so version
-   resolution finds Info.plist; see 3.1). If `$INSTALL_DIR` is not on the current `PATH`,
-   print a warning (hooks invoke bare `kelpi`, so the dir must be on PATH in the shells
-   Claude Code runs hooks from).
-3. **Claude Code hooks** into `$HOME/.claude/settings.json`:
-   - The canonical hooks JSON wires the five `expectedHooks` events, each as one
-     matcher-less group with one `{"type":"command","command":"kelpi event <x>"}` hook.
-     (Matcher-less SessionStart fires for all sources: startup/resume/clear/compact.)
-   - File exists: `python3 merge_hooks.py <file> <hooks-json>` (section 18).
-   - File absent: write the hooks JSON verbatim as the new settings.json (2-space indent,
-     trailing newline).
-4. **Skill install**: if `<app>/Contents/Resources/skills/nex-agentic` exists, copy its
-   `SKILL.md` to `~/.claude/skills/nex-agentic/SKILL.md`.
-5. **Codex hooks** (runs last, non-fatal: a malformed `~/.codex/hooks.json` must not abort
-   an installer whose primary job already succeeded):
-   - Only when `~/.codex` exists (else print a skip note).
-   - Same merge-or-create flow against `~/.codex/hooks.json` with the four
-     `expectedCodexHooks` commands (each carrying `--agent codex`). Merge/write failures
-     print warnings and continue.
-   - Always prints the trust note: Codex requires one-time hook trust; run `/hooks` inside
-     codex (repeat whenever the file changes); requires Codex CLI >= 0.142.
-6. Final message: restart running agent sessions to pick up the new hooks.
+```
+kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>]
+                    [--link [--install-dir <dir>]] [--skill-source <dir>] [--dry-run] [--json]
+```
+
+- `-h`/`--help`: usage to stdout, exit 0. Leftover arguments are rejected
+  (`rejectLeftoverArgs`, hint `this command takes options only`, usage printed, exit 1).
+- Safe to re-run (idempotent by way of the merge in section 18). Directories: `--claude-dir`
+  (default `$HOME/.claude`), `--codex-dir` (default `$HOME/.codex`).
+
+Steps, in order:
+
+1. **`--link` (opt-in)** (`packages/cli/src/install/link.ts:62`): symlink this binary to
+   `<install-dir>/kelpi`, where install-dir is `--install-dir`, else `$KELPI_INSTALL_DIR`, else
+   `/usr/local/bin`. Runs first because linking may be what puts `kelpi` on `PATH`, and the
+   hook command is chosen afterwards. "This binary" is `argv[1]` realpath-resolved
+   (`packages/cli/src/install/self.ts:50`); unresolvable =>
+   `kelpi install-hooks: cannot resolve this CLI's own path, so there is nothing to link.`, exit 1.
+   - Already a symlink to this binary: `unchanged` (`  <link> already points at <target>`).
+   - Else `mkdir -p`, then unlink + symlink (not `ln -sf`, which onto an existing directory
+     symlink would create the link inside it; never a copy). Never uses sudo: a directory that
+     cannot be created or is not writable is a failure rendered as
+     `Warning: could not install the CLI symlink — <reason>` plus `Repair: run it yourself:` and
+     the `sudo mkdir -p <dir> && sudo ln -sfn <target> <link>` command, to stderr.
+   - Success prints `  linked <link> -> <target>` (`would link` under `--dry-run`).
+   - Install dir not on `PATH`: a `Warning: <dir> is not on this shell's PATH. ...` to stderr
+     (hooks run bare `kelpi`, which fails in shells that cannot find it).
+2. **Hook command resolution** (`packages/cli/src/install/self.ts:89`): `--command` wins; else
+   the bare `kelpi` when a `kelpi` on `PATH` realpath-resolves to this binary or to a sibling
+   launcher named `kelpi` beside it, or when step 1 just linked into a directory on `PATH`;
+   else this binary's absolute path, shell-quoted when it needs it (bare `kelpi` when the path
+   is unknowable). Hooks run in the agent's non-interactive shell, so a bare `kelpi` is only
+   written when `PATH` really resolves it.
+3. **Claude Code hooks** into `<claude-dir>/settings.json`
+   (`packages/cli/src/install/hooks.ts:100`): the five `expectedHooks` events, each as one
+   matcher-less group with one `{"type":"command","command":"<prefix> event <x>"}` hook
+   (matcher-less SessionStart fires for all sources: startup/resume/clear/compact), merged per
+   section 18. Absent file => created (directory `mkdir -p`'d); existing file => copied to
+   `<file>.kelpi-backup` then rewritten, or reported `already up to date` when the merged
+   bytes are identical (no write, no backup); not valid JSON => `failed` with
+   `<file> is not valid JSON — refusing to overwrite it. Fix or move the file, then re-run.`,
+   nothing written.
+4. **Skill install** (`packages/cli/src/install/skill.ts:81`): `SKILL.md` copied to
+   `<claude-dir>/skills/kelpi-agentic/SKILL.md` from `--skill-source` (exclusive when given),
+   else `<bundle dir>/skills/kelpi-agentic`, else `<bundle dir>/../resources/skills/kelpi-agentic`
+   (bundle dir = the directory of the resolved binary). None found => skipped silently;
+   identical contents => `  kelpi-agentic skill already up to date (<path>)`; else
+   `  installed the kelpi-agentic skill to <path>`. A copy failure is a warning, never fatal.
+5. **Codex hooks** into `<codex-dir>/hooks.json`, only when the directory exists (else
+   `Skipping Codex CLI hooks (no <dir> — Codex CLI not detected).`): the four
+   `expectedCodexHooks` commands (each carrying `--agent codex`), same
+   create/merge/backup/unchanged/refuse rules as step 3. A failure is the warning
+   `could not write Codex hooks (<reason>). Skipping Codex hooks — the Claude Code hooks above are unaffected.`;
+   success adds the trust note, printed as
+   `  Note: Codex requires one-time hook trust — run /hooks inside codex to trust the kelpi hooks (repeat whenever hooks.json changes). Requires Codex CLI >= 0.142.`
+6. **Output**: progress lines are data and go to stdout
+   (`Configuring Claude Code hooks (command: <prefix>)...`, then per file `  created <path>`,
+   `  merged into <path>[ (backup: <b>)]`, `  <path> already up to date`,
+   `  skipped <path> (<reason>)` or `  FAILED <path>: <reason>`, with `would be` prefixed under
+   `--dry-run`); `Warning:` lines go to stderr. `--dry-run` runs everything, writes nothing and
+   ends with `Dry run: nothing was written. Re-run without --dry-run to apply.`. `--json` prints
+   one compact sorted object `{ok, dry_run, command, claude, codex, skill, warnings, notes, link?}`
+   and nothing else.
+7. **Exit code** follows the Claude half: the Claude file could not be written =>
+   `Error: <reason>` to stderr, exit 1. Under `--json`, `ok` is false and the exit is 1 when
+   either the Claude write or `--link` failed; the human path only warns on a link failure.
+   Otherwise `Done. Restart any running agent sessions to pick up the new hooks.` and (not
+   under `--dry-run`)
+   `Inside Kelpi panes, hook routing is automatic; the default /tmp/kelpi.sock only matters for plain terminals.`,
+   exit 0.
 
 ---
 
 ## 18. `merge_hooks.py`
 
-`merge_hooks.py <settings-path> <hooks-json>`; exit 2 on wrong arg count. Reads the
-settings file (must be valid JSON; a parse exception propagates as a non-zero exit, which
-the Codex path of the installer tolerates), merges, writes back with 2-space indent and a
-trailing newline. Claude's `settings.json` and Codex's `hooks.json` share the same
-three-level `hooks` shape, so one merger serves both.
+The hook merge is a pure JSON-in/JSON-out port of `merge_hooks.py`
+(`mergeHooks`, `packages/cli/src/install/merge.ts:106`), applied by `kelpi install-hooks` to
+both Claude's `settings.json` and Codex's `hooks.json` (they share the same three-level
+`hooks` shape, so one merger serves both). Output is `JSON.stringify(settings, null, 2)` plus
+a trailing newline, byte-identical to the Python's write (`renderHookFile`, `merge.ts:173`). A
+settings file that is not valid JSON is refused before the merge
+(`packages/cli/src/install/hooks.ts:107`): nothing is written and the outcome is `failed`
+(fatal for Claude, a warning for Codex); no exception propagates. The heading keeps the
+historical name.
 
 Merge algorithm (preserves unrelated user hooks):
 
@@ -1763,18 +1903,29 @@ Merge algorithm (preserves unrelated user hooks):
 base_command(cmd) = cmd.split(" --")[0].strip()
   # the flag-less prefix is the kelpi-managed identity:
   # "kelpi event stop", "kelpi event stop --agent codex", and
-  # "/Applications/Nex.app/.../kelpi event stop" all share base "kelpi event stop"
-  # (via the substring test below).
+  # "/usr/local/bin/kelpi event stop" all share base "kelpi event stop"
+  # (via the substring test below); the entry-file form "/.../dist/kelpi.js event stop"
+  # and the pre-rename "/Applications/Nex.app/Contents/Helpers/nex event stop" are
+  # caught by the structural pattern instead.
 
 settings.setdefault("hooks", {})
 for (event, new_groups) in incoming.hooks:
     existing = settings.hooks.setdefault(event, [])
     for new_group in new_groups:                       # {matcher?, hooks:[...]}
-        new_bases = { base_command(h.command)
+        new_bases = extraBases | { base_command(h.command)
                       for h in new_group.hooks
                       if h.type == "command" and h.command }
-        is_kelpi_managed(cmd) = cmd != null and any(base in cmd for base in new_bases)
-                                              # SUBSTRING containment
+                    # extraBases = the canonical bare "kelpi event <verb>" bases of the
+                    # incoming set (canonicalBases, spec.ts:78), so an install whose
+                    # prefix is an absolute path still sweeps a bare install and vice versa
+        patterns  = for each base in new_bases ending in "event <verb>":
+                      /(^|[\s\/'"])(?:kelpi|nex)(\.[cm]?js)?['"]?\s+event\s+<verb>$/
+                    # a token whose basename is kelpi or nex (optionally .js/.mjs/.cjs,
+                    # optionally quoted) followed by "event <verb>" at the END of the base
+                    # (kelpiInvocationPattern, merge.ts:67)
+        is_kelpi_managed(cmd) = cmd != null and (
+              any(base in cmd for base in new_bases)              # SUBSTRING containment
+           or any(p.test(base_command(cmd)) for p in patterns))   # structural, in UNION
         # 1. Sweep: remove every kelpi-managed command hook from ALL existing groups
         #    of this event (absolute-path variants, flagged variants, and even
         #    composite user commands embedding a kelpi base, e.g.
@@ -1790,11 +1941,24 @@ for (event, new_groups) in incoming.hooks:
         #    (null == null counts); extend its hooks, else append new_group.
 ```
 
-Consequences worth testing in a port:
+The structural pattern exists because this CLI may write an absolute path
+(`/.../dist/kelpi.js event stop`), whose base is not a substring of the bare
+`kelpi event stop` an older installer wrote, and vice versa; `nex` stays in the alternation
+so hooks installed before the rename migrate instead of double-firing. The pattern is used in
+union with the Python's substring test, never instead of it, so the sweep is always a superset
+of what the shell installer did; with a bare `kelpi` prefix the two sets are identical and the
+result is byte-for-byte the Python's. Steps 1-3 (sweep, prune empties, insert by matcher) are
+unchanged; a group entry that is not an object is left untouched rather than deleted.
+
+Consequences (pinned by `packages/cli/src/install/merge.test.ts` and
+`packages/cli/tests/install-hooks.test.ts`):
 
 - Re-running is idempotent (the sweep removes the previous install before re-adding).
 - Upgrading a bare `kelpi event stop` to `kelpi event stop --agent codex` replaces rather than
   duplicates (both share the base).
+- An entry-file hook (`/.../dist/kelpi.js event stop`) and a pre-rename `nex event stop` are
+  swept by an incoming `kelpi event stop`, and a bare `kelpi event stop` is swept by an incoming
+  absolute-path install.
 - A stale `SessionStart` group with `"matcher": "startup"` collapses into the incoming
   matcher-less group, fixing issue #181 on re-run.
 - Non-kelpi hooks in shared groups survive; groups only die when the sweep empties them.
@@ -1822,19 +1986,20 @@ with `follow:true`), `web-inspect`, `web-inspect-result`, `web-private`,
 
 ---
 
-## 20. Port notes
+## 20. Compatibility rationale
 
-Things the TypeScript port must get right, or may deliberately change:
+These record quirks preserved on purpose so the pre-port `kelpi` CLI, hook scripts and saved
+state keep working; each explains why the code does something that would otherwise look odd.
 
-1. **The daemon must speak this protocol byte-for-byte.** One JSON object per line in;
+1. **The daemon speaks this protocol byte-for-byte.** One JSON object per line in;
    one newline-terminated JSON reply then close (EOF is the CLI's end-of-reply signal;
-   never keep the connection open after a non-streaming reply, or every CLI call will hang
+   a connection held open after a non-streaming reply makes every CLI call hang
    until its 5s timeout and report "no response from Kelpi (upgrade required?)"). The
    `web-console follow:true` stream is the single connection the server holds open.
-2. **`{ok:false}` replies must be well-formed JSON with an `error` string**, on their own
+2. **`{ok:false}` replies are well-formed JSON with an `error` string**, on their own
    line, followed by close. The CLI's exit codes and stderr text depend on this envelope.
 3. **Fire-and-forget commands get no reply.** Sending one anyway is harmless (the CLI
-   never reads on those paths), but never block on them server-side; the CLI has already
+   never reads on those paths), but the server never blocks on them; the CLI has already
    closed its end.
 4. **Preserve legacy field quirks**: `pane-move-to-workspace` uses `"name"` for the
    destination and the string `"text":"true"` for --create; `workspace-profile` clears by
@@ -1843,36 +2008,39 @@ Things the TypeScript port must get right, or may deliberately change:
    `cascade` and `workspace-delete` a native boolean `force`; the web query verbs are
    `web-q-*` on the wire even though the CLI verbs are `text/attr/count/exists/dom`.
 5. **Empty-reply compatibility shims**: `pane send` treats a 0-byte reply as success; the
-   other bespoke handlers treat it as "server too old". A new daemon should simply always
-   reply, making these dead paths, but a TS CLI rewrite must keep them for mixed-version
-   tolerance.
+   other bespoke handlers treat it as "server too old". The daemon always replies, which
+   makes these dead paths against it, but the CLI keeps them for mixed-version tolerance
+   (`packages/cli/src/reply.ts`, `packages/cli/src/commands/pane.ts:68`).
 6. **The Unix socket path `/tmp/kelpi.sock` is hardcoded** in the CLI (only the TCP
-   alternative is configurable via `KELPI_SOCKET`). The daemon must bind exactly there for
-   the existing CLI to find it. If the port wants a different path, it needs a new CLI or
-   a symlink strategy.
+   alternative is configurable via `KELPI_SOCKET`, `packages/cli/src/transport.ts:36`). The
+   daemon binds exactly there so the CLI finds it from plain terminals; inside panes the
+   daemon injects a `KELPI_SOCKET` route instead (16.8). The legacy `/tmp/nex.sock` is the
+   old app's and is never dialed.
 7. **`ping` is a hard requirement**: reply
-   `{"ok":true,"version":...,"build":...,"pid":<daemon pid>}` within 2 seconds. It backs
-   doctor and version-drift detection. Under the new architecture, decide what `version`
-   means (daemon version vs CLI bundle version) and keep it comparable to the CLI's own
-   reported version, or doctor will WARN forever.
-8. **Doctor's `process` check is macOS-app-shaped**: it greps `ps` for
-   `Kelpi.app/Contents/MacOS/Kelpi`. A TS CLI rewrite should re-point this at the daemon
-   process (and the Electron shell separately, if desired); against the old CLI this check
-   will FAIL when the Swift app is gone even though the daemon is healthy, so a ported
-   daemon that must satisfy the *old* CLI's doctor cannot fully pass it (transport, socket,
-   ping, version, hooks all can; `process` cannot). Acceptable: doctor exits non-zero only
-   on FAIL, and `process` FAIL is exactly the "app not running" signal users will see,
-   so either ship a renamed daemon binary path check in a new CLI or accept the FAIL
-   during transition.
-9. **Version resolution via Info.plist symlink-walking is Swift-app-specific.** A TS CLI
-   should embed its version at build time; keep `"dev"` as the unknown fallback and keep
-   `kelpi --version` printing `kelpi <version>`.
-10. **stdout/stderr discipline matters**: acks and data to stdout; usage errors, warnings,
+   `{"ok":true,"version":...,"build":...,"pid":<daemon pid>,"protocol":<int>,...}` within
+   2 seconds. It backs doctor, the routing check and version-drift detection. `version` and
+   `build` are the daemon's own identity; the CLI compares its compiled identity to them
+   (16.5), with `protocol` compared first so a mismatch about the wire is never reported as
+   mere version drift.
+8. **Doctor's `process` check is daemon-aware** (16.4): a live pid record in the daemon run
+   dir, a `kelpid` / `kelpid.js` process, or a `Kelpi.app/Contents/MacOS/Kelpi` process each
+   count, so the check passes against a daemon started by `kelpid start` as well as one
+   launched by the app. The app comm match is kept beside the daemon evidence, and `ps` rather
+   than `pgrep` is used because pgrep matching is inconsistent across macOS sandbox contexts.
+   The legacy Nex app's processes are never counted; the `routing` check (16.8) is what
+   reports that app answering on the default socket.
+9. **Version identity is compiled in** (`packages/cli/src/version.ts`), not resolved from an
+   app bundle: `CLI_VERSION` / `CLI_BUILD`, overridable at runtime by `KELPI_CLI_VERSION` /
+   `KELPI_CLI_BUILD` so a packaging step can stamp identity without a rebuild. `"dev"` stays
+   the unknown build fallback and `kelpi --version` keeps printing `kelpi <version>`.
+10. **stdout/stderr discipline matters** (`packages/cli/src/io.ts`): acks and data to stdout;
+    usage errors, warnings,
     `Repair:` lines, `(next_since=...)`, `(dropped ...)`, and the follow banner to stderr.
     Scripts pipe stdout (e.g. `pane capture`, `web capture --mode screenshot | base64 -D`),
     so nothing advisory may leak into stdout. `pane capture` writes raw bytes with no
-    added trailing newline.
-11. **Parsing quirks to reproduce faithfully in a CLI rewrite**: flags anywhere in argv;
+    added trailing newline. `exit(n)` is a throw unwound to `main`, never `process.exit`, so
+    a piped stdout is flushed before the process ends.
+11. **Parsing quirks kept faithfully** (`packages/cli/src/args.ts`): flags anywhere in argv;
     values consumed even when dash-prefixed; flag-at-end leaves the flag token to be
     rejected as unknown; `--` tail only on `web click|type|select`; `pane send` joins all
     leftovers with single spaces (no quoting round-trip: consecutive spaces in the
@@ -1880,7 +2048,9 @@ Things the TypeScript port must get right, or may deliberately change:
     literal `--json` will be eaten as a flag); labels cannot start with `-`.
 12. **The routing tables (13.1) and the two routing functions (13.2, 13.3) are
     user-visible contracts** exercised by muscle memory (`kelpi open google.com`,
-    `kelpi web open foo.html`, `./app` to force a path). Port them with table-driven tests:
+    `kelpi web open foo.html`, `./app` to force a path). They live in
+    `packages/cli/src/routing.ts` and are covered by table-driven tests
+    (`packages/cli/src/routing.test.ts`):
     scheme detection (letter-led colon, non-digit next), `host:port`, IPv4, localhost,
     known-TLD gating, existing-file-with-extension rule, directory/extensionless
     exclusion, tilde expansion.
@@ -1892,17 +2062,18 @@ Things the TypeScript port must get right, or may deliberately change:
     suppress warnings by default (`KELPI_VERBOSE_HOOKS` opt-in), silent exit 0 without
     `KELPI_PANE_ID`. Hooks run on every agent turn on machines where Kelpi may not be running.
 15. **`workspace delete --prune-worktree` and `workspace create --worktree` shell out to
-    git on the CLI side / server side respectively.** In the new architecture the daemon
-    owns worktree creation (`workspace-create` with `worktree` fields, 120s client
-    timeout) while the *prune* is CLI-local (runs `git` from the caller's machine). If the
-    daemon moves to a different host than the CLI (tailnet clients), CLI-local pruning
-    breaks; consider moving prune server-side behind a new reply field while keeping the
-    CLI flags stable.
+    git on the CLI side / server side respectively.** The daemon owns worktree creation
+    (`workspace-create` with `worktree` fields, 120s client timeout) while the *prune* is
+    CLI-local (`pruneWorktree`, `packages/cli/src/commands/workspace.ts:275`, runs `git` from
+    the caller's machine). When the daemon runs on a different host than the CLI (tailnet
+    clients), CLI-local pruning cannot reach the worktree; moving prune server-side behind a
+    new reply field while keeping the CLI flags stable is the open option.
 16. **doctor's hooks checks are CLI-local filesystem reads** (`~/.claude`, `~/.codex`);
     they inspect the machine where the CLI (and thus the agent CLIs) run, which stays
-    correct in the remote-daemon world. Do not move them server-side.
-17. **Table renderers** (pane list, workspace list, group list, web tabs, cookies) are
-    parsed by humans and occasionally by scripts with `--no-header`; keep column order,
+    correct with a remote daemon. They stay CLI-local.
+17. **Table renderers** (pane list, workspace list, group list, web tabs, cookies;
+    `packages/cli/src/table.ts`) are
+    parsed by humans and occasionally by scripts with `--no-header`; they keep column order,
     the `…` short-uuid form, `-` placeholders, the `●` active marker, and full pane UUIDs
     in `pane list` (issue #240).
 18. **Timeout envelope**: default 5s (`KELPI_REPLY_TIMEOUT` override), 2s ping, 120s
@@ -1912,8 +2083,8 @@ Things the TypeScript port must get right, or may deliberately change:
     verbs and sync strip the `ok` key (compact, sorted); `workspace create`/`label`,
     `group reorder`/`sort` include `ok` (compact, sorted); list verbs unwrap the array;
     `workspace delete` emits a bespoke per-id array; web verbs pretty-print the full
-    envelope including `ok` (multi-line). Do not normalize these in a rewrite.
+    envelope including `ok` (multi-line). They are not normalized (`packages/cli/src/json.ts`).
 20. **Concurrent pipe draining** for subprocesses (doctor's `ps`, prune's git) avoids a
-    real deadlock at >16KB of child output; a Node rewrite using `child_process.execFile`
-    gets this for free, but a manual stream implementation must drain stdout and stderr
-    concurrently.
+    real deadlock at >16KB of child output; `packages/cli/src/proc.ts` uses
+    `child_process.execFile`, which drains stdout and stderr concurrently, and any
+    replacement must do the same.

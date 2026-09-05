@@ -1,7 +1,9 @@
 # Graft + Git subsystem (daemon git module)
 
-Behavioral specification of Kelpi's git-facing subsystem, written for the TypeScript
-daemon port. Covers:
+Behavioral specification of Kelpi's git-facing subsystem, as implemented in the
+TypeScript daemon (`packages/daemon/src/git/`, `packages/daemon/src/graft/`), the `kelpi`
+CLI (`packages/cli/src/commands/graft.ts`) and the web client
+(`packages/client/src/app/graft.ts`, `packages/client/src/state/graft.ts`). Covers:
 
 1. **GitService** — the daemon's git primitive layer (branch/status/diff/worktree ops,
    stash, tree-level sync primitives, process conventions).
@@ -15,8 +17,9 @@ daemon port. Covers:
    (drives sub-second sidebar branch/status refresh), plus their debounce rules and
    downstream update actions.
 
-Everything here is current behavior of the Swift app; the TS implementer should
-reproduce it unless the "Port notes" section at the end says otherwise.
+Everything here is current behavior of Kelpi. The "Compatibility rationale" section at
+the end records the quirks the code keeps on purpose so the pre-port `kelpi` CLI, hook
+scripts and saved state (breadcrumbs, persisted associations) keep working.
 
 ---
 
@@ -26,7 +29,7 @@ Graft continuously **mirrors a linked git worktree's file content into the paren
 repository's working tree** without moving the parent's HEAD or branch.
 
 Motivating scenario: an agent works on a feature branch in a worktree
-(`~/nex/worktrees/my-feature`), while the user's dev server / editor / preview runs in
+(`~/kelpi/worktrees/my-feature`), while the user's dev server / editor / preview runs in
 the main checkout (`~/code/myrepo`). Toggling graft on makes every save in the
 worktree appear in the parent's working tree within ~half a second, so the dev server
 hot-reloads the agent's work. Toggling graft off restores the parent exactly to its
@@ -36,8 +39,11 @@ Key user-visible guarantees:
 
 - The **parent's branch/HEAD never moves** during a graft session. Only its index +
   working tree are overwritten to match the worktree's content.
-- **Untracked files in the parent** (node_modules, build output, `.env`, etc.) are
-  left alone — only tracked files are overwritten/removed.
+- **Untracked files in the parent that the worktree does NOT track** (node_modules,
+  build output, ignored files) are left alone. An untracked parent file at a path the
+  worktree tracks is overwritten by the next sync pass, exactly like a tracked one: the
+  mirror is one-way (`packages/daemon/src/graft/service.test.ts:236-270`,
+  `packages/daemon/tests/compat/graft.test.ts:359-378`).
 - The **worktree is never touched**: its index, branch ref, HEAD, and staged state
   are all preserved verbatim (the sync reads the worktree via a throw-away index).
 - Uncommitted parent edits at start time are **auto-stashed** (with untracked files)
@@ -58,7 +64,9 @@ a temp index. Ignored files in the worktree are not mirrored.
 
 ## 2. Data model
 
-TS-ish interfaces (wire naming noted where it differs):
+Interfaces (`packages/daemon/src/store/types.ts` for the persisted records,
+`packages/daemon/src/graft/types.ts` for the engine's; wire naming noted where it
+differs):
 
 ```ts
 interface Repo {
@@ -92,7 +100,7 @@ interface GraftSession {
   branch: string;          // worktree's branch at start; literal "HEAD" when detached
   status: GraftSessionStatus;
   stashRef?: string;       // SHA of the auto-stash made in the parent at start
-  lastSync?: Date;
+  lastSyncAt?: number;     // epoch ms of the last successful sync pass (wire: `last_sync`, ISO 8601)
   preGraftBranch?: string; // parent's branch at start ("HEAD" literal when detached)
   preGraftSha?: string;    // parent's HEAD SHA at start
   worktreePreGraftSha?: string; // ALWAYS null for sessions created by the current
@@ -103,6 +111,7 @@ interface GraftOrphan {
   id: string;              // breadcrumb's assocId if parseable as UUID, else a fresh UUID
   parentRepoRoot: string;  // canonicalized
   worktreePath: string;
+  branch: string;          // the breadcrumb's branch ("HEAD" when the record has none)
   stashRef?: string;
   preGraftBranch?: string;
   preGraftSha?: string;
@@ -137,9 +146,9 @@ interface RepoRootInfo {
   parentRepoRoot: string;  // derived from --git-common-dir (see §3 resolveRepoRoot)
 }
 
-// In-flight git *operations* (not dirtiness):
-type RepoState = "clean" | "merge" | "rebase" | "cherryPick" | "revert" | "bisect"
-               | { unknown: string };
+// In-flight git *operations* (not dirtiness). The marker check can only yield the five
+// named states or clean; there is no `unknown` case (packages/daemon/src/git/status.ts:31).
+type RepoState = "clean" | "merge" | "rebase" | "cherryPick" | "revert" | "bisect";
 
 // Working-tree dirtiness for the sidebar/inspector badges:
 type RepoGitStatus =
@@ -168,11 +177,20 @@ interface GraftBreadcrumb {           // JSON, sorted keys, written to
 Example on disk:
 
 ```json
-{"assocId":"5E9C1B4E-6C1D-4A6B-9A87-2C51F0B0D001","branch":"feature/x","preGraftBranch":"main","preGraftSha":"9f72d4f0c2b1...","stashRef":"deadbeef42...","stashed":true,"version":1,"worktreePath":"/Users/ben/nex/worktrees/feature-x","worktreePreGraftSha":null}
+{"assocId":"5E9C1B4E-6C1D-4A6B-9A87-2C51F0B0D001","branch":"feature/x","preGraftBranch":"main","preGraftSha":"9f72d4f0c2b1...","stashRef":"deadbeef42...","stashed":true,"version":1,"worktreePath":"/Users/ben/kelpi/worktrees/feature-x","worktreePreGraftSha":null}
 ```
 
 Reading rules: unparseable JSON → treat as no breadcrumb (leave the file alone —
 better than misinterpreting it); `version != 1` → treat as no breadcrumb.
+
+Further tolerant-decode rules (`packages/daemon/src/graft/breadcrumb.ts:61-90`): JSON
+that is not an object (a string, an array) → no breadcrumb; a missing or empty
+`worktreePath` → no breadcrumb; a missing `stashed` is derived from `stashRef != null`;
+a missing `assocId` decodes as `""` (so the orphan gets a fresh UUID, §4.10); a missing
+`branch` decodes as `"HEAD"`; empty strings in the optional SHA/branch fields
+(`stashRef`, `preGraftBranch`, `preGraftSha`, `worktreePreGraftSha`) are normalized to
+`null`. Encoding (`breadcrumb.ts:46-58`) is compact JSON with sorted keys so a record
+written by the daemon is byte-identical to one written by the pre-port app.
 
 ---
 
@@ -180,28 +198,44 @@ better than misinterpreting it); `version != 1` → treat as no breadcrumb.
 
 ### 3.1 Process conventions (`runGit`)
 
-Every operation shells out to git:
+Every operation shells out to git (`packages/daemon/src/git/exec.ts`):
 
-- Executable: `/usr/bin/git` (hard-coded in the Swift app; the port should resolve
-  `git` from PATH — see Port notes).
+- Executable: the first `git` on `PATH` (`resolveGitExecutable`, `exec.ts:94-106`),
+  falling back to the bare name `git` so spawn still produces a normal ENOENT when git
+  is not installed. The `KELPI_GIT` environment variable overrides the resolution
+  (`exec.ts:97`; used by tests and odd installs).
 - `cwd` = the repo/worktree path argument. **No `-C` flag is used** (except in the
   CLI's `pruneWorktree`, which is a separate binary).
 - Environment: inherits the daemon's full environment. When an op supplies extra env
   (only `writeTreeForWorktree` does, for `GIT_INDEX_FILE`), it is **merged over** the
   inherited environment, not a replacement.
-- stdout and stderr are captured separately.
-- **No timeout.** Calls block until git exits. (`git fetch` during
+- stdout and stderr are captured separately, with a 64 MiB `maxBuffer` (`exec.ts:26`)
+  so a `git diff` of a large tree is not truncated into a parse error.
+- **No timeout by default.** Calls block until git exits. (`git fetch` during
   `--update-main` can take a long time; the CLI compensates with a 120s reply
-  timeout, see §7.6.)
+  timeout, see §7.6.) `RunGitOptions` (`exec.ts:60-75`) accepts an optional
+  `timeoutMs`, a `maxBuffer` and an `AbortSignal` (the diff pane uses the signal to
+  kill a superseded `git diff`). `createGitService` (`packages/daemon/src/git/service.ts:137-144`)
+  takes `timeoutMs` for ordinary reads and `longTimeoutMs` for the worktree/fetch
+  family; the latter is clamped **up** to `MIN_LONG_GIT_TIMEOUT_MS = 120000`
+  (`exec.ts:23`, `exec.ts:155-158`) so a daemon-side budget can never be shorter than
+  the CLI's 120s reply wait. The daemon constructs its shared service with no options
+  (`packages/daemon/src/boot/compose.ts:602`), so in production there is still no
+  timeout.
 - Exit code 0 → return stdout as a UTF-8 string (possibly empty).
+- A spawn failure whose `code` is a string (`ENOENT`, `EACCES`: git itself is missing,
+  not a failed git command) rejects with the raw Node error, not a `GitCommandError`
+  (`exec.ts:136-140`).
 - Exit code != 0 → throw:
 
 ```ts
-interface GitCommandError {
+class GitCommandError extends Error {   // packages/daemon/src/git/exec.ts:28-54
   kind: "commandFailed";
   command: string;      // "git " + args.join(" ")
   exitCode: number;
-  stderr?: string;      // trimmed; used verbatim in user-facing error messages
+  stderr: string;       // trimmed, may be empty; used verbatim in user-facing error messages
+  cwd: string;          // the directory git ran in
+  // message = stderr, or "<command> exited with code <n>" when stderr is empty
 }
 ```
 
@@ -210,28 +244,34 @@ surface it directly (see `describeSyncError` §4.6 and `worktreeErrorMessage` §
 
 ### 3.2 API surface
 
-Each function below lists the exact git invocation(s) and output handling.
+Each function below lists the exact git invocation(s) and output handling. The
+`GitService` interface is `packages/daemon/src/git/service.ts:56-135`.
 
 #### `scanForRepos(rootPath, maxDepth) -> ScannedRepo[]`
 
-Pure filesystem walk (no git spawn). Depth-first from `rootPath` (depth 0), up to
-`maxDepth` levels (the app always calls with `maxDepth = 3`):
+Pure filesystem walk (no git spawn), a standalone function in
+`packages/daemon/src/git/scan.ts:46-76` rather than a `GitService` member.
+Depth-first from `rootPath` (depth 0), up to `maxDepth` levels (`REPO_SCAN_MAX_DEPTH
+= 3`; `repo-scan` passes its optional `max_depth`, §8.10):
 
 - A directory containing a `.git` entry (**file or directory** — worktrees have a
   `.git` file) is a repo: record `{path, name: lastPathComponent}` and **do not
   recurse into it**.
 - Hidden files/dirs are skipped when enumerating children.
+- Symlinked directories are followed (the depth bound is the fence against loops);
+  an unreadable directory is skipped rather than thrown from.
 - Result sorted by `name`, case-insensitive ascending.
 
 #### `getRemoteURL(repoPath) -> string | null`
 
-`git remote get-url origin`. Trim; empty → null. Throws on non-zero exit (callers
-generally swallow with `try?`).
+`git remote get-url origin`. Trim; empty or any failure → null (never throws;
+`packages/daemon/src/git/service.ts:278-285`).
 
 #### `getCurrentBranch(path) -> string | null`
 
 `git rev-parse --abbrev-ref HEAD`. Trim; empty → null. **Detached HEAD prints the
-literal string `"HEAD"`** — callers (graft) treat that as a sentinel.
+literal string `"HEAD"`**: callers (graft) treat that as a sentinel. Any failure →
+null (never throws; `service.ts:253-260`).
 
 #### `getStatus(path) -> RepoGitStatus`
 
@@ -347,10 +387,12 @@ addressable even if other stashes land later.
 
 #### `addAllAndCommit(worktreePath, message, noVerify) -> string[]`
 
-Legacy primitive (from graft's old commit-based design; currently unused by graft
-but part of the service API): `git add -A`; `git diff --name-only --cached` → staged
-paths; if none, return `[]` without committing; else `git commit -m <message>`
-(append `--no-verify` when requested); return the staged paths.
+Not part of the service. The pre-port app carried this legacy commit-based-graft
+primitive (`git add -A`; `git diff --name-only --cached` → staged paths; if none,
+return `[]` without committing; else `git commit -m <message>`, appending
+`--no-verify` when requested; return the staged paths). Nothing needs it, so the
+`GitService` interface (`packages/daemon/src/git/service.ts:56-135`) omits it
+(Compatibility rationale item 19).
 
 #### `checkoutBranchForce(repoPath, branchOrSha)`
 
@@ -405,28 +447,59 @@ parent's index to the tree AND update the working tree to match. Tracked files t
 differ are overwritten; tracked files absent from the tree are deleted; untracked
 files in the parent are preserved. HEAD/branch refs are untouched.
 
-Failure mode to know: if the parent has an **untracked** file at a path that is
-**tracked** in the incoming tree, git refuses with stderr
+Failure mode to know: older gits refused to clobber an **untracked** parent file at a
+path that is **tracked** in the incoming tree, with stderr
 `error: Untracked working tree file '<path>' would be overwritten by merge.`
-Graft surfaces this specially (§4.6).
+The git the daemon runs (2.50+) overwrites the file silently and the session stays
+`watching`. `describeSyncError` (§4.6) still renders that stderr as `Sync blocked - ...`
+for the older case, but the current tests assert the clobber
+(`packages/daemon/tests/compat/graft.test.ts:359-378`,
+`packages/daemon/src/graft/service.test.ts:236-270`).
+
+#### `toplevel(directory) -> string | null`
+
+`git rev-parse --show-toplevel` in `directory` (`packages/daemon/src/git/service.ts:346-355`).
+Returns null without spawning when `directory` does not exist or is not a directory;
+otherwise the first non-empty output line, path-normalized, or null on any git
+failure.
+
+#### `worktreeAdd(request)`
+
+The shared `performWorktreeAdd` of §8.3 as a service member
+(`service.ts:326-345`). `request = {repoPath, worktreePath, branchName, updateMain,
+remote?}`; `remote` defaults to `origin` and names both the remote fetched and the
+`<remote>/<default>` base ref when `updateMain` is set.
+
+#### `sweepGraftTempIndexes(directory = os.tmpdir(), now, maxAgeMs = 24h) -> number`
+
+Standalone helper (`service.ts:210-234`), not a `GitService` member. Best-effort
+deletion of `kelpi-graft-index-*` files in the temp dir whose mtime is older than 24
+hours; younger files are left alone because another daemon may be mid-`write-tree`.
+Returns the number of files removed; never throws (an unreadable directory counts as
+zero). The daemon calls it once at boot (`packages/daemon/src/boot/compose.ts:1543`),
+which is the startup sweep Compatibility rationale item 18 describes.
 
 ---
 
 ## 4. GraftService — the sync engine
 
-A singleton service owning all active graft sessions. All state lives in maps keyed
-by association id, guarded by one mutex. Sessions do NOT survive daemon restart
-(that's what breadcrumbs are for).
+A singleton service (`packages/daemon/src/graft/service.ts`) owning all active graft
+sessions. All state lives in maps keyed by association id; the single-threaded event
+loop is the mutex, so every "lock { ... }" block below is a synchronous step with no
+`await` inside it. Sessions do NOT survive daemon restart (that's what breadcrumbs are
+for).
 
-Internal state:
+Internal state (`service.ts:163-169`):
 
 ```ts
 sessions:        Map<assocId, GraftSession>
-watcherTasks:    Map<assocId, Task>       // the FS-watch consumer loop
-activeSyncTasks: Map<assocId, Task>       // the currently-running sync pass, if any
+watcherTasks:    Map<assocId, {watcher, pending}>  // the recursive FS watch + "a batch landed
+                                                   // mid-pass" flag (code name: `watchers`; §4.3)
+activeSyncTasks: Map<assocId, Promise>    // the currently-running sync pass, if any (code: `activeSync`)
 startingRoots:   Set<string>              // canonical parent roots with a start() mid-flight
+startTasks:      Map<assocId, Promise>    // in-flight start() work, awaited by a racing stop() (§4.4)
 stopTasks:       Map<assocId, Promise>    // in-flight stop() work, for coalescing
-subscribers:     Map<uuid, EventSink>     // updates() stream continuations
+subscribers:     Set<listener>            // updates() listeners (§4.9)
 ```
 
 ### 4.1 The lock model (issue #231) — derive claims from sessions
@@ -480,10 +553,13 @@ lock {
 state = repoState(parentRepoRoot)                  // errors → release claim, rethrow
 if state != clean: release; throw repoBusy(describe(state))
    // describe: "merge in progress", "rebase in progress", "cherry-pick in progress",
-   //           "revert in progress", "bisect in progress", or the unknown string
+   //           "revert in progress", "bisect in progress" (git/status.ts:34)
 
 // Capture parent restore points BEFORE touching anything:
-preGraftBranch = getCurrentBranch(parentRepoRoot)  // may be literal "HEAD" (detached)
+preGraftBranch = getCurrentBranch(parentRepoRoot)  // may be literal "HEAD" (detached);
+                                                   // never throws: a failing read records
+                                                   // null, which restoreParent (§4.7) treats
+                                                   // like the detached sentinel (reset only)
 preGraftSha    = getHeadSha(parentRepoRoot)        // errors → release claim, rethrow
 
 // Auto-stash the parent's uncommitted changes (incl. untracked):
@@ -507,7 +583,9 @@ if getStatus(parentRepoRoot) is dirty:
 branch = getCurrentBranch(worktreePath)            // "HEAD" literal if detached
       ?? association.branchName
       ?? "HEAD"
-// errors → rollbackAfterStash
+// getCurrentBranch never throws (§3.2); a failed read is null and falls through to
+// association.branchName ?? "HEAD". The rollbackAfterStash catch around this step
+// (service.ts:336-341) is therefore unreachable in practice and kept as a guard.
 
 worktreePreGraftSha = null   // tree-based design never rewinds the worktree
 
@@ -589,6 +667,15 @@ catch e:
 The batch's path list is currently unused beyond triggering the pass (no
 changed-paths log is kept).
 
+The daemon implements this loop as a per-session `pending` flag drained by a serial
+`pump` (`packages/daemon/src/graft/service.ts:122-126`, `service.ts:228-262`): the
+watcher's `onBatch` sets `watchers.get(id).pending = true` and calls `pump(id)`;
+`pump` returns immediately if a pass is already in `activeSync` or the watcher entry
+is gone (stop happened), otherwise clears the flag, runs `handleBatch` and re-runs
+itself when the pass settles. Any number of batches that land during a pass collapse
+into exactly one follow-up pass, which is the same outcome as queueing them since
+batch contents are unused.
+
 ### 4.4 `stop(associationID)` (throws)
 
 Concurrent stops for the same id **coalesce**: the first caller creates the stop
@@ -642,12 +729,15 @@ lock { sessions.delete(assocId) }
 emit stopped(assocId)
 ```
 
-Known (accepted) race window: stopping an association whose `start()` is still
-mid-flight (session not yet published) is a no-op here, and the start then completes
-into a live session with no owning association. That session stays visible in
-`activeSessions()`/`graft status`, is matchable by `graft stop --repo <path>`
-(orphan fallback, §7.3), triggers the swap prompt on the next start against its
-root, and is flushed by the quit path.
+Stop-during-start: before step 1, `performStop` first awaits any in-flight `start()`
+for the same id (tracked in `startTasks`, registered by `start()` and released when
+the start settles; `packages/daemon/src/graft/service.ts:393-401`,
+`service.ts:422-433`), swallowing the start's failure. A stop that races a start
+therefore tears down the published session instead of leaving an ownerless one
+behind; a failed start owns nothing and the cleanup below is still correct. This
+closes the window the pre-port app accepted (Compatibility rationale item 17).
+`graft stop --repo <path>`'s orphan fallback (§7.3) is kept as the escape hatch for
+sessions whose associations were deleted.
 
 ### 4.5 `runSyncPass(worktreePath, parentRepoRoot)` (throws)
 
@@ -676,12 +766,15 @@ readTreeInto(parentRepoRoot, tree)
 
 ### 4.6 Sync error rendering (`describeSyncError`)
 
-For a `GitCommandError` with non-empty stderr:
+For a `GitCommandError` with non-empty stderr (`packages/daemon/src/graft/errors.ts:124-131`):
 
-- stderr containing `"Untracked working tree file"` (read-tree refusing to clobber a
-  parent untracked file that the worktree tracks) →
-  `"Sync blocked — <first line of stderr>"`. The path in the message is the file the
-  user must remove or commit in the parent.
+- stderr containing `"Untracked working tree file"` (an older read-tree refusing to
+  clobber a parent untracked file that the worktree tracks) →
+  `"Sync blocked - <first line of stderr>"` (ASCII hyphen; `errors.ts:129`,
+  asserted by `errors.test.ts:58-64`). The path in the message is the file the user
+  must remove or commit in the parent. This branch is only reachable on gits that
+  still refuse; the daemon's supported git overwrites the file instead (§3.2
+  `readTreeInto`).
 - otherwise → `"Sync failed: <stderr>"`.
 
 Any other error → `"Sync failed: <stringified error>"`.
@@ -716,9 +809,14 @@ expands `~` before doing the same (for CLI-supplied `--repo` args, §7.3).
 ### 4.9 `activeSessions()`, `updates()`
 
 - `activeSessions()` → snapshot array of all sessions (undefined order).
-- `updates()` → a new event stream per subscriber; each receives all
-  `started`/`updated`/`stopped` events from subscription time on. Terminating the
-  stream unregisters the subscriber.
+- `updates(listener) → unsubscribe` (`packages/daemon/src/graft/service.ts:549-554`):
+  the listener receives every `started`/`updated`/`stopped` event from registration
+  on; calling the returned function unregisters it. A listener that throws is
+  reported through `onError` and does not stop delivery to the others.
+- Also on the service (`service.ts:70-93`): `session(id)` → the snapshot of one
+  session or null; `claimedRoots()` → `startingRoots ∪ live session roots`
+  (`service.ts:610-614`, used by the orphan refresh in §4.10 and §7.7); `shutdown()`
+  → the clean-quit flush of §5.
 
 ### 4.10 Orphans (crash recovery)
 
@@ -726,8 +824,20 @@ expands `~` before doing the same (for CLI-supplied `--repo` args, §7.3).
 
 For each root (canonicalized), read `<root>/.git/kelpi-graft-active`; if a valid
 version-1 breadcrumb exists, produce an orphan (id = `assocId` parsed as UUID, or a
-fresh random UUID when unparseable). Called once at app launch with the deduped set
-of registered repo paths: `unique(repoRegistry.map(r => r.path))`.
+fresh random UUID when unparseable). Called once at daemon boot with the deduped set
+of registered repo paths: `unique(repoRegistry.map(r => r.path))`
+(`packages/daemon/src/boot/compose.ts:1547-1562`); the result fills the orphan
+registry behind the inspector banner and is broadcast as `graft-orphans` (§7.7).
+
+Detection also re-runs on demand: `graft-session-list {refresh:true}`
+(`packages/daemon/src/ws/graft.ts:161-172`) re-scans every registered repo for a
+breadcrumb, drops any orphan whose `parentRepoRoot` is in `claimedRoots()` (a healthy
+live graft has a breadcrumb on disk by design, and reporting it as interrupted would
+be wrong), and replaces the registry wholesale. The client sends `refresh: true` on
+every connect and every inspector open (`packages/client/src/app/graft.ts:334-347`).
+This is a deliberate superset of the once-at-launch scan: the daemon runs for days and
+repos are registered after boot, so a breadcrumb inside a repo added later would
+otherwise go unnoticed until the next restart.
 
 `recoverOrphan(orphan)` (throws) — mirrors the stop sequence using breadcrumb data:
 
@@ -749,13 +859,17 @@ Any failure leaves the breadcrumb on disk so recovery can be retried.
 
 ## 5. Clean-quit flush
 
-On daemon/app shutdown (before termination proceeds): stop **every session the
-service holds** (not a UI mirror), with a hard cap of **2 seconds** total; sessions
+On daemon shutdown (before termination proceeds): stop **every session the
+service holds** (not a UI mirror), with a hard cap of **2 seconds** total
+(`GRAFT_SHUTDOWN_GRACE_MS`, `packages/daemon/src/graft/service.ts:45`); sessions
 that can't stop in time fall back to the breadcrumb/orphan-recovery path on next
-launch. In the mac app this runs synchronously inside the AppKit
-`applicationShouldTerminate` hook, before the quit-confirmation dialog logic.
-Purpose: a clean quit must not leave `kelpi-graft-active` breadcrumbs behind, or the
-recovery banner would fire on every launch.
+launch. `GraftService.shutdown()` (`service.ts:594-608`) races
+`Promise.allSettled(stop(id) for every session)` against the grace delay, then closes
+every remaining OS watch regardless so the process can exit. The daemon's stop
+sequence awaits it (`packages/daemon/src/boot/compose.ts:1264`) on SIGTERM/SIGINT and
+on `kelpid stop`, before the final state flush. Purpose: a clean quit must not leave
+`kelpi-graft-active` breadcrumbs behind, or the recovery banner would fire on every
+launch.
 
 ---
 
@@ -780,7 +894,11 @@ interface GraftSwapPrompt {
 ```
 
 The mirror is best-effort; the **service is the source of truth** and several flows
-below exist to re-converge the two (issue #231).
+below exist to re-converge the two (issue #231). The reducer is
+`packages/client/src/state/graft.ts`, the flows (toggle, swap, orphan recovery) are
+`packages/client/src/app/graft.ts`, and the button, banner and dialog are
+`packages/client/src/chrome/GraftControls.tsx`. The client talks to the daemon over
+the WS-only verbs of §7.7.
 
 ### 6.1 Launch
 
@@ -793,6 +911,16 @@ below exist to re-converge the two (issue #231).
 On a **first launch** (no persisted workspaces) this is still dispatched with an
 empty roots array so the updates subscription installs — otherwise a CLI-started
 graft on first run would be invisible to status/stop/quit-flush.
+
+In the daemon/client split both steps live daemon-side: the daemon subscribes to the
+service at boot (`packages/daemon/src/boot/compose.ts:967-969`) and runs
+`detectOrphans` over the registry (§4.10). The client's equivalent is `sync()`
+(`packages/client/src/app/graft.ts:334-347`): on every connect and inspector open it
+sends `graft-session-list {refresh:true}` (§7.7), merges the returned sessions into
+the mirror (`mergeSessions`, `packages/client/src/state/graft.ts:107-118`: the
+daemon's list is authoritative, and only this client's own `starting`/`error`
+placeholders survive it), and replaces `orphans` wholesale. Between syncs the
+`graft-changed` and `graft-orphans` broadcasts (§7.7) drive the same two reducers.
 
 ### 6.2 Toggle (per-association button)
 
@@ -915,22 +1043,30 @@ Request fields: `workspace` (name-or-UUID), `repo` (name or path), `pane_id`
 (UUID string; the CLI only includes it when neither `--workspace` nor `--repo` was
 passed). Empty strings are normalized to absent.
 
-`resolveGraftAssociations(workspaceFilter, repoFilter, paneID)`:
+`resolveGraftAssociations(workspaceFilter, repoFilter, paneID)`
+(`packages/daemon/src/handlers/app/graft.ts:56-108`):
 
 ```
 if workspaceFilter:
-  ws = resolveWorkspace(workspaceFilter)     // UUID match wins; else case-sensitive
-                                             // unique name; ambiguous/unknown → fail
+  ws = resolveWorkspaceLenient(workspaceFilter)  // lenient: a UUID-shaped token matches
+                                                 // by id; else the FIRST workspace whose
+                                                 // name matches case-insensitively; else a
+                                                 // workspace whose slug equals the token
+                                                 // (duplicate names are not rejected; the
+                                                 // same resolver pane-move-to-workspace
+                                                 // uses, packages/core/src/resolve/workspace.ts:59-71)
   if !ws: FAIL "workspace not found: <filter>"
   scope = [ws]
 else if paneID:
-  ws = workspaceContainingPane(paneID)
+  ws = workspaceContainingPane(paneID)       // parked panes included
   if !ws: FAIL "no workspace contains the requesting pane"
   scope = [ws]
 else if repoFilter:
   scope = allWorkspaces                      // repo-only filter searches everywhere
 else:
   FAIL "graft requires --workspace, --repo, or NEX_PANE_ID"
+       // literal reply text kept from the legacy CLI era (handlers/app/graft.ts:41);
+       // the CLI itself reads KELPI_PANE_ID (§7.5)
 
 results = []
 for ws in scope, assoc in ws.repoAssociations:
@@ -953,24 +1089,25 @@ Request examples:
 {"command":"graft-start","pane_id":"5E9C1B4E-6C1D-4A6B-9A87-2C51F0B0D001"}
 {"command":"graft-start","workspace":"feature-x"}
 {"command":"graft-start","repo":"my-feature"}
-{"command":"graft-start","workspace":"feature-x","repo":"/Users/ben/nex/worktrees/my-feature"}
+{"command":"graft-start","workspace":"feature-x","repo":"/Users/ben/kelpi/worktrees/my-feature"}
 ```
 
-Handler: resolve scope (failure → `{"ok":false,"error":"<msg>"}`); then for each
+Handler (`packages/daemon/src/handlers/app/graft.ts:112-160`): resolve scope (failure
+→ `{"ok":false,"error":"<msg>","error_kind":"scope"}`); then for each
 association in scope call service `start(assoc)`, collecting successes and the last
 error. Reply:
 
 - all failed / none started:
-  `{"ok":false,"error":"<last error, stringified>"}`
+  `{"ok":false,"error":"<last error message>","error_kind":"<kind>"}`
   (fallback text `"graft start failed"` if somehow no error was captured)
 - all started:
   ```json
   {"ok":true,"started":[
-    {"association_id":"5E9C...","worktree_path":"/Users/ben/nex/worktrees/my-feature",
+    {"association_id":"5E9C...","worktree_path":"/Users/ben/kelpi/worktrees/my-feature",
      "branch":"feature/x","parent_repo_root":"/Users/ben/code/myrepo"}]}
   ```
 - partial:
-  `{"ok":true,"started":[...],"partial_error":"<last error>"}`
+  `{"ok":true,"started":[...],"partial_error":"<last error>","partial_error_kind":"<kind>"}`
 
 CLI rendering (`kelpi graft start [--workspace ..] [--repo ..]`): on `ok:false` the CLI
 prints `kelpi graft-start: <error>` to stderr and exits 1. On success, one line per
@@ -978,14 +1115,25 @@ entry: `started <branch> (<association_id>) at <worktree_path>`; empty list prin
 `No associations started.`; `partial_error` prints
 `Partial failure: <msg>` to stderr (exit code stays 0).
 
-Note: error strings are the stringified Swift enum, e.g.
-`alreadyActive(parentRepoRoot: "/Users/ben/code/myrepo")` — see Port notes.
+Note: error strings are human-readable prose built by `GraftError`
+(`packages/daemon/src/graft/errors.ts:54-101`), e.g.
+`another graft is already active for /Users/ben/code/myrepo`,
+`repository is busy: merge in progress`,
+`worktree not found or not a git checkout: <path>`,
+`<path> is the repository's main checkout, not a linked worktree`,
+`couldn't restore the parent's stashed changes (stash <sha>): <underlying>`
+(the compat test `packages/daemon/tests/compat/graft.test.ts:269` asserts the prose).
+Every `ok:false` reply also carries a machine-readable `error_kind`
+(`alreadyActive | repoBusy | missingWorktree | branchResolutionFailed |
+stashPopConflict | notAWorktree | unknown`, or `scope` when resolution failed before
+the engine ran; `handlers/app/graft.ts:41-46`, `:124-157`); a partial start adds
+`partial_error_kind`. See Compatibility rationale item 7.
 
 ### 7.3 `graft-stop`
 
 Request shape identical to `graft-start`.
 
-Handler:
+Handler (`packages/daemon/src/handlers/app/graft.ts:179-267`):
 
 1. Resolve scope. A resolution **failure is non-fatal iff** `repo` was supplied and
    `workspace` was not — the owning association may have been deleted with its
@@ -1006,16 +1154,24 @@ Handler:
 ```json
 {"ok":true,"stopped":["5E9C1B4E-..."]}
 {"ok":false,"stopped":["5E9C1B4E-..."],
- "failed":[{"association_id":"AB12...","error":"stashPopConflict(...)"}]}
+ "failed":[{"association_id":"AB12...",
+            "error":"couldn't restore the parent's stashed changes (stash deadbeef42...): ...",
+            "error_kind":"stashPopConflict"}],
+ "error":"couldn't restore the parent's stashed changes (stash deadbeef42...): ...",
+ "error_kind":"stashPopConflict"}
 ```
 
 `ok` is `failures.isEmpty`.
 
-CLI rendering quirk (current behavior — see Port notes): the CLI runs the generic
-`{ok,error?}` envelope check first, so an `ok:false` stop reply (which carries
-`failed` but no `error` key) prints `kelpi graft-stop: unknown error` and exits 1
-**without** rendering the per-id `failed` list. The pretty per-failure printing only
-runs on `ok:true` replies, where `failed` is never present.
+CLI rendering quirk (see Compatibility rationale item 8): the `ok:false` stop reply
+also carries a summary `error` (the single failure's message, or
+`<n> graft sessions failed to stop: <m1>; <m2>`) and the first failure's
+`error_kind` beside `stopped`/`failed` (`handlers/app/graft.ts:242-262`). The CLI runs
+the generic `{ok,error?}` envelope check first (`packages/cli/src/reply.ts:35-45`), so
+it prints `kelpi graft-stop: <error>` and exits 1 **before** its per-id `failed`
+renderer (`packages/cli/src/commands/graft.ts:86-92`) runs; that renderer only
+executes on `ok:true` replies, where `failed` is never present. `failed[]` stays in
+the reply for clients that render it.
 
 ### 7.4 `graft-status`
 
@@ -1027,7 +1183,7 @@ lost must still show up here so every `alreadyActive` rejection is explainable):
 ```json
 {"ok":true,"sessions":[
   {"association_id":"5E9C1B4E-...",
-   "worktree_path":"/Users/ben/nex/worktrees/my-feature",
+   "worktree_path":"/Users/ben/kelpi/worktrees/my-feature",
    "parent_repo_root":"/Users/ben/code/myrepo",
    "branch":"feature/x",
    "status":"watching",
@@ -1035,9 +1191,10 @@ lost must still show up here so every `alreadyActive` rejection is explainable):
    "last_sync":"2026-08-18T09:30:12Z"}]}
 ```
 
-Per-session JSON: `status` ∈ `"starting" | "watching" | "syncing" | "error"`; when
-error, an `"error"` key carries the message. `stash_ref` and `last_sync`
-(ISO 8601, second precision) are present only when set.
+Per-session JSON (`graftSessionEntry`, `packages/daemon/src/graft/wire.ts:14-27`):
+`status` ∈ `"starting" | "watching" | "syncing" | "error"`; when error, an `"error"`
+key carries the message. `stash_ref` and `last_sync` (ISO 8601, second precision)
+are present only when set.
 
 CLI: `kelpi graft status [--json]` — `--json` prints the sessions array (sorted keys);
 otherwise `No active graft sessions.` or one line per session:
@@ -1051,8 +1208,9 @@ kelpi graft stop  [--workspace <name-or-uuid>] [--repo <name-or-path>]
 kelpi graft status [--json]
 ```
 
-With no filters, start/stop send `pane_id` from `$NEX_PANE_ID` (caller's workspace
-scope). Unknown action → usage error, exit 1.
+With no filters, start/stop send `pane_id` from `$KELPI_PANE_ID` (caller's workspace
+scope; `packages/cli/src/commands/graft.ts:55`, `packages/cli/src/env.ts:36`). Unknown
+action → usage error, exit 1.
 
 ### 7.6 Reply-envelope conventions (context)
 
@@ -1061,6 +1219,51 @@ The CLI's request/response framing: send one JSON line, read until EOF with a
 --worktree` uses a 120s override because `git worktree add` + `git fetch` can be
 slow). Transport failure / empty reply / invalid JSON / `ok:false` → stderr message +
 exit 1.
+
+### 7.7 WS-only graft verbs and broadcasts
+
+The web client does not use the three socket verbs above: it addresses one
+association row, needs typed failures, and must be able to recover a breadcrumb,
+which has no CLI verb. `packages/daemon/src/ws/graft.ts` therefore exposes five
+**WS-only, association-scoped** commands (`ws/graft.ts:57-63`), matched before the
+socket decoder like the other WS-only families. Every reply reads from the service,
+never from a client mirror (issue #231):
+
+- `graft-session-list {refresh?}` → `{ok:true, sessions:[...], orphans:[...]}`. The
+  client's initial sync and the §6.3 owner lookup. `refresh: true` re-runs orphan
+  detection over the registry first (§4.10).
+- `graft-session-start {association_id}` → `{ok:true, association_id, session}` or
+  `{ok:false, association_id, error, error_kind, parent_repo_root?}`
+  (`ws/graft.ts:182-206`). `parent_repo_root` is set when the engine threw
+  `alreadyActive`; it is what the client's swap prompt names (§6.3). An unknown
+  association id fails with `no repo association matches '<id>'`.
+- `graft-session-stop {association_id}` → `{ok:true, association_id}` or
+  `{ok:false, association_id, error, error_kind}`. Idempotent daemon-side (§4.4),
+  which is what makes the retry-an-errored-session path of §6.2 safe.
+- `graft-orphan-recover {association_id}` → runs `recoverOrphan` (§4.10) on the
+  registry entry; `{ok:false, association_id, error}` on failure, with the orphan
+  and the breadcrumb both kept (`ws/graft.ts:89-131`).
+- `graft-orphan-dismiss {association_id}` → deletes the breadcrumb only; an id not in
+  the registry fails with `no interrupted graft matches '<id>'`.
+
+Two untyped broadcasts keep every connected client's mirror current:
+
+- `graft-changed {type, sessions:[...]}` (`graftChangedEvent`,
+  `packages/daemon/src/graft/wire.ts:39-44`) carries the **full** session list, not a
+  per-event started/updated/stopped delta. The daemon sends it on every engine event
+  (`packages/daemon/src/boot/compose.ts:967-969`); the client's reducer merges the
+  list and preserves only its own `starting`/`error` placeholders
+  (`packages/client/src/state/graft.ts:107-118`).
+- `graft-orphans {type, orphans:[...]}` (`graftOrphansEvent`, `wire.ts:51-65`; entries
+  carry `association_id`, `parent_repo_root`, `worktree_path`, `branch` and
+  `stash_ref` when set) is sent on every change to the orphan registry
+  (`compose.ts:1126-1128`: boot detection, a refresh, a recover, a dismiss), so a
+  second window's banner disappears when the first window restores.
+
+The client-side calls are `graftList` / `graftStart` / `graftStop` /
+`graftRecoverOrphan` / `graftDismissOrphan`
+(`packages/client/src/connection/commands.ts:1243-1290`); start, stop and recover use
+the 120s worktree command timeout because each can run git for a while.
 
 ---
 
@@ -1091,8 +1294,11 @@ residual git rejections surface via `worktreeErrorMessage` (§8.6).
 
 ### 8.2 Worktree base path (`resolvedWorktreeBasePath`)
 
-Setting `worktreeBasePath`, default `"~/nex/worktrees/<repo>"`. Resolution given a
-repo path:
+Setting `worktreeBasePath` (config key, Settings > General > Worktrees), default
+`"~/kelpi/worktrees/<repo>"` (`packages/daemon/src/git/names.ts:13`,
+`packages/core/src/config/general.ts:118`, `packages/protocol/src/ws/settings.ts:394`);
+a blank value falls back to the default. Resolution given a repo path
+(`resolvedWorktreeBasePath`, `names.ts:55-68`):
 
 1. If the setting **starts with** `<repo>`, replace that prefix with the **full repo
    path** (so `"<repo>/worktrees"` → `/Users/ben/code/myrepo/worktrees`).
@@ -1115,14 +1321,21 @@ else:
 
 ### 8.4 Inspector flow (`createWorktree` action)
 
-From the workspace inspector ("add worktree" for a registered repo):
-sanitize worktree name + branch name (either failing → transient
-`worktreeCreationError` alert, nothing spawned); compute path; run the **plain**
-`createWorktree` (no update-main option on this path); on success append a
-`RepoAssociation {repoID, worktreePath, branchName: safeBranch}` to the workspace,
-mark the repo not-auto-discovered, persist, refresh git status, and start a HEAD
-watcher for the new association. On failure set `worktreeCreationError` to
-`worktreeErrorMessage(err)` (alert with a dismiss action).
+From the workspace inspector (`workspace-add-worktree`,
+`packages/daemon/src/ws/repos.ts:420-486`; the client sends it from
+`packages/client/src/connection/commands.ts:1180-1191`): sanitize worktree name +
+branch name (branch defaults to the worktree name; either failing → error reply,
+nothing spawned); resolve the repo by `repo_id` (must be registered) or a
+standardized `repo_path`; compute the path; run `performWorktreeAdd` (§8.3, via
+`GitService.worktreeAdd`) with the sheet's `update_main` flag (`repos.ts:458`), so
+`--update-main` semantics apply on this path too; on success register the repo if
+new, or clear `isAutoDiscovered` if the registry already carried it as
+auto-discovered (`ensureRepo(..., {promote: true})`, `repos.ts:468`), append a
+`RepoAssociation {repoID, worktreePath, branchName: safeBranch, isAutoDetected:
+false}` to the workspace and persist; the association reconciler (§8.8) then starts
+the HEAD watcher and reads status. On failure reply
+`{ok:false, error: worktreeErrorMessage(err)}` (the client shows it as a transient
+alert with a dismiss action).
 
 ### 8.5 New-workspace-with-worktree flow
 
@@ -1168,7 +1381,7 @@ Socket specifics (`workspace-create` wire fields: `worktree`, `branch`,
 
 ```json
 {"ok":true,"workspace_id":"<uuid>","workspace_name":"feature-x",
- "worktree_path":"/Users/ben/nex/worktrees/feature-x","branch":"feature/x",
+ "worktree_path":"/Users/ben/kelpi/worktrees/feature-x","branch":"feature/x",
  "group":"experiments"}
 ```
 
@@ -1193,16 +1406,26 @@ Examples surfaced: `fatal: '<path>' already exists`,
 ### 8.7 Deleting worktrees
 
 - **Inspector "remove association" with delete-worktree checked**
-  (`removeWorktreeAssociation(deleteWorktree: true)`): remove the association +
-  cached git status, dispatch graft `forceStop(assocID)` FIRST (otherwise the
-  session keeps mirroring a worktree that is about to disappear, leaving the parent
-  mid-mirror and the breadcrumb stranded), stop the HEAD watcher, then best-effort
-  `removeWorktree(repo.path, assoc.worktreePath)` (errors swallowed), persist.
-  graftStop and removeWorktree may run concurrently — safe because graft's stop
-  awaits any in-flight sync and operates on the parent root, not the dying worktree
-  dir. Without the checkbox, same minus the git removal.
+  (`remove-repo-association {workspace_id, association_id, delete_worktree: true}`,
+  `packages/daemon/src/ws/repos.ts:369-418`): run a **non-forcing** `git worktree
+  remove` (§3.2 `removeWorktree`) FIRST. If git refuses (dirty or locked worktree),
+  the association is the main checkout itself (standardized paths equal), or the
+  parent repo is no longer registered, reply
+  `{ok:false, error: <worktreeErrorMessage or the reason>, workspace_id,
+  association_id}` and keep the association in place, so the directory is never
+  stranded with nothing in the window pointing at it (`repos.ts:402-405`). Only
+  after a successful removal is `remove-repo-association` dispatched and persisted;
+  the store reconciler (§8.8, `packages/daemon/src/graft/associations.ts:176-186`)
+  then stops the HEAD watcher and force-stops the graft session, i.e. AFTER the
+  worktree directory is gone rather than before. That ordering is safe because
+  graft's stop awaits any in-flight sync and operates on the parent root, not the
+  dying worktree dir; a sync pass that fires in between reports `missingWorktree`
+  and the session stays alive until the force-stop lands. The success reply carries
+  `worktree_path` and `worktree_deleted: true`. Without the checkbox, just drop the
+  association (`worktree_deleted: false`).
 - **CLI `workspace delete --prune-worktree`**: after a successful workspace delete
-  the CLI (client-side, its own git spawns via `/usr/bin/env git`) takes the deleted
+  the CLI (client-side, its own git spawns via `/usr/bin/env git`;
+  `packages/cli/src/commands/workspace.ts:275-311`) takes the deleted
   workspace's directory (`path` in the delete reply — a shell pane's current cwd; an
   empty workspace has none, documented limitation), resolves the worktree root via
   `git -C <path> rev-parse --show-toplevel`, resolves the main worktree via
@@ -1228,20 +1451,64 @@ Every path that drops associations dispatches, per removed association id, BOTH 
 
 ### 8.9 Auto-link / auto-unlink (association lifecycle context)
 
-Not graft-specific but it feeds graft's association set:
+Not graft-specific but it feeds graft's association set
+(`packages/daemon/src/git/autodetect.ts`):
 
 - On pane cwd change (and pane creation), debounce **500ms**, then
   `resolveRepoRoot(cwd)`; if resolved and the pane is still in that directory tree
-  and the auto-detect setting is on: find-or-create a Repo for `parentRepoRoot`
-  (marked `isAutoDiscovered: true` when created), and add a
+  (`isPathInside`, `autodetect.ts:97-103`: exact-or-prefix match on canonicalized
+  paths, i.e. standardized and then symlinks resolved on both sides, so `/tmp` and
+  `/private/tmp` spellings match) and the auto-detect setting is on: find-or-create a
+  Repo whose canonicalized path equals `parentRepoRoot` (`autodetect.ts:175-179`;
+  marked `isAutoDiscovered: true` when created), and add a
   `RepoAssociation {worktreePath: worktreeRoot, isAutoDetected: true}` to the pane's
   workspace unless one for that worktree already exists. Follow-ups: resolve branch +
   status async, start a HEAD watcher, resolve the repo's remote URL, persist once.
 - Auto-unlink: on pane close/cwd changes, debounce **5s**, then remove every
   `isAutoDetected` association whose worktree no longer contains any pane's cwd
-  (prefix match on standardized paths, including parked panes). GC auto-discovered
-  repos with no remaining associations anywhere. Fire stopHeadWatcher + graft
-  forceStop per removed association.
+  (exact-or-prefix match on canonicalized paths, standardized and then symlinks
+  resolved on both sides, so `/tmp` and `/private/tmp` spellings match; including
+  parked panes). GC auto-discovered repos with no remaining associations anywhere.
+  Fire stopHeadWatcher + graft forceStop per removed association.
+
+### 8.10 Repo registry verbs (Settings > Repositories)
+
+The registry that associations point into (`Repo`, §2) has its own editing surface,
+four WS-only verbs in `packages/daemon/src/ws/repos.ts` (`repos.ts:73-87`). They edit
+the global registry rather than a workspace's associations; every mutation is an
+existing store action, so persistence and the CLI's view stay identical to a change
+made any other way. Registry lookups compare `repoKey` = standardized and
+symlink-resolved path (`repos.ts:199-208`), so `/var/...` and `/private/var/...`
+spellings of one repo never register twice.
+
+- `repo-add {path, name?}` (`repos.ts:508-565`): `path` is standardized. Already
+  registered and **auto-discovered** → promoted to manual
+  (`set-repo-auto-discovered {isAutoDiscovered: false}`,
+  `packages/daemon/src/store/types.ts:316-325`) and persisted, so the auto-unlink GC
+  can never collect a repo the user asked for by hand; already registered and manual
+  → `ok` with the existing row, unchanged; new → registered with `name ?? basename`,
+  `remoteURL` from a best-effort `getRemoteURL`, `isAutoDiscovered: false`. The path
+  is deliberately not required to be a checkout (a directory picker can pick
+  anything; the row is honest about being remote-less). Reply:
+  `{ok:true, repo_id, promoted, already_registered, repo}`.
+- `repo-remove {repo_id}` (`repos.ts:567-586`): dispatches `remove-repo`; the reducer
+  drops the repo AND every association pointing at it from every workspace, and the
+  reconciler (§8.8) stops each vanished row's HEAD watcher and force-stops its graft
+  session. Reply: `{ok:true, repo_id, name, path, removed_associations:[ids]}`.
+- `repo-rename {repo_id, name}` (`repos.ts:588-614`): display name only; the path is
+  identity and never moves.
+- `repo-scan {path, max_depth?}` (`repos.ts:616-667`): `scanForRepos` (§3.2) from the
+  standardized `path` (depth 3 unless `max_depth` is a finite number); every find not
+  already in the registry is added (`isAutoDiscovered: false`, remote URL read
+  best-effort), already-registered finds are reported rather than dropped. Reply:
+  `{ok:true, root, scanned, added:[repos], skipped:[paths]}`.
+
+Promotion out of auto-discovered status also happens on the two worktree-creation
+paths: `workspace-create --worktree` clears the flag on an already-registered
+auto-discovered repo (`packages/daemon/src/handlers/app/workspaces.ts:300-325`), and
+`workspace-add-worktree` does the same through `ensureRepo(..., {promote: true})`
+(§8.4). A plain `add-repo-association` registers a new repo as manual but does not
+promote an existing auto-discovered one (`repos.ts:272-310`).
 
 ---
 
@@ -1249,8 +1516,8 @@ Not graft-specific but it feeds graft's association set:
 
 ### 9.1 RecursiveFSWatcher (drives graft sync)
 
-Recursive directory watcher (FSEvents on macOS; the port needs an equivalent —
-e.g. `fs.watch` recursive / `@parcel/watcher` / chokidar). Semantics to preserve:
+Recursive directory watcher (`watchRecursive`, `packages/daemon/src/graft/watcher.ts`,
+a recursive non-persistent `fs.watch` on the worktree root). Semantics:
 
 - `start(rootPath, debounce = 500ms, ignoredComponents = {".git", "node_modules",
   "target", ".DS_Store"})` → stream of `string[]` batches.
@@ -1264,8 +1531,21 @@ e.g. `fs.watch` recursive / `@parcel/watcher` / chokidar). Semantics to preserve
 - Consumer cancellation tears down the underlying watch; teardown drops any pending
   batch.
 - Empty batches are never emitted.
-- Batches queue if the consumer is slow (graft's consumer processes serially; a
-  batch that arrives during a sync pass is buffered and handled next).
+- Batches that arrive while the consumer is busy are not lost: graft's consumer
+  processes serially, and a batch that arrives during a sync pass sets the session's
+  `pending` flag so exactly one follow-up pass runs when the current one finishes
+  (§4.3).
+- **Filtering runs on the root-relative path**, not the absolute path
+  (`watcher.ts:13-15`), so a worktree that happens to live under a directory named
+  `target` or `node_modules` is still watched.
+- An event whose filename is `null` (the platform could not name the entry) is
+  attributed to the root path itself and still schedules a batch rather than being
+  dropped (`watcher.ts:119-127`).
+- **Watch-attach failure**: if `fs.watch` throws at start (the worktree vanished
+  between the initial sync and the watch), the error is reported through `onError`
+  and the watcher stays unattached (`watching = false`, `watcher.ts:129-141`). The
+  session is already published and stays live but unwatched; no batch will fire, and
+  a later pass (a retry through stop/start) reports `missingWorktree` honestly.
 
 ### 9.2 GitHeadWatcher (drives sidebar branch/status refresh)
 
@@ -1275,22 +1555,29 @@ Watches the **HEAD file** of each registered `RepoAssociation` — resolved via
 whenever HEAD changes. This is what makes the sidebar branch label update within
 ~200ms of a `git checkout` / `git switch` / `git reset`, at zero at-rest CPU.
 
-Mechanics (kqueue file-descriptor watch in Swift; port with `fs.watch` on the file):
+Mechanics (`createHeadWatchService`, `packages/daemon/src/graft/head-watcher.ts`; a
+non-recursive `fs.watch` on the HEAD file's **parent directory**, filtered to the
+`HEAD` entry):
 
-- Watch events: write, extend, rename, delete on the HEAD file.
-- On ANY event: **emit** (the consumer only sees the logical "HEAD changed"
-  signal).
-- `git checkout` typically rewrites HEAD via temp-file + **atomic rename**, so the
-  watched inode dies: on a rename/delete event, schedule a **re-open of the same
-  path after 200ms** and keep the same consumer stream (the delay lets git finish
-  writing the new file). If the re-open fails (file gone), the stream finishes.
-- `start(associationID, headPath)` is keyed per association; starting again for the
-  same id cancels and replaces the prior watch. `stop(associationID)` is idempotent
-  and also cancels a pending re-open. `stopAll()` on teardown.
-- Failure to open the HEAD path initially → the watcher silently no-ops (stream
-  ends immediately). The app treats this as "not a repo, nothing to watch".
+- `git checkout` typically rewrites HEAD via temp-file + **atomic rename**, which
+  kills the inode of a file-level watch. Watching the directory and filtering events
+  by `basename(filename) === "HEAD"` is rename-proof by construction, so there is no
+  re-open dance (Compatibility rationale item 10). An event with a `null` filename is
+  treated as a HEAD change (it costs one debounced git read).
+- On ANY matching event: **emit** (the consumer only sees the logical "HEAD changed"
+  signal), after the 150ms debounce below (`HEAD_CHANGE_DEBOUNCE_MS`,
+  `head-watcher.ts:21`).
+- `start(associationID, worktreePath)` is keyed per association; starting again for
+  the same id cancels and replaces the prior watch (an epoch counter makes a slow
+  `resolveHeadPath` unable to resurrect a watch that was stopped meanwhile).
+  `stop(associationID)` is idempotent and also cancels a pending debounce.
+  `stopAll()` on teardown.
+- Failure to resolve the HEAD path (`resolveHeadPath` throws: not a repo, or git
+  unavailable) → the watcher silently no-ops. A directory watch that fails to attach
+  is reported through `onError` and the entry is kept without a handle.
 
-Downstream pipeline (per association):
+Downstream pipeline (per association; `createRepoAssociationWatch`,
+`packages/daemon/src/graft/associations.ts:111-140`):
 
 ```
 startHeadWatcher(workspaceID, associationID, worktreePath):
@@ -1302,7 +1589,8 @@ headChanged:                                   // debounced 150ms, restart-on-ne
   status = getStatus(assoc.worktreePath)  (fallback: unknown)
   branch = getCurrentBranch(assoc.worktreePath) (fallback: null)
   -> gitStatuses[associationID] = status        (in-memory)
-  -> association.branchName = branch            (persisted)
+  -> onWorktreeChanged(worktreePath)            (the pane-branch producer, §9.4)
+  -> association.branchName = branch            (persisted; dispatched only when it changed)
 ```
 
 Watchers are started: at state load for every persisted association; on worktree
@@ -1317,119 +1605,163 @@ its associations. Also triggered when the inspector opens, when a workspace is
 created with a worktree seed, and at state load. This catches dirtiness changes that
 don't touch HEAD (file edits) without watching whole repos.
 
+### 9.4 Pane-branch producer
+
+Independent of the per-association `branchName`, every pane carries its own
+`gitBranch` (the branch chip in the pane header, the status footer and a
+markdown/diff pane's header). `createPaneBranchWatch`
+(`packages/daemon/src/git/branch.ts`) is its producer: one store reconciler that
+resolves `git rev-parse --abbrev-ref HEAD` in each pane's **own** working directory
+whenever that directory changes (an OSC 7 pwd report, a split inheriting a cwd, a
+markdown/diff pane opening, a restore at boot).
+
+- Per-pane **120ms debounce** (`BRANCH_RESOLVE_DEBOUNCE_MS`, `branch.ts:50`), so a
+  burst of `cd`s costs one `git rev-parse`.
+- Per-directory **3s cache** (`BRANCH_CACHE_TTL_MS`, `branch.ts:60`), so N panes
+  sharing a cwd cost one spawn between them.
+- The dispatch of `pane-branch-changed {paneID, branch}` is **conditional**
+  (`branch.ts:171`): a re-resolve that agrees with what the pane already carries
+  writes nothing, so the chip cannot flicker and the delta stream stays quiet.
+- A detached HEAD keeps git's literal answer `"HEAD"`; a directory that is not a
+  checkout (or a failing git) yields `null`, which the renderers draw as nothing.
+- Only visible panes are resolved (a parked pane has no header to draw a branch in);
+  a pane that moved or vanished while git ran is not written to.
+
+Second trigger: `repoChanged(worktreePath)` (`branch.ts:230`) drops the cache for
+every directory inside the worktree and re-resolves the panes sitting in it. The
+association watcher fires it as `onWorktreeChanged(worktreePath)` on every
+association refresh (`packages/daemon/src/graft/associations.ts:132-136`, wired in
+`packages/daemon/src/boot/compose.ts:979-995`), so a `git checkout` in one pane moves
+the branch chip in every pane inside that worktree without a second HEAD watcher.
+
 ---
 
 ## 10. Lifecycle integration summary
 
-- **Launch**: after persisted state loads → start HEAD watchers for all
-  associations → `refreshGitStatus` + 30s timer → graft
-  `onAppLaunched(unique(repoRegistry paths))` (subscribes to service events +
-  detects orphans). First-run (no workspaces) still dispatches with `[]`.
+- **Launch** (`packages/daemon/src/boot/compose.ts`): after persisted state loads →
+  the association reconciler starts HEAD watchers for all associations, reads
+  branch/status once and arms the 30s timer (§9.2, §9.3) → the daemon subscribes to
+  service events (`compose.ts:967`) → sweep stale temp indexes (`compose.ts:1543`) →
+  `detectOrphans(unique(repoRegistry paths))` fills the orphan registry
+  (`compose.ts:1551`). First-run (no workspaces) still runs with `[]`.
 - **Quit**: flush all service graft sessions (2s cap) before terminating (§5).
 - **Crash**: breadcrumbs → orphan banner on next launch (§4.10, §6.6).
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-Things the TS daemon must get right, plus deliberate divergence opportunities:
+These items record quirks the code preserves on purpose so the pre-port `kelpi` CLI,
+hook scripts and saved state (breadcrumbs, persisted associations) keep working, and
+the deliberate divergences from the pre-port app and why they are safe:
 
-1. **Git binary + spawning.** The Swift app hard-codes `/usr/bin/git` and inherits
-   the app environment. The daemon should resolve `git` from PATH (configurable),
-   keep the env-merge semantics for `GIT_INDEX_FILE`, and keep cwd-based invocation.
-   There are **no timeouts** today; consider adding generous ones (esp. `fetch`) but
-   remember the CLI already assumes a slow `workspace create --worktree` (120s reply
-   timeout) — a daemon-side timeout must be longer than that or surfaced as a
-   structured error.
-2. **All git calls are currently blocking-synchronous inside async wrappers.** In
-   Node, spawn async; but preserve the graft engine's ordering guarantees: one sync
-   pass at a time per session, stop awaits the in-flight pass, watcher-vs-stop
-   registration is atomic (§4.3/§4.4). A per-session mutex or task queue is the
-   natural TS shape.
-3. **Lock derivation (issue #231) is a hard invariant.** Do not introduce a
-   standalone busy-roots set. Claim = startingRoots ∪ live session roots; status and
-   stop must read the service, not any client mirror; removal paths must always call
-   stop unconditionally; stop must be an idempotent no-op for unknown ids (this also
-   means stop must run its watcher/sync cleanup steps before the "no session"
-   early-return, exactly as spec'd).
-4. **Stop coalescing** (§4.4) matters in the daemon even more than in-app: the wire
-   layer, workspace-deletion, and quit-flush can all race stops for the same id.
-   Coalesce onto one promise and propagate its real outcome to all awaiters.
-5. **Breadcrumb compatibility.** Keep the exact path
-   (`<parentRepoRoot>/.git/kelpi-graft-active`), JSON field names, `version: 1`, and
-   tolerant decoding (invalid/unknown-version → ignore, don't delete). Users may
-   upgrade with a breadcrumb on disk from the Swift app; the daemon must recover it,
-   including legacy breadcrumbs where `preGraftBranch`/`preGraftSha` are absent
-   (fallback = `git checkout -f HEAD --`) and where `worktreePreGraftSha` is set
-   (worktree `reset --mixed` on recovery).
-6. **Wire compatibility.** The `kelpi` CLI must keep working unchanged: request field
-   names (`workspace`, `repo`, `pane_id`, `worktree`, `branch`, `update_main`),
-   reply shapes (`started[]` with `association_id`/`worktree_path`/`branch`/
-   `parent_repo_root`; `stopped[]` + optional `failed[]`; `sessions[]` per §7.4),
-   `ok` semantics (stop's `ok = no failures`), empty-string-to-nil normalization,
-   and the reply-then-EOF framing. `last_sync` is ISO 8601.
-7. **Error strings.** Today's `error` values are stringified Swift enums (e.g.
+1. **Git binary + spawning.** The daemon resolves `git` from PATH (`KELPI_GIT`
+   overrides), inherits its own environment, merges `GIT_INDEX_FILE` over it, and
+   invokes git with `cwd` rather than `-C` (§3.1). There is **no timeout** in
+   production; the runner supports optional budgets, and any budget on the
+   worktree/fetch family is clamped up to 120s because the CLI already waits 120s
+   for `workspace create --worktree` (§7.6): a daemon-side timeout shorter than that
+   would fail a command the CLI is still prepared to wait for.
+2. **Git calls are async, but the graft engine's ordering guarantees hold.** One
+   sync pass at a time per session (the `pending` flag + serial `pump`, §4.3), stop
+   awaits the in-flight pass, and watcher-vs-stop registration is a synchronous step
+   with no `await` inside it (§4.3/§4.4). The pre-port app got the same guarantees
+   from blocking git calls inside a mutex; the daemon gets them from the
+   single-threaded event loop and explicit awaits.
+3. **Lock derivation (issue #231) is a hard invariant.** There is no standalone
+   busy-roots set. Claim = startingRoots ∪ live session roots; status and stop read
+   the service, not any client mirror; removal paths always call stop
+   unconditionally; stop is an idempotent no-op for unknown ids (which is why stop
+   runs its watcher/sync cleanup steps before the "no session" early-return, §4.4).
+4. **Stop coalescing** (§4.4) matters in the daemon even more than in a single-process
+   app: the wire layer, workspace deletion, the inspector and the quit flush can all
+   race stops for the same id. They coalesce onto one promise and every awaiter gets
+   its real outcome.
+5. **Breadcrumb compatibility.** The exact path
+   (`<parentRepoRoot>/.git/kelpi-graft-active`), JSON field names, sorted-key
+   encoding, `version: 1`, and tolerant decoding (invalid/unknown-version → ignore,
+   don't delete) are all kept (`packages/daemon/src/graft/breadcrumb.ts`). A user
+   can upgrade with a breadcrumb on disk from the pre-port app and the daemon
+   recovers it, including legacy breadcrumbs where `preGraftBranch`/`preGraftSha`
+   are absent (fallback = `git checkout -f HEAD --`) and where `worktreePreGraftSha`
+   is set (worktree `reset --mixed` on recovery).
+6. **Wire compatibility.** The pre-port `kelpi` CLI keeps working unchanged: request
+   field names (`workspace`, `repo`, `pane_id`, `worktree`, `branch`,
+   `update_main`), reply shapes (`started[]` with
+   `association_id`/`worktree_path`/`branch`/`parent_repo_root`; `stopped[]` +
+   optional `failed[]`; `sessions[]` per §7.4), `ok` semantics (stop's `ok = no
+   failures`), empty-string-to-nil normalization, and the reply-then-EOF framing.
+   `last_sync` is ISO 8601 at second precision. The scope-required error text still
+   names `NEX_PANE_ID` (§7.1) because it is a reply string the old CLI printed
+   verbatim.
+7. **Error strings.** The pre-port app put stringified enum cases on the wire (e.g.
    `alreadyActive(parentRepoRoot: "/x")`, `stashPopConflict(stashRef: "...",
    underlying: "...")`). Nothing machine-parses them (the CLI just prints), so the
-   port may use cleaner human-readable messages — but keep them informative
-   (root path, stash SHA, git stderr) since they are the user's only diagnostics.
-   Consider adding a stable machine-readable `error_kind` field as an additive
-   improvement.
-8. **Known CLI quirk** (safe to fix daemon-side only if kept wire-compatible): a
-   partial `graft-stop` failure replies `ok:false` without an `error` key, so the
-   current CLI prints `unknown error` and never renders the `failed` list. If you
-   keep the reply shape, consider also including a summary `error` string so the
-   existing CLI prints something useful; the `failed` array must stay for future
-   clients.
-9. **FS watching.** macOS FSEvents gives recursive file-level events cheaply; in
-   Node use a recursive watcher library. Must-keep semantics: 500ms trailing
-   debounce, component-based ignore list (`.git`, `node_modules`, `target`,
-   `.DS_Store`), dedup+sort per batch, and — critically — events under `.git` must
-   NOT trigger sync passes (otherwise graft's own git activity self-triggers).
-   Watch that your watcher reports paths in a form whose components can be checked
-   (absolute paths are fine).
-10. **HEAD watching.** Watching the file (not the directory) plus the 200ms
-    reopen-after-rename dance is an inode-watch artifact. A TS port can instead
-    watch the HEAD file's **parent directory** for changes to the `HEAD` entry,
-    which sidesteps atomic-rename inode death — as long as it preserves: per-
-    association identity, idempotent stop, silent no-op for non-repos, the 150ms
-    downstream debounce before running `git status` + branch resolve, and the
-    "linked worktree HEAD lives under `.git/worktrees/<name>/HEAD`" resolution via
-    `rev-parse --git-path HEAD`.
-11. **Path canonicalization.** Reproduce standardize+resolve-symlinks for root
-    claims and `--repo` matching (Node: `path.normalize` + `fs.realpathSync`-style,
-    tolerating non-existent paths by resolving the longest existing prefix — the
-    macOS behavior resolves what it can). `/tmp` vs `/private/tmp` equivalence on
-    macOS comes from this; tests rely on it.
+   daemon uses human-readable messages instead (`packages/daemon/src/graft/errors.ts`)
+   while keeping them informative (root path, stash SHA, git stderr), since they are
+   the user's only diagnostics. The additive `error_kind` field on every `ok:false`
+   reply is the stable machine-readable form (§7.2).
+8. **Known CLI quirk.** A partial `graft-stop` failure replies `ok:false`, and the CLI
+   runs its generic envelope check first, so it never renders the `failed` list
+   (§7.3). The daemon therefore also includes a summary `error` string in that reply
+   (`packages/daemon/src/handlers/app/graft.ts:242-262`) so the CLI prints something
+   useful instead of `unknown error`; the `failed` array stays for clients that
+   render it. The reply shape is otherwise unchanged.
+9. **FS watching.** The recursive watcher is a recursive `fs.watch`
+   (`packages/daemon/src/graft/watcher.ts`). The must-keep semantics hold: 500ms
+   trailing debounce, component-based ignore list (`.git`, `node_modules`, `target`,
+   `.DS_Store`), dedup+sort per batch, and, critically, events under `.git` never
+   trigger sync passes (otherwise graft's own git activity would self-trigger).
+   Components are checked on the root-relative path so the emitted absolute paths
+   never match the ignore list through an ancestor directory (§9.1).
+10. **HEAD watching.** The pre-port app watched the HEAD file's descriptor and re-opened
+    it 200ms after a rename, an inode-watch artifact. The daemon instead watches the
+    HEAD file's **parent directory** for changes to the `HEAD` entry
+    (`packages/daemon/src/graft/head-watcher.ts`), which sidesteps atomic-rename
+    inode death, while preserving per-association identity, idempotent stop, the
+    silent no-op for non-repos, the 150ms downstream debounce before running `git
+    status` + branch resolve, and the "linked worktree HEAD lives under
+    `.git/worktrees/<name>/HEAD`" resolution via `rev-parse --git-path HEAD` (§9.2).
+11. **Path canonicalization.** Root claims and `--repo` matching use standardize +
+    resolve-symlinks (`packages/daemon/src/graft/paths.ts`): `path.resolve` plus
+    `fs.realpathSync` on the longest existing prefix, with the missing tail
+    re-appended, because Node's realpath throws the moment any component is missing
+    while the pre-port app resolved what it could. `/tmp` vs `/private/tmp`
+    equivalence on macOS comes from this; tests rely on it.
 12. **Session/association identity.** The graft session id IS the association id.
-    The service must accept a start for an association whose id it has never seen
-    and enforce uniqueness on the parent root, not the id.
-13. **UI mirror is a client concern.** In the new architecture the web client
-    should subscribe to graft session events over the WebSocket (map
-    `started/updated/stopped` to the same upsert/remove semantics) and implement
-    the toggle/swap/orphan state machine of §6 client-side, while every
-    source-of-truth decision (claims, stop targets, status) stays daemon-side.
-14. **Quit flush** becomes daemon-shutdown flush: on SIGTERM/SIGINT stop all
-    sessions with a bounded (2s) grace period before exit; breadcrumbs cover the
-    rest. An Electron-shell quit must not skip daemon shutdown handling.
+    The service accepts a start for an association whose id it has never seen and
+    enforces uniqueness on the parent root, not the id.
+13. **UI mirror is a client concern.** The web client receives the full session list
+    over the WebSocket (`graft-changed`, §7.7) and merges it with the same
+    upsert/remove semantics, and implements the toggle/swap/orphan state machine of
+    §6 client-side, while every source-of-truth decision (claims, stop targets,
+    status, orphan detection) stays daemon-side.
+14. **Quit flush** is the daemon-shutdown flush: on SIGTERM/SIGINT and `kelpid stop`
+    the daemon stops all sessions with a bounded (2s) grace period before exit
+    (§5); breadcrumbs cover the rest. An Electron-shell quit goes through daemon
+    shutdown handling rather than skipping it.
 15. **`repoState` marker files** are read directly from the resolved git dir; for
-    worktrees `rev-parse --git-dir` points at the per-worktree dir — do not
-    shortcut to `<root>/.git`.
+    worktrees `rev-parse --git-dir` points at the per-worktree dir, and the code
+    does not shortcut to `<root>/.git`.
 16. **`getStatus` counts** untracked files in `changedFiles` but not in
     additions/deletions (`diff --shortstat HEAD`), and swallows shortstat errors
     (fresh repo without HEAD). Sidebar badges depend on these exact semantics.
-17. **Concurrency edge already accepted upstream**: stop-during-start leaves an
-    ownerless live session (§4.4 note). The port may close this window (e.g. by
-    having stop await an in-flight start for the same id), but if it does, keep
-    `graft stop --repo <path>`'s orphan fallback — it is also the escape hatch for
-    sessions whose associations were deleted.
+17. **Stop-during-start.** The pre-port app accepted that stopping an association
+    whose start was still mid-flight left an ownerless live session. The daemon
+    closes this window: stop awaits an in-flight start for the same id before
+    tearing down (§4.4). `graft stop --repo <path>`'s orphan fallback is kept
+    regardless, because it is also the escape hatch for sessions whose associations
+    were deleted.
 18. **The `kelpi-graft-index-*` temp index files** go to the OS temp dir and are
-    best-effort deleted; a crashed sync can leave them. Harmless; consider a
-    startup sweep.
-19. **`addAllAndCommit`** is dead code for graft (legacy commit-based design) but
-    still part of the service surface; port it only if something else needs it.
-20. **Worktree flows**: keep sanitization identical (it is user-visible in path
-    previews and replies), keep `<repo>` placeholder semantics in the base path,
-    keep `--update-main` = ls-remote-default + fetch + branch off
-    `origin/<default>`, and keep `worktreeErrorMessage`'s prefer-the-`fatal:`-line
-    behavior — the raw first stderr line of `git worktree add` is misleading.
+    best-effort deleted (the `.lock` twin too); a crashed sync can leave them.
+    Harmless, and `sweepGraftTempIndexes` (§3.2) removes day-old leftovers at boot
+    without robbing a concurrent daemon's in-flight sync.
+19. **`addAllAndCommit`** was dead code for graft (legacy commit-based design) that
+    remained on the pre-port service surface; nothing else needs it, so the daemon's
+    `GitService` omits it (§3.2).
+20. **Worktree flows**: sanitization is identical (it is user-visible in path
+    previews and replies), the `<repo>` placeholder semantics in the base path are
+    kept, `--update-main` = ls-remote-default + fetch + branch off
+    `origin/<default>`, and `worktreeErrorMessage` prefers the last `fatal:`/`error:`
+    line because the raw first stderr line of `git worktree add` is misleading
+    (`packages/daemon/src/git/names.ts`).

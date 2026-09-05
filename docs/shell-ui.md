@@ -1,17 +1,21 @@
 # Shell UI — behavioral specification
 
 Subsystem: the app shell / chrome of Kelpi — everything the user sees around the terminal
-surfaces. This is a UI behavior inventory written for the TypeScript/web port. It describes
-WHAT the current macOS app does, so an equivalent UX can be built in web tech (the daemon
-serves the state; the web client renders this shell). Sizes are given in CSS-pixel-equivalent
-points; treat them as a starting layout, not a pixel contract.
+surfaces. This is a UI behavior inventory of the shell as it is: the daemon serves the state
+and the web client renders this chrome, inside the Electron shell or in a plain browser tab.
+Sizes are given in CSS-pixel-equivalent points; treat them as a starting layout, not a pixel
+contract.
 
-Source of truth read for this spec: `ContentView.swift`, `NexApp.swift`, `AppDelegate.swift`,
-`Chrome/` (RootChromeView, WindowTitleBar, WindowFrameRestorer), `Features/PaneGrid/*`,
-`Features/Workspace/*` (list, inspector, sheets, drag-drop math), `Features/CommandPalette/*`,
-`Features/Help/*`, `Features/StatusBar/*`, `Theme/*`, plus the supporting models
-(`SidebarID`, `WorkspaceColor`, `GroupIcon`, `LabelPreset`, `PaneLayout` drop zones,
-`QuitGate`, `WorkspaceDeleteGate`, command-palette reducer).
+Where the behavior lives: the client chrome in `packages/client/src/chrome/` (TopBar, Sidebar,
+sidebar-model, SidebarResizer, Inspector, CommandPalette, palette, StatusFooter, HelpOverlay,
+ContextMenu, NewWorkspaceSheet, QuitConfirmDialog, theme, presets, icons), the pane grid in
+`packages/client/src/grid/` (PaneGrid, PaneHeader, FocusRing, PaneSearchOverlay, divider,
+tokens), the menus, sheets and drop routing assembled in `packages/client/src/App.tsx`, and
+the Electron shell in `packages/shell/src/` (main, launch, window-state, titlebar, appearance,
+quit, quit-prompt, settings, status, agents, icon, menu, notify). Layout math is
+`packages/core/src/layout/` (`frames.ts`, `types.ts`); the chrome and suppression settings are
+`packages/core/src/config/chrome.ts` and `packages/core/src/config/general.ts`, served by the
+daemon (`packages/protocol/src/ws/settings.ts`).
 
 ---
 
@@ -22,8 +26,8 @@ One main window. Vertical stack:
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ WindowTitleBar (32 high, custom-drawn, traffic lights    │
-│ float over its left edge; ••• menu + sidebar toggle      │
-│ float over its right edge)                               │
+│ float over its left edge; sidebar toggle + ••• menu      │
+│ follow them; inspector toggle at its right edge)         │
 ├──────────┬───────────────────────────────┬───────────────┤
 │ Sidebar  │ Pane grid (active workspace)  │ Inspector     │
 │ (optional│                               │ (optional,    │
@@ -44,39 +48,52 @@ One main window. Vertical stack:
   (default ease, ~0.25s).
 - Sidebar has a 1px divider line on its trailing edge (theme `divider` color) and an
   invisible resize handle at that edge: zero-width strip with a ±3pt hit inset, shows a
-  left-right resize cursor on hover, drag adjusts width clamped to **[180, 300]**. The
-  width is view-local state (not persisted).
+  left-right resize cursor on hover, drag adjusts width clamped to **[180, 300]** (measured
+  from the width at gesture start, so the edge tracks the cursor). The width is client-local
+  (persisted per browser/window in `localStorage` under `kelpi.sidebar.width`; never daemon
+  state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`).
 - When no workspace is active, the pane-grid slot shows an empty state: a large terminal
   glyph (48pt, very faint), "No workspace selected" (secondary text), and a
   "Create Workspace" button that opens the New Workspace sheet.
-- A command-palette overlay can cover the middle row (see §9).
-- Dropping a `.md` file anywhere on the window opens it as a markdown pane
-  (`openFileAtPath`, same path as Finder Open With).
+- A command-palette overlay can cover the middle row (see §7).
+- Dropping a `.md` file on the window (outside a terminal) opens it as a markdown pane, the
+  same route as Finder Open With; a non-markdown drop shows an "Open file" failure toast.
+  Dropping onto a **terminal** instead types the dropped path(s), shell-escaped and
+  space-separated, into that pane; it is the only drop route that accepts several files or a
+  non-markdown path (`packages/client/src/App.tsx:3610-3640`; see the terminal spec).
 
 ### Single-window discipline (macOS)
 
-The macOS app enforces exactly one main window: a registry records the first main window
-as "primary"; any later main window (macOS spawns one when a document is opened while the
-app runs) is closed immediately, and terminal surfaces refuse to re-parent into a
-non-primary window (otherwise the surfaces would be stranded blank). The primary claim is
-relinquished when the window closes so a Dock-reopened window can re-claim it.
-*Port relevance:* the web client is naturally single-window per tab; the Electron shell
-should keep one main BrowserWindow and route file-opens into it.
+Kelpi keeps exactly one main window. The Electron shell takes the single-instance lock at
+launch (`packages/shell/src/main.ts:1419-1441`): a second launch exits immediately after
+handing its arguments to the running shell, which raises its window and forwards any markdown
+path among them as a file-open. `open-file` events (Finder Open With) are routed into that
+same window and non-markdown paths are ignored. Closing the window is not quitting: the app
+stays in the Dock and the tray, and a Dock click re-shows the window onto the same sessions.
+The web client is naturally single-window per tab.
 
 ### Window frame persistence (Electron shell)
 
-The macOS app persists, outside the DB (UserDefaults):
+The shell persists, outside the DB, in `window-state.json` under the Electron user-data
+directory (`packages/shell/src/window-state.ts:43-67`):
 
-- the windowed frame (`kelpi.mainWindow.frame`) on every move/resize, **skipping** saves
-  while in native fullscreen or during the enter/exit-fullscreen transition, so the stored
-  frame is always the windowed one;
-- a fullscreen boolean (`kelpi.mainWindow.isFullScreen`); on launch the windowed frame is
-  restored first, then fullscreen is re-entered if the flag is set.
+- the windowed frame (`bounds`) on every move/resize, debounced ~400ms and **skipping** saves
+  while fullscreen or minimised, so the stored frame is always the windowed one
+  (`packages/shell/src/main.ts:272-289`);
+- a `fullScreen` boolean; on launch the windowed frame is restored first, then fullscreen is
+  re-entered if the flag is set;
+- a `visibleOnAllWorkspaces` boolean: the tray's "Show on All Desktops" checkbox (§9) toggles
+  Electron's `setVisibleOnAllWorkspaces` and persists it here, and it is re-applied when the
+  window is created (`packages/shell/src/main.ts:226-251`, `:529-541`). Kelpi owns this toggle
+  itself rather than reading the Dock's "Assign To" binding, so an assignment made from the
+  Dock menu lasts only for that session while the in-app toggle survives a relaunch.
 
-On restore, the frame is clamped: it is kept only if some screen fully fits it AND that
-screen contains the window's top 28pt "drag strip" with at least 80pt of grabbable width;
-otherwise the window is recentred on the current screen (shrunk to fit). This prevents
-restoring a window whose title bar is off every remaining display.
+On restore, the frame is clamped (`clampBoundsToDisplays`,
+`packages/shell/src/window-state.ts:120-149`): kept verbatim if some display's work area
+fully contains it and shows its top 28pt "drag strip" with at least 80pt of grabbable width;
+else shifted (shrunk to fit) into a display that still shows a grabbable slice of the strip;
+else recentred on the primary display. This prevents restoring a window whose title bar is
+off every remaining display.
 
 ---
 
@@ -90,7 +107,8 @@ stored in app state — from three inputs:
    appearance live; `light`/`dark` force the whole window scheme.
 2. The OS color scheme (for the `system` case).
 3. Per-appearance user color overrides (Settings ▸ Appearance), stored as
-   `"<light|dark>:<key>" → "RRGGBB"` strings.
+   `"<light|dark>:<key>" → "RRGGBB"` strings in the daemon's `chrome-colors` setting
+   (`packages/core/src/config/chrome.ts`).
 
 ### Token set and preset values
 
@@ -185,7 +203,7 @@ A preset gallery the user can apply in one click (writes the palette into the ma
 bucket's overrides and switches Light/Dark to suit; the terminal theme is untouched).
 Seven presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha** (dark) and
 **Solarized Light, Gruvbox Light** (light). Each specifies the 11 overridable colors
-(see `BuiltInChromeThemes.swift` for exact hex tables — carry them over verbatim).
+(the exact hex tables are `BUILT_IN_CHROME_THEMES` in `packages/client/src/chrome/presets.ts`).
 
 ### Theme sharing
 
@@ -207,8 +225,9 @@ Seven presets: **Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin Mocha** (d
 }
 ```
 
-Two wire forms: a pretty-JSON `.nextheme` file, and a one-line share code
-`kelpi-theme:<base64(compact JSON)>`. Import accepts the prefixed code, bare base64, or raw
+Two wire forms: a pretty-JSON `.nextheme` file (the pre-port extension, kept so existing
+theme files still import; `packages/client/src/chrome/presets.ts:271-276`), and a one-line
+share code `kelpi-theme:<base64(compact JSON)>`. Import accepts the prefixed code, bare base64, or raw
 JSON pasted directly. A `version` greater than the app's known version is rejected with
 "This theme was made with a newer version of Kelpi (vN)."; junk input → "That doesn't look
 like a Kelpi theme." Importing restyles chrome only — it never changes the recipient's
@@ -224,11 +243,20 @@ theme, possibly overridden in Settings ▸ Appearance). Rules:
   panes.
 - If `backgroundOpacity >= 1`, the window paints an opaque `theme.windowBackground`
   backdrop behind everything.
-- If `backgroundOpacity < 1`, the window itself is made non-opaque (macOS: transparent
-  window background) and the chrome backdrop is **not** painted, so transparent terminal
+- If `backgroundOpacity < 1`, the window itself is made non-opaque (Electron: a transparent
+  `BrowserWindow`) and the chrome backdrop is **not** painted, so transparent terminal
   cells see through to the desktop. Chrome surfaces (sidebar/headers/footer) still paint
   their own opaque colors.
 - Appearance changes re-broadcast the config so open non-terminal panes repaint live.
+
+Window transparency is fixed at creation. Electron cannot toggle `transparent` on an existing
+window, so the shell reads `background-opacity` from the ghostty config BEFORE creating the
+window (`packages/shell/src/appearance.ts:7-12`, `packages/shell/src/main.ts:396-428`) and
+tells the page with `?windowTransparent=1`. At opacity 1 the opaque window's `backgroundColor`
+is the theme's `windowBackground`, kept live on appearance changes. A later settings write
+that crosses the 1.0 boundary is detected (`transparencyNeedsRelaunch`) and reported once per
+run with a desktop notification, "Window transparency changes on next launch"; changes on the
+same side of 1.0 apply live (`packages/shell/src/main.ts:749-766`).
 
 ### Utility formats used across the chrome
 
@@ -240,7 +268,9 @@ theme, possibly overridden in Settings ▸ Appearance). Rules:
 
 ## 3. Title bar
 
-Custom 32pt-high bar drawn as content at the very top (macOS hides the native title bar).
+Custom 32pt-high bar drawn as content at the very top (the shell creates the window with
+`titleBarStyle: 'hiddenInset'`, `packages/shell/src/titlebar.ts:62-69`; the browser client has
+no native bar to hide).
 Background = `theme.footerBackground` with a 1px bottom divider.
 
 **Identity cluster** (perfectly centered, non-interactive — clicks fall through to the
@@ -254,29 +284,50 @@ drag region):
   else if any is `running` → `statusRunning`; else the workspace's own color. No active
   workspace → `textTertiary`, and the name falls back to "Kelpi" with no pane count.
 - Name: 12pt semibold `textPrimary`; count: `textTertiary`; single line, tail-truncated.
-- Horizontal insets: 80 leading (clears traffic lights), 86 trailing (clears controls).
+- Horizontal clearance: the identity is centred and bounded on both sides by the wider of
+  the two control clusters plus 12pt (measured live with a `ResizeObserver`, 256pt before the
+  first measurement; `packages/client/src/chrome/TopBar.tsx:125-150`, `:338-353`), so a long
+  name truncates before it runs under the traffic lights or the controls. The 80pt
+  traffic-light gutter is only the bar's left padding.
 
 **Drag & double-click:** empty bar area drags the window; double-click in the strip
 (excluding the two gutter insets) performs the user's OS "double-click title bar"
 preference — Zoom (default), Minimize, or nothing.
 
-**Trailing controls** (top-right, clickable):
+**Leading controls** (after the traffic-light gutter, clickable;
+`packages/client/src/chrome/TopBar.tsx:279-325`):
 
-- `•••` menu: "Settings…", "Show Inspector"/"Hide Inspector" (toggles inspector),
-  divider, "Restart Socket Server".
 - Sidebar-toggle button (sidebar glyph), tooltip "Toggle sidebar".
+- `•••` menu (`packages/client/src/App.tsx:3484-3510`): "Settings…", "Show Inspector"/"Hide
+  Inspector" (toggles inspector), "Kelpi Help", then, inside the desktop shell only, a divider,
+  "Install CLI", "Check for Updates…"; then a divider and "Restart Socket Server". The
+  shell-only rows are omitted in a browser rather than shown disabled.
 
-Both are tinted `textSecondary`, 13pt.
+Both are tinted `textSecondary`, 13pt, 14pt apart.
+
+**Trailing controls** (top-right, `packages/client/src/chrome/TopBar.tsx:380-563`), in order:
+
+- Layout control: a button showing the current predefined layout's name (or "custom"),
+  tooltip "Cycle layout (⇧⌘Space)", plus a chevron that opens a layout menu listing the
+  predefined layouts (dismissable; web panes park beneath it).
+- Synchronise-input toggle: "sync", or "sync N" with the synced pane count while active
+  (accent-tinted); the tooltip explains the two-shell-pane minimum when it cannot engage.
+- "take size control" chip, shown only when terminal sizing follows another connected
+  window's geometry; clicking sizes the panes to this window.
+- Connection pill: a dot colored by status plus the label (offline / connecting / connected /
+  reconnecting / disconnected / refused); the last error is its tooltip.
+- Inspector-toggle button (mirror glyph of the sidebar toggle), tooltip "Toggle inspector
+  (⌘I)", last so it sits the same 12pt from the window edge as the sidebar toggle does.
 
 ---
 
 ## 4. Pane grid
 
 Renders the active workspace's `PaneLayout` tree as absolutely-positioned pane views plus
-divider handles, computed mathematically from the tree (`paneFrames(in: bounds)` /
-`splitDividers(in: bounds)`). Pane view identity is stable across layout changes — panes
-are only moved/resized, never re-created (critical for keeping terminal state alive; in
-web, keep DOM nodes stable across layout mutations).
+divider handles, computed mathematically from the tree (`paneFrames` / `splitDividers` in
+`packages/core/src/layout/frames.ts`). Pane view identity is stable across layout changes, 
+panes are only moved/resized, never re-created (critical for keeping terminal state alive:
+the DOM nodes stay stable across layout mutations, `packages/client/src/grid/PaneGrid.tsx`).
 
 - Divider thickness: **2pt**.
 - Empty layout state: centered terminal glyph (36pt faint), "No panes", and a
@@ -297,8 +348,9 @@ frame, with these overlays:
 
 Body by pane type:
 
-- `shell` — the terminal surface (ghostty; ghostty-web in the port).
-- `markdown` — preview (WKWebView-rendered HTML) or, in edit mode, either the built-in
+- `shell`: the terminal surface (ghostty-web).
+- `markdown`: preview (rendered HTML in a sandboxed content frame,
+  `packages/client/src/content/ContentFrame.tsx`) or, in edit mode, either the built-in
   plain-text editor or an embedded terminal running the user's `$EDITOR`.
 - `scratchpad` — plain-text editor bound to `pane.scratchpadContent`.
 - `diff` — rendered `git diff` HTML; takes a `refreshToken` (uint bumped by the header
@@ -339,9 +391,12 @@ Left-to-right contents:
    (expand icon + "ZOOM", 10pt mono, orange @ 0.12 fill); clicking it un-zooms.
    Tooltip "Toggle zoom".
 5. **SYNC badges** (synchronise-input, workspace-level flag):
-   - sync active AND pane not excluded → amber badge (broadcast icon + "SYNC");
-     tooltip "Synchronise input is on — keystrokes mirror to peer panes". Shown even in a
-     single-pane workspace (deliberate "you left it on" cue).
+   - sync active AND pane not excluded → orange badge (the same `orange` token as the ZOOM
+     badge, deliberately distinct from the agent badge's `activeAgent` amber so a synced pane
+     never reads as a pane with a running agent; `packages/client/src/grid/tokens.ts:41-57`,
+     `PaneHeader.tsx:901-925`; broadcast icon + "SYNC"); tooltip "Synchronise input is on -
+     keystrokes mirror to peer panes". Shown even in a single-pane workspace (deliberate "you
+     left it on" cue).
    - sync active AND pane excluded → dimmed gray badge (dashed-rect icon + "SYNC OFF",
      9pt); tooltip "Excluded from the workspace sync group".
 6. `Spacer` — everything after is right-aligned.
@@ -367,6 +422,17 @@ Left-to-right contents:
     opens a fresh web pane split to the right of this pane; shift-click splits below.
 13. **Close** (× icon, tooltip "Close pane (⌘W)").
 
+**Narrow headers** (`packages/client/src/grid/PaneHeader.tsx:96-201`, `:756-778`,
+`:1029-1055`): the title carries the largest flex-shrink so it truncates first, in the middle,
+keeping the last path segment (at most 24 characters) intact; shrinkable badges keep a 2.5ch
+text floor. Below that, `badgeFit` computes the width left after the fixed chrome and drops
+badges in order: git branch first (the footer and inspector both show it), then the agent
+badge (the status dot already carries it), then the label chip. Below that again,
+`headerOverflowCount` folds trailing buttons from the ✕ inward (globe, split-down,
+split-right, then the per-type buttons; never the ✕, and never just one, because a lone fold
+saves nothing) into a `•••` overflow menu whose rows carry the same labels and chords.
+Widening the pane un-folds the row and closes an open overflow menu.
+
 Header gestures:
 
 - Single click → focus the pane.
@@ -378,7 +444,10 @@ Header gestures:
 **Header context menu** (all panes unless noted):
 
 ```
-Rename…                       (opens Rename Pane sheet)
+Rename…                       (turns the header's title into an inline field pre-filled
+                               with the label; Enter/blur commit the trimmed value, empty
+                               clears the label, Esc cancels; no sheet;
+                               packages/client/src/grid/PaneHeader.tsx:620-648, :855-867)
 Close Pane                    (destructive)
 ──────────
 Split Right
@@ -387,30 +456,31 @@ New Web Pane
 ──────────                    (shell panes only)
 Status ▸  Idle / Running / Awaiting Input   (current gets a checkmark;
                                              manual status override)
+──────────                    (web panes only; packages/client/src/App.tsx:3420-3432)
+Element Pickup                (arms the web pane's element picker)
+Toggle Developer Tools        (disabled outside the Electron shell)
 ──────────                    (only when other workspaces exist)
 Move to Workspace ▸  <workspace names>       (fire-and-forget move)
 ──────────                    (only while workspace sync is active)
 Include in Sync | Exclude from Sync          (toggles this pane's membership)
 ──────────
-Open in Finder                (markdown/diff w/ filePath → reveal file;
-                               otherwise open workingDirectory)
+Open in Finder                (Electron shell only; markdown/diff w/ filePath → reveal
+                               file; otherwise open workingDirectory)
 Copy Working Directory        (puts cwd on the clipboard)
 ```
 
 **Menu-stability requirement:** agent activity mutates pane fields (status, title,
-elapsed timer) every second. The current app goes to great lengths (equatable projection +
-a hit-test-transparent live overlay copy) so those ticks can never rebuild the header's
-context menu and dismiss an open submenu. In web, an open context menu must similarly
-survive high-frequency re-renders of the row/header beneath it.
+elapsed timer) every second. Those ticks must never rebuild the header's context menu and
+dismiss an open submenu, so the menu is a portal whose open state lives outside the header
+(`packages/client/src/chrome/ContextMenu.tsx`, `packages/client/src/grid/PaneHeader.tsx:9`):
+an open context menu survives high-frequency re-renders of the row/header beneath it.
 
-**Menu-over-a-web-page requirement (port only):** this menu opens from a pane header, and
-on a web pane it lands over the page area. The current app pays nothing for that — a
-`WKWebView` is an AppKit subview in the same window and an `NSMenu` is its own window, so
-the menu simply floats over a page that keeps rendering. In the port the page is a native
-`WebContentsView` the shell composites **above** the client's document, so a menu over it
-is invisible until the view is parked, and parking it left the pane empty for as long as
-the menu was up (issue #12). The requirement, therefore: **the page's content must stay
-visible while a menu is over it.** The port meets it with a **POSTER**: it photographs the
+**Menu-over-a-web-page requirement:** this menu opens from a pane header, and on a web pane
+it lands over the page area. The page is a native `WebContentsView` the shell composites
+**above** the client's document, so a menu over it is invisible until the view is parked,
+and parking it left the pane empty for as long as the menu was up (issue #12). The
+requirement, therefore: **the page's content must stay visible while a menu is over it.**
+Kelpi meets it with a **POSTER**: it photographs the
 page before it parks. The client holds the view on screen, asks the host for one frame
 (the `poster` verb, `daemon/src/webpane/HOST_PROTOCOL.md` §3.6), paints it in the hole and
 only then hands the view back, so the menu draws over a still frame of the page it was
@@ -463,15 +533,20 @@ see the guest page's own layout at all.
 
 ### 4.4 Divider drag & resize overlay
 
-Dividers are 2pt bars in `theme.divider`, overlaid with gray @ 0.2 normally and
-accent @ 0.5 while dragging; the hit area extends ±4pt beyond the visual bar; hover shows
-the appropriate resize cursor.
+Dividers are 2pt bars in `theme.divider`, overlaid with secondary-text @ 0.2 normally and
+system accent @ 0.5 while dragging; the hit area extends ±6pt beyond the visual bar
+(`DIVIDER_HIT_INSET` in `packages/core/src/layout/types.ts:61`, a 14pt band; where two
+bands overlap at a T-junction the press is re-resolved geometrically and goes to the divider
+whose bar is nearest, `packages/client/src/grid/divider.ts:152-184`,
+`PaneGrid.tsx:453-491`); hover shows the appropriate resize cursor.
 
 Drag semantics: each divider carries `{splitPath, available, firstSize}` where
 `available = containerExtent - dividerThickness`. During drag,
 `newRatio = (firstSize + dragDelta) / available` → `updateSplitRatio(splitPath, ratio)`.
 The layout engine clamps ratios to **[0.1, 0.9]** and resets any active predefined-layout
-index (a manual resize breaks the "even-horizontal etc." association).
+index (a manual resize breaks the "even-horizontal etc." association). The drag preview is
+per-frame, but ratio commits to the daemon are coalesced to one per 50ms with the last
+position flushed on release (`RATIO_COMMIT_INTERVAL_MS`, `packages/client/src/grid/PaneGrid.tsx:85`).
 
 **Resize dimensions overlay:** while any divider is being dragged, OR while the grid
 container itself is resizing (window/sidebar/inspector changes), every pane shows a
@@ -500,6 +575,12 @@ Contents:
   search moving "up" through scrollback for next). Disabled/dimmed while the field is
   empty.
 - × button → `searchClose` (also bound to the `close_search` keybinding, Esc by default).
+- A second ⌘F / Ctrl-F while the field has focus also closes the bar. It is the one
+  hard-coded chord in the client, because the key dispatcher stands down inside text fields
+  and the field is where focus is (`packages/client/src/grid/PaneSearchOverlay.tsx:207-217`).
+- The bar's maximum width is the pane width minus twice its inset, and the field yields
+  inside it, so a wide match counter cannot push the field's leading edge off the pane
+  (`PaneSearchOverlay.tsx:166-188`).
 
 State (`searchNeedle`, `searchTotal`, `searchSelected`) lives on the workspace; results
 stream in from the active pane's search engine (terminal, markdown find, or web find —
@@ -517,6 +598,12 @@ the web pane drops results from non-active tabs).
   badge auto-clears shortly after the user attends to that pane. The timer is
   re-scheduled (canceling the old one) on each focus/activation, and only runs when the
   pane's status ≠ idle.
+- The 600ms timer only runs while the window is active. The shell reports focus/blur to the
+  daemon as a window-scoped `shell-activation` message (`packages/shell/src/main.ts:556-570`,
+  `packages/shell/src/status.ts:361-381`), and the grid's `dwellEnabled` gate tears the
+  pending clear down on blur, so a `stop` that lands while nobody is looking keeps its
+  "awaiting input" badge; the next focus re-arms a fresh 600ms
+  (`packages/client/src/grid/PaneGrid.tsx:131-138`, `:553-562`; `FocusRing.tsx:64-74`).
 - App activation additionally clears the dock badge and re-syncs external indicators.
 
 ---
@@ -598,7 +685,10 @@ from the left (applied outside the background so the selection ring indents too)
     1s ease-in-out, auto-reversing forever.
 - **Name**: 13pt semibold always (weight never changes with active state so long names
   don't rewrap); `textPrimary` when active, `textSecondary` otherwise; 1 line.
-- **Label chips** under the name: up to **3** inline chips + `"+N"` overflow indicator.
+- **Label chips** under the name: at most **3** inline chips, reduced to 2, 1 or 0 when the
+  row is too narrow to show them near-whole (a chip is dropped rather than clipped below
+  ~80% of its own width; `fitLabelChips`, `packages/client/src/chrome/Sidebar.tsx:633-680`),
+  with everything dropped folded into a `"+N"` overflow indicator.
   Chip = capsule, 9pt medium text, 5×1 padding; preset-styled labels use the preset's
   solid background + contrast-computed (or explicit) text color, unstyled labels use a
   neutral gray fill with secondary text.
@@ -693,8 +783,10 @@ type DropTarget =
   dragging*, so sibling rows shift out of the way in real time (the reorder itself is
   the drop indicator). `ontoGroupHeader` is **preview-only** (the cursor transits headers
   constantly): it renders as an accent @ 0.18 tint over the header band, and the grabbed
-  row previews a nested indent (depth ≥ 1) while it's the target. A between-rows target
-  that is not live-applied renders a 2pt accent line at the insertion y.
+  row previews a nested indent (depth ≥ 1) while it's the target. Kelpi never draws an
+  insertion line: every between-rows target is live-applied against the client-local shadow
+  model, so the gap the reorder opens is the only slot indicator and the header tint is the
+  only `ontoGroupHeader` indicator (`packages/client/src/chrome/Sidebar.tsx:903-906`, `:921-937`).
 - **Spring-loading:** hovering a *collapsed* group (header or its would-be children) for
   **650ms** transiently expands it for the rest of the drag (persisted `isCollapsed`
   untouched). Leaving the group cancels/collapses. On release the spring-loaded group
@@ -707,11 +799,16 @@ type DropTarget =
   in/out, the "No workspaces" placeholder stays/reappears under the dragged row so the
   group's total height is constant while the cursor sweeps it (no layout jumps). Walker
   math mirrors this phantom placeholder exactly.
-- **Landing animation:** releasing a single row onto a collapsed group header that stays
-  collapsed (setting `expandGroupOnWorkspaceDrop` off and not spring-loaded) animates the
-  row to the header's y, shrinking to 0.2 scale at 15% opacity ("falls into the group"),
-  then commits the move; the preview state clears ~400ms later. Otherwise release simply
-  springs everything home while committing.
+- **Landing animation:** Kelpi plays none. Every release, including a drop onto a
+  collapsed group header, seeds one spring settle for the released row
+  (`applyDropSettle(settleSeed)`) and commits the move (`commitDrop`), and the row springs
+  home while the FLIP pass adds the commit's layout delta on top
+  (`packages/client/src/chrome/Sidebar.tsx:2911-2944`). The original's "falls into the
+  group" script (row pinned to the header's y, shrinking to 0.2 scale at 15% opacity,
+  commit ~400ms later) only ran with its `expandGroupOnWorkspaceDrop` setting off; that
+  setting has no client counterpart, and the port drops the script deliberately so the
+  default configuration plays a single animation (`Sidebar.tsx:2893-2910`). A drop with
+  that setting off is a knowing divergence.
 - **Multi-drag:** grabbing a row that belongs to a ≥2 multi-selection drags the whole
   selection: the grabbed row shows a `+N` accent capsule at its trailing edge; the other
   selected rows collapse to zero height (hidden) for the duration. During the drag only
@@ -734,20 +831,25 @@ Same lift styling and auto-scroll as workspace drags.
 Single-workspace version (also used in the filtered list):
 
 ```
-Rename…                          → Rename Workspace sheet
+Rename…                          → inline rename in the row (same field behavior as the
+                                   group header, §5.4); §10.2's sheet is not used
 Color ▸                          → 10 colors (red orange yellow green blue purple pink gray black white)
 Profile ▸                        → "default" + config-defined profiles; active one checked;
                                    an assigned-but-deleted profile stays listed so the
                                    check never disappears
-Change Icon ▸
-    Symbol ▸                     → curated SF symbols with labels:
+Change Icon ▸                    → one flat submenu (submenus are one level deep,
+                                   packages/client/src/chrome/ContextMenu.tsx:10-12;
+                                   built at Sidebar.tsx:3446-3491):
+    Symbol                       (inert caption) over the curated symbols with labels:
                                    Folder, Tray, Archive, Star, Flag, Pin, Bookmark,
                                    Build(hammer), Tests(testtube.2), Terminal,
-                                   Package(shippingbox), Docs(book), AI(sparkles)
-    Emoji ▸                      → 📁 📂 ⭐ 🔥 💼 🎯 🧪 🐛 📝 🚀 ☁️ 🎨
-    Custom Emoji…                → custom emoji sheet
+                                   Package(shippingbox), Docs(book), AI(sparkles);
+                                   the current one is checked
+    Emoji                        (inert caption) over 📁 📂 ⭐ 🔥 💼 🎯 🧪 🐛 📝 🚀 ☁️ 🎨
     ──────────
-    Reset to Letter              → clears icon (back to first-letter avatar)
+    Custom Emoji…                → custom emoji sheet
+    Reset to Letter              → clears icon (back to first-letter avatar); disabled
+                                   when no icon is set
 Labels ▸                         → every preset with a real-color swatch dot
                                    (checkmark drawn inside when applied); click toggles.
                                    Then any applied free-form labels (checkmark, click
@@ -787,8 +889,8 @@ Delete N Workspaces…             → bulk delete confirmation (§12.3); disabl
 ```
 
 The tri-state swatches are real-color circles (11pt) with a contrast-colored check or
-dash drawn inside — native menus can't tint icons, hence pre-rendered images; in web,
-render colored dots directly.
+dash drawn inside, rendered directly as colored dots in the portal menu
+(`packages/client/src/chrome/ContextMenu.tsx`).
 
 ### 5.7 Group context menu
 
@@ -797,7 +899,8 @@ New Workspace              → New Workspace sheet pre-scoped to this group
 ──────────
 Rename…                    → inline rename in the header row
 Color ▸                    → "None" + the 10 colors
-Change Icon ▸              → Symbol ▸ / Emoji ▸ / Custom Emoji… / Reset to Folder
+Change Icon ▸              → the same flat submenu as §5.6 (Symbol and Emoji captions,
+                             Custom Emoji…), ending in Reset to Folder
 Expand | Collapse
 ──────────
 Delete Group…              → group delete confirmation (§12.4)
@@ -832,9 +935,13 @@ a workspace is active. Header row "Inspector" + ×-circle close button, then a d
 then a scrollable stack of three sections (12pt padding, dividers between):
 
 **Workspace section** — "Workspace" caption; a 4×16 rounded bar in the workspace color +
-name; "N pane(s)" caption; a **Profile** dropdown (built-in `default` first, then config
-profiles, plus the currently-assigned name even if it vanished from the config; selecting
-dispatches `setProfile` — applies to future pane spawns only).
+the name (click to rename inline; Enter commits, Esc cancels;
+`packages/client/src/chrome/Inspector.tsx:382-420`); "N pane(s)" caption; the ten-color
+swatch row (the current color outlined); the workspace's applied label chips; a **Profile**
+dropdown (built-in `default` first, then config profiles, plus the currently-assigned name
+even if it vanished from the config; selecting dispatches `setProfile`, applies to future
+pane spawns only). The header row shows a "reading git…" indicator while a repo-status read
+is in flight (`Inspector.tsx:358-362`).
 
 **Repositories section** — "Repositories" caption. Content:
 
@@ -857,11 +964,16 @@ dispatches `setProfile` — applies to future pane spawns only).
     "Remove & Delete Worktree" (also deletes the git worktree).
   - When a repo group has worktrees but no main association, a non-interactive repo
     header anchors them.
-- **Add menu** (borderless "+ Add", disabled when the repo registry is empty):
-  "Add Repository" → multi-select repo picker sheet; "New Worktree" → if the workspace
-  (or registry) resolves to exactly one candidate repo, jump straight to the Create
-  Worktree sheet, otherwise a single-select repo picker first.
-- Worktree-creation failures surface as an alert "Couldn't create worktree" + message.
+- **Add menu** (borderless "+ Add", always enabled; `packages/client/src/chrome/Inspector.tsx:25-29`,
+  `:597-604`): "Add Repository…" → a sheet with a path field (a native folder browser in the
+  Electron shell) and the multi-select repo picker, with a scan-this-folder row; it is the
+  only way to register a repo, so it stays live with an empty registry (there is no Scan
+  Directory flow); "New Worktree…" (disabled when no repo is registered) → if the workspace
+  (or registry) resolves to exactly one candidate repo, jump straight to the Create Worktree
+  sheet, otherwise a single-select repo picker first.
+- Add-repository and worktree-creation failures keep their sheet open and show the daemon's
+  message inline in red (`SheetError`, `Inspector.tsx:955-960`, `:1163-1183`); there is no
+  separate alert.
 
 Inspector icon buttons show a hover background, brighten on hover, and use a pointer
 cursor.
@@ -892,6 +1004,10 @@ Structure:
 - One item per pane (in layout order): icon per type (terminal/doc/note/±/globe);
   title = `label ?? title ?? cwd(~)`; subtitle = the terminal title when a distinct label
   exists, the cwd when only a label exists, else empty.
+- Then one **command** item per client verb (`PaletteItem.kind = "command"`,
+  `packages/client/src/chrome/palette.ts:26-47`, `:101`; built by `paletteCommand(...)` in
+  `packages/client/src/App.tsx:4926-4945`), appended after the state-derived items, each with
+  an optional shortcut hint (`⌘…`) when the binding map covers its action.
 
 **Filtering** (substring, not fuzzy):
 
@@ -904,7 +1020,9 @@ Structure:
 **Row rendering:** workspace-color dot (8pt) · type icon · title (13pt) over subtitle
 (11pt secondary) · trailing tag — for workspace items a neutral `"workspace"` chip; for
 pane items a chip with the workspace name on the workspace color @ 0.7 with white text.
-Selected row = accent @ 0.2 background.
+Command rows show their shortcut in a trailing monospace column
+(`packages/client/src/chrome/CommandPalette.tsx:444-452`). Selected row = accent @ 0.2
+background.
 
 **Keyboard/mouse:** ↑/↓ move the selection (clamped, scrolls the row to center);
 hovering a row selects it; Enter or click confirms; Esc (or backdrop click) dismisses.
@@ -915,7 +1033,9 @@ Query changes reset the selection to 0.
 pane item; set the sidebar scroll target; and ~200ms later (after the fade-out) hand
 keyboard focus to the destination pane's surface. Dismiss/Esc paths do the same focus
 handoff to the previously focused pane so the keyboard never lands nowhere. Confirming
-with an empty result list just closes.
+with an empty result list just closes. Confirming a command item runs `item.run()` exactly
+once, inside the palette (`CommandPalette.tsx:193-206`), and the focus handoff then follows
+the client's live focused pane rather than a captured id.
 
 ---
 
@@ -935,8 +1055,10 @@ with an empty result list just closes.
    in `activeAgent` amber (elapsed only when a start time is known; 1s ticker);
    waiting → `awaiting input` in `statusWaiting`; idle → nothing.
 
-**Right cluster** (fixed, never wraps): optional system-stat gauges (§8.1), then three
-agent counts, then a live `HH:MM` clock (1s ticker, monospaced digits).
+**Right cluster** (never wraps): optional system-stat gauges (§8.1), then three agent
+counts, then a live hour:minute clock in the viewer's locale short format (`14:52` /
+`2:52 PM`; zero-padded 24h only as a fallback when `Intl` is unavailable; 1s ticker, tabular
+digits; `clockLabel`, `packages/client/src/chrome/theme.ts:560-592`).
 
 Counts: `● N running` / `● N waiting` / `● N inactive` — dot in the corresponding theme
 status color, count right-aligned in a fixed 14pt slot (no jitter at 9→10).
@@ -947,8 +1069,7 @@ status. A zero count is inert; a non-zero count is a button that opens a popover
 "Inactive agents"), then one row per pane — workspace-color dot, workspace name
 (secondary), `·`, pane title (primary, middle-truncated), and for running rows a live
 elapsed timer in amber. Clicking a row activates that workspace + focuses that pane and
-closes the popover. (macOS must also juggle first-responder restoration; web just
-focuses.)
+closes the popover (the pane is focused after the workspace switch).
 
 ### 8.1 System stat gauges
 
@@ -970,29 +1091,45 @@ height 11) when `showSystemStatGraphs` is on and ≥2 samples exist.
   196×52 filled graph in a bordered rounded box; `now / min / max / avg` mini-columns;
   caption `"last N samples · ~2Ns"`. Value formatting: percentages as `NN%`, load as
   `0.00`, network/diskIO as a byte-rate string.
+- Width budget: the gauges are the segment the footer gives up first. `useFooterGaugeBudget`
+  measures the row, keeps 220px for the left cluster and the counts + clock, and
+  `fitStatGauges` renders only the canonical-order prefix that fits (cpu, memory, load, …),
+  unmounting later gauges rather than clipping them, because each gauge's hover popover is
+  drawn above the footer and cannot be clipped (`packages/client/src/chrome/StatusFooter.tsx:480-502`,
+  `:656-692`). Until a measurement exists, all enabled gauges render. Samples come from the
+  daemon at 2s with a 60-sample history (`packages/protocol/src/ws/stats.ts:73-76`).
 
 ---
 
 ## 9. Menu-bar (tray) status item
 
-An 18×18 icon in the macOS menu bar (system tray equivalent): a terminal glyph with a
-6pt status dot on the top-right corner — waiting color when any pane waits (priority),
-else running color when any runs, else no dot (and the icon renders monochrome/template).
-Colors come from the chrome theme's status colors.
+A 16×16pt menu-bar image (1x and 2x representations; `ICON_BASE_SIZE`,
+`packages/shell/src/icon.ts:161`) of the Kelpi mark with a 6px status dot at the top-right
+(`icon.ts:257-258`): waiting color when any pane waits (priority), else running color when
+any runs, else no dot and the glyph is a template image (tints with the menu bar). A fourth
+state, daemon disconnected, carries its own dot color (`trayIndicator`,
+`packages/shell/src/agents.ts:302-309`). Dot colors follow the chrome theme's status colors
+and re-resolve on settings writes and OS appearance flips.
 
-Clicking toggles a popover (280 wide, height fits content up to 400):
+The tray icon has NO click handler (`packages/shell/src/status.ts:523-548` registers none;
+the smoke asserts `handlers=0`): its native context menu is the whole gesture, and a
+left-click opens it. Menu shape (`status.ts:428-480`; rows from `trayMenuRows`,
+`agents.ts:386-419`):
 
-- Empty state: check-circle icon + "All clear".
-- Otherwise a scrollable list grouped by workspace (groups sorted by name): a group
-  header (workspace-color dot + name, caption-bold), then rows per active pane —
-  monospace pane title (middle-truncated) + status dot on the right (waiting = pulsing
-  ring, running = solid green). Row click → activate the app + main window, switch to
-  that workspace, focus that pane, close the popover.
-- The popover closes on any outside click.
+- Disconnected: a disabled "Daemon not reachable" row. No agents: a disabled "✓  All clear"
+  row. Otherwise, per workspace (sorted by name): a disabled header
+  `<glyph> <workspace> - N waiting, M running`, then one clickable row per running/waiting
+  pane, indented, `<glyph>  <title>` (middle-truncated). Clicking a pane row raises the
+  window, then asks this window's client (via the daemon `reveal-request`) to activate the
+  workspace and focus the pane.
+- Separator; "Show Kelpi"; "Show on All Desktops" (checkbox, persisted in the shell's
+  window-state file, §1); "Reconnect to Daemon" (connected) or "Start Daemon" (not connected;
+  deliberately never a restart, which would kill every session); "Install CLI" (packaged
+  builds that carry a CLI payload); separator; "Quit Kelpi" (through the quit gate, §12.1).
 
-Items shown are the running/waiting panes (`StatusBarItem { workspaceName,
-workspaceColor, paneTitle, paneID, workspaceID, status }`), pushed to the controller by
-the reducer whenever counts change.
+The tooltip is "Kelpi - N waiting, M running" / "Kelpi - all clear" / "Kelpi - daemon not
+reachable" (`trayTooltip`). The menu shape is logged (`tray menu: …`) because it is not
+observable from outside the process.
 
 ---
 
@@ -1016,9 +1153,11 @@ Fields, top to bottom:
    else, when the `inheritGroupOnNewWorkspace` setting is on, the active workspace's
    group; else none.
 5. **Profile** dropdown: `default` first, then config-defined profiles.
-6. **Repositories** (only when the repo registry is non-empty): the chosen repos as rows
-   (drive icon + name + ×-circle remove), plus "+ Add Repository" → multi-select repo
-   picker sheet.
+6. **Repositories**: with a non-empty registry, the chosen repos as rows (drive icon +
+   name + ×-circle remove) plus "+ Add Repository" → multi-select repo picker sub-sheet;
+   with an empty registry the heading is still shown over a single caption saying where
+   repositories come from (not a focus stop;
+   `packages/client/src/chrome/NewWorkspaceSheet.tsx:49-51`).
 7. **Worktree section** (only when exactly ONE repo is selected):
    - "Create git worktree" checkbox; when on:
    - "Worktree name" field; "Branch name" field — the branch mirrors the worktree name
@@ -1039,33 +1178,44 @@ Fields, top to bottom:
 Keyboard: Tab / Shift-Tab cycle through every *visible* control in reading order
 (name → color → group → profile → repo removes → add-repo → worktree toggle →
 worktree fields → cancel → create), wrapping; the Create stop is omitted while disabled.
+Return submits from anywhere in the sheet, not only from a text field
+(`NewWorkspaceSheet.tsx:297-314`).
 
 ### 10.2 Rename Workspace (300 wide)
 
 Title, a text field pre-filled with the current name, Cancel / **Rename** (disabled when
-the trimmed value is empty; Enter submits).
+the trimmed value is empty; Enter submits). Not currently mounted: the sidebar row (§5.6) and
+the inspector (§6) rename in place instead.
 
 ### 10.3 Rename Pane (320 wide)
 
 Title "Rename Pane", field placeholder "Pane label (leave empty to clear)" pre-filled
 with the current label; submitting an **empty** string clears the label (falls back to
-cwd/title display). Rename dispatches the same `pane-name` wire command as the CLI.
+cwd/title display). Rename dispatches the same `pane-name` wire command as the CLI. Not
+currently mounted: the header's Rename… (§4.2) is an inline field with the same semantics.
 
 ### 10.4 New Group (320 wide)
 
 Used by "Group N Selected Workspaces…". Title "New Group"; caption
 "Group N selected workspace(s)."; name field pre-filled with the unique placeholder name;
 a color row of 16pt circles — a "None" stroke-only swatch first, then the 10 colors, the
-chosen one showing a small checkmark; Cancel / **Create** (disabled while empty).
+chosen one showing a small checkmark; Cancel / **Create** (disabled while empty). The sheet
+is the shared `NewEntrySheet` in group mode (`packages/client/src/chrome/NewWorkspaceSheet.tsx:91-95`,
+`:116-117`); when remote daemons are registered it also carries a "Runs on" dropdown choosing
+which daemon creates the group (this one by default; multi-daemon groups). Return submits
+from anywhere in the sheet.
 
 ### 10.5 Custom Emoji (340 wide)
 
 Shared by group icons and workspace icons. Title `Custom Emoji for "<name>"`; caption
 explaining input rules; a large-font text field (placeholder 🔥) that hard-truncates its
 content to the **first grapheme cluster** on every change (ZWJ sequences / flags / skin
-tones survive as one grapheme); a "browse emoji" button that opens the OS emoji picker
-routed into the field; Cancel / **Set Icon** (disabled unless the grapheme passes the
-emoji-ish validation). Validation accepts: emoji-presentation base scalars; explicit
+tones survive as one grapheme); the caption reads "Type or paste a single emoji or symbol.
+Use the grid below to browse. Letters, digits, and punctuation are rejected."; a browse grid
+of the curated emoji beneath the field (clicking one fills it;
+`packages/client/src/chrome/Sidebar.tsx:4998-5056`); a red hint line while the input is not
+an icon; Cancel / **Set Icon** (disabled unless the grapheme passes the emoji-ish
+validation, `normalizeIconEmoji`, `packages/client/src/chrome/icons.tsx:374`). Validation accepts: emoji-presentation base scalars; explicit
 U+FE0F on an emoji-capable base (❤️, keycaps); bare non-ASCII `Emoji=Yes` scalars (✂, ©);
 non-ASCII symbol-category glyphs (⛙ ♞ → ⌘). It rejects letters, digits, punctuation,
 whitespace, ASCII, and lone modifiers.
@@ -1082,10 +1232,17 @@ the branch field submits).
 
 ## 11. Help window
 
-Separate small window (420×300, content-sized, centered), opened by Help ▸ "Kelpi Help"
-(⌘?): app icon 64pt + "Kelpi" + "Version X.Y.Z"; a "Keyboard Shortcuts" section that is
-just a pointer — "View and customize all keyboard shortcuts in" + a
-"Settings > Keybindings" link button; a "GitHub Repository" link.
+A modal overlay in the main window, not a second window (`HelpOverlay`,
+`packages/client/src/chrome/HelpOverlay.tsx`): max width 720, dimmed backdrop; Escape, the
+Close button or a backdrop click dismiss it. Opened by Help ▸ "Kelpi Help" (⌘?), which the
+shell relays as a `menu-request` through the daemon (`packages/shell/src/main.ts:1121-1141`),
+and by the title bar's ••• ▸ "Kelpi Help". Header: the Kelpi mark + "Kelpi" + "Version X.Y.Z"
+(the daemon's reported version). A "Keyboard Shortcuts" section with a "Settings ▸ Keybindings"
+link, then every action grouped by settings category with its CURRENT shortcut read from the
+live keybinding map ("-" when unbound; `HelpOverlay.tsx:145-219`). A "Command Line" section
+listing a handful of `kelpi` verbs (`--help`, `doctor`, `md`, `diff`, `pane split|send|capture`,
+`workspace create --worktree`). Footer: a "GitHub Repository" link (handed to the system
+browser in the shell) and "Press Escape to close".
 
 ---
 
@@ -1096,25 +1253,46 @@ second, and honor their "Don't ask again" suppression even when Cancel is clicke
 
 ### 12.1 Quit confirmation
 
-Every termination path (menu Quit, ⌘Q, OS logout, updater relaunch) first flushes pending
-markdown auto-saves and stops graft sessions, then — unless disabled by the
-`confirmQuitWhenActive` setting/suppression — shows a warning dialog:
+Every termination path (menu Quit, ⌘Q, tray Quit, a signal) is intercepted at Electron's
+`before-quit` (`packages/shell/src/quit.ts:113-206`). Closing the window is not a
+termination path (the app stays in the Dock). The gate first asks the daemon to flush
+pending editor autosaves (bounded, `QUIT_FLUSH_TIMEOUT_MS` = 750ms), then, only when
+`confirmQuitWhenActive` is on AND at least one pane is running or waiting
+(`shouldConfirmQuit`, `packages/shell/src/settings.ts:103-108`), shows the dialog; with
+nothing active it quits without asking. The shell never stops the daemon or any session:
+quitting only closes the window.
 
 - Title "Quit Kelpi?".
-- Body: with active agents → "Kelpi has N active agent(s) across M workspace(s). Quitting
-  will terminate all sessions."; with none → "Are you sure you want to quit Kelpi?".
-- Buttons Cancel (default) / Quit (destructive); "Don't ask again" checkbox writes the
-  same key as the Settings toggle.
+- Body: "N agent(s) across M workspace(s) are still active. They keep running in the
+  background - quitting only closes this window. Reopen Kelpi to attach again."
+  (`quitConfirmDetail`, `packages/shell/src/agents.ts:490-497`).
+- Buttons Quit (destructive) / Cancel (default; Return and Escape;
+  `settings.ts:141-150`). "Don't ask again" writes the daemon's `confirm-quit-when-active`
+  setting (falling back to the shell's local settings file when the daemon is unreachable,
+  which is also where the policy is read from in that case) and is honored even on Cancel.
 
-"Active agents" = panes (including parked ones) with status running or waitingForInput.
+"Active agents" = panes with status running or waitingForInput.
+
+Where the dialog is drawn (`promptForQuit`, `packages/shell/src/quit-prompt.ts:164-201`;
+`quit.ts:232-245`): the main process probes the page for a versioned `window.__kelpiQuitGate`
+global (1s probe timeout) and, when the window is visible, not minimised, not crashed and
+not loading, and the page answers, asks the renderer to draw the dialog
+(`packages/client/src/chrome/QuitConfirmDialog.tsx`: Quit painted `#E0655C`, Cancel focused).
+A hidden window, a missing gate, or a 120s verdict timeout falls back to Electron's
+`dialog.showMessageBox` (app-modal when there is no window), so the quit can always ask. The
+route taken is logged.
 
 ### 12.2 Workspace delete gate
 
-Deleting a single workspace with active agents (running/waiting panes), when the
-`confirmWorkspaceDeleteWhenActive` setting is on: warning dialog
-`Delete "<name>"?` / "This workspace has N active agent(s). Deleting it will terminate
-it/them." Cancel (default) / Delete (destructive) / "Don't ask again". No active agents,
-or setting off → delete immediately. The sidebar Delete item is disabled when only one
+Deleting a single workspace from the sidebar always confirms: `Delete "<name>"?` with
+Cancel / Delete (destructive) (`packages/client/src/chrome/Sidebar.tsx:3894-3907`,
+`:5153-5195`). When the workspace has active agents (running/waiting panes) AND the
+`confirmWorkspaceDeleteWhenActive` setting is on, the dialog adds the line "This workspace
+has N active agent(s). Deleting it will terminate it/them." and a "Don't ask again" checkbox
+that writes the same setting. With no active agents, or the setting off, the plain
+confirmation is shown without the agent line. The ⌘W close-last-pane route is the one
+exception: it deletes the workspace silently unless the active-agent alert applies
+(`packages/client/src/App.tsx:1364-1380`). The sidebar Delete item is disabled when only one
 workspace remains. (The CLI's `--force` bypass is server-side and independent.)
 
 ### 12.3 Bulk delete confirmation
@@ -1140,17 +1318,31 @@ requested one, options "Stop existing & swap" (destructive) / "Keep existing" (c
 
 ## 13. App bootstrap & cross-cutting shell behaviors
 
-Once-per-app startup (guarded so a second window can never re-run it): start the terminal
-runtime; load ghostty config and apply saved appearance overrides (opacity/custom
-background) BEFORE any pane spawns; request notification permission and wire its
-"Open" action to activate-workspace + focus-pane; set up the tray item; register the
-global hotkey callback; dispatch `appLaunched` (async state load); start the socket
-server (+ TCP listener when `tcp-port` configured) and route every wire message into the
-reducer; wire the Finder file-open bridge (cold-launch arrivals are buffered, then queued
-in state until the persistence load lands, then flushed); wire the quit gate; start the
-keyboard shortcut monitor.
+Once-per-app startup in the Electron shell (`runLaunchSequence`,
+`packages/shell/src/launch.ts`, wired from `boot` in `packages/shell/src/main.ts:1341-1414`):
+apply the permission policy; build the application menu; then, together, discover or spawn
+the daemon and connect to it (the shell never stops one; an unreachable daemon is reported
+with an error box and the shell exits) and read the web pane's find-highlight palette; create
+the main window (reading the ghostty `background-opacity` first, §2, and restoring the saved
+frame, §1); then, together, register the global hotkey from the config file
+(`packages/shell/src/hotkey.ts`), run the CLI install policy, refresh the bundled skill and
+start the updater; install the quit gate (§12.1). The status socket to the daemon supplies
+agent counts, tray rows, notifications and the daemon settings; the tray item and the
+web-pane host are started beside it. The daemon owns the socket server and the TCP listener.
+Finder file-opens are forwarded as the ordinary `open` control command; cold-launch arrivals
+are parked and replayed in arrival order once the daemon connection is up, a parked file
+raises no window, and only markdown paths are forwarded (`launch.ts` `createOpenFileQueue`).
 
-Shell-level event plumbing the web client must reproduce with daemon events:
+Desktop notifications (`packages/shell/src/notify.ts:26-50`,
+`packages/shell/src/status.ts:583-654`): the Electron shell makes no permission request
+(`Notification.isSupported()` is the whole gate; the browser client asks from a user
+gesture). Every agent notification carries the `kelpi-agent` actions Open / Dismiss; a body
+click or "Open" raises the window and sends a window-scoped `reveal-request` through the
+daemon to activate the workspace and focus the pane; "Dismiss" only dismisses; a pane that
+stops waiting withdraws its notification; a repost for the same pane replaces the previous
+toast.
+
+Shell-level event plumbing, delivered to the client as daemon events:
 
 - terminal title change → `surfaceTitleChanged(paneID, title)` (header/status bar text);
 - terminal pwd change → `surfaceDirectoryChanged` (header path, git branch refresh);
@@ -1165,6 +1357,18 @@ Menu-bar app menus mirror the keybinding map: New Workspace (⌘N), New Group (�
 Preview Markdown… (⌘O), New Web Pane (⌘⇧O), Command Palette (⌘P), workspace switch
 (⌘1…⌘9), Select/Deselect All Workspaces, Toggle Sidebar (⌘⇧S), Toggle Inspector (⌘I) —
 all shortcuts are user-rebindable, the menu reflects the current binding.
+
+The full application menu (`packages/shell/src/menu.ts`, assembled in
+`packages/shell/src/main.ts:1077-1143`): Kelpi ▸ About, Check for Updates… (greyed unless
+the build is packaged and updater-capable; `menu.ts:454-469`); File ▸ the rows above plus
+Close (⌘W), which asks the focused window's page to run `close_pane` and closes the window
+only when the page reports nothing to close or does not answer within 500ms
+(`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Reload,
+Force Reload (⌥⌘R, moved off ⇧⌘R because that chord is `rename_workspace`), Toggle Developer
+Tools, Toggle Full Screen (`menu.ts:253-283`); Window (standard); Debug ▸ Seed Test Group
+(unpackaged builds only; `menu.ts:493-521`); Help ▸ Kelpi Help (⌘?, §11). Every product row
+relays `menu-request` → daemon → `menu-command` → the client's own action, because the shell
+has no preload; the menu shape is logged for the smoke test.
 
 ---
 
@@ -1191,7 +1395,9 @@ interface Pane {                      // fields the shell UI reads
   scratchpadContent?: string;
   agentSessionID?: string;
   agentKind?: AgentKind;
-  agentStartedAt?: string;            // ISO; drives elapsed badges
+  agentStartedAt?: number | null;     // epoch MILLISECONDS (Date.now()), NOT the Unix-seconds
+                                      // encoding of createdAt/lastActivityAt; drives elapsed
+                                      // badges (packages/core/src/layout/pane.ts:78)
   backgroundTaskCount: number;        // transient; "· N running"
   markdownFontSize: number;
 }
@@ -1215,18 +1421,23 @@ interface LabelPreset { name: string; color: LabelColor; textColor?: LabelColor 
 interface ResolvedLabelStyle { background: Color; text: Color }
 // text = explicit override, else black/white by sRGB luminance (> 0.6 → black)
 
-interface CommandPaletteItem {
-  id: string;              // "ws:<uuid>" | "pane:<uuid>"
+interface CommandPaletteItem {   // PaletteItem, packages/client/src/chrome/palette.ts
+  id: string;              // "ws:<uuid>" | "pane:<uuid>" | a command's own id
+  kind: "workspace" | "pane" | "command";
   icon: string; title: string; subtitle: string;
-  workspaceID: UUID; workspaceName: string;
-  paneID: UUID | null; workspaceColor: WorkspaceColor;
+  workspaceID: UUID | null; workspaceName: string;
+  paneID: UUID | null; workspaceColor: WorkspaceColor | null;
+  run?: () => void;        // command items only
+  shortcut?: string;       // "⌘P" hint, command items only
 }
 
 interface ChromeStatusSummary { running: number; waiting: number; inactive: number }
 
-interface StatusBarItem {   // tray popover rows
+interface StatusBarItem {   // status-bar count popover rows (§8)
   workspaceName: string; workspaceColor: WorkspaceColor;
   paneTitle: string; paneID: UUID; workspaceID: UUID; status: PaneStatus;
+  agentStartedAt?: number | null;   // epoch milliseconds; elapsed label in the popover row
+                                    // (packages/client/src/chrome/StatusFooter.tsx:201-210)
 }
 
 // Pane-grid drag & drop
@@ -1245,48 +1456,54 @@ Sidebar/selection state on the app: `topLevelOrder: SidebarID[]`,
 
 ---
 
-## 15. Port notes
+## 15. Compatibility rationale
 
-**Architecture split.** In the port, everything in this doc is client-side rendering over
-daemon state. The daemon owns: workspaces/groups/panes/layout, order lists, selection is
-debatable (keep selection client-local; it is ephemeral UI state), pane statuses, agent
-metadata, git statuses, persistence, and the confirmation *policies* (e.g. last-workspace
-guard, active-agent counts). The client owns: filter text, drag state, row measurements,
-palette open/query/selection (unless you want palette sync across clients — current app
-treats it as app state but nothing external reads it), sidebar width, hover/focus timers,
-resize-overlay visibility, diff refresh tokens.
+These notes record the quirks Kelpi preserves on purpose so the pre-port kelpi CLI, hook
+scripts and saved state keep working, and why the code does what it does where that is not
+obvious from the sections above.
 
-**Things that must be daemon-authoritative** (multiple clients may be attached):
+**Architecture split.** Everything in this doc is client-side rendering over daemon state.
+The daemon owns: workspaces/groups/panes/layout, order lists, pane statuses, agent metadata,
+git statuses, persistence, and the confirmation *policies* (e.g. last-workspace guard,
+active-agent counts). The client owns: selection (ephemeral UI state), filter text, drag
+state, row measurements, palette open/query/selection (nothing external reads it), sidebar
+width (`localStorage`, §1), hover/focus timers, resize-overlay visibility, diff refresh
+tokens.
+
+**Things that are daemon-authoritative** (multiple clients may be attached):
 active workspace + focused pane, sync-input group, zoom state, pane labels/statuses,
-sidebar order mutations (move/group/reorder are already wire commands), workspace/group
-CRUD. UI-only affordances today with **no wire command** — group/workspace icon
-management, label presets, chrome theme settings — will need daemon endpoints (or
-client-persisted settings) in the port; note the CLAUDE.md states group icon management
-is deliberately UI-only, so keep it off the CLI wire protocol but the web client still
-needs a persistence path (daemon settings store).
+sidebar order mutations (move/group/reorder are wire commands), workspace/group CRUD.
+Group/workspace icon management has daemon verbs (`set-workspace-icon` /
+`set-group-icon`, `packages/daemon/src/ws/sync.ts:329-367`; the daemon re-runs
+`normalizeIconEmoji` on the wire), and label presets and chrome theme settings live in the
+daemon settings store (`packages/protocol/src/ws/settings.ts`), so every attached client
+agrees. Per CLAUDE.md, icon management stays off the CLI wire protocol; the client reaches it
+through the WebSocket verbs only.
 
-**Live-apply drag model.** Sidebar drags mutate real order state *during* the drag
-(live-apply) — dozens of `moveWorkspace/moveWorkspaceToGroup/moveGroup` dispatches per
-drag. Over a WebSocket this would spam persistence and other clients. Recommended port
-adaptation: perform live-apply against a client-local shadow of the order lists for
-rendering, and commit ONE atomic move (or the bulk move) to the daemon on release. The
-post-remove-index semantics of `moveWorkspace(toIndex)` / `moveWorkspaceToGroup(groupID,
-index)` / `moveWorkspacesToGroup(ids, groupID, index)` / `moveGroup(toIndex)` must be
-preserved exactly (remove-then-insert).
+**Live-apply drag model.** Sidebar drags mutate the order state *during* the drag
+(live-apply), which as real dispatches would be dozens of
+`moveWorkspace/moveWorkspaceToGroup/moveGroup` per drag, spamming persistence and other
+clients over the WebSocket. So the client live-applies against a client-local shadow of the
+order lists for rendering and commits ONE atomic move (or the bulk move) to the daemon on
+release (`packages/client/src/chrome/sidebar-model.ts`). The post-remove-index semantics of
+`moveWorkspace(toIndex)` / `moveWorkspaceToGroup(groupID, index)` /
+`moveWorkspacesToGroup(ids, groupID, index)` / `moveGroup(toIndex)` are preserved exactly
+(remove-then-insert): the shadow's final index IS the post-remove index because the shadow is
+built by removing then inserting.
 
-**Menu stability.** Two macOS bugs shaped this code (issues #124/#227): open context
-menus being destroyed by unrelated re-renders (agent status ticks). Web context menus
-built as portals with state-independent lifetimes avoid the workaround entirely — but
-keep the requirement: an open menu/submenu must survive 1s-cadence status updates in the
-row beneath it.
+**Menu stability.** Two macOS-app bugs shaped this requirement (issues #124/#227): open
+context menus being destroyed by unrelated re-renders (agent status ticks). Kelpi's context
+menus are portals with state-independent lifetimes (`packages/client/src/chrome/ContextMenu.tsx`),
+which avoids the workaround entirely, and the requirement stands: an open menu/submenu must
+survive 1s-cadence status updates in the row beneath it.
 
-**Focus management.** The app carefully sequences keyboard-focus handoff (palette close →
+**Focus management.** Keyboard-focus handoff is sequenced deliberately (palette close →
 200ms → focus surface; popover row click → focus surface before dismissal; suppression of
-focus grabs while sidebar text fields are editing; status-bar/tray navigation racing
-window first-responder restoration). In web this collapses to `element.focus()` ordering,
-but keep: (a) closing the palette/search always returns focus to the focused pane;
-(b) inline editors are never robbed of focus by re-renders; (c) selecting a pane from
-tray/status popovers focuses it *after* switching workspaces.
+focus grabs while sidebar text fields are editing). In the client this collapses to
+`element.focus()` ordering, and three rules hold: (a) closing the palette/search always
+returns focus to the focused pane; (b) inline editors are never robbed of focus by
+re-renders; (c) selecting a pane from tray/status popovers focuses it *after* switching
+workspaces.
 
 **Timers to reproduce:** 600ms focused-pane status auto-clear; 750ms resize-overlay
 linger; 650ms drag spring-load; 40pt/3pt/15ms drag auto-scroll; 1s pulse animation; 1s
@@ -1295,18 +1512,22 @@ debounces (other subsystem); 0.15s palette transition; ~0.35s spring for sidebar
 reorders; 0.22s scroll-reveal.
 
 **Terminal-surface identity.** The grid's contract — pane DOM/view instances are stable
-across every layout mutation, only repositioned — is essential for ghostty-web too.
-Render panes as absolutely-positioned siblings keyed by pane id (the current app computes
-frames from the layout tree into a flat coordinate space; replicate that rather than
-nesting flex containers, so moves/splits never re-mount a terminal).
+across every layout mutation, only repositioned, is essential for ghostty-web.
+Panes render as absolutely-positioned siblings keyed by pane id, with frames computed from
+the layout tree into a flat coordinate space (`packages/core/src/layout/frames.ts`,
+`packages/client/src/grid/PaneGrid.tsx`) rather than nested flex containers, so moves/splits
+never re-mount a terminal.
 
-**System stats** are sampled in-process on macOS. In the port the daemon (or Electron
-main) must sample and stream them; remote/mobile clients then show daemon-host stats,
-which is arguably the more useful semantic.
+**System stats** are sampled by the daemon and streamed to every client
+(`packages/protocol/src/ws/stats.ts`, `system-stats` messages, 2s cadence, 60-sample
+history); remote/mobile clients therefore show daemon-host stats, which is the more useful
+semantic.
 
 **Tray + dock.** The menu-bar item, dock badge, and desktop notifications are Electron
-main-process features; the web-only client can degrade to a favicon badge/notification
-API. Keep the waiting-beats-running priority and theme-colored dots.
+main-process features (`packages/shell/src/status.ts`, `icon.ts`, `notify.ts`); the web-only
+client degrades to a favicon badge and the browser notification API
+(`packages/client/src/chrome/favicon.ts`). Both keep the waiting-beats-running priority and
+theme-colored dots.
 
 **One mark, every surface.** The Dock tile, the menu-bar glyph and the browser tab all
 draw the same Kelpi mark: the kelpie head in `core/assets/kelpi-icon.svg`, restated as
@@ -1329,24 +1550,31 @@ pixel at 16px). The drawing's own hairline is ~1.2% of its square, which at tab 
 fifth of a pixel, so a form that skipped the floor would render a grey ghost and then
 visibly thicken the moment the client mounted.
 
-**macOS-specific behaviors that need Electron equivalents:** quit interception with the
-flush-then-confirm pipeline; window frame persistence + off-screen clamping; single
-instance/window; Finder file-open routing; "double-click title bar" preference (Electron:
-just zoom/maximize); native emoji picker (web: an emoji-picker component; the
-first-grapheme truncation and emoji validation logic port directly).
+**Electron equivalents of the macOS-app behaviors:** quit interception with the
+flush-then-confirm pipeline (§12.1, `packages/shell/src/quit.ts`); window frame persistence +
+off-screen clamping (§1, `window-state.ts`); single instance/window (§1, `main.ts`); Finder
+file-open routing (§13, `launch.ts`); the "double-click title bar" preference; the OS emoji
+picker, replaced by the sheet's browse grid (§10.5) while the first-grapheme truncation and
+emoji validation logic are kept verbatim (`packages/client/src/chrome/icons.tsx`).
 
-**Vibrancy caveat.** Terminal `backgroundOpacity < 1` currently makes the whole window
-transparent to the desktop. In a browser this is impossible; in Electron it needs a
-transparent BrowserWindow. A reasonable web fallback: treat opacity < 1 as opacity 1 for
-the window, but keep the non-terminal panes' tinted-background blending (they blend
-against the chrome, which still looks correct).
+**Vibrancy caveat.** Terminal `backgroundOpacity < 1` makes the whole Electron window
+transparent to the desktop, and because a `BrowserWindow`'s transparency is fixed at
+creation the shell decides it from the config file before the window exists and asks for a
+relaunch when the setting crosses 1.0 (§2). A browser tab cannot be transparent, so there the
+window is effectively opaque while the non-terminal panes keep their tinted-background
+blending (they blend against the chrome, which still looks correct).
 
-**Hex colors are canonical.** All chrome colors are plain sRGB hex — they translate to
-CSS custom properties directly. Implement `resolve(appearance, system, overrides)` as a
-pure function producing a CSS-variable set; the two adaptive workspace monochromes
-(black/white) need light/dark variants via the same mechanism.
+**Hex colors are canonical.** All chrome colors are plain sRGB hex and translate to CSS
+custom properties directly: `resolve(appearance, system, overrides)` is a pure function
+producing a CSS-variable set (`packages/client/src/chrome/theme.ts`,
+`ThemeProvider.tsx`), and the two adaptive workspace monochromes (black/white) get their
+light/dark variants through the same mechanism.
 
 **Suppression settings** (`confirmQuitWhenActive`, `confirmWorkspaceDeleteWhenActive`)
-live in UserDefaults today, shared between dialog checkboxes and Settings toggles with a
-change broadcast. Port them into the daemon settings store so Settings UI and dialogs
-stay in sync across clients.
+live in the daemon settings store as `confirm-quit-when-active` and
+`confirm-workspace-delete` (`packages/core/src/config/general.ts:15-45`), shared between the
+dialog checkboxes and the Settings toggles so they stay in sync across clients. They were
+never config keys in the macOS app (it kept them in UserDefaults), so only the literal
+`false` turns one off, and the shell migrates its old local `shell-settings.json` quit flag
+into the daemon once on first read, keeping the local file as the fallback for a ⌘Q while
+the daemon is unreachable (`packages/shell/src/settings.ts`, `quit.ts`).

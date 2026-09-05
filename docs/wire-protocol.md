@@ -1,37 +1,75 @@
 # Kelpi Wire Protocol — Compatibility Contract
 
 This document specifies the complete IPC wire protocol between the `kelpi` CLI (and agent
-hooks) and the Kelpi app, as implemented today in the Swift app
-(`Nex/Services/SocketServer.swift` + the socket handlers in `AppReducer*.swift`). The new
-TypeScript daemon must honor this contract so the **existing `kelpi` CLI binary keeps working
-unchanged**.
+hooks) and the Kelpi daemon, as implemented in the TypeScript daemon
+(`packages/daemon/src/control/server.ts`, the command handlers under
+`packages/daemon/src/handlers/` and `packages/daemon/src/webpane/`, and the decoder and
+allowlist in `packages/protocol/src/`). The daemon honors this contract so the **`kelpi` CLI
+binary, hook scripts and saved state keep working unchanged** across upgrades.
 
-Everything here is derived from the current Swift source. Where behavior is quirky, the
-quirk is documented as-is and flagged in "Port notes" at the end.
+Everything here is derived from the current TypeScript source. Where behavior is quirky, the
+quirk is documented as-is and explained in "Compatibility rationale" at the end.
 
 ---
 
 ## 1. Transports
 
-The server listens on two transports simultaneously (the second is optional):
+The daemon runs two control servers, both speaking the newline-JSON protocol in this
+document (`packages/daemon/src/boot/compose.ts:1437-1480`):
+
+- the **run-dir server** on `<run dir>/daemon-v<PROTOCOL_VERSION>.sock`
+  (`packages/daemon/src/lifecycle/rundir.ts:7`). It always also binds a loopback TCP
+  listener: the configured `tcp-port` when the run-dir path is itself the compat path,
+  otherwise an ephemeral port. That port is the **pane route**: it is injected into every
+  pane as `KELPI_SOCKET=tcp:127.0.0.1:<port>` and reported by `ping` as `pane_route`
+  (§6.8). A busy run-dir socket is fatal at startup (a daemon of this protocol version is
+  already running);
+- the **compat server** on `/tmp/kelpi.sock` plus the configured `tcp-port`, which is what
+  a plain terminal reaches. Its bind failure is non-fatal: the daemon keeps running on the
+  run-dir server, remembers the failure, and reports it in `ping`'s `compat` block
+  (`packages/daemon/src/boot/compose.ts:792-814`).
+
+Each server listens on two transports simultaneously (the second is optional):
 
 ### 1.1 Unix domain socket (always on)
 
-- Path: **`/tmp/nex.sock`** (hardcoded constant; not per-user, not under `$TMPDIR`).
-- On startup the server `unlink`s any stale file at that path, then `socket(AF_UNIX,
-  SOCK_STREAM)`, `bind`, `listen(backlog=5)`.
+- Path: **`/tmp/kelpi.sock`** (hardcoded in the CLI, `packages/cli/src/transport.ts:35`; not
+  per-user, not under `$TMPDIR`). The legacy Swift app's `/tmp/nex.sock` is never used: the
+  two apps run side by side with nothing shared. `KELPID_SOCKET_PATH` (development only)
+  moves the daemon's compat socket (`packages/daemon/src/control/endpoints.ts:18-19`); the
+  CLI then needs `KELPI_SOCKET=tcp:…` or a symlink to reach it.
+- On startup, if a file already exists at the path the server first sends
+  `{"command":"ping"}` to it (1 s budget). Any JSON-object reply means a live daemon owns
+  the socket and startup fails (`ECONTROLBUSY`) rather than stealing it; only a socket that
+  does not answer is unlinked before `bind`/`listen`
+  (`packages/daemon/src/control/server.ts:296-320`, `packages/daemon/src/control/probe.ts`).
+- After binding, the socket file is `chmod 0600` (same-UID only;
+  `packages/daemon/src/control/server.ts:377-381`).
 - On clean shutdown, the socket file is unlinked **only if this server instance actually
-  started** (guards against a second/test instance deleting the live socket).
-- Each accepted client FD gets `SO_NOSIGPIPE` set so a write to a vanished client fails
-  with `EPIPE` instead of killing the process (a client may `^C` between sending a request
-  and the reply being written).
+  started** (guards against a second/test instance deleting the live socket;
+  `packages/daemon/src/control/server.ts:405-414`).
+- A write to a vanished client fails with `EPIPE` (or `ECONNRESET` on a `^C`) and is
+  reported as a non-fatal transport error instead of killing the process (a client may `^C`
+  between sending a request and the reply being written;
+  `packages/daemon/src/control/server.ts:283`).
 
 ### 1.2 TCP listener (optional)
 
-- Enabled by the config line `tcp-port = <port>` in `~/.config/nex/config`. The app calls
-  `startTCP(port:)` at startup and re-invokes it on config reload (stopping any previous
-  TCP listener first — the Unix socket stays up).
-- Binds **`127.0.0.1` only** (never `0.0.0.0`), `SO_REUSEADDR`, `listen(backlog=5)`.
+- Enabled by the config line `tcp-port = <port>` in `~/.config/kelpi/config`
+  (`KELPID_CONFIG_PATH` overrides the location, `packages/daemon/src/boot/config.ts:42-50`;
+  `tcp-port = 0` or absent = no listener, `config.ts:103-105`). The daemon binds it at
+  startup and re-binds it on config reload (stopping any previous TCP listener first; the
+  Unix socket stays up: `packages/daemon/src/control/server.ts:420-450`).
+- `KELPID_TCP_PORT` (and `KELPID_SOCKET_PATH`) outrank the config file at boot and stay in
+  force across config reloads: a settings write that changes `tcp-port` is ignored while the
+  env override is active (`packages/daemon/src/control/endpoints.ts:60-62`,
+  `packages/daemon/src/boot/compose.ts:724-729`).
+- A failed bind (port in use) is **not fatal**: the Unix socket keeps serving, the failure is
+  recorded as `{requested, bound: null, error}` and surfaced through `ping`'s `tcp` block
+  (§6.8; `packages/daemon/src/control/server.ts:341-363`).
+- Binds **`127.0.0.1` only** (never `0.0.0.0`): the host may be `127.0.0.1`, `localhost` or
+  `::1`; anything else is refused when the server is constructed
+  (`packages/daemon/src/control/server.ts:31`).
 - **No authentication.** Security model: loopback-only; remote access is via SSH reverse
   tunnels (`ssh -R <port>:localhost:<port> remote`) or `host.docker.internal:<port>` from
   dev containers.
@@ -39,24 +77,38 @@ The server listens on two transports simultaneously (the second is optional):
 
 ### 1.3 Client-side transport selection (the `kelpi` CLI)
 
-- Env var `NEX_SOCKET`:
-  - Absent/empty or not starting with `tcp:` → Unix socket at `/tmp/nex.sock`.
-  - `tcp:<host>:<port>` → TCP. Host is resolved via `getaddrinfo` (AF_INET). A malformed
-    value (missing port, non-numeric port) silently falls back to the Unix socket.
+- Env var `KELPI_SOCKET` (the value the daemon injects into every pane's environment,
+  `packages/core/src/env/merged-env.ts:14-16`; `NEX_SOCKET` is not read):
+  - Absent/empty or not starting with `tcp:` → Unix socket at `/tmp/kelpi.sock`.
+  - `tcp:<host>:<port>` → TCP (IPv4, `family: 4`). A malformed value (missing port,
+    non-numeric or out-of-range port) silently falls back to the Unix socket
+    (`packages/cli/src/transport.ts:39-54`), unless `KELPI_REQUIRE_SOCKET` is set, in which
+    case the command refuses to dial at all (sandbox guard,
+    `packages/cli/src/transport.ts:205-212`).
+- The caller's pane id comes from `KELPI_PANE_ID` (`packages/cli/src/env.ts:35-37`) and its
+  profile from `KELPI_PROFILE`; the daemon injects only `KELPI_*` names and reserves them
+  against profile overrides (`packages/core/src/env/merged-env.ts:18-20`).
 - The CLI opens **one connection per command**, writes exactly one JSON line, then:
   - fire-and-forget: closes immediately, exit 0 (with a stderr `Warning:` if the connect
     failed, suppressible via `KELPI_SILENT=1`; `kelpi event …` auto-suppresses unless
     `KELPI_VERBOSE_HOOKS=1`).
-  - request/response: sets `SO_RCVTIMEO` (default **5 s**, override via
-    `KELPI_REPLY_TIMEOUT=<seconds>`; per-command overrides: `web wait` uses
-    `ceil(--timeout)+5` s min 5, `web exec` similarly, `workspace create --worktree` uses
-    **120 s**), reads until EOF, parses the accumulated bytes as one JSON object.
+  - request/response: sets an **inactivity** read timeout (restarts on every received
+    chunk; default **5 s**, override via `KELPI_REPLY_TIMEOUT=<seconds>`; per-command
+    overrides: `web wait` uses `max(ceil(--timeout)+5, KELPI_REPLY_TIMEOUT)` s with
+    `--timeout` defaulting to 10 s, `web exec` similarly with a 30 s default `--timeout`
+    (`packages/cli/src/commands/web.ts:900`, `:955`), `workspace create --worktree` uses
+    **120 s**, `kelpi doctor`'s ping uses **2 s** (`packages/cli/src/commands/doctor.ts:61`)),
+    reads until EOF, parses the accumulated bytes as one JSON object
+    (`packages/cli/src/transport.ts:278-304`).
   - streaming (`web console --follow` only): no read timeout at all; reads
     newline-delimited JSON lines until EOF or SIGINT (SIGINT closes the FD).
 - CLI reply handling: transport failure → categorized `Error:`/`Repair:` stderr text and
   exit 1. **Empty reply** (connection closed with 0 bytes, or read timeout) is treated as
-  "older Kelpi that doesn't support this command" and is also a non-zero exit. `{"ok":false}`
-  → error printed from the `error` field, exit non-zero.
+  "older Kelpi that doesn't support this command" and is a non-zero exit
+  (`packages/cli/src/reply.ts:25-31`), except `kelpi pane send`, which treats an empty
+  reply as success (a pre-request/response app acted, then closed;
+  `packages/cli/src/commands/pane.ts:368-370`). `{"ok":false}` → error printed from the
+  `error` field, exit non-zero.
 
 ---
 
@@ -68,15 +120,17 @@ The server listens on two transports simultaneously (the second is optional):
 - The server splits each received chunk on `\n` (empty segments skipped), trims
   leading/trailing whitespace from each line, and JSON-decodes each line independently.
 - Multiple messages in one chunk/connection are legal and are dispatched **in order**.
-- Any line that fails to decode, has an unknown `command`, or fails that command's field
-  guards is **silently dropped** — no reply, no error, connection left open. (A client
-  waiting for a reply to a malformed allowlisted command therefore hits its read timeout
-  and sees an "empty reply".)
-- **Known limitation to preserve awareness of (see Port notes):** the current server reads
-  in 4096-byte chunks and does **not** buffer partial lines across `read()` calls. A JSON
-  line split across two reads is dropped. In practice the CLI writes each request with a
-  single `send()` on a local socket, so this only bites for very large payloads
-  (e.g. a huge `web-exec` script over TCP).
+- A line that fails to JSON-decode or names an unknown `command` is **silently dropped**:
+  no reply, no error, connection left open. A line that names a known command but has a
+  wrong-typed known key or fails that command's field guards is likewise dropped **when the
+  command is fire-and-forget**; when the command is in the reply allowlist (§4) the server
+  answers `{"ok":false,"error":"<detail>"}` and closes, so the CLI prints the error instead
+  of waiting out its read timeout (`packages/daemon/src/control/server.ts:159-170`).
+- Lines are buffered per connection until `\n`, so a request split across reads is
+  reassembled (`packages/protocol/src/framing.ts:76-103`; the pre-port server's
+  4096-byte-chunk drop is gone, Compatibility rationale item 2). A single line longer than
+  64 MB is discarded (up to and including its terminator), counted in the buffer's
+  `overflows`, and framing resumes on the next line (`framing.ts:41`).
 
 ### 2.2 Field decoding rules
 
@@ -88,6 +142,10 @@ names are listed per command below). Rules:
   `"index": "3"` instead of `"index": 3`, or `"bare": "true"` instead of `true`) fails the
   decode of the **entire message** → silently dropped. Booleans are JSON booleans, counts
   are JSON numbers, `label_values`/`order` are JSON arrays of strings.
+- A JSON `null` for a known key reads as **absent**, not as a type error: the validator
+  skips null values and the field readers map null to undefined
+  (`packages/protocol/src/wire/fields.ts:143`, `:168-171`), so `{"bare":null}` decodes
+  with `bare` defaulting to `false`.
 - `since` is an unsigned 64-bit integer; a negative value fails the decode.
 - Many optional string fields are normalized: **empty string → treated as absent**
   (documented per command; applies to `target`, `workspace`, `group`, `profile`,
@@ -95,23 +153,25 @@ names are listed per command below). Rules:
   `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`).
 - `pane_id` must be a syntactically valid UUID string; an invalid UUID makes
   `pane_id` behave as absent (for commands where it's optional) or drops the message (for
-  commands where it's required). UUID parsing is Foundation's `UUID(uuidString:)` —
-  case-insensitive, canonical 8-4-4-4-12 hex form. UUIDs in replies are emitted
-  **uppercase** (Foundation's `uuidString`).
+  commands where it's required). UUID parsing is `normalizeUuid`
+  (`packages/protocol/src/wire/vocab.ts:144`): case-insensitive, canonical 8-4-4-4-12 hex
+  form. UUIDs in replies are emitted **uppercase**.
 
 ### 2.3 Reply framing
 
 - Replies are only ever sent for commands in the **reply allowlist** (§4). For everything
   else the server writes nothing, ever; the connection sits open until the client closes
-  it (client EOF → server cancels its read source and closes the FD).
+  it (client EOF → the server's socket `close` event releases every handle bound to that
+  connection, `packages/daemon/src/control/server.ts:288-293`).
 - A reply is a **single JSON object serialized to one line + `\n`** (compact
-  `JSONSerialization` output; key order unspecified). After sending, the server closes the
-  client connection (which is the client's EOF signal / end-of-reply marker).
+  `JSON.stringify` output, `packages/protocol/src/replies/serialize.ts:11`; key order
+  unspecified). After sending, the server closes the client connection (which is the
+  client's EOF signal / end-of-reply marker).
 - Success replies always contain `"ok": true`; failures always contain `"ok": false` and a
   human-readable `"error": "<message>"` string. Failure replies may carry extra fields
   (e.g. `active_agents` on the workspace-delete running-agents refusal).
-- Reply writes loop over partial `send()`s until the full line is written; on any write
-  error (e.g. `EPIPE`) the rest of the reply is silently abandoned.
+- Reply writes go through `socket.write`; on any write error (e.g. `EPIPE`) the reply is
+  abandoned and the error reported as non-fatal (`packages/daemon/src/control/reply.ts:63-72`).
 - If the client disconnects before the reply is written, the reply handle goes stale and
   `send`/`close` become no-ops.
 
@@ -119,35 +179,45 @@ names are listed per command below). Rules:
 
 - The catch-up drain reply is sent **without closing** the connection. Every subsequent
   console line for that pane is pushed as its own newline-terminated JSON object.
-- The stream ends when the **client** disconnects (EOF/SIGINT closes the client FD). The
-  server's per-client cancel handler detects the closed FD, drops the reply handle, and
-  notifies the app core (internally: a synthesized `socketSubscriberDisconnected(replyID)`
-  event) so the console-subscriber registry can release the handle. This internal event is
-  **never parseable from the wire** — it exists only inside the server.
+- The stream ends when the **client** disconnects (EOF/SIGINT closes the client FD) or
+  when the **pane closes**. On client disconnect the server's socket `close` event releases
+  every reply handle bound to that connection and fires each handle's disconnect callbacks
+  once; the console-follow handler registers its unsubscribe there
+  (`reply.onDisconnect(unsubscribe)`, `packages/daemon/src/webpane/handlers.ts:451-484`,
+  `packages/daemon/src/control/reply.ts:92-101`). On pane close the console store ends every
+  subscriber for that pane (`packages/daemon/src/webpane/console.ts:116-122`, driven by the
+  store's `pane-removed` event in `packages/daemon/src/webpane/service.ts:356-359`) and the
+  handler's `end` callback closes the connection server-side. The disconnect notification is
+  **never parseable from the wire**: it exists only inside the server.
+- The drain line (the first line of the stream) also carries `"follow": true`
+  (`packages/daemon/src/webpane/handlers.ts:462`).
 
 ### 2.5 Reply-handle lifecycle (server internals the port must reproduce)
 
 - When a parsed message's wire command is in the allowlist, the server allocates a
-  **ReplyHandle** *before* dispatching to the app core: a monotonically increasing
-  `uint64` id (starting at 1, wrapping) mapped to the client FD.
-- `send(json)` writes one JSON line to that FD (no-op if stale). `close()` cancels the
-  client's read source, which closes the FD and removes the mapping. A convenience
-  `sendAndClose` and an `error(message)` (= `send({ok:false,error}) + close`) exist; the
-  contract is: **exactly one reply line then EOF** for every allowlisted command except
-  the `web-console --follow` stream.
-- When a client FD is torn down for any reason, **all** outstanding reply-handle ids
-  pointing at that FD are dropped and a disconnect notification fires for each (the app
-  core ignores ids it never registered — only the console-follow registry cares).
+  **reply handle** bound to the client connection *before* dispatching to the app core
+  (`createReplyHandle`, `packages/daemon/src/control/reply.ts:43-109`, allocated per
+  connection in `packages/daemon/src/control/server.ts:257-266`). Handles are objects
+  closed over the socket; there is no numeric handle id.
+- `send(json)` writes one JSON line to that connection (no-op once the peer is gone or the
+  handle closed). `close()` ends the writable side (that FIN is the CLI's EOF) and destroys
+  the socket once the bytes flush. The contract is: **exactly one reply line then EOF** for
+  every allowlisted command except the `web-console --follow` stream.
+- When a connection dies for any reason, **all** handles bound to it are released
+  (`peerGone`, `packages/daemon/src/control/server.ts:288-293`) and each one's disconnect
+  callbacks fire once (the console-follow registry uses this to drop its subscriber; an
+  ordinary request handle has none).
 - Handles are safe to drop without replying: the client's read timeout handles it. But the
-  CLI treats that as an error, so the daemon should always reply.
-- Fire-and-forget commands are dispatched with **no** handle (`nil`), and every handler
+  CLI treats that as an error, so the daemon always replies.
+- Fire-and-forget commands are dispatched with **no** handle (`null`), and every handler
   must tolerate that (legacy path).
 
 ### 2.6 Dispatch ordering
 
-All parsed messages from a chunk are handed to the app core **on the main queue, in wire
-order**. Reply handles are allocated on the read thread before dispatch, so the FD mapping
-is always visible when the handler runs.
+All parsed messages from a chunk are handed to the app core **synchronously, in wire
+order** (`dispatchWireLine`, `packages/daemon/src/control/server.ts:159-180`). Reply handles
+are allocated before dispatch, so the handle is always bound to its connection when the
+handler runs.
 
 ---
 
@@ -165,7 +235,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `pane-split`, `pane-create`, `pane-name`, `pane-resize`, `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
    `pane-send` / `pane-split` / `pane-create` / `pane-name` (and the close/capture/
-   send-key/sync family) work from a plain shell with no `NEX_PANE_ID`.
+   send-key/sync family) work from a plain shell with no `KELPI_PANE_ID`.
 2. **Mandatory-`pane_id` guard** — anything not matched above must carry a valid
    `pane_id` UUID or the message is dropped.
 3. **Fallback switch** on the remaining commands, all of which require the `pane_id`:
@@ -191,11 +261,12 @@ its whole purpose is to *drop* the id — a dual-fire would immediately re-attac
 it clears the recorded profile beside the id, agent-lifecycle.md §5.6).
 
 The synthesized event is tagged with the **original wire command name** for allowlist
-purposes. Since every command that realistically carries `session_id` (the `kelpi event`
-family) is fire-and-forget, the dual-fire never gets a reply handle in practice. (Quirk:
-if an *allowlisted* command carried `pane_id` + `session_id`, the current server would
-allocate a second, never-answered handle for the dual-fire; it is cleaned up when the
-client disconnects. Do not rely on this; see Port notes.)
+purposes but never receives a reply handle, even when the primary command is allowlisted:
+`dispatchSequence` marks the synthesized item `reply: false` and the server passes `null`
+for it (`packages/protocol/src/dualfire.ts:56-67`,
+`packages/daemon/src/control/server.ts:172-180`; Compatibility rationale item 7). Since
+every command that realistically carries `session_id` (the `kelpi event` family) is
+fire-and-forget, this only matters for hand-rolled clients.
 
 ---
 
@@ -273,13 +344,18 @@ Used by `pane-close`, `pane-capture`, `pane-send`, `pane-send-key`, `pane-name`,
 `pane-resize`, `pane-sync-exclude`, `pane-move-adjacent` (for both `target` and
 `anchor`), and every targeted `web-*` command. Wire shape:
 
-- `pane_id` (optional): the **caller's own** pane UUID from `NEX_PANE_ID`. Used as the
+- `pane_id` (optional): the **caller's own** pane UUID from `KELPI_PANE_ID`. Used as the
   addressed pane only when `target` is absent; otherwise it merely scopes label lookup.
 - `target` (optional string): name-or-UUID of the addressed pane.
 - `workspace` (optional string): name-or-UUID of a workspace to scope label lookup.
 
 Parse-time guard (shared): at least one of `pane_id` (valid UUID) / `target` must be
-present or the message is dropped. Empty-string `target`/`workspace` count as absent.
+present. Every command that carries the triple is in the reply allowlist (§4), so a
+message with neither is answered `{"ok":false,"error":"<command> requires pane_id or
+target"}` and the connection closed, not dropped
+(`packages/protocol/src/wire/decode.ts:146-150`,
+`packages/daemon/src/control/server.ts:159-170`). Empty-string `target`/`workspace`
+count as absent.
 
 Resolution algorithm (server-side, produces either a pane or an error string):
 
@@ -311,11 +387,22 @@ if target given:                             # target WINS over pane_id
                      --workspace <name-or-id> to disambiguate"
 elif pane_id given:
     pane must exist in some workspace, else error "no pane with UUID '<uuid>'"
+then (either branch):
+    ws = workspace containing the resolved pane
+    if workspace filter given and ws != filter:
+        error "pane '<id>' is not in workspace '<ws filter name>'"
 ```
 
 Labels are matched **case-sensitively and exactly**. UUID targets are global (unless
 narrowed by `workspace`). Errors are returned as `{"ok":false,"error":"..."}` on
 request/response commands and silently ignored on the legacy fire-and-forget path.
+
+Only **visible** (non-parked) panes resolve: every lookup above filters parked panes out,
+so a parked pane is never user-addressable (`packages/core/src/resolve/pane-target.ts:27-33`,
+`:173-176`). The final scope check is what turns a `pane_id`-only request under a
+`workspace` filter naming a different workspace into
+`pane '<id>' is not in workspace '<name>'` (`pane-target.ts:191-193`); the label path never
+reaches it because its candidates were already drawn from the filtered workspace.
 
 ### 5.8 Workspace / group name-or-id resolution
 
@@ -323,6 +410,14 @@ request/response commands and silently ignored on the legacy fire-and-forget pat
 that id exists, it wins. Otherwise it must be a **unique case-sensitive name** match;
 zero or ≥2 matches fail (fire-and-forget commands then no-op; request/response commands
 reply with an error, ambiguous names getting a distinct "ambiguous" message).
+
+Two paths use a **lenient** resolver instead (`resolveWorkspaceLenient`,
+`packages/core/src/resolve/workspace.ts:59-71`): `pane-move-to-workspace`'s destination
+`name` (`packages/daemon/src/handlers/pane/geometry.ts:187-190`) and the graft commands'
+`workspace` scope (`packages/daemon/src/handlers/app/graft.ts:63-67`). There the token is
+tried as a UUID, then as a **case-insensitive first-match** name with no ambiguity guard
+(two workspaces named `Dev` and `dev` resolve to whichever comes first), then as an exact
+slug match.
 
 ---
 
@@ -376,7 +471,7 @@ carry `"command"`.
 | `graft-stop` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-status` | R/R | — | — |
 | `ping` | R/R | — | — |
-| `web-open` | R/R | `url` (non-empty) | `pane_id`, `private` |
+| `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | — |
 | `web-url` | R/R | pane-target* | — |
 | `web-back` | R/R | pane-target* | — |
@@ -419,7 +514,7 @@ session-id-bearing event except `session-end`.
 ### 6.1 Agent lifecycle events (all F&F)
 
 Sent by `kelpi event …` from Claude Code / Codex hooks. `pane_id` is the target pane's
-UUID (from `NEX_PANE_ID`). All are silently dropped when `pane_id` is missing/invalid.
+UUID (from `KELPI_PANE_ID`). All are silently dropped when `pane_id` is missing/invalid.
 
 **`start`** — main agent loop began (UserPromptSubmit hook). Resets the pane's
 background-task count to 0 and marks the pane running; sets the pane's agent kind.
@@ -563,20 +658,30 @@ mode (DECCKM).
 Resize the resolved pane against its immediate split sibling. Guard: pane-target triple
 AND **exactly one** of `ratio` (number, absolute target share of the addressed pane,
 0<r<1) / `delta` (number, signed share adjustment; grow positive, shrink negative) —
-both or neither drops the message. The handler maps the pane to its enclosing split,
+both or neither is answered `{"ok":false,"error":"pane-resize requires exactly one of ratio / delta"}` and the connection is closed (`packages/protocol/src/wire/decode.ts:243`), the same shape as every other guard failure on an allowlisted command. The handler maps the pane to its enclosing split,
 converts the requested pane *share* to the split's stored first-child ratio (a
 second-child pane's share is `1 - ratio`), clamps the effective share to `[0.1, 0.9]`,
-and resets any tracked predefined-layout index. Refuses a sole-leaf pane (no sibling).
+and resets any tracked predefined-layout index. Refuses a sole-leaf pane (no sibling:
+`pane <id> has no sibling to resize against (it is the only pane in its workspace)`) and,
+before the split lookup, any workspace with a zoomed pane (`cannot resize while a pane is
+zoomed`, followed by an un-zoom hint; `packages/daemon/src/handlers/pane/geometry.ts:47-61`).
 
 ```json
 {"command":"pane-resize","target":"coordinator","workspace":"main","ratio":0.7}
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
-   "split_path":[0,1],"ratio":0.7,"target_share":0.7,"label":"coordinator"}
+   "split_path":"dL","ratio":0.7,"target_share":0.7,"label":"coordinator"}
 ```
 
-`split_path` is an array of 0/1 child indices from the layout root to the enclosing
-split; `ratio` is the stored first-child ratio after the write; `target_share` is the
-clamped share of the addressed pane.
+`split_path` is the split-path **string** of the enclosing split: `"d"` is the root
+split and each appended `L`/`R` steps into a split's first/second child (so `"dL"` is the
+first child of the root split, `"dLR"` the second child of that). Kelpi builds it in
+`enclosingSplitPath` (`packages/core/src/layout/ratio.ts:61-77`), returns it as
+`ResizeResult.splitPath: string` (`packages/core/src/layout/ratio.ts:80,118`) and copies
+it onto the wire unchanged (`packages/daemon/src/handlers/pane/geometry.ts:98`). It is the
+same path shape `layout-select` and pane-layout §7.3 use. (`PaneResizeReply.split_path`
+in `packages/protocol/src/replies/types.ts:41-42` still declares `readonly number[]`;
+the bytes on the wire are the string.) `ratio` is the stored first-child ratio after the
+write; `target_share` is the clamped share of the addressed pane.
 
 #### `pane-move` (F&F)
 
@@ -606,7 +711,8 @@ drag-and-drop). `target` + `anchor` (both name-or-UUID) + `zone`
 Move the caller pane to another workspace. `pane_id` required; destination
 workspace name-or-id rides in **`name`** (required non-empty). **Quirk:** the
 "create the workspace if missing" flag rides in the **`text`** field as the literal
-string `"true"` (anything else, or absent, = false).
+string `"true"` (anything else, or absent, = false). The destination is resolved with the
+lenient resolver (§5.8; `packages/daemon/src/handlers/pane/geometry.ts:187-190`).
 
 ```json
 {"command":"pane-move-to-workspace","pane_id":"1B4E…","name":"scratch","text":"true"}
@@ -628,7 +734,8 @@ Reply — `panes` array; per-entry always-present keys:
 `id` (uppercase UUID), `type` (`shell|markdown|scratchpad|diff|web`), `workspace_id`,
 `workspace_name`, `working_directory`, `status` (`idle|running|waitingForInput`),
 `is_focused` (bool), `is_active_workspace` (bool), `created_at` / `last_activity_at`
-(ISO 8601, `withInternetDateTime`). Conditionals: `label`, `title`, `git_branch`,
+(ISO 8601 UTC, whole seconds; `packages/core/src/codec/timestamps.ts:91`). Conditionals:
+`label`, `title`, `git_branch`,
 `agent_session_id` (full id), `agent` (`claude|codex`, last-known), `background_tasks`
 (only when > 0), `file_path`, `group_id` + `group_name` (only when the workspace is in
 a group).
@@ -659,6 +766,11 @@ vanishes mid-capture: `{"ok":false,"error":"pane closed during capture"}`.
 Tail semantics: a trailing `\n` on the captured text is preserved through the tail
 operation; empty input tails to `""`.
 
+A present `lines` that is <= 0 fails with `lines must be a positive integer (got N)` before
+the target is resolved (`packages/daemon/src/handlers/pane/input.ts:77-81`). A read that
+throws for a still-present pane answers `{"ok":false,"error":"pane capture failed: <error>"}`
+(`input.ts:136-147`).
+
 #### `pane-sync` (R/R)
 
 Workspace-wide synchronized input. `action` required: `"on"`, `"off"`, `"toggle"`, or
@@ -675,6 +787,14 @@ workspace via `pane_id`. All four actions reply with the same status payload:
 `synced_pane_ids` is sorted lexicographically; `excluded` entries are sorted by id and
 carry `label` only when set. The sync group only contains shell panes, minus the
 excluded set, and only when ≥2 qualify.
+
+`action` is lowercased before matching; an unknown value →
+`{"ok":false,"error":"unknown sync action '<action>' (valid: on, off, toggle, status)"}`.
+With neither a resolvable `workspace` nor a `pane_id` that some workspace contains →
+`pane sync requires --workspace or NEX_PANE_ID` (the error text still names the legacy
+variable; `packages/daemon/src/handlers/pane/sync.ts:28`). The caller lookup is
+parked-inclusive (a parked shell still belongs to its workspace), and the reply is computed
+from post-mutation state (`sync.ts:61-85`).
 
 #### `pane-sync-exclude` (R/R)
 
@@ -724,8 +844,9 @@ workspace profile (empty string = none). Worktree flow (all empty strings normal
 absent): `worktree` = worktree/folder name to create, `branch` (defaults to the
 worktree name), `update_main` (bool, default false — fetch and branch off
 `origin/<default>`), `repo` = source repo path (the CLI always sends it when `worktree`
-is set; missing → `{"ok":false,"error":"--worktree requires a source repo (pass --repo
-<path>)"}`).
+is set; the handler falls back to `path`, and only when both are absent or blank →
+`{"ok":false,"error":"--worktree requires a source repo (pass --repo <path>)"}`;
+`packages/daemon/src/handlers/app/workspaces.ts:253-257`).
 
 ```json
 {"command":"workspace-create","name":"Test","color":"blue","group":"projects"}
@@ -743,6 +864,13 @@ the id or rename an existing group)"}`. With `worktree`, an unknown group →
 groups; create it first (`kelpi group create`) or omit --group"}`. Worktree git failures
 → `{"ok":false,"error":"<git error text>"}`. The CLI reads this command with a 120 s
 timeout when `worktree` is set (slow `git fetch` is not a spurious failure).
+
+Names are sanitized before any git work: an unusable `worktree` →
+`{"ok":false,"error":"\"<name>\" isn't a usable worktree name"}`, an unusable `branch` →
+`{"ok":false,"error":"\"<branch>\" isn't a usable branch name"}`
+(`packages/daemon/src/handlers/app/workspaces.ts:260-272`). The `group` token is trimmed
+(`workspaces.ts:232`), and the worktree reply also carries `group` when the workspace was
+placed in one (`workspaces.ts:352-358`).
 
 #### `workspace-move` (F&F)
 
@@ -789,9 +917,16 @@ or empty = clear).
 
 `name` (required non-empty) = workspace name-or-id; `label_op` (required non-empty) ∈
 `set|add|remove|clear` (unknown op → `{"ok":false,"error":"unknown label operation
-'<op>'"}`); `label_values` = array of strings (default `[]`; values are trimmed and
-empties dropped server-side). `set` replaces, `add` appends dedup-preserving, `remove`
-drops matches, `clear` empties. Introduced labels also gain a gray label preset.
+'<op>'"}`); `label_values` = array of strings (default `[]`; values are trimmed, truncated
+to 64 characters and empties dropped server-side, `packages/core/src/resolve/ids.ts:45-55`).
+`set` replaces, `add` appends dedup-preserving, `remove` drops matches, `clear` empties. A
+`set`/`add`/`remove` whose values all normalize away is refused rather than applied:
+`{"ok":false,"error":"no label value to set (use --clear to remove all labels)"}`
+(`"no label value to add"`, `"no label value to remove"`), so a `set` that normalizes to
+nothing never silently wipes the label set
+(`packages/daemon/src/handlers/app/workspaces.ts:571-600`). Unknown workspace →
+`{"ok":false,"error":"no workspace matches '<name>'"}`. Introduced labels also gain a gray
+label preset.
 
 ```json
 {"command":"workspace-label","name":"main","label_op":"add","label_values":["wip","urgent"]}
@@ -861,8 +996,11 @@ child order.)
 
 `name` (name-or-id) and `by` both required non-empty. `by` ∈ `name` (case-insensitive
 workspace name) | `last-activity` (most recent pane activity) | `last-accessed` (alias
-`last-modified`; workspace lastAccessedAt). `descending` (bool, default false). Stable
-sort. Reply shape mirrors `group-reorder`.
+`last-modified`; workspace lastAccessedAt). `by` is lowercased and also accepts the
+underscore aliases `last_activity`, `last_accessed`, `last_modified`; unknown →
+`{"ok":false,"error":"unknown sort key '<by>' (use name|last-activity|last-accessed)"}`
+(`packages/daemon/src/handlers/app/groups.ts:136-144`, `:203-207`). `descending` (bool,
+default false). Stable sort. Reply shape mirrors `group-reorder`.
 
 ```json
 {"command":"group-sort","name":"projects","by":"last-activity","descending":true}
@@ -884,7 +1022,7 @@ validation happens in the handler, silently.
 
 ### 6.6 File / diff commands (both F&F)
 
-**`open`** — open a markdown pane for `path` (required non-empty; absolute path).
+**`open`**: open a markdown pane for `path` (required non-empty).
 `pane_id` optional (originating pane); `reuse` (bool, default false) = replace the
 originating pane in place (`kelpi open --here` / `kelpi md --here`).
 
@@ -896,13 +1034,25 @@ originating pane in place (`kelpi open --here` / `kelpi md --here`).
 optional file/dir scope (empty → absent); `pane_id` optional.
 
 ```json
-{"command":"diff","repo_path":"/Users/ben/code/kelpi","target_path":"Nex/Services","pane_id":"1B4E…"}
+{"command":"diff","repo_path":"/Users/ben/code/kelpi","target_path":"packages/daemon","pane_id":"1B4E…"}
 ```
+
+Both route to the workspace containing the visible pane named by `pane_id`, else the
+active workspace; with no active workspace the message is dropped
+(`packages/daemon/src/handlers/app/files.ts:29-37`). A relative `path` / `repo_path` /
+`target_path` is joined to the originating pane's working directory, else to the target
+workspace's focused pane's; absolute and `~`-prefixed paths pass through untouched
+(`files.ts:39-65`). The `kelpi` CLI absolutises before sending, so this only matters for raw
+socket clients.
 
 ### 6.7 Graft commands (all R/R)
 
-Scope resolution: `workspace` (name-or-id) and/or `repo` (repo name or path); with
-neither, `pane_id` scopes to the caller's workspace; no scope at all → error.
+Scope resolution: `workspace` (name-or-id, resolved with the lenient resolver of §5.8;
+`packages/daemon/src/handlers/app/graft.ts:63-67`) and/or `repo` (repo name or path); with
+neither, `pane_id` scopes to the caller's workspace; no scope at all → error. Every graft
+failure reply also carries a machine-readable `error_kind` string (scope failures:
+`"scope"`; `graft.ts:8-14`, `:125`, `:143-157`); a partial start adds `partial_error_kind`
+beside `partial_error`.
 
 **`graft-start`**
 
@@ -922,10 +1072,15 @@ No targets → `{"ok":true,"stopped":[]}`. Otherwise:
 
 ```json
 {"ok":true,"stopped":["<uuid>", "…"]}
-{"ok":false,"stopped":["<uuid>"],"failed":[{"association_id":"<uuid>","error":"…"}]}
+{"ok":false,"stopped":["<uuid>"],
+ "failed":[{"association_id":"<uuid>","error":"…","error_kind":"…"}],
+ "error":"<the one failure, or 'N graft sessions failed to stop: …'>","error_kind":"…"}
 ```
 
-(`ok` is false iff any stop failed; `failed` present only then.)
+(`ok` is false iff any stop failed; `failed` and the summary `error` present only then. The
+summary is the single failure's text, or `N graft sessions failed to stop: <errors joined
+by '; '>`, so the CLI's generic envelope check has something to print;
+`packages/daemon/src/handlers/app/graft.ts:234-261`.)
 
 **`graft-status`** — no parameters.
 
@@ -945,18 +1100,42 @@ Health check + version probe (used by `kelpi doctor`). No parameters.
 
 ```json
 {"command":"ping"}
-→ {"ok":true,"version":"0.32.0","build":"123","pid":48291}
+→ {"ok":true,"version":"0.1.0","build":"1","pid":48291,"protocol":1,
+   "pane_route":"tcp:127.0.0.1:52144",
+   "persistence":{"ok":true,"degraded":false,"path":"/…/kelpi.db","failed_saves":0,"last_save_at":"2026-08-18T09:05:12Z"}}
 ```
 
-`version` = app short version, `build` = build number (both `"unknown"` if
-unavailable), `pid` = the server process id (lets callers confirm which instance owns
-the socket).
+`version` = daemon version, `build` = build number (compiled-in constants, overridable via
+`KELPID_VERSION` / `KELPID_BUILD`; `"unknown"` is never emitted;
+`packages/daemon/src/boot/version.ts:16-21`, `:34-40`), `pid` = the server process id (lets
+callers confirm which instance owns the socket). The reply carries additive blocks the CLI
+ignores unless it understands them (`packages/daemon/src/handlers/app/ping.ts:33-64`):
+
+- `protocol` (int): the compiled-in `PROTOCOL_VERSION`, the same number in the run-dir
+  socket name.
+- `tcp` `{requested, host, bound?, error?}`: present only when a `tcp-port` was configured;
+  `bound` when the listener is up, `error` when the bind failed (§1.2).
+- `compat` `{path, error}`: present only when the compat socket (§1) is degraded.
+- `pane_route`: the `KELPI_SOCKET` value injected into panes, present once the run-dir
+  server's TCP listener is bound.
+- `persistence` `{ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:
+  the database health, so a daemon whose store failed to open does not look healthy.
+
+`kelpid status` and the daemon's own startup probe parse these blocks
+(`packages/daemon/src/control/probe.ts:20-108`).
 
 ### 6.9 Web pane commands (all R/R)
 
-All use the §5.7 pane-target triple except `web-open` (which always creates a new pane
-in the active workspace; its `pane_id` is informational only). Reply payload details
-are specified in the web-pane subsystem doc; every reply follows the `{"ok":true,…}` /
+All use the §5.7 pane-target triple except `web-open`, which always creates a new pane:
+when its `pane_id` resolves to a visible pane the new pane is created in that pane's
+workspace, otherwise in the active workspace (no workspace at all →
+`{"ok":false,"error":"no active workspace"}`; `packages/daemon/src/webpane/handlers.ts:105-113`,
+`:181-186`). `web-open` also accepts an optional `target` (the pane to split off) and
+`direction` (§5.2; unrecognized → absent), decoded in
+`packages/protocol/src/wire/decode.ts:417-431`: the handler splits that pane when it is a
+visible pane of the routed workspace and otherwise ignores the anchor
+(`webpane/handlers.ts:190-200`). Only the GUI sends them; the CLI never does. Reply payload
+details are specified in the web-pane subsystem doc; every reply follows the `{"ok":true,…}` /
 `{"ok":false,"error":…}` convention on a single line + EOF, except the
 `web-console --follow` stream (§2.4). Request shapes:
 
@@ -999,24 +1178,24 @@ Parse guards and defaults (beyond the shared triple):
 
 | command | guards | defaults |
 |---|---|---|
-| `web-open` | `url` non-empty (else drop); pane-target NOT required | `private:false` |
+| `web-open` | `url` non-empty (else `{"ok":false,"error":"web-open requires a non-empty url"}`, `packages/protocol/src/wire/decode.ts:419`); pane-target NOT required | `private:false` |
 | `web-navigate` | `url` non-empty | — |
 | `web-reload` | — | `hard:false` |
-| `web-capture` | — | `mode:"meta"` (empty string also → `"meta"`; values: `meta`, `text`, `screenshot`) |
+| `web-capture` | — | `mode:"meta"` (empty string also → `"meta"`; values: `meta`, `text`, `screenshot`, `dom`, `all`; anything else → `{"ok":false,"error":"unknown capture mode '<mode>' (allowed: meta, text, screenshot, dom, all)"}` before the host is contacted, `packages/daemon/src/webpane/handlers.ts:316-325`) |
 | `web-tab-new` | — | `url:""` (blank tab), `make_active:true` |
 | `web-tab-close` / `web-tab-select` | `tab` non-empty (UUID string or numeric index; resolved server-side, UUID tried first) | — |
 | `web-console` | — | `since:0` (full buffer), `level:null` (empty → null), `clear:false`, `follow:false` |
 | `web-inspect` | — | `send_to:null` (empty → null), `submit:false`, `disarm:false` |
 | `web-inspect-result` | — | `clear:false` |
-| `web-private` | `private` **must be present** (bool) else drop | — |
-| `web-cookies-clear` | — | `domain:null` (empty → null), `all:false` |
+| `web-private` | `private` **must be present** (bool) else `{"ok":false,"error":"web-private requires private"}` (`packages/protocol/src/wire/decode.ts:508`) | — |
+| `web-cookies-clear` | `all:true` together with a `domain` → `{"ok":false,"error":"--all and --domain are mutually exclusive"}`; without a connected host → `{"ok":true,…,"deleted":0}` (`packages/daemon/src/webpane/handlers.ts:599-611`) | `domain:null` (empty → null), `all:false` |
 | `web-cookies-delete` | `name` non-empty | `domain:null` |
 | `web-click` | `selector` non-empty | `double:false`, `right:false`; `at_x`/`at_y` both optional doubles (both must be present to apply; else element center) |
 | `web-type` | `selector` non-empty; `text` present (empty allowed) | `submit:false`, `replace:true` |
 | `web-q-text` / `web-q-dom` | `selector` non-empty | `max_bytes:null` (JS default) |
 | `web-q-attr` | `selector` and `attribute` non-empty | — |
 | `web-q-count` / `web-q-exists` / `web-hover` | `selector` non-empty | — |
-| `web-wait` | exactly one of `selector` / `url_match` non-empty (neither or both → drop) | `for:null` (empty → null), `timeout_ms:0` (0/absent → JS default 10000) |
+| `web-wait` | exactly one of `selector` / `url_match` non-empty (neither or both → `{"ok":false,"error":"web-wait requires exactly one of selector / url_match"}`, `packages/protocol/src/wire/decode.ts:586`) | `for:null` (empty → null), `timeout_ms:0` (0/absent → JS default 10000) |
 | `web-select` | `selector` non-empty; `value_or_label` present (empty allowed) | — |
 | `web-scroll` | `selector` non-empty | `block:"center"` (∈ start/center/end), `behavior:"instant"` (∈ instant/smooth) |
 | `web-key` | `key` non-empty | `selector:null` (empty → null; null = document.activeElement) |
@@ -1043,11 +1222,11 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `session_id` | string | `session-start`, `session-end`, dual-fire on any |
 | `background_tasks` | int | `stop`, `notification` |
 | `agent` | string | `start`, `session-start` (+ dual-fire) |
-| `direction` | string | `pane-split`, `pane-move` |
+| `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
 | `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
 | `color` | string | `workspace-create`, `group-create` |
-| `target` | string | pane-target commands |
+| `target` | string | pane-target commands, `web-open` (GUI split anchor) |
 | `text` | string | `pane-send`; **`pane-move-to-workspace`'s create flag (`"true"`)**; `web-type` |
 | `key` | string | `pane-send-key`, `web-key` |
 | `bare` | bool | `pane-send` |
@@ -1108,8 +1287,9 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 ## 8. Invariants and edge cases (checklist)
 
 1. One JSON object per `\n`-terminated line; requests and replies alike.
-2. A malformed / unknown / guard-failing request line is **silently dropped** — never an
-   error reply, never a connection close.
+2. An undecodable line, an unknown command, or a malformed fire-and-forget request is
+   silently dropped: never a reply, never a close. A malformed *allowlisted* request gets
+   `{"ok":false,"error":…}` + EOF (§2.1).
 3. Reply iff the wire command is in the allowlist (§4); exactly one reply line then
    server-side close (client sees EOF), except `web-console` with `follow:true`.
 4. Every success reply has `"ok": true`; every failure has `"ok": false` +
@@ -1128,7 +1308,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
     gets its own reply handle on the same FD (the CLI never does this — the first
     `close()` tears down the FD and orphans the rest).
 11. Reply JSON is compact, single-line, key order unspecified; UUIDs uppercase;
-    timestamps ISO 8601 UTC (`withInternetDateTime`).
+    timestamps ISO 8601 UTC, whole seconds (`packages/core/src/codec/timestamps.ts:91`).
 12. The `ping` reply is the CLI's version-drift probe: `version`/`build` must reflect
     the running daemon.
 13. Writing a reply to a disappeared client must be harmless (no crash, no retry).
@@ -1137,105 +1317,112 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 
 ---
 
-## 9. Port notes
+## 9. Compatibility rationale
 
-Things the TS daemon must get right, or may deliberately do differently:
+These items record the quirks the daemon preserves on purpose, and the few places it
+deliberately differs from the pre-port app, so the pre-port `kelpi` CLI, hook scripts and
+saved state keep working:
 
 1. **Byte-compat surface.** The compatibility target is: request key names/types,
    command names, guard behavior (what gets dropped vs. errored), the allowlist
    membership, reply framing (one JSON line + EOF), and reply field names/types.
    JSON key order, whitespace, and UUID casing inside replies are *not* load-bearing
-   for the current CLI (it JSON-parses replies), but keep UUIDs uppercase anyway —
+   for the current CLI (it JSON-parses replies), but UUIDs stay uppercase anyway:
    scripts built on `--json` output may compare ids textually against values they got
    from earlier replies.
 
-2. **Fix the read-buffering bug, keep the framing.** The Swift server drops any JSON
-   line split across 4096-byte reads. The daemon should buffer per-connection until
-   `\n` (this is a strict superset of current behavior and fixes large `web-exec`
-   payloads over TCP). Do not add a line-length cap below several MB without
-   considering `web-exec --file` and `pane-send` of large text.
+2. **Per-connection line buffering, same framing.** The pre-port server dropped any JSON
+   line split across 4096-byte reads. The daemon buffers per connection until `\n`
+   (`packages/protocol/src/framing.ts`), a strict superset of the old behavior that makes
+   large `web-exec` payloads over TCP work. The per-line cap is 64 MB, deliberately far
+   above anything `web-exec --file` or a `pane-send` of large text produces.
 
-3. **Silent drop vs. error replies.** Today a malformed allowlisted request gets *no*
-   reply, and the CLI surfaces that as "empty reply (Kelpi version may not support this
-   command)" after its 5 s timeout. Replying `{"ok":false,"error":…}` to malformed
-   *allowlisted* commands would be a strictly better experience and the current CLI
-   handles it fine — safe improvement. But **never** reply to fire-and-forget commands
-   (the CLI isn't reading; on some paths it has already closed its socket and your
-   write would just EPIPE — harmless but noisy) and never reply to undecodable lines
-   (you can't know if the sender expects a reply).
+3. **Silent drop vs. error replies.** The pre-port app never answered a malformed
+   allowlisted request, and the CLI surfaced that as "empty reply (Kelpi version may not
+   support this command)" after its 5 s timeout. The daemon replies
+   `{"ok":false,"error":…}` to malformed *allowlisted* commands instead
+   (`packages/daemon/src/control/server.ts:159-170`); the CLI handles that fine, so the
+   experience is strictly better. It still **never** replies to fire-and-forget commands
+   (the CLI isn't reading; on some paths it has already closed its socket and the write
+   would just EPIPE, harmless but noisy) and never replies to undecodable lines (nobody
+   can know whether the sender expects a reply).
 
 4. **Reply-then-close is the EOF contract.** The CLI reads *until EOF*, not until the
-   first newline, for ordinary request/response commands. You MUST close the
-   connection (or at least shutdown write) after the reply line, or every CLI call
-   will hang for the 5 s timeout even though the reply arrived. Conversely for
-   `web-console follow` you must NOT close; the CLI disables its timeout and loops on
-   lines.
+   first newline, for ordinary request/response commands. The daemon therefore ends the
+   connection after the reply line (`packages/daemon/src/control/reply.ts:77-88`); without
+   that every CLI call would hang for the 5 s timeout even though the reply arrived.
+   Conversely for `web-console follow` the daemon does NOT close; the CLI disables its
+   timeout and loops on lines.
 
-5. **Client-disconnect cleanup.** Reproduce the semantics of
-   `socketSubscriberDisconnected`: when a connection dies, any long-lived reply handle
-   bound to it (console-follow subscribers; conceptually any future stream) must be
-   released so the daemon stops pushing events. Ordinary request handles just become
+5. **Client-disconnect cleanup.** When a connection dies, any long-lived reply handle
+   bound to it (console-follow subscribers; conceptually any future stream) is released
+   through the handle's disconnect callbacks so the daemon stops pushing events
+   (`packages/daemon/src/control/server.ts:288-293`). Ordinary request handles just become
    no-ops.
 
-6. **Main-thread ordering.** All messages from one chunk are dispatched in order into
-   the app core. Preserve per-connection ordering; the dual-fire `session-start` must
-   be processed *after* its primary message.
+6. **Dispatch ordering.** All messages from one chunk are dispatched in order into the
+   app core, per connection; the dual-fire `session-start` is processed *after* its
+   primary message (`packages/protocol/src/dualfire.ts:56-67`).
 
-7. **The dual-fire quirk** (§3.1): implement it exactly — it is how session ids stay
-   bound across `stop`/`notification` — including the `session-end` exclusion. Do not
-   allocate a reply handle for the synthesized event even when the primary command is
-   allowlisted (this fixes a latent handle leak in the Swift version without changing
-   observable CLI behavior).
+7. **The dual-fire quirk** (§3.1) is implemented exactly (it is how session ids stay
+   bound across `stop`/`notification`), including the `session-end` exclusion. The daemon
+   does not allocate a reply handle for the synthesized event even when the primary
+   command is allowlisted; the pre-port app allocated a second, never-answered handle
+   there, a latent leak with no observable CLI behavior, so the fix changes nothing on
+   the wire.
 
-8. **Type-strict decoding.** Match the "wrong type poisons the line" behavior rather
-   than coercing (`"true"` string is not `true` — except the `pane-move-to-workspace`
-   `text:"true"` create-flag quirk, which is a *string* comparison and must stay one).
+8. **Type-strict decoding.** The daemon matches the "wrong type poisons the line" behavior
+   rather than coercing (`"true"` string is not `true`), except for the
+   `pane-move-to-workspace` `text:"true"` create-flag quirk, which is a *string*
+   comparison and stays one (`packages/protocol/src/wire/decode.ts`).
 
-9. **`/tmp/nex.sock` is a fixed, world-known path with no auth.** The trust model is
-   "same UID on the same box" (and note `/tmp` is sticky but the socket is
-   user-owned). Keep the path — the CLI hardcodes it — but consider tightening file
-   modes. TCP must stay loopback-only, no auth (tunnels provide security). If the
-   daemon adds a WebSocket transport for web/mobile clients, that is a *new* protocol
-   surface; this newline-JSON contract only needs to hold on the Unix socket and TCP
-   listener the existing CLI uses.
+9. **`/tmp/kelpi.sock` is a fixed, world-known path with no auth.** The trust model is
+   "same UID on the same box" (and note `/tmp` is sticky but the socket is user-owned).
+   The path stays because the CLI hardcodes it; the file mode is tightened to `0600`
+   (`packages/daemon/src/control/server.ts:34`). TCP stays loopback-only, no auth (tunnels
+   provide security). The daemon's WebSocket transport for GUI clients is a *separate*
+   protocol surface; this newline-JSON contract holds on the Unix socket and TCP listener
+   the CLI uses.
 
-10. **Stale-socket handling.** On startup, unlink the existing socket file before
-    binding (the Swift app does this unconditionally — a second instance therefore
-    steals the socket from the first). On shutdown unlink only if you bound it.
-    `ping`'s `pid` field exists so `kelpi doctor` can tell who owns the socket.
+10. **Stale-socket handling.** The pre-port app unlinked the existing socket file
+    unconditionally before binding, so a second instance stole the socket from the first.
+    The daemon pings the existing socket first and refuses to start when it answers
+    (`ECONTROLBUSY`, `packages/daemon/src/control/server.ts:296-320`); only a dead socket
+    is unlinked. On shutdown it unlinks only what it bound. `ping`'s `pid` field exists so
+    `kelpi doctor` can tell who owns the socket.
 
-11. **Timeout budget.** Handlers must reply within ~5 s (default CLI timeout) except
-    the known long-poll commands (`web-wait`, `web-exec` — CLI extends per `--timeout`;
-    `workspace-create` with `worktree` — CLI allows 120 s). Anything async (capture,
-    graft git work, web JS evaluation) should still send its reply from the async
-    completion, exactly like the Swift effects do.
+11. **Timeout budget.** Handlers reply within ~5 s (default CLI timeout) except the known
+    long-poll commands (`web-wait`, `web-exec`: the CLI extends per `--timeout`;
+    `workspace-create` with `worktree`: the CLI allows 120 s). Anything async (capture,
+    graft git work, web JS evaluation) still sends its reply from the async completion.
 
 12. **Allowlist is by command name only.** A future command that wants a reply must be
-    added to the allowlist; conversely nothing in the request opts into a reply. Keep
-    this table in one place in the daemon.
+    added to the allowlist; conversely nothing in the request opts into a reply. The
+    table lives in one place in the daemon (`packages/protocol/src/allowlist.ts`).
 
-13. **Error strings are UX, not API** — the CLI prints them verbatim; scripts branch on
-    `ok` (and typed extras like `active_agents`, `found`). Matching the Swift wording
-    is nice for doc/tests continuity but only `ok`/field names are contract. One
+13. **Error strings are UX, not API**: the CLI prints them verbatim; scripts branch on
+    `ok` (and typed extras like `active_agents`, `found`). Matching the pre-port app's
+    wording is nice for doc/tests continuity but only `ok`/field names are contract. One
     exception-ish case: `kelpi web exists` exits 0/1 from the reply's `found` field, so
     field names in web replies matter (see the web-pane subsystem doc).
 
-14. **Enum vocabularies to embed:** agent kinds (`claude|codex`, case-insensitive,
-    default claude), split directions (`horizontal|vertical`), move directions
-    (`left|right|up|down`), zones (`above|below|left-of|right-of`), colors (10 names,
-    §5.5), named keys (§5.6), pane types (`shell|markdown|scratchpad|diff|web`), pane
-    statuses (`idle|running|waitingForInput`), sync actions (`on|off|toggle|status`),
-    label ops (`set|add|remove|clear`), sort keys
-    (`name|last-activity|last-accessed|last-modified`), pane-list scopes
-    (`all|current`), capture modes (`meta|text|screenshot`), graft statuses
-    (`starting|watching|syncing|error`).
+14. **Enum vocabularies embedded** (`packages/protocol/src/wire/vocab.ts`): agent kinds
+    (`claude|codex`, case-insensitive, default claude), split directions
+    (`horizontal|vertical`), move directions (`left|right|up|down`), zones
+    (`above|below|left-of|right-of`), colors (10 names, §5.5), named keys (§5.6), pane
+    types (`shell|markdown|scratchpad|diff|web`), pane statuses
+    (`idle|running|waitingForInput`), sync actions (`on|off|toggle|status`), label ops
+    (`set|add|remove|clear`), sort keys
+    (`name|last-activity|last-accessed|last-modified`, plus their underscore aliases),
+    pane-list scopes (`all|current`), capture modes (`meta|text|screenshot|dom|all`),
+    graft statuses (`starting|watching|syncing|error`).
 
 15. **`pane-split`/`pane-create` mint the new pane id up front** and return it in the
-    reply *before* the pane exists. The daemon must do the same (generate the UUID,
-    reply, then build) so `kelpi pane split --json | jq .pane_id` keeps returning the
-    real id immediately.
+    reply *before* the pane exists. The daemon does the same (generate the UUID, reply,
+    then build) so `kelpi pane split --json | jq .pane_id` keeps returning the real id
+    immediately.
 
-16. **`pane-send` replies before delivering keystrokes** — the reply means "target
-    resolved and accepted", not "bytes hit the PTY". Keep that ordering; orchestrator
+16. **`pane-send` replies before delivering keystrokes**: the reply means "target
+    resolved and accepted", not "bytes hit the PTY". That ordering is kept; orchestrator
     scripts pipeline `pane send` + `pane send-key` and rely on low latency, not on
     delivery confirmation.

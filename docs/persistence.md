@@ -1,41 +1,54 @@
 # Kelpi Persistence Subsystem — Behavioral Specification
 
-Source of truth: `Nex/Services/DatabaseService.swift`, `Nex/Services/PersistenceService.swift`,
-plus the model types they serialize (`Pane`, `PaneLayout`, `WorkspaceGroup`, `WebPaneState`,
-`GroupIcon`, `SidebarID`, `Repo`, `RepoAssociation`, `WorkspaceColor`, `PaneType`) and the
-load/save wiring in `AppReducer` (`.appLaunched`, `.stateLoaded`, `.persistState`).
-Tests: `KelpiTests/DatabaseMigrationTests.swift`.
+This document specifies how Kelpi persists its state: the SQLite schema and its migration
+ledger, the JSON encodings stored inside TEXT columns, the debounced save path, the load path
+and its post-load fixups, and which fields survive a restart.
 
-This document specifies BEHAVIOR for a TypeScript daemon implementation. The implementer will
-not read the Swift source.
+Implementation: `packages/daemon/src/db/location.ts` (where the file lives),
+`packages/daemon/src/db/adapter.ts` (the `node:sqlite` adapter, pragmas, transactions),
+`packages/daemon/src/db/schema.ts` (tables and migrations), `packages/daemon/src/db/codec.ts`
+(row encoding and decoding), `packages/daemon/src/db/persistence.ts` (debounce, the write
+transaction, load, health), `packages/daemon/src/store/snapshot.ts` (the persisted projection
+of daemon state and the boot-time reset), `packages/daemon/src/boot/compose.ts` (save gating,
+degradation reporting, shutdown flush) and `packages/daemon/src/boot/resume.ts` (the resume
+pipeline). The JSON codecs live in `packages/core/src/codec/`.
+Tests: `packages/daemon/src/db/*.test.ts`, `packages/daemon/src/boot/persistence-boot.test.ts`.
 
 ---
 
 ## 1. Overview
 
-Kelpi persists its full workspace/pane/repo/group state to a single SQLite database:
+Kelpi persists its full workspace/pane/repo/group state to a single SQLite database owned by
+the daemon (`packages/daemon/src/db/location.ts:47-72`):
 
 ```
-~/Library/Application Support/Kelpi/nex.db
+macOS:  ~/Library/Application Support/kelpid/kelpi.db
+other:  $XDG_DATA_HOME/kelpid/kelpi.db, else ~/.local/share/kelpid/kelpi.db
 ```
 
-The directory is created on startup if missing (`mkdir -p` semantics). The database is opened
-with:
+`KELPID_DB_PATH` overrides the path on every platform (`~` expanded; `:memory:` gives a
+throw-away in-memory daemon; a blank value is ignored). The parent directory is created on
+startup if missing; directories the daemon creates are made 0700, while a parent that already
+exists is used exactly as it is (`location.ts:100-112`). The legacy Swift app's own file
+(`~/Library/Application Support/Nex/nex.db`) is never opened by the daemon; `kelpid import`
+copies it across once (see Compatibility rationale). The database is opened by the
+`node:sqlite` adapter (`packages/daemon/src/db/adapter.ts:92-97`) with:
 
-- **WAL journal mode** (the production connection is a GRDB `DatabasePool`, which enables WAL;
-  tests use an in-memory queue).
+- **WAL journal mode** for file databases (ignored for `:memory:`, which tests use).
 - **`PRAGMA foreign_keys = ON`** on every connection (cascade deletes depend on it).
 
 The persistence strategy is deliberately simple:
 
-- **Save**: every state-mutating action in the app dispatches a `persistState` action. That
-  action snapshots the ENTIRE app state into flat record arrays and hands them to a debounced
-  writer. After a 500 ms quiet period, the writer runs ONE transaction that **deletes every row
-  in every entity table and re-inserts the snapshot**. There are no per-field updates, no
-  diffing, no dirty tracking.
-- **Load**: happens exactly once, at app launch. The whole database is read into in-memory
+- **Save**: every reducer action that changes the store notifies the persistence subscriber
+  (`packages/daemon/src/boot/compose.ts:883`), which snapshots the ENTIRE daemon state into flat
+  record arrays (`toSnapshot`, `packages/daemon/src/store/snapshot.ts:157`) and hands them to a
+  debounced writer. After a 500 ms quiet period, the writer runs ONE transaction that
+  **deletes every row in every entity table it owns and re-inserts the snapshot**. There are no
+  per-field updates, no diffing, no dirty tracking.
+- **Load**: happens exactly once, at daemon boot. The whole database is read into in-memory
   state, some transient fields are reset (see §7), and from then on the DB is write-only until
-  the next launch.
+  the next boot. A database that cannot be opened is a refusal to start, not a silent
+  downgrade (§6.1).
 
 There is no schema-level referential integrity beyond the two FK cascades described below; the
 "clear + reinsert" model means the DB is always a self-consistent snapshot of one moment of app
@@ -47,14 +60,26 @@ state (modulo the debounce window).
 
 Conventions used by the current implementation:
 
-- **IDs** are TEXT columns containing UUID strings. When written by the app they are UPPERCASE
-  (Swift's `UUID.uuidString`), e.g. `"11111111-2222-3333-4444-555555555555"`. Parsing on load
+- **IDs** are TEXT columns containing UUID strings. When written they are UPPERCASE
+  (`normalizeUUIDLoose`, `packages/core/src/codec/uuid.ts:19`, matching the legacy app's
+  `UUID.uuidString`), e.g. `"11111111-2222-3333-4444-555555555555"`. Parsing on load
   is case-insensitive.
 - **Timestamps** are REAL (declared `DOUBLE`) columns containing Unix epoch **seconds** as a
   float (e.g. `1755500000.123456`). Not milliseconds, not ISO strings.
 - **Booleans** are stored as SQLite integers 0/1 (declared `BOOLEAN`).
 - **Enums** are stored as their raw string value (e.g. pane `type` = `"shell"`).
 - **Arrays / trees** are stored as JSON text in TEXT columns (exact JSON shapes in §3).
+
+Read/write tolerances (`packages/daemon/src/db/codec.ts`):
+
+- A DOUBLE timestamp that is non-numeric or non-finite decodes as epoch `0` rather than
+  dropping the row (`timestampColumn`, `codec.ts:193-195`). On write, a value of millisecond
+  magnitude (`looksLikeUnixMillis`, at or above 1e11) is converted to seconds instead of
+  corrupting the column (`toEpochSecondsColumn`, `codec.ts:246-250`).
+- An empty string in an optional TEXT column reads as NULL (`optionalText`, `codec.ts:198-201`):
+  `label`, `agentSessionID`, `agentProfileName`, `filePath`, `remoteURL`, `branchName`,
+  `profileName` and `webURL`. A stored `profileName` of `"default"` is normalized to NULL on
+  load as well as on save (`codec.ts:536`).
 
 ### 2.1 `workspace`
 
@@ -97,6 +122,7 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `webActiveTabID`| TEXT    | yes  |           | UUID of the active tab; NULL or stale → falls back to first tab. NULL for private panes. |
 | `webIsPrivate`  | BOOLEAN | yes  |           | per-pane private browsing flag. Persisted even though the pane's tabs are not, so a restored private pane comes back BLANK but still private (non-persistent cookie store). NULL → false. |
 | `agentKind`     | TEXT    | yes  |           | `AgentKind` raw value: `claude | codex`. Last-known agent CLI for this pane; picks the resume command (`claude --resume <id>` vs `codex resume <id>`). NULL = never saw an agent (treated as `claude` where a default is needed). Deliberately NOT cleared on load (§7.3). |
+| `agentProfileName` | TEXT | yes  |           | Kelpi-only (v19, §4): the profile name the pane's agent session was launched under, so a resume rebuilds the same environment. NULL = unknown. Written and read on every save/load (`packages/daemon/src/db/codec.ts:609`); preserved (not cleared) on load like `agentKind`; cleared together with `agentSessionID` on `session-end` (§7.3). |
 
 ### 2.3 `repo` and `repoAssociation`
 
@@ -133,14 +159,19 @@ cascade because saves clear-and-reinsert everything, but ad-hoc `DELETE` stateme
 | `key`   | TEXT PK | no   |
 | `value` | TEXT    | yes  |
 
-Exactly two keys are written today:
+Five keys are written today (`encodeAppStateRows`, `packages/daemon/src/db/codec.ts:418-434`;
+all five are read back by `snapshotFromRows`, `codec.ts:755-767`):
 
 | key                 | value |
 |---------------------|-------|
 | `activeWorkspaceID` | UUID string of the active workspace, or NULL |
-| `topLevelOrder`     | JSON array of `SidebarID` values (§3.2) — the ordered top-level sidebar entries (workspaces AND group headers, interleaved) |
+| `topLevelOrder`     | JSON array of `SidebarID` values (§3.2): the ordered top-level sidebar entries (workspaces AND group headers, interleaved) |
+| `kelpid.labelPresets` | JSON array of `{name, color, textColor}` label presets (the legacy app kept these in UserDefaults) |
+| `kelpid.snapshotVersion` | `PersistedSnapshot.version` (currently `1`), independent of the migration ledger |
+| `kelpid.labelPresetsMigrated` | `'1'` / `'0'`: the one-shot legacy-label to preset marker (§6.2 step 9). A missing row reads as `false` (`decodeAppStateFlag`, `codec.ts:309`), which is what makes the back-fill one-shot on databases written before the key existed |
 
-Unlike the entity tables, `appState` rows are **upserted, never cleared** — an unknown key
+The first two are shared with the legacy app; the `kelpid.*` keys are daemon-owned singletons.
+Unlike the entity tables, `appState` rows are **upserted, never cleared**: an unknown key
 written by a future version would survive saves from an older version.
 
 ### 2.5 `workspace_group`
@@ -158,25 +189,40 @@ written by a future version would survive saves from an older version.
 
 ### 2.6 Migration bookkeeping table
 
-GRDB's migrator records applied migrations in its own table:
+Applied migrations are recorded in the table the legacy app's GRDB migrator created, which
+Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 
 ```sql
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v18_pane_agent_kind"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v19_pane_agent_profile"`). On
 startup, any registered migration whose identifier is not present is run, in registration
-order, each in its own transaction, and its identifier inserted. A TS port keeping the same
-DB file must honor this table (see Port notes).
+order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
+failure can never record an unapplied step); identifiers already present are skipped
+(`migrate`, `schema.ts:234-249`). Kelpi keeps this table so that a database written by the
+legacy app is adopted without re-running its migrations (see Compatibility rationale).
+
+**Foreign identifiers.** A ledger written by the legacy app carries migrations Kelpi does not
+own: `v7_scheduled_tasks` and `v9_workspace_folders` (the committed fixture of a real ledger,
+`packages/core/fixtures/migrations.json`, has 20 identifiers), which created the
+`scheduledTask` and `workspaceFolder` tables and added `workspace.folderID`. Kelpi never runs
+them, never reads, writes or drops the tables they created, and only ever clears the tables it
+owns (`OWNED_TABLES`, `schema.ts:25-32`; `packages/daemon/src/db/persistence.ts:339-343`).
+Every INSERT names its columns explicitly, so an adopted extra column such as
+`workspace.folderID` keeps its default across saves (`persistence.ts:180-196`). `kelpid import`
+reports such tables as ignored (`packages/daemon/src/import/reader.ts:65-74`).
 
 ---
 
 ## 3. JSON encodings stored inside TEXT columns
 
-These come from Swift's synthesized `Codable`. The shapes below were verified empirically
-against the exact enum declarations. Object key ORDER is arbitrary (Swift's JSONEncoder does
-not sort keys); parsers must not depend on it. UUIDs are emitted uppercase; parse
-case-insensitively.
+These shapes are the legacy Swift app's synthesized `Codable` encodings, which Kelpi writes and
+reads byte-compatibly through `packages/core/src/codec/` (`pane-layout-json.ts`,
+`sidebar-id.ts`, `json-columns.ts`, `icon.ts`, `uuid.ts`; round-trip fixtures in
+`fixtures.test.ts`). The shapes below were verified empirically against the exact enum
+declarations. Object key ORDER is arbitrary (the legacy encoder did not sort keys); parsers
+must not depend on it. UUIDs are emitted uppercase; parse case-insensitively.
 
 ### 3.1 `workspace.layoutJSON` — the `PaneLayout` tree
 
@@ -249,8 +295,8 @@ All three fields are always present (title may be `""`).
 NOT JSON — a flat prefix-qualified string chosen for hand-readability:
 
 - `"system:<sf-symbol-name>"`, e.g. `"system:star.fill"` — an SF Symbol identifier, rendered
-  tinted with the workspace/group color. (Web port: map to an equivalent icon set or ship the
-  SF Symbol name through as an opaque token.)
+  tinted with the workspace/group color. (Parsed by `parseIconString`,
+  `packages/core/src/codec/icon.ts:11`.)
 - `"emoji:<grapheme>"`, e.g. `"emoji:📁"` — a single grapheme rendered as plain text (its own
   colors, no tint).
 
@@ -266,13 +312,17 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 
 ## 4. Migration history (all 18, in order)
 
-Migration identifiers are strings; each runs once, recorded in `grdb_migrations`. From v4
-onward, every `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks
-the live column list and skips if the column already exists (or, for v15, if the target name
-already exists / the source is missing). This guard exists because pre-release builds sometimes
-created columns before the migration record was written; re-running `ADD COLUMN` on an existing
-column throws and would wedge startup. A port re-implementing these migrations should keep the
-guards (idempotency).
+Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts:45-195`). There are 19 in total: the 18 shared
+with the legacy app plus the Kelpi-only `v19_pane_agent_profile`. From v3 onward, every
+`ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
+list and skips if the column already exists (or, for v15, if the target name already exists /
+the source is missing). This guard exists because pre-release builds of the legacy app
+sometimes created columns before the migration record was written; re-running `ADD COLUMN` on
+an existing column throws and would wedge startup. (The legacy app guarded from v4 onward;
+guarding v3 as well is a strict superset: a database that already grew `slug` out of band boots
+instead of throwing.) The guard is `addColumn` (`schema.ts:40-43`); it is what makes each
+migration idempotent regardless of ledger drift.
 
 | id | what it does |
 |----|--------------|
@@ -294,6 +344,7 @@ guards (idempotency).
 | `v16_workspace_icon` | `workspace` + `icon TEXT`. Guarded. |
 | `v17_workspace_profile` | `workspace` + `profileName TEXT`. Guarded. |
 | `v18_pane_agent_kind` | `pane` + `agentKind TEXT` (`"claude"`/`"codex"`, issue #101 — picks the resume command on restart). Guarded. |
+| `v19_pane_agent_profile` | `pane` + `agentProfileName TEXT` (§2.2). Kelpi-only, no legacy counterpart: listed in `DAEMON_ONLY_MIGRATIONS` (`schema.ts:205`) so the importer does not treat a legacy ledger that lacks it as stale. Guarded. |
 
 ---
 
@@ -301,15 +352,19 @@ guards (idempotency).
 
 ### 5.1 Triggers
 
-There is no timer and no save-on-quit flush for the DB. Saves happen because reducer actions
-dispatch `persistState` after mutating persisted state. The trigger set is broad — effectively
-"anything that changes durable state", including:
+There is no timer. Saves happen because the store notifies its persistence subscriber after
+every reducer action that changes state (`persist`, `packages/daemon/src/boot/compose.ts:872-885`),
+and that subscriber schedules a debounced snapshot; graceful shutdown additionally flushes
+whatever is pending (§5.2). Every save is gated until the launch restore sequence has resolved
+(§6.2 step 8). The trigger set is broad, effectively "anything that changes durable state",
+including:
 
 - workspace create / rename / recolor / re-icon / delete / reorder / move between groups
 - group create / rename / delete / collapse / reorder / sort / icon
 - pane create / split / close / move / label / resize (ratio changes) / layout cycle & select
 - agent lifecycle (`agentStarted` / `agentStopped` — persists status + session id)
-- agent `session-start` / `session-end` (session id binding / clearing)
+- agent `session-start` / `session-end` (session id binding / clearing; `session-end` bypasses
+  the debounce, §5.2)
 - repo registry changes, repo association changes, worktree flows
 - workspace labels & profiles, web pane tab changes, markdown/scratchpad edits (content)
 - active workspace switch, focus changes
@@ -327,9 +382,19 @@ save(snapshot):
   flat record arrays). The debounce delays the WRITE, not the capture — so the write that lands
   is the LAST snapshot, and intermediate snapshots are discarded wholesale.
 - Rapid mutations therefore coalesce to one transaction, at the cost of a ≤500 ms window in
-  which a crash/force-quit loses the latest changes. **Normal quit does NOT flush the DB
-  debounce** (the quit path flushes markdown-editor file writes and graft sessions only), so
-  quitting within 500 ms of the last mutation can lose that mutation. Accepted behavior today.
+  which a crash/force-quit loses the latest changes. **Graceful shutdown flushes the debounce**:
+  `stop()` (SIGTERM/SIGINT handlers, `kelpid stop`; `packages/daemon/src/boot/compose.ts:1225-1288`)
+  first flushes editor buffers into the store, then writes the pending snapshot synchronously
+  (`flush()`, `packages/daemon/src/db/persistence.ts:437-443`; `close()` also flushes first)
+  before closing the handle. A failed final flush is logged ("shut down WITHOUT saving state")
+  and the process exits 1 (`compose.ts:1310-1329`). A shutdown that lands inside the
+  launch-restore window (§6.2 step 8) deliberately writes nothing, so un-consumed session ids
+  stay on disk.
+- **`session-end` bypasses the debounce.** The `sessionEnded` transition sets
+  `persistImmediately` (`packages/core/src/agent/machine.ts:157-172`) and the event handler
+  then calls `saveNow()` instead of `scheduleSave()`
+  (`packages/daemon/src/handlers/app/events.ts:60-61`, `compose.ts:877-881`), so the cleared
+  session id survives a crash inside the 500 ms window (issue #178).
 
 ### 5.3 The write transaction (clear + reinsert)
 
@@ -343,16 +408,29 @@ INSERT all workspace rows          (sortOrder = index in app's workspace array)
 INSERT all pane rows               (flattened: for each workspace, its visible panes in order)
 INSERT all repoAssociation rows
 INSERT all workspace_group rows    (sortOrder = index in app's groups array)
-UPSERT appState rows               ("activeWorkspaceID", "topLevelOrder")
+UPSERT appState rows               (the five keys in §2.4)
 ```
 
 - `appState` rows use save/upsert; the table is never cleared.
-- Any error rolls back the transaction and is logged to console and **swallowed** — the app
-  keeps running with the previous DB contents intact.
-- Pane row insert order doubles as the de-facto pane ordering on load (there is no ORDER BY on
-  panes; SQLite returns them in rowid ≈ insert order). Display order actually comes from the
-  layout tree, but list surfaces (`pane list`) reflect array order, which round-trips through
-  insert order in practice.
+- Only the five entity tables the daemon owns are cleared (`repoAssociation`, `pane`,
+  `workspace`, `repo`, `workspace_group`); foreign tables in an adopted database are never
+  touched, and every INSERT names its columns (§2.6).
+- Rows SQLite would reject are dropped before the transaction starts rather than allowed to
+  abort it (§9.4).
+- Any error rolls back the transaction; the daemon keeps running on the previous DB contents,
+  but the failure is **observable** (`packages/daemon/src/db/persistence.ts:426-434`):
+  `health()` flips to degraded (phase, errno, failed-save count), a `persistence-degraded`
+  event is broadcast to attached clients (re-announced when the attached-client count changes,
+  and on a 5 s floor while saves are being dropped; `packages/daemon/src/boot/compose.ts:390-400`,
+  `863-870`), `ping` / `kelpid status` report it (`packages/daemon/src/handlers/app/ping.ts:54-55`),
+  and shutdown logs "kelpid stopped (state NOT saved)" and exits 1 (`compose.ts:1305`, `1322`).
+- Pane row insert order doubles as the de-facto order of the in-memory `panes` array on load
+  (there is no ORDER BY on panes; SQLite returns them in rowid ≈ insert order). That array
+  order is not user-visible: display order comes from the layout tree, and the `pane-list`
+  reply enumerates each workspace's panes in layout order too (`allPaneIDs(workspace.layout)`,
+  skipping ids with no backing pane; `packages/daemon/src/handlers/pane/list.ts:79-81`,
+  `packages/core/src/layout/tree.ts:14`), workspaces in state order. The `panes` array order
+  is never consulted for `pane-list` (wire-protocol §6.2, socket-handlers §4.12).
 
 ### 5.4 Field mapping notes on save
 
@@ -369,7 +447,8 @@ UPSERT appState rows               ("activeWorkspaceID", "topLevelOrder")
     only).
   - Non-web panes write NULL for all four columns.
 - **Scratchpad content** is persisted in `pane.content`.
-- **Timestamps** are converted Date → epoch seconds (float).
+- **Timestamps** are written as epoch seconds (float) through `toEpochSecondsColumn`; a
+  millisecond-magnitude value is converted rather than written (§2).
 - **Parked panes are NOT saved.** A pane parked by `kelpi open --here` (off-layout but PTY kept
   alive) lives in a separate `parkedPanes` lane that the snapshot ignores — it vanishes on
   restart (its ghostty surface couldn't be restored anyway).
@@ -379,17 +458,22 @@ UPSERT appState rows               ("activeWorkspaceID", "topLevelOrder")
 
 ## 6. Load path
 
-Runs once, from app launch, before any UI/daemon state exists. Single read transaction.
+Runs once, at daemon boot, before any socket exists. Six plain SELECTs, no read transaction
+(`readRows`, `packages/daemon/src/db/persistence.ts:303-313`): the daemon is the only writer
+and nothing writes before the load completes. (Writes, by contrast, open with
+`BEGIN IMMEDIATE` and nest via `SAVEPOINT`, `packages/daemon/src/db/adapter.ts:160-197`.)
 
 ### 6.1 Read + decode
 
 ```
 repos       ← SELECT * FROM repo                         (skip rows with unparseable id UUID)
 workspaces  ← SELECT * FROM workspace ORDER BY sortOrder (skip unparseable id)
+panes       ← SELECT * FROM pane                         (no ORDER BY: insert order, §5.3;
+                                                          bucketed by workspaceID in memory;
+                                                          skip unparseable id)
+assocs      ← SELECT * FROM repoAssociation              (bucketed by workspaceID;
+                                                          skip unparseable id or repoID)
   for each workspace:
-    panes   ← SELECT * FROM pane WHERE workspaceID = ?   (skip unparseable id)
-    assocs  ← SELECT * FROM repoAssociation WHERE workspaceID = ?
-                                                         (skip unparseable id or repoID)
     decode layoutJSON (fallback: empty)
     decode labelsJSON (fallback: [])
     color   ← WorkspaceColor(raw) ?? blue
@@ -408,20 +492,41 @@ Per-pane decode:
   `agentKind` ← `AgentKind(raw)` or nil (strict — unknown string → nil).
 - `isEditing` is DERIVED: `true` iff type is `scratchpad` (scratchpads restore into edit
   mode); all other panes restore in view mode.
-- Web pane sidecar (only when type is `web`):
+- Web pane sidecar (only when type is `web`; `decodeWebColumns`,
+  `packages/daemon/src/db/codec.ts:557-581`): `isPrivate` ← `webIsPrivate ?? false`. If
+  `isPrivate` is true the pane restores with zero tabs, whatever `webTabsJSON` / `webURL` hold
+  (`kelpid import` warns about such rows, `packages/daemon/src/import/reader.ts:372-378`).
+  Otherwise:
   1. If `webTabsJSON` is non-null, non-empty, and decodes → use it as the tab list.
   2. Else if `webURL` is non-null and non-empty → one tab `{id: newUUID, url: webURL, title: ""}`
      (pre-v13 rows).
-  3. Else → zero tabs (blank pane; this is the restored form of a private pane).
-  - `activeTabID` ← parse `webActiveTabID` as UUID, else first tab's id, else nil.
-  - `isPrivate` ← `webIsPrivate ?? false`.
+  3. Else → zero tabs (blank pane).
+  - `activeTabID` ← `webActiveTabID` when it parses as a UUID AND names one of the restored
+    tabs, else first tab's id, else nil. (On save, `webURL` / `webActiveTabID` likewise fall
+    back to the first tab when the in-memory active id is stale: `activeWebTab`,
+    `codec.ts:344-350`.)
 - Fields with no column are initialized to their defaults (see §8 transient list).
 
-**Any thrown error during the whole load** (not per-row) → log and return the empty result
-(no workspaces, no groups, no order, no active id, no repos): the app then behaves like a
-first launch, without touching the broken DB file.
+**Open / migration failure** (the file cannot be opened, is not a database, or a migration
+throws) is fatal: `createPersistence` closes the handle and marks the open as failed
+(`packages/daemon/src/db/persistence.ts:265-291`), and boot then refuses to start with a
+`PersistenceUnavailableError` (`code: ENEXDPERSIST`) naming the path, phase, errno and a repair
+hint, thrown from `start()` before any run dir, socket or PTY exists
+(`assertPersistenceUsable`, `persistence.ts:161-165`;
+`packages/daemon/src/boot/compose.ts:404-418`, `1425`). The file is never deleted or truncated.
+`KELPID_ALLOW_EPHEMERAL_STATE=1` (or a `:memory:` path) opts into running memory-only, with a
+warning on every boot and `degraded: true` in `ping`.
+
+**A thrown error during the row read itself** (after a successful open, e.g. a missing table)
+still abandons the whole load (not per-row): it is logged, the file is left untouched, and the
+daemon boots as a fresh install (§6.2 Case A; `loadOutcome` returns status `unreadable`,
+`persistence.ts:315-328`).
 
 ### 6.2 Post-load fixups (the `stateLoaded` handler)
+
+(`fromSnapshot`, `packages/daemon/src/store/snapshot.ts:228`, performs steps 1-3;
+`applyLoadReset`, `snapshot.ts:312`, steps 4-5; `packages/daemon/src/boot/resume.ts` steps 6-7;
+`packages/daemon/src/boot/compose.ts:1188-1215` step 8.)
 
 Case A — **zero workspaces loaded** (fresh install or wiped DB):
 
@@ -433,31 +538,55 @@ Case A — **zero workspaces loaded** (fresh install or wiped DB):
 Case B — normal restore:
 
 1. Install loaded workspaces / groups / repos into state.
-2. `activeWorkspaceID` ← loaded value, else first workspace's id.
+2. `activeWorkspaceID` ← loaded value when it names a loaded workspace, else first workspace's
+   id (`snapshot.ts:281-285`; `kelpid import` applies the same repair and reports it,
+   `packages/daemon/src/import/convert.ts:178-182`).
 3. `topLevelOrder`: if the loaded array is EMPTY (legacy DB from before groups existed),
    synthesize it as `[workspace(id) for each workspace, in loaded order]`; otherwise use it
    verbatim. (No validation that entries reference live workspaces/groups.)
 4. Capture **resumable panes**: every pane (across all workspaces) with a non-null
-   `agentSessionID` yields a tuple `(paneID, sessionID, kind ?? claude)`. Captured BEFORE
-   clearing.
+   `agentSessionID` yields a tuple `(paneID, sessionID, kind ?? claude, profileName)`, where
+   `profileName` is the pane's `agentProfileName` (null = unknown) (`captureResumeTuple`,
+   `packages/core/src/agent/session.ts:60-68`). Captured BEFORE clearing.
 5. **Clear** every pane's `agentSessionID` (set nil) and reset every non-`idle` pane's
    `status` to `idle`. Rationale: status is tied to a live PTY, which never survives restart;
    a stale persisted `running` would otherwise falsely trigger the "agents still running"
    quit-confirmation dialog (issue #129). `agentKind` is deliberately NOT cleared — it is a
-   last-known display value and the resume tuples already captured it.
-6. Spawn terminal surfaces for every `shell` pane (workingDirectory, workspace profile env).
-7. **Auto-resume**: if any resumable tuples exist, wait 2 seconds (surfaces/PTYs settling),
-   then for each tuple type the resume command into that pane's PTY:
+   last-known display value and the resume tuples already captured it. `agentProfileName` is
+   preserved for the same reason (`resetPaneAgentStateOnLoad`, `session.ts:75-84`).
+6. Spawn a PTY for every `shell` pane that does not already have one (a pane created by a CLI
+   command racing this pass keeps the PTY it already got), at the pane's remembered geometry
+   (§7.4), with the owning workspace's profile env. A pane whose resume tuple recorded a
+   `profileName` AND whose session id passes the allowlist below spawns under that recorded
+   profile instead, so the resumed agent lands in the environment its session was launched
+   under (`spawnRestoredPanes`, `packages/daemon/src/boot/resume.ts:128-199`). A pane the
+   geometry cache has never seen is held for the first client geometry report rather than being
+   born at 80x24 (`packages/daemon/src/pty/spawn-gate.ts`); one bad pane (vanished cwd, broken
+   shell) does not abort the restore.
+7. **Auto-resume**: if any resumable tuples exist, wait 2 seconds (PTYs settling;
+   `RESUME_SETTLE_DELAY_MS`), then for each tuple type the resume command into that pane's PTY
+   with Enter appended (`typeResumeCommands`, `resume.ts:205-233`):
    - command = `claude --resume <sessionID>` (kind claude) or `codex resume <sessionID>`
      (kind codex);
    - SKIPPED (silently) unless the session id passes the shell-safety allowlist:
-     non-empty, ≤128 chars, every char ASCII alphanumeric or `.` `_` `-`. This is a security
-     gate — the id arrived over the local socket and is being typed into a shell.
-8. AFTER the resume commands are sent, dispatch one `persistState` — this writes the
-   CLEARED session ids back to the DB. Ordering is deliberate: if the app crashes before the
-   resumes execute, the ids are still on disk and the next launch retries.
-9. Kick off git status refresh, HEAD watchers for every repo association, label→preset
-   migration, queued Finder file-opens, graft recovery.
+     non-empty, ≤128 chars, every char ASCII alphanumeric or `.` `_` `-` (`isSafeSessionID`,
+     `packages/core/src/agent/session.ts:31`). This is a security gate: the id arrived over the
+     local socket and is being typed into a shell;
+   - also SKIPPED when the pane has no live PTY (its spawn failed or is still deferred on the
+     geometry gate) or when writing to the PTY throws.
+   The outcome (`spawned` / `resumed` / `skipped` / `settled`) resolves `Daemon.restored`, and
+   `DaemonInfo.resumeTuples` reports how many tuples were captured (`compose.ts:275`, `1213`).
+8. AFTER the resume commands are sent, one unconditional save runs: this writes the CLEARED
+   session ids back to the DB. **Every save is gated until then**: `persist()` and
+   `persistNow()` return early while `persistReady` is false, and it becomes true only once
+   `typeResumeCommands()` has settled or thrown (`compose.ts:850-856`, `872-881`, `1209-1212`).
+   So any mutation from a client or CLI during the ~2 s settle window, and the Default
+   workspace of a fresh install, is written by that tail save and never before, and a `stop()`
+   inside the window writes nothing. Ordering is deliberate: if the daemon crashes before the
+   resumes execute, the ids are still on disk and the next boot retries.
+9. Kick off git status refresh, HEAD watchers for every repo association, the one-shot
+   label→preset migration (`packages/daemon/src/boot/labels.ts`; its marker is the
+   `kelpid.labelPresetsMigrated` app-state key, §2.4), queued file-opens, graft recovery.
 
 ### 6.3 Slug generation (legacy backfill)
 
@@ -469,8 +598,11 @@ suffix = first 8 chars of the UUID string, lowercased
 slug   = base == "" ? suffix : base + "-" + suffix
 ```
 
-e.g. `("My App!", 5F0C24D9-…)` → `"my-app-5f0c24d9"`. Applied on load only when the stored
-slug is the empty string (v3 default); also applied on workspace create and rename.
+e.g. `("My App!", 5F0C24D9-…)` → `"my-app-5f0c24d9"` (`makeSlug`,
+`packages/core/src/resolve/ids.ts:36-43`). Applied on load when the stored slug is the empty
+string (v3 default), on save if the in-memory slug is somehow empty (`encodeWorkspaceRow`,
+`packages/daemon/src/db/codec.ts:325`, so an empty slug is never written), and on workspace
+create and rename.
 
 ---
 
@@ -485,9 +617,12 @@ Per workspace: id, name, slug, color, icon, profileName, labels, layout tree (un
 focused pane id, createdAt, lastAccessedAt.
 
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
-agentSessionID (written, but consumed-and-cleared by the next launch), agentKind, status
-(written, but reset to idle on load), createdAt, lastActivityAt, web tabs + active tab +
-private flag (tabs/URLs withheld for private panes).
+agentSessionID (written, but consumed-and-cleared by the next launch), agentKind,
+agentProfileName, status (written, but reset to idle on load), createdAt, lastActivityAt, web
+tabs + active tab + private flag (tabs/URLs withheld for private panes).
+
+App level (daemon-owned `appState` keys, §2.4): label presets, the label-preset migration
+marker, the snapshot version.
 
 ### 7.2 Deliberately transient (reset every launch)
 
@@ -505,24 +640,46 @@ Web pane sidecar: console ring buffer, inspector arm state + nonce + result queu
 inspect session, last batch target. Only `tabs` / `activeTabID` / `isPrivate` persist.
 
 App: `pendingFileOpens`, socket reply handles, git status caches, keybindings (config file,
-not DB), settings (UserDefaults/config file, not this DB).
+not DB), settings (`~/.config/kelpi/config`, not this DB).
 
 ### 7.3 Restore-with-teeth summary (the resume contract)
 
-`agentSessionID` + `agentKind` exist so that a restart can put the user back INTO their agent
-sessions: launch reads them, clears the ids in memory, spawns PTYs, waits 2 s, types
+`agentSessionID` + `agentKind` (+ `agentProfileName`) exist so that a restart can put the user
+back INTO their agent sessions: boot reads them, clears the ids in memory, spawns PTYs (under
+the recorded `agentProfileName` where one exists, §6.2 step 6), waits 2 s, types
 `claude --resume <id>` / `codex resume <id>` into each affected pane (allowlist permitting),
 and only then persists the cleared state. `kelpi event session-end` clears a pane's session id
-at runtime when the ending session matches (so an exited session isn't resumed); Codex has no
-session-end hook, so a stale codex id may persist and be resumed (known limitation).
+and its `agentProfileName` at runtime when the ending session matches (so an exited session
+isn't resumed) and saves immediately, bypassing the debounce (§5.2;
+`packages/core/src/agent/machine.ts:157-172`); Codex has no session-end hook, so a stale codex
+id may persist and be resumed (known limitation).
+
+### 7.4 Sibling state files beside the database
+
+Two daemon-owned state files live in the database's directory (`dirname(dbPath)`), so they
+follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory only
+(`packages/daemon/src/boot/compose.ts:327-329`, `424-432`):
+
+- `pane-geometry.json` (`packages/daemon/src/pty/geometry.ts:58`): the last-rendered cols/rows
+  per pane, so a restored shell is born at its remembered size instead of 80x24 (§6.2 step 6).
+  Writes are debounced (750 ms) and the store is closed, flushing any pending write, during
+  `stop()`.
+- `favourites.json` (`packages/daemon/src/webpane/favourites.ts`): web-pane favourites, kept in
+  the legacy app's `[{id, url, title, createdAt}]` payload shape rather than in an `appState`
+  row.
+
+Neither file is part of the SQLite schema, the migration ledger or the save transaction.
 
 ---
 
 ## 8. Equivalent SQLite DDL for the TS daemon
 
-This is the schema as it exists after v18, expressed as plain DDL. (SQLite's ALTER-produced
+This is the schema as it exists after v19, expressed as plain DDL. (SQLite's ALTER-produced
 schema differs cosmetically — column order and the absence of NOT NULL on late-added columns
-are preserved here.)
+are preserved here.) An adopted legacy database may additionally hold `scheduledTask`,
+`workspaceFolder` and `workspace.folderID` (§2.6); they are not part of this DDL and Kelpi
+leaves them alone. `packages/daemon/src/import/testing.ts` carries this DDL verbatim to build
+legacy fixtures for the importer's tests.
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -559,11 +716,12 @@ CREATE TABLE pane (
   webTabsJSON      TEXT,                    -- [WebTab] JSON (§3.3)
   webActiveTabID   TEXT,
   webIsPrivate     BOOLEAN,                 -- 0/1/NULL(=false)
-  agentKind        TEXT                     -- claude|codex|NULL
+  agentKind        TEXT,                    -- claude|codex|NULL
+  agentProfileName TEXT                     -- Kelpi-only (v19); NULL = unknown
 );
 
 CREATE TABLE appState (
-  key   TEXT PRIMARY KEY,                   -- "activeWorkspaceID", "topLevelOrder"
+  key   TEXT PRIMARY KEY,                   -- "activeWorkspaceID", "topLevelOrder", "kelpid.*" (§2.4)
   value TEXT
 );
 
@@ -596,11 +754,12 @@ CREATE TABLE workspace_group (
   icon           TEXT
 );
 
--- GRDB migration ledger (must be honored when adopting an existing nex.db)
+-- Migration ledger, kept under the legacy GRDB name so an adopted database is not re-migrated
 CREATE TABLE IF NOT EXISTS grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-TS-ish record interfaces (as read/written, before decoding the JSON columns):
+Record interfaces (as read/written, before decoding the JSON columns;
+`packages/daemon/src/db/codec.ts`):
 
 ```ts
 interface WorkspaceRow {
@@ -613,6 +772,7 @@ interface PaneRow {
   id: string; workspaceID: string; label: string | null; type: string;
   workingDirectory: string; filePath: string | null; content: string | null;
   agentSessionID: string | null; agentKind: string | null; status: string;
+  agentProfileName: string | null;
   createdAt: number; lastActivityAt: number;
   webURL: string | null; webTabsJSON: string | null;
   webActiveTabID: string | null; webIsPrivate: 0 | 1 | null;
@@ -638,15 +798,22 @@ interface WorkspaceGroupRow {
 
 1. Entity tables are always a single-moment snapshot: partial writes are impossible (one
    transaction), and a failed write leaves the previous snapshot intact.
-2. Debounce window: up to 500 ms of the newest state can be lost on crash OR on normal quit
-   (no DB flush at quit). The launch-restore save (§6.2 step 8) is intentionally ordered
-   AFTER resume commands so a crash mid-restore retries resumes.
-3. `appState` is upsert-only; never cleared. Only two keys today.
-4. `repo.path` UNIQUE is the only value-level DB constraint; app logic must dedupe repos by
-   path before insert or the whole save transaction fails (and is swallowed).
+2. Debounce window: up to 500 ms of the newest state can be lost on crash; graceful shutdown
+   flushes the pending write (§5.2). The launch-restore save (§6.2 step 8) is intentionally
+   ordered AFTER resume commands so a crash mid-restore retries resumes, and every save is
+   gated until then.
+3. `appState` is upsert-only; never cleared. Five keys today (§2.4).
+4. `repo.path` UNIQUE is the only value-level DB constraint. The write path never lets it abort
+   a save: `snapshotToRows` (`packages/daemon/src/db/codec.ts:455-505`) drops, before INSERT,
+   any duplicate primary key (first occurrence wins, in every table), any second repo with an
+   already-seen path, and any association whose repo is not in the registry (an FK violation),
+   so one bad row can never freeze persistence at the previous snapshot. The `add-repo` reducer
+   also refuses a repo whose id or path already exists
+   (`packages/daemon/src/store/reducers/workspaces.ts:470-471`).
 5. Rows with unparseable UUIDs are silently skipped on load (row-level tolerance);
-   a hard read error abandons the entire load and boots as a fresh install without
-   destroying the file.
+   a hard read error after a successful open abandons the entire load and boots as a fresh
+   install without destroying the file. A database that cannot be opened or migrated refuses
+   to start instead (§6.1).
 6. Unknown enum strings degrade: color→blue, pane type→shell, status→idle, agentKind→null,
    icon→null. Layout/labels/childOrder/topLevelOrder JSON parse failures degrade to
    empty/[]-equivalents.
@@ -662,7 +829,8 @@ interface WorkspaceGroupRow {
 12. `agentSessionID` round-trip: persisted at runtime, consumed for resume at next launch,
     cleared in memory immediately, cleared on disk only after resume commands are sent.
 13. Session ids are typed into shells at restore; the ASCII-allowlist gate
-    (`[A-Za-z0-9._-]{1,128}`) is a security boundary and MUST be preserved by any port.
+    (`[A-Za-z0-9._-]{1,128}`, `isSafeSessionID`, `packages/core/src/agent/session.ts:31`) is a
+    security boundary.
 14. `agentKind` survives load un-cleared (last-known badge value + resume verb selection).
 15. Panes are stored flat with a `workspaceID`; the layout tree is per-workspace JSON. There
     is no reconciliation between them at load. Keep writes atomic so they can't diverge.
@@ -672,75 +840,93 @@ interface WorkspaceGroupRow {
     (never a file).
 19. Deleting a workspace/repo row via raw SQL cascades to `repoAssociation` (and workspace →
     pane); requires `foreign_keys=ON` on the connection.
-20. First launch (empty DB or unreadable DB): create one workspace named "Default" with a
-    single shell pane in the home directory; persist on the next mutation.
+20. First launch (empty DB, or a read failure after a successful open): create one workspace
+    named "Default" with a single shell pane in the home directory; persisted by the save at
+    the tail of the restore sequence (§6.2 step 8).
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-Things the TypeScript daemon port must get right, and places it may deliberately diverge:
+These notes record the quirks Kelpi preserves on purpose so that databases written by the
+legacy Swift app (Nex), the pre-port `kelpi` CLI and hook scripts, and saved state all keep
+working, and which of the optional divergences from the legacy app were taken and which were
+declined.
 
-**Must keep (behavioral contract):**
+**Kept (behavioral contract):**
 
-- **DB adoption**: if the daemon adopts an existing `nex.db`, it must (a) run/verify the same
-  migration ledger (`grdb_migrations` identifiers `v1_initial` … `v18_pane_agent_kind`), only
-  applying migrations whose identifiers are absent, keeping the per-migration column-existence
-  guards; and (b) parse the exact JSON shapes in §3 — most notably the Swift-Codable enum
-  encodings with `_0` keys for `PaneLayout` and `SidebarID`, uppercase UUIDs (parse
-  case-insensitively), and epoch-SECONDS float timestamps (not ms — a naive `Date.now()` write
-  would corrupt every timestamp by 1000×).
+- **DB adoption**: because `kelpid import` and the persistence layer both read databases the
+  legacy app wrote, Kelpi (a) runs/verifies the same migration ledger (`grdb_migrations`
+  identifiers `v1_initial` … `v18_pane_agent_kind`, plus its own `v19_pane_agent_profile`),
+  only applying migrations whose identifiers are absent and keeping the per-migration
+  column-existence guards (`packages/daemon/src/db/schema.ts`); and (b) parses and writes the
+  exact JSON shapes in §3, most notably the Swift-Codable enum encodings with `_0` keys for
+  `PaneLayout` and `SidebarID`, uppercase UUIDs (parsed case-insensitively), and epoch-SECONDS
+  float timestamps (not ms: a naive `Date.now()` write would corrupt every timestamp by 1000×,
+  which is why `toEpochSecondsColumn` converts millisecond-magnitude values, §2).
 - **Graceful degradation table** (§9 items 5–8): unknown enums, broken JSON, empty slug, empty
-  topLevelOrder each have a defined fallback; none may crash the load or drop sibling rows.
+  topLevelOrder each have a defined fallback; none crashes the load or drops sibling rows.
 - **Resume pipeline** (§6.2 steps 4–8) including the session-id shell-safety allowlist and the
-  clear-in-memory / persist-after-resume ordering. The 2 s settle delay is an empirical PTY
-  warm-up value; keep something equivalent.
-- **Transient-field reset** (§7.2), especially status→idle on load — clients (quit dialogs,
+  clear-in-memory / persist-after-resume ordering. The 2 s settle delay
+  (`RESUME_SETTLE_DELAY_MS`) is an empirical PTY warm-up value carried over unchanged.
+- **Transient-field reset** (§7.2), especially status→idle on load: clients (quit dialogs,
   status bar, `pane list`, `workspace delete` running-agents guard) all assume a fresh boot
   has zero active agents until hooks re-report.
 - **Private web pane contract**: flag persists, contents never do.
-- **`repo.path` UNIQUE + FK cascades + `foreign_keys=ON`** (better-sqlite3 requires the pragma
-  per connection, same as GRDB).
+- **`repo.path` UNIQUE + FK cascades + `foreign_keys=ON`** (`node:sqlite` requires the pragma
+  per connection, as GRDB did; `packages/daemon/src/db/adapter.ts:92`).
 
-**Where the port can and probably should diverge:**
+**Where Kelpi deliberately diverges from the legacy app, and where it deliberately does not:**
 
-- **Daemon-owned DB location**: `~/Library/Application Support/Kelpi/nex.db` is a macOS-ism. A
-  headless daemon should choose an XDG-style path (e.g. `~/.local/share/kelpi/nex.db` with
-  `$KELPI_DATA_DIR` override) and, on first run, MIGRATE by copying the legacy macOS path's file
-  if present so existing users keep their workspaces. Keep WAL mode (the daemon is long-lived
-  and single-writer; WAL also allows concurrent read snapshots for the web client).
-- **Per-field / per-entity saves**: the clear-and-reinsert full-snapshot model is simple and
-  matches TCA's "state is one value" world, but in a daemon that mutates state at higher
-  frequency (every socket command, every client edit) it causes needless churn (every pane row
-  rewritten because one label changed) and briefly holds a write lock on the whole dataset.
-  A port can keep the SAME schema but move to upsert/delete-by-id per entity, ideally still
-  behind a short debounce and always inside one transaction per logical mutation. If it does,
-  it must take over the invariants the snapshot model gave for free: orphan deletion (pane
-  rows for deleted workspaces — the FK cascade covers this if deletes go through the
-  `workspace` table), `sortOrder` renumbering on reorder, and appState upserts.
-- **Timestamps**: if the daemon owns fresh DBs (no adoption), switching to INTEGER epoch-ms or
-  ISO-8601 TEXT is reasonable — but then the adoption/migration step must convert, and the
-  wire surfaces (`workspace list` prints ISO 8601 already) must stay unchanged.
-- **JSON columns**: `layoutJSON`'s `_0`-keyed encoding is an artifact of Swift, not a design.
-  For daemon-created DBs a cleaner tagged form (`{"type":"split","direction":"horizontal",...}`)
-  is fine — but the reader must accept BOTH forms if old DBs are adopted, or a one-time v19
-  migration should rewrite the column. Same for `topLevelOrder`'s SidebarID encoding. Pick one:
-  dual-read or rewrite-migration; do not write the Swift shapes from TS by hand unless you
-  keep byte-compatibility tests.
-- **Quit flush**: a daemon can (and should) flush the pending debounced write on graceful
-  shutdown (SIGTERM handler), eliminating the 500 ms loss window the Mac app tolerates.
-- **appState growth**: the key/value table is the natural home for new daemon-level singletons
-  (schema version of the TS layer, last-connected client, etc.). Remember it is upsert-only —
-  design keys to be forward/backward compatible.
-- **Session resume ownership**: in the new architecture the daemon owns PTYs, so restore no
-  longer needs an app-launch trigger — the daemon can resume sessions on ITS start, and a
-  reconnecting client just renders. The allowlist gate must move with it. Also note the Mac
-  app types the resume command into the shell (visible to the user, runs under the user's
-  shell env/profile); a daemon spawning `claude --resume X` directly as the PTY command would
-  change semantics (shell rc files, cwd inheritance, what happens when the command exits) —
-  emulate the "type into an interactive shell" behavior.
-- **Settings/keybindings/profiles are NOT in this DB** — they live in `~/.config/nex/config`
-  and (macOS) UserDefaults. The port's daemon config story is a separate subsystem; nothing in
-  `nex.db` should absorb it silently.
+- **Daemon-owned DB location**: the daemon keeps its own file (`kelpid/kelpi.db`, §1) and never
+  opens the legacy app's `~/Library/Application Support/Nex/nex.db`, so the two can run side by
+  side without corrupting each other's state. There is no automatic first-run copy;
+  `kelpid import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]` performs the
+  one-time migration (`packages/daemon/src/main.ts:865-960`,
+  `packages/daemon/src/import/importer.ts:172-262`): the source is opened read-only and never
+  modified (`--from` defaults to the pre-rename daemon's `nexd/nex.db` when it exists, else the
+  legacy app's file); a populated or uninspectable target is refused unless `--force`, which
+  first copies it aside as `<target>.<timestamp>.bak`; and the import is refused outright while
+  a daemon is running against the target (`--force` does not override that). The converted
+  snapshot idles every status but keeps `agentSessionID` / `agentKind`, so the first boot after
+  the import resumes sessions exactly as §6.2 steps 4–8 describe; it also back-fills gray label
+  presets and sets `kelpid.labelPresetsMigrated`, and copies a legacy `~/.config/nex/config` to
+  `~/.config/kelpi/config` when no Kelpi config exists yet. WAL mode is kept (the daemon is
+  long-lived and single-writer; WAL also allows concurrent read snapshots for the web client).
+- **Per-field / per-entity saves (declined)**: the clear-and-reinsert full-snapshot model is
+  simple and matches the "state is one value" store, but in a daemon that mutates state at
+  higher frequency (every socket command, every client edit) it causes needless churn (every
+  pane row rewritten because one label changed) and briefly holds a write lock on the whole
+  dataset. Kelpi keeps the snapshot model anyway (§5.3), because it gives the invariants for
+  free that a per-entity model would have to take over: orphan deletion (pane rows for deleted
+  workspaces), `sortOrder` renumbering on reorder, and appState upserts. The debounce keeps the
+  churn bounded.
+- **Timestamps (declined)**: switching to INTEGER epoch-ms or ISO-8601 TEXT would have required
+  the adoption/migration step to convert; since Kelpi adopts legacy databases as they are, the
+  columns stay epoch-SECONDS floats (§2), and the wire surfaces (`workspace list` prints
+  ISO 8601) convert at the edge.
+- **JSON columns (declined)**: `layoutJSON`'s `_0`-keyed encoding is an artifact of the legacy
+  app's Codable, not a design. Rather than dual-read a cleaner tagged form or rewrite the
+  column in a migration, Kelpi writes the legacy shapes from `packages/core/src/codec/` and
+  keeps byte-compatibility fixtures (`packages/core/src/codec/fixtures.test.ts`). Same for
+  `topLevelOrder`'s SidebarID encoding.
+- **Quit flush (taken)**: the daemon flushes the pending debounced write on graceful shutdown
+  (§5.2), eliminating the 500 ms loss window the legacy app tolerated.
+- **appState growth (taken)**: the key/value table is the home for daemon-level singletons
+  (`kelpid.labelPresets`, `kelpid.snapshotVersion`, `kelpid.labelPresetsMigrated`, §2.4). It is
+  upsert-only, so keys are designed to be forward/backward compatible: an older reader ignores
+  them, a newer one defaults them.
+- **Session resume ownership (taken)**: the daemon owns PTYs, so restore needs no app-launch
+  trigger: the daemon resumes sessions on ITS start, and a reconnecting client just renders.
+  The allowlist gate moved with it. The legacy app typed the resume command into the shell
+  (visible to the user, running under the user's shell env/profile); spawning
+  `claude --resume X` directly as the PTY command would change semantics (shell rc files, cwd
+  inheritance, what happens when the command exits), so Kelpi emulates the "type into an
+  interactive shell" behavior (§6.2 step 7).
+- **Settings/keybindings/profiles are NOT in this DB**: they live in `~/.config/kelpi/config`
+  (`resolveConfigPath`, `packages/daemon/src/boot/config.ts:42-50`, with a `KELPID_CONFIG_PATH`
+  override; `kelpid import` copies a legacy `~/.config/nex/config` there once when no Kelpi
+  config exists, `packages/daemon/src/main.ts:903-910`) and, for the legacy app, UserDefaults.
+  The daemon config story is a separate subsystem; nothing in `kelpi.db` absorbs it silently.
 - **Graft sessions** are not in this DB either (breadcrumb files + in-memory service); listed
   here only so no one goes looking for a table.

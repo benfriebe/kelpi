@@ -1,15 +1,18 @@
 # Pane Layout Subsystem — Behavioral Specification
 
-Source of truth (Swift, do not consult for the port — this doc is the reference):
-`Nex/Models/PaneLayout.swift`, `Nex/Models/Pane.swift`, `Nex/Models/PaneType.swift`,
-`KelpiTests/PaneLayoutTests.swift`, plus the layout-touching parts of
-`Nex/Features/Workspace/WorkspaceFeature.swift`, `Nex/AppReducer+Socket.swift`,
-`Nex/Features/PaneGrid/PaneGridView.swift`, `Nex/Features/PaneGrid/SplitDividerView.swift`,
-and `Nex/Services/PersistenceService.swift` / `DatabaseService.swift`.
+This document specifies Kelpi's pane layout subsystem: the layout tree each workspace owns,
+its persisted encoding, the pure queries and mutations over it, the frame and divider
+geometry the client renders, and the pane record. The implementation is the shared
+`@kelpi/core` layout module (`packages/core/src/layout/types.ts`, `tree.ts`, `frames.ts`,
+`dropZone.ts`, `neighbor.ts`, `ratio.ts`, `predefined.ts`, `codec.ts`, `pane.ts`), consumed by
+the daemon's reducers (`packages/daemon/src/store/reducers/panes.ts`, `layout.ts`) and socket
+handlers (`packages/daemon/src/handlers/pane/`), by the web client's grid
+(`packages/client/src/grid/PaneGrid.tsx`, `divider.ts`), and by persistence
+(`packages/daemon/src/store/snapshot.ts`).
 
 This subsystem is pure logic plus a small amount of UI geometry. Every function here is a
-pure function from an immutable layout tree to a new tree (or a query result). The TS port
-should keep it that way: a standalone, side-effect-free module with 100% conformance-test
+pure function from an immutable layout tree to a new tree (or a query result), and the
+module stays that way: a standalone, side-effect-free package with 100% conformance-test
 coverage (test list at the end).
 
 ---
@@ -20,7 +23,7 @@ Each workspace owns exactly one layout tree describing how its panes tile the co
 The tree is a strict binary tree:
 
 ```ts
-type UUID = string; // canonical UUID string; Swift persists them UPPERCASE
+type UUID = string; // canonical UUID string; persisted UPPERCASE (packages/core/src/layout/codec.ts)
 
 type SplitDirection = "horizontal" | "vertical";
 // "horizontal" = children sit SIDE BY SIDE (left | right)  — created by ⌘D "split right"
@@ -62,16 +65,20 @@ Invariants (maintained by the mutation functions, not enforced by a validator):
 
 ```ts
 const DIVIDER_THICKNESS = 2; // logical px between split children, in every split
+const DIVIDER_HIT_INSET = 6; // px per side the divider grab strip extends past the bar (§7.4)
+const DIVIDER_MIN_DRAG_DISTANCE = 1; // px along the split axis before a divider drag activates
 ```
+
+All three live in `packages/core/src/layout/types.ts`.
 
 ---
 
 ## 2. Persisted JSON encoding (must match byte-for-byte semantics)
 
 The layout is persisted in the workspace DB row as a JSON string (`layoutJSON` column).
-The encoding is Swift's auto-synthesized `Codable` form for an enum with associated
-values. The TS daemon MUST read and write this exact shape so existing databases keep
-working:
+The encoding is the pre-port Swift app's auto-synthesized `Codable` form for an enum with
+associated values. The daemon reads and writes this exact shape
+(`packages/core/src/layout/codec.ts`) so databases written by that app keep working:
 
 ```json
 { "leaf":  { "_0": "AAAAAAAA-0000-0000-0000-000000000001" } }
@@ -99,8 +106,8 @@ Notes:
 - The unlabeled first associated value is keyed `_0` (the direction string for `split`,
   the UUID string for `leaf`). Labeled values keep their labels (`ratio`, `first`,
   `second`).
-- Swift writes UUIDs uppercase (`"AAAAAAAA-…"`). Parse case-insensitively; write
-  uppercase for compatibility.
+- UUIDs are written uppercase (`"AAAAAAAA-…"`), as the legacy app wrote them. The codec
+  parses case-insensitively and writes uppercase for compatibility.
 - On load, a workspace whose `layoutJSON` fails to parse falls back to `empty` (never an
   error). Missing/empty string → `empty`.
 - On save, the workspace persists `savedLayout ?? layout` — i.e. if a pane is currently
@@ -190,8 +197,10 @@ return { layout: replacing(layout, paneID, splitNode), newPaneID }
   `second` (right / bottom). So "split right" (`horizontal`) puts the new pane on the
   right; "split down" (`vertical`) puts it underneath.
 - Ratio is always exactly `0.5`.
-- `newPaneID` defaults to a freshly minted UUID; callers (CLI `pane split`/`pane create`)
-  may inject a pre-minted ID so the ack can carry the real pane id.
+- `newPaneID` is supplied by the caller: the model mints nothing
+  (`packages/core/src/layout/tree.ts:96-101`). The daemon pre-mints it (uppercase canonical
+  UUID, `mintPaneID` in `packages/daemon/src/handlers/pane/support.ts:81-83`) before dispatch
+  so the `pane split`/`pane create` ack can carry the real pane id.
 - If `paneID` is not in the tree, the layout is unchanged (via `replacing`'s no-op) but a
   `newPaneID` is still returned — callers guard against this before calling.
 
@@ -232,8 +241,8 @@ function draggedPaneGoesFirst(zone: DropZone): boolean {
 ### 5.2 `DropZone.calculate(point, rect) -> DropZone`
 
 Given the cursor position inside a target pane's rect, pick the closest edge.
-Coordinate system is **top-left origin, y increases downward** (web-native; matches the
-Swift UI coordinates used here).
+Coordinate system is **top-left origin, y increases downward** (web-native;
+`calculateDropZone` in `packages/core/src/layout/dropZone.ts`).
 
 ```
 dx = point.x - rect.midX          // rect.midX = rect.x + rect.width/2
@@ -274,17 +283,25 @@ Consequences:
 - Any ratio previously enclosing the moved pane is lost (collapse); the new split is 0.5.
 - **Edge case**: if `targetID` is not present in the tree after the removal step, the
   `replacing` is a no-op and the moved pane silently disappears from the layout while
-  still existing in the pane list. The Swift reducer guards this by verifying both panes
-  exist in the workspace's pane collection before calling (`movePane` action, §12.2), and
-  the socket handler additionally verifies both are in the *same* workspace. The TS port
-  must keep an equivalent guard.
+  still existing in the pane list. The reducer guards this by verifying both panes exist
+  in the workspace's visible pane list before calling (`move-pane-adjacent`,
+  `packages/daemon/src/store/reducers/panes.ts:642-657`; §12.2), and the socket handler
+  additionally verifies both are in the *same* workspace
+  (`packages/daemon/src/handlers/pane/geometry.ts`).
 - If `paneID` was not in the tree at all, this degenerates to "insert pane adjacent to
   target" (removal no-ops). This path is exercised in practice only via guarded callers.
 
-Reducer wrapper behavior (`movePane(paneID, targetPaneID, zone)` action):
-- no-op unless both panes exist in the workspace pane list;
+Reducer wrapper behavior (`move-pane-adjacent` action,
+`packages/daemon/src/store/reducers/panes.ts:642-657`):
+- no-op unless both panes exist in the workspace's visible pane list;
 - on success: layout ← movingPane(...), focus ← moved pane, `currentLayoutIndex ← null`
   (§11.3).
+- `paneID == targetID` passes the guard: `movingPane` returns the tree unchanged, but the
+  reducer still sets focus to the pane and clears `currentLayoutIndex`. This is a preserved
+  quirk (listed in the file header, `panes.ts:17-18`). Neither caller reaches it in
+  practice: the socket handler replies `"cannot move a pane adjacent to itself"` first
+  (`packages/daemon/src/handlers/pane/geometry.ts:154-157`, §12.2) and the grid's drop
+  handler ignores a drop onto the dragged pane (`packages/client/src/grid/PaneGrid.tsx:504`).
 
 ---
 
@@ -348,8 +365,8 @@ Notes:
   source's center.
 - **Tiebreaker**: on exactly equal distance, prefer the candidate closer to the top-left
   origin — smaller `midY` for left/right moves, smaller `midX` for up/down moves. This
-  must be deterministic regardless of map iteration order (the Swift tests loop 20x to
-  catch nondeterminism).
+  must be deterministic regardless of map iteration order (tests 26 and 27 in
+  `packages/core/src/layout/neighbor.test.ts` loop 20x to catch nondeterminism).
 - Returns `null` when nothing lies in that direction (e.g. the leftmost pane asked for
   `left`), and for a single-pane layout.
 - The `inDir` predicate is a half-plane test on the candidate's far edge, not an overlap
@@ -439,35 +456,60 @@ into `second`. Examples: `"d"` root, `"dL"` root's first child (must itself be a
 
 ### 7.4 Divider interaction (GUI behavior to re-create in the web client)
 
-From `SplitDividerView` + `PaneGridView.dividerView`:
+Implemented by `Divider`, `startDividerDrag`, `onDividerPointerMove` and `endDividerDrag`
+in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
+`packages/client/src/grid/divider.ts` over `packages/core/src/layout/frames.ts`:
 
 - **Visible bar**: `DIVIDER_THICKNESS` (2 px) thick, full length of the split's cross
   axis, painted in the chrome theme's divider color with a subtle overlay
   (secondary/20% normally, accent/50% while dragging).
-- **Hit area**: the hit target is the bar rect **inset by −4 px on every side**, i.e. a
-  10 px thick strip (2 + 4 + 4) extending 4 px into each neighboring pane, and 4 px
-  longer at each end. Pointer cursor: horizontal split → left-right resize cursor;
-  vertical split → up-down resize cursor (on hover).
-- **Drag**: minimum drag distance 1 px before it activates. On every drag-change event
-  the delta along the split axis (cumulative translation.x for horizontal, .y for
-  vertical, from gesture start) feeds:
+- **Hit area**: the hit target is the bar rect **inset by −6 px on every side**
+  (`DIVIDER_HIT_INSET`, `packages/core/src/layout/types.ts:61`; `dividerHitRect` in
+  `frames.ts:118`), i.e. a 14 px thick strip (2 + 6 + 6) extending 6 px into each
+  neighbouring pane and 6 px longer at each end. (The pre-port app used −4 px / 10 px; the
+  strip was widened deliberately, SPACING-REVIEW S48. The visible 2 px bar is unchanged:
+  `Divider` draws it at offset `DIVIDER_HIT_INSET` inside the strip, so the bar sits
+  exactly on `info.rect` whatever the inset.) Pointer cursor: horizontal split →
+  `col-resize`; vertical split → `row-resize` (on hover).
+- **Press resolution**: because grab strips overlap where a divider meets a perpendicular
+  one (a T-junction), the DOM's choice of which strip received the press is arbitrary.
+  `startDividerDrag` therefore re-resolves the press against every divider's bar with
+  `dividerAtPoint` (`divider.ts`, slop `DIVIDER_HIT_INSET + 1` = 7 px across the bar, the
+  bar's own extent along it): of the dividers whose band contains the point, the one with
+  the smallest across-axis distance wins, the earlier divider on ties. A press on no band
+  (only possible with a stale rect) keeps the divider the DOM chose.
+- **Drag**: minimum drag distance `DIVIDER_MIN_DRAG_DISTANCE` (1 px) along the split axis
+  before it activates (`dividerDragActivated`). The grid snapshots `firstSize`/`available`
+  at drag start (`dividerDragSnapshot`) and on every pointer move computes, from the
+  cumulative translation along the split axis (`.x` for horizontal, `.y` for vertical):
 
   ```
-  newRatio = (info.firstSize + delta) / info.available
-  dispatch updateSplitRatio(splitPath: info.id, ratio: newRatio)
+  newRatio = clamp((firstSizeAtDragStart + cumulativeDelta) / available)   // [0.1, 0.9]
   ```
 
-  `updateSplitRatio` clamps to `[0.1, 0.9]` (§9.1) and sets `currentLayoutIndex ← null`.
+  (`ratioForDividerDrag`, 1:1 tracking; the pre-port compounding quirk, §15.3, is fixed).
+  It previews that ratio locally every frame by applying `updatingSplitRatio` on top of the
+  daemon's tree (`PaneGrid.tsx:342-364`), and commits it to the daemon at most once per
+  `RATIO_COMMIT_INTERVAL_MS` (50 ms, leading edge, with a trailing flush on release so the
+  last position always wins; `throttleTrailing` in `divider.ts`). The commit's wire spelling
+  depends on the split (`dividerCommit` in `divider.ts`, `onSetRatio` in
+  `packages/client/src/App.tsx:4198-4209`):
+  - if the split has a leaf child, `pane-resize --ratio` for that pane with the pane's own
+    share (`share = paneIsFirst ? ratio : 1 - ratio`; `dividerPaneTarget` prefers `first`,
+    else `second`), the same `resizePaneShare` pipeline as §12.5
+    (`commands.setSplitRatio`, `packages/client/src/connection/commands.ts:475-477`);
+  - if both children are splits (e.g. the root divider of a 2×2 tiled layout), the WS-only
+    verb `set-split-ratio {workspace_id, split_path, ratio}`
+    (`commands.setSplitRatioAtPath`, `commands.ts:757-769`;
+    `packages/daemon/src/ws/sync.ts:777-802`), which dispatches the store's
+    `update-split-ratio`.
 
-  ⚠️ Port note: in the Swift implementation `info.firstSize` is re-read from the
-  re-rendered view on each event while `delta` stays cumulative from gesture start, which
-  compounds (the divider moves faster than the cursor). The *intended* behavior — and
-  what the TS port should implement — is 1:1 tracking: capture `firstSizeAtDragStart`
-  once when the drag begins and compute
-  `newRatio = (firstSizeAtDragStart + cumulativeDelta) / available`.
-- While a drag is active (and for 750 ms after it ends, and likewise during window
-  resizes) the app sets a transient "isResizing" flag used to overlay pane-size badges;
-  cosmetic only.
+  Both paths clamp to `[0.1, 0.9]` (§9.1) and set `currentLayoutIndex ← null`. A preview
+  computed against an older tree is dropped the moment a fresh tree arrives unless the
+  gesture is still running, in which case it re-applies to the newer tree.
+- While a drag is active (and for `RESIZE_BADGE_LINGER_MS` = 750 ms after it ends, and
+  likewise during window resizes) the grid sets a transient "resizing" flag used to overlay
+  pane-size badges (`PaneGrid.tsx:83`); cosmetic only.
 
 ### 7.5 Drop-zone overlay (GUI)
 
@@ -481,11 +523,17 @@ top    → { x: minX, y: minY, w: width,   h: height/2 }
 bottom → { x: minX, y: midY, w: width,   h: height/2 }
 ```
 
+Activation: a pane-header press starts a gesture, but the drag only activates once the
+pointer has travelled `PANE_MOVE_DRAG_THRESHOLD` = 8 px (Euclidean, `Math.hypot(dx, dy)`)
+from the press (`packages/client/src/grid/PaneGrid.tsx:81, 512-516`); until then nothing is
+highlighted and a release is a plain click.
+
 Hit-testing during the drag: compute `paneFrames` for the current grid size, find the
-pane (other than the dragged one) whose rect contains the cursor (first match in
-iteration order; rects don't overlap so order doesn't matter apart from divider strips,
-which belong to no pane), then `DropZone.calculate(cursor, thatRect)`. Dropping with a
-valid target dispatches `movePane(source, target, zone)`; dropping elsewhere does
+pane (other than the dragged one) whose rect contains the cursor (`paneAtPoint` in
+`packages/core/src/layout/frames.ts`; first match in iteration order; rects don't overlap
+so order doesn't matter apart from divider strips, which belong to no pane), then
+`calculateDropZone(cursor, thatRect)`. Dropping with a valid target sends
+`pane-move-adjacent` (§12.2); dropping elsewhere, or onto the dragged pane itself, does
 nothing. The dragged pane renders at 50% opacity during the drag.
 
 ---
@@ -708,29 +756,33 @@ currentLayoutIndex ← index
 
 Any operation that structurally changes the tree or manually changes a ratio sets
 `currentLayoutIndex ← null`, so the next `cycleLayout` restarts from index 0. The reset
-sites in the current app: splitting (both GUI split and CLI-injected splits/creates),
-creating a pane into an empty workspace, closing/removing a pane, opening
-markdown/diff/web/scratchpad panes (they insert panes), `movePane` (drag-drop /
-`pane move --target`), `movePaneInDirection` (directional swap), `updateSplitRatio`
-(divider drag), `pane resize` (CLI), and reopening a closed pane. Rule of thumb for the
-port: **every layout mutation except `cycleLayout`/`selectLayout` themselves clears the
-index** (zoom/un-zoom does NOT clear it — zoom parks the tree and restores it, and
-cycle/select handle the zoomed case explicitly).
+sites (`packages/daemon/src/store/reducers/panes.ts`): splitting (both GUI split and
+CLI-injected splits/creates), closing/removing a pane, opening markdown/diff/web/scratchpad
+panes (they insert panes), `move-pane-adjacent` (drag-drop / `pane move --target`),
+`move-pane-direction` (directional swap), `update-split-ratio` and `resize-pane` (divider
+drag, `pane resize`), `move-pane-to-workspace` (both workspaces), parking/unparking a pane
+(`kelpi open --here`), and reopening a closed pane. `create-pane` (the empty-workspace
+first-pane path) does NOT clear the index: it replaces the tree with a single leaf
+(`panes.ts:87-92`), and the index is already `null` on any workspace that route can reach.
+Rule of thumb: **every layout mutation except `cycleLayout`/`selectLayout` themselves
+clears the index** (zoom/un-zoom does NOT clear it: zoom parks the tree and restores it,
+and cycle/select handle the zoomed case explicitly).
 
 ---
 
 ## 12. Layout-adjacent workspace behaviors (context for integration)
 
-These live outside `PaneLayout` but are the only consumers of its API; the port needs
-them to wire the module correctly.
+These live outside the layout module but are the only consumers of its API; they are what
+wires it into the daemon (`packages/daemon/src/store/reducers/panes.ts`, `layout.ts`,
+`packages/daemon/src/handlers/pane/`).
 
 ### 12.1 GUI split (⌘D split right / ⌘⇧D split down; CLI `pane split`)
 
 - Source pane = explicitly targeted pane, else the focused pane; no-op if none.
 - If zoomed: restore `savedLayout`, clear zoom state, then split within the restored
   tree.
-- New pane: fresh UUID (or CLI-injected), `workingDirectory` inherited from the source
-  pane, optional label. Appended to the pane list; layout ← `splitting(...)`; focus moves
+- New pane: fresh UUID minted by the daemon handler (§4.3), `workingDirectory` inherited
+  from the source pane, optional label. Appended to the pane list; layout ← `splitting(...)`; focus moves
   to the **new** pane; `currentLayoutIndex ← null`; a PTY surface is spawned for it.
 - `createPane` (CLI `pane create` into an empty workspace) instead sets
   `layout ← leaf(newPaneID)` semantics via the same splitting path when a source exists,
@@ -752,6 +804,13 @@ them to wire the module correctly.
 - `layout ← swappingLeaves(focused, neighbor)` — the two panes exchange positions, tree
   shape and all ratios untouched. Focus stays on the same pane id (which now sits in the
   neighbor's old slot). `currentLayoutIndex ← null`.
+- The wire command `pane-move` is fire-and-forget and names a pane (`pane_id`). Its handler
+  (`handlePaneMove`, `packages/daemon/src/handlers/pane/geometry.ts:110-125`) dispatches
+  `focus-pane` for that pane first and then `move-pane-direction`, so the swap always acts
+  on the caller pane and leaves it focused. The client keybinds send the same command with
+  the focused pane (`packages/client/src/App.tsx:1401-1404`), so the reducer's "no focused
+  pane" branch is unreachable from every current caller. The zoomed and no-neighbour no-ops
+  produce no reply.
 
 ### 12.4 Zoom (`toggleZoomPane`)
 
@@ -834,8 +893,10 @@ type AgentKind = "claude" | "codex";
 
 ### 13.1 AgentKind helpers (behavioral contract)
 
-- `fromWire(raw: string | undefined): AgentKind` — lowercase the input and match;
-  absent or unrecognized → `"claude"` (back-compat: an old CLI without the `agent`
+(`packages/core/src/agent/session.ts`)
+
+- `agentKindFromWire(raw: string | null | undefined): AgentKind`: lowercase the input and
+  match; absent or unrecognized → `"claude"` (back-compat: an old CLI without the `agent`
   field keeps pre-existing behavior).
 - `isSafeSessionID(id: string): boolean` — `id.length >= 1 && id.length <= 128` and
   every char is ASCII alphanumeric or `.` `_` `-`. Anything else is rejected.
@@ -849,22 +910,23 @@ type AgentKind = "claude" | "codex";
 
 | Field | Type | Default | Persisted? | Meaning |
 |---|---|---|---|---|
-| `id` | UUID | new UUID | yes (`id`) | Stable pane identity; keys the layout leaf, the PTY surface, CLI `--target`, `NEX_PANE_ID`. |
+| `id` | UUID | new UUID | yes (`id`) | Stable pane identity; keys the layout leaf, the PTY surface, CLI `--target`, `KELPI_PANE_ID`. |
 | `label` | string \| null | null | yes (`label`) | User/CLI-assigned name (`kelpi pane name`); resolvable as a `--target` within a workspace scope. |
 | `type` | PaneType | `"shell"` | yes (`type`) | Pane kind; only `shell` panes have terminal surfaces / can sync input / be captured. |
 | `title` | string \| null | null | **no** | Live terminal title reported by the terminal (OSC); display-only, reset on restart. |
 | `workingDirectory` | string | user home dir | yes (`workingDirectory`) | Cwd the PTY spawns in; updated on pwd-change events; for markdown/diff panes: the file's parent dir / repo path. |
 | `gitBranch` | string \| null | null | **no** | Branch detected for `workingDirectory`; recomputed live, not stored. |
-| `status` | PaneStatus | `"idle"` | yes (`status`) | Agent lifecycle status driving badges/notifications. |
+| `status` | PaneStatus | `"idle"` | yes (`status`; written to the row but reset to `"idle"` on load by the agent-monitoring load pass (`applyLoadReset`, `packages/daemon/src/store/snapshot.ts:312-327`; `resetPaneAgentStateOnLoad`, `packages/core/src/agent/session.ts:75-83`), so a restart never restores a non-idle value: a status describes a live PTY, and a persisted `running` would falsely trip the quit dialog) | Agent lifecycle status driving badges/notifications. |
 | `filePath` | string \| null | null | yes (`filePath`) | Markdown file path, or diff scope path; null for shells. |
 | `isEditing` | boolean | false | **no** | Markdown pane view/edit mode toggle (⌘E). |
 | `externalEditorCommand` | string \| null | null | **no** | When set on a markdown pane in edit mode, the `$EDITOR` shell command run in an attached terminal surface instead of the built-in editor. Transient. |
 | `scratchpadContent` | string \| null | null | yes (`content` column) | In-memory text of a scratchpad pane; persisted to DB, never written to a file. |
 | `agentSessionID` | string \| null | null | yes (`agentSessionID`) | Latest Claude/Codex session id bound via lifecycle hooks; drives resume-on-restart. Cleared on load for exited sessions per the agent-monitoring subsystem's rules. |
 | `agentKind` | AgentKind \| null | null | yes (`agentKind`, nullable; DB migration `v18_pane_agent_kind`) | Last-known agent CLI seen in this pane; picks badge label and resume command. Deliberately NOT cleared when `agentSessionID` is cleared on state load. Null = never saw an agent (badge falls back to "claude"). |
-| `markdownFontSize` | number | 14 (`defaultMarkdownFontSize`) | **no** | Markdown preview body font size (px); ⌘= / ⌘- adjust, ⌘0 resets to 14. Per-pane, in-memory. |
+| `agentProfileName` | string \| null | null | yes (`agentProfileName`, nullable; daemon-only DB migration `v19_pane_agent_profile`, `packages/daemon/src/db/schema.ts:189-194`) | The effective profile name (`KELPI_PROFILE`) the agent session was launched under, so a resume can rebuild the same environment. Null = unknown, resume uses the workspace's current profile. A last-known value like `agentKind`: kept across the load-time session clear (`packages/core/src/agent/session.ts:75-83`), captured into resume tuples, snapshotted on close and restored on reopen (`packages/daemon/src/store/reducers/panes.ts:168, 350-353`). Declared in `packages/core/src/layout/pane.ts:64-70`. |
+| `markdownFontSize` | number | 14 (`DEFAULT_MARKDOWN_FONT_SIZE`) | **no** | Markdown preview body font size (px); ⌘= / ⌘- adjust, ⌘0 resets to 14. Per-pane, in-memory. `set-markdown-font-size` (`packages/daemon/src/store/reducers/panes.ts:744-753`) ignores non-markdown panes and markdown panes in edit mode, and stores `max(8, min(32, round(size)))`. Closing a pane snapshots the value (`panes.ts:169`) and `reopen-closed-pane` restores it alongside `agentKind`/`agentProfileName` (`panes.ts:350-353`), so it survives close → reopen even though it never reaches the DB. |
 | `parkedSourcePaneID` | UUID \| null | null | **no** | On a markdown pane opened via `kelpi open --here`: points to the parked source pane; closing this pane restores the source instead of a normal close. |
-| `agentStartedAt` | timestamp \| null | null | **no** | Wall-clock start of the current agent run, for the "claude · mm:ss" elapsed badge. Set only on a non-running → running transition (repeated start pings within a run don't reset it). Null after restart until the resumed agent re-emits a start. |
+| `agentStartedAt` | epoch **milliseconds** \| null (`EpochMilliseconds`, JS `Date.now()`; NOT the Unix-seconds encoding of the persisted `createdAt`/`lastActivityAt`. Mixing the two silently renders a "0s" elapsed badge; `packages/core/src/layout/pane.ts:35-43`, `packages/daemon/src/store/types.ts:13-16`) | null | **no** | Wall-clock start of the current agent run, for the "claude · mm:ss" elapsed badge. Set to `now` on EVERY `agentStarted`, including a `start` that arrives while the pane is already `running` (that means the previous stop was missed, so it is treated as a fresh run and the elapsed clock restarts; `packages/core/src/agent/machine.ts:83-93`, `packages/daemon/src/handlers/app/events.ts:96-100`). The non-running → running-only rule applies to `agentStopped` with `background_tasks > 0` (`machine.ts:70`) and to the manual `setPaneStatus` override (`machine.ts:193-196`), not to `agentStarted`. Null after restart until the resumed agent re-emits a start. |
 | `backgroundTaskCount` | number | 0 | **no** | Count of Claude Code background units still in flight (from the `background_tasks` hook field). Non-zero keeps the pane `"running"` after a Stop instead of flipping to `"waitingForInput"`. Reset to 0 on the next `start`/`error`. Surfaces in `pane list --json` as `background_tasks` and in the header badge as "· N running". |
 | `createdAt` | timestamp | now | yes (`createdAt`, Unix seconds float) | Creation time. |
 | `lastActivityAt` | timestamp | now | yes (`lastActivityAt`, Unix seconds float) | Last title/pwd/agent activity; feeds workspace `last_activity_at`. |
@@ -883,7 +945,8 @@ string; `SESSION` prints a truncated `agentSessionID` or `-`.
 
 ## 14. Conformance test list (port these 1:1)
 
-From `PaneLayoutTests` (all pure-model):
+The numbered cases below are the `it` titles in `packages/core/src/layout/tree.test.ts`,
+`ratio.test.ts`, `neighbor.test.ts` and `codec.test.ts` (all pure-model):
 
 **allPaneIDs**
 1. `leafReturnsOneID` — `allPaneIDs(leaf(a)) == [a]`.
@@ -952,7 +1015,7 @@ From `PaneLayoutTests` (all pure-model):
 30. `codableRoundTrip` — encode `split(h, .6, leaf(a), split(v, .4, leaf(b), leaf(c)))`
     to the §2 JSON and decode back to a deep-equal tree.
 
-From `PredefinedLayoutTests`:
+In `packages/core/src/layout/predefined.test.ts` (44-48 are in `ratio.test.ts`):
 
 **guards**
 31. `singlePaneReturnsLeafForAll` — every kind with `[a]` → `leaf(a)`.
@@ -997,81 +1060,99 @@ From `PredefinedLayoutTests`:
 49. `allPaneIDsPreserved` — for 5 random ids and every kind:
     `set(allPaneIDs(build)) == set(ids)`.
 
-Ratio comparisons in tests 34, 35, 42 use exact double arithmetic (`1.0/3.0`); the TS
-port should compare with the same IEEE-754 doubles (JS numbers are the same doubles, so
-`1/3 === 1/3` holds — just construct expected values the same way, don't round).
+Ratio comparisons in tests 34, 35, 42 use exact double arithmetic (`1/3`); the tests
+compare IEEE-754 doubles constructed the same way as the implementation (`1/3 === 1/3`
+holds), never rounded values.
 
 ---
 
-## 15. Port notes
+## 15. Compatibility rationale
 
-1. **Keep it pure and shared.** This module is consumed by the daemon (wire commands
+These items record quirks and constraints the code preserves on purpose so that the
+pre-port `kelpi` CLI, hook scripts and saved state keep working, and why the code does what
+it does where the reason is not obvious from the behaviour alone.
+
+1. **Pure and shared.** This module is consumed by the daemon (wire commands
    `pane-split`, `pane-create`, `pane-close`, `pane-move`, `pane-move-adjacent`,
-   `pane-resize`, `layout-cycle`, `layout-select`), by the web client (frame + divider
-   geometry, drag-drop), and by persistence. Implement it once as a dependency-free TS
-   package with immutable operations; both daemon and client import it. Frame math must
-   be identical on both sides or divider drags will jitter.
+   `pane-resize`, `layout-cycle`, `layout-select`, `pane-move-to-workspace`, and the
+   WS-only `toggle-zoom` and `set-split-ratio` listed in `WS_ONLY_COMMANDS`,
+   `packages/daemon/src/ws/sync.ts:357-364`; plus the park/unpark/reuse path behind
+   `kelpi open --here`), by the web client (frame + divider geometry, drag-drop), and by
+   persistence. It is implemented once as a dependency-free package
+   (`packages/core/src/layout/`) with immutable operations; both daemon and client import
+   it. Frame math is identical on both sides, otherwise divider drags would jitter.
+   Beyond the §12 consumers, `pane-move-to-workspace`
+   (`packages/daemon/src/handlers/pane/geometry.ts:181-207`,
+   `packages/daemon/src/store/reducers/panes.ts:536-608`) removes the pane from the source
+   tree, un-zooms the source if that pane was zoomed, splits the target's focused pane
+   horizontally (or becomes the root leaf of an empty target) and clears BOTH workspaces'
+   `currentLayoutIndex`; `parkPane`/`unparkPane` (`panes.ts:232-286`) likewise remove or
+   re-insert a leaf and clear the index.
 
-2. **DB compatibility.** The `layoutJSON` shape in §2 is the existing on-disk format
-   (Swift Codable enum encoding, `_0` keys, uppercase UUIDs, `{"empty":{}}`). The TS
-   daemon must parse it (case-insensitive UUIDs, tolerate unknown keys) and should write
-   the same shape so a rollback to the Swift app keeps working during the transition. If
-   you introduce a cleaner native format, do it behind a migration, not silently.
+2. **DB compatibility.** The `layoutJSON` shape in §2 is the on-disk format the pre-port
+   Swift app wrote (Codable enum encoding, `_0` keys, uppercase UUIDs, `{"empty":{}}`). The
+   daemon parses it (case-insensitive UUIDs, tolerating unknown keys) and writes the same
+   shape (`packages/core/src/layout/codec.ts`) so a database written by that app loads
+   unchanged. A cleaner native format would go behind a migration, not in silently.
 
-3. **Fix the divider-drag compounding quirk deliberately** (§7.4). The Swift code
-   recomputes `firstSize` mid-gesture while the delta stays cumulative, so the divider
-   outruns the cursor. Port the *intended* math: snapshot `firstSize`/`available` at
-   drag start, `newRatio = (startFirstSize + cumulativeDelta) / available`, clamp in the
-   model. Everything else about the divider (2 px bar, 10 px hit strip via −4 px inset,
-   per-axis resize cursor, min drag distance 1 px) should be replicated in the web UI.
+3. **The divider-drag compounding quirk is fixed deliberately** (§7.4). The pre-port
+   code recomputed `firstSize` mid-gesture while the delta stayed cumulative, so the
+   divider outran the cursor. The code implements the *intended* math: snapshot
+   `firstSize`/`available` at drag start, `newRatio = (startFirstSize + cumulativeDelta) /
+   available`, clamp in the model (`ratioFromDividerDrag`,
+   `packages/core/src/layout/frames.ts`; pinned by `frames.test.ts`). Everything else about
+   the divider (2 px bar, 14 px hit strip via −6 px inset, per-axis resize cursor, min drag
+   distance 1 px) is replicated in the web UI.
 
 4. **Coordinate system.** All geometry here is top-left origin, y-down — exactly what
-   the DOM gives you. `DropZone.calculate`'s `ny > 0 → bottom` already assumes y-down;
-   no flipping needed.
+   the DOM gives. `calculateDropZone`'s `ny > 0 → bottom` already assumes y-down;
+   no flipping is needed.
 
-5. **`currentLayoutIndex` is transient per-workspace UI state**, not persisted. In the
-   new architecture it should live in the daemon's workspace state (so `kelpi layout
-   cycle` from the CLI and a web-client button share the same cycle position), and every
-   layout-mutating command must clear it (§11.3). Zoom does not clear it, but
-   cycle/select must un-zoom first.
+5. **`currentLayoutIndex` is transient per-workspace UI state**, not persisted. It lives
+   in the daemon's workspace state (so `kelpi layout cycle` from the CLI and a web-client
+   button share the same cycle position), and every layout-mutating command clears it
+   (§11.3). Zoom does not clear it, but cycle/select un-zoom first.
 
 6. **Guards live above the model.** `movingPane`, `swappingLeaves`, and `splitting` have
    sharp edges when given IDs not present in the tree (silent pane loss in `movingPane`,
-   one-way rename in `swappingLeaves`). The daemon's command handlers must validate
+   one-way rename in `swappingLeaves`). The daemon's command handlers validate
    pane existence / same-workspace membership / X≠Y before touching the tree, and reply
-   `{"ok":false,"error":...}` for CLI callers — never "fix" the model functions to
-   throw, or the conformance tests (20) break.
+   `{"ok":false,"error":...}` for CLI callers. The model functions never throw; making them
+   throw would break the conformance tests (20).
 
-7. **Ratios are floats end-to-end.** No rounding in the model; clamp only at the two
-   user-driven entry points (`updatingSplitRatio` internally, and `pane resize`'s share
-   clamp before converting share→ratio for second-child panes: `newRatio = paneIsFirst ?
-   share : 1 - share`). `buildLayout` outputs unclamped ratios like `1/N`.
+7. **Ratios are floats end-to-end.** No rounding in the model; clamping happens only at
+   the two user-driven entry points (`updatingSplitRatio` internally, and `pane resize`'s
+   share clamp before converting share→ratio for second-child panes: `newRatio =
+   paneIsFirst ? share : 1 - share`). `buildLayout` outputs unclamped ratios like `1/N`.
 
 8. **The divider consumes layout space.** `available = total - 2` per split nests, so
    "even" layouts are only approximately even in pixels and deep combs lose 2 px per
-   level. This is accepted behavior; pin tree shapes in tests, not pixel equality. If
-   the web client renders dividers with CSS gaps instead, it must still use *this*
-   frame math for hit-testing and for `neighborPaneID` (whose tolerance constant
-   `DIVIDER_THICKNESS + 1 = 3` depends on it).
+   level. This is accepted behavior; the tests pin tree shapes, not pixel equality. The
+   web client uses *this* frame math for hit-testing and for `neighborPaneID` (whose
+   tolerance constant `DIVIDER_THICKNESS + 1 = 3` depends on it).
 
 9. **`neighborPaneID` uses a fixed 10000×10000 canonical bounds**, independent of the
-   actual window size. Keep that: it makes directional navigation resolution-independent
-   and deterministic. Keep the exact tiebreaker (secondary key = candidate midY/midX,
-   strictly smaller wins on distance ties) — tests 26/27 exist precisely because a hash-
-   map iteration order once made this nondeterministic; in TS, iterate a sorted or
-   insertion-ordered structure and apply the tiebreaker explicitly anyway.
+   actual window size. That makes directional navigation resolution-independent and
+   deterministic. The exact tiebreaker (secondary key = candidate midY/midX, strictly
+   smaller wins on distance ties) is applied explicitly; tests 26/27 exist precisely
+   because a hash-map iteration order once made this nondeterministic
+   (`packages/core/src/layout/neighbor.ts`).
 
 10. **Pane model persistence split matters.** Only the columns marked "yes" in §13.2
     survive restart. Transient fields (`title`, `isEditing`, `agentStartedAt`,
     `backgroundTaskCount`, `markdownFontSize`, `parkedSourcePaneID`,
-    `externalEditorCommand`, `gitBranch`) must be reconstructed as empty/defaults on
-    load. `agentKind` persists even when `agentSessionID` is cleared on load — the
-    restore path reads it to build the resume command before the clearing pass.
+    `externalEditorCommand`, `gitBranch`) are reconstructed as empty/defaults on
+    load. `agentKind` and `agentProfileName` persist even when `agentSessionID` is cleared
+    on load; the restore path reads them to build the resume command before the clearing
+    pass.
 
-11. **Multi-client future.** In the Swift app one process owns the tree; in new_nex the
-    daemon owns it and clients render `paneFrames` locally from a replicated tree.
-    Divider drags should send `updateSplitRatio(splitPath, ratio)` (path encoding §7.3)
-    rather than pixel values, exactly like the current action, so concurrent clients at
-    different window sizes stay consistent. Split paths are positional and become stale
-    after any structural change — the daemon should treat a path that no longer lands on
-    a split as the no-op the model already makes it.
+11. **Multi-client.** The daemon owns the tree and clients render `paneFrames` locally
+    from a replicated tree. Divider drags send a ratio/share, never pixels: `pane-resize`
+    (pane + share) when the split has a leaf child, else `set-split-ratio` (split path +
+    ratio; path encoding §7.3), see §7.4, so concurrent clients at different window sizes
+    stay consistent. Split paths are positional and become stale after any structural
+    change. The model treats a path that no longer lands on a split as a no-op
+    (`packages/core/src/layout/ratio.ts`); the `set-split-ratio` wire verb checks first
+    and replies `{"ok":false,"error":"no split at path '<path>'"}`
+    (`packages/daemon/src/ws/sync.ts:788-793`) so a client that previewed against a stale
+    tree finds out rather than seeing a silent success.

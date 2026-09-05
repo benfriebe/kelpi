@@ -1,7 +1,11 @@
 # Agent Lifecycle — Behavioral Specification
 
-Spec for the daemon's agent-tracking module and the web client's status UI. Written for
-TypeScript implementers porting the macOS Kelpi app; no Swift source reading required.
+Spec for Kelpi's agent tracking: the daemon's agent-tracking module
+(`packages/core/src/agent/`, driven by `packages/daemon/src/handlers/app/events.ts`), the
+`kelpi event` hook command, and the status UI in the web client and the Electron shell.
+It describes what Kelpi does today, in the present tense; the closing Compatibility
+rationale records the quirks kept on purpose so older hook installs and saved state keep
+working.
 
 Scope: hook wiring (Claude Code + Codex CLI), the `kelpi event` CLI command, the wire
 protocol for agent lifecycle messages, the per-pane agent state machine, session-id
@@ -65,7 +69,7 @@ interface PaneAgentFields {
   agentKind: AgentKind | null;     // persisted; NEVER cleared on load (last-known display value)
   agentProfileName: string | null; // persisted; NOT cleared on load — effective KELPI_PROFILE
                                    // the session was launched under (null = unknown/legacy CLI)
-  agentStartedAt: Date | null;     // transient (in-memory only) — wall-clock start of current run
+  agentStartedAt: EpochMilliseconds | null; // transient (in-memory only): epoch ms start of current run
   backgroundTaskCount: number;     // transient — default 0; count of in-flight background units
 }
 ```
@@ -82,17 +86,27 @@ interface PaneAgentFields {
 - `agentStartedAt` powers the elapsed badge ("claude · 4m 9s"). Because it is not
   persisted, a pane restored as `.running` (which cannot happen after §6.1's reset,
   but conceptually) or resumed after relaunch shows no elapsed clock until the agent
-  re-emits a start.
+  re-emits a start. Kelpi holds it as epoch **milliseconds** (`EpochMilliseconds`, the
+  JS `Date.now()` clock the state machine stamps it with:
+  `packages/core/src/layout/pane.ts:35-43`, `:76-77`,
+  `packages/core/src/agent/machine.ts:30`, `:89`), not the Unix-seconds `EpochSeconds`
+  encoding of the persisted `createdAt`/`lastActivityAt`
+  (`packages/daemon/src/store/types.ts:13-16`); mixing the two silently renders a "0s"
+  elapsed badge. No ISO string or `Date` is held in the model.
 - `backgroundTaskCount` is not persisted; reset to 0 on the next `start`, `error`,
   `session-start`, or manual status override.
 
 ### 1.4 Persistence
 
 The DB pane record stores: `status` (text, default `"idle"`), `agentSessionID`
-(text, nullable — historically named `claudeSessionID`, renamed by migration so the
-schema is not pinned to one agent), and `agentKind` (text, nullable — migration
-`v18_pane_agent_kind`). On load, `status` strings that don't parse fall back to
-`"idle"`, and unknown `agentKind` strings fall back to null.
+(text, nullable; historically named `claudeSessionID`, renamed by migration so the
+schema is not pinned to one agent), `agentKind` (text, nullable; migration
+`v18_pane_agent_kind`), and `agentProfileName` (text, nullable; migration
+`v19_pane_agent_profile`, listed in `DAEMON_ONLY_MIGRATIONS` because no legacy `nex.db`
+ledger can contain it, `packages/daemon/src/db/schema.ts:189-205`). On load, `status`
+strings that don't parse fall back to `"idle"`, unknown `agentKind` strings fall back to
+null, and a missing `agentProfileName` reads as null
+(`packages/daemon/src/store/snapshot.ts:194`).
 
 Persist triggers relevant to this subsystem: every agent lifecycle event
 (`agentStarted` / `agentStopped` / `agentError` / `sessionStarted`) triggers a
@@ -106,12 +120,15 @@ launch). Manual status override persists too.
 
 Kelpi learns about agent activity exclusively through lifecycle hooks that the agent
 CLIs fire. Each hook runs `kelpi event <type>` inside the pane's PTY environment
-(which carries `NEX_PANE_ID=<pane uuid>`), and the CLI forwards a JSON line over
-the daemon socket.
+(which carries `KELPI_PANE_ID=<pane uuid>` and, when the daemon advertises a route,
+`KELPI_SOCKET`; `packages/core/src/env/merged-env.ts:14-16, 95`), and the CLI forwards
+a JSON line over the daemon socket. The daemon injects only `KELPI_*` variables: there
+is no `NEX_PANE_ID` / `NEX_SOCKET` fallback anywhere in the CLI or the daemon.
 
 ### 2.1 Claude Code hooks (`~/.claude/settings.json`, `"hooks"` key)
 
-Installed by `install-hooks.sh`. Expected set (the doctor's `expectedHooks`):
+Installed by `kelpi install-hooks` (§2.3). Expected set (the doctor's `expectedHooks`,
+`packages/cli/src/doctor/hooks.ts`):
 
 | Claude Code hook event | Command                     | Meaning to Kelpi                     |
 | ---------------------- | --------------------------- | ---------------------------------- |
@@ -128,6 +145,13 @@ Installed by `install-hooks.sh`. Expected set (the doctor's `expectedHooks`):
   semantics: `*`/empty = match all; a value of only letters/digits/`_-`/spaces/`,|`
   is a `|`- or `,`-separated exact list (whitespace-trimmed); anything else is an
   unanchored regex (a regex that fails to compile covers nothing).
+- The doctor reads both `settings.json` and `settings.local.json` under `~/.claude`
+  (a hook wired in either file counts; `packages/cli/src/doctor/hooks.ts:116`). It
+  accepts the `kelpi `, `nex `, `kelpi.js ` and `nex.js ` command prefixes as wired
+  (`hooks.ts:99-112`): a pre-rename install or one that invokes the CLI by its entry
+  file fires identically, so neither is prescribed a repair. It flags
+  `"disableAllHooks": true` (the last file that defines it wins, local over user;
+  `hooks.ts:150-155`) because that silences every hook, Kelpi's included.
 
 ### 2.2 Codex CLI hooks (`~/.codex/hooks.json`)
 
@@ -143,7 +167,7 @@ Expected set (`expectedCodexHooks`):
 | `PermissionRequest` | `kelpi event notification --agent codex` |
 | `SessionStart`      | `kelpi event session-start --agent codex`|
 
-Codex known limitations (all deliberate, document them for the port):
+Codex known limitations (all deliberate):
 
 - No SessionEnd → a stale codex session id can persist after codex exits; a later
   restart may `codex resume` a dead session, and the pane sits in the footer's
@@ -156,24 +180,46 @@ Codex known limitations (all deliberate, document them for the port):
 
 ### 2.3 Installer merge semantics (`install-hooks.sh` + `merge_hooks.py`)
 
-Safe to re-run; this is the repair path doctor suggests. Behavior to reproduce:
+The installer is `kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link]
+[--dry-run] [--json] [--command <prefix>] [--install-dir <dir>] [--skill-source <path>]`
+(`packages/cli/src/commands/install-hooks.ts`), which replaces the `install-hooks.sh` +
+`merge_hooks.py` scripts the heading names; the merge itself is a line-by-line port of
+the Python (`packages/cli/src/install/merge.ts`). Safe to re-run; this is the repair
+path doctor names. Behavior:
 
 - If the settings file doesn't exist, write the hooks JSON verbatim.
-- Otherwise deep-merge: for each event, first **remove any existing hook whose
-  command contains an incoming command's flag-less base** — the base is everything
-  before the first `" --"` (so `kelpi event stop`, `/Applications/Nex.app/Contents/Helpers/nex event stop`,
-  and `kelpi event stop --agent codex` all share the base `kelpi event stop`). Then
+- Otherwise back the file up to `<file>.kelpi-backup` before the first write (a re-run
+  that produces identical bytes reports `unchanged` and writes neither the file nor the
+  backup; `packages/cli/src/install/hooks.ts:19-38`) and deep-merge: for each event,
+  first **remove any existing hook whose command contains an incoming command's
+  flag-less base**, the base being everything before the first `" --"` (so
+  `kelpi event stop`, `/Applications/Nex.app/Contents/Helpers/nex event stop`, and
+  `kelpi event stop --agent codex` all share the base `kelpi event stop`), OR whose base
+  ends in `kelpi`/`nex` (optionally `.js`/`.mjs`/`.cjs`, optionally quoted) followed by
+  `event <verb>` (`kelpiInvocationPattern`, `merge.ts:60-75`; used in union with the
+  substring test, never instead of it, so an absolute-path install such as
+  `/Users/x/kelpi.js event stop` and a bare `kelpi event stop` are one identity). Then
   drop hook groups left empty, then append the incoming hooks into the group whose
   `matcher` equals the incoming group's matcher (creating the group if none matches).
-- Deliberate trade-off: the substring sweep also removes a *composite* user command
-  embedding a kelpi base (e.g. `notify.sh && kelpi event stop`) — keeping it would
-  double-fire, which is the worse failure mode.
-- Unrelated user hooks are preserved.
-- The Codex section runs last and is non-fatal: a malformed `~/.codex/hooks.json`
-  must not abort an installer whose Claude-hook job already succeeded. Skipped
-  entirely when `~/.codex` doesn't exist.
-- Also installs `kelpi` (symlink) into `KELPI_INSTALL_DIR` (default `/usr/local/bin`)
-  and warns if that dir isn't on `PATH` — the hooks invoke bare `kelpi`.
+- Deliberate trade-off: the sweep also removes a *composite* user command embedding a
+  kelpi base (e.g. `notify.sh && kelpi event stop`): keeping it would double-fire, which
+  is the worse failure mode.
+- Unrelated user hooks are preserved. A malformed existing file is a typed failure with
+  a repair line, and nothing is written.
+- The Codex section runs last and is non-fatal: a malformed `~/.codex/hooks.json` does
+  not abort an installer whose Claude-hook job already succeeded. Skipped entirely when
+  `~/.codex` doesn't exist. The exit code follows the Claude half only.
+- The hook command is resolved, not assumed (`packages/cli/src/install/self.ts`):
+  `--command <prefix>` wins; otherwise a `kelpi` on `PATH` that resolves to this very
+  binary yields the bare `kelpi`; otherwise the hooks get this binary's absolute path,
+  shell-quoted when needed.
+- `--link` (optional) symlinks `kelpi` into `KELPI_INSTALL_DIR` (`--install-dir`; default
+  `/usr/local/bin`, `packages/cli/src/install/link.ts:25`) and warns if that dir isn't
+  on `PATH`. It runs before the command is chosen, so a fresh machine gets the bare
+  `kelpi` on its first run. Never sudo: an unwritable directory is reported with the
+  exact command to run by hand.
+- `--dry-run` runs the whole thing and writes nothing (the merged bytes come back as
+  `preview`); `--json` prints one object and nothing else.
 
 ---
 
@@ -184,8 +230,8 @@ kelpi event stop|start|error|notification|session-start|session-end
           [--agent claude|codex] [--message ...] [--title ...] [--body ...]
 ```
 
-Behavioral algorithm (must be preserved exactly — the existing CLI must keep working
-against the new daemon, and a reimplementation must match):
+Behavioral algorithm (`packages/cli/src/commands/event.ts`; preserved exactly, so hook
+configs written for the pre-port CLI keep working against the daemon):
 
 1. **Suppress transport warnings** unless `KELPI_VERBOSE_HOOKS=1` is set (hooks fire
    on every Stop/Notification; spamming user terminals is unacceptable). `kelpi event`
@@ -193,8 +239,9 @@ against the new daemon, and a reimplementation must match):
 2. Unknown event type or unknown `--agent` value → usage error to stderr, exit 1
    (an invalid `--agent` must fail loudly, not silently degrade to claude — the
    error lands in the agent's hook output).
-3. **`NEX_PANE_ID` required**: if the env var is absent, exit 0 *silently* (the
-   hook is running outside a Kelpi pane; not an error).
+3. **`KELPI_PANE_ID` required**: if the env var is absent, exit 0 *silently* (the
+   hook is running outside a Kelpi pane; not an error; `packages/cli/src/env.ts:39-43`).
+   A value that is set but empty is used verbatim.
 4. **Read stdin JSON when piped** (stdin is not a TTY): parse the whole of stdin as
    one JSON object. Claude Code and Codex pass their hook payload this way. Parse
    failures are ignored (treated as no payload).
@@ -234,12 +281,15 @@ against the new daemon, and a reimplementation must match):
 ```jsonc
 {
   "command": "stop",                 // the event type verbatim
-  "pane_id": "9C0FA24C-...-...",     // NEX_PANE_ID
+  "pane_id": "9C0FA24C-...-...",     // KELPI_PANE_ID
   // all optional, omitted when absent:
   "message": "...",                  // --message (used by `error`)
   "title": "Claude Code",            // notification title
   "body": "Needs permission to run Bash", // notification body
   "session_id": "6f9a2c9e-....",     // from hook stdin payload
+  "profile": "work",                 // KELPI_PROFILE of the hook's environment; ONLY when
+                                     // session_id is present and the event is not
+                                     // session-end (event.ts:156-162)
   "agent": "codex",                  // ONLY when --agent was passed
   "background_tasks": 2              // ONLY when count > 0
 }
@@ -252,9 +302,11 @@ pre-Codex/pre-background protocol — that back-compat is a hard requirement.
 
 ## 4. Wire protocol — daemon side
 
-Transport: newline-delimited JSON on the Unix socket `/tmp/nex.sock` (or TCP
-`127.0.0.1:<port>`). All six agent-lifecycle commands are **fire-and-forget**: the
-server reads, acts, and drops the connection; no reply is written.
+Transport: newline-delimited JSON on the Unix socket `/tmp/kelpi.sock` (or TCP
+`127.0.0.1:<port>`; see §4.3 for the listeners). All six agent-lifecycle commands are
+**fire-and-forget**: the server reads, acts, and drops the connection; no reply is
+written. Parsing is `packages/protocol/src/wire/decode.ts`; the dual-fire is
+`packages/protocol/src/dualfire.ts`.
 
 ### 4.1 Parsing rules
 
@@ -267,7 +319,7 @@ and must parse as a UUID**; otherwise the line is silently dropped. Per command:
 | `stop`          | `agentStopped(paneID, backgroundTaskCount = background_tasks ?? 0)`    |       |
 | `error`         | `agentError(paneID, message = message ?? "Unknown error")`             |       |
 | `notification`  | `notification(paneID, title = title ?? "Agent", body = body ?? "", backgroundTaskCount = background_tasks ?? 0)` | |
-| `session-start` | `sessionStarted(paneID, sessionID, agent = fromWire(agent))` — dropped if `session_id` absent/empty | |
+| `session-start` | `sessionStarted(paneID, sessionID, agent = fromWire(agent), profileName = profile)`; dropped if `session_id` absent/empty; `profile` optional (absent/blank = older CLI, keeps last-known; `decode.ts:170-177`) | |
 | `session-end`   | `sessionEnded(paneID, sessionID)` — dropped if `session_id` absent/empty | |
 
 ### 4.2 The session_id dual-fire
@@ -290,9 +342,39 @@ fromWire(agent))` right after the primary message.**
 Multiple newline-separated JSON lines in one read are each processed in order;
 blank/whitespace lines and unparseable lines are skipped.
 
+### 4.3 Listeners: the compat socket and the run-dir socket
+
+The daemon binds two control listeners to the same dispatcher
+(`packages/daemon/src/boot/compose.ts:1438-1480`), so a CLI line and a browser command
+cannot drift:
+
+- The **CLI-compat control socket** `/tmp/kelpi.sock` (`DEFAULT_CONTROL_SOCKET_PATH`,
+  `packages/daemon/src/control/endpoints.ts:18`; `KELPID_SOCKET_PATH` overrides it,
+  `KELPID_TCP_PORT` or the config's `tcp-port` adds a TCP listener). It is what a
+  `kelpi` command in a plain terminal dials (`packages/cli/src/transport.ts:35`). It is
+  **best-effort**: when the bind fails (another Kelpi owns the path) the daemon keeps
+  booting, remembers the failure so `ping` and `kelpi doctor` can say where
+  plain-terminal commands are going, logs it, and retries on every "Restart Socket
+  Server"; a configured `tcp-port` is salvaged with a standalone TCP bind
+  (`compose.ts:784-795`).
+- The **run-dir control socket** `daemon-v<N>.sock` (`packages/daemon/src/lifecycle/rundir.ts`),
+  the daemon's own, always carries a TCP listener too: the configured `tcp-port` when the
+  compat path is the run-dir path, an ephemeral loopback port otherwise. A busy run-dir
+  socket is fatal (a daemon of this protocol is already running). It binds before the
+  restored panes spawn because every pane's env embeds this listener as
+  `KELPI_SOCKET=tcp:<host>:<port>`, so hooks firing inside a pane reach *this* daemon
+  even while the compat socket is degraded. `tcp:` is the only `KELPI_SOCKET` form the
+  CLI honours; anything else falls back to `/tmp/kelpi.sock` silently.
+
+`/tmp/nex.sock` belongs to the legacy app and is never dialed by this CLI; the two run
+side by side with nothing shared (`kelpid import` is the bridge).
+
 ---
 
 ## 5. The pane agent state machine
+
+The machine is `packages/core/src/agent/machine.ts`, dispatched through
+`packages/daemon/src/store/reducers/agent.ts`.
 
 All transitions target "the pane wherever it lives" — the visible layout **or** the
 parked lane (panes hidden by `kelpi open --here` keep live PTYs and agents). Events
@@ -428,11 +510,30 @@ if pane.status == waitingForInput: pane.status = idle
 
 - **Only** `waitingForInput` is cleared — never clobber `running` if the agent
   started again during the 600 ms window.
-- Side effects: persist, refresh external indicators, and **remove any delivered
-  desktop notification for that pane** (by its dedup identifier, §7.5).
+- Side effects: persist and refresh external indicators. The `idle` transition also
+  takes the pane out of the waiting set, which is what closes the Electron shell's
+  native `kelpi-<paneID>` toast (§7.5); the browser client's own toast was already
+  dropped at focus time, before this timer fired.
 
 The 600 ms delay exists so that briefly clicking through panes doesn't instantly
 swallow "waiting" badges, and so the user visibly sees what they're acknowledging.
+
+Client-side the timer is `useFocusDwell` (`packages/client/src/grid/FocusRing.tsx:64-77`);
+the mutation is the daemon's `clear-pane-status` verb
+(`packages/daemon/src/ws/sync.ts:705-724`, `packages/core/src/agent/machine.ts:202-215`).
+Two refinements to the triggers above:
+
+- The effect is keyed on the focused pane's `(paneID, status)`, so a focused pane whose
+  status flips to `waitingForInput` starts a fresh 600 ms countdown without any focus
+  event, and the daemon's resulting `idle` tears the timer down. The callback is held in
+  a ref, so a parent re-render cannot restart the countdown.
+- The timer is **gated on the app being active**: the Electron shell reports window
+  focus/blur to the daemon (`packages/shell/src/main.ts:556-570`), the client derives
+  `isAppActive` (window active AND document visible,
+  `packages/client/src/state/activation.ts:61`) and passes it as `enabled`
+  (`packages/client/src/grid/PaneGrid.tsx:553-562`). A blur tears the pending clear
+  down and the next focus schedules a fresh 600 ms, so a `stop` that lands while nobody
+  is looking cannot clear its own "awaiting input" badge 600 ms later.
 
 ### 5.9 Status color / display summary
 
@@ -442,8 +543,8 @@ swallow "waiting" badges, and so the user visibly sees what they're acknowledgin
 | `waitingForInput` | `"awaiting input"` in blue (`statusWaiting`: `#5E8AC4` / `#6F9BD8`) on a 14% pill | waiting dot: same blue |
 | `idle`            | no badge                                                | inactive: `#9A9A96` / `#8A8A92` |
 
-These colors are user-overridable chrome theme tokens; the menu-bar icon and popover
-must be pushed the *resolved* colors so all surfaces agree.
+These colors are user-overridable chrome theme tokens; the tray icon and menu are
+pushed the *resolved* colors so all surfaces agree (`packages/shell/src/icon.ts`).
 
 ---
 
@@ -476,17 +577,26 @@ Order matters:
    inherit it (and re-report it), which is correct — their transcripts live under
    that profile's config dir. The pane rejoins the workspace's assignment when its
    tracked session ends (§5.6/§6.3) or the pane is closed.
+   A pane the geometry cache has never seen (a fresh install, or a state file that
+   outlived its cache) is not born at 80×24: `spawnRestoredPanes` hands it to the spawn
+   gate (`deps.spawn.deferSpawn`, `packages/daemon/src/boot/resume.ts:184-195`) to be
+   spawned on the first client geometry report, and still counts it as spawned. The
+   gate declines when no client is there to report, and the pane then spawns
+   immediately as before.
 4. If there are resume tuples: **sleep 2 seconds** (let shells finish starting),
    then for each tuple compute `kind.resumeCommand(sessionID)`; skip null (failed
    the safety allowlist), otherwise type the command into that pane's PTY
-   (command text + Enter).
+   (command text + Enter). `typeResumeCommands` re-checks `pty.has` before typing
+   (`resume.ts:220-227`; a pending deferred spawn answers for it), so a deferred pane's
+   command goes through the normal path or is skipped, never typed into nothing.
 5. **Persist only after** the resume commands were sent — so if the process crashes
    before the resume executes, the session ids are still in the DB for the next try.
 
 ### 6.2 Close/reopen ("reopen closed pane")
 
 Closing a pane captures a snapshot including `agentSessionID`, `agentKind`, and
-`agentProfileName`. Reopening (a stack of up to 10, LIFO):
+`agentProfileName`. Reopening (`reopen-closed-pane`, `packages/daemon/src/ws/panes.ts`;
+a stack of up to 10, LIFO):
 
 - Recreates the pane (new UUID) carrying over `agentKind` (but the *live* pane's
   `agentSessionID` starts null — the session is re-bound by the resume below via
@@ -508,6 +618,29 @@ recorded profiles) persist until overwritten (documented limitation: a codex pan
 resumed under a recorded profile keeps it until a new session overwrites it or the
 pane is closed).
 
+### 6.4 On-demand restart (`restart-pane-agent`)
+
+A client can ask the daemon to type a pane's resume command right now, without a
+relaunch or a reopen: the WS-only `restart-pane-agent` verb
+(`packages/daemon/src/ws/sync.ts:908`, channel in `packages/daemon/src/ws/agents.ts:33-57`),
+wrapped as `commands.restartPaneAgent` on the client
+(`packages/client/src/connection/commands.ts:848-850`) and reachable as
+`PaneActions.onRestartAgent`. Behavior:
+
+- Finds the pane in either lane (visible or parked). Refuses, with an error reply, a
+  non-shell pane, a pane with no `agentSessionID`, an id that fails the safety allowlist
+  (`resumeCommand` returns null), or a pane with no live PTY.
+- Otherwise types `(agentKind ?? "claude").resumeCommand(agentSessionID)`
+  (`claude --resume <id>` / `codex resume <id>`) into the PTY the same way the boot-time
+  resume does (command text + Enter) and replies
+  `{ok, pane_id, workspace_id, agent, command}`.
+- **No store mutation**: no status is forced and no session id is cleared; the agent's
+  own hooks report what happens next, exactly as after a boot-time resume.
+- There is deliberately no pane-header button for it (a one-click restart of a live
+  agent sitting between Split Down and Close is a mis-click nobody asked for;
+  `packages/client/src/grid/PaneHeader.tsx:1000-1006`). The verb stays reachable for any
+  client or a later context-menu item.
+
 ---
 
 ## 7. Desktop notifications
@@ -519,8 +652,8 @@ On `agentStopped`, compute:
 ```
 isFocused   = (pane's workspace is the active workspace) AND (pane is that
               workspace's focused pane)
-isAppActive = the app has OS focus                        // web port: document
-                                                          // visibility/focus
+isAppActive = any connected client is visible/focused     // multi-client rule,
+                                                          // Compatibility rationale 2
 hasBackgroundWork = backgroundTaskCount > 0
 
 shouldNotify = (!isFocused || !isAppActive) && !hasBackgroundWork
@@ -530,7 +663,7 @@ shouldBounce = !isAppActive && !hasBackgroundWork
 - If `shouldNotify`: post a notification with **title = pane title ?? workspace
   name**, **body = "Agent is waiting for input"**, tagged with (paneID, workspaceID).
 - If `shouldBounce`: request user attention (macOS dock bounce, informational —
-  bounces once). Web port equivalent: a one-shot attention signal (e.g. title
+  bounces once). Web client equivalent: a one-shot attention signal (e.g. title
   flash / favicon pulse) when the client tab is unfocused.
 - The background-work suppression exists to kill the notification churn from the
   repeat Stops that fire as each background unit completes (issues #215, #220).
@@ -550,26 +683,46 @@ the wire `message` (`"Unknown error"` default).
 
 ### 7.4 Terminal OSC desktop notifications (OSC 9 / 99 / 777)
 
-A separate entry point (terminal escape sequences from any program in the pane).
-Suppressed only when the pane is focused in the active workspace AND the app is
-active; otherwise posted with the OSC-provided title/body, tagged with the paneID
-(no workspaceID — clicking it still activates the app but cannot navigate).
-Unknown pane → ignored.
+A separate entry point (terminal escape sequences from any program in the pane;
+`packages/daemon/src/handlers/app/osc-notifications.ts`). Suppressed only when the pane
+is focused in the active workspace AND the app is active; otherwise posted with the
+OSC-provided title (falling back to `pane.title ?? workspace name`; OSC 9 carries no
+title of its own) and body, tagged with both paneID and workspaceID and the
+`kelpi-<paneID>` dedup key (`osc-notifications.ts:54-63`), so clicking it navigates
+like an agent notification. Unknown pane → ignored.
 
 ### 7.5 Notification mechanics
 
 - **Identifier / dedup**: every notification for a pane uses the identifier
   `kelpi-<paneID>` — a newer notification for the same pane replaces the older one.
-- **Category/actions**: two buttons — **Open** (foreground action) and **Dismiss**
-  (destructive-styled, does nothing).
+- **Category/actions**: two buttons, **Open** then **Dismiss** (does nothing), in that
+  order; the Electron shell builds the pair once (`packages/shell/src/notify.ts`) and
+  cannot style Dismiss destructively (an Electron action has a type and a text and
+  nothing else). macOS shows the first action as a button and the rest behind the
+  "more" affordance, so the order is what the app controls.
 - Notifications are shown even when the app is in the foreground (banner + sound);
   suppression is decided at the call sites above, not by the presenter.
 - **Open / default click**: requires both `paneID` and `workspaceID` in the
   payload; activates the app, switches to that workspace, and focuses that pane.
-- **Removal**: `clearPaneStatus` (the 600 ms focus acknowledgment) removes the
-  pane's delivered + pending notification, so the notification center doesn't keep
-  stale "waiting" toasts for panes the user already visited.
-- Permission is requested once on app launch (alert + sound + badge).
+- **Removal**: Kelpi never sends a retraction message: the daemon publishes a
+  notification and nothing else (`packages/shell/src/agents.ts:443-451`). The two
+  presenters withdraw on different triggers. The Electron shell closes the native
+  `kelpi-<paneID>` toast when that pane **leaves the waiting set** (any status change
+  away from `waitingForInput`, `clearPaneStatus` included; `noLongerWaitingPanes` in
+  `packages/shell/src/status.ts:583-591`), so a toast on a pane that is already `idle`
+  (an OSC toast on a plain terminal, §7.4) is not closed by visiting it. The browser
+  client instead calls `clear(paneID)`
+  (`packages/client/src/state/notifications.ts:182-190`) from its focus report the
+  moment the user focuses the pane, unconditionally and before the 600 ms dwell
+  (`packages/client/src/state/bridge.ts:390-391`).
+- **Permission**: the browser client asks on the first `pointerdown` in the window
+  (browsers grant only from a user gesture; `packages/client/src/App.tsx:619-627`) and
+  posts in-app toasts until granted. The Electron shell needs no permission request:
+  `Notification.isSupported()` is the only gate (`notify.ts:26-28`).
+- Suppression is decided in the daemon (`packages/core/src/agent/notifications.ts`,
+  fed by client focus/visibility reports), which simply does not broadcast a
+  notification a client should not show; everything that arrives at a client is
+  rendered.
 
 ---
 
@@ -582,7 +735,8 @@ activation. Semantics:
 ### 8.1 Aggregation
 
 Walk **all workspaces × visible panes** (parked panes are NOT included here,
-unlike the quit/delete gates):
+unlike the quit/delete gates; `packages/shell/src/agents.ts`, and the web client's
+`packages/client/src/chrome/favicon.ts` for the same two numbers):
 
 - `totalWaiting` = panes with `waitingForInput`
 - `totalRunning` = panes with `running`
@@ -596,29 +750,44 @@ unlike the quit/delete gates):
   **running > 0 → running color**; else no dot (icon renders as a template/plain).
 - Colors are the resolved chrome-theme `statusWaiting` / `statusRunning`, resolved
   against the OS appearance (the menu bar lives in the OS theme, not the app theme).
+- A daemon that is not reachable outranks both: the tray shows a `disconnected` dot in
+  the inactive colour (`trayIndicator`, `packages/shell/src/agents.ts:302-310`;
+  `packages/shell/src/icon.ts`). Nothing is knowable about agents until it reconnects.
 
 ### 8.3 Menu-bar popover
 
-Click toggles a 280 px-wide popover (transient; closes on outside click; height =
-`max(60, min(400, items*48 + 44))`):
+The tray icon opens a native menu (Electron `Tray` + `Menu`), not a custom popover;
+the rows are derived in `trayMenuRows` (`packages/shell/src/agents.ts:386-418`) and
+wired in `packages/shell/src/status.ts`:
 
-- Empty state: a checkmark icon + "All clear".
-- Otherwise items grouped by workspace, groups sorted by workspace name; each group
-  header shows the workspace color dot + name; each pane row shows the pane title
-  (monospaced, middle-truncated) and a status dot on the right — waiting = pulsing
-  dot (1 s ease-in-out opacity blink), running = steady dot.
-- Clicking a row: activate the app, raise the window, switch to the row's
-  workspace, then focus the pane **after** the window has restored its previous
-  focus (ordering matters — see §8.5). Popover closes.
-- Content refreshes live while shown.
+- Daemon unreachable: one disabled row `Daemon not reachable` (and the icon shows the
+  `disconnected` dot, §8.2).
+- Empty state: one disabled row `✓  All clear`.
+- Otherwise, per workspace with non-idle visible panes, sorted by name: a disabled
+  header `<marker> <workspace name> - <W> waiting, <R> running` (marker `◉` when the
+  workspace has any waiting pane, else `●`: waiting wins, as §8.2), then one clickable
+  row per non-idle pane, indented, `<glyph>  <title>` (`◉` waiting / `●` running;
+  title = `pane.title ?? label ?? "Shell"`, middle-truncated at 40 characters so the
+  command head and the argument tail both survive), sorted by title. No animation and
+  no workspace colour dot: a native menu item is text plus an optional image, so the
+  pulsing halo becomes the `◉`/`●` distinction and the counts move onto the header.
+- Clicking a pane row: raise the window, then ask the daemon to reveal the pane
+  (`reveal-request`) so this window's client switches workspace and focuses the pane
+  last (the same sequence a clicked notification uses; §8.5 ordering is the client's
+  job).
+- A separator and the tray's standing rows (Show Kelpi, Quit Kelpi) follow.
+- The menu is rebuilt on every count change and on connect/disconnect.
 
 ### 8.4 Dock badge (web port: tab badge / title count)
 
-- `waiting > 0` → badge label = the waiting count (number as string).
+- `waiting > 0` → badge label = the waiting count (number as string)
+  (`dockBadgeLabel`, `packages/shell/src/agents.ts:298`; the web client folds the same
+  count into `document.title`, `packages/client/src/chrome/favicon.ts`).
 - else → no badge.
 - On app activation (user switches to the app), the badge is cleared immediately
-  and indicators refresh (the focused pane's 600 ms acknowledgment timer is also
-  scheduled — §5.8).
+  and indicators refresh (`status.acknowledgeActivation()` on window `focus`,
+  `packages/shell/src/main.ts:556-558`; the focused pane's 600 ms acknowledgment timer
+  is also scheduled, §5.8).
 
 ### 8.5 Focus-navigation ordering invariant
 
@@ -629,8 +798,9 @@ tick). Otherwise the window restoring its previous focused surface re-emits a
 focus event for the OLD pane and reverts the selection (this bug is real; the
 ordering is the fix). For same-workspace jumps from the footer popover, the app
 instead makes the target surface first responder immediately while the popover
-still holds key. Web port: any "jump to pane" affordance must guarantee the final
-focus state is the target pane, immune to focus-restoration races.
+still holds key. In the web client every "jump to pane" affordance guarantees the
+final focus state is the target pane, immune to focus-restoration races: workspace
+first, pane last (`packages/client/src/state/notifications.ts`).
 
 ---
 
@@ -655,7 +825,8 @@ Agent section renders **only when `pane.agentSessionID != null`**:
 
 ### 9.2 Elapsed label format (`chromeElapsedLabel`)
 
-Shared by footer, pane header, and popovers. `total = max(0, floor(now - start))`
+Shared by footer, pane header, and popovers (`packages/client/src/chrome/theme.ts:545`;
+both arguments are epoch milliseconds). `total = max(0, floor(now - start))`
 seconds:
 
 - hours > 0 → `"<h>h <m>m"`
@@ -675,8 +846,10 @@ fixed-width so single→double digit doesn't shift layout):
 - **inactive** (`statusInactive` dot): panes with `agentSessionID != null` AND
   status `idle` — an attached-but-idle (resumable) agent.
 
-Counts sum over all workspaces' **visible panes** (not parked). Followed by a
-live `HH:MM` clock (1-second timer).
+Counts sum over all workspaces' **visible panes** (not parked). Followed by a live
+hour:minute clock in the viewer's locale (12- or 24-hour per OS setting, so `2:52 PM`
+on a US machine and `14:52` on a UK one; `clockLabel`,
+`packages/client/src/chrome/theme.ts:558`), ticking on the shared 1-second timer.
 
 A count item with value > 0 is clickable → opens a 252 px-wide popover titled
 "Running agents" / "Awaiting input" / "Inactive agents", listing each matching
@@ -706,36 +879,52 @@ Every pane has a header; on the right side, **for shell panes with
 
 ## 10. Quit gate
 
-Intercept every app-termination path (⌘Q, menu Quit, scripted/system quit).
-Decision procedure, synchronous:
+Applies to quitting the Electron shell (⌘Q, the app menu, the tray's Quit Kelpi, a
+signal; every path is intercepted via `before-quit`, `packages/shell/src/quit.ts`).
+Closing the window is not a termination path: on macOS the app stays alive in the dock.
+Quitting the shell **never stops the daemon**: PTYs and agents keep running, and the
+next launch (or a browser on the tailnet) re-attaches to exactly the sessions that were
+there (`quit.ts:171-177`, "deliberately absent: anything that stops the daemon"). The
+gate that survives is the accident guard: ⌘Q is one keystroke from ⌘W. Decision
+procedure:
 
-1. Flush any pending debounced markdown auto-saves (500 ms debounce could drop an
-   edit otherwise), and stop active graft sessions (bounded ~2 s wait) — these run
-   unconditionally, before any dialog decision.
-2. If the `confirmQuitWhenActive` setting is **false** → quit immediately.
-   (Default **true**; UserDefaults key `settings.confirmQuitWhenActive`, absent =
-   true.) Also skipped in test mode.
-3. Compute the **activity summary** over all workspaces:
+1. Flush any pending debounced markdown/scratchpad autosaves (`flushPendingSaves`),
+   bounded by `QUIT_FLUSH_TIMEOUT_MS` = 750 ms so a flush can never hold the app
+   hostage (`quit.ts:111, 158-168`). Runs on every path, including the one that shows
+   no dialog. Nothing stops graft sessions.
+2. If `confirm-quit-when-active` is **false** → quit. This is a daemon general setting
+   (default **true**; `packages/protocol/src/ws/settings.ts:41-49`; the Settings ▸
+   Workspaces toggle writes the same key), read off the shell's status WS snapshot via
+   `confirmWhenActive`. When the daemon has not reported a value (no connection yet, an
+   older daemon), the shell's local `settings.json` `confirmQuitWhenActive` is the
+   fallback (`quit.ts:139-142`), so a ⌘Q while the daemon is unreachable still honours a
+   suppression the user set.
+3. Compute the **activity summary** over all workspaces (`activitySummary`,
+   `packages/shell/src/agents.ts:470-480`):
    - `agentCount` = Σ per-workspace `activeAgentCount`, where a workspace's count
      is its panes **plus parked panes** with status ≠ `idle` (running or waiting).
-   - `workspaceCount` = number of workspaces with count > 0.
-4. Show a warning dialog **unconditionally** (even when the summary is empty —
-   step 2 is the only bypass):
+   - `workspaceCount` = number of workspaces with count > 0 (a workspace whose only
+     live agents are parked still counts).
+4. If the summary is empty → quit with **no dialog** (`shouldConfirmQuit` = setting AND
+   `agents > 0`, `packages/shell/src/settings.ts:103-107`).
+5. Otherwise a warning (`quitDialogSpec`, `settings.ts:139-150`):
    - Title: `Quit Kelpi?`
-   - Body when agents active: `Kelpi has <N> active agent(s) across <M>
-     workspace(s). Quitting will terminate all sessions.` (singular/plural on both
-     nouns).
-   - Body when none: `Are you sure you want to quit Kelpi?`
-   - Buttons: **Cancel** is the default (Return key) — ⌘Q is the accidental
-     keystroke being guarded, so the safe option wins; **Quit** is
-     destructive-styled.
-   - Suppression checkbox `Don't ask again`: when ticked, persist
-     `confirmQuitWhenActive = false` **regardless of which button was clicked**
-     (honour suppression even on Cancel), and broadcast the change so an open
-     Settings window re-syncs its toggle.
-5. Quit only on Quit; Cancel aborts termination.
-
-The setting is also a toggle in Settings; both write the same key.
+   - Body: `<N> agent(s) across <M> workspace(s) are still active. They keep running in
+     the background - quitting only closes this window. Reopen Kelpi to attach again.`
+     (singular/plural on both nouns; `quitConfirmDetail`, `agents.ts:483-497`). The
+     text says the opposite of a "will terminate all sessions" warning on purpose: a
+     user who quits by reflex learns their agents survived.
+   - Buttons: **Quit** / **Cancel**, with **Cancel** the default (Return key), since ⌘Q
+     is the accidental keystroke being guarded and the safe option wins.
+   - Suppression checkbox `Don't ask again`: when ticked, persist the setting false
+     **regardless of which button was clicked** (honoured even on Cancel,
+     `quit.ts:268-269`), written locally first and then through the daemon when it is
+     reachable (`quit.ts:145-156`), so an open Settings window re-syncs its toggle.
+   - The dialog is shown inside the live renderer when a visible, loaded window exists,
+     with the native `dialog.showMessageBox` as the fallback (app-modal when there is no
+     window, so a tray or signal quit with no window still asks; `quit.ts:210-245`). A
+     second ⌘Q while the dialog is up does not stack another.
+6. Quit only on Quit; Cancel aborts.
 
 ## 11. Workspace delete gate
 
@@ -746,16 +935,29 @@ enforcement points:
 
 Entry points: the sidebar workspace context-menu **Delete** item (disabled when
 only one workspace exists), and the ⌘W close-pane path **when closing the last
-pane of a workspace** (which deletes the workspace instead of the pane).
+pane of a workspace** (which deletes the workspace instead of the pane;
+`closeFocused`, `packages/client/src/App.tsx:1365-1384`). The ⌘W path sends
+`allowLast: true`, so it is the one gesture that may delete the last workspace and
+reach the "No workspace selected" state (§11.2).
 
-Decision (`shouldDelete(workspaceName, activeAgentCount)`):
+Decision. `activeAgentCount` = panes + parked panes with status ≠ idle in that
+workspace. The `confirmWorkspaceDeleteWhenActive` setting defaults to true; it is a
+daemon general setting, config key `confirm-workspace-delete`
+(`packages/protocol/src/ws/settings.ts:29-38`), so dialogs and the Settings ▸
+Workspaces toggle (`packages/client/src/settings/WorkspacesTab.tsx`) stay in sync
+across clients. The two entry points apply it differently:
 
-- `activeAgentCount` = panes + parked panes with status ≠ idle in that workspace.
-- If `activeAgentCount == 0` OR the `confirmWorkspaceDeleteWhenActive` setting is
-  false → proceed immediately (return true). Default true; UserDefaults key
-  `settings.confirmWorkspaceDeleteWhenActive`, absent = true; Settings ▸
-  Workspaces toggle writes the same key.
-- Otherwise a warning dialog:
+- The sidebar **Delete** item **always** opens the `Delete “<workspaceName>”?`
+  confirmation (`setConfirm({kind:'workspace', ...})`,
+  `packages/client/src/chrome/Sidebar.tsx:3894-3907`). It folds the count in only
+  when `activeAgentCount > 0` AND the setting is true; otherwise the dialog is the
+  plain confirmation with no agent line and no suppression box
+  (`Sidebar.tsx:5176-5195`).
+- The ⌘W last-pane path (`shouldDelete(workspaceName, activeAgentCount)`): if
+  `activeAgentCount == 0` OR the setting is false, delete immediately with no dialog
+  (`packages/client/src/App.tsx:1371-1384`); otherwise open the warning dialog below.
+  This is the one route that deletes without a dialog.
+- The warning dialog (the sidebar dialog with an active count, or the ⌘W gate):
   - Title: `Delete “<workspaceName>”?`
   - Body: `This workspace has <N> active agent(s). Deleting it will terminate
     it/them.` (singular/plural).
@@ -768,8 +970,14 @@ Decision (`shouldDelete(workspaceName, activeAgentCount)`):
 
 Server-side, independent of the GUI setting:
 
-- Refuses to delete the **last remaining** workspace:
-  `{"ok":false,"error":"refusing to delete the last workspace"}`.
+- Refuses to delete the **last remaining** workspace
+  (`{"ok":false,"error":"refusing to delete the last workspace"}`) unless the request
+  carries `allow_last: true` (`packages/daemon/src/handlers/app/workspaces.ts:475-478`,
+  read at `:633`). Only the GUI's ⌘W-close-last-pane path sends it (§11.1): the one
+  route that may reach zero workspaces and the "No workspace selected" state.
+  `kelpi workspace delete` and the sidebar Delete item never do, and
+  `packages/protocol/src/wire/decode.ts:325-329` deliberately does not decode
+  `allow_last` from the wire, so nothing arriving over the control socket can set it.
 - Ambiguous name (matches > 1 workspace, non-UUID):
   `{"ok":false,"error":"workspace name is ambiguous: <name> (use the id)"}`;
   unknown → `workspace not found: <name>`.
@@ -786,7 +994,8 @@ Server-side, independent of the GUI setting:
 
 ## 12. `pane list` exposure of agent state
 
-Each entry in the `pane-list` reply includes (agent-relevant fields):
+Each entry in the `pane-list` reply (`packages/daemon/src/handlers/pane/list.ts`)
+includes (agent-relevant fields):
 
 ```jsonc
 {
@@ -809,7 +1018,10 @@ one) and `last_activity_at` per workspace.
 
 Role: purely view-layer host-resource telemetry in the footer. It never touches
 agent state and never dispatches actions — it exists in this spec because it lives
-in the same status bar and its display rules must be reproduced.
+in the same status bar and its display rules are specified here. The sampler runs in
+the daemon (`packages/daemon/src/stats/sampler.ts`, probes in
+`packages/daemon/src/stats/host.ts`), samples the daemon host, and streams snapshots
+to clients as `system-stats` messages.
 
 ### 13.1 Snapshot shape
 
@@ -827,11 +1039,20 @@ interface SystemStats {
 
 ### 13.2 Sampling rules
 
-- Poll cadence **2 s**, gated by the master "show system stats" setting (no work
-  when off). First sample of any rate metric reports 0 (no baseline yet).
-- CPU: delta of busy (user+system+nice) vs total ticks between samples, clamped
-  0–100.
-- Memory used: active + wired + compressed pages × page size; total = physical.
+- Poll cadence **2 s**, gated by the master "show system stats" setting AND at least
+  one attached WS client (`packages/daemon/src/boot/compose.ts:576-580`): no work when
+  off or when nobody is watching. Turning the sampler off stops the timer and clears
+  the history and every rate baseline; turning it on clears them again, takes one
+  immediate sample (so the first gauge appears within a frame rather than after a full
+  interval) and then samples every 2 s (`sampler.ts:236-252`). First sample of any rate
+  metric reports 0 (no baseline yet).
+- CPU: delta of busy (user+system+nice+irq) vs total ticks between samples, clamped
+  0–100 (`host.ts:47`).
+- Memory used: active + wired + compressed pages × page size (the page size is read
+  from `vm_stat`'s header, not assumed; Linux uses `MemTotal - MemAvailable` from
+  `/proc/meminfo`); total = physical. Memory is a level, not a rate: when the probe
+  fails the last known value is carried forward rather than reporting 0
+  (`sampler.ts:120-122, 159`).
 - Load: 1-minute load average.
 - Network: sum in/out byte counters across non-loopback link-layer interfaces.
   **Counter-reset guard**: if the new summed counter is *lower* than the previous
@@ -916,75 +1137,84 @@ interface SystemStats {
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-Things the TypeScript daemon + web client must get right, or do differently:
+These items record the quirks Kelpi preserves on purpose, and the places where its
+daemon-plus-clients architecture deliberately differs from the single-window app it
+replaced, so that the pre-port `kelpi` CLI, existing hook scripts and saved state keep
+working:
 
-1. **Split the module across daemon and client.** The state machine (§5), session
+1. **The module is split across daemon and client.** The state machine (§5), session
    binding/resume (§6), wire parsing (§4), notification *decisions* (§7), and the
-   gates' server-side guard (§11.2) belong in the daemon — they must work headless
-   with no client attached. Elapsed-time ticking, popovers, the 600 ms
-   focus-acknowledgment timer, and dialogs are client-side, but the daemon must own
-   the resulting state changes (`clearPaneStatus` should be a client→daemon
-   message so multiple attached clients converge).
-2. **"App active" and "pane focused" need a multi-client definition.** The Swift
-   app has exactly one window; the port has N web clients + an Electron shell.
-   Suggested rule: `isAppActive` = any connected client is visible/focused;
-   `isFocused` = that pane is the focused pane of the active workspace in a
-   focused client. The daemon needs client focus/visibility reports to compute
-   notification suppression; default to "not active" when no client is attached
-   (so notifications fire for headless operation).
-3. **Desktop notifications move transport.** UNUserNotificationCenter →
-   per-platform: Electron native notifications, Web Notifications API for browser
-   clients, possibly push for mobile/tailnet clients. Preserve: the `kelpi-<paneID>`
-   replace-on-repost identity, Open (navigate to pane) / Dismiss actions, removal
-   on focus acknowledgment, and the suppression matrix. Decide who posts: daemon
-   → each client, with client-side dedup, or only the focused client's absence
-   triggers posting.
-4. **Dock badge / bounce / menu-bar icon** become: Electron `app.badgeCount` +
-   `dock.bounce`, tray icon with status dot, and for pure web clients a favicon
-   badge / `document.title` count. Waiting-wins-over-running precedence and
-   clear-on-activation must be preserved.
-5. **`agentStartedAt` should live in the daemon** (it already survives workspace
-   switches in the app because state is central). Send it to clients as an epoch
-   timestamp; clients render the ticking label locally (1 s timer, format §9.2).
-   It remains transient — do not persist.
-6. **Persistence contract**: store `status`, `agentSessionID`, `agentKind` on the
-   pane record; keep the load-time sequence of §6.1 exactly (capture-then-clear,
-   persist after resume). Column naming is free, but `pane list --json` must keep
-   emitting `status` (camelCase enum values!), `agent_session_id`, `agent`,
-   `background_tasks`.
-7. **Resume typing**: `surfaceManager.sendCommand` = write the command text + CR
-   to the PTY. Keep the 2 s post-spawn delay and the `isSafeSessionID` allowlist —
-   this is a real injection surface (socket → DB → PTY).
-8. **Wire compatibility is a hard requirement**: the existing `kelpi` CLI must work
-   unchanged. That fixes the six command names, `pane_id`/`session_id`/`agent`/
+   gates' server-side guard (§11.2) live in the daemon and work headless with no
+   client attached. Elapsed-time ticking, popovers, the 600 ms focus-acknowledgment
+   timer, and dialogs are client-side, but the daemon owns the resulting state changes
+   (`clearPaneStatus` is the client→daemon `clear-pane-status` message, so multiple
+   attached clients converge).
+2. **"App active" and "pane focused" have a multi-client definition.** The legacy app
+   had exactly one window; Kelpi has N web clients + an Electron shell. The rule
+   (`packages/core/src/agent/notifications.ts`, wired in
+   `packages/daemon/src/boot/compose.ts:1098-1099`): `isAppActive` = any connected
+   client is visible/focused; `isFocused` = that pane is the focused pane of the active
+   workspace in a focused client. The daemon computes notification suppression from
+   client focus/visibility reports, and both default to "not active" when no client is
+   attached (so notifications fire for headless operation).
+3. **Desktop notifications are per-platform.** Electron native notifications in the
+   shell (`packages/shell/src/notify.ts`, `status.ts`) and the Web Notifications API
+   (with an in-app toast fallback) in browser clients
+   (`packages/client/src/state/notifications.ts`). Preserved: the `kelpi-<paneID>`
+   replace-on-repost identity, Open (navigate to pane) / Dismiss actions, removal on
+   focus acknowledgment, and the suppression matrix. The daemon decides and broadcasts
+   to each client; a client renders everything that arrives, with the browser's
+   permission state as its only local gate.
+4. **Dock badge / bounce / menu-bar icon** are Electron `app.badgeCount` +
+   `dock.bounce`, a tray icon with a status dot, and for pure web clients a favicon
+   badge / `document.title` count (`packages/client/src/chrome/favicon.ts`).
+   Waiting-wins-over-running precedence and clear-on-activation are preserved.
+5. **`agentStartedAt` lives in the daemon** (state is central, so it survives workspace
+   switches). It is sent to clients as an epoch timestamp in milliseconds; clients
+   render the ticking label locally (1 s timer, format §9.2). It remains transient and
+   is never persisted.
+6. **Persistence contract**: `status`, `agentSessionID`, `agentKind` and
+   `agentProfileName` are stored on the pane record; the load-time sequence of §6.1 is
+   kept exactly (capture-then-clear, persist after resume). Column naming is free, but
+   `pane list --json` keeps emitting `status` (camelCase enum values!),
+   `agent_session_id`, `agent`, `background_tasks`.
+7. **Resume typing** writes the command text + CR to the PTY (`TerminalInput.sendText`,
+   `packages/daemon/src/boot/resume.ts`). The 2 s post-spawn delay and the
+   `isSafeSessionID` allowlist are kept: this is a real injection surface
+   (socket → DB → PTY).
+8. **Wire compatibility is a hard requirement**: the pre-port CLI works unchanged. That
+   fixes the six command names, `pane_id`/`session_id`/`agent`/
    `background_tasks`/`title`/`body`/`message` field names, absent-field defaults,
    the fire-and-forget (no reply) contract, and the dual-fire synthesis being
    server-side (old CLIs rely on it).
-9. **The `background_tasks` guard is defensive by design** — it's an observed
-   Claude Code field. Keep the terminal-exclusion counting in the CLI; if you also
-   reimplement the CLI, port the terminal-status set verbatim.
-10. **Gates**: the quit gate's "flush before deciding" step maps to daemon shutdown
-    (flush persistence, stop graft sessions). For the port, quitting a *client*
-    should NOT kill agents (the daemon keeps PTYs alive — that's the architecture's
-    point); the quit-gate semantics apply to stopping the **daemon**. Rethink the
-    UX: the confirmation belongs wherever "terminate all sessions" actually
-    happens. The workspace-delete guard must stay server-side (`--force`), with the
-    client dialog as a UI convenience over the same `activeAgentCount`.
-11. **SystemStatsService** samples the *daemon host's* resources (that's where the
-    agents run) — implement via Node (`os.loadavg`, `/proc` or `systeminformation`)
-    in the daemon and stream samples to clients; keep the 2 s cadence, 60-sample
-    history, counter-reset-to-0 guard, and the 1000-vs-1024 divisor split (rates
-    use 1000, byte sizes use 1024).
-12. **Timers must not thrash state**: elapsed labels and the clock are render-side
+9. **The `background_tasks` guard is defensive by design**: it's an observed
+   Claude Code field. The terminal-exclusion counting stays in the CLI, with the
+   terminal-status set ported verbatim (`packages/cli/src/commands/event.ts`).
+10. **Gates**: quitting a *client* does NOT kill agents (the daemon keeps PTYs alive;
+    that is the architecture's point), so the shell's quit gate (§10) only warns that
+    sessions survive and skips the dialog when nothing is active. "Terminate all
+    sessions" only happens when the **daemon** stops, and the daemon's own shutdown
+    does the flush (persistence) and the bounded PTY kill. The workspace-delete guard
+    stays server-side (`--force`), with the client dialog as a UI convenience over the
+    same `activeAgentCount`.
+11. **System stats** sample the *daemon host's* resources (that's where the agents
+    run), via Node in the daemon (`os.cpus` / `os.loadavg`; `vm_stat`, `netstat -ibn`
+    and `ioreg` on darwin, `/proc` on Linux) and stream to clients; the 2 s cadence,
+    60-sample history, counter-reset-to-0 guard, and the 1000-vs-1024 divisor split
+    (rates use 1000, byte sizes use 1024) are kept.
+12. **Timers do not thrash state**: elapsed labels and the clock are render-side
     only. The only timer that dispatches is the 600 ms clear-status debounce.
-13. **Focus-jump ordering** (§8.5): the web client must apply "activate workspace,
+13. **Focus-jump ordering** (§8.5): the web client applies "activate workspace,
     then focus pane last" so focus-restoration races can't revert the selection.
-14. **`install-hooks.sh` / `merge_hooks.py` / doctor** stay client-machine-side
-    tools (hooks run where the agent CLI runs). If agents run on remote machines
-    over the tailnet, the hooks there need `NEX_SOCKET=tcp:...` to reach the
-    daemon; the hook config itself is unchanged.
-15. **Manual status override** needs a web UI equivalent of the pane-header context
-    menu (Status ▸ Idle/Running/Awaiting Input), shell panes only, and should ride
-    the same daemon action as everything else so indicators/persistence follow.
+14. **`kelpi install-hooks` / doctor** are client-machine-side tools (hooks run where
+    the agent CLI runs). If agents run on remote machines over the tailnet, the hooks
+    there need `KELPI_SOCKET=tcp:...` to reach the daemon; the hook config itself is
+    unchanged. Hooks installed before the Kelpi rename run a bare `nex event ...`; the
+    doctor accepts them as wired and the installer's sweep migrates them to the `kelpi`
+    form instead of letting them fire twice (§2.1, §2.3).
+15. **Manual status override** has a web UI equivalent of the pane-header context
+    menu (Status ▸ Idle/Running/Awaiting Input), shell panes only, and rides the same
+    daemon action as everything else (`set-pane-status`,
+    `packages/daemon/src/ws/sync.ts:727`) so indicators/persistence follow.

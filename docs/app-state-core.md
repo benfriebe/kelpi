@@ -1,28 +1,38 @@
 # App State Core - Behavioral Specification
 
-Subsystem: top-level app state model and all non-socket behavior of Kelpi's `AppReducer`.
-Source of truth (Swift): `Nex/AppReducer.swift`, `AppReducer+Domain.swift`, `AppReducer+RepoGit.swift`,
-`AppReducer+SearchNotify.swift`, `AppReducer+CommandPalette.swift`, and the models
-`WorkspaceGroup`, `WorkspaceColor`, `SidebarID`, `Repo`, `RepoAssociation`, `GitStatus`,
-`GroupIcon`, `LabelPreset`, plus the AppKit gates `FileOpenGate`, `QuitGate`, `WorkspaceDeleteGate`.
+Subsystem: Kelpi's top-level app state model and all non-socket behavior of the daemon's domain
+store and the chrome that drives it.
+Source of truth: the daemon store (`packages/daemon/src/store/types.ts`,
+`packages/daemon/src/store/reducers/workspaces.ts`, `packages/daemon/src/store/reducers/groups.ts`,
+`packages/daemon/src/store/derived.ts`, `packages/daemon/src/store/snapshot.ts`), the app handlers
+(`packages/daemon/src/handlers/app/*.ts`), the repo/git services (`packages/daemon/src/git/*.ts`,
+`packages/daemon/src/graft/associations.ts`, `packages/daemon/src/graft/head-watcher.ts`), the
+shared resolvers (`packages/core/src/resolve/*.ts`), the models `WorkspaceGroup`,
+`WorkspaceColor`, `SidebarID`, `Repo`, `RepoAssociation`, `GitStatus`, `GroupIcon`, `LabelPreset`,
+and the gates: the shell's open-file queue and quit gate (`packages/shell/src/launch.ts`,
+`packages/shell/src/quit.ts`) and the sidebar's delete confirmation
+(`packages/client/src/chrome/Sidebar.tsx`).
 
-This document is written for TypeScript implementers of the new headless daemon + web client.
-It specifies behavior, not Swift idioms. Everything here is the *observable contract*: data shapes,
+This document specifies Kelpi's behavior as it is today, for anyone working on the daemon, the
+Electron shell or the web client. Everything here is the *observable contract*: data shapes,
 algorithms, state transitions, defaults, edge cases, and user-visible UI semantics.
 
-Out of scope (covered by sibling docs): the socket wire protocol handlers (`AppReducer+Socket.swift`),
-web panes (`AppReducer+WebPane.swift`), the per-workspace pane/layout reducer (`WorkspaceFeature`),
-persistence record schemas (`PersistenceService` / `DatabaseService`), settings internals
-(`SettingsFeature`), graft internals (`GraftFeature`), and keybinding config parsing. Where core
-behavior touches those, the touchpoint is specified here.
+Out of scope (covered by sibling docs): the socket wire protocol handlers (socket-handlers.md),
+web panes (web-pane.md), the per-workspace pane/layout reducer (workspace-feature.md),
+persistence record schemas (persistence.md), settings internals (config-keybindings.md), graft
+internals (graft-git.md), and keybinding config parsing. Where core behavior touches those, the
+touchpoint is specified here.
 
 ---
 
 ## 1. Top-level state model
 
-The app has exactly one root state object. In the current app it is an in-memory TCA store; in the
-port it is the daemon's authoritative in-memory state, mutated only by "actions" (events), with
-persistence and side effects triggered per action as specified below.
+The app has exactly one root state object: the daemon's authoritative in-memory state
+(`DaemonState` in `packages/daemon/src/store/types.ts:152`), mutated only by "actions" (events),
+with persistence and side effects triggered per action as specified below. The transient UI fields
+listed below (selection, prompts, rename fields, palette, scroll signal) live in the client that
+owns the gesture and never reach the daemon store; they are listed here because the behaviors in
+this document depend on them.
 
 ```ts
 interface AppState {
@@ -30,8 +40,12 @@ interface AppState {
   workspaces: Workspace[];              // identity: workspace.id; array preserves insertion order
   groups: WorkspaceGroup[];             // identity: group.id
   topLevelOrder: SidebarID[];           // interleaved workspace refs + group refs, sidebar top level
-  activeWorkspaceID: UUID | null;
+  lastActiveWorkspaceID: UUID | null;   // the daemon's last activation from ANY client; each
+                                        // attached client keeps its own live active workspace
+                                        // and reports activations to the daemon (see 3.1)
   repoRegistry: Repo[];                 // identity: repo.id
+  labelPresets: LabelPreset[];          // section 6; saved in the same snapshot as everything else
+  labelPresetsMigrated: boolean;        // one-shot legacy-label -> preset marker (section 6.5)
 
   // ---- Transient (reset on every launch; never persisted) ----
   isSidebarVisible: boolean;            // default true
@@ -49,10 +63,10 @@ interface AppState {
   selectedWorkspaceIDs: Set<UUID>;      // sidebar multi-select
   lastSelectionAnchor: UUID | null;     // shift-range-select anchor
   bulkDeleteConfirmationIDs: UUID[] | null;  // pending "Delete N Workspaces?" prompt
-  gitStatuses: Map<UUID, RepoGitStatus>;     // keyed by RepoAssociation.id (NOT repo id)
+  gitStatuses: Map<UUID, RepoGitStatus>;     // keyed by RepoAssociation.id (NOT repo id); held by
+                                             // the association watcher outside the store (7.8)
   worktreeCreationError: string | null; // transient alert text for a failed worktree create
-  pendingFileOpens: string[];           // markdown paths parked during cold launch (see section 11)
-  didRestoreWorkspaces: boolean;        // half of the label-preset migration gate
+  // (no pendingFileOpens: the cold-launch queue lives in the shell, see section 11.2)
 
   // Command palette (transient)
   isCommandPaletteVisible: boolean;
@@ -76,7 +90,7 @@ fields:
 interface Workspace {
   id: UUID;                       // immutable
   name: string;
-  slug: string;                   // filesystem-safe, generated once at creation (see 1.2)
+  slug: string;                   // filesystem-safe, recomputed on rename (see 1.2)
   color: WorkspaceColor;
   icon: GroupIcon | null;         // avatar override; null = first letter of name
   profileName: string | null;     // workspace profile assignment; null = built-in "default"
@@ -113,8 +127,10 @@ suffix = first 8 chars of id (lowercased, hyphens excluded since UUID prefix has
 slug  = base === "" ? suffix : `${base}-${suffix}`
 ```
 
-Generated once at workspace creation; renames do NOT regenerate the slug (restored workspaces keep
-their persisted slug). The slug is an alternate lookup key for CLI workspace resolution.
+Generated at workspace creation and RECOMPUTED on rename (`slug = makeSlug(newName, id)` in
+`packages/daemon/src/store/reducers/workspaces.ts:328`; the old slug is not kept). Restored
+workspaces keep their persisted slug until renamed. The slug is an alternate lookup key for the
+lenient CLI resolver (15.1). `makeSlug` lives in `packages/core/src/resolve/ids.ts:36`.
 
 ### 1.3 WorkspaceColor
 
@@ -126,9 +142,10 @@ type WorkspaceColor =
 
 - 10 values; the raw string is what is persisted and what rides the wire.
 - Rendering: standard palette colors for the first eight. `black` and `white` are *adaptive
-  monochromes* so they stay visible against both light and dark chrome:
-  - light appearance: black renders as gray(0.11), white as gray(0.68)
-  - dark appearance: black renders as gray(0.45), white as gray(0.96)
+  monochromes* so they stay visible against both light and dark chrome (exact values in
+  `WORKSPACE_COLOR_HEX`, `packages/client/src/chrome/theme.ts:397`, per shell-ui.md §14):
+  - light appearance: black renders as `#3A3A3E`, white as `#C8C8C4`
+  - dark appearance: black renders as `#7A7A82`, white as `#E6E6EA`
   (i.e. black is always the darker of the pair, white the lighter; neither is ever pure
   black-on-black or white-on-white.)
 - `nextRandomColor(workspaces)`: pick a uniformly random color from all 10 **excluding the color of
@@ -175,19 +192,23 @@ Invariants:
 
 ```ts
 type GroupIcon =
-  | { kind: "systemName"; name: string }  // SF Symbol id, e.g. "star.fill"; tinted with the color
+  | { kind: "systemName"; name: string }  // symbol token, e.g. "star.fill"; tinted with the color
   | { kind: "emoji"; emoji: string };     // exactly 1 grapheme; renders as plain text, no tint
 ```
 
 Storage encoding (a TEXT column / string field): `"system:<name>"` or `"emoji:<grapheme>"`.
 Parsing an unknown prefix or an empty payload yields `null` (degrade to the fallback glyph).
 
-Web-port note: SF Symbol names are macOS-specific. The port needs an icon-name mapping (or its own
-icon vocabulary) but must round-trip the stored `system:*` strings losslessly for data migrated
-from the macOS app.
+Symbol names are opaque tokens end to end: the daemon stores and forwards the `system:*` string
+untouched, and the client maps the curated set it offers in "Change Icon > Symbol" to glyphs
+(`ICON_TOKEN_GLYPHS` in `packages/client/src/chrome/icons.tsx`), falling back to a generic glyph
+for a name it does not know. A `system:*` value written by the legacy macOS app therefore
+round-trips losslessly through a client that never draws it.
 
 **Emoji validation** (used by both group and workspace custom-emoji confirm): the input is trimmed,
-and only the FIRST grapheme cluster is considered; it must pass `isGraphemeEmoji`:
+and only the FIRST grapheme cluster is considered; it must pass `isGraphemeEmoji`
+(`packages/core/src/codec/emoji.ts`, shared by the client's custom-emoji field and the daemon's
+icon verbs):
 
 1. Accept if the first scalar has the Unicode `Emoji_Presentation` property (covers color emoji,
    skin tones, flags, ZWJ sequences).
@@ -326,6 +347,14 @@ fully visible), and immediately dispatches `clearSidebarScrollTarget` to null it
 re-fire on unrelated re-renders. While the sidebar filter is active the scroll request is consumed
 but dropped (the filtered list has no stable scroll host).
 
+The signal is client state: the client that issued a create sets it from the reply id
+(`packages/client/src/App.tsx:1252` for workspaces, `:1223` for groups, from the reply's
+`group_id`), every activation path sets it in the same funnel that reports the activation
+(`activateWorkspaceAndReveal`, `packages/client/src/App.tsx:450`), and the sidebar
+consumes-and-clears it through `onScrollHandled` (`packages/client/src/chrome/Sidebar.tsx:3233`).
+The daemon's `scrollTarget` dependency (`packages/daemon/src/handlers/app/context.ts:173`) is a
+no-op, so a create issued by another client never moves this client's viewport.
+
 ### 2.6 Sidebar filter (view-level; behavior to re-create)
 
 - A text field above the list: placeholder "Filter workspaces or labels".
@@ -364,7 +393,7 @@ workspace should occupy AFTER being detached from its current parent. The reduce
 exactly that (remove from all parents first, then insert at the clamped index), so the UI passes
 indices straight through.
 
-Additional interaction details worth reproducing:
+Additional interaction details:
 
 - Multi-drag: if the dragged row is part of the current multi-selection (selection size > 1), the
   whole selection moves via the bulk action, preserving on-screen order of the sources.
@@ -425,6 +454,17 @@ Bulk operations over the selection:
 5. Effects: persist state AND `refreshGitStatus` (so the inspector/sidebar badges for the newly
    active workspace are fresh).
 
+Each attached client owns its live active workspace; the daemon keeps only `lastActiveWorkspaceID`
+(the last activation from any client, which is what `kelpi workspace list` reports as ACTIVE and
+what a fresh client restores to; `packages/daemon/src/store/types.ts:158`). A client reports every
+activation, even a re-assert of the workspace it is already showing, and the report reaches the
+daemon store as `set-active-workspace` only when the daemon's `lastActiveWorkspaceID` differs OR
+the destination's parent group is collapsed, so the expand in step 3 still happens on a re-assert
+(`packages/daemon/src/ws/sync.ts:1914`; the reducer case is
+`packages/daemon/src/store/reducers/workspaces.ts:353`). Steps 4 and 5's scroll target and git
+refresh ride in the client's activation funnel (`activateWorkspaceAndReveal`,
+`packages/client/src/App.tsx:450`).
+
 ### 3.2 Index and relative switching
 
 - `switchToWorkspaceByIndex(i)` (Cmd+1..9 maps to i = 0..8): index into `visibleWorkspaceOrder`;
@@ -443,8 +483,8 @@ Bulk operations over the selection:
 Signature (all optional but name):
 
 ```
-createWorkspace(name, color?, repos: Repo[] = [], workingDirectory?, groupID?, profileName?,
-                id?, worktree?: { path, branchName })
+createWorkspace(name, color?, workingDirectory?, groupID?, profileName?, id?,
+                worktree?: { path, branchName })
 ```
 
 Behavior, in order:
@@ -459,13 +499,18 @@ Behavior, in order:
 5. `profileName`: normalize the assignment (trim; empty or the literal `"default"` -> null).
 6. First-pane working directory precedence:
    - `worktree` present -> `worktree.path`
-   - else exactly one repo in `repos` -> `repos[0].path`
    - else `workingDirectory` if given
    - else stays at home directory.
-7. For each repo in `repos`: add to `repoRegistry` if its id is not already there; append a new
-   `RepoAssociation{ id: fresh, repoID, worktreePath: worktree?.path ?? repo.path,
-   branchName: worktree?.branchName ?? null }` to the workspace. When `worktree` is present, also
-   set that repo's `isAutoDiscovered = false` (a worktree flow promotes the repo to "kept").
+7. When `worktree` is present: register the repo if new (or clear `isAutoDiscovered` if it was
+   auto-detected; a worktree flow promotes the repo to "kept") and seed one association
+   `RepoAssociation{ id: fresh, repoID, worktreePath: worktree.path, branchName:
+   worktree.branchName, isAutoDetected: false }` on the workspace. The create action carries no
+   repo list (`create-workspace` in `packages/daemon/src/store/types.ts:195` has only
+   `workingDirectory` and the optional `repoAssociations` the worktree branch fills;
+   `packages/daemon/src/handlers/app/workspaces.ts:160`). Repos chosen in the GUI sheet are
+   attached AFTER creation: the client sends one WS `add-repo-association` per chosen repo once
+   the reply carries the new id (`packages/client/src/App.tsx:1252`), and each registers the repo
+   via `ensureRepo` when the registry does not have it (`packages/daemon/src/ws/repos.ts:272`).
 8. Append the workspace to the flat `workspaces` array (always at the end; only sidebar order
    reflects placement).
 9. Sidebar placement, governed by settings `newWorkspacePlacement` (default `end-of-list`):
@@ -489,7 +534,7 @@ Behavior, in order:
     - If `worktree` present: also `refreshGitStatus` immediately (so dirty/ahead badges do not lag
       until the 30 s timer).
 
-GUI sheet notes (behavior to re-create): the "New Workspace" sheet pre-selects a color via
+GUI sheet notes (`packages/client/src/chrome/NewWorkspaceSheet.tsx`): the "New Workspace" sheet pre-selects a color via
 `nextRandomColor`, and preselects a group as follows: an explicit `pendingSheetGroupID` (sheet
 opened scoped to a group, e.g. from a group context menu / the group's "+" affordance) wins;
 otherwise, when settings `inheritGroupOnNewWorkspace` (default true) is on, the active workspace's
@@ -502,9 +547,10 @@ Inputs: `name, color?, repo, worktreeName, branchName, updateMain=false, groupID
 
 1. Clear `worktreeCreationError`.
 2. Sanitize `worktreeName` and `branchName` with `sanitizedGitName` (below). A name that sanitizes
-   to nothing sets `worktreeCreationError` to
-   `"<input>" isn't a usable worktree name. Use letters, numbers, or - _ / . characters.`
-   (branch variant says "branch name") and STOPS - no async work, the sheet stays open.
+   to nothing fails with `"<input>" isn't a usable worktree name` (branch variant:
+   `"<input>" isn't a usable branch name`; no suffix, `packages/daemon/src/handlers/app/workspaces.ts:264`
+   and `packages/daemon/src/ws/repos.ts:441`) and STOPS - no async work, the sheet stays open
+   showing the message.
 3. `worktreePath = resolvedWorktreeBasePath(repo.path) + "/" + folderName` (see 4.2.2).
 4. Async: perform the worktree add:
    - `updateMain=false`: `git worktree add <path> <branch>`; on failure retry as
@@ -513,7 +559,7 @@ Inputs: `name, color?, repo, worktreeName, branchName, updateMain=false, groupID
      `git ls-remote --symref origin HEAD`, falling back to the local `origin/HEAD` symref, then
      `"main"`), `git fetch origin`, then
      `git worktree add -b <branch> <path> origin/<default>`.
-5. On success: dispatch `createWorkspace(name, color, repos=[repo], groupID, profileName, id,
+5. On success: dispatch `createWorkspace(name, color, groupID, profileName, id,
    worktree={path, branchName: sanitizedBranch})` (i.e. all of 4.1 runs with the worktree seed).
 6. On failure: `worktreeCreationFailed(workspaceID: null, error: worktreeErrorMessage(err))` ->
    sets `worktreeCreationError`; the new-workspace sheet observes it, shows the message, and stays
@@ -537,7 +583,8 @@ Best effort: it neutralizes common failures (spaces especially) but does not enf
 
 #### 4.2.2 Worktree base path template
 
-Settings `worktreeBasePath`, default `~/nex/worktrees/<repo>`. Resolution given a repo path:
+Settings `worktreeBasePath`, default `~/kelpi/worktrees/<repo>` (`DEFAULT_WORKTREE_BASE_PATH`,
+`packages/daemon/src/git/names.ts:13`). Resolution given a repo path:
 
 - If the template STARTS with `<repo>`, that occurrence expands to the full repository path.
 - Any other `<repo>` occurrence expands to the repository directory name (last path component).
@@ -575,20 +622,33 @@ at the entry points:
   the WorkspaceDeleteGate dialog first (section 13.2).
 - The Cmd+W close-last-pane path: when the focused workspace has <= 1 pane, Cmd+W runs the
   WorkspaceDeleteGate and then deletes the WORKSPACE instead of the pane. This path has no
-  last-workspace guard, so Cmd+W can legitimately take the app to zero workspaces.
+  last-workspace guard, so Cmd+W can legitimately take the app to zero workspaces. The mechanism
+  is an opt-in flag: the daemon's delete refuses at one workspace (`refusing to delete the last
+  workspace`) unless the message carries `allow_last`, and only the client's `closeFocused` sets
+  it (`packages/client/src/App.tsx:1364`; the guard is
+  `packages/daemon/src/handlers/app/workspaces.ts:475`). The CLI never sends it. The GUI delete
+  itself is the WS-only `delete-workspace` command (`GUI_DELETE_WORKSPACE_COMMAND`,
+  `packages/daemon/src/ws/sync.ts:393`), routed into the app dispatcher rather than answered from
+  the store because it must tear down PTYs and persist.
 - The CLI `workspace delete` refuses the last workspace and enforces the running-agents guard
   server-side with `--force` (socket subsystem doc).
 
 ### 4.4 Bulk delete
 
-`confirmBulkDelete` (after the staged confirmation): clear `bulkDeleteConfirmationIDs`; re-check
-`ids.length < workspaces.length` (state may have changed while the prompt was up; refuse deleting
-all). Then a batched version of 4.3: collect all pane ids + association ids across the batch,
-remove each workspace, scrub `topLevelOrder` + every `childOrder` of the removed set, re-point
-`activeWorkspaceID` by max `lastAccessedAt` when the active one died, scrub rename/selection state
-(anchor always nulled), destroy surfaces, clear sync groups per deleted workspace, force-stop
-grafts, persist. (Bulk delete does NOT stop HEAD watchers explicitly in the current code - see
-Port notes.)
+`confirmBulkDelete` (after the staged confirmation) is N single deletes, not one batched action:
+the client issues one forced `delete-workspace` per staged id, in selection order
+(`packages/client/src/App.tsx:2223`, wired from `packages/client/src/chrome/Sidebar.tsx:4901`),
+and each runs the full 4.3 path on the daemon (pane teardown, active re-point by max
+`lastAccessedAt`, persist) under the daemon's own last-workspace guard
+(`packages/daemon/src/handlers/app/workspaces.ts:475`) - so a bulk delete can never empty the list,
+but it is not atomic: a refused or failed member leaves the earlier ones deleted. The
+"Delete N Workspaces..." item is disabled when the selection covers every workspace
+(`packages/client/src/chrome/Sidebar.tsx:3672`); that, plus the daemon guard, is the "refuse
+deleting all" rule, not a batch re-check. (The store also carries a batched `delete-workspaces`
+reducer action with single-pass semantics, `packages/daemon/src/store/types.ts:210`; nothing
+dispatches it today.) HEAD watchers and graft sessions for the removed associations are torn down
+by the association reconciler (`packages/daemon/src/graft/associations.ts:168`), whichever path
+removed them.
 
 The confirmation prompt is a destructive confirmation dialog titled
 "Delete N Workspaces?" (singular variant for 1) - the staged ids are captured at request time.
@@ -675,8 +735,14 @@ The single-pass semantics matter: sequential single moves drift when sources and
 - `renameGroup(id, name)`: trim; empty or missing group -> no-op; set the name; clear
   `renamingGroupID` if it pointed here; persist.
 - `setGroupColor(id, color | null)`: guard exists; set; persist.
-- `setGroupIcon(id, icon | null)`: guard exists; set; persist. (Note: group icon management is
-  deliberately GUI-only; there is no `group-set-icon` wire command.)
+- `setGroupIcon(id, icon | null)`: guard exists; set; persist. Group icon and color management
+  is a GUI gesture, not a CLI verb: there is no `group-set-icon` socket command, but the GUI
+  channel carries `set-group-icon` and `set-group-color` as WS-only commands (`WS_ONLY_COMMANDS`,
+  `packages/daemon/src/ws/sync.ts:359`). `icon` on the wire is the flat storage string
+  (`"emoji:🔥"` / `"system:star"`); null or an unparseable value clears the icon back to the
+  fallback glyph. An `emoji:` payload is the one thing not taken on trust: the daemon re-validates
+  it with the 1.6 heuristic (`packages/core/src/codec/emoji.ts`) and refuses a non-emoji grapheme,
+  so no hand-built frame can store a letter as an icon.
 - Custom emoji flow: `requestGroupCustomEmoji(id)` stages a prompt carrying the group id + name for
   the sheet header; `cancelGroupCustomEmoji` clears it; `confirmGroupCustomEmoji(text)` applies the
   validation in 1.6 and on success sets `icon = emoji(firstGrapheme)` and persists. The workspace
@@ -699,7 +765,8 @@ group entry from `topLevelOrder` and the group itself.
   delete (4.4): collect pane ids + association ids, remove workspaces, re-point active workspace by
   max `lastAccessedAt` when needed, scrub rename/selection state (anchor nulled only when it
   pointed at a removed workspace), clear `groupDeleteConfirmation`, destroy surfaces, clear
-  per-workspace sync groups, force-stop grafts, persist. (HEAD watchers: same omission as 4.4.)
+  per-workspace sync groups, force-stop grafts, persist. (HEAD watchers and graft sessions for the
+  removed associations are torn down by the association reconciler, as in 4.4.)
 
 Confirmation UX: `requestGroupDelete(id)` stages
 `groupDeleteConfirmation = { groupID, groupName, workspaceCount }` where `workspaceCount` counts
@@ -751,16 +818,19 @@ interface LabelPreset {
   preset name renders in the preset's colors; unmatched chips render neutral.
 - Auto text color: perceived luminance `0.299 r + 0.587 g + 0.114 b` over sRGB in 0..1; text is
   black when luminance > 0.6, else white.
-- Storage: the whole preset list is one JSON array under a key-value setting
-  (`settings.labelPresets`); writes are immediate (never debounced - a debounce could drop an edit
-  made just before quit).
+- Storage: the preset list is a JSON array in the `appState` table, written with the rest of the
+  snapshot by the 500 ms debounced save (`labelPresets` is part of `PersistedSnapshot`,
+  `packages/daemon/src/store/snapshot.ts:173`; the writer in `packages/daemon/src/db/persistence.ts`
+  is flushed on graceful shutdown, so an edit just before quit is not lost). Each color is stored
+  as `{kind:'named', color}` or `{kind:'custom', hex}` (`packages/daemon/src/db/codec.ts:256`);
+  the one-string form (6.2) is the WS wire encoding.
 
 ### 6.4 Preset list operations (PresetsFeature)
 
-All operations persist the whole list immediately on success:
+All operations change the store and persist the whole list with the next debounced snapshot:
 
-- `labelPresetsLoaded(list)`: set list; `didLoadLabelPresets = true`; signal core to run the
-  migration gate (6.5).
+- `labelPresetsLoaded(list)`: the list arrives inside the boot snapshot together with the
+  workspaces (there is no separate load event); the migration gate (6.5) runs once after boot.
 - `addLabelPreset(name, color)`: normalize name; empty OR case-sensitive duplicate -> silent no-op
   (this makes it safe to call opportunistically, e.g. the CLI label back-fill); else append.
 - `updateLabelPreset(id, name, color)`: `id` is the preset's CURRENT name; missing -> no-op;
@@ -776,21 +846,22 @@ All operations persist the whole list immediately on success:
 Purpose: labels created before presets existed should each get a preset (default gray) so they show
 up in Settings > Labels and survive being unapplied.
 
-Gate (all three required):
+Gate: the persistent one-shot marker (`appState` key `kelpid.labelPresetsMigrated`, the store's
+`labelPresetsMigrated`) is NOT set. Workspaces and presets arrive in one snapshot, so there is no
+load race: boot runs the check once (`runLabelPresetMigration`,
+`packages/daemon/src/boot/labels.ts:75`, called from `packages/daemon/src/boot/compose.ts:1520`),
+after the fresh-install default workspace is created. When the gate passes: collect every distinct
+workspace label in first-seen order (workspace order, then label order; empty names skipped), add
+`{name, color: named(gray)}` for each name not already a preset via the idempotent
+`addLabelPreset` (6.4), THEN set the marker (a crash in between leaves the migration pending, not
+half-done; both dispatches land in one synchronous drain, so the debounced save sees the finished
+state). The marker is one-way, so a preset the user later deletes is never resurrected by a
+subsequent launch.
 
-1. `didRestoreWorkspaces` (workspaces finished loading from persistence),
-2. `presets.didLoadLabelPresets` (preset list finished loading),
-3. the persistent one-shot marker `settings.labelPresets.migrated` is NOT set.
-
-The two loads race, so BOTH completion events dispatch the migration check; whichever lands second
-runs it. When the gate passes: set the marker (so a preset the user later deletes is never
-resurrected by a subsequent launch), collect every distinct workspace label in first-seen order,
-and feed them to the preset reducer, which adds `{name, color: named(gray)}` for each name not
-already a preset.
-
-Fresh-install path: when `stateLoaded` finds zero workspaces it immediately sets the migrated
-marker (there is nothing legacy to migrate, and marking now prevents a LATER launch from migrating
-the user's new labels).
+Fresh-install path: the same call runs with zero labels and sets the marker (there is nothing
+legacy to migrate, and marking now prevents a LATER launch from migrating the user's new labels).
+An unreadable database takes the same path: `emptyDaemonState` defaults the marker to false
+(`packages/daemon/src/store/types.ts:706`) precisely so boot sets it there too.
 
 ### 6.6 CLI back-fill invariant (cross-ref)
 
@@ -849,11 +920,17 @@ Set the name (no-op on missing); persist.
 - `worktreeCreationFailed(workspaceID | null, error)`: `worktreeCreationError = error` (the
   workspace id is unused; the inline new-workspace flow passes null). `dismissWorktreeCreationError`
   nulls it.
-- `removeWorktreeAssociation(workspaceID, associationID, deleteWorktree)`: guard workspace,
-  association, and its repo all exist. Remove the association; drop its git status entry. Then, in
-  parallel: force-stop any graft session on the association (must happen - the association is
-  gone, so a retry-start would be wrong), stop its HEAD watcher, and when `deleteWorktree` run
-  `git worktree remove` (errors swallowed; best-effort) from the parent repo; persist.
+- `removeWorktreeAssociation(workspaceID, associationID, deleteWorktree)` (WS
+  `remove-repo-association`, `packages/daemon/src/ws/repos.ts:383`): guard workspace and
+  association exist. When `deleteWorktree`: refuse if the parent repo is unregistered (`the parent
+  repository is no longer registered`) or the association IS the main checkout (`that association
+  is the main checkout, not a worktree`); otherwise run a NON-forcing `git worktree remove` from
+  the parent repo FIRST, and on failure reply `{ok:false}` with `worktreeErrorMessage` and keep the
+  association (a worktree git would not delete must stay visible; git refuses a dirty or locked
+  worktree and that refusal is reported, not forced). Only then remove the association and persist
+  (`repos.ts:409`); the association reconciler stops its HEAD watcher, drops its status entry and
+  force-stops any graft session (must happen - the association is gone, so a retry-start would be
+  wrong).
 
 ### 7.6 Auto-link (auto-detected repo associations)
 
@@ -877,15 +954,20 @@ Debounces (all keyed and restartable - a newer schedule cancels the pending one)
 
 `autoLinkResolved(workspaceID, paneID, info)`:
 
-1. Race guards: setting still on; workspace exists; pane exists; the pane's current pwd (path
-   normalized) is still `worktreeRoot` or inside it (`pwd == root || pwd.startsWith(root + "/")`).
-   Any failure = silent skip.
-2. Find-or-create the parent repo by `path == parentRepoRoot`. Created repos get
-   `{name: lastPathComponent(parentRepoRoot), isAutoDiscovered: true}`.
+1. Race guards: setting still on; workspace exists; pane exists; the pane's current pwd
+   (standardized AND symlink-resolved on both sides, `isPathInside`,
+   `packages/daemon/src/git/autodetect.ts:85`) is still `worktreeRoot` or inside it
+   (`pwd == root || pwd.startsWith(root + "/")`). Any failure = silent skip. Resolving symlinks
+   is what makes a shell reporting `/var/...` match the `/private/var/...` that `git rev-parse`
+   answers with.
+2. Find-or-create the parent repo by canonical path equality (symlinks resolved, so `/var/...`
+   and `/private/var/...` are one repo; `packages/daemon/src/git/autodetect.ts:175`). Created
+   repos get `{name: lastPathComponent(parentRepoRoot), isAutoDiscovered: true}`. The WS repo
+   verbs key the registry the same way (`canonicalizeUserPath`, `packages/daemon/src/ws/repos.ts:190`).
 3. If the workspace does not already have an association with `worktreePath == worktreeRoot`:
-   append `{repoID, worktreePath: worktreeRoot, branchName: null, isAutoDetected: true}`, then
-   async resolve its branch + git status (dispatching `gitStatusUpdated` and
-   `repoAssociationBranchResolved`), and start a HEAD watcher.
+   append `{repoID, worktreePath: worktreeRoot, branchName: null, isAutoDetected: true}`; the
+   association reconciler (7.9) then starts a HEAD watcher and reads its branch + git status
+   immediately (dispatching `repoAssociationBranchResolved`).
 4. If the repo was newly created: async resolve its remote URL (`repoRemoteURLResolved`).
 5. Persist once if anything was added.
 
@@ -907,15 +989,23 @@ close, pane process termination, and directory changes):
 
 ### 7.8 Git status pipeline
 
-Data flow: `gitStatuses: Map<associationID, RepoGitStatus>` + `association.branchName`.
+Data flow: the association watcher (`createRepoAssociationWatch`,
+`packages/daemon/src/graft/associations.ts:105`) keeps a transient `Map<associationID,
+RepoGitStatus>` OUTSIDE the store, exposed through `statusFor` (`associations.ts:215`), while
+`association.branchName` lives on the workspace and persists. There is no `gitStatusUpdated`
+action. Clients read statuses with the WS `workspace-repo-status` verb
+(`packages/daemon/src/ws/repos.ts:221`); passing `refresh: true` re-reads branch + dirtiness for
+the workspace's associations before the reply (a git failure leaves the last known status), which
+is what the inspector asks for when it opens or when a HEAD moved.
 
-- `refreshGitStatus`: only for the ACTIVE workspace; no-op when it has no associations. For each
-  association sequentially: `getStatus(worktreePath)` (1.8 semantics; failures -> `unknown`) ->
-  `gitStatusUpdated(assocID, status)` (pure map write, no persist), then
+- `refreshGitStatus`: only for the ACTIVE workspace (the daemon's `lastActiveWorkspaceID`); no-op
+  when it has no associations. For each association: `getStatus(worktreePath)` (1.8 semantics;
+  failures -> `unknown`) -> write the watcher's map entry (no persist), then
   `getCurrentBranch(worktreePath)` (`git rev-parse --abbrev-ref HEAD`; null on failure/empty) ->
   `repoAssociationBranchResolved` (writes `branchName`, persists).
 - `startGitStatusTimer`: an app-lifetime 30 s repeating timer dispatching `refreshGitStatus`.
-  Started once from `stateLoaded`; restart-safe (starting again cancels the prior timer).
+  Started once at boot (`repoWatch.start()`, `packages/daemon/src/boot/compose.ts:1518`);
+  restart-safe (starting again cancels the prior timer).
 - Triggers for an immediate refresh: workspace activation (3.1), inspector open (`toggleInspector`
   refreshes when turning ON), worktree created, command palette confirm, workspace create with a
   worktree seed, and HEAD changes (below).
@@ -931,22 +1021,29 @@ Per association, a filesystem watcher on the worktree's real HEAD file:
   yields `<repo>/.git/HEAD`, a linked worktree `<repo>/.git/worktrees/<name>/HEAD`; relative
   results resolve against the worktree root; the path is normalized. Resolution failure = watcher
   silently not started.
-- Watch for writes/deletes/renames. `git checkout` rewrites HEAD via temp file + atomic rename, so
-  after a delete/rename the watcher re-opens the file after 200 ms and keeps watching; the consumer
-  only sees logical "HEAD changed" events. At rest the watcher costs zero CPU (kqueue-style
-  event-driven; the port can use fs.watch or equivalent).
+- `git checkout` rewrites HEAD via temp file + atomic rename, which kills an inode watch; the
+  watcher (`createHeadWatchService`, `packages/daemon/src/graft/head-watcher.ts:125`) therefore
+  watches the HEAD file's PARENT directory with a non-recursive `fs.watch` and filters events to
+  the `HEAD` entry, which is rename-proof by construction with no re-open dance (a null filename
+  from the platform is treated as a HEAD change at the cost of one debounced git read). The
+  consumer only sees logical "HEAD changed" events. At rest the watcher costs zero CPU
+  (event-driven).
 - `startHeadWatcher(workspaceID, associationID, worktreePath)`: starting again for the same
   association replaces the previous watcher.
 - `stopHeadWatcher(associationID)`: stops the watcher and cancels any pending debounced refresh.
 - `headChanged(workspaceID, associationID)`: guard the association still exists; then debounce
   150 ms (restarting on each event - checkout's double-write coalesces to one refresh) and run
-  status + branch resolution for that single association, dispatching `gitStatusUpdated` +
-  `repoAssociationBranchResolved`.
+  status + branch resolution for that single association, updating the watcher's status entry and
+  dispatching `repoAssociationBranchResolved`.
 
-Watchers are seeded: at `stateLoaded` for every persisted association; on workspace create for the
-seed associations; on `worktreeCreated`; on auto-link; and on the workspace-level
-`addRepoAssociation` child action. They are stopped on association removal paths (7.3, 7.5, 7.7,
-workspace delete) and the association's `gitStatuses` entry is dropped alongside.
+Watchers are seeded and stopped by one store-subscribed reconciler
+(`packages/daemon/src/graft/associations.ts:168`): on every event batch it diffs the association
+set, starts a watcher plus an immediate branch/status read for each association that appeared
+(boot restore of every persisted association, workspace create with a worktree seed,
+`worktreeCreated`, auto-link, the workspace-level `addRepoAssociation` child action), and for each
+that vanished (7.3, 7.5, 7.7, workspace delete, bulk delete, group cascade) stops the watcher, drops
+its status entry and force-stops any graft session. From the store's point of view every removal
+path is the same event: the association is gone.
 
 ### 7.10 Inspector
 
@@ -983,20 +1080,31 @@ sequence:
 
 ### 9.2 Notification service semantics
 
-- Every notification's identifier is `kelpi-<paneID>` -> one live notification per pane; a new post
+- Every notification's identifier is `kelpi-<paneID>` (`notificationDedupeKey`,
+  `packages/daemon/src/handlers/app/events.ts:32`) -> one live notification per pane; a new post
   replaces the previous one (dedup by pane).
 - Category has two action buttons: "Open" (foreground) and "Dismiss" (destructive/no-op).
 - Payload: `{ paneID, workspaceID? }`.
-- "Open" or clicking the notification body: requires BOTH ids; activates the app, then
-  `setActiveWorkspace(workspaceID)` + focus the pane. Agent-lifecycle notifications (posted by the
-  socket subsystem) include `workspaceID`; OSC-originated notifications (9.1) are posted WITHOUT a
-  workspace id, so their Open button currently does nothing beyond dismissal (see Port notes).
+- "Open" or clicking the notification body: requires BOTH ids; raises the window, then
+  `setActiveWorkspace(workspaceID)` + focus the pane. Both agent-lifecycle notifications and
+  OSC-originated ones (9.1) carry `workspaceID`: the OSC sink resolves the pane's owning workspace
+  at post time and broadcasts `{type:'notification', kind:'osc', paneID, workspaceID, title, body,
+  dedupeKey}` (`packages/daemon/src/handlers/app/osc-notifications.ts:54`; the title falls back to
+  the pane title, then the workspace name), so Open works for either.
 - Notifications are shown even while the app is frontmost (banner + sound); the focus-based
   suppression happens before posting, not at presentation time.
-- `removeNotification(paneID)` removes delivered + pending notifications for that pane. Core calls
-  it when a pane's status is cleared (`clearPaneStatus` child action), so acting on a pane retracts
-  its stale "waiting for input" notification.
-- Permission is requested once at app launch.
+- Retraction: the daemon publishes notifications but never an explicit `removeNotification`
+  (`packages/shell/src/agents.ts:449`). The shell closes a pane's live `kelpi-<paneID>`
+  notification the moment that pane leaves the waiting set (any status change away from
+  `waitingForInput`, `clearPaneStatus` included; `packages/shell/src/status.ts:589`), so acting on
+  a pane retracts its stale "waiting for input" notification the same way.
+- Permission is requested from a user gesture, not at launch: the browser client registers a
+  one-shot `pointerdown` listener and the first click in the window calls
+  `runtime.notifications?.request()` (`packages/client/src/App.tsx:622`; browsers grant
+  notification permission only from a user gesture, and `request()` is a no-op once the state is
+  no longer `default`, `packages/client/src/state/notifications.ts:135`). The Electron shell makes
+  no permission request at all: `Notification.isSupported()` is the whole gate
+  (`packages/shell/src/notify.ts:26`).
 
 ### 9.3 updateExternalIndicators
 
@@ -1015,16 +1123,18 @@ items   = one StatusBarItem per non-idle pane:
             paneID, workspaceID, status }
 ```
 
-Menu bar (behavior to re-create in the web/electron chrome):
+Menu bar (the Electron shell's tray, fed by the shell's own daemon connection in
+`packages/shell/src/status.ts`):
 
 - A terminal glyph icon; template (monochrome) when both counts are zero.
 - A 6 px colored dot overlays the icon's top-right corner when anything is active: the WAITING
   color when `waiting > 0` (waiting wins), else the RUNNING color when `running > 0`. Colors come
   from the resolved chrome theme so they match in-app status colors.
 - Clicking opens a popover listing `items` (workspace-colored rows); selecting a row activates the
-  app/window FIRST, then switches to the workspace, then focuses the pane (ordering matters in the
-  macOS app because window key restoration re-asserts the old first responder; an equivalent
-  focus-after-raise ordering should be kept).
+  app/window FIRST, then switches to the workspace, then focuses the pane (the shell sends a
+  `reveal-request` through its daemon connection and the client performs the switch and focus once
+  the window is up; the focus-after-raise ordering is kept because key-window restoration would
+  otherwise re-assert the old focus).
 
 Dock badge: `waiting > 0 ? String(waiting) : none`. Only waiting agents badge the dock; running
 ones do not.
@@ -1067,6 +1177,13 @@ id       = "pane:<paneID>"
 
 `homeAbbreviated` replaces the user home directory prefix with `~`.
 
+After the state-derived rows the palette appends client command items (`kind: "command"`;
+`buildPaletteItems(workspaces, { commands })`, `packages/client/src/chrome/palette.ts:101`). Each
+carries its own id, a `run` callback and an optional `shortcut` hint (the display string of the
+key binding that covers it, e.g. `⌘P`; workspace/pane rows never carry one, there is no key for
+"this workspace"). Confirming a command item runs it inside the palette component and nothing else
+happens (`packages/client/src/App.tsx:3197`).
+
 ### 10.2 Query filtering
 
 - Empty query -> all items.
@@ -1089,11 +1206,13 @@ id       = "pane:<paneID>"
 - `commandPaletteConfirm`:
   - If the selected index is out of range (e.g. zero matches): just close the palette and schedule
     the focus handoff so the window is not left without keyboard focus.
-  - Else take the selected item; hide the palette; clear the query; set
-    `activeWorkspaceID = item.workspaceID` DIRECTLY (also bumping that workspace's
-    `lastAccessedAt`, mirroring 3.1 but without the collapsed-group auto-expand);
-    `sidebarScrollTarget = workspace(item.workspaceID)`; effects: persist, `refreshGitStatus`,
-    focus the item's pane when it is a pane item, and schedule the focus handoff to
+  - Else take the selected item; hide the palette; clear the query; activate `item.workspaceID`
+    exactly as 3.1 (`lastAccessedAt` bump, collapsed parent group expanded, scroll target, git
+    refresh) through the same `activateWorkspaceAndReveal` funnel every activation uses
+    (`packages/client/src/App.tsx:3194`); the daemon dispatches `set-active-workspace` when the
+    parent is collapsed precisely so the palette's destination is not left hidden
+    (`packages/daemon/src/ws/sync.ts:1917`, reducer `packages/daemon/src/store/reducers/workspaces.ts:359`).
+    Then focus the item's pane when it is a pane item, and schedule the focus handoff to
     `item.paneID ?? destination workspace's focusedPaneID`.
 
 ### 10.4 Focus handoff
@@ -1117,47 +1236,50 @@ Two distinct "open" actions exist; do not conflate them:
   can target the CALLER's workspace: when the wire message carries the caller's pane id and that
   pane exists, focus is set to the caller pane and the markdown pane opens in the caller's
   workspace, honoring `--here` reuse; otherwise it falls back to the active workspace. It does NOT
-  go through `openFileAtPath` and does NOT use `pendingFileOpens`.
+  go through `openFileAtPath` and is never parked (the shell queue in 11.2 is the only one).
 
 ### 11.1 openFileAtPath(path, fromPaneID)
 
-1. If `activeWorkspaceID` is null (cold launch: the open beat the async state load): push the path
-   onto `pendingFileOpens` and stop. (Two-stage queue, see 11.2.)
+1. If there is no active workspace (the daemon's `lastActiveWorkspaceID` is null or names no
+   workspace): drop the open silently (`route`, `packages/daemon/src/handlers/app/files.ts:29`).
+   This cannot occur after boot, because the default workspace is created before the daemon
+   listens (11.2); the cold-launch queue lives in the shell, not here.
 2. Relative-path resolution: when the path is not absolute, resolve it against, in order, the
    working directory of `fromPaneID`'s pane in the active workspace, else the active workspace's
    focused pane's working directory; when neither yields a non-empty cwd, the path passes through
-   unchanged.
+   unchanged. A `~`-prefixed path is passed through unchanged rather than joined to a cwd
+   (`files.ts:50`; joining would produce `<cwd>/~/x`, a path that cannot exist).
 3. Forward to the active workspace's `openMarkdownFile(filePath: resolved)` (workspace subsystem:
    opens or reuses a markdown pane).
 
 ### 11.2 The two-stage cold-launch queue
 
-Stage 1 - `FileOpenGate` (outside the store): the OS-level "open these files" callback can fire
-before the UI/store wiring exists. The gate buffers paths until the app wires a forwarding closure
-at first render; wiring drains the buffer in arrival order into `openFileAtPath(path, null)`.
-Filtering happens BEFORE the gate: only file URLs with extension `md` or `markdown`
-(case-insensitive) are forwarded (an explicit `open -a Kelpi foo.png` must not render binary as
-markdown). After forwarding at least one file while the app is already running, the window is
-raised and activated (an open into a minimized/hidden app must be visible); on cold launch the OS
-activates the app anyway.
+Stage 1 - the shell's open-file queue (`createOpenFileQueue`, `packages/shell/src/launch.ts:81`):
+Electron's `open-file` event can fire before the daemon connection exists. The queue parks paths
+until the daemon socket is ready (`ready()`); `drain` then snapshots the queue and CLEARS it first
+(the opener has no dedup; leaving the queue populated would let a later drain replay stale paths
+as phantom panes) before forwarding each as `open {path, paneID: null}` in arrival order. The pane
+id is deliberately not parked: the only route that carries one (Cmd+O from a pane in a window that
+is already up) can never be parked, because a window implies a connection. Filtering happens
+BEFORE the queue: only file URLs with extension `md` or `markdown` (case-insensitive) are forwarded
+(an explicit `open -a Kelpi foo.png` must not render binary as markdown). After forwarding a file
+while the app is already running, the window is raised and activated (an open into a
+minimized/hidden app must be visible); on cold launch the OS activates the app anyway.
 
-Stage 2 - `pendingFileOpens` (inside the store): an open that arrives after wiring but before the
-async persistence load has produced a workspace parks in `pendingFileOpens` (11.1 step 1).
-`flushPendingFileOpens` snapshots the queue, CLEARS it first (openMarkdownFile has no dedup;
-leaving the queue populated would let a later workspace creation replay stale paths as phantom
-panes), then re-dispatches each path through `openFileAtPath`. Both `stateLoaded` branches flush:
-the fresh-install branch right after creating the default workspace (which sets
-`activeWorkspaceID` synchronously, so the flush sees a live workspace), the restore branch right
-after assigning `activeWorkspaceID`.
-
-`pendingFileOpens` is transient - deliberately excluded from persistence.
+Stage 2 is unnecessary: the daemon creates the default workspace before it starts any listener
+(`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, called at `:1432` "BEFORE
+any listener"), so an `open` never arrives without an active workspace; if one somehow does it is
+dropped (11.1 step 1). `pendingFileOpens` does not exist; the shell queue above is the only parking
+place, and it is transient by construction.
 
 ### 11.3 openDiffPath(repoPath, targetPath, fromPaneID)
 
 GUI/CLI-shared entry for diff panes. No-op without an active workspace. `targetPath` resolution:
 null/empty -> null (whole-repo diff); absolute -> as-is; relative -> resolved against
-`fromPaneID`'s pane cwd, else the focused pane's cwd, else passed through. Forwards to the active
-workspace's `openDiffPane(repoPath, resolvedTarget, reusePaneID: null)`.
+`fromPaneID`'s pane cwd, else the focused pane's cwd, else passed through. `repoPath` and
+`targetPath` both resolve through that same cwd chain (`packages/daemon/src/handlers/app/files.ts:98`;
+`kelpi diff ../other` names a sibling checkout, not a directory under the daemon's cwd). Forwards
+to the active workspace's `openDiffPane(repoPath, resolvedTarget, reusePaneID: null)`.
 
 ---
 
@@ -1167,34 +1289,46 @@ workspace's `openDiffPane(repoPath, resolvedTarget, reusePaneID: null)`.
 
 Dispatched once at startup. Kicks off, concurrently:
 
-1. Load persisted state -> `stateLoaded(workspaces, groups, topLevelOrder, activeWorkspaceID,
-   repoRegistry)`. (Loader contract: workspaces reconstructed with their persisted panes, layouts,
-   focus, associations, labels, icons, profiles; `topLevelOrder` and `activeWorkspaceID` from the
-   app-state key-value store - keys `activeWorkspaceID` and `topLevelOrder` - possibly null/empty.)
-2. Load settings (UserDefaults-backed in the current app).
+1. Load persisted state -> one snapshot (`fromSnapshot`, `packages/daemon/src/store/snapshot.ts`)
+   carrying workspaces, groups, topLevelOrder, activeWorkspaceID, repoRegistry, the label presets
+   and the migration marker. (Loader contract: workspaces reconstructed with their persisted
+   panes, layouts, focus, associations, labels, icons, profiles; `topLevelOrder` and
+   `activeWorkspaceID` from the app-state key-value store - keys `activeWorkspaceID` and
+   `topLevelOrder` - possibly null/empty.)
+2. Load settings (`SettingsService`, `packages/daemon/src/settings/service.ts`, which reads
+   `~/.config/kelpi/config` and watches it for changes).
 3. Load keybindings from the config file.
 4. Parse general config (focus-follows-mouse, theme, tcp-port, global hotkey) -> `configLoaded`.
-5. Load web favourites JSON -> presets.
-6. Load label presets JSON -> presets (triggers the 6.5 gate signal).
+5. Load web favourites JSON -> presets (`favourites.json` beside the database,
+   `packages/daemon/src/boot/compose.ts:329`).
+6. Label presets arrive inside the snapshot of step 1; the 6.5 migration runs once after the
+   default workspace is ensured.
 
-Also part of app startup, outside the reducer (behavior to preserve): notification permission
-request + Open-action wiring (9.2), menu-bar controller setup + row-selection wiring (9.3), the
-FileOpenGate connection (11.2), the QuitGate wiring (13.1), and starting the socket server.
+Also part of startup, outside the reducer: in the shell, notification wiring (9.2), the tray +
+row-selection wiring (9.3), the open-file queue (11.2) and the quit gate (13.1); in the daemon,
+starting the socket server.
 
 ### 12.2 stateLoaded - fresh install (zero workspaces)
 
-Effects, in order: `createWorkspace(name: "Default")` (full 4.1 semantics; becomes active);
-`flushPendingFileOpens`; hand off to graft launch (empty parent-root list); set the label-preset
-migration marker (6.5). Note `didRestoreWorkspaces` stays false on this branch; the migration is
-neutralized by the marker instead.
+Effects, in order: `createWorkspace(name: "Default")` (full 4.1 semantics; becomes active;
+`ensureDefaultWorkspace`, `packages/daemon/src/boot/compose.ts:1170`, runs BEFORE any listener so
+a CLI that connects the instant the socket appears never sees an empty daemon); hand off to graft
+launch (empty parent-root list); run the label-preset migration, which finds nothing and sets the
+marker (6.5).
+
+An unreadable database takes the same path: `initialState` (`packages/daemon/src/boot/compose.ts:333`)
+returns an empty state with status `unreadable` when the snapshot cannot be loaded (the file is
+never deleted), and `ensureDefaultWorkspace` creates "Default" for it. On the restore branch, a
+persisted active id that names a workspace which no longer exists falls back to the first
+workspace in the flat list (`fromSnapshot`, `packages/daemon/src/store/snapshot.ts:281`).
 
 ### 12.3 stateLoaded - restore
 
 State assignment:
 
 1. `workspaces = loaded`, `groups = loaded`, `repoRegistry = loaded`.
-2. `activeWorkspaceID = loaded ?? first workspace's id`.
-3. `didRestoreWorkspaces = true`.
+2. `lastActiveWorkspaceID = loaded (when it still names a workspace) ?? first workspace's id`.
+3. (No separate restore flag: the label-preset migration gate is the persisted marker alone, 6.5.)
 4. `topLevelOrder = loaded`, unless empty -> synthesize from the flat list (legacy pre-groups DB).
 
 Session-resume capture (BEFORE any clearing):
@@ -1216,7 +1350,12 @@ Effects:
 
 7. Create a terminal surface for every SHELL pane across all workspaces, with the owning
    workspace's profile env resolved once per profile name (profile resolution re-reads the config
-   file; cache per launch batch). Non-shell panes (markdown/scratchpad/diff/web) get no PTY.
+   file; cache per launch batch) - except a pane whose resume tuple recorded the session's launch
+   profile (`agentProfileName`, `packages/daemon/src/store/snapshot.ts:51`) AND whose session id
+   passes the step-8 allowlist, which spawns under that recorded profile so the resumed agent lands
+   in the environment it was started in (`packages/daemon/src/boot/resume.ts:110` and `:139`;
+   agent-lifecycle.md §6.1). A tuple whose id fails the allowlist never drags its profile into a
+   pane that gets a fresh shell. Non-shell panes (markdown/scratchpad/diff/web) get no PTY.
 8. After all surfaces are created: if any resumables exist, sleep ~2 s (give shells time to reach
    a prompt), then for each tuple type the resume command into the pane's PTY:
    - `kind == "claude"` -> `claude --resume <sessionID>`
@@ -1226,9 +1365,10 @@ Effects:
      the wire and is typed into a shell; this blocks persisted command injection).
 9. THEN persist (so the cleared session ids are only written after the resume commands went out;
    a crash before the resume keeps the ids for the next launch).
-10. Also dispatch: `refreshGitStatus`; `startGitStatusTimer` (30 s loop); `migrateLabelsToPresets`
-    (6.5 gate); `flushPendingFileOpens`; graft launch with the deduped set of registry repo paths;
-    and a `startHeadWatcher` for every persisted association of every workspace.
+10. Also: `refreshGitStatus`; `startGitStatusTimer` (30 s loop); `runLabelPresetMigration` (6.5,
+    after the default-workspace check); graft launch with the deduped set of registry repo paths;
+    and the association reconciler starts (7.9), seeding a HEAD watcher for every persisted
+    association of every workspace.
 
 ### 12.4 configLoaded / restartSocketServer (bootstrap coordination)
 
@@ -1246,42 +1386,55 @@ Effects:
 ### 13.1 Quit confirmation (QuitGate)
 
 User-visible behavior on ANY termination path (menu Quit, Cmd+Q, OS logout, programmatic
-terminate):
+terminate), owned by the Electron shell (`packages/shell/src/quit.ts`):
 
-1. Always, before anything else: synchronously flush pending debounced markdown saves (the editor's
-   500 ms autosave may be outstanding), and stop all active graft sessions (bounded ~2 s wait) so
-   their on-disk breadcrumbs are cleared - otherwise the orphan-recovery banner fires on next
-   launch even after a clean quit.
-2. Skip the dialog entirely (terminate immediately) in test mode or when the setting
-   `confirmQuitWhenActive` is false.
-3. Otherwise show a warning dialog:
+1. Always, before anything else: ask the daemon to flush pending debounced markdown saves (the
+   editor's 500 ms autosave may be outstanding); the wait is bounded at 750 ms
+   (`QUIT_FLUSH_TIMEOUT_MS`, `quit.ts:111`) so a flush can never hold the app hostage. Quitting
+   the shell never stops the daemon, its PTYs or its graft sessions (`quit.ts:8`, `:171`): the
+   sessions keep running and the next launch attaches to them. Graft unwinding (bounded ~2 s, so
+   a clean quit never leaves a `kelpi-graft-active` breadcrumb behind and the orphan-recovery
+   banner does not fire on the next launch) runs on DAEMON shutdown instead
+   (`packages/daemon/src/boot/compose.ts:1260`).
+2. Skip the dialog entirely (terminate immediately) when no agent is active OR the setting
+   `confirmQuitWhenActive` is false (`shouldConfirmQuit`, `packages/shell/src/settings.ts:103`).
+3. Otherwise show a question dialog (`quitDialogSpec`, `settings.ts:141`):
    - Title: `Quit Kelpi?`
-   - Body when agents are active: `Kelpi has <N> active agent(s) across <M> workspace(s). Quitting
-     will terminate all sessions.` (proper singular/plural). When none:
-     `Are you sure you want to quit Kelpi?` - note the dialog fires even with zero agents unless
-     suppressed.
+   - Body: `<N> agent(s) across <M> workspace(s) are still active. They keep running in the
+     background - quitting only closes this window. Reopen Kelpi to attach again.` (proper
+     singular/plural; `quitConfirmDetail`, `packages/shell/src/agents.ts:490`). The dialog is only
+     shown when at least one agent is active; with none, the shell quits immediately (the daemon
+     and its sessions outlive the window either way).
    - Buttons: "Cancel" is the DEFAULT (Return key) - Cmd+Q is the accidental keystroke being
      guarded; "Quit" is destructive-styled.
    - A "Don't ask again" suppression checkbox. If ticked, persist
      `confirmQuitWhenActive = false` REGARDLESS of which button was clicked (platform convention:
-     honour suppression even on Cancel), and broadcast the change so an open Settings window
-     re-syncs its toggle.
+     honour suppression even on Cancel; `quit.ts:268`), and broadcast the change so an open
+     Settings window re-syncs its toggle. Suppression is written to the daemon setting
+     `confirm-quit-when-active`, with the shell's local settings file as the fallback the policy
+     reads when the daemon is unreachable (`quit.ts:139`).
 4. Terminate only on "Quit".
 
 `ActivitySummary` for the body comes from 9.4 (`activeAgentSummary`, parked panes included).
-Setting storage key: `settings.confirmQuitWhenActive`, default true (absent key = true).
+Setting storage: the daemon's general setting `confirmQuitWhenActive`, default true (absent key =
+true); the shell reads it from the daemon settings snapshot.
 
 ### 13.2 Workspace delete confirmation (WorkspaceDeleteGate)
 
-`shouldDelete(workspaceName, activeAgentCount) -> boolean`, called by the sidebar Delete item and
-the Cmd+W close-last-pane path BEFORE dispatching `deleteWorkspace`:
+Two entry points, with different gating:
 
-- Returns true immediately when `activeAgentCount == 0` OR the setting
-  `confirmWorkspaceDeleteWhenActive` is false (key `settings.confirmWorkspaceDeleteWhenActive`,
-  default true).
-- Otherwise a warning dialog: title `Delete "<name>"?`; body
-  `This workspace has <N> active agent(s). Deleting it will terminate it/them.`; Cancel is default,
-  "Delete" destructive; same "Don't ask again" suppression semantics + change broadcast as 13.1.
+- The sidebar context-menu "Delete" (disabled when `workspaces.length <= 1`) ALWAYS opens the
+  `Delete "<name>"?` confirmation (`packages/client/src/chrome/Sidebar.tsx:3890`). When
+  `activeAgentCount > 0` AND the setting `confirmWorkspaceDeleteWhenActive` is on (daemon general
+  setting `confirmWorkspaceDeleteWhenActive`, wire name `confirm-workspace-delete`, default true),
+  that same dialog carries the agent-count body `This workspace has <N> active agent(s). Deleting
+  it will terminate it/them.` and a "Don't ask again" checkbox with the same suppression
+  semantics + change broadcast as 13.1 (`Sidebar.tsx:5126`); otherwise it is the plain
+  confirmation with no count (the caller passes 0 when the setting is off).
+- The Cmd+W close-last-pane path calls `shouldDelete(workspaceName, activeAgentCount)` BEFORE
+  dispatching `deleteWorkspace` (`closeFocused`, `packages/client/src/App.tsx:1371`): it returns
+  true immediately (no dialog) when `activeAgentCount == 0` OR the setting is false, and otherwise
+  shows the agent-count warning above (Cancel default, "Delete" destructive).
 
 The CLI enforces the same guard server-side with `--force`, independent of this GUI setting.
 
@@ -1294,23 +1447,31 @@ labels/icons/profiles, groups, topLevelOrder, activeWorkspaceID, repoRegistry) a
 persistence layer, which debounces writes by 500 ms and then clears + re-inserts all records.
 Consequently core dispatches `persistState` liberally; the debounce coalesces.
 
-Actions that persist (from this subsystem): workspace create/delete/bulk-delete, all move actions,
-`setActiveWorkspace`, `setBulkColor`, `setBulkLabel`, group create/rename/color/icon/emoji/
-collapse/delete/reorder, workspace icon/emoji, `repoAdded`, `removeRepo`, `renameRepo`, worktree
-created/association removed, auto-link additions, auto-unlink removals, `repoRemoteURLResolved`,
-`repoAssociationBranchResolved`, command palette confirm, the post-resume persist in 12.3, and -
-via a catch-all - EVERY child workspace action (any pane/layout/focus/label mutation inside a
-workspace persists app state). Pure UI state changes (sidebar visibility, selection, prompts,
-palette, inspector visibility, `gitStatusUpdated`) do not persist.
+Every store change schedules the debounced save: `store.subscribe(() => persist())`
+(`packages/daemon/src/boot/compose.ts:884`) is the single persistence subscription, and the writer
+(`packages/daemon/src/db/persistence.ts:39`) coalesces at 500 ms with the LAST snapshot winning
+and a synchronous flush on graceful shutdown. There is no per-action persist list: workspace
+create/delete/bulk-delete, all move actions, `setActiveWorkspace`, `setBulkColor`, `setBulkLabel`,
+group create/rename/color/icon/emoji/collapse/delete/reorder, workspace icon/emoji, `repoAdded`,
+`removeRepo`, `renameRepo`, worktree created/association removed, auto-link additions, auto-unlink
+removals, `repoRemoteURLResolved`, `repoAssociationBranchResolved`, the post-resume persist in
+12.3, and EVERY child workspace action (any pane/layout/focus/label mutation inside a workspace)
+persist simply because they change the store. The only immediate write is `session-end`'s cleared
+session id (`persistNow`, `compose.ts:878`), which must survive an immediate crash. Sidebar and
+inspector visibility, selection, prompts, palette and scroll state live in the client and never
+reach the store, so they cannot persist; git statuses live in the association watcher (7.8),
+outside the store.
 
 Additional side effects hooked onto child workspace actions (routing layer):
 
 - `agentStarted` / `agentStopped` / `agentError` / `sessionStarted`: persist + refresh external
   indicators.
-- `clearPaneStatus(paneID)`: persist + refresh indicators + retract the pane's desktop
-  notification.
-- `addRepoAssociation` (workspace-level): persist + start a HEAD watcher.
-- `removeRepoAssociation`: drop the git status entry, stop the watcher, persist.
+- `clearPaneStatus(paneID)`: persist + refresh indicators; the pane leaving the waiting set is
+  what retracts its desktop notification (9.2).
+- `addRepoAssociation` (workspace-level): persist; the association reconciler starts a HEAD
+  watcher (7.9).
+- `removeRepoAssociation`: persist; the reconciler drops the git status entry and stops the
+  watcher (7.9).
 - `paneDirectoryChanged`: persist + schedule auto-link (pane) + auto-unlink (workspace).
 - `closePane` / `paneProcessTerminated`: scrub `renamingPaneID` when the pane vanished, drop any
   web-console subscribers for the closed pane, persist + schedule auto-unlink.
@@ -1330,7 +1491,8 @@ refreshes external indicators. A manual override does not survive relaunch (12.3
 
 ### 15.1 Name-or-id resolution
 
-Two variants exist with DIFFERENT semantics; both must be ported faithfully:
+Two variants exist with DIFFERENT semantics (`packages/core/src/resolve/workspace.ts`:
+`resolveWorkspaceStrict` / `resolveGroupStrict` and `resolveWorkspaceLenient`):
 
 - Strict (used by pane-target workspace filters and most workspace/group CLI verbs):
   - `resolveGroup(nameOrID)`: UUID parse first (a matching UUID always wins); else exact
@@ -1343,7 +1505,8 @@ Two variants exist with DIFFERENT semantics; both must be ported faithfully:
 
 ### 15.2 resolvePaneTarget(paneID?, target?, workspaceFilter?)
 
-Defined in core, consumed by socket handlers; returns either
+Defined in core (`packages/core/src/resolve/pane-target.ts:90`), consumed by socket handlers;
+returns either
 `{paneID, workspace}` or a human-readable error string for `{ok:false,error}` replies:
 
 1. Resolve `workspaceFilter` up front via strict resolution; unknown ->
@@ -1378,11 +1541,20 @@ Only VISIBLE panes resolve (parked panes are not user-addressable).
   (empty input stays "", never becomes "\n"). Used by pane capture.
 - `paneSendText(paneID, text, bare)`: bare = write bytes verbatim to the PTY; non-bare = write then
   press Enter. Shared by pane-send and the web element picker (picker defaults to bare).
-- `handlePing`: replies `{ok:true, version, build, pid}` from the app bundle metadata + process id.
-- Graft socket scope resolution (`resolveGraftAssociations`): scope = one workspace via
+- `handlePing` (`packages/daemon/src/handlers/app/ping.ts:33`): replies `{ok:true, version, build,
+  pid, protocol}` from the daemon's version metadata + process id, plus additive health the
+  `kelpi doctor` / `kelpid status` commands read: `tcp {requested, host, bound?, error?}` when a
+  TCP listener was requested (so a `tcp-port` that never bound is visible), `compat {path, error}`
+  for the legacy compatibility socket, `pane_route` for the socket route injected into panes, and
+  `persistence {ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}` so a
+  daemon whose database failed to open never looks healthy.
+- Graft socket scope resolution (`resolveGraftAssociations`,
+  `packages/daemon/src/handlers/app/graft.ts`): scope = one workspace via
   `workspaceFilter` (lenient resolution) OR the caller pane's workspace OR - only when a
   `repoFilter` is present - all workspaces; error otherwise
-  (`graft requires --workspace, --repo, or NEX_PANE_ID`). `repoFilter` matches an association's
+  (`graft requires --workspace, --repo, or NEX_PANE_ID`; the error text still names the legacy
+  variable for the old CLI's benefit, while the pane origin itself is the `pane_id` the CLI reads
+  from `KELPI_PANE_ID`, `packages/cli/src/env.ts:36`). `repoFilter` matches an association's
   `worktreePath`, its last path component, or the repo's registry name. Empty result ->
   `no repo associations matched the requested scope`. `graft stop` additionally falls back to the
   SERVICE's live session list, matching orphaned sessions by canonicalized worktree/parent paths
@@ -1394,105 +1566,117 @@ Only VISIBLE panes resolve (parked panes are not user-addressable).
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-Things the TypeScript port must get right, or where the target architecture warrants a deliberate
-change:
+These items record the quirks Kelpi preserves on purpose, so that the pre-port kelpi CLI, hook
+scripts and saved state keep working, and the places where the daemon architecture deliberately
+departs from the legacy macOS app:
 
 1. **Ordering model is three structures, one truth.** `topLevelOrder` + per-group `childOrder`
-   define the sidebar; the flat `workspaces` array is insertion order only. Port `visibleWorkspaceOrder`
-   and `renderedEntries` as pure derivations and use `visibleWorkspaceOrder` for index switching,
-   cycling, and range select. The flat-array mirror in `moveWorkspace` (4.6) exists only for
-   legacy alignment; the port can keep the flat store append-only and drop the mirror IF nothing
-   reads flat order (verify Cmd+N numbering and `workspace list` output use the derived orders,
-   which they do today).
+   define the sidebar; the flat `workspaces` array is insertion order only. `visibleWorkspaceOrder`
+   and `renderedEntries` are pure derivations (`packages/daemon/src/store/derived.ts:122`,
+   restated over rendered rows in `packages/client/src/chrome/sidebar-model.ts`) and
+   `visibleWorkspaceOrder` drives index switching, cycling, and range select. The flat-array mirror
+   in `moveWorkspace` (4.6) exists only for legacy alignment; nothing reads flat order for Cmd+N
+   numbering or `workspace list` output (both use the derived orders), so the flat store could be
+   append-only without the mirror.
 
 2. **Post-remove index convention** for every move/insert action. All indices are "position after
    the item(s) are detached". Getting this wrong produces off-by-one drift exactly when sources and
-   targets overlap; the bulk move (4.9) must stay atomic (one remove pass, one insert pass).
+   targets overlap; the bulk move (4.9) stays atomic (one remove pass, one insert pass).
 
-3. **Boot clearing vs resume capture ordering** (12.3): capture resumable `(paneID, sessionID,
-   agentKind)` tuples BEFORE nulling `agentSessionID` and resetting statuses; never clear
-   `agentKind`; persist only AFTER resume commands are sent. Enforce the session-id shell-safety
-   allowlist before composing any resume command - the daemon writes into PTYs just like the app.
+3. **Boot clearing vs resume capture ordering** (12.3): resumable `(paneID, sessionID, agentKind,
+   agentProfileName)` tuples are captured BEFORE `agentSessionID` is nulled and statuses reset;
+   `agentKind` is never cleared; the store persists only AFTER resume commands are sent. The
+   session-id shell-safety allowlist is enforced before any resume command is composed
+   (`resumeCommand`, `packages/daemon/src/boot/resume.ts:219`) - the daemon writes into PTYs just
+   as the legacy app did.
 
-4. **Effect debounces/cancellation keys** must be preserved: auto-link 500 ms per pane, auto-unlink
-   5 s per workspace, HEAD-changed 150 ms per association, git-status timer 30 s singleton, palette
-   focus handoff 200 ms singleton, persistence write 500 ms. Each keyed effect restarts on
-   re-schedule (latest wins). In Node, a Map of timers/AbortControllers per key reproduces this.
+4. **Effect debounces/cancellation keys** are preserved: auto-link 500 ms per pane, auto-unlink
+   5 s per workspace (`packages/daemon/src/git/autodetect.ts:49`), HEAD-changed 150 ms per
+   association (`packages/daemon/src/graft/head-watcher.ts`), git-status timer 30 s singleton,
+   palette focus handoff 200 ms singleton (`packages/client/src/chrome/CommandPalette.tsx:29`),
+   persistence write 500 ms (`packages/daemon/src/db/persistence.ts:39`). Each keyed effect
+   restarts on re-schedule (latest wins), implemented as a Map of timers per key.
 
-5. **Guards live at the edges, not in the delete reducer.** `deleteWorkspace` itself will delete
-   the last workspace and will kill running agents. The last-workspace refusal exists in the GUI
-   (disabled menu item) and CLI handler; the running-agents confirmation exists in the GUI gate and
-   the CLI `--force` check. A web client must re-implement both edge guards; the daemon action
-   should stay permissive to keep the Cmd+W-to-zero-workspaces path working.
+5. **Guards live at the edges, not in the delete reducer.** The reducer's `deleteWorkspace` itself
+   will delete the last workspace and will kill running agents. The last-workspace refusal exists
+   in the GUI (disabled menu item) and the daemon's delete verb; the running-agents confirmation
+   exists in the GUI gate and the CLI `--force` check. The client implements both edge guards, and
+   the daemon's verb stays permissive on the one flagged path (`allow_last`, 4.3) so the
+   Cmd+W-to-zero-workspaces path keeps working while `kelpi workspace delete` still refuses.
 
 6. **`gitStatuses` is keyed by association id, not repo id.** Status entries and HEAD watchers are
-   born and destroyed strictly with associations. Note the current app does NOT explicitly stop
-   HEAD watchers in bulk delete and group cascade delete (only single `deleteWorkspace` does); the
-   watchers die only via their keyed-cancellation when restarted. The port should just stop
-   watchers on every association-removal path - treat the omission as a bug, not a contract.
+   born and destroyed strictly with associations. The legacy app did NOT explicitly stop HEAD
+   watchers in bulk delete and group cascade delete (only single `deleteWorkspace` did); that
+   omission was a bug, not a contract, and the association reconciler (7.9) stops watchers and
+   force-stops graft on every association-removal path.
 
-7. **AppKit gates become client/daemon splits.** QuitGate/WorkspaceDeleteGate are synchronous modal
-   dialogs in the app. In the port: the Electron shell (and web client on tab close, best effort)
-   owns the quit dialog UX; the daemon must expose `activeAgentSummary` and the flush operations
-   (markdown autosave flush, graft session stop) as calls the shell can invoke before allowing
-   termination. Suppression settings (`confirmQuitWhenActive`,
-   `confirmWorkspaceDeleteWhenActive`, both default true) belong in daemon-side settings so all
-   clients agree, with a change broadcast to live clients.
+7. **The native gates are client/daemon splits.** QuitGate/WorkspaceDeleteGate were synchronous
+   modal dialogs in the legacy app. Now the Electron shell owns the quit dialog UX (13.1) and the
+   sidebar owns the delete confirmation (13.2); the daemon exposes `activeAgentSummary` and the
+   markdown autosave flush as calls the shell invokes before allowing termination, and unwinds
+   graft sessions on its own shutdown rather than the shell's. Suppression settings
+   (`confirmQuitWhenActive`, `confirmWorkspaceDeleteWhenActive`, both default true) are daemon-side
+   settings so all clients agree, with a change broadcast to live clients.
 
-8. **FileOpenGate's two-stage queue maps to daemon boot.** Stage 1 (OS event before UI wiring) is
-   Electron's `open-file` event buffered until the renderer/daemon connection exists; stage 2
-   (`pendingFileOpens` until a workspace exists) ports directly into the daemon: park paths while
-   `activeWorkspaceID` is null, drain (snapshot + clear FIRST) from both `stateLoaded` branches.
-   Keep the markdown-extension filter (`md`, `markdown`) at the OS boundary.
+8. **The open-file queue is one stage, at the shell.** Stage 1 (OS event before UI wiring) is
+   Electron's `open-file` event buffered until the daemon connection exists
+   (`packages/shell/src/launch.ts:81`), drained snapshot-then-clear; stage 2 (`pendingFileOpens`
+   until a workspace exists) is not needed because the daemon creates the default workspace before
+   it listens (11.2). The markdown-extension filter (`md`, `markdown`) stays at the OS boundary.
 
-9. **OSC-notification Open button is broken today** (9.2): OSC-originated notifications are posted
-   without `workspaceID`, so their Open action fails the guard and does nothing. The port should
-   fix this by resolving the workspace at post time (the pane's owning workspace is known) - it is
-   a one-line improvement, but note it changes observed behavior.
+9. **OSC-notification Open works** (9.2): OSC-originated notifications carry `workspaceID`,
+   resolved from the pane's owning workspace at post time. The legacy app posted them without one,
+   so their Open action failed the guard and did nothing; this is a deliberate change in observed
+   behavior.
 
 10. **External indicators exclude parked panes; the quit summary includes them.** Three different
-    tallies exist: `activeAgentSummary` (panes + parked, drives quit/delete guards),
-    `chromeStatusSummary` (visible only, adds the `inactive` bucket for idle panes with a session
-    id), and `updateExternalIndicators` (visible only, builds the menu-bar item list, dock badge =
-    waiting count only, waiting color beats running on the icon dot). Keep them distinct.
+    tallies exist (`packages/daemon/src/store/derived.ts:189`): `activeAgentSummary` (panes +
+    parked, drives quit/delete guards), `chromeStatusSummary` (visible only, adds the `inactive`
+    bucket for idle panes with a session id), and `updateExternalIndicators` (visible only, builds
+    the menu-bar item list, dock badge = waiting count only, waiting color beats running on the
+    icon dot). They are kept distinct.
 
-11. **Emoji validation must be server-checked.** The one-grapheme emoji rule (1.6) is enforced in
-    the reducer, not just the input UI; the daemon should validate again on whatever mutation API
-    sets icons. JS `Intl.Segmenter` gives grapheme clusters; Unicode property escapes
-    (`\p{Emoji_Presentation}`, `\p{Emoji}`, `\p{So}\p{Sm}\p{Sc}`) cover the four acceptance rules.
+11. **Emoji validation is server-checked.** The one-grapheme emoji rule (1.6) is enforced in the
+    daemon's `set-workspace-icon` / `set-group-icon` verbs, not just the input UI
+    (`packages/core/src/codec/emoji.ts`). JS `Intl.Segmenter` gives grapheme clusters; Unicode
+    property escapes (`\p{Emoji_Presentation}`, `\p{Emoji}`, `\p{So}\p{Sm}\p{Sc}`) cover the
+    four acceptance rules.
 
 12. **Two resolution strictnesses** (15.1). The strict unique-name resolver (case-sensitive,
     ambiguous -> error) and the lenient resolver (case-insensitive first match, then slug) both
-    exist and are wired to different commands. Port both and preserve which call sites use which,
-    or CLI behavior changes subtly (e.g. graft scope accepts case-insensitive names; workspace
-    delete does not).
+    exist (`packages/core/src/resolve/workspace.ts`) and are wired to different commands. Which
+    call sites use which is preserved, or CLI behavior changes subtly (e.g. graft scope accepts
+    case-insensitive names; workspace delete does not).
 
-13. **Label presets are settings-store data, workspace labels are entity data.** Presets live
-    outside the SQLite entity graph (JSON blob, immediate writes); labels live on the workspace
-    rows. The one-shot migration marker (`settings.labelPresets.migrated`) must be set on fresh
-    installs too, or a later launch resurrects deleted presets. `addLabelPreset` must stay
-    idempotent-by-name so the CLI back-fill can never clobber a user's color.
+13. **Label presets are app-state data, workspace labels are entity data.** Presets live outside
+    the SQLite entity graph (a JSON blob under an `appState` key, saved with the debounced snapshot
+    and flushed on shutdown); labels live on the workspace rows. The one-shot migration marker
+    (`kelpid.labelPresetsMigrated`) is set on fresh installs too, or a later launch would resurrect
+    deleted presets. `addLabelPreset` stays idempotent-by-name so the CLI back-fill can never
+    clobber a user's color.
 
-14. **git invocations are plain subprocess calls** and their exact flag sets matter for parity:
-    `status --porcelain` + `diff --shortstat HEAD` (dirty math, 1.8), `rev-parse --abbrev-ref HEAD`
-    (branch), `rev-parse --git-path HEAD` (watch target; relative results resolve against the
-    worktree), `ls-remote --symref origin HEAD` with local-symref and `"main"` fallbacks (default
-    branch), worktree add existing-branch-then`-b` fallback, and the stderr diagnostic extraction
-    (last `fatal:`/`error:` line) for user-facing worktree errors.
+14. **git invocations are plain subprocess calls** and their exact flag sets are kept for parity
+    (`packages/daemon/src/git/service.ts`): `status --porcelain` + `diff --shortstat HEAD` (dirty
+    math, 1.8), `rev-parse --abbrev-ref HEAD` (branch), `rev-parse --git-path HEAD` (watch target;
+    relative results resolve against the worktree), `ls-remote --symref origin HEAD` with
+    local-symref and `"main"` fallbacks (default branch), worktree add existing-branch-then`-b`
+    fallback, and the stderr diagnostic extraction (last `fatal:`/`error:` line) for user-facing
+    worktree errors.
 
-15. **Persist-on-everything is safe only because of the write debounce.** The port's persistence
-    layer needs the same coalescing (500 ms) or an equivalent dirty-flag scheme; core logic assumes
-    persist calls are near-free. Also preserve WHAT is transient: statuses, session ids
-    (cleared on load), sync-input state, parked panes, selection/prompt/palette state, git
-    statuses, and `pendingFileOpens` must never round-trip through the DB.
+15. **Persist-on-everything is safe only because of the write debounce.** The persistence layer
+    coalesces at 500 ms (`packages/daemon/src/db/persistence.ts:39`) and flushes on graceful
+    shutdown; core logic assumes persist calls are near-free. WHAT is transient is preserved:
+    statuses, session ids (cleared on load), sync-input state, parked panes,
+    selection/prompt/palette state and git statuses never round-trip through the DB.
 
-16. **Sidebar scroll signal is one-shot and consumer-cleared.** In a web client, model
-    `sidebarScrollTarget` as an event (or a token the client acknowledges) rather than durable
-    state, and keep the rule that restores/deletes/moves never emit it.
+16. **Sidebar scroll signal is one-shot and consumer-cleared.** The client models
+    `sidebarScrollTarget` as a token it consumes and clears (2.5) rather than durable state, and
+    restores/deletes/moves never emit it.
 
-17. **HEAD watching on the web stack**: use per-association `fs.watch` on the resolved HEAD path
-    with the 200 ms re-arm after rename/delete (checkout's atomic rename otherwise kills the
-    watcher), then the 150 ms coalescing debounce before refreshing. This is what makes branch
+17. **HEAD watching on the Node stack**: per-association `fs.watch` on the resolved HEAD path's
+    PARENT directory, filtered to the `HEAD` entry (7.9; the legacy app re-armed a file watch
+    200 ms after checkout's atomic rename killed it, which is the case the directory watch
+    sidesteps), then the 150 ms coalescing debounce before refreshing. This is what makes branch
     badges update sub-second after `git checkout`; the 30 s timer is only the fallback.

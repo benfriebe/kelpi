@@ -1,30 +1,37 @@
 # Content Panes: Markdown, Diff, Scratchpad
 
-Behavioral specification of Kelpi's non-terminal "content" panes — markdown preview/edit
-panes, git-diff panes, and scratchpad panes — plus the supporting services
-(`EditorService`, the per-pane file watcher, find-in-page, scroll preservation, and the
-copy pipeline). Written for the TypeScript port (headless daemon + web client); no Swift
-knowledge is assumed. Where behavior is macOS-app-specific, the *user-visible* behavior
-is described so it can be re-created in the web UI.
+Behavioral specification of Kelpi's non-terminal "content" panes (markdown preview/edit
+panes, git-diff panes, and scratchpad panes) plus the supporting services (the
+`$VISUAL`/`$EDITOR` resolver, the per-pane file watcher, find-in-page, scroll preservation,
+and the copy pipeline). It describes Kelpi as it is: a headless daemon that owns the pane
+model, file reading, file watching, git invocation and the markdown/diff to HTML rendering,
+and a web client that owns the sandboxed preview frame, scroll state, find-in-page, the
+injected bridge script and clipboard access. Where behavior is user-visible it is described
+as such, so that every attached client renders it the same way.
 
-Source files this spec was derived from (Swift, in `/Users/ben/code/kelpi`):
+Source files this spec describes (TypeScript):
 
-- `Nex/Features/MarkdownPane/MarkdownHTMLRenderer.swift` — markdown → HTML + CSS
-- `Nex/Features/MarkdownPane/MarkdownFrontMatter.swift` — front-matter extraction + rendering
-- `Nex/Features/MarkdownPane/MarkdownCodeCopyScript.swift` — code-block copy button JS
-- `Nex/Features/MarkdownPane/MarkdownFindScript.swift` — find-in-page JS
-- `Nex/Features/MarkdownPane/MarkdownFindController.swift` — find routing/reapply
-- `Nex/Features/MarkdownPane/MarkdownPaneView.swift` — preview host, file watching, copy actions
-- `Nex/Features/MarkdownPane/MarkdownEditorView.swift` — built-in plain-text editor
-- `Nex/Features/MarkdownPane/LineNumberRulerView.swift` — editor line-number gutter
-- `Nex/Features/DiffPane/DiffHTMLRenderer.swift` — git diff → HTML + CSS
-- `Nex/Features/DiffPane/DiffPaneView.swift` — diff host, refresh semantics
-- `Nex/Features/ScratchpadPane/ScratchpadEditorView.swift` — scratchpad editor
-- `Nex/Services/EditorService.swift` — $VISUAL/$EDITOR resolution for external edit mode
-- `Nex/Services/RecursiveFSWatcher.swift` — recursive FSEvents watcher (used by Graft, spec'd here for completeness)
-- Plus the surrounding wiring in `WorkspaceFeature.swift`, `PaneGridView.swift`,
-  `PaneHeaderView.swift`, `Pane.swift`, `PaneType.swift`, `GitService.swift`,
-  `PaneFocusView.swift`, `KeyBinding.swift`, `NexCommands.swift`.
+- `packages/daemon/src/content/markdown.ts`: markdown → HTML + CSS, front-matter extraction and rendering, bare-URL autolinking
+- `packages/daemon/src/content/html.ts`: the shared document wrapper, HTML escaping, the luminance rule
+- `packages/daemon/src/content/diff.ts`: git diff → HTML + CSS
+- `packages/daemon/src/content/service.ts`: the daemon's content service (entries, loading, watching, edit mode, refresh)
+- `packages/daemon/src/content/editor.ts`: the authoritative edit buffer (autosave, atomic write, shutdown flush)
+- `packages/daemon/src/content/watcher.ts`: the per-file watcher behind the preview
+- `packages/daemon/src/content/external-editor.ts`: $VISUAL/$EDITOR resolution for external edit mode
+- `packages/daemon/src/ws/desktop.ts`: the `markdown-external-editor` verb (open / close)
+- `packages/daemon/src/git/exec.ts`, `packages/daemon/src/git/service.ts`: the git process layer and `getDiff`
+- `packages/daemon/src/graft/watcher.ts`: recursive directory watcher (used by Graft, spec'd here for completeness)
+- `packages/daemon/src/store/reducers/panes.ts`, `packages/daemon/src/store/types.ts`: the pane model, the open/close/park/reopen reducers, closed-pane snapshots
+- `packages/daemon/src/handlers/app/files.ts`: the `open` and `diff` wire commands
+- `packages/client/src/content/ContentFrame.tsx`: the sandboxed preview host, find bar, copy menu, scroll restore
+- `packages/client/src/content/bridge.ts`: the injected bridge script (copy button, links, find, chord relay, scroll) and its host-side effects
+- `packages/client/src/content/copy.ts`: the whole-document copy commands
+- `packages/client/src/content/MarkdownPane.tsx`, `DiffPane.tsx`, `ScratchpadPane.tsx`: the three pane bodies
+- `packages/client/src/content/PlainTextEditor.tsx`, `gutter.ts`: the built-in plain-text editor and its line-number gutter
+- `packages/client/src/content/scroll.ts`: the shared scroll-position store
+- `packages/client/src/content/client.ts`: the client's content API (keystroke coalescing, mode, refresh)
+- Plus the surrounding wiring in `packages/client/src/App.tsx`, `packages/client/src/grid/PaneHeader.tsx`,
+  `packages/client/src/chrome/theme.ts` and `packages/core/src/config/bindings.ts`.
 
 ---
 
@@ -89,6 +96,7 @@ interface ClosedPaneSnapshot {
   scratchpadContent?: string;
   agentSessionID?: string;
   agentKind?: "claude" | "codex";
+  agentProfileName?: string;     // the profile the agent session was launched under
   markdownFontSize: number;      // font size DOES survive close→reopen (unlike restart)
   webState?: unknown;            // web pane sidecar; irrelevant here
 }
@@ -96,8 +104,12 @@ interface ClosedPaneSnapshot {
 
 `reopenClosedPane` pops the newest snapshot, mints a new pane id, splits the focused
 pane horizontally, and recreates the pane with
-`isEditing = (type == "scratchpad")`. Markdown/scratchpad/diff/web reopens create no
+`isEditing = (type == "scratchpad")`. `agentKind`, `agentProfileName` and
+`markdownFontSize` are restored from the snapshot (`agentSessionID` is not; it only
+types the resume command). Markdown/scratchpad/diff/web reopens create no
 PTY; only shell reopens spawn a surface (and possibly resume an agent session).
+(`packages/daemon/src/store/reducers/panes.ts`, `snapshotForReopen` / `reopenClosedPane`;
+`ClosedPaneSnapshot` in `packages/daemon/src/store/types.ts`.)
 
 ---
 
@@ -109,8 +121,10 @@ Entry points (all converge on this one action):
 
 1. **⌘O** file picker (filtered to `.md`) and **drag-and-drop** of a `.md` file onto the
    window → app-level `openFileAtPath(path, fromPaneID?)`:
-   - If no workspace is loaded yet (cold launch race), the path is queued in
-     `pendingFileOpens` and drained once state loads. The queue is transient.
+   - If no workspace is active yet, the `open` (or `diff`) command is dropped; the
+     daemon keeps no pending-open queue (`route()` in
+     `packages/daemon/src/handlers/app/files.ts` returns null and the handler returns
+     without dispatching).
    - Relative paths are resolved against the originating pane's cwd (or the focused
      pane's cwd) before dispatch.
 2. **Finder "Open With → Kelpi"** → same `openFileAtPath` path.
@@ -154,7 +168,8 @@ else:
 ```
 
 Note: the non-reuse markdown path does NOT restore a zoomed layout first (diff and
-scratchpad do). Minor asymmetry in the source; harmless to normalize in the port.
+scratchpad do). Minor asymmetry, preserved on purpose (`openMarkdownPane` in
+`packages/daemon/src/store/reducers/panes.ts`, marked as a quirk).
 
 ### 2.2 Diff pane — `openDiffPane(repoPath, targetPath?, reusePaneID?)`
 
@@ -220,11 +235,12 @@ leaf), focus the new pane. No label, no git branch detection, no file.
 
 ```
 file bytes (UTF-8)
-  → FrontMatterExtractor.extract  → (yaml | null, body)
-  → parse body as GitHub-flavored markdown (swift-markdown; port: any CommonMark+GFM
-    parser with tables, strikethrough, task lists)
-  → MarkdownHTMLRenderer (AST → HTML string)
-  → fmHTML = yaml ? FrontMatterRenderer.render(yaml) : ""
+  → extractFrontMatter  → (yaml | null, body)
+  → parse body as GitHub-flavored markdown (markdown-it, CommonMark + GFM tables and
+    strikethrough, with `linkify` and `typographer` off and `html: true`)
+  → renderTokens (token stream → HTML string; markdown-it only parses here, the HTML is
+    emitted by Kelpi's own walker so the §3.3 contract holds)
+  → fmHTML = yaml ? renderFrontMatter(yaml) : ""
   → full HTML document: doctype + <html class="dark|light"> + inline <style> + body =
       <div id="content"> fmHTML + bodyHTML </div>
 ```
@@ -238,7 +254,9 @@ Inputs to the document wrapper:
   container applies it; see 3.8).
 - `baseFontSize` — `pane.markdownFontSize` (default 14).
 
-Dark-mode detection (shared by markdown, diff, and the plain-text editors):
+Dark-mode detection (shared by markdown, diff, and the plain-text editors;
+`isDarkBackground` in `packages/daemon/src/content/html.ts`, mirrored client-side by
+`ghosttyBucket` in `packages/client/src/chrome/theme.ts`):
 
 ```
 luminance = 0.299*r + 0.587*g + 0.114*b     // components in 0..1, sRGB
@@ -281,29 +299,36 @@ titles), diff lines, and front-matter keys/values.
 | Any other node | children concatenated (default visit) |
 
 Raw HTML passthrough is intentional (matches GitHub-ish behavior). The preview runs in
-an isolated webview in the current app; in the web-client port, consider the security
-implications (see Port notes).
+an iframe sandboxed to `allow-scripts` only (`packages/client/src/content/ContentFrame.tsx`),
+so the document has an opaque origin and cannot script the app shell (see Compatibility
+rationale, item 3).
 
 ### 3.4 Bare-URL autolinking
 
-swift-markdown only links `<>`-wrapped URLs and `[text](url)`. Plain-text nodes are
-additionally scanned for URLs (macOS `NSDataDetector` link detection; port: a URL
-regex/linkifier) with these rules:
+The parser only links `<>`-wrapped URLs and `[text](url)` (markdown-it's own linkify is
+off). Plain-text nodes are additionally scanned for URLs (`AUTOLINK_PATTERN` and
+`autolinkText` in `packages/daemon/src/content/markdown.ts`) with these rules:
 
 - Only matches whose **source text starts with** one of
   `http://`, `https://`, `ftp://`, `file://`, `mailto:` (case-insensitive prefix
   check) become links. Schemeless domains (`example.com`) and bare emails
   (`foo@example.com`) are deliberately left as plain text — this is "terminal-style
   pasted-URL clickability", not GitHub fuzzy linkification.
-- Output per match: `<a href="ESCAPED_CANONICAL_URL">ESCAPED_SOURCE_TEXT</a>` — the
-  href is the detector's canonicalized URL when available, else the matched text;
-  surrounding text is escaped normally.
+- Output per match: `<a href="ESCAPED_URL">ESCAPED_SOURCE_TEXT</a>`, where the href is
+  the matched text itself, never re-canonicalized (`new URL()` would append slashes the
+  source never had); surrounding text is escaped normally.
+- Trailing sentence punctuation is not part of the link: `trimUrlTail` strips any run of
+  `.`, `,`, `;`, `:`, `!`, `?` off the end of a match, and strips a trailing `)`, `]` or
+  `}` only when it is unbalanced within the match (so `(see https://x.y/z)` links
+  `https://x.y/z` but `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its paren). A
+  match that trims to nothing is skipped.
 - Autolinking is disabled inside explicit links and image alt text (a depth counter
   is incremented around their children) — text there is escape-only.
 
 ### 3.5 Front-matter extraction
 
-`FrontMatterExtractor.extract(markdown) → { yaml: string | null, body: string }`.
+`extractFrontMatter(markdown) → { yaml: string | null, body: string }`
+(`packages/daemon/src/content/markdown.ts`).
 
 Rules:
 
@@ -330,12 +355,12 @@ below), and the body excludes both fences.
 
 ### 3.6 Front-matter rendering
 
-`FrontMatterRenderer.render(yaml) → html` (prepended before the markdown body inside
-`#content`):
+`renderFrontMatter(yaml) → html` (prepended before the markdown body inside
+`#content`; `packages/daemon/src/content/markdown.ts`):
 
 - If `yaml.trim() === ""` → return `""` (nothing rendered).
-- Parse the YAML (Yams compose; port: a YAML lib that exposes node types + can
-  round-trip serialize a node). On **parse error** or when the **root is not a
+- Parse the YAML (the `yaml` package's `parseDocument`, which exposes node types and
+  can re-serialize a node). On **parse error** or when the **root is not a
   mapping** → raw fallback:
   `<pre class="frontmatter-raw">ESCAPED_RAW_YAML</pre>\n`
 - If the root mapping is empty → `""`.
@@ -385,12 +410,20 @@ FRONTMATTER_HTML + BODY_HTML
 
 ### 3.8 Background and theme integration
 
-- The document CSS sets `background-color: transparent;` on `body`. The webview itself
-  is rendered non-opaque. The **pane container** behind the webview paints the ghostty
-  terminal background color at the ghostty background opacity
-  (`Color(ghosttyConfig.backgroundColor).opacity(ghosttyConfig.backgroundOpacity)`).
-  This makes markdown/diff/scratchpad/web panes visually identical to terminal panes,
-  including going fully transparent at 0% opacity, without double-painting.
+- The document CSS sets `background-color: transparent;` on `body`, and the **pane
+  container** behind the document paints the ghostty terminal background color at the
+  ghostty background opacity (`--kelpi-term-bg`, the same fill terminal panes use). In
+  the web client the document is shown in an `allow-scripts`-only sandboxed iframe: an
+  opaque origin composited in its own process, which cannot inherit the container's
+  transparency and would otherwise paint over a white canvas. So the client additionally
+  injects `html { background-color: <ghostty bg at ghostty opacity, flattened over the
+  window fill>; color-scheme: dark|light }` into the document after the daemon's own
+  stylesheet (`frameBaseStyle` / `prepareContentDocument` in
+  `packages/client/src/content/bridge.ts`; `ContentFrame` always passes a
+  `documentBackground`, falling back to `FRAME_DOCUMENT_BACKGROUND`). Content panes
+  therefore match the pane fill's colour but, unlike terminal panes, do not become
+  see-through at 0% opacity. The daemon's HTML contract is untouched: a client that can
+  composite transparency simply passes no background and gets the transparent document.
 - The background color still selects the light/dark text theme (luminance rule, 3.1).
 - When the ghostty config background color/opacity changes at runtime (theme change),
   the currently loaded content is **re-rendered** (HTML regenerated with the new
@@ -399,14 +432,16 @@ FRONTMATTER_HTML + BODY_HTML
 ### 3.9 Markdown stylesheet (the exact CSS contract)
 
 The full inline stylesheet, with `BASE` = baseFontSize px and
-`CODE = max(BASE - 1, 6)` px. Reproduce faithfully (colors are GitHub-derived):
+`CODE = max(BASE - 1, 6)` px, emitted by `markdownStylesheet()` in
+`packages/daemon/src/content/markdown.ts` (colors are GitHub-derived). Two rules, marked
+S42 and S51, are Kelpi's own and are asserted by `markdown.test.ts`:
 
 ```css
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
     font-size: BASEpx;
     line-height: 1.6;
-    padding: 20px 28px;
+    padding: 20px clamp(12px, 6%, 28px);   /* S42: a flat 28px left a 67px text column in a narrow split; identical to 28px above ~470px of pane */
     margin: 0;
     color: #1f2328;
     background-color: transparent;
@@ -524,13 +559,13 @@ table.frontmatter td {
 }
 pre.frontmatter-raw, pre.frontmatter-nested {
     margin: 0;
-    padding: 8px 10px;
     background: transparent;
     border: none;
     font-size: 0.85em;
     white-space: pre-wrap;
 }
-pre.frontmatter-raw { border-left: 3px solid #d1d9e0; padding-left: 10px; margin: 0 0 1.5em; }
+pre.frontmatter-nested { padding: 0; }   /* S51: the value sits in the cell's own 6/12 box, not a second one */
+pre.frontmatter-raw { padding: 8px 10px; border-left: 3px solid #d1d9e0; padding-left: 10px; margin: 0 0 1.5em; }
 .dark pre.frontmatter-raw { border-left-color: #3d444d; }
 .code-block { position: relative; }
 /* Margin on the wrapper, not the <pre>, so stacking matches a bare <pre>. */
@@ -585,8 +620,11 @@ pre.frontmatter-raw { border-left: 3px solid #d1d9e0; padding-left: 10px; margin
 
 ### 3.10 Code-block copy button (injected JS)
 
-A script injected at document-end wires a single delegated click listener (guarded by
-`window.__kelpiCopyCodeBound` so re-injection is a no-op):
+A script injected at document-end wires a single delegated click listener. The listener
+is one part of the content bridge script (`contentBridgeScript` in
+`packages/client/src/content/bridge.ts`), which is guarded as a whole by
+`window.__kelpiContentBridge` (re-injection is a no-op for the copy listener and for the
+scroll/link/find/chord/context-menu handlers that ride the same script):
 
 ```
 on document click:
@@ -599,9 +637,9 @@ on document click:
                                                     // without an inner <code> (e.g. any
                                                     // future front-matter pre) is skipped
   if no code or code.textContent empty → ignore
-  send code.textContent to the host                 // current app: webkit message handler
-                                                    // 'copyCodeBlock' → host writes the
-                                                    // string to the system clipboard
+  send code.textContent to the host                 // postMessage {kind:'copy', text};
+                                                    // the host writes the string to the
+                                                    // clipboard (writeClipboardText)
   btn.classList.add('copied')
   origLabel = btn.getAttribute('aria-label') || 'Copy code'
   btn.setAttribute('aria-label', 'Copied')          // announce success to assistive tech
@@ -614,8 +652,26 @@ If posting to the host throws, nothing happens (no visual state change). The cop
 text is the **raw code text** (not the HTML). Host-side: an empty string is ignored;
 otherwise it replaces the clipboard contents as plain text.
 
-Port: in a browser, `navigator.clipboard.writeText(text)` replaces the message-handler
-hop; keep the aria-label swap and the 1.5 s `copied` window exactly.
+The host half is `writeClipboardText` in `packages/client/src/content/bridge.ts`
+(`navigator.clipboard.writeText`); the aria-label swap and the 1.5 s `copied` window
+(`COPY_FEEDBACK_MS`) stay inside the frame.
+
+The same bridge script installs the frame's other host hooks, because the sandboxed frame
+is cross-origin and the host can see none of its events directly:
+
+- **Chord relay**: a capture-phase `keydown` listener on `window` forwards ⌘E
+  (`toggle-edit`) and ⌘F (`find-open`) to the host, and relays every other chord the
+  app's binding map claims (seeded into the script at injection and refreshed by a
+  `chords` message from the host on every `ready`), calling `preventDefault` on exactly
+  those. An unclaimed chord is left to the document, so ⌘C still copies a selection.
+  Capture phase on `window` means a script inside the rendered note cannot
+  `stopPropagation()` a claimed chord (⌘W in particular) back to the native menu.
+- **Context menu**: on right-click, while the host has told the frame it has a copy
+  menu to show (`copy-menu {enabled}`, true only for a markdown pane whose last load
+  succeeded), the frame suppresses the browser's menu and posts `{x, y, selection}`;
+  the host draws the menu described in §3.14 and appends a plain "Copy" row when
+  `selection` is non-empty. With no host menu the browser's own menu is left alone.
+- **Focus**: a `mousedown` anywhere in the frame posts `focus` so the pane focuses (§4.3).
 
 ### 3.11 Render/reload cycle and scroll preservation
 
@@ -674,26 +730,35 @@ Precedence summary: same-document reloads (file change, font change, theme chang
 restore the absolute `scrollY` captured just before the reload; fresh view builds and
 mode switches restore the shared fractional position.
 
+Explicit refresh: a markdown pane also accepts the same refresh a diff pane does
+(`ContentService.refresh` in `packages/daemon/src/content/service.ts`, reached from the
+client's `content.refresh(paneID)` and the `diff-refresh` wire verb, which is not
+type-gated). On a markdown pane it re-reads the file through `reloadFromDisk`, with the
+same unchanged-content guard as a watcher reload, so a refresh of an unchanged file
+renders nothing.
+
 ### 3.12 Live file watching (markdown preview)
 
-Per open preview, a kqueue-style single-file watcher
-(`open(filePath, O_EVTONLY)` + DispatchSource with mask
-`[write, extend, rename, delete]`, events delivered on the main thread):
+Per open preview, a single-file watcher owned by the daemon's content service
+(`watchFile` in `packages/daemon/src/content/watcher.ts`: a non-persistent `fs.watch` on
+the file itself):
 
-- **write / extend** → `loadFile()` (which no-ops if content is byte-identical).
-- **rename / delete** → vim-style save handling (vim writes a new file and renames it
-  over the old one, which invalidates the open fd):
-  1. stop watching (closes the fd),
-  2. wait **200 ms**,
-  3. re-open the watch on the same path and `loadFile()`.
+- **change** → reload (`reloadFromDisk`, which no-ops if content is byte-identical).
+- **rename**, or an `error` event on the watch handle (an ENOENT surfacing as an error is
+  the delete half of the dance) → vim-style save handling (vim writes a new file and
+  renames it over the old one, which invalidates the watch):
+  1. stop watching (closes the handle),
+  2. wait **200 ms** (`RENAME_REATTACH_DELAY_MS`),
+  3. re-open the watch on the same path and reload.
   If the file is truly gone, the reload renders the "Failed to load file" blockquote,
-  and the re-watch silently fails (fd open fails → no watcher) until the view is
-  rebuilt.
-- Watching starts when the preview is built and on `filePath` change (old watch
-  stopped first), and stops when the view is dismantled.
-
-Port: Node `fs.watch` on the file (or its parent dir) with the same semantics: change
-events reload; rename/delete events trigger a 200 ms delayed re-attach + reload.
+  and the re-watch silently fails (the watch cannot be created → no watcher) until
+  something rebuilds the watch.
+- Watching starts when the first client subscribes to the pane (`content-subscribe`
+  creates the entry and the watch) and again after a re-scope (`filePath` change under a
+  live subscription: old watch stopped first). It is **suspended** while the pane is in
+  edit mode (§4.2; `suspend()` detaches without forgetting the path, `resume()`
+  re-attaches without firing) and closed when the last subscriber leaves, unless the edit
+  buffer is still dirty, in which case the entry survives until the write lands (§4.2).
 
 ### 3.13 Find-in-page (markdown preview)
 
@@ -701,8 +766,11 @@ The workspace-level search overlay (same UI as terminal scrollback search) drive
 markdown panes through an injected JS namespace `window.__kelpiFind` with
 `search(needle)`, `next()`, `prev()`, `clear()`.
 
-State machine (host side, per pane): a controller keeps `paneID → lastNeedle` and a
-handle to the pane's page. Workspace actions:
+State (host side, per pane, **per client**): `ContentFrame`
+(`packages/client/src/content/ContentFrame.tsx`) keeps the needle, the open/closed bar and
+the last `{total, current}` in component state and replays the stored needle on every
+`ready`; two clients searching the same pane never see each other's highlights. The bar
+itself is the grid's `PaneSearchOverlay`, the same one every pane type gets. Actions:
 
 - `searchNeedleChanged(needle)` → `__kelpiFind.search(needle)` immediately (no debounce —
   it's local JS; terminal panes debounce, markdown does not). The needle is
@@ -721,7 +789,13 @@ JS behavior contract:
   exists): `mark.kelpi-find-match { background:#F2D027; color:#000; border-radius:2px;
   padding:0 }` and current match `mark.kelpi-find-match.kelpi-find-current
   { background:#FF7A00; color:#000 }`. (These mirror ghostty's search-background /
-  search-selected-background so terminal and markdown find share a palette.)
+  search-selected-background so terminal and markdown find share a palette.) Those are
+  the defaults: all four colours are user-overridable through the kelpi config
+  (`search-match-color`, `search-match-text-color`, `search-match-current-color`,
+  `search-match-current-text-color`) and reach the script as a `FindPalette`; each value
+  is validated to plain `#rrggbb` before it is interpolated into the stylesheet, anything
+  else falling back to the default (`resolveFindPalette` in
+  `packages/client/src/content/bridge.ts`).
 - `search(needle)`:
   - Clear all existing marks first (unwrap `<mark>` elements, re-normalize text nodes).
   - Empty needle → post `{total: 0, current: -1}` and stop.
@@ -735,7 +809,9 @@ JS behavior contract:
     `<mark class="kelpi-find-match">` elements (zero-length matches are skipped by
     advancing lastIndex).
   - Current index = 0 if any matches; the current mark also gets class
-    `kelpi-find-current` and is scrolled into view (`block:'center'`).
+    `kelpi-find-current` and is scrolled into view (`block:'center'`, with
+    `inline:'nearest'` so stepping through matches inside a wide code block or table
+    does not also scroll the document sideways).
   - Post result `{total, current}` to the host.
 - `next()/prev()`: `currentIndex = (currentIndex ± 1 + total) % total`, move the
   `kelpi-find-current` class, scroll into view, post result.
@@ -750,38 +826,50 @@ JS behavior contract:
 
 Preview panes expose two copy commands, available from (a) the pane header's copy
 button (a small `doc.on.doc` icon shown only on markdown panes in view mode, opening a
-two-item menu) and (b) the preview's right-click context menu (two items prepended:
-"Copy as Markdown", "Copy as Rich Text", then a separator, then the native menu).
+two-item menu) and (b) the preview's right-click context menu (the host draws a menu
+with "Copy as Markdown" and "Copy as Rich Text", then, when text is selected in the
+document, a separator and a plain "Copy" row for that selection; the browser's own menu
+is suppressed only while the host has such a menu to show, see §3.10).
 
 Both bail silently when the last load failed (`didLoadSuccessfully == false`) — you
 can't copy the synthetic error blockquote.
 
 - **Copy as Markdown**: the *source* markdown of the whole document with front-matter
-  stripped (`FrontMatterExtractor.extract(currentContent).body`) → clipboard as plain
+  stripped (`stripFrontMatter(text)` in `packages/client/src/content/copy.ts`, the same
+  four fence/BOM/64 KiB rules as the daemon's `extractFrontMatter`) → clipboard as plain
   text. (Selection-aware copy was deliberately abandoned; the contract is whole-file.)
-- **Copy as Rich Text**: takes the rendered DOM of `#content`, clones it, removes all
+- **Copy as Rich Text**: the frame clones the rendered DOM of `#content`, removes all
   `.frontmatter, .frontmatter-raw, .frontmatter-nested` elements (the front-matter
-  table breaks RTF conversion) and all `.code-copy-btn` elements (they'd leak into the
-  payload as a stray glyph), and serializes `innerHTML`. The host then converts that
-  HTML into rich text **with relative URLs resolved against the file's parent
-  directory** (so `src="diagram.png"` next to the file keeps working in the paste
-  target) and writes three clipboard flavors: plain text (the flattened string), RTF,
-  and HTML.
+  table breaks rich-text conversion) and all `.code-copy-btn` elements (they'd leak into
+  the payload as a stray glyph), **absolutizes every `src` and `a[href]` against the
+  document's `<base href>`** (the daemon's `/pane-assets/<paneID>/` route, so a sibling
+  `src="diagram.png"` pastes as a daemon URL that keeps working in the paste target),
+  and posts `innerHTML` plus the flattened `textContent`. The host writes two clipboard
+  flavors, `text/html` and `text/plain`, through `ClipboardItem`, falling back to a
+  plain-text write where `ClipboardItem` is missing (`writeRichText` in
+  `packages/client/src/content/copy.ts`); there is no RTF flavor in a browser.
 
-In the current app the copy request travels pane-header → notification
-(`{paneID, kind: "markdown"|"richText"}`) → the matching preview coordinator. Port
-equivalent: a client-side message to the pane's iframe/component.
+The copy request travels pane-header button → a `copyToken` bump on the pane's
+`ContentFrame`, which opens the two-item menu; "Copy as Markdown" uses the source text
+the daemon already sent every subscriber, "Copy as Rich Text" asks the frame for the DOM
+(`collect-rich-text` → `rich-text`, matched by token) and writes what comes back.
 
 ### 3.15 Link handling
 
-Clicks on links in the preview do NOT navigate the pane. Any link-activated navigation
-is cancelled and the URL is opened in the system default browser. (All other
-navigations — the initial HTML load — proceed.)
+Clicks on links in the preview do not navigate the pane, except in-document fragment
+links (`href` starting `#`), which scroll the document. Every other anchor click is
+cancelled inside the frame and posted to the host (`link` message), and the host opens
+`http:`, `https:` and `mailto:` URLs outside the pane (`window.open` with `noopener`;
+the Electron shell routes that to the system browser) and silently drops every other
+scheme, including the `file://` and `ftp://` URLs §3.4 autolinks, because the href is
+untrusted content and `javascript:` must never reach `window.open` on the app's own
+origin (`openExternalLink` in `packages/client/src/content/bridge.ts`).
 
 ### 3.16 Font size (preview only)
 
 Per-pane `markdownFontSize`, adjusted by keybindings (defaults: ⌘= increase, ⌘-
-decrease, ⌘0 reset). Rules (enforced host-side):
+decrease, ⌘0 reset). Rules (enforced by the daemon reducer `set-markdown-font-size` in
+`packages/daemon/src/store/reducers/panes.ts`):
 
 - Only when the focused pane is `markdown` AND `isEditing == false` (the plain-text
   editor has a fixed 13 pt monospace font; diff panes currently receive the same
@@ -795,65 +883,111 @@ decrease, ⌘0 reset). Rules (enforced host-side):
 
 ### 4.1 Toggle rules (`toggleMarkdownEdit(paneID)`)
 
-Triggered by keybinding `toggle_markdown_edit` (default **⌘E**) — dispatched only when
-the focused pane is a markdown pane — or the pane-header edit/preview button (pencil
-icon in view mode, eye icon in edit mode; tooltip "Edit (⌘E)" / "Preview (⌘E)").
+Triggered by keybinding `toggle_markdown_edit` (default **⌘E**), dispatched only when
+the focused pane is a markdown pane, by the pane-header edit/preview button (pencil
+icon in view mode, eye icon in edit mode; tooltip "Edit (⌘E)" / "Preview (⌘E)"), or by
+⌘E pressed inside the preview frame or the editor (both relay it to the host, §3.10).
+The client half is `toggleMarkdownEdit` in `packages/client/src/App.tsx`; the daemon half
+is `setMode` in `packages/daemon/src/content/service.ts`.
 
 ```
 pane must exist and be type markdown, else no-op
 
-if pane.isEditing:                       // edit → view
-    wasExternal = pane.externalEditorCommand != null
-    pane.isEditing = false
-    pane.externalEditorCommand = null
-    if wasExternal: destroy the pane's terminal surface (kills the editor PTY)
-else:                                    // view → edit
-    if search overlay is on this pane: close it (clear needle/counts + JS marks)
-    if pane.filePath set AND EditorService can build a command (see §6):
-        pane.isEditing = true
-        pane.externalEditorCommand = command
-        spawn a terminal surface for this pane running `command` in
-        pane.workingDirectory, with the workspace profile env injected
-    else:
-        pane.isEditing = true
-        pane.externalEditorCommand = null   // built-in editor
+if pane.externalEditorCommand != null:   // an external editor session is running
+    markdown-external-editor {action:"close"}: kill the pane's PTY and dispose its
+    terminal, isEditing = false, externalEditorCommand = null
+                                         // the file watcher reloads on-disk changes
+else:                                    // built-in editor only
+    content.setMode(view ⇄ edit)         // wire: content-set-mode
+    entering edit: if the search overlay is on this pane, close it (clear
+                   needle/counts + JS marks); suspend the file watcher; seed the
+                   daemon's edit buffer from the last-read content (unless the
+                   buffer is already dirty)
+    leaving edit:  flush the pending autosave, re-read the file from disk, resume
+                   the watcher
 ```
+
+⌘E never resolves `$EDITOR`. The external editor is a separate gesture: the "$EDITOR"
+chip drawn bottom-right over the preview (`MarkdownPane.tsx`, aria-label "Open in
+$EDITOR"), which sends the wire command `markdown-external-editor {pane_id,
+action:"open"}` (`packages/daemon/src/ws/desktop.ts`). `open` resolves the editor (§6;
+it awaits the probe if warm-up has not finished), fails with "no $VISUAL or $EDITOR is
+set" when nothing resolves (there is no silent fallback to the built-in editor on this
+path), kills any previous PTY on the pane so a re-entered editor never replays the last
+session's screen, dispatches `set-markdown-editing` with `externalEditorCommand`, and
+spawns the pane's PTY running the command with cwd `pane.workingDirectory` and the
+workspace profile env every terminal pane gets. The spawn waits for the client's own
+measurement of the pane when a client is attached (the editor is as unreflowable as a
+shell prompt); a spawn failure logs, clears `isEditing`, and replies with the error.
+This is a deliberate departure from the pre-port app, which preferred the external editor
+whenever one resolved: Kelpi ships a real built-in editor, and silently swapping it for
+`vim` on a machine where `$EDITOR` happens to be set would be the worse surprise.
 
 While `isEditing` is true the pane body renders:
 
-- `externalEditorCommand != null` → a full terminal surface (ghostty) running the
-  user's `$EDITOR` on the file. When that process exits, the pane flips back to view
-  mode automatically (see 2.4) and the file watcher picks up saved changes.
+- `externalEditorCommand != null` → a full terminal surface running the user's `$EDITOR`
+  on the file. When that process exits, the pane flips back to view mode automatically
+  (see 2.4) and the file watcher picks up saved changes. ⌘E or `action:"close"` ends
+  the session the same way.
 - else → the built-in plain-text editor (4.2).
 
 ### 4.2 Built-in editor behavior
 
-A plain-text (never rich), monospace 13 px editor with:
+A plain-text (never rich), monospace 13 px editor (`PlainTextEditor` in
+`packages/client/src/content/PlainTextEditor.tsx`, a `textarea`; shared with scratchpads)
+with:
 
-- Undo enabled; smart quotes / smart dashes / automatic text replacement disabled;
-  native find bar available.
-- Content: the raw file bytes as UTF-8. Read failure renders the literal text
-  `// Failed to load: <error message>` into the editor buffer (note: saving after that
-  would write this placeholder — a known sharp edge, keep or fix in the port).
+- Undo enabled (the textarea's own); spellcheck, autocorrect and autocapitalize
+  disabled. No find bar: `toggle_search` over a markdown pane in edit mode declines
+  (`toggleSearch` in `packages/client/src/App.tsx`) and the chord falls through to the
+  host.
+- Content: the raw file bytes as UTF-8. A read failure seeds the edit buffer with the
+  same `> Failed to load file: <path>` blockquote the preview renders (§3.11), and
+  `setMode('edit')` re-seeds from that content; this is still a known sharp edge, the
+  first keystroke autosaves that text over the file.
+- **Tab** (unmodified) inserts a `\t` at the caret rather than moving focus; ⇧Tab and
+  any modified Tab are left to the browser as navigation. `tab-size` is 4.
+- **Wrapping**: the markdown editor soft-wraps to the pane (`wrap="soft"`); the
+  scratchpad editor does not (`wrap="off"`, a horizontal scrollbar instead, see §7).
+- **Metrics**: an 8 px inset on every side and a fixed 16 px row height, shared with the
+  gutter so the numbers and the rows never drift.
 - **Line-number gutter**: right-aligned line numbers (1-based), 11 px monospace,
   gutter min width 36 px, growing to fit the largest line number + 8 px gutter
   padding + 4 px text padding. Gutter background = pane-header chrome color; number
   color = tertiary chrome text color. A trailing newline shows an extra final line
   number; an empty document shows "1". Line count = number of `\n` + 1.
-- **Autosave**: on every text change, a 500 ms debounce timer (re)starts; on fire, the
-  whole buffer is written to `filePath` atomically (temp file + rename). Write errors
-  are logged, not surfaced.
-- **Quit flush**: on app quit, all live editors synchronously flush any pending
-  debounced save before exit so up to 500 ms of typing isn't lost (issue #129). Port:
-  daemon-side, flush on client disconnect/shutdown for any dirty editor buffers.
+- **Autosave**: the client coalesces keystrokes for 300 ms (`CONTENT_TEXT_DEBOUNCE_MS`
+  in `packages/client/src/content/client.ts`) before sending the buffer to the daemon
+  as `content-set-text`; on receipt the daemon (re)starts a 500 ms debounce timer
+  (`EDITOR_AUTOSAVE_DEBOUNCE_MS` in `packages/daemon/src/content/editor.ts`) and, on
+  fire, writes the whole buffer to `filePath` atomically (temp file + rename, preserving
+  the original mode). A write therefore lands up to ~800 ms after the last keystroke.
+  The client also flushes whatever the 300 ms window still holds when the textarea
+  loses focus or unmounts (⌘E back to preview, workspace switch). Write errors are
+  logged, not surfaced; the buffer stays dirty so the next keystroke or the shutdown
+  flush retries.
+- **Buffer authority**: the daemon's buffer is authoritative, not any client's.
+  `setText` updates it and restarts the debounce without notifying subscribers; other
+  clients viewing the same pane receive the new text only when the save fires
+  (`onSaved` → re-render + emit), and the typist's own textarea adopts an incoming
+  buffer only while it is unfocused, so a keystroke is never moved or lost mid-edit. A
+  dirty buffer keeps its entry alive after the last client unsubscribes, until the
+  write lands or the shutdown flush runs.
+- **Quit flush**: at daemon shutdown, `content.flushSync()`
+  (`packages/daemon/src/boot/compose.ts`) synchronously saves every dirty buffer before
+  the persist gate closes, markdown files and scratchpads alike, so up to 500 ms of
+  typing isn't lost (issue #129). A pane that closes mid-edit is flushed on the way out
+  (`forget`).
 - **Scroll persistence**: same shared fraction store as the preview — scroll fraction
   saved on scroll, restored on build — so toggling ⌘E keeps your place bidirectionally.
 - Text/caret color: luminance rule against the ghostty background —
   dark background → near-white text (`white 0.90`), light → near-black (`white 0.12`);
   the editor surface itself is transparent over the pane's ghostty-colored background.
-- No file watching in edit mode: external changes to the file while the built-in
-  editor is open are NOT live-merged (last writer wins on the next autosave). The
-  preview re-reads on the next toggle back (view is rebuilt → `loadFile()`).
+- No file watching in edit mode: the watcher is suspended on entering edit mode, so
+  external changes to the file while the built-in editor is open are NOT live-merged
+  (last writer wins on the next autosave). Leaving edit mode flushes the buffer,
+  re-reads the file and resumes the watcher (`setMode` in
+  `packages/daemon/src/content/service.ts`).
 
 ### 4.3 Focus semantics (all content panes)
 
@@ -875,9 +1009,13 @@ A plain-text (never rich), monospace 13 px editor with:
 - `repoPath` = `pane.workingDirectory` (the repo), `targetPath` = `pane.filePath`
   (optional file/dir scope). No `--staged` or ref-range support.
 - Diff text source: `git diff --no-color` run in `repoPath`, with
-  `-- <targetPath>` appended when the scope is non-empty. Implementation: spawn
-  `/usr/bin/git` with cwd = repoPath, capture stdout; non-zero exit throws an error
-  carrying the command, exit code, and trimmed stderr.
+  `-- <targetPath>` appended when the scope is non-empty. Implementation: spawn the
+  first `git` on the daemon's `PATH` (`KELPI_GIT` overrides; the bare name is the last
+  resort so a missing git is a normal ENOENT; `resolveGitExecutable` in
+  `packages/daemon/src/git/exec.ts`) with cwd = repoPath, capture stdout; non-zero exit
+  throws a `GitCommandError` carrying the command, exit code, and trimmed stderr. A
+  newer load aborts the previous child through an `AbortSignal` (`getDiff` in
+  `packages/daemon/src/git/service.ts`).
 - On git failure the pane renders the plain text
   `Failed to run git diff in <repo>:\n<error message>` **through the normal diff
   renderer** (so it appears as loose context lines, not a special error page).
@@ -888,15 +1026,17 @@ A plain-text (never rich), monospace 13 px editor with:
 
 The diff re-runs `git diff` when ANY of:
 
-1. `repoPath` or `targetPath` changes;
+1. `repoPath` or `targetPath` changes: the daemon re-runs git itself when the pane's
+   `workingDirectory` or `filePath` moves under a live subscription (`pane-upserted`
+   in `packages/daemon/src/content/service.ts`), cancelling the in-flight read first;
 2. the header **refresh button** (clockwise-arrow icon, tooltip "Refresh diff") is
-   clicked — implemented as a per-pane monotonically incremented `refreshToken`
-   (wrapping u64, client-local state, not persisted); a token change forces a reload;
+   clicked: the client sends `content.refresh(paneID)` (wire verb `diff-refresh`) and
+   the daemon re-runs git, re-rendering only when the text changed;
 3. the pane transitions unfocused → focused (refresh-on-focus: come back to the diff
-   pane and it's current);
-4. a "reload page" gesture inside the webview (⌘R / right-click → Reload) — the
-   navigation is cancelled and mapped to a re-fetch (a raw reload would land on
-   about:blank since the HTML was string-loaded).
+   pane and it's current; `DiffPane.tsx`, seeded with the mount-time value so a pane
+   that mounts focused does not run git twice);
+4. (No equivalent: the sandboxed frame has no reload gesture to remap. Refresh is
+   triggers 1-3 only.)
 
 Font-size or background/theme changes WITHOUT any of the above re-render the cached
 diff text without re-running git. Each new load cancels any in-flight git invocation.
@@ -1005,8 +1145,10 @@ path shown is `"<renameFrom> → <destPath>"` (with a real arrow character).
 
 ### 5.4 Diff stylesheet (exact contract)
 
-`BASE` = baseFontSize px (default 13; the GUI passes `pane.markdownFontSize`, so the
-shared per-pane font size applies, default 14):
+`BASE` = baseFontSize px (default 13; the daemon passes `pane.markdownFontSize`, so the
+shared per-pane font size applies, default 14). Emitted by `diffStylesheet()` in
+`packages/daemon/src/content/diff.ts`; the rules marked S41 are Kelpi's own and are
+asserted by `diff.test.ts`:
 
 ```css
 html, body { margin: 0; padding: 0; }
@@ -1056,11 +1198,15 @@ details.file:first-child > summary { border-top: none; }
 .caret { display: inline-block; width: 10px; color: #8b949e; transition: transform 0.12s ease; }
 .caret::before { content: "\25B6"; font-size: 9px; }   /* ▶ */
 details[open] > summary .caret { transform: rotate(90deg); }
-.file-path { font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
+.file-path {
+    font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;   /* S41 */
+}
 .file-status {
     font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
     font-size: 10px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px;
+    flex-shrink: 0;   /* S41 */
 }
 .status-added    { background: rgba(46,160,67,0.18);  color: #1a7f37; }
 .dark .status-added    { color: #4ac26b; background: rgba(46,160,67,0.22); }
@@ -1076,6 +1222,7 @@ details[open] > summary .caret { transform: rotate(90deg); }
     margin-left: auto;
     font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px; display: inline-flex; gap: 8px;
+    flex-shrink: 0;   /* S41 */
 }
 .stat-add { color: #1a7f37; font-weight: 600; }   .dark .stat-add { color: #4ac26b; }
 .stat-del { color: #cf222e; font-weight: 600; }   .dark .stat-del { color: #ff7b72; }
@@ -1097,41 +1244,55 @@ details[open] > summary .caret { transform: rotate(90deg); }
 .dark .empty { color: #8b949e; }
 ```
 
+(S41: in a narrow split the path is what yields, ellipsized; the status badge and the
++N/-M counts never shrink.)
+
 Same doctype/html-class/head wrapper as markdown (3.7) but the body is the diff HTML
 directly (no `#content` wrapper).
 
-Diff panes do not participate in find-in-page (only terminal, markdown, and web panes
-do).
+Diff panes participate in find-in-page exactly as markdown previews do (§3.13): the same
+injected `__kelpiFind`, the same per-pane bar, opened by `toggle_search` when a diff
+pane is focused (`DiffPane.tsx` passes `findToken` into `ContentFrame`; `toggleSearch`
+in `packages/client/src/App.tsx` admits `pane.type === 'diff'`).
 
 ---
 
 ## 6. EditorService ($VISUAL/$EDITOR resolution for external edit mode)
 
-Purpose: decide whether ⌘E opens the user's terminal editor instead of the built-in
-one, and build the exact shell command to run it. GUI apps on macOS don't inherit the
-login shell env, so this is done by interrogating the user's shell once.
+Purpose: resolve the user's terminal editor for the "Open in $EDITOR" gesture (§4.1)
+and build the exact shell command to run it. A GUI-launched daemon doesn't inherit the
+login shell env (the packaged app's daemon inherits the Electron shell's minimal env), so
+this is done by interrogating the user's shell once
+(`packages/daemon/src/content/external-editor.ts`).
 
 ### 6.1 API
 
 ```ts
-interface EditorService {
-  resolveEditor(): string | null;                 // e.g. "nvim", "code -w"; null if
-                                                  // unresolved / still resolving
+interface EditorResolver {
+  current(): EditorResolution | null;             // { editor: "nvim" | "code -w" …,
+                                                  //   path: loginPATH | null,
+                                                  //   source: "shell" | "process-env" };
+                                                  // null if unresolved / still resolving
   buildCommand(filePath: string): string | null;  // full shell command or null
   warmUp(): void;                                 // kick off async resolution; called
-                                                  // once at app launch
+                                                  // once at daemon boot
+  resolve(): Promise<EditorResolution | null>;    // await the in-flight (or a fresh)
+                                                  // probe
 }
 ```
 
-Both getters are **non-blocking**: while resolution is in flight they return null and
-the caller falls back to the built-in editor. (So the very first ⌘E after a cold
-launch may use the built-in editor even for a user with `$EDITOR` set, if warmup
-hasn't finished — warmUp at launch makes this rare.)
+`current()` / `buildCommand()` are **non-blocking**: null while resolution is in flight
+or within the 30 s failure TTL (a stale failure re-arms the probe in the background and
+still answers null for that call). `resolve()` awaits the in-flight or a fresh probe and
+is what the user-initiated "Open in $EDITOR" command uses, so an explicit open may wait
+up to the 2 s watchdog; `warmUp()` at daemon boot makes that rare. With no editor
+resolvable the open command fails ("no $VISUAL or $EDITOR is set"); ⌘E does not consult
+the resolver at all (§4.1).
 
 ### 6.2 Resolution algorithm
 
-1. Determine the user's login shell: passwd database (`getpwuid`) → `$SHELL` env →
-   `/bin/sh`.
+1. Determine the user's login shell: passwd database (`os.userInfo().shell`) → `$SHELL`
+   env → `/bin/sh`.
 2. Spawn it as `shell -l -i -c 'printf "\n%s\n%s\n%s\n%s\n%s\n" "__KELPI_EDITOR_BEGIN__" "$VISUAL" "$EDITOR" "$PATH" "__KELPI_EDITOR_END__"'`
    — login + interactive so `.zshrc`/`.bashrc`/`.zprofile` are all sourced (that's
    where users actually set `$EDITOR`).
@@ -1163,16 +1324,18 @@ formatCommand(editor, filePath, loginPath):
 ```
 
 The `editor` value is deliberately NOT quoted — `"code -w"` must stay two words. The
-`/usr/bin/env PATH=…` prefix exists because the terminal runtime wraps commands as
-`bash -c "exec -l <command>"`, where `exec` won't parse a bare `VAR=value` prefix as
-an assignment; `env` is a real binary so it works. The captured login `$PATH` is
-injected so the editor binary is findable in the minimal env a GUI app gets; no nested
+`/usr/bin/env PATH=…` prefix is kept byte-for-byte: the command is handed to a shell as
+`sh -c '<command>'` (the pre-port runtime wrapped it as `bash -c "exec -l <command>"`,
+where `exec` won't parse a bare `VAR=value` prefix as an assignment), and `env` is a
+real binary so it works in both, which also means a pane's `externalEditorCommand` reads
+identically to one written before the port. The captured login `$PATH` is injected so
+the editor binary is findable in the minimal env a GUI-launched process gets; no nested
 login shell is spawned at launch time (that would cost 1-2 s of rc-file sourcing per
-⌘E).
+open).
 
-The resulting command is spawned in a terminal surface with cwd =
-`pane.workingDirectory` and the workspace profile env; process exit returns the pane
-to view mode (see 2.4/4.1).
+The resulting command is spawned as the pane's PTY with cwd = `pane.workingDirectory`
+and the workspace profile env; process exit returns the pane to view mode (see
+2.4/4.1).
 
 ---
 
@@ -1185,21 +1348,28 @@ reported to state (`scratchpadContentChanged(paneID, content)` → sets
 
 Behavior = the built-in markdown editor (4.2) with these differences:
 
-- **Save target**: instead of writing a file, the 500 ms debounced change handler
-  sends the full buffer to state. Note the debounce means up to 500 ms of typing can
-  be lost on an abrupt kill; unlike the markdown editor there is no quit-flush hook
-  for scratchpads (the DB persistence layer has its own 500 ms debounce on top). A
-  port may want to close that gap.
-- **Initial content**: `pane.scratchpadContent ?? ""`, seeded once at view build.
-  There is no reload-from-state path while the view lives (the editor is the source
-  of truth while open).
+- **Save target**: instead of writing a file, the client coalesces keystrokes for
+  300 ms, then `content-set-text` lands in the daemon's edit buffer, whose 500 ms
+  debounce dispatches `scratchpad-content-changed(paneID, content)`; the persistence
+  layer then debounces that into the DB. The buffer is flushed on editor blur, on
+  unmount, and synchronously at daemon shutdown (`flushSync` covers scratchpads as well
+  as markdown files; `flushAll` in `packages/daemon/src/content/editor.ts` saves every
+  buffer regardless of target), so the quit-flush gap the pre-port app had is closed.
+- **Initial content**: `pane.scratchpadContent ?? ""`, from the daemon's first
+  snapshot. The textarea is read-only until that snapshot arrives, so a keystroke into
+  the empty pre-load buffer cannot go out as a `content-set-text` that wipes a restored
+  scratchpad (`ScratchpadPane.tsx`). While open, the daemon buffer is authoritative and
+  an incoming buffer is adopted only while the textarea is unfocused (§4.2).
 - No file, no file watching, no view mode: `isEditing` is always true, there is no
   preview/⌘E toggle, no copy-as-markdown, no font-size bindings (fixed 13 px
   monospace).
 - Header: note icon, title "Scratchpad", no label chip logic difference, no git
   branch.
-- Same line-number gutter, scroll-fraction persistence, undo, find bar, transparent
-  background over the ghostty-colored pane fill, luminance-based text color.
+- Same line-number gutter, scroll-fraction persistence, undo, transparent
+  background over the ghostty-colored pane fill, luminance-based text color. Like the
+  markdown editor it has no find bar (`toggle_search` declines for scratchpads and the
+  chord falls through to the host). Unlike the markdown editor it does not soft-wrap:
+  the scratchpad textarea keeps `wrap="off"` and scrolls horizontally.
 - Close/reopen: content rides the closed-pane snapshot, so ⌘⇧T restores the text.
 
 ---
@@ -1223,8 +1393,13 @@ Header layout (all panes share one header bar; content-pane specifics):
   tooltip "Copy whole file") → menu with "Copy as Markdown" / "Copy as Rich Text";
   edit/preview toggle button (pencil in view mode with tooltip "Edit (⌘E)"; eye in
   edit mode with tooltip "Preview (⌘E)"). The copy button is hidden while editing.
-- **Diff-only button**: refresh (`arrow.clockwise`, tooltip "Refresh diff") → bumps
-  the pane's refreshToken (5.2).
+- **Diff-only button**: refresh (`arrow.clockwise`, tooltip "Refresh diff") → sends
+  `content.refresh(paneID)` (5.2).
+- **Markdown-only body control**: a "$EDITOR" chip (aria-label "Open in $EDITOR") is
+  drawn bottom-right over the preview body, not in the header, whenever the pane is in
+  view mode; it sends `markdown-external-editor {action:"open"}` (§4.1;
+  `packages/client/src/content/MarkdownPane.tsx`). There are no font +/- header buttons:
+  preview font size is reachable only through the ⌘= / ⌘- / ⌘0 bindings (§3.16).
 - Standard buttons (split right / split down / close) follow.
 - Context-menu "Open in Finder"-equivalent: markdown reveals `filePath`; diff reveals
   `filePath` when non-empty, else opens `workingDirectory`; others open the working
@@ -1238,42 +1413,45 @@ panes blend with the terminal theme (see 3.8).
 
 ## 9. Scroll-position store (shared)
 
-A process-wide (client-side, in-memory, not persisted) map:
+A process-wide (client-side, in-memory, not persisted) map
+(`contentScrollStore` in `packages/client/src/content/scroll.ts`):
 
 ```ts
-scrollFractions: Map<paneID, number>   // 0..1 fraction of max scroll
+scrollPositions: Map<paneID, { top: number; fraction: number }>
+  // top:      absolute offset in CSS px, restored on a same-mount reload
+  // fraction: 0..1 of max scroll, restored on a fresh build (§3.11 precedence)
 ```
 
-Writers: markdown preview (JS scroll events → fraction), markdown editor + scratchpad
-(scroll observer → `contentOffsetY / maxScroll`, only when maxScroll > 0), diff pane
-(JS scroll events). Readers: each view on build (and the webviews again on every
-document-finish). `clearScrollFraction(paneID)` exists for cleanup. Because it's keyed
-by pane id and outlives view rebuilds, position survives workspace switches and
-view/edit toggles, but not app restarts.
+Writers: markdown preview (JS scroll events → `{top, fraction}`), markdown editor +
+scratchpad (textarea scroll → `scrollTop / maxScroll`, only when maxScroll > 0), diff
+pane (JS scroll events). Readers: each view on build (and the frames again on every
+`ready`). `clear(paneID)` exists for cleanup. Because it's keyed by pane id and outlives
+view rebuilds, position survives workspace switches and view/edit toggles, but not app
+restarts. Components take a `scrollStore` prop so a test can hand them an isolated one.
 
 ---
 
 ## 10. RecursiveFSWatcher (directory watcher service)
 
 Not used by content panes (the markdown preview uses its own single-file watcher,
-§3.12) — it drives Graft's worktree mirroring — but it lives in the assigned surface,
-so its contract:
+§3.12); it drives Graft's worktree mirroring, but it is spec'd here for completeness.
+It lives in `packages/daemon/src/graft/watcher.ts` (`watchRecursive`) and is specified
+authoritatively in graft-git.md §9.1; its contract:
 
-- `start(rootPath, debounce = 500ms, ignoredComponents = {".git", "node_modules", "target", ".DS_Store"}) → AsyncStream<string[]>`
-  Recursive watch over `rootPath` (FSEvents file-level events, no-defer). Events are
-  path strings; a path is dropped if ANY of its `/`-separated components is in
-  `ignoredComponents`.
+- `watchRecursive({ root, onBatch, debounceMs = 500, ignored = [".git", "node_modules", "target", ".DS_Store"] }) → { close(), flush(), watching, pending }`
+  Recursive watch over `root` (a recursive, non-persistent `fs.watch`). Events are path
+  strings; a path is dropped if ANY of its `/`-separated components is in `ignored`.
+  Filtering runs on the path **relative to the root** (a worktree that lives under a
+  directory called `target` is still watched); the emitted paths are absolute.
 - **Debounced batching**: changed paths accumulate in a set; each new event resets the
-  debounce timer; after `debounce` of quiet the batch is emitted as a **sorted, deduped
-  array**. Empty batches are never emitted.
-- Stream termination (consumer cancel) or `stopAll()` tears the watch down; teardown
-  cancels any pending batch (a final partial batch may be silently dropped).
-- Zero cost at rest (event-driven). One OS stream per active watch.
-- Test backend: no OS watcher; tests inject paths which go through the same component
-  filter but bypass debounce (one synchronous batch per inject).
-
-Port: chokidar/@parcel/watcher with equivalent ignore + 500 ms trailing-debounce
-batch semantics.
+  trailing debounce timer; after `debounceMs` of quiet the batch is handed to `onBatch`
+  as a **sorted, deduped array**. Empty batches are never emitted.
+- `close()` tears the watch down and drops any pending batch (a final partial batch may
+  be silently dropped). `flush()` emits the current batch immediately (used by tests).
+- Zero cost at rest (event-driven). One recursive `fs.watch` handle per active watch.
+- Test seam: the `watch` option replaces the OS watcher with a fake whose injected
+  events go through the same component filter and the same debounce; `flush()` collapses
+  the wait.
 
 ---
 
@@ -1300,7 +1478,9 @@ Markdown:
 - Task-list checkboxes are disabled — clicking them does nothing and never mutates the
   file.
 - Raw HTML in markdown passes through unescaped.
-- Link clicks leave the app (system browser); the preview never navigates.
+- Link clicks on `http:`/`https:`/`mailto:` leave the app (system browser); other
+  schemes are dropped; only an in-document `#fragment` link moves the preview, and the
+  preview never navigates to another document (§3.15).
 - `--here` panes restore their parked terminal on close; if the parked terminal's
   process died first, close behaves normally.
 
@@ -1327,106 +1507,117 @@ Fonts (defaults, bindable):
 
 ---
 
-## Port notes
+## Compatibility rationale
 
-1. **Where rendering happens.** In the Swift app, markdown/diff HTML is generated
-   natively and pushed into a WKWebView. In the port, the natural split is: the
-   **daemon** owns the pane model, file reading, file watching, git invocation, and
-   (recommended) the markdown/diff → HTML transformation (so all clients render
-   identically and the CLI could someday reuse it); the **web client** owns scroll
-   state, find-in-page, the copy button JS, and clipboard access. The HTML/CSS/JS
-   contracts in §3.9/3.10/3.13/5.4 are the compatibility target regardless of where
-   they're produced.
+These items record quirks and design choices preserved on purpose, so that the pre-port
+`kelpi` CLI, hook scripts and saved state keep working and so the code's oddities read
+as decisions rather than accidents.
 
-2. **Markdown parser parity.** swift-markdown is cmark-gfm underneath. Use a
-   CommonMark+GFM-compliant JS parser (e.g. remark-gfm or markdown-it with the gfm
-   tables/strikethrough/task-list plugins) but implement the HTML emission yourself to
-   match §3.3 exactly (class names, attribute order need not be byte-identical, but
+1. **Where rendering happens.** The **daemon** owns the pane model, file reading, file
+   watching, git invocation, and the markdown/diff → HTML transformation (so all clients
+   render identically and the CLI could someday reuse it); the **web client** owns scroll
+   state, find-in-page, the bridge JS (copy button, links, chords), and clipboard
+   access (`packages/daemon/src/content/`, `packages/client/src/content/`). The
+   HTML/CSS/JS contracts in §3.9/3.10/3.13/5.4 are the compatibility target regardless
+   of where they're produced.
+
+2. **Markdown parser parity.** The pre-port renderer was cmark-gfm underneath. Kelpi
+   parses with markdown-it (CommonMark + GFM tables/strikethrough) and emits the HTML
+   itself (`renderTokens` in `packages/daemon/src/content/markdown.ts`) to match §3.3
+   exactly (class names, attribute order need not be byte-identical, but
    classes/structure must match the CSS and copy-button JS). Note the non-standard
    bits: the `code-block` wrapper + copy button, task-list markup, autolink scheme
-   allowlist (§3.4 — do NOT use GFM autolink extension semantics, which link bare
-   domains), and raw-HTML passthrough.
+   allowlist (§3.4: GFM autolink extension semantics, which link bare domains, are
+   deliberately NOT used; markdown-it's `linkify` is off), and raw-HTML passthrough.
 
-3. **Raw HTML / sanitization.** The current app passes raw HTML through into an
-   isolated, JS-enabled webview whose only host bridges are scroll/find/copy. In a web
-   client the preview MUST be similarly isolated (sandboxed iframe with its own
-   origin, or sanitize). Preserve the behavior (users rely on inline HTML in notes)
-   but do not let pane content script against the app shell.
+3. **Raw HTML / sanitization.** Raw HTML passes through unsanitized into an iframe
+   sandboxed to `allow-scripts` only, whose only host bridges are the `postMessage`
+   channel in `packages/client/src/content/bridge.ts` (scroll/find/copy/link/focus/
+   chords). `allow-scripts` and `allow-same-origin` are never both set. The behavior is
+   preserved (users rely on inline HTML in notes) but pane content cannot script
+   against the app shell.
 
-4. **Relative resources.** The preview is loaded with baseURL = the file's directory
-   so relative images work; copy-as-rich-text resolves relative URLs the same way. In
-   the port the daemon must serve sibling files of an opened markdown file (scoped
-   static route) and set `<base>` accordingly — a plain `srcdoc` iframe would break
-   relative images.
+4. **Relative resources.** The daemon serves sibling files of an opened markdown file
+   on a scoped, credentialed static route (`/pane-assets/<paneID>/`) and emits
+   `<base href>` for it, so relative images work even though the frame is loaded
+   through `srcdoc` (a plain `srcdoc` iframe would resolve them against the client
+   page); copy-as-rich-text resolves relative URLs against the same base (§3.14). The
+   client re-inserts the `<base>` tag if a document lacks one.
 
-5. **Clipboard.** `navigator.clipboard.writeText` for plain text; for copy-as-rich-
-   text write both `text/html` and `text/plain` flavors via `ClipboardItem` (browsers
-   can't write RTF — HTML flavor is the practical equivalent and pastes fine into rich
-   editors). Keep front-matter and copy-button stripping (§3.14).
+5. **Clipboard.** `navigator.clipboard.writeText` for plain text; copy-as-rich-text
+   writes both `text/html` and `text/plain` flavors via `ClipboardItem` (browsers can't
+   write RTF; the HTML flavor is the practical equivalent and pastes fine into rich
+   editors), falling back to plain text where `ClipboardItem` is missing. Front-matter
+   and copy-button stripping are kept (§3.14).
 
-6. **File watching.** Replace the kqueue single-file watcher with `fs.watch` on the
-   parent directory (more reliable for the vim rename dance on all platforms) or
-   chokidar on the single file; keep the 200 ms re-attach delay and the
-   unchanged-content short-circuit. Watchers live in the daemon; pushes to clients are
-   "content changed" events (send new content or a rendered-HTML invalidation).
+6. **File watching.** The single-file watcher is `fs.watch` on the file itself
+   (`packages/daemon/src/content/watcher.ts`) with the 200 ms re-attach delay for the
+   vim rename dance and the unchanged-content short-circuit. Watchers live in the
+   daemon; pushes to clients are `content-updated` events carrying the new state and
+   rendered document.
 
 7. **Autosave authority.** The built-in editor's 500 ms debounced write and the
-   preview's file watcher form a loop through the filesystem; the current app avoids
-   echo because view and edit modes never run simultaneously for one pane. Preserve
-   that invariant (edit mode suspends the watcher-driven preview). With multiple
-   clients attached to one daemon, the daemon must arbitrate: one editing client's
-   buffer is authoritative; other clients viewing the same pane should follow the
-   autosaved writes. Implement the quit-flush (flush pending debounced saves on
-   shutdown/disconnect) — and consider extending it to scratchpads, which today can
-   lose up to ~1 s (editor debounce + DB debounce) on a hard kill.
+   preview's file watcher form a loop through the filesystem; echo is avoided because
+   view and edit modes never run simultaneously for one pane (edit mode suspends the
+   watcher). With multiple clients attached to one daemon, the daemon arbitrates: its
+   edit buffer is authoritative and other clients viewing the same pane follow the
+   autosaved writes (§4.2). The quit-flush runs at daemon shutdown and covers
+   scratchpads as well as markdown files (§7), closing the ~1 s (editor debounce + DB
+   debounce) loss the pre-port app had on a hard kill.
 
-8. **External editor mode** translates directly: EditorService resolution
-   (§6.2 — login+interactive shell probe with sentinels, concurrent pipe drain, 2 s
-   watchdog, 30 s failure TTL) runs in the daemon (Node `child_process` +
-   `os.userInfo().shell` / `/etc/passwd`); "spawn a surface running the command" means
-   the daemon points the pane's PTY at the editor command; process-exit → flip back to
-   view mode. The non-blocking contract matters: never stall the toggle waiting on
-   shell init.
+8. **External editor mode.** Resolution (§6.2: login+interactive shell probe with
+   sentinels, concurrent pipe drain, 2 s watchdog, 30 s failure TTL) runs in the daemon
+   (`child_process.spawn` + `os.userInfo().shell`); "spawn a surface running the
+   command" means the daemon points the pane's PTY at the editor command; process-exit
+   flips the pane back to view mode. The non-blocking contract of `current()` and
+   `buildCommand()` still holds; the explicit "Open in $EDITOR" command is the one path
+   that awaits `resolve()`, and ⌘E never stalls on shell init because it never
+   consults the resolver (§4.1). The command format is byte-for-byte the pre-port one
+   so a persisted `externalEditorCommand` reads identically (§6.3).
 
 9. **Theme source.** Light/dark is derived from the ghostty background color's
-   luminance, NOT the OS theme. The web client should compute `isDark` from the same
-   config-provided color and paint the pane container with
-   `rgba(bgColor, bgOpacity)` behind a transparent preview. Re-render (or live-swap
-   the `dark` class + repaint) on config change.
+   luminance, NOT the OS theme. The web client computes `isDark` from the same
+   config-provided color (`ghosttyBucket` in `packages/client/src/chrome/theme.ts`) and
+   paints the pane container with `rgba(bgColor, bgOpacity)` behind the document; the
+   sandboxed frame additionally gets that fill flattened to an opaque colour (§3.8).
+   The daemon re-renders on config change.
 
-10. **Refresh tokens are client-local.** The diff refreshToken is UI state (a counter
-    per pane in the grid component), not daemon state. In the port, "refresh" can just
-    be a client → daemon `diff.refresh(paneID)` request; keep refresh-on-focus and the
-    reload-gesture remap.
+10. **Refresh is a request, not client state.** There is no per-pane refresh token;
+    "refresh" is a client → daemon `content.refresh(paneID)` request (wire verb
+    `diff-refresh`), refresh-on-focus is kept in `DiffPane.tsx`, and the reload-gesture
+    remap has no equivalent because the sandboxed frame has no reload gesture (§5.2).
 
-11. **Scroll store.** Keep it client-side and per-pane-id; it should survive workspace
-    switches (component unmount/remount) but need not survive reload. If pane DOM is
-    kept alive across workspace switches (as terminal surfaces are), much of this
-    machinery collapses to "don't destroy the node".
+11. **Scroll store.** Client-side and per-pane-id (`packages/client/src/content/scroll.ts`);
+    it survives workspace switches (component unmount/remount) but not a page reload.
+    It holds both an absolute `top` and a `fraction` so the two restore paths of §3.11
+    each get the unit that is truthful for them.
 
-12. **Find-in-page.** The JS in §3.13 is portable as-is (it's plain DOM). Keep the
-    host-side needle cache + reapply-after-reload, the markdown/terminal palette
-    match, and the force-close on entering edit mode. Result posting becomes a
-    postMessage to the client shell, which updates the shared search overlay
-    (`total`, `current`; -1 current not forwarded; total 0 clears selection).
+12. **Find-in-page.** The JS in §3.13 is plain DOM, injected as part of the bridge
+    script. The host-side needle cache + reapply-after-reload, the markdown/terminal
+    palette match (now user-overridable), and the force-close on entering edit mode
+    are all kept. Result posting is a `postMessage` to the client, which updates the
+    per-pane search overlay (`total`, `current`; -1 current not forwarded; total 0
+    clears selection).
 
-13. **Known quirks worth fixing (or knowingly preserving):**
-    - Built-in editor read failure puts `// Failed to load: …` into an *editable*
-      buffer that autosave will happily write to the file on the first keystroke.
-    - Markdown non-reuse open doesn't unzoom first (diff/scratchpad do).
+13. **Known quirks knowingly preserved:**
+    - Built-in editor read failure puts the `> Failed to load file: …` blockquote
+      into an *editable* buffer that autosave will happily write to the file on the
+      first keystroke (§4.2).
+    - Markdown non-reuse open doesn't unzoom first (diff/scratchpad do); marked as a
+      quirk in `openMarkdownPane`.
     - Diff `extractFilePath` breaks on paths whose name contains `" b/"`; statuses/
       counts are line-prefix heuristics (fine for `git diff --no-color`, not for
       arbitrary input).
     - `backgroundOpacity` is threaded into both renderers but unused inside them
-      (transparency + container fill made it moot); keep the parameter or drop it
-      consciously.
-    - Diff panes share `markdownFontSize` as their base font but have no bindings to
-      change it (bindings are markdown-view-only), so diffs effectively always render
-      at the pane's default 14 px unless the pane previously was… it never was —
-      practically constant. The port can simply give diffs a fixed 13-14 px base or
-      wire the bindings properly.
+      (transparency + container fill made it moot); the parameter is kept for parity
+      (`ContentAppearance` in `packages/daemon/src/content/html.ts`).
+    - Diff panes share `markdownFontSize` as their base font (falling back to
+      `DEFAULT_DIFF_FONT_SIZE` when the pane has none) but have no bindings to change
+      it (bindings are markdown-view-only), so diffs render at the pane's default
+      14 px in practice.
 
 14. **CLI compatibility.** The `open` and `diff` wire commands (and `--here` reuse
     semantics, including pane parking/unparking) are part of the frozen wire protocol
-    the existing `kelpi` CLI expects. Parking (`parkedPanes` lane keeping the PTY alive
-    off-layout, restore-on-close) must exist in the daemon's workspace model.
+    the existing `kelpi` CLI expects (`packages/daemon/src/handlers/app/files.ts`).
+    Parking (`parkedPanes` lane keeping the PTY alive off-layout, restore-on-close)
+    exists in the daemon's workspace model (`packages/daemon/src/store/reducers/panes.ts`).

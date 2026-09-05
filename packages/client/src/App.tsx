@@ -1046,6 +1046,34 @@ function Shell(props: AppProps): ReactElement {
         [store, webCommands]
     );
 
+    /**
+     * Issue #33 - `handBackPaneCaret`'s mirror image: the ring has LEFT every web pane, so the
+     * window's keyboard has to come back out of the page.
+     *
+     * A web pane's page is a native view over this document. While it holds the window's
+     * keyboard, moving the ring changes nothing about where a keystroke goes: `focusPaneSurface`
+     * is DOM focus, and DOM focus cannot outrank a sibling widget. So the ring landed on a
+     * terminal and the terminal would not type.
+     *
+     * It never showed with a mouse, and that is why it lasted: the press that moves the ring also
+     * makes this renderer the window's first responder, so the platform did the handoff for free.
+     * A KEYBOARD focus move has no such press, and until ⌘[ / ⌥⌘← reached Kelpi from a focused
+     * page there was no way to make one.
+     *
+     * Keyed on leaving, and on the pane we are leaving: firing while a web pane still wears the
+     * ring would take the keyboard off a page the user is deliberately typing into, which is the
+     * exact defect WEB-043's chrome-text exemption exists to avoid in the other direction.
+     */
+    const previousWebPaneID = useRef<string | null>(null);
+    useEffect(() => {
+        const state = store.getState();
+        const focusedIsWeb = focusedPaneID !== null && selectPane(state, focusedPaneID)?.type === 'web';
+        const leaving = previousWebPaneID.current;
+        previousWebPaneID.current = focusedIsWeb ? focusedPaneID : null;
+        if (leaving === null || focusedIsWeb) return;
+        void webCommands.blurView(leaving);
+    }, [focusedPaneID, store, webCommands]);
+
     // WEB-002: a web pane (or tab) that arrives BLANK hands the caret to the URL bar; one that
     // arrives with a URL is loading a page, so focus belongs to the page. Same token the ⌘L
     // path bumps, so the two cannot disagree about what "focus the URL bar" means.

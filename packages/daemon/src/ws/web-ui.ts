@@ -219,6 +219,15 @@ export async function webPaneGuiCommand(
             return { ...envelope, ok: envelope['ok'] === true, pane_id: paneID };
         }
 
+        // ── take keyboard focus back from the page (issue #33) ──────────────
+        case 'web-blur-view': {
+            // No tab argument: the destination is the window's own renderer, not a tab. The
+            // client sends this when its ring leaves every web pane, which is the only moment
+            // it can be known - the host never sees the ring.
+            const envelope = await channel.call('blur-view', {});
+            return { ...envelope, ok: envelope['ok'] === true, pane_id: paneID };
+        }
+
         // ── find (§10) ──────────────────────────────────────────────────────
         case 'web-find': {
             const action = typeof payload['action'] === 'string' ? payload['action'] : 'search';

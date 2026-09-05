@@ -97,6 +97,19 @@ export interface WebPaneCommands {
      * call site (`WebPane.tsx`), exactly as the Swift `claimFirstResponder` guard did.
      */
     focusView(paneID: string, tabID?: string | null): Promise<CommandReply>;
+    /**
+     * Issue #33: take the window's keyboard back out of the page.
+     *
+     * A web pane's page is a native view that holds the window's keyboard while it has it, so
+     * moving the ring changes nothing about where a keystroke goes - `focusPaneSurface` is DOM
+     * focus, and DOM focus cannot outrank a sibling widget. A mouse press never showed this
+     * (the press itself makes the renderer first responder); a keyboard focus move does, which
+     * is why it surfaced only once ⌘[ / ⌥⌘← started reaching Kelpi from a focused page.
+     *
+     * `paneID` is the pane the keyboard is being taken FROM, for the daemon's pane scoping; the
+     * destination is always this window's own renderer.
+     */
+    blurView(paneID: string): Promise<CommandReply>;
     /** `</>`: toggle the docked inspector for the pane's active tab. */
     toggleDevTools(paneID: string, tabID?: string | null): Promise<CommandReply>;
 
@@ -181,6 +194,11 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
                 command: 'web-focus-view',
                 pane_id: paneID,
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
+            }),
+        blurView: (paneID) =>
+            sender.raw({
+                command: 'web-blur-view',
+                pane_id: paneID
             }),
         toggleDevTools: (paneID, tabID) =>
             sender.raw({

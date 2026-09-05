@@ -47,6 +47,7 @@ import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
 import { chordCommand, setForwardedKeybindLines } from './keys.js';
+import { parkKeyboardDecision } from './park-keyboard.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
@@ -370,6 +371,15 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             detach: (tab) => {
                 const view = tab.contentsView;
                 const window = options.window?.() ?? null;
+                /*
+                 * Sampled BEFORE the re-parent, because removing the view from the window is
+                 * itself what makes the answer stop being true (`./park-keyboard.ts` explains
+                 * why a parked view holding the keyboard is the "it works exactly once" bug).
+                 */
+                const parked = parkKeyboardDecision({
+                    viewHeldKeyboard: tab.hasKeyboardFocus(),
+                    windowIsFocused: window !== null && !window.isDestroyed() && window.isFocused()
+                });
                 if (window !== null && !window.isDestroyed()) {
                     try {
                         window.contentView.removeChildView(view);
@@ -400,6 +410,15 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 view.setBounds({ x: 0, y: 0, width, height });
                 tab.setEmbedded(false);
                 holderWindow().contentView.addChildView(view);
+                if (parked === 'restore-to-client') {
+                    // Through the same handoff §N30 uses, so there is one way in this process to
+                    // give the client its keyboard back, and one place that explains it.
+                    const restored = restoreKeyboard({ kind: 'client' });
+                    log(
+                        `web pane ${tab.paneID}: parked view held the keyboard; ` +
+                            `${restored ? 'handed it back to the client' : 'could not hand it back'}`
+                    );
+                }
             },
             setBounds: (tab, bounds) => {
                 tab.contentsView.setBounds(bounds);
@@ -422,6 +441,8 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     const dispatcher = createVerbDispatcher<HostTab>({
         registry,
+        // The client's ring has left every web pane in this window (issue #33).
+        restoreClientKeyboard: () => restoreKeyboard({ kind: 'client' }),
         storage: sessions.storage,
         writeScreenshot: spillScreenshot,
         /**

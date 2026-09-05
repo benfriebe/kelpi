@@ -987,6 +987,10 @@ export const WEB_COMMANDS = [
     'web-tab-reorder',
     'web-stop',
     'web-focus-view',
+    // …and its inverse (issue #33): the client's ring left every web pane, so the window's
+    // keyboard has to come back out of the page. GUI-only for the same reason `web-focus-view`
+    // is - it is a statement about where the user is looking, which no CLI can make.
+    'web-blur-view',
     // Issue #12's still frame. GUI-only for the plainest of reasons: it exists to paint a hole
     // in a window, and a CLI has no hole (`kelpi web capture` is the automation read).
     'web-poster',

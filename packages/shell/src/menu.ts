@@ -29,6 +29,17 @@
 
 import type { MenuItemConstructorOptions } from 'electron';
 
+import {
+    MENU_BAR_ACTIONS,
+    isKelpiAction,
+    parseKeybindValue,
+    resolveKeyBindings,
+    triggersForAction,
+    type KelpiAction
+} from '@kelpi/core/config';
+
+import { acceleratorForTrigger } from './hotkey.js';
+
 // ── the `menu-command`s the client answers ──────────────────────────────────────────
 
 /** §WS-001 — the client answers by toggling the sidebar. */
@@ -82,10 +93,18 @@ export function switchWorkspacePosition(command: string): number | null {
 /** How many "Switch to Workspace N" rows the File menu carries (⌘1…⌘9). */
 export const SWITCH_WORKSPACE_ROWS = 9;
 
-// ── accelerators, each one its action's own default trigger ─────────────────────────
+// ── accelerators: the SHIPPED defaults, pinned against the derivation below ─────────
+//
+// These constants are each action's default trigger and nothing more. They are NOT what the
+// menu is built from (issue #47): `menuAccelerators` derives every row's chord from the binding
+// map the daemon resolves, so a rebind or an `unbind` in the config file moves (or removes) the
+// menu's shortcut too. `menu.test.ts` asserts the derivation over an empty override list yields
+// exactly these, so a shipped default that moved without its constant fails loudly. They are
+// spelled in `acceleratorForTrigger`'s modifier order (Shift before CommandOrControl) for that
+// comparison; Electron reads accelerator modifiers in any order, so the chord is unchanged.
 
 /** ⌘⇧S — `toggle_sidebar`'s default trigger (`core/src/config/bindings.ts`). */
-export const TOGGLE_SIDEBAR_ACCELERATOR = 'CommandOrControl+Shift+S';
+export const TOGGLE_SIDEBAR_ACCELERATOR = 'Shift+CommandOrControl+S';
 /** ⌘I — `toggle_inspector`'s default trigger (`core/src/config/bindings.ts:56`). */
 export const TOGGLE_INSPECTOR_ACCELERATOR = 'CommandOrControl+I';
 /** ⌘N — `new_workspace`'s default trigger (`KeyBinding.swift:514`). */
@@ -93,15 +112,95 @@ export const NEW_WORKSPACE_ACCELERATOR = 'CommandOrControl+N';
 /** ⌘O — `open_file`'s default trigger. */
 export const OPEN_FILE_ACCELERATOR = 'CommandOrControl+O';
 /** ⌘⇧G — `new_group`'s default trigger (`core/src/config/bindings.ts`; `KeyBinding.swift:557`). */
-export const NEW_GROUP_ACCELERATOR = 'CommandOrControl+Shift+G';
+export const NEW_GROUP_ACCELERATOR = 'Shift+CommandOrControl+G';
 /** ⌘⇧O — `open_web_pane`'s default trigger (`KeyBinding.swift:516`). */
-export const NEW_WEB_PANE_ACCELERATOR = 'CommandOrControl+Shift+O';
+export const NEW_WEB_PANE_ACCELERATOR = 'Shift+CommandOrControl+O';
 /** ⌘P — `command_palette`'s default trigger (`KeyBinding.swift:551`). */
 export const COMMAND_PALETTE_ACCELERATOR = 'CommandOrControl+P';
 
 /** ⌘1…⌘9 — `switch_to_workspace_1..9`'s default triggers. */
 export function switchWorkspaceAccelerator(position: number): string {
     return `CommandOrControl+${String(position)}`;
+}
+
+// ── accelerators, derived from the binding map (config-keybindings.md §7.1, #47) ────
+
+/**
+ * The Electron accelerator per menu-bar action, or absent when the action has no displayable
+ * shortcut. Only the 16 `MENU_BAR_ACTIONS` are ever present (§4 "Menu-bar action set").
+ */
+export type MenuAccelerators = Readonly<Partial<Record<KelpiAction, string>>>;
+
+/**
+ * §7.1: "shortcut = FIRST trigger of the action, in configString sort order", read from the
+ * binding map, and "Menu shortcuts update live when bindings change (they read the current map)".
+ *
+ * `keybindLines` are the daemon's `keybind` OVERRIDES (`SettingsSnapshot.keybindLines`, the
+ * file's lines only): the same list the client's dispatcher resolves its map from
+ * (`client/src/chrome/keys.ts` ▸ `keyBindingsFromOverrideLines`), through the same parser, so
+ * the menu row and the chord in the page cannot disagree. An empty list is the shipped defaults.
+ *
+ * Why this exists (#47): a native accelerator outranks the page, so a menu pinned to the
+ * defaults kept firing New Workspace on ⌘N after the user had rebound or unbound it, and showed
+ * a chord the config file no longer had. An action left with no trigger (an `unbind` line) gets
+ * NO accelerator, so its chord is free for whatever the user gave it; one whose first trigger
+ * has no Electron spelling (`acceleratorForTrigger` returns null) simply shows no shortcut and
+ * still fires through the client dispatcher, exactly as §7.1 says.
+ */
+export function menuAccelerators(keybindLines: readonly string[]): MenuAccelerators {
+    const overrides = keybindLines
+        .map((line) => parseKeybindValue(line))
+        .filter((override): override is NonNullable<typeof override> => override !== null);
+    const map = resolveKeyBindings(overrides);
+    const result: Partial<Record<KelpiAction, string>> = {};
+    for (const action of MENU_BAR_ACTIONS) {
+        const trigger = triggersForAction(map, action)[0];
+        if (trigger === undefined) continue;
+        const accelerator = acceleratorForTrigger(trigger);
+        if (accelerator !== null) result[action] = accelerator;
+    }
+    return result;
+}
+
+/** The shipped defaults: what a menu built before the daemon has delivered `keybindLines` carries. */
+export const DEFAULT_MENU_ACCELERATORS: MenuAccelerators = menuAccelerators([]);
+
+/**
+ * True when no menu-bar chord differs. `main.ts` rebuilds the application menu only when this
+ * is false: a rebuild drops an open menu and re-registers every accelerator, and most settings
+ * writes (a theme, a profile, the quit prompt) move no chord at all.
+ */
+export function sameMenuAccelerators(a: MenuAccelerators, b: MenuAccelerators): boolean {
+    for (const action of MENU_BAR_ACTIONS) {
+        if (a[action] !== b[action]) return false;
+    }
+    return true;
+}
+
+/**
+ * The line `main.ts` logs beside `menuLogLine`: which menu-bar chords differ from the shipped
+ * defaults, or that none do. The menu is not observable from outside the process, so this is
+ * the only trace that a rebind actually reached it.
+ */
+export function menuAcceleratorsLogLine(accelerators: MenuAccelerators): string {
+    const moved: string[] = [];
+    for (const action of MENU_BAR_ACTIONS) {
+        const current = accelerators[action];
+        if (current === DEFAULT_MENU_ACCELERATORS[action]) continue;
+        moved.push(`${action}=${current ?? '(none)'}`);
+    }
+    return `menu: accelerators from the binding map: ${moved.length === 0 ? 'all defaults' : moved.join(', ')}`;
+}
+
+/** `switch_to_workspace_N` for a 1-based row position, or null past the nine the map names. */
+function switchWorkspaceAction(position: number): KelpiAction | null {
+    const name = `switch_to_workspace_${String(position)}`;
+    return isKelpiAction(name) ? name : null;
+}
+
+/** `{ accelerator }` or nothing: `exactOptionalPropertyTypes` forbids an explicit undefined. */
+function acceleratorProp(accelerator: string | undefined): { accelerator?: string } {
+    return accelerator === undefined ? {} : { accelerator };
 }
 
 // ── row titles, matching `NexCommands.swift`'s ──────────────────────────────────────
@@ -229,6 +328,12 @@ export interface MenuRelayDeps {
     readonly sendMenuRequest: (command: string) => boolean;
     /** Called when the request could not be delivered (nothing is listening). */
     readonly onUndelivered?: ((command: string) => void) | undefined;
+    /**
+     * §7.1 / #47: each menu-bar action's chord, derived from the CURRENT binding map
+     * (`menuAccelerators`). Absent means the shipped defaults, which is all a menu built before
+     * the daemon has delivered `keybindLines` can know; `main.ts` rebuilds with the real ones.
+     */
+    readonly accelerators?: MenuAccelerators | undefined;
 }
 
 export type ViewMenuDeps = MenuRelayDeps;
@@ -237,12 +342,12 @@ export type ViewMenuDeps = MenuRelayDeps;
 function relayRow(
     deps: MenuRelayDeps,
     label: string,
-    accelerator: string,
+    accelerator: string | undefined,
     command: string
 ): MenuItemConstructorOptions {
     return {
         label,
-        accelerator,
+        ...acceleratorProp(accelerator),
         click: () => {
             if (deps.sendMenuRequest(command)) return;
             deps.onUndelivered?.(command);
@@ -267,9 +372,11 @@ export const FORCE_RELOAD_ACCELERATOR = 'CommandOrControl+Alt+R';
  * web-contents roles the shell has always carried.
  */
 export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions[] {
+    // #47: the binding map's chords, never the constants above (see `menuAccelerators`).
+    const accel = deps.accelerators ?? DEFAULT_MENU_ACCELERATORS;
     return [
-        relayRow(deps, TOGGLE_SIDEBAR_LABEL, TOGGLE_SIDEBAR_ACCELERATOR, TOGGLE_SIDEBAR_COMMAND),
-        relayRow(deps, TOGGLE_INSPECTOR_LABEL, TOGGLE_INSPECTOR_ACCELERATOR, TOGGLE_INSPECTOR_COMMAND),
+        relayRow(deps, TOGGLE_SIDEBAR_LABEL, accel.toggle_sidebar, TOGGLE_SIDEBAR_COMMAND),
+        relayRow(deps, TOGGLE_INSPECTOR_LABEL, accel.toggle_inspector, TOGGLE_INSPECTOR_COMMAND),
         { type: 'separator' },
         // ⌘R: not in the binding map, so nothing is shadowed. (A web pane's priority layer does
         // claim ⌘R while a web pane is focused — that is the page consuming it first, which is
@@ -356,31 +463,35 @@ export function workspaceSelectionLogLine(selectedCount: number): string {
  * client → daemon → shell, mirroring §AGNT-056's `shell-activation` in the other direction.
  */
 export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions[] {
+    // #47: the binding map's chords, never the constants above (see `menuAccelerators`).
+    const accel = deps.accelerators ?? DEFAULT_MENU_ACCELERATORS;
     return [
-        relayRow(deps, NEW_WORKSPACE_LABEL, NEW_WORKSPACE_ACCELERATOR, NEW_WORKSPACE_COMMAND),
-        relayRow(deps, NEW_GROUP_LABEL, NEW_GROUP_ACCELERATOR, NEW_GROUP_COMMAND),
+        relayRow(deps, NEW_WORKSPACE_LABEL, accel.new_workspace, NEW_WORKSPACE_COMMAND),
+        relayRow(deps, NEW_GROUP_LABEL, accel.new_group, NEW_GROUP_COMMAND),
         // CONT-120 / APP-020. It goes to the CLIENT rather than opening the panel here, so the
         // picker behaves identically however it is raised (⌘O in the window, this item, the •••
         // menu) and so the caller pane travels with the request.
         {
             label: OPEN_FILE_LABEL,
-            accelerator: OPEN_FILE_ACCELERATOR,
+            ...acceleratorProp(accel.open_file),
             click: () => {
                 if (deps.sendMenuRequest(OPEN_FILE_COMMAND)) return;
                 deps.promptOpenFile();
             }
         },
-        relayRow(deps, NEW_WEB_PANE_LABEL, NEW_WEB_PANE_ACCELERATOR, NEW_WEB_PANE_COMMAND),
-        relayRow(deps, COMMAND_PALETTE_LABEL, COMMAND_PALETTE_ACCELERATOR, COMMAND_PALETTE_COMMAND),
+        relayRow(deps, NEW_WEB_PANE_LABEL, accel.open_web_pane, NEW_WEB_PANE_COMMAND),
+        relayRow(deps, COMMAND_PALETTE_LABEL, accel.command_palette, COMMAND_PALETTE_COMMAND),
         { type: 'separator' },
-        // ⌘1…⌘9. The client resolves the POSITION against the sidebar's visible order, exactly
-        // as `switch_to_workspace_N` does, so the row and the chord cannot pick different rows.
+        // ⌘1…⌘9 by default. The client resolves the POSITION against the sidebar's visible
+        // order, exactly as `switch_to_workspace_N` does, so the row and the chord cannot pick
+        // different rows; the chord itself is `switch_to_workspace_N`'s current binding (#47).
         ...Array.from({ length: SWITCH_WORKSPACE_ROWS }, (_unused, index) => {
             const position = index + 1;
+            const action = switchWorkspaceAction(position);
             return relayRow(
                 deps,
                 switchWorkspaceLabel(position),
-                switchWorkspaceAccelerator(position),
+                action === null ? undefined : accel[action],
                 switchWorkspaceCommand(position)
             );
         }),

@@ -396,3 +396,70 @@ describe('the tray gesture — no handler creeps back in anywhere else (N16 swee
         expect(offenders).toEqual([]);
     });
 });
+
+/**
+ * #47 / config-keybindings.md §7.1: the application menu derives its accelerators from the
+ * daemon's `keybindLines`, so the main process has to be TOLD them, on the handshake and on
+ * every write. The same defensive shape as `confirmQuitWhenActive`: null until said, and a
+ * payload that carries no list leaves the last answer standing.
+ */
+describe('the keybind lines the menu reads (#47, §7.1)', () => {
+    let socket: FakeSocket;
+    let controller: ReturnType<typeof createStatusController>;
+
+    beforeEach(() => {
+        setLogStreams({ out: { write: () => true }, err: { write: () => true } });
+        electronMock.trays.length = 0;
+        socket = createFakeSocket();
+        controller = createStatusController({
+            location: LOCATION,
+            host: createHost(),
+            socketFactory: () => socket as unknown as WebSocket
+        });
+        controller.start();
+    });
+
+    afterEach(() => {
+        controller.stop();
+        setLogStreams({ out: process.stdout, err: process.stderr });
+    });
+
+    it('is null until the daemon has said, then takes them from `welcome` (strings only)', () => {
+        expect(controller.daemonSettings.keybindLines).toBeNull();
+        socket.emit('open');
+        socket.emit(
+            'message',
+            JSON.stringify({
+                type: 'welcome',
+                daemon: { version: '0.0.0-test', pid: 1 },
+                settings: { keybindLines: ['shift+super+n=new_workspace', 42] }
+            }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['shift+super+n=new_workspace']);
+    });
+
+    it('follows a `settings-changed` write, and keeps the last answer when a payload carries none', () => {
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+        // The handshake above carried no list: still "not told".
+        expect(controller.daemonSettings.keybindLines).toBeNull();
+
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'settings-changed', settings: { keybindLines: ['super+n=unbind'] } }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['super+n=unbind']);
+
+        // A write that names only the quit flag must not snap the menu back to the defaults,
+        // and must not lose the flag either (the two readers are independent).
+        socket.emit(
+            'message',
+            JSON.stringify({ type: 'settings-changed', settings: { general: { confirmQuitWhenActive: false } } }),
+            false
+        );
+        expect(controller.daemonSettings.keybindLines).toEqual(['super+n=unbind']);
+        expect(controller.daemonSettings.confirmQuitWhenActive).toBe(false);
+    });
+});

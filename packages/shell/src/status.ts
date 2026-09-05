@@ -183,6 +183,13 @@ export interface StatusHost {
 export interface ShellDaemonSettings {
     /** §10 step 2: `confirm-quit-when-active`. Null until the daemon has said. */
     readonly confirmQuitWhenActive: boolean | null;
+    /**
+     * config-keybindings.md §7.1 / #47: the config file's `keybind` override lines, exactly as
+     * the client resolves its map from them (`SettingsSnapshot.keybindLines`). The application
+     * menu derives its accelerators from these (`menu.ts` ▸ `menuAccelerators`); null until the
+     * daemon has said, which the menu reads as the shipped defaults.
+     */
+    readonly keybindLines: readonly string[] | null;
 }
 
 export interface StatusController {
@@ -302,7 +309,7 @@ export function createStatusController(options: StatusOptions): StatusController
     /** Last painted dot palette, so a recolour on an unchanged indicator still repaints (§M25). */
     let lastPaletteSignature = '';
     /** §AGNT-117: the daemon's answer, or null until it has given one. */
-    let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null };
+    let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null, keybindLines: null };
     /**
      * §M25: `chrome-appearance` + `chrome-colors`, as delivered by the daemon's settings
      * snapshot. Undefined / empty until a `welcome` has spoken, which resolves to the shipped
@@ -330,7 +337,24 @@ export function createStatusController(options: StatusOptions): StatusController
         if (!isRecord(general)) return;
         const value = general['confirmQuitWhenActive'];
         if (typeof value !== 'boolean') return;
-        daemonSettings = { confirmQuitWhenActive: value };
+        daemonSettings = { ...daemonSettings, confirmQuitWhenActive: value };
+    }
+
+    /**
+     * #47: the `keybind` lines the application menu's accelerators follow (§7.1).
+     *
+     * Separate from `readDaemonSettings` for the reason `readChromePalette` is: it must survive
+     * that one bailing out on an older daemon's payload. A payload with no list (or a misshapen
+     * one) leaves the previous answer standing rather than snapping the menu back to defaults.
+     */
+    function readKeybindLines(payload: unknown): void {
+        if (!isRecord(payload)) return;
+        const lines = payload['keybindLines'];
+        if (!Array.isArray(lines)) return;
+        daemonSettings = {
+            ...daemonSettings,
+            keybindLines: lines.filter((line): line is string => typeof line === 'string')
+        };
     }
 
     /**
@@ -735,6 +759,9 @@ export function createStatusController(options: StatusOptions): StatusController
                 // §M25: …and the chrome palette, so the tray's dot is the user's colour from the
                 // first paint rather than after their first agent event.
                 readChromePalette(parsed['settings']);
+                // #47: …and the keybind lines, so the menu built at launch on the shipped
+                // defaults can be rebuilt with the user's chords before they press one.
+                readKeybindLines(parsed['settings']);
                 host.daemonSettingsReady?.(daemonSettings);
                 const daemon = isRecord(parsed['daemon']) ? parsed['daemon'] : {};
                 log(
@@ -812,6 +839,10 @@ export function createStatusController(options: StatusOptions): StatusController
                 // light/dark), and the menu bar has to follow it live — the Swift re-resolves the
                 // theme on every `updateExternalIndicators`, which a settings write triggers.
                 readChromePalette(parsed['settings']);
+                // #47 / §7.1: a Keybindings write has to move the menu's accelerators live, and
+                // unlike the hotkey the menu reads the daemon's list rather than the file, so it
+                // resolves the same map the client does.
+                readKeybindLines(parsed['settings']);
                 updateTray();
                 host.settingsChanged?.();
                 break;

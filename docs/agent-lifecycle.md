@@ -853,9 +853,15 @@ on a US machine and `14:52` on a UK one; `clockLabel`,
 
 A count item with value > 0 is clickable → opens a 252 px-wide popover titled
 "Running agents" / "Awaiting input" / "Inactive agents", listing each matching
-pane as `workspaceColorDot workspaceName · paneTitle` (title = `pane.title ??
-pane.label ?? "Shell"`), with a live elapsed label on the right **for the running
-list only** (when `agentStartedAt` is set). Rows are buttons: clicking switches
+pane as `workspaceColorDot workspaceName · paneTitle` (title = `pane.label ??
+pane.title ?? pane.workingDirectory`, `packages/client/src/App.tsx:4971`: the
+user's own label wins over the OSC title, and an unlabelled, untitled pane shows
+its cwd rather than a generic "Shell", the same precedence the command palette's
+pane rows use, shell-ui.md §7), with a live elapsed label on the right **for the
+running list only** (when `agentStartedAt` is set). The Swift ordered it
+`title ?? label ?? "Shell"`, and the Electron tray rows (§8.3,
+`packages/shell/src/agents.ts:97`) still do; the client's label-first order is
+deliberate and shared across its surfaces (issue #57 agl-07). Rows are buttons: clicking switches
 to the workspace + focuses the pane (see §8.5 focus-ordering) and closes the
 popover. A 0-count item is inert (plain, non-interactive). Empty list inside an
 open popover shows "None.".

@@ -1,0 +1,422 @@
+{
+    "source": "docs/current/wire-protocol.md",
+    "regenerate": "node packages/protocol/scripts/snapshot-wire-spec.mjs",
+    "replyAllowlist": [
+        "graft-start",
+        "graft-status",
+        "graft-stop",
+        "group-list",
+        "group-reorder",
+        "group-sort",
+        "pane-capture",
+        "pane-close",
+        "pane-create",
+        "pane-list",
+        "pane-move-adjacent",
+        "pane-name",
+        "pane-resize",
+        "pane-send",
+        "pane-send-key",
+        "pane-split",
+        "pane-sync",
+        "pane-sync-exclude",
+        "ping",
+        "web-back",
+        "web-capture",
+        "web-click",
+        "web-console",
+        "web-cookies-clear",
+        "web-cookies-delete",
+        "web-cookies-list",
+        "web-exec",
+        "web-forward",
+        "web-hover",
+        "web-inspect",
+        "web-inspect-result",
+        "web-key",
+        "web-navigate",
+        "web-open",
+        "web-private",
+        "web-q-attr",
+        "web-q-count",
+        "web-q-dom",
+        "web-q-exists",
+        "web-q-text",
+        "web-reload",
+        "web-scroll",
+        "web-select",
+        "web-tab-close",
+        "web-tab-new",
+        "web-tab-select",
+        "web-tabs",
+        "web-type",
+        "web-url",
+        "web-wait",
+        "workspace-create",
+        "workspace-delete",
+        "workspace-label",
+        "workspace-list"
+    ],
+    "commands": [
+        {
+            "command": "diff",
+            "mode": "F&F"
+        },
+        {
+            "command": "error",
+            "mode": "F&F"
+        },
+        {
+            "command": "graft-start",
+            "mode": "R/R"
+        },
+        {
+            "command": "graft-status",
+            "mode": "R/R"
+        },
+        {
+            "command": "graft-stop",
+            "mode": "R/R"
+        },
+        {
+            "command": "group-create",
+            "mode": "F&F"
+        },
+        {
+            "command": "group-delete",
+            "mode": "F&F"
+        },
+        {
+            "command": "group-list",
+            "mode": "R/R"
+        },
+        {
+            "command": "group-rename",
+            "mode": "F&F"
+        },
+        {
+            "command": "group-reorder",
+            "mode": "R/R"
+        },
+        {
+            "command": "group-sort",
+            "mode": "R/R"
+        },
+        {
+            "command": "layout-cycle",
+            "mode": "F&F"
+        },
+        {
+            "command": "layout-select",
+            "mode": "F&F"
+        },
+        {
+            "command": "notification",
+            "mode": "F&F"
+        },
+        {
+            "command": "open",
+            "mode": "F&F"
+        },
+        {
+            "command": "pane-capture",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-close",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-create",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-list",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-move",
+            "mode": "F&F"
+        },
+        {
+            "command": "pane-move-adjacent",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-move-to-workspace",
+            "mode": "F&F"
+        },
+        {
+            "command": "pane-name",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-resize",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-send",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-send-key",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-split",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-sync",
+            "mode": "R/R"
+        },
+        {
+            "command": "pane-sync-exclude",
+            "mode": "R/R"
+        },
+        {
+            "command": "ping",
+            "mode": "R/R"
+        },
+        {
+            "command": "session-end",
+            "mode": "F&F"
+        },
+        {
+            "command": "session-start",
+            "mode": "F&F"
+        },
+        {
+            "command": "start",
+            "mode": "F&F"
+        },
+        {
+            "command": "stop",
+            "mode": "F&F"
+        },
+        {
+            "command": "web-back",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-capture",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-click",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-console",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-cookies-clear",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-cookies-delete",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-cookies-list",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-exec",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-forward",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-hover",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-inspect",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-inspect-result",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-key",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-navigate",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-open",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-private",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-q-attr",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-q-count",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-q-dom",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-q-exists",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-q-text",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-reload",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-scroll",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-select",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-tab-close",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-tab-new",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-tab-select",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-tabs",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-type",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-url",
+            "mode": "R/R"
+        },
+        {
+            "command": "web-wait",
+            "mode": "R/R"
+        },
+        {
+            "command": "workspace-create",
+            "mode": "R/R"
+        },
+        {
+            "command": "workspace-delete",
+            "mode": "R/R"
+        },
+        {
+            "command": "workspace-label",
+            "mode": "R/R"
+        },
+        {
+            "command": "workspace-list",
+            "mode": "R/R"
+        },
+        {
+            "command": "workspace-move",
+            "mode": "F&F"
+        },
+        {
+            "command": "workspace-profile",
+            "mode": "F&F"
+        }
+    ],
+    "fields": {
+        "action": "string",
+        "agent": "string",
+        "all": "bool",
+        "anchor": "string",
+        "at_x": "double",
+        "at_y": "double",
+        "attribute": "string",
+        "background_tasks": "int",
+        "bare": "bool",
+        "behavior": "string",
+        "block": "string",
+        "body": "string",
+        "branch": "string",
+        "by": "string",
+        "cascade": "bool",
+        "clear": "bool",
+        "color": "string",
+        "command": "string",
+        "delta": "double",
+        "descending": "bool",
+        "direction": "string",
+        "disarm": "bool",
+        "domain": "string",
+        "double": "bool",
+        "excluded": "bool",
+        "follow": "bool",
+        "for": "string",
+        "force": "bool",
+        "group": "string",
+        "hard": "bool",
+        "index": "int",
+        "key": "string",
+        "label_op": "string",
+        "label_values": "string[]",
+        "level": "string",
+        "lines": "int",
+        "make_active": "bool",
+        "max_bytes": "int",
+        "message": "string",
+        "mode": "string",
+        "name": "string",
+        "new_name": "string",
+        "order": "string[]",
+        "pane_id": "uuid",
+        "path": "string",
+        "private": "bool",
+        "profile": "string",
+        "ratio": "double",
+        "replace": "bool",
+        "repo": "string",
+        "repo_path": "string",
+        "reuse": "bool",
+        "right": "bool",
+        "scope": "string",
+        "script": "string",
+        "scrollback": "bool",
+        "selector": "string",
+        "send_to": "string",
+        "session_id": "string",
+        "since": "uint64",
+        "submit": "bool",
+        "tab": "string",
+        "target": "string",
+        "target_path": "string",
+        "text": "string",
+        "timeout_ms": "int",
+        "title": "string",
+        "update_main": "bool",
+        "url": "string",
+        "url_match": "string",
+        "value_or_label": "string",
+        "workspace": "string",
+        "worktree": "string",
+        "zone": "string"
+    }
+}

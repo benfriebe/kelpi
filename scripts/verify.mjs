@@ -246,6 +246,12 @@ const SANDBOX_GUARD = { KELPI_REQUIRE_SOCKET: '1' };
 const started = Date.now();
 run('typecheck', 'pnpm typecheck');
 
+// The half of the wire-spec conformance guard that needs `docs/`. It cannot live in the test
+// suite: `docs/` is gitignored, and a test that reads it fails in every fresh worktree (which is
+// how it used to behave). The other half, snapshot vs TypeScript, runs in `pnpm test` everywhere.
+// This step no-ops with a printed line when the doc is absent, so it is never a silent pass.
+run('wire spec snapshot', 'node packages/protocol/scripts/snapshot-wire-spec.mjs --check');
+
 if (full) {
     run('root tests', 'npx vitest run');
     run('shell tests', 'pnpm --filter @kelpi/shell test');

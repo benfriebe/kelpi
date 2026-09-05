@@ -56,6 +56,12 @@ export interface RecursiveWatcher {
     readonly root: string;
     /** True while an OS watch is attached. */
     readonly watching: boolean;
+    /**
+     * True once the OS watch has delivered its first event, ignored or not. Until then the
+     * stream may not be live at all (FSEvents starts asynchronously on libuv's CF thread), and
+     * the graft service keeps running catch-up passes (service.ts GRAFT_WATCH_CATCH_UP_MS).
+     */
+    readonly live: boolean;
     /** Paths accumulated but not yet flushed. */
     readonly pending: number;
     /** Flush the current batch immediately (tests; also used by nothing in production). */
@@ -90,6 +96,7 @@ export function watchRecursive(options: WatchRecursiveOptions): RecursiveWatcher
     let handle: RecursiveWatchHandle | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    let live = false;
 
     const cancelTimer = (): void => {
         if (timer === null) return;
@@ -128,6 +135,7 @@ export function watchRecursive(options: WatchRecursiveOptions): RecursiveWatcher
 
     try {
         const created = watchFn(options.root, (_event, filename) => {
+            live = true; // the first delivery of any kind is proof the stream is up
             record(filename);
         });
         created.on('error', (error) => {
@@ -144,6 +152,9 @@ export function watchRecursive(options: WatchRecursiveOptions): RecursiveWatcher
         root: options.root,
         get watching() {
             return handle !== null;
+        },
+        get live() {
+            return live;
         },
         get pending() {
             return batch.size;

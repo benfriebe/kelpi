@@ -60,6 +60,20 @@ export const GRAFT_SHUTDOWN_GRACE_MS = 2_000;
  */
 export const GRAFT_WATCH_CATCH_UP_MS = 1_500;
 
+/**
+ * How many catch-up passes to run at most while the OS watch has still delivered nothing.
+ *
+ * One pass (#60) closed the window for a write made the instant `start` returns, and then the
+ * same test failed on its NEXT write, two seconds after start, under the same load: the
+ * FSEvents stream was still not live. There is no API that says when it is, so the catch-up
+ * repeats every GRAFT_WATCH_CATCH_UP_MS until the watcher reports its first event
+ * (`watcher.live`), which is the only proof available, and stops there because from then on
+ * real events drive the passes. The cap bounds a watch that never goes live (attach failed,
+ * or a platform that delivers nothing) to 20 passes, thirty seconds of coverage, after which
+ * the session stays live but unwatched exactly as §9.1 already describes for attach failure.
+ */
+export const GRAFT_WATCH_CATCH_UP_MAX = 20;
+
 /** The auto-stash message tag, so the stash is identifiable in `git stash list`. */
 export function stashMessageFor(associationID: string): string {
     return `kelpi-graft:${associationID}`;
@@ -116,8 +130,10 @@ export interface CreateGraftServiceOptions {
     /** Injected FS watcher (tests); defaults to the recursive `fs.watch` wrapper. */
     readonly watch?: RecursiveWatchFn | undefined;
     readonly debounceMs?: number | undefined;
-    /** Delay before the post-attach catch-up pass (tests); see `GRAFT_WATCH_CATCH_UP_MS`. */
+    /** Delay between post-attach catch-up passes (tests); see `GRAFT_WATCH_CATCH_UP_MS`. */
     readonly catchUpMs?: number | undefined;
+    /** Cap on catch-up passes while the watch is not yet live (tests); see `GRAFT_WATCH_CATCH_UP_MAX`. */
+    readonly catchUpMax?: number | undefined;
     readonly shutdownGraceMs?: number | undefined;
     /** Injected `realpath` for canonicalization (tests). */
     readonly realpath?: RealpathFn | undefined;
@@ -173,6 +189,7 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
     const mintID = options.uuid ?? ((): string => newUUID());
     const graceMs = options.shutdownGraceMs ?? GRAFT_SHUTDOWN_GRACE_MS;
     const catchUpMs = options.catchUpMs ?? GRAFT_WATCH_CATCH_UP_MS;
+    const catchUpMax = options.catchUpMax ?? GRAFT_WATCH_CATCH_UP_MAX;
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
     };
@@ -281,18 +298,28 @@ export function createGraftService(options: CreateGraftServiceOptions): GraftSer
         });
         const entry: WatcherEntry = { watcher, pending: false, catchUp: null };
         watchers.set(session.id, entry);
-        // The catch-up pass (see GRAFT_WATCH_CATCH_UP_MS): a change made before the OS watch
-        // went live would otherwise never be seen. Routed through `pending` + `pump` so it is
-        // serialised with real batches exactly like one of them.
-        const timer = setTimeout(() => {
-            const live = watchers.get(session.id);
-            if (live !== entry) return; // stopped and possibly restarted in the meantime
-            live.catchUp = null;
-            live.pending = true;
-            pump(session.id);
-        }, catchUpMs);
-        timer.unref?.();
-        entry.catchUp = timer;
+        // The catch-up passes (see GRAFT_WATCH_CATCH_UP_MS / _MAX): a change made before the OS
+        // watch goes live would otherwise never be seen, and there is no signal for "live" other
+        // than the first event it delivers. So: pass, wait, check `watcher.live`, repeat, until
+        // the watch has spoken or the cap is spent. Each pass is routed through `pending` +
+        // `pump` so it is serialised with real batches exactly like one of them.
+        let remaining = catchUpMax;
+        const armCatchUp = (): void => {
+            if (remaining <= 0) return;
+            remaining -= 1;
+            const timer = setTimeout(() => {
+                const current = watchers.get(session.id);
+                if (current !== entry) return; // stopped and possibly restarted in the meantime
+                current.catchUp = null;
+                if (watcher.live) return; // the OS watch has proven itself; real events take over
+                current.pending = true;
+                pump(session.id);
+                armCatchUp();
+            }, catchUpMs);
+            timer.unref?.();
+            entry.catchUp = timer;
+        };
+        armCatchUp();
     };
 
     // ── start ───────────────────────────────────────────────────────────────

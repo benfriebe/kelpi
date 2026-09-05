@@ -1,4 +1,5 @@
 import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
+import { KELPI_PROFILE_ENV_KEY } from '@kelpi/core/env';
 import type { WsProfile } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -65,9 +66,32 @@ describe('the keybinding table', () => {
     });
 });
 
+describe('the profile editor’s marker var (§9.5)', () => {
+    /**
+     * #46: the editor kept writing the pre-port NEX_PROFILE after the rename. The daemon
+     * neither reserves nor overrides that name, so the "always matches the profile name" row
+     * was an ordinary var that a rename left stale. The marker IS the daemon's canonical key.
+     */
+    it('is the daemon’s canonical KELPI_PROFILE, never the pre-port NEX_PROFILE', () => {
+        expect(PROFILE_MARKER_VAR).toBe(KELPI_PROFILE_ENV_KEY);
+        expect(PROFILE_MARKER_VAR).toBe('KELPI_PROFILE');
+    });
+
+    it('treats a legacy NEX_PROFILE line as an ordinary, editable var that round-trips verbatim', () => {
+        // An imported pre-port config carries these; the daemon injects them verbatim, so the
+        // editor shows them (and the user can delete them) rather than hiding them.
+        const legacy: readonly WsProfile[] = [{ name: 'work', env: { NEX_PROFILE: 'work', A: '1' } }];
+        const work = profileDrafts(legacy)[1];
+        expect(work?.vars.map((entry) => entry.key)).toEqual(['A', 'NEX_PROFILE']);
+        expect(profilesForWrite(profileDrafts(legacy))).toEqual([
+            { name: 'work', env: { A: '1', NEX_PROFILE: 'work', KELPI_PROFILE: 'work' } }
+        ]);
+    });
+});
+
 describe('the profile editor’s load transform (§9.5)', () => {
     const profiles: readonly WsProfile[] = [
-        { name: 'work', env: { NEX_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', AAA: '1' } },
+        { name: 'work', env: { KELPI_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', AAA: '1' } },
         { name: 'default', env: { EDITOR: 'vim' } }
     ];
 
@@ -80,7 +104,7 @@ describe('the profile editor’s load transform (§9.5)', () => {
         expect(drafts[0]).toEqual({ name: DEFAULT_PROFILE_NAME, vars: [] });
     });
 
-    it('strips the derived NEX_PROFILE marker and sorts vars by key', () => {
+    it('strips the derived KELPI_PROFILE marker and sorts vars by key', () => {
         const work = profileDrafts(profiles)[1];
         expect(work?.vars.map((entry) => entry.key)).toEqual(['AAA', 'CLAUDE_CONFIG_DIR']);
     });
@@ -94,7 +118,7 @@ describe('the profile editor’s load transform (§9.5)', () => {
 });
 
 describe('the profile editor’s write transform (§9.5)', () => {
-    it('adds the NEX_PROFILE marker to every non-default profile', () => {
+    it('adds the KELPI_PROFILE marker to every non-default profile', () => {
         const written = profilesForWrite([
             { name: DEFAULT_PROFILE_NAME, vars: [] },
             { name: 'work', vars: [{ key: 'A', value: '1' }] }
@@ -127,7 +151,7 @@ describe('the profile editor’s write transform (§9.5)', () => {
         ).toEqual([{ name: 'work', env: { A: '2', [PROFILE_MARKER_VAR]: 'work' } }]);
     });
 
-    it('never writes a user-supplied NEX_PROFILE — the marker is always derived', () => {
+    it('never writes a user-supplied KELPI_PROFILE — the marker is always derived', () => {
         const written = profilesForWrite([
             { name: DEFAULT_PROFILE_NAME, vars: [] },
             { name: 'work', vars: [{ key: PROFILE_MARKER_VAR, value: 'spoofed' }] }
@@ -136,7 +160,7 @@ describe('the profile editor’s write transform (§9.5)', () => {
     });
 
     it('round-trips a loaded set unchanged', () => {
-        const profiles: readonly WsProfile[] = [{ name: 'work', env: { A: '1', NEX_PROFILE: 'work' } }];
+        const profiles: readonly WsProfile[] = [{ name: 'work', env: { A: '1', KELPI_PROFILE: 'work' } }];
         expect(profilesForWrite(profileDrafts(profiles))).toEqual(profiles);
     });
 });

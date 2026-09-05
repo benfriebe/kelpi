@@ -139,7 +139,7 @@ export interface SettingsService {
     /**
      * Replace the file's WHOLE profile section (§1.6/§9.5's write-through). Every non-`profile`
      * line survives byte-for-byte; profiles with a blank name, and vars with a blank key, are
-     * dropped by the writer, so a name-only profile needs its `NEX_PROFILE` marker var to
+     * dropped by the writer, so a name-only profile needs its `KELPI_PROFILE` marker var to
      * survive a round-trip (the editor adds it).
      */
     setProfiles(profiles: readonly WsProfile[]): SettingsSnapshot;

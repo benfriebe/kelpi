@@ -1112,7 +1112,10 @@ stored client-side:
   values round-trip unmodified. The stored `KELPI_PROFILE` var is filtered out of the
   editable rows (it's rendered as a locked, derived row instead). Vars display sorted by
   key. The `default` profile is pinned FIRST in the list, moved there if present in the
-  file, synthesized (empty) if not.
+  file, synthesized (empty) if not. The marker name is the daemon's own constant
+  (`PROFILE_MARKER_VAR = KELPI_PROFILE_ENV_KEY`, `model.ts`), so the editor and section 9.3
+  cannot drift; a pre-port `NEX_PROFILE` line (an imported Nex config) is an ordinary var
+  to the daemon and is shown as one, editable and deletable, never hidden or rewritten.
 - **Locked marker row**: every profile's var list is headed by a non-editable
   `KELPI_PROFILE = <name>` row with a lock icon and tooltip "Injected automatically, 
   always matches the profile name".

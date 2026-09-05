@@ -27,7 +27,7 @@ function setup(profiles: readonly WsProfile[] = []) {
 }
 
 const WORK: readonly WsProfile[] = [
-    { name: 'work', env: { NEX_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }
+    { name: 'work', env: { KELPI_PROFILE: 'work', CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }
 ];
 
 afterEach(cleanup);
@@ -128,12 +128,12 @@ describe('the profile list', () => {
      * column with the editable rows beneath it. Asserted as structure (two disabled inputs
      * carrying the two halves) rather than as one string, because the alignment is the point.
      */
-    it('shows the derived NEX_PROFILE marker as a locked var row, not an editable var', () => {
+    it('shows the derived KELPI_PROFILE marker as a locked var row, not an editable var', () => {
         setup(WORK);
         fireEvent.click(screen.getByTestId('profile-row-work'));
         const key = screen.getByTestId('profile-marker-key') as HTMLInputElement;
         const value = screen.getByTestId('profile-marker-value') as HTMLInputElement;
-        expect(key.value).toBe('NEX_PROFILE');
+        expect(key.value).toBe('KELPI_PROFILE');
         expect(value.value).toBe('work');
         expect(key.disabled).toBe(true);
         expect(value.disabled).toBe(true);
@@ -172,7 +172,7 @@ describe('editing', () => {
     it('adds a profile with its marker var, so it survives the write', () => {
         const bound = setup();
         fireEvent.click(screen.getByTestId('profile-add'));
-        expect(bound.writes).toEqual([[{ name: 'profile-2', env: { NEX_PROFILE: 'profile-2' } }]]);
+        expect(bound.writes).toEqual([[{ name: 'profile-2', env: { KELPI_PROFILE: 'profile-2' } }]]);
     });
 
     it('writes the WHOLE set on every commit (§1.6 is a full replacement)', () => {
@@ -186,7 +186,7 @@ describe('editing', () => {
         fireEvent.change(screen.getByTestId('profile-var-value-1'), { target: { value: 'bar' } });
         fireEvent.blur(screen.getByTestId('profile-var-value-1'));
         expect(bound.writes.at(-1)).toEqual([
-            { name: 'work', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', FOO: 'bar', NEX_PROFILE: 'work' } }
+            { name: 'work', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', FOO: 'bar', KELPI_PROFILE: 'work' } }
         ]);
     });
 
@@ -201,7 +201,7 @@ describe('editing', () => {
         const bound = setup(WORK);
         fireEvent.click(screen.getByTestId('profile-row-work'));
         fireEvent.click(screen.getByTestId('profile-var-remove-0'));
-        expect(bound.writes.at(-1)).toEqual([{ name: 'work', env: { NEX_PROFILE: 'work' } }]);
+        expect(bound.writes.at(-1)).toEqual([{ name: 'work', env: { KELPI_PROFILE: 'work' } }]);
     });
 
     it('renames on blur, stripping the characters that would break the line format', () => {
@@ -212,7 +212,7 @@ describe('editing', () => {
         expect((field as HTMLInputElement).value).toBe('work2');
         fireEvent.blur(field);
         expect(bound.writes.at(-1)).toEqual([
-            { name: 'work2', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', NEX_PROFILE: 'work2' } }
+            { name: 'work2', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work', KELPI_PROFILE: 'work2' } }
         ]);
     });
 
@@ -241,7 +241,7 @@ describe('editing', () => {
         );
         view.rerender(
             <ProfilesTab
-                profiles={[{ name: 'personal', env: { NEX_PROFILE: 'personal' } }]}
+                profiles={[{ name: 'personal', env: { KELPI_PROFILE: 'personal' } }]}
                 actions={bound}
                 paths={DEFAULT_SETTINGS_PATHS}
             />

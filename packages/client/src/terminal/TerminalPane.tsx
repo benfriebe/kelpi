@@ -415,9 +415,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 if (renderer === null || host === null) return null;
                 return measureMouseSurface(host, renderer, geometryRef.current, latest.current.measure);
             },
-            // Straight to the PTY, exactly as the engine's own `onData` goes: a mouse report is
-            // input, and the daemon owns nothing about it.
-            write: (data) => streamRef.current?.write(data)
+            // Straight to the PTY, but on the UN-mirrored frame: a report carries cell
+            // coordinates measured against THIS pane's grid, and terminal-surface.md §8.2 / §11
+            // keep mouse input out of the sync-group fan-out (a sibling in another mouse mode,
+            // or none, would take the bytes as typed text). Issue #51.
+            write: (data) => streamRef.current?.writeDirect(data)
         });
     }
 
@@ -447,7 +449,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     if (kittyRef.current === null) {
         kittyRef.current = createKittyKeyboard({
             flags: () => modesRef.current.kittyKeyboardFlags ?? 0,
-            write: (data) => streamRef.current?.write(data)
+            // §8.2 mirrors only the press that carries the input; a kitty release (`:3u`) is the
+            // keyUp the legacy path never produced, so it takes the un-mirrored frame (#51).
+            write: (data, release) =>
+                release ? streamRef.current?.writeDirect(data) : streamRef.current?.write(data)
         });
     }
 

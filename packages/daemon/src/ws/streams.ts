@@ -462,6 +462,18 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
                         report(error, `pty-write ${decoded.paneID}`);
                     }
                     return;
+                case PTY_FRAME_TYPES.inputDirect:
+                    if (decoded.payload.length === 0) return;
+                    try {
+                        // Client-encoded mouse reports and kitty key releases: terminal-surface.md
+                        // §8.2 lists both as NOT mirrored, and the manager cannot tell them from
+                        // keystrokes by their bytes, so the client sends them as their own frame
+                        // type and they take the un-mirrored write (issue #51).
+                        pty.writeDirect(decoded.paneID, decoded.payload);
+                    } catch (error) {
+                        report(error, `pty-write-direct ${decoded.paneID}`);
+                    }
+                    return;
                 case PTY_FRAME_TYPES.ack: {
                     const consumed = decodeAckPayload(decoded.payload);
                     if (consumed === undefined) return;

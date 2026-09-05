@@ -59,6 +59,14 @@ describe('pty frames', () => {
         frame[0] = 0x7f;
         expect(decodePtyFrame(frame)).toBeUndefined();
     });
+
+    it('keeps un-mirrored input (mouse reports, kitty releases) a distinct frame type (#51)', () => {
+        // terminal-surface.md §8.2: the daemon mirrors `input` bytes to sync siblings and must
+        // not mirror these, so the two are told apart by frame type, not by sniffing payloads.
+        expect(PTY_FRAME_TYPES.inputDirect).not.toBe(PTY_FRAME_TYPES.input);
+        const frame = encodePtyFrame(PTY_FRAME_TYPES.inputDirect, PANE, new Uint8Array([0x1b])) as Uint8Array;
+        expect(decodePtyFrame(frame)).toMatchObject({ type: PTY_FRAME_TYPES.inputDirect, paneID: PANE });
+    });
 });
 
 describe('flow-control and resize payloads', () => {

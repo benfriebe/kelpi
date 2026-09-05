@@ -107,6 +107,22 @@ describe('PtyClient subscription', () => {
         expect(h.json('resize-pane')).toHaveLength(1);
     });
 
+    it('sends writeDirect as the un-mirrored inputDirect frame, never as input (#51)', () => {
+        // terminal-surface.md §8.2: mouse reports and kitty releases must not fan out to sync
+        // siblings, and the daemon tells them apart from keystrokes by frame type alone.
+        const h = harness();
+        const handle = h.client.subscribe(PANE, { onData: () => {} });
+
+        handle.writeDirect('\x1b[<0;3;4M');
+        handle.writeDirect('');
+
+        const direct = h.frames().filter((frame) => frame?.type === PTY_FRAME_TYPES.inputDirect);
+        expect(direct).toHaveLength(1);
+        expect(direct[0]?.paneID).toBe(PANE.toUpperCase());
+        expect(decoder.decode(direct[0]?.payload)).toBe('\x1b[<0;3;4M');
+        expect(h.frames().filter((frame) => frame?.type === PTY_FRAME_TYPES.input)).toEqual([]);
+    });
+
     it('detaches when the last subscriber goes away', () => {
         const h = harness();
         const first = h.client.subscribe(PANE, { onData: () => {} });

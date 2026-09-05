@@ -1556,11 +1556,12 @@ a recursive non-persistent `fs.watch` on the worktree root). Semantics:
   libuv's CF thread. `start` publishes the session as soon as the watch is created, so a
   write made the instant `graft start` returns can fall inside that window and would
   otherwise never be observed (the session says `watching`, nothing mirrors, and no later
-  event repairs it). So `startWatcher` arms one delayed pass, `GRAFT_WATCH_CATCH_UP_MS`
-  (1500 ms, `service.ts:61`), routed through the same `pending` + `pump` path as a real
-  batch so it is serialised with them (`service.ts:287`). `stop` and `shutdown` cancel it
-  (`service.ts:472`, `service.ts:640`): a pass that fired after the restore would re-apply
-  the worktree over the restored parent.
+  event repairs it). So `startWatcher` runs catch-up passes every `GRAFT_WATCH_CATCH_UP_MS`
+  (1500 ms) until the watcher reports its first delivered event (`watcher.live`, the only
+  available proof that the stream is up), at most `GRAFT_WATCH_CATCH_UP_MAX` (20, thirty
+  seconds of coverage), each routed through the same `pending` + `pump` path as a real batch
+  so it is serialised with them. `stop` and `shutdown` cancel the pending one: a pass that
+  fired after the restore would re-apply the worktree over the restored parent.
 
 ### 9.2 GitHeadWatcher (drives sidebar branch/status refresh)
 

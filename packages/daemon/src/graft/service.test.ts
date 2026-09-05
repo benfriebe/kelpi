@@ -127,11 +127,12 @@ function watchControl(): WatchControl {
 function service(
     gitService: GitService,
     watch?: WatchControl,
-    extra: { catchUpMs?: number } = {}
+    extra: { catchUpMs?: number; catchUpMax?: number } = {}
 ): GraftService {
     return createGraftService({
         git: gitService,
         debounceMs: 1,
+        ...(extra.catchUpMax !== undefined ? { catchUpMax: extra.catchUpMax } : {}),
         // Tests drive batches by hand; keep the real catch-up pass out of their way unless a
         // test asks for it, so timing assertions about "no pass happened" stay meaningful.
         catchUpMs: extra.catchUpMs ?? 60_000,
@@ -322,7 +323,47 @@ describe.skipIf(!HAS_GIT)('graft start → sync', () => {
         // waitFor throws if the catch-up pass never mirrors it.
         await waitFor(() => fs.existsSync(path.join(f.parent, 'late.txt')), 5_000);
         expect(fs.readFileSync(path.join(f.parent, 'late.txt'), 'utf8')).toBe('before the watch was live\n');
-        expect(graft.session(session.id)?.status).toEqual({ kind: 'watching' });
+        // Passes repeat until the watch is live, so the status is only settled between them.
+        await waitFor(() => graft.session(session.id)?.status.kind === 'watching');
+
+        await graft.stop(session.id);
+    }, 60_000);
+
+    it('keeps running catch-up passes until the OS watch delivers its first event', async () => {
+        // Under load the FSEvents stream can take several seconds to go live, so one pass is not
+        // enough: the same compat test that #60 fixed for its first write then failed on its second.
+        const f = fixture('catch-up-repeat');
+        const watch = watchControl();
+        const graft = service(createGitService(), watch, { catchUpMs: 40, catchUpMax: 20 });
+        const session = await graft.start(f.association);
+
+        fs.writeFileSync(path.join(f.worktree, 'first.txt'), 'one\n');
+        await waitFor(() => fs.existsSync(path.join(f.parent, 'first.txt')), 5_000);
+        // A second write, still with no event from the (fake) OS watch: only a repeated pass can
+        // carry it. This is exactly the `keep.txt` edit in the compat test.
+        fs.writeFileSync(path.join(f.worktree, 'second.txt'), 'two\n');
+        await waitFor(() => fs.existsSync(path.join(f.parent, 'second.txt')), 5_000);
+        await waitFor(() => graft.session(session.id)?.status.kind === 'watching');
+
+        await graft.stop(session.id);
+    }, 60_000);
+
+    it('stops the catch-up passes once the OS watch has delivered an event', async () => {
+        const f = fixture('catch-up-live');
+        const watch = watchControl();
+        const graft = service(createGitService(), watch, { catchUpMs: 40, catchUpMax: 20 });
+        const session = await graft.start(f.association);
+
+        // One real event: the stream is live, and from here real batches drive the passes.
+        fs.writeFileSync(path.join(f.worktree, 'seen.txt'), 'seen\n');
+        watch.fire(f.worktree, 'seen.txt');
+        await waitFor(() => fs.existsSync(path.join(f.parent, 'seen.txt')), 5_000);
+        await settle(120); // let any already-armed catch-up timer fire and observe `live`
+
+        // A write with no event must now NOT be mirrored by a catch-up pass.
+        fs.writeFileSync(path.join(f.worktree, 'unseen.txt'), 'unseen\n');
+        await settle(300);
+        expect(fs.existsSync(path.join(f.parent, 'unseen.txt'))).toBe(false);
 
         await graft.stop(session.id);
     }, 60_000);

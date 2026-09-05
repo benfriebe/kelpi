@@ -868,7 +868,7 @@ The `</>` button toggles a docked web inspector for the active tab. It sends the
 | ⌘- | zoom out −0.1 |
 | ⌘0 | reset zoom |
 
-- Bindable actions (config `keybind =` names, `packages/core/src/config/actions.ts`) all default-unbound except `open_web_pane` (⌘⇧O): `web_focus_url_bar`, `web_back`, `web_forward`, `web_reload`, `web_tab_new`, `web_tab_close`, `web_tab_prev`, `web_tab_next`, `web_zoom_in`, `web_zoom_out`, `web_zoom_reset`. Their dispatch requires the focused pane to be a web pane; `web_tab_close` also requires >1 tab.
+- Bindable actions (config `keybind =` names, `packages/core/src/config/actions.ts`) all default-unbound except `open_web_pane` (⌘⇧O): `web_focus_url_bar`, `web_back`, `web_forward`, `web_reload`, `web_tab_new`, `web_tab_close`, `web_tab_prev`, `web_tab_next`, `web_zoom_in`, `web_zoom_out`, `web_zoom_reset`. Their dispatch requires the focused pane to be a web pane (otherwise the chord falls through). `web_tab_close` does not fall through on a single tab: with 1 tab, or no tab yet, it closes the pane itself via `closePane` (`packages/client/src/App.tsx:2772-2781`), matching the reducer's single-tab close; only the hard-coded ⌘W of the priority layer above declines on a single tab.
 - Menu bar: File → New Web Pane (⌘⇧O) → blank pane split from the focused pane.
 
 ### 16.7 Empty state

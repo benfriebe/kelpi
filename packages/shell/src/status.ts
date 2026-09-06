@@ -418,6 +418,9 @@ export function createStatusController(options: StatusOptions): StatusController
 
     function bounce(): void {
         try {
+            // By property on the live `app.dock`, never through a bound copy: the test-only
+            // KELPI_HARNESS_SOCKET channel (`./harness.ts`) counts bounces by wrapping exactly
+            // this property, and that count is the only way a driver can check #55 at all.
             app.dock?.bounce('informational');
         } catch {
             // Non-macOS, or no dock: the tray still carries the signal.

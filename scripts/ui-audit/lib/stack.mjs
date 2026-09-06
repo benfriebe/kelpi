@@ -262,6 +262,10 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
         KELPI_HARNESS: '1',
+        // The test-only control channel (`packages/shell/src/harness.ts`): the native surfaces
+        // CDP cannot reach (the application menu and its accelerators, native dialogs, the dock
+        // bounce). Under the sandbox root for the same reason `kelpid.sock` is: it dies with it.
+        KELPI_HARNESS_SOCKET: path.join(root, 'harness.sock'),
         /*
          * Where every shell this sandbox ever launches puts its window
          * (`packages/shell/src/audit-window.ts`).
@@ -287,6 +291,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         configPath,
         ghosttyConfigPath,
         socketPath,
+        harnessSocket: env.KELPI_HARNESS_SOCKET,
         helpersDir,
         httpPort,
         controlPort,

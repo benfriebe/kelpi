@@ -187,6 +187,7 @@ const sandbox = {
     configPath,
     ghosttyConfigPath,
     socketPath,
+    harnessSocket: path.join(root, 'harness.sock'),
     helpersDir,
     httpPort,
     controlPort,
@@ -209,7 +210,12 @@ const sandbox = {
         // Without this the window that comes up is the daemon's placeholder page rather than the
         // app, and nothing else about the instance looks wrong (#37). The env is deliberately
         // clean, so anything the daemon needs has to be listed here by name.
-        KELPID_CLIENT_DIR: clientDistDir
+        KELPID_CLIENT_DIR: clientDistDir,
+        // The test-only control channel (`packages/shell/src/harness.ts`) for the native
+        // surfaces CDP cannot reach: the application menu, native dialogs, the dock bounce.
+        // Not the KELPI_HARNESS watchdog marker, see below; this socket alone changes nothing
+        // about who outlives whom.
+        KELPI_HARNESS_SOCKET: path.join(root, 'harness.sock')
         // Deliberately NO KELPI_HARNESS: this instance should outlive a crashed launcher the way
         // the real one outlives its shell — kill it with Ctrl-C here, or `kelpid stop` with the
         // env above.
@@ -251,6 +257,10 @@ console.log(`[dev-instance]   run dir:      ${sandbox.runDir}`);
 // from one that is the placeholder: with the client served, its renderer shows up here as a page
 // target beside the web panes' WebContentsView targets (#37).
 console.log(`[dev-instance]   debug targets: curl -s http://127.0.0.1:${String(debugPort)}/json/list`);
+// The shell's test-only control channel (`packages/shell/src/harness.ts`): newline-delimited
+// JSON over this socket reaches the menu, native dialogs and the dock, which the debug port
+// above cannot. Try: printf '{"id":1,"op":"ping"}\n' | nc -U <path>
+console.log(`[dev-instance]   harness:       ${sandbox.harnessSocket}`);
 console.log('[dev-instance]');
 console.log('[dev-instance] Ctrl-C to stop.');
 

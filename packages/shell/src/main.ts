@@ -50,6 +50,8 @@ import {
     resolveCliLinkPath,
     type CliInstallResult
 } from './cli-install.js';
+import { harnessSocketPath } from './harness-protocol.js';
+import { startHarness, stopHarness } from './harness.js';
 import {
     createOpenFileQueue,
     runCliInstallPolicy,
@@ -1457,6 +1459,25 @@ async function boot(): Promise<void> {
         },
         logError
     });
+    /*
+     * KELPI_HARNESS_SOCKET: the test-only control channel (`./harness.ts`), after the launch
+     * sequence so the menu, the window and the quit gate it reaches all exist. The gate is the
+     * env var and only that; a user's launch has it unset and skips this branch, which is what
+     * keeps their shell byte-identical (the file header says why it exists at all).
+     */
+    const harnessSocket = harnessSocketPath(process.env);
+    if (harnessSocket !== null) {
+        startHarness({
+            app,
+            dialog,
+            BrowserWindow,
+            Menu,
+            socketPath: harnessSocket,
+            mainWindow: () => mainWindow,
+            log,
+            logError
+        });
+    }
 }
 
 // A second launch must never start a second shell: raise the window we already have.
@@ -1552,6 +1573,9 @@ if (!app.requestSingleInstanceLock()) {
         // holder window. The daemon keeps the panes; only the views die with the app.
         webHost?.stop();
         quitGate?.dispose();
+        // Unlinks the harness socket and restores the wrapped methods; a no-op for a user's
+        // shell, which never started one.
+        stopHarness();
         // Deliberately absent: anything that would signal, kill or stop the daemon.
     });
 

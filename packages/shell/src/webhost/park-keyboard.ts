@@ -20,6 +20,23 @@
  * with the MOUSE after clicking a page stranded the keyboard the same way. Deriving the set from
  * the binding map only made the second one reachable from the keyboard, which is how it surfaced.
  *
+ * ## Two moments, and getting only one of them is the same bug
+ *
+ * A view stops being on screen at one of two points, and BOTH drop its keyboard focus as a side
+ * effect - so the sample has to happen before whichever one is about to run:
+ *
+ *   - **hidden** (`registry.ts` ▸ the activate loop → `show(view, false)` → `setVisible(false)`).
+ *     This is the tab-switch path, and it arrives one notify EARLIER than the park;
+ *   - **parked** (`./embed.ts` ▸ `detach`), for everything else: a hidden pane, a workspace
+ *     change, a closing window. Nothing hid the view first, so it is still holding the keyboard
+ *     when it gets here.
+ *
+ * The first version of this fix sampled only at the park. For a tab switch that is too late by a
+ * whole round trip: hiding had already taken the focus, the census answered "this view does not
+ * have the keyboard", the handoff declined, and the keyboard was left with nothing at all.
+ * Measured as ⌘⇧] cycling exactly once and then going dead - the same symptom the fix was for,
+ * which is why the log showing zero handoffs was the thing that gave it away.
+ *
  * ## Why the client, and not the incoming view
  *
  * On a tab switch there IS another view arriving, and a browser would put the keyboard in it.
@@ -62,4 +79,22 @@ export function parkKeyboardDecision(input: ParkKeyboardInput): ParkKeyboardDeci
     if (!input.viewHeldKeyboard) return 'leave';
     if (!input.windowIsFocused) return 'leave';
     return 'restore-to-client';
+}
+
+/**
+ * Wrap a registry's `show` hook so a view gives the keyboard up BEFORE it is hidden.
+ *
+ * A function rather than two lines at the call site, because the thing that has to stay true is
+ * the ORDER, and an order is only guarded if something asserts it. Reversing these two lines
+ * reproduces the original defect exactly - `setVisible(false)` drops the focus, the sample then
+ * reads false, and the keyboard is stranded - and nothing about the code would look wrong.
+ */
+export function releaseBeforeHide<T>(
+    show: (tab: T, visible: boolean) => void,
+    release: (tab: T) => void
+): (tab: T, visible: boolean) => void {
+    return (tab, visible) => {
+        if (!visible) release(tab);
+        show(tab, visible);
+    };
 }

@@ -47,7 +47,7 @@ import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
 import { chordCommand, setForwardedKeybindLines } from './keys.js';
-import { parkKeyboardDecision } from './park-keyboard.js';
+import { parkKeyboardDecision, releaseBeforeHide } from './park-keyboard.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, cssToDipScale, parsePaneGeometry, type WindowMetrics } from './geometry.js';
@@ -240,6 +240,35 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         return false;
     };
 
+    /**
+     * Hand the keyboard back to the client if THIS view is the one holding it (issue #33).
+     *
+     * Must be called BEFORE whatever is about to take the view off the screen, because both of
+     * those operations drop the view's focus themselves and the answer stops being true - see
+     * `./park-keyboard.ts` on the two moments this has to run at, and why sampling at only one
+     * of them left tab cycling broken.
+     */
+    const releaseKeyboardIfHeld = (tab: HostTab, reason: string): void => {
+        const window = options.window?.() ?? null;
+        const viewHeldKeyboard = tab.hasKeyboardFocus();
+        const decision = parkKeyboardDecision({
+            viewHeldKeyboard,
+            windowIsFocused: window !== null && !window.isDestroyed() && window.isFocused()
+        });
+        if (decision === 'leave') {
+            // Logged even when nothing happens: "the view did not have it" and "we never looked"
+            // are opposite states that were indistinguishable from outside the process, which is
+            // what made the first version of this fix look like it had not run at all.
+            traceFocus(`keyboard park (${reason}): held=${String(viewHeldKeyboard)} -> left alone`);
+            return;
+        }
+        const restored = restoreKeyboard({ kind: 'client' });
+        log(
+            `web pane ${tab.paneID}: ${reason} view held the keyboard; ` +
+                `${restored ? 'handed it back to the client' : 'could not hand it back'}`
+        );
+    };
+
     const hooks = createTabHooks({
         keyboardOwner,
         restoreKeyboard,
@@ -323,7 +352,19 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         }
     });
 
-    const registry: TabRegistry<HostTab> = createTabRegistry<HostTab>(hooks);
+    const registry: TabRegistry<HostTab> = createTabRegistry<HostTab>({
+        ...hooks,
+        /*
+         * A tab switch hides the outgoing view HERE, one notify before the geometry that parks
+         * it - and `setVisible(false)` drops that view's keyboard focus itself. Sampling only at
+         * the park was therefore always too late: the census said "it does not have it" because
+         * hiding had just taken it, and the keyboard was left with nothing. Measured as ⌘⇧]
+         * cycling exactly once and then going dead.
+         */
+        show: releaseBeforeHide(hooks.show, (tab) => {
+            releaseKeyboardIfHeld(tab, 'hidden');
+        })
+    });
 
     /**
      * The shell window's live measurements, or null when there is nothing to embed into: no
@@ -372,14 +413,12 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 const view = tab.contentsView;
                 const window = options.window?.() ?? null;
                 /*
-                 * Sampled BEFORE the re-parent, because removing the view from the window is
-                 * itself what makes the answer stop being true (`./park-keyboard.ts` explains
-                 * why a parked view holding the keyboard is the "it works exactly once" bug).
+                 * Before the re-parent, which drops the view's focus itself. This is the moment
+                 * for every park that does NOT go through a tab switch - a hidden pane, a
+                 * workspace change, a closing window - where the view is still visible and still
+                 * holding the keyboard when it gets here.
                  */
-                const parked = parkKeyboardDecision({
-                    viewHeldKeyboard: tab.hasKeyboardFocus(),
-                    windowIsFocused: window !== null && !window.isDestroyed() && window.isFocused()
-                });
+                releaseKeyboardIfHeld(tab, 'parked');
                 if (window !== null && !window.isDestroyed()) {
                     try {
                         window.contentView.removeChildView(view);
@@ -410,15 +449,6 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 view.setBounds({ x: 0, y: 0, width, height });
                 tab.setEmbedded(false);
                 holderWindow().contentView.addChildView(view);
-                if (parked === 'restore-to-client') {
-                    // Through the same handoff §N30 uses, so there is one way in this process to
-                    // give the client its keyboard back, and one place that explains it.
-                    const restored = restoreKeyboard({ kind: 'client' });
-                    log(
-                        `web pane ${tab.paneID}: parked view held the keyboard; ` +
-                            `${restored ? 'handed it back to the client' : 'could not hand it back'}`
-                    );
-                }
             },
             setBounds: (tab, bounds) => {
                 tab.contentsView.setBounds(bounds);

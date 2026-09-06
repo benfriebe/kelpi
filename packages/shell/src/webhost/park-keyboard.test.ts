@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { parkKeyboardDecision } from './park-keyboard.js';
+import { parkKeyboardDecision, releaseBeforeHide } from './park-keyboard.js';
 
 describe('parking a view that holds the keyboard', () => {
     it('hands the keyboard back to the client', () => {
@@ -35,5 +35,48 @@ describe('parking a view that holds the keyboard', () => {
         // the user is actually using.
         expect(parkKeyboardDecision({ viewHeldKeyboard: true, windowIsFocused: false })).toBe('leave');
         expect(parkKeyboardDecision({ viewHeldKeyboard: false, windowIsFocused: false })).toBe('leave');
+    });
+});
+
+/**
+ * The ordering, which is the part that was wrong the first time.
+ *
+ * A tab switch hides the outgoing view one notify BEFORE the park, and `setVisible(false)` drops
+ * that view's keyboard focus itself. Sampling after it reads false and declines the handoff, so
+ * the keyboard is left with a view nobody can see - ⌘⇧] cycles exactly once and then goes dead,
+ * which is the very symptom the fix was for.
+ */
+describe('releasing before the hide', () => {
+    it('gives the keyboard up first, then hides', () => {
+        const order: string[] = [];
+        const show = releaseBeforeHide<string>(
+            (tab, visible) => order.push(`show(${tab},${String(visible)})`),
+            (tab) => order.push(`release(${tab})`)
+        );
+        show('T1', false);
+        expect(order).toEqual(['release(T1)', 'show(T1,false)']);
+    });
+
+    it('does not touch the keyboard when a view is being SHOWN', () => {
+        const order: string[] = [];
+        const show = releaseBeforeHide<string>(
+            (tab, visible) => order.push(`show(${tab},${String(visible)})`),
+            (tab) => order.push(`release(${tab})`)
+        );
+        show('T1', true);
+        expect(order).toEqual(['show(T1,true)']);
+    });
+
+    it('runs for every tab the activate loop hides, not just the outgoing one', () => {
+        // `registry.ts` calls show(view, tab === active) for EVERY tab in the pane, so this fires
+        // for tabs that were already hidden. Harmless by construction: the release checks whether
+        // the view actually holds the keyboard, and a hidden one never does.
+        const released: string[] = [];
+        const show = releaseBeforeHide<string>(
+            () => {},
+            (tab) => released.push(tab)
+        );
+        for (const tab of ['T1', 'T2', 'T3']) show(tab, tab === 'T2');
+        expect(released).toEqual(['T1', 'T3']);
     });
 });

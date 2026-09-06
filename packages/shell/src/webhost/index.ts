@@ -643,9 +643,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             const contents = tab.contentsView.webContents;
             if (contents.isDestroyed()) return null;
             log(`web pane ${paneID} tab ${tabID}: harness crash requested`);
-            // Not `contents.forcefullyCrashRenderer()` inline: it kills the process this call
-            // is standing in, and Electron's own docs ask for it to be the last thing the tick
-            // does. The reply has to reach the driver either way.
+            // One tick later, not inline: the kill starts a teardown that runs back through
+            // `render-process-gone` into `forgetTab` and the destroy hook, and the harness
+            // answers its socket synchronously. Deferring keeps the driver's reply ahead of the
+            // recovery it is about to watch for, instead of racing a socket write against it.
             setImmediate(() => {
                 try {
                     if (!contents.isDestroyed()) contents.forcefullyCrashRenderer();

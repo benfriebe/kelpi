@@ -4199,9 +4199,14 @@ function Shell(props: AppProps): ReactElement {
                         <SidebarResizer
                             width={sidebarWidth}
                             onResizeStart={() => setSidebarResizing(true)}
+                            /* Issue #79: the flag comes off when the GESTURE ends, not when a
+                               width is committed. `onCommit` is skipped for a press that never
+                               moved, and both are skipped entirely when the handle is unmounted
+                               mid-drag (⇧⌘S) - either of which used to leave `sidebarResizing`
+                               stuck true, and with it §WS-001's slide transition off the slot. */
+                            onResizeEnd={() => setSidebarResizing(false)}
                             onResize={setSidebarWidth}
                             onCommit={(width) => {
-                                setSidebarResizing(false);
                                 storeSidebarWidth(width);
                             }}
                         />

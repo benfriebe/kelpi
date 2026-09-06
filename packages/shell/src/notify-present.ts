@@ -6,7 +6,7 @@
  * property every time (`app.dock`, `dialog`), so the channel replaces the property and the call
  * sites are none the wiser. `new Notification(...)` is neither: it is a CLASS reached through an
  * ESM import binding, which no module outside `status.ts` and `main.ts` can reassign. That was
- * the one hole in `scripts/ui-audit/README.md`'s "Where this stops" — a scenario could not
+ * the one hole in `scripts/ui-audit/README.md`'s "Where this stops", a scenario could not
  * assert that a notification was shown, with what, or what clicking it does, which is most of
  * agent-lifecycle.md §7.
  *

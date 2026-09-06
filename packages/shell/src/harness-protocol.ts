@@ -56,8 +56,8 @@ export function harnessSocketPath(env: Readonly<Record<string, string | undefine
  * Under the channel the shell keeps posting for real, because a real banner is harmless to a
  * scenario and a recorder that suppresses the thing under test is the mistake `audit-window.ts`
  * refuses `hide()` for. `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` is for the runs where it is not
- * harmless — a machine running several sandboxes at once, or one whose Notification Centre a
- * human is also reading — and it only ever removes the OS call: the record, the handlers and
+ * harmless, a machine running several sandboxes at once, or one whose Notification Centre a
+ * human is also reading, and it only ever removes the OS call: the record, the handlers and
  * `notification-click` / `notification-close` behave identically either way.
  *
  * A second gate rather than a value on the first, and read only inside `startHarness`, so it is
@@ -543,7 +543,7 @@ export interface NotificationFired {
  * `status.ts`'s replace-on-repost `close()` and its "Dismiss" branch run through here as well;
  * and it holds the site's own handlers, so `notification-click` calls the exact function macOS
  * would have called rather than a re-implementation of what clicking means. `#delegate` is the
- * real Electron notification underneath, or null under the quiet gate — which is the ONLY
+ * real Electron notification underneath, or null under the quiet gate, which is the ONLY
  * difference the gate makes.
  *
  * Pure of Electron on purpose: the delegate is structural, so `harness-protocol.test.ts` drives
@@ -631,7 +631,7 @@ export class RecordedNotification implements KelpiNotificationHandle {
 
     /**
      * `notification-click`: the body tap, or the named action button, as the OS would deliver
-     * it. A missing handler is an error rather than a silent success — a scenario asserting
+     * it. A missing handler is an error rather than a silent success, a scenario asserting
      * that clicking Open focuses the pane must not pass against a notification nobody wired.
      */
     fire(action: string | undefined): NotificationFired | string {

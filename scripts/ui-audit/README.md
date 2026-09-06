@@ -71,7 +71,7 @@ Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | 
 
 ### Notifications
 
-`new Notification(...)` is a class import, so there is no property to replace the way `app.dock.bounce` and `dialog.showMessageBox` are replaced. Every notification the shell posts therefore goes through one seam instead (`packages/shell/src/notify-present.ts`; `notify.ts` has the request shape and `harness-protocol.ts` the recording rules), and the channel swaps the presenter behind it. A user's shell is unchanged: the seam builds the same options object each call site built, passes on only the keys it was given, and registers only the listeners the caller supplied — `notify-present.test.ts` pins that.
+`new Notification(...)` is a class import, so there is no property to replace the way `app.dock.bounce` and `dialog.showMessageBox` are replaced. Every notification the shell posts therefore goes through one seam instead (`packages/shell/src/notify-present.ts`; `notify.ts` has the request shape and `harness-protocol.ts` the recording rules), and the channel swaps the presenter behind it. A user's shell is unchanged: the seam builds the same options object each call site built, passes on only the keys it was given, and registers only the listeners the caller supplied, `notify-present.test.ts` pins that.
 
 A notification is recorded when it is SHOWN, not when it is built, and each record is:
 
@@ -79,7 +79,7 @@ A notification is recorded when it is SHOWN, not when it is built, and each reco
 { seq, title, body, actions: string[], paneID: string|null, silent, key: string|null, displayed, closed }
 ```
 
-`seq` is its ordinal in the run; `key` is agent-lifecycle.md §7.5's identifier (`kelpi-<paneID>`), which is what makes replace-on-repost assertable — a pane never has two records with the same `key` and `closed: false`. `counters().notifications` is the exact count for the whole run and `recentNotifications` is the last 20, oldest first. The `index` both ops take is a position in THAT list (negatives count from the end), and omitting it means the most recent one.
+`seq` is its ordinal in the run; `key` is agent-lifecycle.md §7.5's identifier (`kelpi-<paneID>`), which is what makes replace-on-repost assertable, a pane never has two records with the same `key` and `closed: false`. `counters().notifications` is the exact count for the whole run and `recentNotifications` is the last 20, oldest first. The `index` both ops take is a position in THAT list (negatives count from the end), and omitting it means the most recent one.
 
 Both ops call the call site's own handler, so what a scenario exercises is the shipped path: `notificationClick()` runs §7.5's default click (activate, switch to that workspace, focus that pane) and `notificationClick({ action: 'Open' })` runs the button that §AGNT-073 registers alongside it. See `../scenarios/notification-shown-and-opened.mjs`.
 

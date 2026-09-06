@@ -14,14 +14,14 @@
  * HOW THE PRECONDITIONS ARE MET, which is most of what this file is doing between assertions.
  * The daemon decides whether to broadcast at all (`packages/core/src/agent/notifications.ts`):
  * §7.1 and §7.2 both need `!isFocused || !isAppActive`, and §7.1 needs no background work. So
- * the pane that plays the agent is parked in a workspace that is NOT the active one — a second
- * workspace is created after it, which takes the foreground — and the window is blurred, which
+ * the pane that plays the agent is parked in a workspace that is NOT the active one, a second
+ * workspace is created after it, which takes the foreground, and the window is blurred, which
  * settles `isAppActive` too. That also makes the §7.5 Open assertion worth making: the pane is
  * somewhere the user is not, so "switches to that workspace and focuses that pane" is a visible
  * change of DOM rather than a no-op.
  *
  * ORDER MATTERS, and not in the order the ops were written. Clicking Open focuses the pane and
- * activates the app, which is exactly the state in which §7.1 says a stop must NOT notify — so
+ * activates the app, which is exactly the state in which §7.1 says a stop must NOT notify, so
  * the run has to leave again (another workspace, another blur) before the stop event, or the
  * last assertion would be checking the daemon's suppression rather than the notification's
  * shape. The step that does that is marked below.
@@ -97,7 +97,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
 
     // ── §7.5: the identifier is a REPLACE, not a pile ───────────────────────────────
     // The daemon has no dedupe of its own (`notificationDecision` is a suppression matrix, not
-    // a history), so an identical repeat does broadcast again — and the shell's replace-on-repost
+    // a history), so an identical repeat does broadcast again, and the shell's replace-on-repost
     // closes the pane's previous toast before showing the new one. What §7.5 promises is that a
     // pane never has two live notifications, and that is what is asserted.
     const repeat = await cli.run(['event', 'notification', '--title', 'needs you', '--body', 'a question'], { env });

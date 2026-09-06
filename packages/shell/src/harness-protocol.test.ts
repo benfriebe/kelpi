@@ -635,7 +635,7 @@ describe('recording notifications', () => {
         entry.attach(delegate.handle);
         entry.show();
         // `close()` closes the real one, whose own close event comes straight back through
-        // `dispatchClose` — status.ts's live-map handler must not run twice for one withdrawal.
+        // `dispatchClose`, status.ts's live-map handler must not run twice for one withdrawal.
         entry.close();
         entry.dispatchClose();
         entry.close();

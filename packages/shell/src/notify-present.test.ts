@@ -5,7 +5,7 @@
  * `vitest.config.mts` says a module importing `electron` belongs to `scripts/smoke.mjs`, and
  * that holds for anything needing a real Notification Centre. It does not hold for what this
  * file is about: which OPTIONS object reaches the constructor and which listeners get
- * registered, both decided in the main process from values a fake class can record — the same
+ * registered, both decided in the main process from values a fake class can record, the same
  * exemption `status.test.ts` takes for the tray.
  */
 

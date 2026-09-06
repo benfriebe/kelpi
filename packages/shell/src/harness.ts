@@ -32,7 +32,7 @@
  * and `dialog` objects (which is why `status.ts` and `quit.ts` call them by property, never
  * through a bound copy); both still call the original, except a message box a driver has armed
  * an answer for, which is resolved without being shown. The third is notifications (#67), which
- * have no property to replace — `new Notification(...)` is a class import — so `./notify.ts`
+ * have no property to replace, `new Notification(...)` is a class import, so `./notify.ts`
  * and `./notify-present.ts` give them one seam to be wrapped at instead, and it still posts for
  * real unless `KELPI_HARNESS_QUIET_NOTIFICATIONS=1`. The socket is unlinked before listening (a stale
  * file from a killed run) and again on `will-quit`. There is no auth on the socket because the
@@ -142,8 +142,8 @@ function wrapDialog(dialog: Dialog, counters: HarnessCounters): () => void {
  *
  * Not a property replacement like the two above, because there is no property: `new
  * Notification(...)` is a class import, which is exactly why the channel could not see a
- * notification at all before this. `./notify-present.ts` is the seam that makes it wrappable —
- * one module-level function every site calls — and this swaps the presenter behind it and puts
+ * notification at all before this. `./notify-present.ts` is the seam that makes it wrappable, 
+ * one module-level function every site calls, and this swaps the presenter behind it and puts
  * the previous one back on `stopHarness`.
  *
  * The site's own handlers are routed THROUGH the record rather than handed to the real

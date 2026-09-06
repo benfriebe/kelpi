@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HELP_CLI_ENTRIES, HELP_GITHUB_URL, HelpOverlay } from './HelpOverlay';
+import { HELP_CLI_ENTRIES, HELP_GITHUB_URL, HELP_MOUSE_ENTRIES, HelpOverlay } from './HelpOverlay';
 import { clientKeyBindings } from './keys';
 
 afterEach(cleanup);
@@ -44,7 +44,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(row?.textContent).toContain('-');
     });
 
-    it('groups rows under the six visible categories', () => {
+    it('groups rows under the seven visible categories', () => {
         renderHelp();
         const groups = [...document.querySelectorAll('[data-help-category]')].map((node) =>
             node.getAttribute('data-help-category')
@@ -55,8 +55,30 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
             'Workspaces',
             'View',
             'Files',
-            'Search'
+            'Search',
+            'Clipboard'
         ]);
+    });
+
+    /**
+     * #81: the app's only written answer to "why does dragging in my agent pane select nothing".
+     * Shift+drag is ghostty's `mouse-shift-capture = false` bypass and had no affordance anywhere.
+     */
+    it('names the mouse gestures, Shift+drag included', () => {
+        renderHelp();
+        const mouse = screen.getByTestId('help-mouse').textContent ?? '';
+        for (const entry of HELP_MOUSE_ENTRIES) expect(mouse).toContain(entry.gesture);
+        expect(document.querySelector('[data-help-gesture="Shift+drag"]')?.textContent).toContain(
+            'while an app owns the mouse'
+        );
+    });
+
+    it('shows the Clipboard chords in the live map', () => {
+        renderHelp();
+        const copy = document.querySelector('[data-help-action="copy"]');
+        expect(copy?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌘C');
+        const paste = document.querySelector('[data-help-action="paste"]');
+        expect(paste?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌘V');
     });
 
     it('closes on the button, on the backdrop and on Escape', () => {

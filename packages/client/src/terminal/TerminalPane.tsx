@@ -38,6 +38,7 @@ import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
+import { registerTerminalPane } from './pane-registry';
 import {
     IDLE_PANE_MODES,
     createMouseReporter,
@@ -259,11 +260,6 @@ export interface TerminalPaneProps {
     readonly onExit?: ((paneID: string, exitCode: number | null, signal?: string) => void) | undefined;
     readonly onBell?: ((paneID: string) => void) | undefined;
     readonly onTitleChange?: ((paneID: string, title: string) => void) | undefined;
-    /**
-     * The engine's selection changed (§TERM-034). Optional and unused by assembly today — the
-     * capability is the READ; a browser has no system text service to report it to.
-     */
-    readonly onSelectionChange?: ((paneID: string, selection: string) => void) | undefined;
     /**
      * §TERM-036 — what a screen reader should call this pane, normally the same string the
      * pane header shows (`paneDisplayTitle`). Omitted ⇒ the bare word "Terminal".
@@ -636,7 +632,18 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // engine must make NO selection, and the two can now be told apart.
             const offSelection = renderer.onSelectionChange((selection) => {
                 setSelectionLength(selection.length);
-                latest.current.onSelectionChange?.(paneID, selection);
+            });
+            /**
+             * #81: publish this pane's live selection read for the app's `copy` action.
+             *
+             * A registration rather than a callback prop, and a PULL rather than the push above,
+             * because the engine's `clearSelection()` fires no change event
+             * (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:227`, called from the
+             * mousedown at `:439`): a cached selection survives the click that visibly cleared
+             * it. `terminal/pane-registry.ts` has the full argument.
+             */
+            const offRegistry = registerTerminalPane(paneID, {
+                selection: () => rendererRef.current?.selection() ?? ''
             });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies
@@ -770,6 +777,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 offBell();
                 offTitle();
                 offSelection();
+                offRegistry();
                 offFailure();
                 offHold();
                 stream.unsubscribe();

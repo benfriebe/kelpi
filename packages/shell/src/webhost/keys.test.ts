@@ -2,7 +2,8 @@
  * Which chords the host takes from an embedded page (`./keys.ts`).
  *
  * The set has to be exactly what Kelpi claims: the resolved binding map, plus the web-pane
- * priority layer and the two window-listener chords, minus bare ⌘[ / ⌘]. Too narrow and a
+ * priority layer and the two window-listener chords, minus the page-owned actions (⌘C / ⌘V,
+ * #81). Too narrow and a
  * binding is unreachable the moment a user clicks the page - issue #33, where ⌘D never split
  * and ⌘P reached Chromium's print dialog. Too wide and Kelpi starts eating a page's own
  * shortcuts — ⌘K for a command palette, ⌘S for a save — which is a much worse failure, because
@@ -195,6 +196,19 @@ describe('the set follows the config file', () => {
         // typo cannot cost the user every other chord.
         expect(claimedChordsForLines(['not a keybind at all'])).toEqual(DEFAULTS);
         expect(claimedChordsForLines([])).toEqual(DEFAULTS);
+    });
+
+    /**
+     * #81 bound ⌘C and ⌘V, and this relay must not follow the map there: it cancels the chord in
+     * the page BEFORE the client is asked, and the client declines for a web pane, so a page
+     * would lose Copy and Paste and get nothing back.
+     */
+    it('leaves ⌘C and ⌘V with the page even though the map binds them (#81)', () => {
+        expect(DEFAULTS.has('meta+KeyC')).toBe(false);
+        expect(DEFAULTS.has('meta+KeyV')).toBe(false);
+        // And the carve-out follows a REBIND, because it is by action rather than by chord.
+        const rebound = claimedChordsForLines([...DEFAULT_KEYBIND_LINES, 'shift+super+c=copy']);
+        expect(rebound.has('shift+meta+KeyC')).toBe(false);
     });
 
     it('is exactly this, for the shipped config (the whole claim, reviewable at a glance)', () => {

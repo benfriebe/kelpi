@@ -1,9 +1,9 @@
 /**
  * The Settings action catalog (config-keybindings.md §4, §13.1).
  *
- * The 51 bindable actions, their display names, and the categories the Keybindings table
+ * The 53 bindable actions, their display names, and the categories the Keybindings table
  * renders as sections — in the fixed order §13.1 names: `Pane Management, Navigation,
- * Workspaces, View, Files, Search`. The eleven `web_*` actions are catalogued too but marked
+ * Workspaces, View, Files, Search, Clipboard`. The eleven `web_*` actions are catalogued too but marked
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
  * hard-coded priority layer), while still being legal to bind by hand in the config file.
  *
@@ -21,18 +21,20 @@ export const SETTINGS_CATEGORIES = [
     'View',
     'Files',
     'Search',
+    'Clipboard',
     'Web Pane'
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
-/** §4's six visible sections, in the order §13.1 fixes. `Web Pane` is deliberately absent. */
+/** §4's seven visible sections, in the order §13.1 fixes. `Web Pane` is deliberately absent. */
 export const VISIBLE_CATEGORIES: readonly SettingsCategory[] = [
     'Pane Management',
     'Navigation',
     'Workspaces',
     'View',
     'Files',
-    'Search'
+    'Search',
+    'Clipboard'
 ];
 
 export interface ActionEntry {
@@ -93,6 +95,9 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
 
     { action: 'toggle_search', category: 'Search', label: 'Toggle Search' },
     { action: 'close_search', category: 'Search', label: 'Close Search' },
+
+    { action: 'copy', category: 'Clipboard', label: 'Copy' },
+    { action: 'paste', category: 'Clipboard', label: 'Paste' },
 
     { action: 'web_focus_url_bar', category: 'Web Pane', label: 'Web: Focus URL Bar' },
     { action: 'web_back', category: 'Web Pane', label: 'Web: Back' },

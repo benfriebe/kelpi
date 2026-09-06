@@ -17489,7 +17489,16 @@ function buildFlows(ctx) {
                 recorder.check('⌘? opened the Help overlay', help !== null);
                 if (help !== null) {
                     recorder.check('it names a version', /Version \S+/.test(help.version), help.version);
-                    recorder.check('it lists the six binding categories', help.categories.length === 6, help.categories.join(' / '));
+                    // Read against the six ORIGINAL sections rather than a fixed count: #81 added
+                    // Clipboard and a future category would fail this assertion for no reason.
+                    // What matters is that all six are still there and every one is named.
+                    const CORE_HELP_CATEGORIES = ['Pane Management', 'Navigation', 'Workspaces', 'View', 'Files', 'Search'];
+                    const missingCategories = CORE_HELP_CATEGORIES.filter((name) => !help.categories.includes(name));
+                    recorder.check(
+                        'it lists every binding category, the six core sections included',
+                        missingCategories.length === 0 && help.categories.length >= CORE_HELP_CATEGORIES.length,
+                        missingCategories.length === 0 ? help.categories.join(' / ') : `missing: ${missingCategories.join(', ')}`
+                    );
                     recorder.check('it lists bound shortcuts from the live map', help.bound >= 10, `${String(help.bound)} of ${String(help.rows)} bound`);
                     // The claim is "read from the live map", so the assertion is against the
                     // SOURCE of that map — the daemon's config file — not a fixed default: an

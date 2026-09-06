@@ -20,8 +20,8 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 51 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(51);
+    it('is the 53 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(53);
     });
 
     it('keeps §13.1’s fixed section order and excludes the web-pane category', () => {
@@ -31,7 +31,8 @@ describe('the action catalog', () => {
             'Workspaces',
             'View',
             'Files',
-            'Search'
+            'Search',
+            'Clipboard'
         ]);
         expect(VISIBLE_CATEGORIES).not.toContain('Web Pane');
     });
@@ -40,7 +41,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(51 - 11);
+        expect(visible).toHaveLength(53 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

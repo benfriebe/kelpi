@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (51 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (53 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -51,6 +51,10 @@ export const KELPI_ACTIONS = [
     // Search
     'toggle_search',
     'close_search',
+    // Clipboard (#81). Both fall through when the focused pane is not a terminal, so a
+    // markdown pane, a chrome text field and a web page keep the Edit menu's own Copy/Paste.
+    'copy',
+    'paste',
     // Web pane (hidden from Settings; all ship unbound)
     'web_focus_url_bar',
     'web_back',

@@ -13,6 +13,7 @@ import {
     measureGeometry,
     shouldGrabFocus
 } from './TerminalPane';
+import { paneHandle } from './pane-registry';
 import {
     createFakePtyApi,
     createFakeRendererFactory,
@@ -1533,10 +1534,9 @@ describe('TerminalPane — mouse reporting', () => {
 });
 
 describe('TerminalPane — selection read (§TERM-034)', () => {
-    it('publishes the engine selection length, and hands the text to the host', async () => {
+    it('publishes the engine selection length, and registers a LIVE read of the text (#81)', async () => {
         const pty = createFakePtyApi();
         const renderers = createFakeRendererFactory();
-        const seen: string[] = [];
         const view = render(
             <TerminalPane
                 paneID="pane-1"
@@ -1545,24 +1545,75 @@ describe('TerminalPane — selection read (§TERM-034)', () => {
                 visible
                 createRenderer={renderers.factory}
                 measure={box(800, 480)}
-                onSelectionChange={(_, selection) => seen.push(selection)}
             />
         );
         await settle();
         const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
         expect(root.dataset['terminalSelection']).toBe('0');
+        expect(paneHandle('pane-1')?.selection()).toBe('');
 
         act(() => {
             renderers.last().emitSelection('total 48');
         });
 
         expect(root.dataset['terminalSelection']).toBe('8');
-        expect(seen).toEqual(['total 48']);
+        expect(paneHandle('pane-1')?.selection()).toBe('total 48');
 
         act(() => {
             renderers.last().emitSelection('');
         });
         expect(root.dataset['terminalSelection']).toBe('0');
+        expect(paneHandle('pane-1')?.selection()).toBe('');
+    });
+
+    /**
+     * #81's whole reason for a pull rather than a push. The engine's `clearSelection()` fires no
+     * change event, so the pushed value would still say "total 48" here while the pane's own
+     * `selection()` correctly says nothing is selected.
+     */
+    it('reads through to the renderer even when the engine cleared without an event', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        render(
+            <TerminalPane
+                paneID="pane-quiet"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        act(() => {
+            renderers.last().emitSelection('total 48');
+        });
+        expect(paneHandle('pane-quiet')?.selection()).toBe('total 48');
+        // The silent clear: the renderer's selection goes away with no listener called.
+        act(() => {
+            renderers.last().clearSelectionSilently();
+        });
+        expect(paneHandle('pane-quiet')?.selection()).toBe('');
+    });
+
+    it('unregisters on unmount, so a closed pane cannot be copied from', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const view = render(
+            <TerminalPane
+                paneID="pane-gone"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        expect(paneHandle('pane-gone')).not.toBeNull();
+        view.unmount();
+        await settle();
+        expect(paneHandle('pane-gone')).toBeNull();
     });
 
     it('publishes the cell metrics the audit computes expected report cells with', async () => {

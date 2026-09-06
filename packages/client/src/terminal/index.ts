@@ -9,6 +9,7 @@
  *   `ingest.ts`       — replay-then-live byte ordering for one pane
  *   `TerminalPane.tsx`— the React component: engine + PTY stream + resize/focus/visibility
  *   `mount-policy.ts` — which panes may hold a live renderer (cap + LRU eviction)
+ *   `pane-registry.ts`: live per-pane handles the app reads at chord time (the `copy` action)
  *
  * Hands-on engine gaps: `../kelpi-docs/research/ghostty-web-spike.md`.
  *
@@ -85,6 +86,13 @@ export {
     type KittyKeyboard,
     type KittyKeyboardOptions
 } from './kitty-keyboard';
+
+export {
+    paneHandle,
+    registerTerminalPane,
+    registeredPaneCount,
+    type TerminalPaneHandle
+} from './pane-registry';
 
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
 

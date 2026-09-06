@@ -1082,8 +1082,47 @@ daemon streams to every attached client so the engine and the daemon vt agree.
 
 ### 12.1 Copy (terminal → clipboard)
 
-Copy-on-select and the copy binding are client-side (the engine writes the browser/Electron
-clipboard directly). **OSC 52 writes** are parsed by the daemon's vt
+Two client-side paths write the clipboard, and until #81 only the first existed:
+
+1. **Copy-on-select.** The engine copies on mouse-up and on double-click
+   (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:543-547`, `:563-567`, through
+   `copyToClipboard` at `:850-889`). It writes the browser/Electron clipboard directly.
+2. **The `copy` binding** (default ⌘C, `packages/core/src/config/bindings.ts`;
+   docs/config-keybindings.md section 4). The action reads the FOCUSED pane's live selection
+   through `renderer.selection()` and writes it with `navigator.clipboard.writeText`
+   (`packages/client/src/app/clipboard.ts`, reached through
+   `packages/client/src/terminal/pane-registry.ts`).
+
+   **A live read, never a cached one.** The engine's `clearSelection()` fires no change event
+   (`selection-manager.ts:227`) and the mousedown that starts a new selection calls it directly
+   (`:439`), so a pushed-and-cached selection survives the click that visibly cleared it. The
+   registry exists so the app can pull the answer at the moment the chord is pressed.
+
+   **It declines rather than swallows** in two cases, and a decline is the dispatcher's
+   fall-through (docs/config-keybindings.md section 7.2 step 7): the focused pane has no live
+   terminal renderer, or the selection is empty. The empty case is deliberately NOT an interrupt:
+   mouse reporting clears the selection on every press (section 12.1's Shift+drag note below), so
+   an agent pane meets it constantly. ⌃C remains the only interrupt.
+
+The engine's own claim that `SelectionManager` handles ⌘C (`input-handler.ts:382-386`) is wrong:
+that class registers no `keydown` and no `copy` listener at all (`:420-661`). Before #81 the
+chord therefore fell to the shell's `{ role: 'editMenu' }` Copy, which copies the hidden
+textarea's DOM selection. That is always empty in a terminal pane, so the clipboard kept its
+previous contents and the next ⌘V pasted the old text.
+
+**Selecting while an application owns the mouse: Shift+drag.** Once mouse reporting is on
+(section 11), a press inside the pane is reported to the application instead of starting a
+selection, and any selection made before it asked is cleared
+(`packages/client/src/terminal/mouse.ts:459-476`, `TerminalPane.tsx:859-867`; ghostty's rule,
+`Surface.zig:3850-3852`). **Shift is the bypass**, which is ghostty's `mouse-shift-capture =
+false` default: a shift-held press or release is recorded as held but not reported and is handed
+to the engine (`mouse.ts:440-450`, `:459-465`, `:503-510`), so shift+drag still selects. Without
+it, dragging inside `vim`, `less` or an agent pane highlights nothing at all, which is what
+"I can't copy text from a terminal session" turned out to mean. The gesture is listed in the
+Help overlay's Mouse section (`packages/client/src/chrome/HelpOverlay.tsx`,
+`HELP_MOUSE_ENTRIES`).
+
+**OSC 52 writes** are parsed by the daemon's vt
 (`packages/daemon/src/term/osc52.ts`, registered at
 `packages/daemon/src/term/service.ts:796-815`, which claims the sequence) and honoured by
 `createClipboardWriteSink` (`packages/daemon/src/handlers/app/clipboard.ts:57-107`) only when
@@ -1112,21 +1151,36 @@ machine, or a `cat` of a file someone else wrote. The refusal is structural: the
 PTY reference and the service subscribes to no `onData`, so nothing can turn a read into a
 reply.
 
-The paste binding itself is client-side. Resolution order:
+The `paste` binding (default ⌘V, docs/config-keybindings.md section 4) is client-side and is
+Kelpi's own action rather than the Edit menu role's (#81). It resolves against the **focused
+pane**, not against whatever DOM node holds the caret, which is what makes it land in the pane
+the user is looking at whether or not the engine's hidden textarea has focus. It declines (and
+falls through to the Edit menu's Paste) when the focused pane has no live terminal renderer, so
+chrome fields, markdown editors, diff panes and web pages are untouched.
 
-1. Clipboard has a non-empty **string** → the engine pastes it (this covers text and copied
-   file URLs); the text flows through the paste pipeline (bracketed-paste wrap), same as
-   `pane send`.
-2. Clipboard has **no text** but has a PNG image → the client's capture-phase paste listener
-   (`packages/client/src/App.tsx:3641-3665`) uploads the bytes (`paste-image`, base64 over
-   the WS command channel, `App.tsx:2134-2151`; PNG only, since a browser clipboard already hands
+Resolution order (`pasteClipboardInto`, `packages/client/src/App.tsx`):
+
+1. Clipboard has a non-empty **string** → the text goes to the daemon over `drop-text`, which
+   runs the paste pipeline (`packages/daemon/src/pty/input.ts` `sendText`): the section 9.1
+   filter, the bracketed-paste envelope when the foreground app asked for it, and the **mirrored**
+   write, so a paste reaches synchronise-input siblings (section 8.2 item 2). Before #81 the
+   bytes went the engine's way instead (`terminal.ts:723-739`), which wrapped the envelope but
+   applied no filter and never reached the daemon's own paste protection.
+2. Clipboard has **no text** but has a PNG image → the bytes are uploaded (`paste-image`, base64
+   over the WS command channel, `App.tsx`; PNG only, since a browser clipboard already hands
    over PNG, and an unknown type is refused rather than written with a lying extension); the
    daemon (`packages/daemon/src/ws/desktop.ts:449-505`) caps it at `MAX_PASTE_IMAGE_BYTES`
    (24 MiB), writes `<tmpdir>/kelpi-clipboard-images/clipboard-<uuid>.png` **on the machine
    the PTY runs on** and types the **shell-escaped file path** bare (no Enter) through the
    same paste pipeline as `pane send --bare`, i.e. pasting a screenshot into a terminal
    pastes a path to a PNG. (Built for agent workflows: paste an image to Claude Code.)
+   The window's capture-phase `paste` listener keeps the same route for a paste event that
+   arrives without the chord (a drag-drop, a Services menu, the context menu's Paste).
 3. Neither → nothing is typed.
+
+A clipboard that cannot be read at all is reported as an error toast rather than swallowed: the
+chord is consumed before the asynchronous read resolves, so a silent failure would be a dead ⌘V
+with nothing anywhere to explain it.
 
 Kelpi never shows a paste-confirmation dialog: the daemon's paste filter (section 9.1) does
 the unsafe-paste protection instead.

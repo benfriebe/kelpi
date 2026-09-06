@@ -43,9 +43,11 @@
  *   - **⌘, and ⌘/ ⌘?** open Settings and Help through their own window listeners rather than
  *     through the binding map (they are OS menu-bar items in the Swift app, and there is no
  *     `KelpiAction` for either). The content-pane set folds them in for exactly this reason;
- *   - **bare ⌘[ / ⌘]** are subtracted even though the map binds them (`focus_previous_pane` /
- *     `focus_next_pane`): inside a page they are back/forward, which the page may itself want
- *     (SET-189). Only ⌘⇧[ / ⌘⇧] - tab cycling - are Kelpi's.
+ *   - **⌘C and ⌘V** are subtracted even though the map binds them (`copy` / `paste`, #81):
+ *     they are terminal actions the client declines for a web pane, and this relay cancels a
+ *     chord in the page BEFORE the client is asked, so relaying them would take a page's own
+ *     Copy and Paste and give nothing back. See `PAGE_OWNED_ACTIONS`.
+ *     (The older carve-out for bare ⌘[ / ⌘] is gone; `claimedChords` says why.)
  *
  * ## The native menu gets there first, for sixteen of them (#47)
  *
@@ -77,6 +79,7 @@ import {
     DEFAULT_KEYBINDINGS,
     parseKeybindValue,
     resolveKeyBindings,
+    type KelpiAction,
     type KeyBindingMap,
     type KeyTrigger
 } from '@kelpi/core/config';
@@ -197,6 +200,22 @@ const PRIORITY_LAYER_CHORDS: readonly string[] = [
 const WINDOW_LISTENER_CHORDS: readonly string[] = ['meta+Comma', 'meta+Slash', 'shift+meta+Slash'];
 
 /**
+ * Actions whose chords stay with the page, whatever the binding map says (#81).
+ *
+ * `copy` and `paste` are bound by default (⌘C / ⌘V) and they are TERMINAL actions: the client's
+ * handlers decline the moment the focused pane has no terminal renderer, and a focused web pane
+ * never has one. Relaying them would be destructive rather than merely useless, because this
+ * relay cancels the chord in the page BEFORE the client is asked: a page would lose its own Copy
+ * and Paste and get nothing in exchange. The module header's promise is exactly this one, and it
+ * names ⌘C by name: "Everything else (⌘C, ⌘A, typing, the page's own shortcuts) is left
+ * completely alone."
+ *
+ * A user who rebinds `copy` to some other chord moves this carve-out with it, because the
+ * exclusion is by ACTION and the map is the input.
+ */
+const PAGE_OWNED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['copy', 'paste']);
+
+/**
  * A trigger's chord key, or null when this boundary will not carry it.
  *
  * One rule: at least one of ⌘/⌃/⌥. Shift alone is how a page's user types a capital, and a bare
@@ -224,7 +243,11 @@ function relayableChordKey(trigger: KeyTrigger): string | null {
  * #33 is that this answer follows the user's config rather than a hardcoded list, and the only
  * way to keep that true is for the set to have no other input.
  *
- * There is no subtraction any more. Bare ⌘[ / ⌘] used to be carved out on the grounds that
+ * One subtraction, `PAGE_OWNED_ACTIONS` above: ⌘C and ⌘V. Both are terminal actions the client
+ * declines for a web pane, and this relay cancels a chord in the page before the client is asked,
+ * so relaying them would take a page's own Copy and Paste and give nothing back.
+ *
+ * The OTHER subtraction is gone. Bare ⌘[ / ⌘] used to be carved out on the grounds that
  * "inside a page they are back/forward, which the page may itself want" - which is wrong twice
  * over. config-keybindings.md 7.3 settles it: "back/forward are ⌘←/⌘→, NOT ⌘[/⌘], so ⌘[/⌘] keep
  * meaning focus-previous/next-pane even inside a web pane" (issue #229), and 6 lists both as
@@ -236,6 +259,7 @@ function relayableChordKey(trigger: KeyTrigger): string | null {
 export function claimedChords(bindings: KeyBindingMap): ReadonlySet<string> {
     const claimed = new Set<string>([...PRIORITY_LAYER_CHORDS, ...WINDOW_LISTENER_CHORDS]);
     for (const binding of bindings.values()) {
+        if (PAGE_OWNED_ACTIONS.has(binding.action)) continue;
         const key = relayableChordKey(binding.trigger);
         if (key !== null) claimed.add(key);
     }

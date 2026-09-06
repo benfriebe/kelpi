@@ -32,7 +32,7 @@ export const covers = [
     'packages/client/src/grid/PaneGrid.tsx'
 ];
 
-export default async function ({ page, rec, d, sleep }) {
+export default async function ({ page, harness, rec, d, sleep }) {
     const RESIZER = '[data-testid="sidebar-resizer"]';
 
     const widthOf = () =>
@@ -62,6 +62,39 @@ export default async function ({ page, rec, d, sleep }) {
         await sleep(250);
     };
 
+    /*
+     * Self-provisioning, because this file runs in a suite: an earlier scenario can leave the
+     * window blurred (`dock-bounce-stop-only` does) or the sidebar closed, and a chord that
+     * lands nowhere would look exactly like the bug this asserts. So the window is focused and
+     * the sidebar is opened first, through the harness, before anything is measured.
+     */
+    await harness.focus();
+    await sleep(600);
+    if ((await open()) === false) {
+        await harness.menuClick({ path: ['View', 'Toggle Sidebar'] });
+        await d.settle(async () => (await open()) === true, { ceilingMs: 8_000 });
+    }
+
+    /*
+     * ⇧⌘S, delivered as View ▸ Toggle Sidebar rather than as a key event.
+     *
+     * The two are the same thing: the row IS ⇧⌘S (`shell/src/menu.ts` ▸ `viewMenuTemplate`) and
+     * both reach the client as one `menu-command: toggle-sidebar`. The row is used because a
+     * CDP key event is ambiguous here - the renderer's own binding and the native menu
+     * accelerator can each answer the same synthesized keystroke, and a double toggle closes
+     * and re-opens the sidebar, which is indistinguishable from "the close did not happen".
+     * Measured: standalone the chord settles closed, in a suite run it came back open. What
+     * this scenario is about is the UNMOUNT, so it asks for the unmount unambiguously; the
+     * chord's own routing is `menu-accelerators-follow-rebinding`'s subject, not this file's.
+     */
+    const toggleSidebar = async (want) => {
+        await harness.menuClick({ path: ['View', 'Toggle Sidebar'] });
+        await d.settle(async () => (await open()) === want, { ceilingMs: 8_000 });
+        // Stable, not merely reached: a double toggle passes an instantaneous read.
+        await sleep(500);
+        return (await open()) === want;
+    };
+
     const start = await widthOf();
     rec.check('the sidebar is on screen with a measurable width', typeof start === 'number' && start > 0, `${String(start)} px`);
     rec.note(`starting width ${String(start)} px`);
@@ -74,9 +107,7 @@ export default async function ({ page, rec, d, sleep }) {
     rec.check('the body carries the drag cursor while the gesture runs', (await cursor()) === 'col-resize', String(await cursor()));
 
     // ⇧⌘S while the button is still down: App.tsx stops rendering the handle.
-    await page.key('KeyS', { modifiers: d.MOD.meta | d.MOD.shift });
-    await d.settle(async () => (await open()) === false, { ceilingMs: 8_000 });
-    rec.check('⇧⌘S closes the sidebar mid-drag', (await open()) === false);
+    rec.check('the sidebar closes mid-drag (View ▸ Toggle Sidebar, i.e. ⇧⌘S)', await toggleSidebar(false));
 
     const cursorAfterUnmount = String(await cursor());
     rec.check(
@@ -89,8 +120,7 @@ export default async function ({ page, rec, d, sleep }) {
     // even on screen. One move, well clear of where the drag left it, so a stuck drag cannot
     // pass by wandering back.
     await bareMove(held.x + 400, held.y);
-    await page.key('KeyS', { modifiers: d.MOD.meta | d.MOD.shift });
-    await d.settle(async () => (await open()) === true, { ceilingMs: 8_000 });
+    rec.check('and it re-opens', await toggleSidebar(true));
     await sleep(700);
     const afterReopen = await widthOf();
     rec.check(

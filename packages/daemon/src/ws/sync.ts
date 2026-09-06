@@ -2488,6 +2488,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 command === 'web-tab-reorder' ||
                 command === 'web-stop' ||
                 command === 'web-focus-view' ||
+                command === 'web-blur-view' ||
                 command.startsWith('web-batch-')
             ) {
                 void webPaneGuiCommand(channel, store, command, paneID, payload).then(settle, (error: unknown) => {

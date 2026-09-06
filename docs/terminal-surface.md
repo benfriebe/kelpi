@@ -675,8 +675,9 @@ URI → `opened: "external", url, source: "hyperlink"`; any other scheme →
 (`cellText`, `packages/daemon/src/term/service.ts`) and takes the token at that offset:
 - the token is trimmed of trailing `.`, then `,;:`, then `.` again, and a balanced wrapper
   pair (`()`, `[]`, `<>`, quotes) is stripped (`tokenAt`, `desktop.ts`);
-- a token breaks on whitespace, on the shell-and-prose punctuation `"'`` <>|`, **and on the
-  box-drawing and block characters** U+2500…U+257F, U+2588 and U+2591…U+2593. A TUI draws its
+- a token breaks on whitespace, on the shell-and-prose punctuation (double quote, apostrophe,
+  backtick, `<`, `>`, `|`), **and on the box-drawing and block characters**
+  U+2500…U+257F, U+2588 and U+2591…U+2593. A TUI draws its
   frames out of those and glues them straight onto the content when the box is full
   (`│https://example.com/x│`), and with `│` absent from the break set the border stayed on the
   token and the click did nothing;

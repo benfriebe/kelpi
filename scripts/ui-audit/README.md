@@ -72,7 +72,7 @@ Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | 
 
 ### Crashing a pane on purpose
 
-`crash` exists because issue #76's recovery is three processes wide — a renderer dies in the shell, the shell disposes and re-places the view, the daemon re-announces the pane, the client draws a card if it does not — and only the last of those is reachable from a renderer. CDP's `Page.crash` is not an alternative: it needs a debugger attached to the PANE's own target, and `--remote-debugging-port` exposes the shell window's page, not the `WebContentsView` inside it.
+`crash` exists because issue #76's recovery is three processes wide (a renderer dies in the shell, the shell disposes and re-places the view, the daemon re-announces the pane, the client draws a card if it does not) and only the last of those is reachable from a renderer. CDP's `Page.crash` is not an alternative: it needs a debugger attached to the PANE's own target, and `--remote-debugging-port` exposes the shell window's page, not the `WebContentsView` inside it.
 
 It kills a real process, so it is the one op that changes the instance under the test rather than reading it. Keep it to a sandbox (which is all `KELPI_HARNESS_SOCKET` ever reaches), and remember the daemon rebuilds the pane automatically for the FIRST death in 30 s: to see the "This page stopped responding" card, wait for the rebuild and crash it again (web-pane.md §5.2). `scripts/ui-audit/web-view-rebuild.mjs` and `scripts/scenarios/web-pane-crashed-card.mjs` both do exactly that.
 

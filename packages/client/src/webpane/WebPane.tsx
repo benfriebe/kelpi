@@ -65,7 +65,7 @@ export interface WebPaneTab {
     readonly title?: string | null | undefined;
     /**
      * §5.2 / issue #76: `false` when the tab's renderer died and the host has no view for it.
-     * **Absent means live** — the daemon only ever writes the flag to turn it off, so nothing
+     * **Absent means live**: the daemon only ever writes the flag to turn it off, so nothing
      * that has not crashed carries it.
      */
     readonly live?: boolean | null | undefined;
@@ -1343,7 +1343,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     <EmptyPaneNote paneID={paneID} />
                 ) : active?.live === false ? (
                     /*
-                     * §16.7 / issue #76 — the page's renderer died and there is no view behind
+                     * §16.7 / issue #76: the page's renderer died and there is no view behind
                      * this hole. The user's words for the state this replaces were "only show
                      * the browser chrome, but aren't rendering the body of the browser at all"
                      * and "no retry / reload option either".

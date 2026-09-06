@@ -56,7 +56,7 @@ export default async function ({ page, cli, harness, rec, d }) {
         /**
          * Crash it, without letting a refusal end the run. Against a tree with the fix reverted
          * the pane is never rebuilt, so the second crash has nothing to kill and the op answers
-         * `no live view` — and the checks after it are the ones that say what the bug is.
+         * `no live view`, and the checks after it are the ones that say what the bug is.
          */
         const crash = async () => {
             try {
@@ -115,7 +115,7 @@ export default async function ({ page, cli, harness, rec, d }) {
         const tabs = await cli.run(['web', 'tabs', '--target', paneID, '--json']);
         rec.check('`kelpi web tabs` reports the tab as not live', /"live"\s*:\s*false/.test(tabs.stdout), tabs.stdout.trim());
 
-        // "no retry / reload option either" — the whole point of the card. Tolerant of a missing
+        // "no retry / reload option either": the whole point of the card. Tolerant of a missing
         // button for the same reason `crash` is: a reverted tree has no card to click, and the
         // two checks below are what say so.
         const clicked = await page

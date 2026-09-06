@@ -1020,7 +1020,7 @@ describe('host state mirroring', () => {
 });
 
 /**
- * Issue #76 — a web pane whose renderer dies.
+ * Issue #76: a web pane whose renderer dies.
  *
  * The reducer refuses to remove a pane's only tab, so before this the daemon's answer to a dead
  * renderer was to change nothing at all: the tab stayed, the host had no view for it, and every

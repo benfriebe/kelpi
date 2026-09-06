@@ -430,7 +430,7 @@ describe('tab strip', () => {
      * §16.7's second empty surface (issue #76): the page's renderer died.
      *
      * The user's report was "sometimes web panes just go blank and only show the browser
-     * chrome" and "no retry / reload option either" — so what is asserted here is that the box
+     * chrome" and "no retry / reload option either". So what is asserted here is that the box
      * says what happened and carries a button, and that the chrome the report describes as
      * still-drawn is still drawn, because that half was never the bug.
      */

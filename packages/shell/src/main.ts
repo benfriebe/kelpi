@@ -1582,8 +1582,8 @@ if (!app.requestSingleInstanceLock()) {
      * Issue #76: every process death in this app, named, in one place.
      *
      * The user's report was "web panes just go blank" and the shell had almost nothing to say
-     * about it. The only `render-process-gone` handlers were per-`webContents` — this window's
-     * (`attachContentGuards`) and a web tab's (`webhost/tab.ts`) — so a renderer belonging to
+     * about it. The only `render-process-gone` handlers were per-`webContents` (this window's
+     * `attachContentGuards` and a web tab's `webhost/tab.ts`), so a renderer belonging to
      * neither died silently, and a GPU or utility process dying left no trace at all even though
      * a GPU restart can take every renderer in the app with it, which is one of the ways a pane
      * goes blank in the wild.

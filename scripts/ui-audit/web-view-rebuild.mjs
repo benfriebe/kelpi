@@ -207,7 +207,7 @@ async function main() {
                 `document.querySelector('[data-testid="web-crashed-${paneID}"]') !== null`
             )) === true;
         /**
-         * "Is there a page there" — asked with a verb that needs one.
+         * "Is there a page there", asked with a verb that needs one.
          *
          * NOT `kelpi web url`: §8.2 makes it answer from daemon STATE when the host round trip
          * fails, so a dead pane still prints the URL and title it had before it died and the

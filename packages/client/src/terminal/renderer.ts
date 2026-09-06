@@ -1295,6 +1295,13 @@ class AdapterRenderer implements TerminalRenderer {
      * continue. The pane paints its history progressively instead of all at once, which is what
      * a terminal has always done with a slow stream.
      *
+     * A RESIZE mid-drain is deliberately NOT a cancel, unlike a reset or a teardown. The
+     * remaining chunks are this pane's own history and the grid they are parsed at is the one
+     * the pane is now, which is the same thing that happens to live output during a drag; and
+     * the daemon owes one settled-resize replay per changed grid (§N24), which arrives as a
+     * `reset()` and supersedes whatever is left anyway. Cancelling here would throw away
+     * scrollback for a redraw that is already promised.
+     *
      * `strict` marks the FIRST tick, which runs synchronously inside `loadExclusive` and so
      * inside the startup gate. Two things ride on that: a normal-sized screen still lands
      * before `open()` resolves, exactly as it did before this existed, and a planted write fault

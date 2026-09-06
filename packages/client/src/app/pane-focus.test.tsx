@@ -24,6 +24,7 @@ import { ScratchpadPane } from '../content/ScratchpadPane';
 import { contentState, createFakeContentApi } from '../content/testing';
 import {
     PANE_SURFACE_ATTR,
+    armCaretClaim,
     engineFocusWindowOwner,
     focusPaneSurface,
     isPaneSurfaceCaret,
@@ -67,6 +68,14 @@ function mountChromeField(): HTMLInputElement {
     document.body.appendChild(input);
     return input;
 }
+
+/**
+ * One task, which is what an armed claim waits for after a `focusout`: the caret is dropped to
+ * `<body>` for the length of a focus move, so the decision is taken once the move has landed.
+ */
+const settleFocus = async (): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
 // ── the rule itself ─────────────────────────────────────────────────────────────────
 
@@ -354,6 +363,113 @@ describe('the engine-autofocus arbiter (§N35 residual a)', () => {
     });
 });
 
+/**
+ * Issue #35 - a claim that was DECLINED asks again.
+ *
+ * The politeness rule saying no is correct; dropping the claim afterwards is what left a pane
+ * wearing the ring with the keyboard in a sidebar filter until the user clicked it a second
+ * time. The web pane has had the armed form of this since §N30's residual; these pin it for the
+ * shared helper the terminal and the editor now use.
+ */
+describe('armCaretClaim (issue #35)', () => {
+    it('claims immediately when no chrome field is using the caret', () => {
+        const terminal = mountFakeTerminal();
+        let claims = 0;
+        const disarm = armCaretClaim(terminal.host, () => {
+            claims += 1;
+        });
+        expect(claims).toBe(1);
+        disarm();
+    });
+
+    it('stays armed while a chrome field holds it, and claims when the field lets go', async () => {
+        const filter = mountChromeField();
+        filter.focus();
+        const terminal = mountFakeTerminal();
+        let claims = 0;
+        const disarm = armCaretClaim(terminal.host, () => {
+            claims += 1;
+        });
+        // Declined, and the field keeps what it had: this is the half that was already right.
+        expect(claims).toBe(0);
+        expect(document.activeElement).toBe(filter);
+
+        // Escape in the sidebar filter blurs it (`chrome/Sidebar.tsx`), with nothing else taking
+        // the caret. That is the moment the pane may finally have it.
+        filter.blur();
+        await settleFocus();
+        expect(claims).toBe(1);
+        disarm();
+    });
+
+    it('is not answered by the ENGINE grabbing its own host, only by the field letting go', async () => {
+        const filter = mountChromeField();
+        filter.focus();
+        const terminal = mountFakeTerminal();
+        let claims = 0;
+        const disarm = armCaretClaim(terminal.host, () => {
+            claims += 1;
+        });
+
+        // `Terminal.open()`'s auto-focus, and the arbiter putting it straight back: a transient,
+        // not an answer. Spending the claim here would end the user's edit on the pane's behalf.
+        terminal.area.focus();
+        await settleFocus();
+        expect(claims).toBe(0);
+        filter.focus();
+        await settleFocus();
+        expect(claims).toBe(0);
+        expect(document.activeElement).toBe(filter);
+
+        filter.blur();
+        await settleFocus();
+        expect(claims).toBe(1);
+        disarm();
+    });
+
+    it('claims once: the gain is spent when the claim is MADE, and not again', async () => {
+        const filter = mountChromeField();
+        filter.focus();
+        const terminal = mountFakeTerminal();
+        let claims = 0;
+        armCaretClaim(terminal.host, () => {
+            claims += 1;
+        });
+        filter.blur();
+        await settleFocus();
+        filter.focus();
+        filter.blur();
+        await settleFocus();
+        expect(claims).toBe(1);
+    });
+
+    it('a disarmed claim never fires - an armed claim cannot outlive the ring', async () => {
+        const filter = mountChromeField();
+        filter.focus();
+        const terminal = mountFakeTerminal();
+        let claims = 0;
+        const disarm = armCaretClaim(terminal.host, () => {
+            claims += 1;
+        });
+        disarm();
+        filter.blur();
+        await settleFocus();
+        expect(claims).toBe(0);
+    });
+
+    it('another PANE holding the caret does not block the pane that wears the ring', () => {
+        const typing = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000032');
+        typing.area.focus();
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000033');
+        let claims = 0;
+        const disarm = armCaretClaim(arriving.host, () => {
+            claims += 1;
+        });
+        expect(claims).toBe(1);
+        disarm();
+    });
+});
+
 describe('releaseFocusedPaneCaret (§N29)', () => {
     it('lets go of whichever pane surface holds the caret, without being told which', () => {
         // The gesture that needs this cannot name the outgoing pane: a click inside a web
@@ -439,6 +555,53 @@ describe('an editor mounting into a focused pane', () => {
         });
 
         expect(document.activeElement).toBe(input);
+    });
+
+    /**
+     * Issue #35 - …and then asks again, which the editor was the worst offender at.
+     *
+     * `wasFocused.current = claimable` ran unconditionally, so the DECLINED claim above spent the
+     * focus gain outright: `!wasFocused.current` was false for ever after, and the pane kept the
+     * ring with the keyboard in the field until the user clicked it.
+     */
+    it('stays armed after being declined, and takes the caret when the field lets go (#35)', async () => {
+        const input = mountChromeField();
+        input.focus();
+
+        render(<PlainTextEditor paneID={SCRATCH} ariaLabel="scratchpad" value="" onChange={() => undefined} focused visible />);
+        const area = screen.getByTestId(`content-textarea-${SCRATCH}`);
+        expect(document.activeElement).toBe(input);
+
+        await act(async () => {
+            input.blur();
+            await settleFocus();
+        });
+        expect(document.activeElement).toBe(area);
+    });
+
+    it('…and a claim that was never made does not blur a caret it does not hold (#35)', async () => {
+        const input = mountChromeField();
+        input.focus();
+
+        const view = render(
+            <PlainTextEditor paneID={SCRATCH} ariaLabel="scratchpad" value="" onChange={() => undefined} focused visible />
+        );
+        expect(document.activeElement).toBe(input);
+
+        // The pane loses focus with the claim still armed: the field is somebody else's caret,
+        // and the release edge only ever lets go of one this editor is holding.
+        view.rerender(
+            <PlainTextEditor paneID={SCRATCH} ariaLabel="scratchpad" value="" onChange={() => undefined} focused={false} visible />
+        );
+        expect(document.activeElement).toBe(input);
+
+        // …and the armed claim is disarmed with it: the field letting go later is not this
+        // pane's caret to collect any more.
+        await act(async () => {
+            input.blur();
+            await settleFocus();
+        });
+        expect(document.activeElement).not.toBe(screen.getByTestId(`content-textarea-${SCRATCH}`));
     });
 
     it('does NOT take the caret when the pane is focused but off-screen (a background create)', () => {

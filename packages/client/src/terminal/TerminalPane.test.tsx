@@ -1150,6 +1150,89 @@ describe('TerminalPane — helpers', () => {
         input.remove();
     });
 
+    /**
+     * Issue #35 - a claim the politeness rule DECLINED asks again.
+     *
+     * The pane is focused (⌘], a sidebar row, `kelpi pane focus`, an agent), and a chrome text
+     * field - the sidebar filter, a rename, the palette - holds the caret. Declining is right;
+     * dropping the claim is not. The effect's deps are `[focused, visible, status]` and none of
+     * them changes when the field is let go, so the pane wore the ring and drew a blinking cursor
+     * while every keystroke went to the field, until a second click on the pane blurred the field
+     * before the pane's own handler ran.
+     */
+    it('re-claims the caret when the chrome field that declined it lets go (issue #35)', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const filter = document.createElement('input');
+        document.body.appendChild(filter);
+        filter.focus();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        // Declined, and the field keeps its caret: the half that was already right.
+        expect(renderers.last().focusCount).toBe(0);
+        expect(document.activeElement).toBe(filter);
+
+        // Escape in the sidebar filter blurs it (`chrome/Sidebar.tsx`). Nothing else re-runs the
+        // effect; the armed claim is what answers.
+        await act(async () => {
+            filter.blur();
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(renderers.last().focusCount).toBe(1);
+        filter.remove();
+    });
+
+    it('…and a pane that lost the ring does not collect the caret later (issue #35)', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const filter = document.createElement('input');
+        document.body.appendChild(filter);
+        filter.focus();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+        expect(renderers.last().focusCount).toBe(0);
+
+        // The ring moves on while the claim is still armed: the cleanup disarms it, so the field
+        // letting go afterwards is somebody else's business.
+        view.rerender(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await act(async () => {
+            filter.blur();
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(renderers.last().focusCount).toBe(0);
+        filter.remove();
+    });
+
     it('…and a FOCUSED pane keeps what its engine took (N35)', async () => {
         const pty = createFakePtyApi();
         const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });

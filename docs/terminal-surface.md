@@ -525,11 +525,24 @@ follows exactly **one client at a time**, the *size owner*:
   that opens a markdown pane) forcibly move focus to a pane even if something else holds it;
   the client follows the store's `focusedPaneID`.
 - **Polite focus** (view-mount path, `shouldGrabFocus`,
-  `packages/client/src/app/pane-focus.ts:59-77`): when the focused pane's surface (re)mounts
+  `packages/client/src/app/pane-focus.ts`): when the focused pane's surface (re)mounts
   it grabs focus *unless* a text editor outside any pane currently holds it (sidebar rename
   field, command palette input): two guards: an app-level "sidebar editing" flag suppresses
   the grab, and a final check bails if the current focus owner is an editable element that is
   not another pane's surface. Prevents re-renders from stealing the caret mid-typing.
+- **Armed focus** (issue #35, `armCaretClaim`, `packages/client/src/app/pane-focus.ts`): a
+  claim the rule above DECLINED is not dropped, it stays armed and is made the moment the
+  caret it deferred to is let go. The pane's own effect deps (`[focused, visible, status]`
+  for a terminal, `[claimable]` for an editor) never change when a sidebar filter is
+  dismissed, so without this a pane focused by ⌘] / ⌘[, a sidebar row, `kelpi pane focus` or
+  an agent wore the ring and drew a blinking cursor while the keystrokes went to the field,
+  until the user clicked the pane a second time (the click blurs the field before the pane's
+  own handler runs). The gain is spent only when the claim is actually MADE; losing pane
+  focus disarms it, so an armed claim never outlives the ring that justified it. The engine
+  focusing its own host is not an answer (that is `Terminal.open()`'s auto-focus, which the
+  arbiter is about to undo), and a `focusout` is answered one task later, because the caret
+  is dropped to `<body>` for the length of a focus move. The web pane has carried the same
+  rule since §N30's residual (`webpane/WebPane.tsx`).
 - Focus-related quirk worth preserving: raising the window restores its previous
   focus owner first, so programmatic pane selection applies *after* that restoration
   (the focus dispatch is deferred one turn).

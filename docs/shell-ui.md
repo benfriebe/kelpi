@@ -363,7 +363,11 @@ pane-focused event that drives `focusPane` — every pane type participates in t
 focus flow. When a focused shell pane's surface is (re)shown it grabs keyboard focus,
 EXCEPT while a sidebar inline rename/filter text field is active (a
 `sidebarTextEditingActive` flag suppresses focus stealing so re-renders can't yank the
-caret out of the field).
+caret out of the field). That refusal is not the end of the claim: the pane stays armed and
+takes the caret the moment the field lets go (issue #35, `armCaretClaim` in
+`packages/client/src/app/pane-focus.ts`), so a pane focused without a click - ⌘] / ⌘[, a
+sidebar row, `kelpi pane focus`, an agent - never sits there wearing the ring with the
+keystrokes going into a field the user has finished with.
 
 ### 4.2 Pane header
 
@@ -1502,10 +1506,11 @@ survive 1s-cadence status updates in the row beneath it.
 **Focus management.** Keyboard-focus handoff is sequenced deliberately (palette close →
 200ms → focus surface; popover row click → focus surface before dismissal; suppression of
 focus grabs while sidebar text fields are editing). In the client this collapses to
-`element.focus()` ordering, and three rules hold: (a) closing the palette/search always
+`element.focus()` ordering, and four rules hold: (a) closing the palette/search always
 returns focus to the focused pane; (b) inline editors are never robbed of focus by
 re-renders; (c) selecting a pane from tray/status popovers focuses it *after* switching
-workspaces.
+workspaces; (d) a handoff that was declined because a field is mid-edit is not lost, the
+pane collects the caret when the field lets go (issue #35).
 
 **Timers to reproduce:** 600ms focused-pane status auto-clear; 750ms resize-overlay
 linger; 650ms drag spring-load; 40pt/3pt/15ms drag auto-scroll; 1s pulse animation; 1s

@@ -29,6 +29,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type R
 
 import {
     PANE_SURFACE_ATTR,
+    armCaretClaim,
     openEngineFocusWindow,
     releasePaneCaret,
     shouldGrabFocus,
@@ -1042,8 +1043,26 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         const renderer = rendererRef.current;
         if (renderer === null) return;
         if (focused && visible) {
-            if (shouldGrabFocus(hostRef.current)) renderer.focus();
-            return;
+            /*
+             * Issue #35 - the claim is ARMED, not one-shot.
+             *
+             * `shouldGrabFocus` declining is correct: a sidebar rename, the filter or the palette
+             * mid-edit keeps its caret. What was missing was the second attempt. This effect's
+             * deps are `[focused, visible, status]`, none of which change when the field the
+             * claim deferred to is finally let go, so a declined claim was dropped outright: the
+             * pane wore the ring, drew a blinking cursor (below), and every keystroke went to the
+             * field until the user clicked the pane a second time - the click blurring the field
+             * before the pane's own handler ran is the whole of "clicking again fixes it".
+             *
+             * `armCaretClaim` is the rule the WEB pane has had since §N30's residual, in the
+             * shared module: claim now if the caret is free, otherwise stay armed and re-decide
+             * when it moves. The cleanup disarms, so an armed claim never outlives the ring that
+             * justified it, and `rendererRef` is read at claim time rather than closed over
+             * because a restart builds a fresh engine.
+             */
+            return armCaretClaim(hostRef.current, () => {
+                rendererRef.current?.focus();
+            });
         }
         if (!focused) {
             renderer.blur();

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    MIN_PANE_EXTENT_PX,
     dividerDragSnapshot,
     leaf,
     split,
@@ -92,9 +93,32 @@ describe('ratioForDividerDrag', () => {
         expect(ratio).toBeCloseTo((299 + 50) / 598, 12);
     });
 
-    it('clamps to [0.1, 0.9]', () => {
-        expect(ratioForDividerDrag(snapshot, { x: 0, y: 0 }, { x: -5000, y: 0 })).toBe(0.1);
-        expect(ratioForDividerDrag(snapshot, { x: 0, y: 0 }, { x: 5000, y: 0 })).toBe(0.9);
+    /**
+     * Issue #79 — a horizontal drag bottoms out on the COLUMN floor, not on the bare 0.1.
+     *
+     * `MIN_PANE_EXTENT_PX` (160 px, 20 columns at the shipped 8 px cell) over this split's 798 px
+     * is 0.2005…, so a drag off the left edge stops there and one off the right stops at its
+     * mirror. Without it a drag swept every intermediate width down to a ten-column pane, and
+     * every one of those rewrapped the whole scrollback.
+     */
+    it('clamps a horizontal drag to the column floor at either end', () => {
+        expect(snapshot.available).toBe(798);
+        const floor = MIN_PANE_EXTENT_PX / 798;
+        expect(ratioForDividerDrag(snapshot, { x: 0, y: 0 }, { x: -5000, y: 0 })).toBeCloseTo(floor, 12);
+        expect(ratioForDividerDrag(snapshot, { x: 0, y: 0 }, { x: 5000, y: 0 })).toBeCloseTo(1 - floor, 12);
+        // …and it is a floor, not a new resting place: an ordinary drag is untouched by it.
+        expect(ratioForDividerDrag(snapshot, { x: 0, y: 0 }, { x: 60, y: 0 })).toBeCloseTo((399 + 60) / 798, 12);
+    });
+
+    /**
+     * A vertical drag keeps the shipped [0.1, 0.9]. Only a width change moves the column count,
+     * so the floor's whole justification is absent here and applying it would be a row floor
+     * (three rows today, nine) that nothing asked for.
+     */
+    it('clamps a vertical drag to the shipped [0.1, 0.9]', () => {
+        const vertical = rootSnapshot(split('vertical', 0.5, leaf('a'), leaf('b')));
+        expect(ratioForDividerDrag(vertical, { x: 0, y: 0 }, { x: 0, y: -5000 })).toBe(0.1);
+        expect(ratioForDividerDrag(vertical, { x: 0, y: 0 }, { x: 0, y: 5000 })).toBe(0.9);
     });
 });
 

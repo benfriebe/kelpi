@@ -66,6 +66,29 @@ export const DIVIDER_MIN_DRAG_DISTANCE = 1;
 export const MIN_SPLIT_RATIO = 0.1;
 export const MAX_SPLIT_RATIO = 0.9;
 
+/**
+ * The narrowest a pane is ever dragged to, in CSS px (issue #79).
+ *
+ * **160 px is 20 columns** at the app's shipped terminal cell width: `measureCellSize`
+ * (`packages/client/src/terminal/fonts.ts:210`) takes `ceil(measureText('M').width)`, which for
+ * the default 13 px monospace face is 8 px. Twenty columns is the width at which a shell prompt
+ * and a short command still read as a terminal rather than as a column of single letters.
+ *
+ * It is a floor on the DRAG, not a new minimum for a stored layout: `clampRatio` only applies it
+ * when the caller passes the split's pixel extent, so a ratio replayed from the daemon or from a
+ * layout template is untouched and a narrow split someone already has keeps working.
+ *
+ * The reason it belongs in the resize path at all is cost, not taste. A width change is the only
+ * resize that moves the COLUMN count, and a column count change rewraps the whole scrollback
+ * (`ghostty_terminal_resize`, O(scrollback), plus `initCellPool` and two full-area canvas blits
+ * with a backing-store realloc). Rewrapping is superlinear as the pane narrows, because every
+ * stored line becomes more wrapped rows: at `MIN_SPLIT_RATIO` alone an 800 px split could be
+ * dragged to a 10-column pane, and a drag sweeps EVERY intermediate width on the way there at
+ * about 10 Hz per pane. Bottoming the sweep out at 20 columns bounds the worst frame in the
+ * gesture without changing anything a user would call a layout.
+ */
+export const MIN_PANE_EXTENT_PX = 160;
+
 /** Root split path; append "L" to descend into `first`, "R" into `second`. */
 export const ROOT_SPLIT_PATH = 'd';
 
@@ -158,9 +181,19 @@ export function rectContains(rect: Rect, point: Point): boolean {
 }
 
 /**
- * Clamp to [0.1, 0.9]. NaN propagates (matches Swift's `min(max(r, 0.1), 0.9)`,
- * where NaN comparisons are all false and the original value falls through).
+ * Clamp to [0.1, 0.9], and to the column floor below when the caller knows how many pixels the
+ * split has to share. NaN propagates (matches Swift's `min(max(r, 0.1), 0.9)`, where NaN
+ * comparisons are all false and the original value falls through).
+ *
+ * `available` is the split's extent along its own axis, in CSS px — `SplitDividerInfo.available`
+ * — and is what turns the ratio into a pane size. Callers without it (the daemon applying a
+ * stored ratio, a layout template) get exactly the old behaviour.
  */
-export function clampRatio(ratio: number): number {
-    return Math.min(Math.max(ratio, MIN_SPLIT_RATIO), MAX_SPLIT_RATIO);
+export function clampRatio(ratio: number, available?: number): number {
+    const base = Math.min(Math.max(ratio, MIN_SPLIT_RATIO), MAX_SPLIT_RATIO);
+    if (available === undefined || !Number.isFinite(available) || available <= 0) return base;
+    // Half, at most: a split too narrow to give BOTH children the floor gives them an even
+    // share rather than an impossible one.
+    const floor = Math.min(MIN_PANE_EXTENT_PX / available, 0.5);
+    return Math.min(Math.max(base, floor), 1 - floor);
 }

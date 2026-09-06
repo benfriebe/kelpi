@@ -140,7 +140,9 @@ describe('encodeKittyKey — disambiguate escape codes (0b1)', () => {
     it('encodes the ctrl / alt / super chords with 1 + the bitfield', () => {
         expect(press('a', DISAMBIGUATE, { ctrl: true })).toBe('\x1b[97;5u');
         expect(press('a', DISAMBIGUATE, { alt: true })).toBe('\x1b[97;3u');
-        expect(press('a', DISAMBIGUATE, { meta: true })).toBe('\x1b[97;9u');
+        // ⌘B, not ⌘A: super is still the 8 bit, but `a` is now one of the five system-editing
+        // letters this encoder hands back (#80; the suite below is the exemption's own).
+        expect(press('b', DISAMBIGUATE, { meta: true })).toBe('\x1b[98;9u');
         expect(press('a', DISAMBIGUATE, { ctrl: true, alt: true })).toBe('\x1b[97;7u');
         // Shift lowercases the key rather than becoming a second identity for it.
         expect(press('A', DISAMBIGUATE, { ctrl: true, shift: true })).toBe('\x1b[97;6u');
@@ -316,6 +318,63 @@ describe('encodeKittyKey — report all keys as escape codes (0b1000)', () => {
         expect(press('Unidentified', EVERYTHING)).toBeNull();
         expect(press('Process', EVERYTHING)).toBeNull();
         expect(press('MediaPlayPause', EVERYTHING)).toBeNull();
+    });
+});
+
+describe('encodeKittyKey: the system-editing chords Kelpi keeps (#80)', () => {
+    /**
+     * The defect this suite pins: with the protocol on, ⌘V was `CSI 118;9u` and the interceptor
+     * swallowed it, so nothing pasted for as long as an agent was running in the pane. Every
+     * assertion here is `null`, and `null` is the whole product behaviour: the event is left
+     * untouched, so the engine's own ⌘V/⌘C pass-through and the shell's Edit menu still fire.
+     */
+    it('hands ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z back at every flag set', () => {
+        for (const flags of [DISAMBIGUATE, WITH_EVENTS, EVERYTHING]) {
+            for (const key of ['v', 'c', 'x', 'a', 'z']) {
+                expect(press(key, flags, { meta: true })).toBeNull();
+                expect(release(key, flags, { meta: true })).toBeNull();
+            }
+        }
+    });
+
+    it('exempts the shifted forms too, since ⌘⇧Z is still a system chord', () => {
+        expect(press('Z', EVERYTHING, { meta: true, shift: true })).toBeNull();
+        expect(press('V', WITH_EVENTS, { meta: true, shift: true })).toBeNull();
+    });
+
+    it('exempts NOTHING else: super chords outside the five still encode', () => {
+        expect(press('b', DISAMBIGUATE, { meta: true })).toBe('\x1b[98;9u');
+        expect(press('k', DISAMBIGUATE, { meta: true })).toBe('\x1b[107;9u');
+        // Backspace stays encoded here: #82 maps ⌘Backspace in the BINDING layer instead, so a
+        // user who unbinds it gets the fixterm encoding back, which is Ghostty's own rule.
+        expect(press('Backspace', DISAMBIGUATE, { meta: true })).toBe('\x1b[127;9u');
+        expect(press('ArrowLeft', DISAMBIGUATE, { meta: true })).toBe('\x1b[1;9D');
+    });
+
+    it('is super-only: ctrl+c stays the interrupt and ctrl+v stays a chord', () => {
+        expect(press('c', DISAMBIGUATE, { ctrl: true })).toBe('\x1b[99;5u');
+        expect(press('v', DISAMBIGUATE, { ctrl: true })).toBe('\x1b[118;5u');
+        expect(press('a', DISAMBIGUATE, { alt: true })).toBe('\x1b[97;3u');
+        // ⌃⌘C is not a system-editing chord; the exemption must not swallow it.
+        expect(press('c', DISAMBIGUATE, { ctrl: true, meta: true })).toBe('\x1b[99;13u');
+        expect(press('v', DISAMBIGUATE, { alt: true, meta: true })).toBe('\x1b[118;11u');
+    });
+
+    it('leaves the Meta key ITSELF reportable under report all keys', () => {
+        // The exemption is about the letter, never about super as a modifier: an application
+        // that asked for every key still learns when ⌘ went down.
+        expect(press('Meta', EVERYTHING, { meta: true, location: 1 })).toBe('\x1b[57444;9u');
+    });
+
+    it('the stateful encoder declines them too, so the pane never calls preventDefault', () => {
+        const written: string[] = [];
+        const keyboard = createKittyKeyboard({
+            flags: () => EVERYTHING,
+            write: (bytes) => written.push(decoder.decode(bytes))
+        });
+        expect(keyboard.key(event('keydown', 'v', { meta: true }))).toBe(false);
+        expect(keyboard.key(event('keydown', 'c', { meta: true }))).toBe(false);
+        expect(written).toEqual([]);
     });
 });
 

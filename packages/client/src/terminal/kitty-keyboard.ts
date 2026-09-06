@@ -47,6 +47,10 @@
  *     precisely because their encoding is unchanged. Applications mask the modifier field, so an
  *     unreported bit costs nothing; a wrongly-reported one costs the legacy guarantee.
  *
+ * **A fourth limit, and this one is a product decision rather than a browser one:** the five
+ * macOS system-editing chords (⌘V, ⌘C, ⌘X, ⌘A, ⌘Z) are never encoded, at any flags. See
+ * `isSystemEditingChord` for why, and for the trade Ghostty makes identically (#80).
+ *
  * One divergence worth naming rather than burying: for a **shifted punctuation** key the
  * `unicode-key-code` this module reports is the *produced* glyph lowercased (`ctrl+@` → 64), not
  * the layout's unshifted key (kitty would say 50, the `2` under it). Letters are exact —
@@ -287,6 +291,50 @@ export function kittySequence(form: KittyKeyForm, mods: number, eventType: Kitty
 }
 
 /**
+ * The five system-editing letters (#80). Lowercase, matched against the lowercased `key`.
+ *
+ * ⌘V, ⌘C, ⌘X, ⌘A, ⌘Z: paste, copy, cut, select-all, undo. Not ⌘W, ⌘Q, ⌘N or any other chord the
+ * app or the OS already claims, because those never reach this encoder: the app's dispatcher
+ * consumes a BOUND chord in the window capture phase long before the pane's listeners run
+ * (`chrome/keys.ts` `installKeyDispatcher`, `TerminalPane.tsx`'s interceptor comment). This set
+ * is exactly the chords that are bound nowhere and therefore arrive here every time.
+ */
+export const KITTY_SYSTEM_EDITING_KEYS: ReadonlySet<string> = new Set(['v', 'c', 'x', 'a', 'z']);
+
+/**
+ * Is this one of the chords Kelpi keeps for the layers below the interceptor (#80)?
+ *
+ * The kitty protocol has a super bit, so `⌘V` under `disambiguate` is a perfectly legal
+ * `CSI 118;9u` and this module used to encode it. Encoding it is also the end of paste: the
+ * interceptor `preventDefault()`s a consumed event, which kills BOTH fallbacks the port relies
+ * on. The engine passes ⌘V and ⌘C through un-prevented so the browser's own `paste` / `copy`
+ * fire (`vendor/ghostty-web-patched/source/lib/input-handler.ts:373-386`), and the shell's
+ * `{ role: 'editMenu' }` is downstream of the page (`shell/src/main.ts`, `shell/src/menu.ts`).
+ * The observable symptom is #80's: start Claude Code, which negotiates the protocol, and ⌘V
+ * stops pasting until you exit it.
+ *
+ * So super chords in this set are handed back, and the cost is named rather than hidden: an
+ * application that legitimately wants `CSI 118;9u` does not get it. Ghostty makes the same
+ * trade on macOS: `super+v` / `super+c` are `paste_from_clipboard` / `copy_to_clipboard` in
+ * its shipped macOS defaults (`src/config/Config.zig`, the `Keybinds.init` darwin block), and a
+ * binding is consumed before the key encoder ever runs.
+ *
+ * **Only super.** A ctrl or alt chord is never exempt (`ctrl+c` is the interrupt, and
+ * disambiguating `ctrl+i` from Tab is the flag's entire purpose). Shift is tolerated, since a
+ * shifted system chord is still a system chord (⌘⇧Z is Redo), and the platform, not this
+ * module, decides what it means.
+ */
+export function isSystemEditingChord(event: KittyKeyEventLike): boolean {
+    if (event.metaKey !== true) return false;
+    if (event.ctrlKey === true || event.altKey === true) return false;
+    const key = event.key;
+    // Single scalars only: `Meta`, `Dead` and every functional key are longer than one unit, and
+    // an astral glyph is not in the set anyway.
+    if (key.length !== 1) return false;
+    return KITTY_SYSTEM_EDITING_KEYS.has(key.toLowerCase());
+}
+
+/**
  * One key event → the bytes a kitty-protocol application expects, or **null** when this event
  * is not ours: the protocol is off, the flags do not cover it, or its legacy encoding is
  * already correct and the engine should produce it.
@@ -311,6 +359,13 @@ export function encodeKittyKey(event: KittyKeyEventLike, rawFlags: number): Uint
     const eventType: KittyEventType = release ? 3 : event.repeat === true && reportEvents ? 2 : 1;
 
     const mods = kittyModifiers(event);
+
+    // ── the chords the platform owns, before any table is consulted (#80) ───────────
+    //
+    // Deliberately FIRST, so it covers every branch below rather than only the text-key one:
+    // whatever the set grows to hold, the answer is the same null.
+    if (isSystemEditingChord(event)) return null;
+
     /** Any modifier at all — what decides whether Enter / Tab / Backspace keep their C0 byte. */
     const chorded = mods !== 0;
     /** ctrl / alt / super — the modifiers that stop a key from producing text. */

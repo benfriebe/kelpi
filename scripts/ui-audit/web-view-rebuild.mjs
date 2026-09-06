@@ -186,6 +186,22 @@ async function main() {
         const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened.stdout) ?? [])[1];
         if (paneID === undefined) throw new Error(`no web pane opened: ${opened.stdout}${opened.stderr}`);
 
+        /**
+         * Crash the pane, without letting a refusal end the run.
+         *
+         * The refusal is itself a symptom: against the shipped tree the registry drops a dead
+         * tab without rebuilding it, so the second crash has nothing to kill and the op answers
+         * `no live view for pane <id>`. Throwing there would abandon the control run three
+         * assertions in, and the assertions after it - no card, and `web reload` answering
+         * `no live tab` - are the ones that describe the bug most plainly.
+         */
+        const crashPane = async () => {
+            try {
+                return await harness.crash(paneID);
+            } catch (error) {
+                return { crashed: false, error: error instanceof Error ? error.message : String(error) };
+            }
+        };
         const cardUp = async () =>
             (await page.eval(
                 `document.querySelector('[data-testid="web-crashed-${paneID}"]') !== null`
@@ -227,7 +243,7 @@ async function main() {
         // ── 2. crash it, and see the death reported ────────────────────────────────
         let mark = sinceIndex();
         const crashAt = Date.now();
-        const crashed = await harness.crash(paneID);
+        const crashed = await crashPane();
         check('the harness crashes the pane’s renderer', crashed?.crashed === true, JSON.stringify(crashed));
         const gone = await waitFor(
             'the shell to log the renderer death',
@@ -277,7 +293,7 @@ async function main() {
 
         // ── 4. a second crash inside the window stops, and says so ─────────────────
         mark = sinceIndex();
-        await harness.crash(paneID);
+        await crashPane();
         const cardShown = await waitFor(
             'the client to draw the stopped-responding card',
             cardUp,
@@ -318,7 +334,7 @@ async function main() {
 
         // ── 6. …and so does the card's own Reload button ───────────────────────────
         mark = sinceIndex();
-        await harness.crash(paneID);
+        await crashPane();
         const cardAgain = await waitFor('the card again', cardUp, 30_000).then(() => true, () => false);
         check('a third crash inside the window draws the card again', cardAgain);
         const clicked = await page.eval(

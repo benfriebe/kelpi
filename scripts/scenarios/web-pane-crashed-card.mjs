@@ -53,6 +53,20 @@ export default async function ({ page, cli, harness, rec, d }) {
         const reload = `[data-testid="web-crashed-reload-${paneID}"]`;
         /** A read that needs a live page: `web url` falls back to daemon state, `web text` cannot. */
         const pageReads = async () => /tick \d+/.test((await cli.run(['web', 'text', '#t', '--target', paneID])).stdout);
+        /**
+         * Crash it, without letting a refusal end the run. Against a tree with the fix reverted
+         * the pane is never rebuilt, so the second crash has nothing to kill and the op answers
+         * `no live view` — and the checks after it are the ones that say what the bug is.
+         */
+        const crash = async () => {
+            try {
+                await harness.crash(paneID);
+                return true;
+            } catch (error) {
+                rec.note(`crash refused: ${error instanceof Error ? error.message : String(error)}`);
+                return false;
+            }
+        };
 
         await d.settleDom(page, `document.querySelector('[data-testid="web-page-${paneID}"]')`, { ceilingMs: 15_000 });
         rec.check(
@@ -64,7 +78,7 @@ export default async function ({ page, cli, harness, rec, d }) {
 
         // One death is a recovery, not a report: the daemon rebuilds the pane and the user sees
         // a reload. Waiting for the page to answer again is what proves that half happened.
-        await harness.crash(paneID);
+        await crash();
         rec.check(
             'a single renderer death rebuilds itself, with no card',
             await d.settle(pageReads, { ceilingMs: 25_000 }),
@@ -76,7 +90,7 @@ export default async function ({ page, cli, harness, rec, d }) {
         );
 
         // The second death inside the window is the page's own fault, and the daemon stops.
-        await harness.crash(paneID);
+        await crash();
         const shown = await d.settleDom(page, `document.querySelector('${card}')`, { ceilingMs: 25_000 });
         rec.check('a repeat crash raises the stopped-responding card', shown);
         await rec.shot(page, 'crashed-card');
@@ -101,8 +115,15 @@ export default async function ({ page, cli, harness, rec, d }) {
         const tabs = await cli.run(['web', 'tabs', '--target', paneID, '--json']);
         rec.check('`kelpi web tabs` reports the tab as not live', /"live"\s*:\s*false/.test(tabs.stdout), tabs.stdout.trim());
 
-        // "no retry / reload option either" — the whole point of the card.
-        await page.click(reload);
+        // "no retry / reload option either" — the whole point of the card. Tolerant of a missing
+        // button for the same reason `crash` is: a reverted tree has no card to click, and the
+        // two checks below are what say so.
+        const clicked = await page
+            .eval(
+                `(() => { const b = document.querySelector('${reload}'); if (b === null) return false; b.click(); return true; })()`
+            )
+            .catch(() => false);
+        rec.check('the card carries a Reload button', clicked === true);
         rec.check(
             'clicking Reload brings the page back',
             await d.settle(pageReads, { ceilingMs: 25_000 }),

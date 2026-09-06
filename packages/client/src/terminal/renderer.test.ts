@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { REPLAY_CHUNK_BYTES } from './ingest';
 import {
     DEFAULT_FONT_FAMILY,
     DEFAULT_TERMINAL_ENGINE,
     DEFAULT_TERMINAL_THEME,
+    PENDING_WRITE_LIMIT_BYTES,
     RESIZE_PAINT_HOLD_TIMEOUT_MS,
     TERMINAL_RESET_SEQUENCE,
     compactTheme,
@@ -945,6 +947,149 @@ describe('a poisoned engine (run-F N1)', () => {
         renderer.write(new Uint8Array(0)); // post-open: still a no-op, still not a fault
         expect(renderer.failed).toBe(false);
         expect(engine.terminal.writes).toEqual([]);
+        renderer.dispose();
+    });
+});
+
+/**
+ * Issue #78: the mount flush is a pump, not a `for` loop.
+ *
+ * The engine parses a payload in ONE synchronous WASM call, so the size of a single `write()`
+ * IS the size of the main thread's next stall. Before this, `open()` handed the whole queued
+ * replay over at once and a workspace switch was N of those back to back. The tests below pin
+ * the three things the pump has to get right: it spends a budget and yields, a newer replay
+ * abandons the remainder, and a pane torn down mid-drain takes its timer with it.
+ *
+ * Time is faked, and the stub engine SPENDS it: 4 ms per write, so exactly two writes fit in
+ * `REPLAY_TICK_BUDGET_MS` (8 ms) and the boundaries are arithmetic rather than a race.
+ */
+describe('the budgeted mount flush (issue #78)', () => {
+    const CHUNKS = 6;
+
+    /** A renderer with `CHUNKS` 64 KiB chunks queued and its engine open, mid-drain. */
+    async function midDrain(): Promise<{ engine: StubEngine; renderer: ReturnType<typeof createRendererFromLoader> }> {
+        const engine = stubEngine();
+        engine.terminal.onWriteRecorded = (): void => {
+            vi.setSystemTime(Date.now() + 4);
+        };
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+        const opening = renderer.open(host());
+        renderer.write('x'.repeat(REPLAY_CHUNK_BYTES * CHUNKS));
+        engine.settle();
+        await opening;
+        return { engine, renderer };
+    }
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('writes a multi-chunk replay across several tasks, in order, none of them the whole parse', async () => {
+        vi.useFakeTimers();
+        const { engine, renderer } = await midDrain();
+
+        // The first tick is synchronous, inside the startup gate: two writes: a budget's worth,
+        // not the payload: and a continuation task left behind for the rest.
+        expect(engine.terminal.writes).toHaveLength(2);
+        expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+        for (let advance = 0; advance < 20 && engine.terminal.writes.length < CHUNKS; advance += 1) {
+            await vi.advanceTimersByTimeAsync(10);
+        }
+        expect(engine.terminal.writes).toHaveLength(CHUNKS);
+        // Every chunk, in order, and none of them bigger than one budgeted write.
+        expect(engine.terminal.writes.join('')).toBe('x'.repeat(REPLAY_CHUNK_BYTES * CHUNKS));
+        for (const chunk of engine.terminal.writes) expect(chunk.length).toBeLessThanOrEqual(REPLAY_CHUNK_BYTES);
+        renderer.dispose();
+    });
+
+    it('lets a newer replay supersede the rest of the drain', async () => {
+        vi.useFakeTimers();
+        const { engine, renderer } = await midDrain();
+        expect(engine.terminal.writes).toHaveLength(2);
+
+        // `ingest.replay()`: reset, then the new snapshot. The four chunks still queued from the
+        // old one are inside it already, and writing them after it would paint history over it.
+        renderer.reset();
+        renderer.write('NEWER SNAPSHOT');
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(engine.terminal.writes.slice(2)).toEqual([TERMINAL_RESET_SEQUENCE, 'NEWER SNAPSHOT']);
+        renderer.dispose();
+    });
+
+    it('holds live bytes behind the drain rather than writing them in front of it', async () => {
+        vi.useFakeTimers();
+        const { engine, renderer } = await midDrain();
+
+        // An `output` frame while the snapshot's tail is still queued: it belongs AFTER it.
+        renderer.write('LIVE TAIL');
+        await vi.advanceTimersByTimeAsync(20);
+
+        expect(engine.terminal.writes.at(-1)).toBe('LIVE TAIL');
+        expect(engine.terminal.writes.join('')).toBe(`${'x'.repeat(REPLAY_CHUNK_BYTES * CHUNKS)}LIVE TAIL`);
+        renderer.dispose();
+    });
+
+    it('is safe to dispose mid-drain: no further writes, no timer left pointing at the engine', async () => {
+        vi.useFakeTimers();
+        const { engine, renderer } = await midDrain();
+        expect(engine.terminal.writes).toHaveLength(2);
+
+        renderer.dispose();
+        await vi.advanceTimersByTimeAsync(50);
+
+        expect(engine.terminal.writes).toHaveLength(2);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('releases the startup gate before the drain finishes, so the next pane is not held behind it', async () => {
+        vi.useFakeTimers();
+        const first = await midDrain();
+        expect(first.engine.terminal.writes.length).toBeLessThan(CHUNKS); // still draining
+
+        const second = stubEngine();
+        const other = createRendererFromLoader('ghostty', second.loader);
+        const opening = other.open(host());
+        second.settle();
+        await opening;
+
+        // The second pane is live while the first one still has chunks to write: before #78 the
+        // whole parse sat inside the gate and this could not happen.
+        expect(second.terminal.opened).not.toBeNull();
+        expect(first.engine.terminal.writes.length).toBeLessThan(CHUNKS);
+
+        await vi.advanceTimersByTimeAsync(50);
+        expect(first.engine.terminal.writes).toHaveLength(CHUNKS);
+        first.renderer.dispose();
+        other.dispose();
+    });
+
+    /**
+     * The cap exists so the drain is bounded; the RIS at the head of the queue exists so the
+     * snapshot behind it is not painted over the previous pane's screen (`reset`). The pre-#78
+     * trim shifted from index 0, which dropped the reset FIRST: the two rules cancelling each
+     * other out at exactly the moment both matter.
+     */
+    it('trims an over-cap queue from the oldest chunks, never the leading RIS', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+        const opening = renderer.open(host());
+
+        renderer.reset(); // engine still loading: plants RIS at the head
+        // Two megabytes into a one-megabyte queue: the tail is what the user is looking at.
+        renderer.write('O'.repeat(PENDING_WRITE_LIMIT_BYTES));
+        renderer.write('N'.repeat(PENDING_WRITE_LIMIT_BYTES));
+        engine.settle();
+        await opening;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const written = engine.terminal.writes.join('');
+        expect(engine.terminal.writes[0]).toBe(TERMINAL_RESET_SEQUENCE);
+        expect(written.length - TERMINAL_RESET_SEQUENCE.length).toBeLessThanOrEqual(PENDING_WRITE_LIMIT_BYTES);
+        // The newest bytes survived and the oldest went.
+        expect(written.endsWith('N'.repeat(1000))).toBe(true);
+        expect(written.split('O').length - 1).toBeLessThan(PENDING_WRITE_LIMIT_BYTES);
         renderer.dispose();
     });
 });

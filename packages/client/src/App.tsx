@@ -125,6 +125,7 @@ import {
     switchWorkspacePosition,
     workspaceSelectionReport
 } from './app/file-menu';
+import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
 import { focusPaneSurface, releaseFocusedPaneCaret } from './app/pane-focus';
@@ -2648,12 +2649,25 @@ function Shell(props: AppProps): ReactElement {
 
     const dimensionsRef = useRef(new Map<string, TerminalGeometry>());
     const [, setDimensionsTick] = useState(0);
+    /**
+     * One App render per FRAME for the pane geometries, however many panes report (issue #78).
+     *
+     * Both callers land in their own task on a workspace switch: `TerminalPane`'s
+     * `setTimeout(0)` visibility effect and its open-resolution handler: so this used to bump
+     * App state about 2N times per switch, none of them batched by React because none of them
+     * share an event, and every bump is an O(panes) render of the whole tree. The MAP is
+     * written synchronously and `getPaneDimensions` reads it through the ref, so no reader ever
+     * sees a stale grid; only the paint waits for the frame. See `app/frame-tick.ts`.
+     */
+    const dimensionsTick = useRef<FrameTick | null>(null);
+    dimensionsTick.current ??= createFrameTick(() => setDimensionsTick((tick) => tick + 1));
+    useEffect(() => () => dimensionsTick.current?.cancel(), []);
 
     const onDimensionsChange = useCallback((paneID: string, geometry: TerminalGeometry): void => {
         const previous = dimensionsRef.current.get(paneID);
         if (previous?.cols === geometry.cols && previous.rows === geometry.rows) return;
         dimensionsRef.current.set(paneID, geometry);
-        setDimensionsTick((tick) => tick + 1);
+        dimensionsTick.current?.request();
     }, []);
 
     const getPaneDimensions = useCallback(

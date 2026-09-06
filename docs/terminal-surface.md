@@ -416,6 +416,23 @@ because no client is watching, section 4.1).
   A second replay always resets the engine first, a newer replay supersedes one still being
   applied (a CAN byte aborts any escape sequence the cut left open), and live bytes that
   arrive while a replay is pending are held (up to 256 KiB) and released after it painted.
+- **The mount flush is budgeted too** (`packages/client/src/terminal/renderer.ts`, issue #78):
+  bytes that arrive before the engine exists are queued by the adapter, and that queue is
+  drained on the same pump: 64 KiB writes, 8 ms per task, then a `setTimeout(0)` yield, not
+  in one loop at `open()`. A pane whose replay beats its engine (a launch, a relaunch, a
+  reload, a workspace switch that mounts up to `DEFAULT_MOUNT_LIMIT` panes at once) therefore
+  paints its history progressively instead of parsing megabytes in one synchronous WASM call.
+  A `reset()` on a live engine abandons whatever the flush had left, for the same reason a
+  newer replay supersedes an older one in `ingest.ts`; live bytes that arrive mid-drain go to
+  the back of the same queue so ordering is preserved; and a dispose or a poison cancels the
+  drain with its timer. The queue's own ceiling is `PENDING_WRITE_LIMIT_BYTES` (1 MiB, the
+  daemon's `DEFAULT_CLIENT_QUEUE_BYTES`), and it is trimmed from the oldest chunks BEHIND the
+  leading RIS, never by dropping the reset that makes the snapshot behind it the whole screen.
+- **Engine startup serialization** (`serializeEngineStartup`, run-F N1): every startup in the
+  page runs one at a time, holding the WASM load, `open()`, the geometry and the flush's FIRST
+  budgeted tick. The rest of the flush drains outside the gate: once the shared instance exists there is
+  only one of it, so a second pane coming up cannot be handed a terminal from another instance,
+  and holding a whole parse in the critical section is what made a switch N sequential parses.
 
 ---
 

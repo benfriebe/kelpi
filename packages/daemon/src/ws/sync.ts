@@ -1052,6 +1052,22 @@ export const WEB_GEOMETRY_REPORT_MESSAGE = 'web-geometry-report';
  */
 export const WEB_GEOMETRY_RESYNC_MESSAGE = 'web-geometry-resync';
 
+/**
+ * Host → daemon: "broadcast the message above, now" (issue #75).
+ *
+ * The daemon sends `web-geometry-resync` by itself on host registration, because that is the
+ * moment only IT can see. This is the other moment, and only the host can see it: the shell
+ * parked a view for a reason no client ever heard about (its window had no metrics for an
+ * instant, or was hidden and came back) and is holding a placement it cannot honour from its own
+ * books. Nothing about geometry is stored here either way - the daemon still only knows when to
+ * ask, and this is a second party allowed to say when.
+ *
+ * Accepted only from the connection that currently HOLDS the host role. An ordinary client
+ * asking would be a client making every other client re-send, which is a fan-out any attached
+ * browser could trigger.
+ */
+export const WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE = 'web-geometry-resync-request';
+
 /** Client → daemon "take the user to this pane", and the daemon's fan-out of it. */
 export const REVEAL_REQUEST_MESSAGE = 'reveal-request';
 export const REVEAL_PANE_MESSAGE = 'reveal-pane';
@@ -1541,6 +1557,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case 'host-unregister':
                     this.releaseHost();
                     return;
+                case WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE: {
+                    // #75. Host-only, and scoped to the window this host declared, exactly as the
+                    // registration-time broadcast is: a client filters on it for itself.
+                    if (this.hostRegistration === null) return;
+                    broadcastGeometryResync(this.client?.windowID ?? null);
+                    return;
+                }
                 case 'host-rpc-reply': {
                     const id = text(parsed['id']);
                     const payload = parsed['reply'];

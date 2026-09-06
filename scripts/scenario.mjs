@@ -23,6 +23,7 @@
  *   t.harness   the shell channel: menu, menuClick, press, counters, armDialog, window, focus, blur
  *   t.cli       the sandbox's kelpi CLI (boot only): run(args, {env}), ok(args) -> stdout
  *   t.sandbox   paths and ports (boot only): configPath, root, base, controlPort, debugPort
+ *   t.shell     the shell process (boot only, else null): lines[], text(), waitForLine(re, label)
  *   t.rec       the recorder: check(label, ok, detail), note(msg), shot(page, label)
  *   t.d         the driver module itself (PAGE, clickMenuItem, openSidebarMenu, settleDom, ...)
  *   t.sleep
@@ -141,7 +142,21 @@ for (const file of files) {
     try {
         const mod = await import(pathToFileURL(file).href);
         if (typeof mod.default !== 'function') throw new Error(`${file} has no default export function`);
-        await mod.default({ page: t.page, harness: t.harness, cli: t.cli, sandbox: t.sandbox, rec, d: driver, sleep: driver.sleep, repoRoot });
+        await mod.default({
+            page: t.page,
+            harness: t.harness,
+            cli: t.cli,
+            sandbox: t.sandbox,
+            // The shell's own stdout, for behaviour whose only external evidence is a log line
+            // (the web-pane placement trail, `web pane <id> view owner=main|holder`). Null under
+            // `--attach`, where this runner did not launch the shell and cannot read its pipe; a
+            // scenario that needs it must say so rather than assume.
+            shell: t.shell ?? null,
+            rec,
+            d: driver,
+            sleep: driver.sleep,
+            repoRoot
+        });
     } catch (error) {
         rec.check('the scenario ran to completion', false, error instanceof Error ? error.stack ?? error.message : String(error));
         try {

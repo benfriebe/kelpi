@@ -820,7 +820,13 @@ export const HARNESS_OPS = [
     'notification-close',
     'window',
     'focus',
-    'blur'
+    'blur',
+    // Issue #75's three. `menu-click` refuses role rows and `press` finds no handler on one, so
+    // ⌘H, ⌥⌘H and ⌘M could not be driven at all: the one bug class that needs them (the shell
+    // parks its own views on `hide`/`minimize`) had no way to be reproduced from a script.
+    'hide',
+    'minimize',
+    'restore'
 ] as const;
 export type HarnessOp = (typeof HARNESS_OPS)[number];
 
@@ -828,6 +834,15 @@ export interface WindowSnapshot {
     readonly focused: boolean;
     readonly visible: boolean;
     readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+}
+
+/**
+ * What `hide` / `minimize` / `restore` answer with: the two flags the caller is about to assert
+ * on, read back AFTER the call so the reply is an observation rather than an intention.
+ */
+export interface WindowVisibility {
+    readonly visible: boolean;
+    readonly minimized: boolean;
 }
 
 /**
@@ -848,6 +863,12 @@ export interface HarnessSurface<T extends MenuEntryLike<T>> {
     readonly focus: () => boolean | null;
     /** `blur()`; returns `isFocused()` afterwards, or null without a window. */
     readonly blur: () => boolean | null;
+    /** `hide()`: what ⌘H does to the window. Null without a window. */
+    readonly hide: () => WindowVisibility | null;
+    /** `minimize()`: what ⌘M does. Null without a window. */
+    readonly minimize: () => WindowVisibility | null;
+    /** Undo either of the two above, whichever the window is in. Null without a window. */
+    readonly restore: () => WindowVisibility | null;
     readonly counters: HarnessCounters;
 }
 
@@ -932,6 +953,14 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
                 return okResponse(id, { focused: surface.focus() });
             case 'blur':
                 return okResponse(id, { focused: surface.blur() });
+            // #75. Nulls rather than an error with no window, exactly as `window` answers, so a
+            // scenario reads one shape whether or not there is a window to act on.
+            case 'hide':
+                return okResponse(id, surface.hide() ?? { visible: null, minimized: null });
+            case 'minimize':
+                return okResponse(id, surface.minimize() ?? { visible: null, minimized: null });
+            case 'restore':
+                return okResponse(id, surface.restore() ?? { visible: null, minimized: null });
             default:
                 return errorResponse(id, `unknown op "${op}" (ops: ${HARNESS_OPS.join(', ')})`);
         }

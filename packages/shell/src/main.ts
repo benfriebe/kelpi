@@ -572,6 +572,17 @@ function createWindow(): BrowserWindow {
     window.on('enter-full-screen', () => saveFullScreenFlag(window, true));
     window.on('leave-full-screen', () => saveFullScreenFlag(window, false));
     window.on('focus', () => {
+        /*
+         * #75: the fast path back from a hide.
+         *
+         * macOS emits no `show` for `app.show()` and none at all for `BrowserWindow.show()`
+         * (measured; `webhost/index.ts` has the table), so the host's own reconciler is what
+         * notices the window is usable again, and it has backed off to a two-second tick by
+         * then. Coming back to a hidden app DOES focus its window, and a restore is free when
+         * there is nothing parked, so this turns the common gesture into one frame instead of
+         * up to two seconds.
+         */
+        webHost?.restoreViews('window-focused');
         // agent-lifecycle.md §8.4: activating the app clears the badge immediately.
         status?.acknowledgeActivation();
         // §AGNT-056: …and the pane grid re-schedules its 600 ms status clear, which is the
@@ -593,11 +604,26 @@ function createWindow(): BrowserWindow {
         // pane whose view is parented to nothing).
         webHost?.releaseViews('window-closed');
     });
-    window.on('hide', () => webHost?.releaseViews('window-hidden'));
-    // Resizing/moving the window changes the content area under every embedded view; the client
-    // re-measures and reports, so nothing is recomputed here — but a window that leaves the
-    // screen entirely must not keep views parented to it.
-    window.on('minimize', () => webHost?.releaseViews('window-minimized'));
+    /*
+     * Hiding and minimising, and the two events that undo them (issue #75).
+     *
+     * Resizing/moving the window changes the content area under every embedded view; the client
+     * re-measures and reports, so nothing is recomputed here — but a window that leaves the
+     * screen entirely must not keep views parented to it.
+     *
+     * These four lines are a matched set, and for a long time only the first two existed. A
+     * ⌘H, an ⌥⌘H from another app, a ⌘M or the global hotkey's second press parked every web
+     * pane's view in the off-screen holder, `releaseViews` DELETED the placement, and nothing
+     * ever put it back: the client's geometry reporter dedupes an identical re-render, so it
+     * had nothing to say, and no other event follows an unhide. Every web pane came back an
+     * empty hole with its chrome still drawn round it, recoverable only by switching workspace
+     * away and back, resizing the window, or restarting the app. `parkViews` keeps the
+     * placement, `restoreViews` re-applies it against the window's live metrics.
+     */
+    window.on('hide', () => webHost?.parkViews('window-hidden'));
+    window.on('minimize', () => webHost?.parkViews('window-minimized'));
+    window.on('show', () => webHost?.restoreViews('window-shown'));
+    window.on('restore', () => webHost?.restoreViews('window-restored'));
 
     /*
      * H10 — a right-click inside a content pane's document frame.

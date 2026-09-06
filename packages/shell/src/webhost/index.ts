@@ -85,8 +85,26 @@ export interface WebPaneHost {
     readonly paneCount: number;
     /** Panes whose view is currently inside the shell window. */
     readonly embeddedPaneIDs: readonly string[];
-    /** Send every embedded view back to the holder (the window closed, or is about to). */
+    /** Panes this shell parked and still owes a placement to (#75). */
+    readonly parkedPaneIDs: readonly string[];
+    /**
+     * Send every embedded view back to the holder and FORGET where it was: the window is closing
+     * or the host is losing its role, so the placements are not ours to restore.
+     */
     releaseViews(reason?: string): void;
+    /**
+     * Send every embedded view back to the holder and REMEMBER where it was (#75): the user hid
+     * or minimised the window, and `restoreViews()` puts them back when it comes back.
+     */
+    parkViews(reason?: string): void;
+    /**
+     * Put back every view this shell parked (#75). Called on the window's `show` and `restore`.
+     *
+     * Also the repair for the park no event can undo: a placement that is still parked once the
+     * window is live again is one the shell cannot honour from its own books, so the clients are
+     * asked to re-state what belongs on screen.
+     */
+    restoreViews(reason?: string): void;
 }
 
 /**
@@ -465,9 +483,148 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 `web pane ${event.paneID} view ${event.outcome === 'placed' ? 'owner=main' : 'owner=holder'} ` +
                     `bounds=${box} (${event.reason})`
             );
+            // #75: this host now holds a placement (or has just parked one), and macOS gives no
+            // dependable event for the moment either can change (see the reconciler below).
+            // Arming here rather than at each call site means no path added later can forget to.
+            watchWindowState();
         },
         onError
     });
+
+    /*
+     * ── #75: a park this shell performs is a park this shell undoes ─────────────────
+     *
+     * Two mechanisms, and the SECOND one is the load-bearing one. That is the opposite of what
+     * the issue proposes, and the reason is measurable rather than a preference.
+     *
+     * Measured on this app's own Electron (43.4.0 / Chromium 150), plain window, in
+     * `docs/audit/n75-verify/electron-window-events.cjs`:
+     *
+     *     win.hide()      no events at all       win.show()     no events at all
+     *     win.minimize()  minimize, show, hide   win.restore()  restore, show
+     *     app.hide()      hide, and only while the app is actually the active one
+     *     app.show()      no events at all
+     *
+     * So on macOS a hide and an unhide have NO dependable event: `orderOut:` / `orderFront:`
+     * post nothing Electron forwards, `NSApplicationDidUnhide` does not reach a window's `show`,
+     * and a Space switch, which is the gesture the issue was actually reported for, has no API
+     * at all. A restore wired only to `window.on('show')` would pass a unit test and do nothing
+     * on the machine it was written for. (It also explains the field reports: the park that bit
+     * users is mostly not the `hide` handler but a geometry report landing while `isVisible()`
+     * is false, which released with reason `no-window`.)
+     *
+     *   1. **The events, where they fire.** `main.ts` wires `hide`/`minimize` to `parkViews` and
+     *      `show`/`restore` to `restoreViews`, so where macOS does say something the answer
+     *      lands in one frame. `refresh()` re-applies each placement against the window's LIVE
+     *      metrics, so a window resized or moved to another display while it was away comes
+     *      back correctly clamped rather than at the box it left.
+     *   2. **A reconciler that looks at the window itself.** While this host holds any
+     *      placement at all it re-checks four booleans on a backing-off timer (150 ms after a
+     *      change, up to 2 s at rest) and makes the books match: a window that is not usable
+     *      parks what is in it, a window that is usable again places back what it parked. No
+     *      event, no gesture and no client report is required for either direction.
+     *
+     * If the window is usable and a placement STILL cannot be honoured (its view is gone, or
+     * never existed), the clients are asked to re-state theirs through the daemon's
+     * `web-geometry-resync` broadcast (#34's message: the only party that knows where the holes
+     * are is the one that drew them). That ask is rate-limited, because a broadcast reaches every
+     * attached client and a stuck placement must not become a message per tick.
+     */
+    const WATCH_MIN_MS = 150;
+    const WATCH_MAX_MS = 2_000;
+    const RESYNC_MIN_INTERVAL_MS = 5_000;
+    let watchTimer: NodeJS.Timeout | null = null;
+    let watchDelay = WATCH_MIN_MS;
+    let lastResyncAsk = 0;
+
+    /**
+     * Is there a window a view could be in right now?
+     *
+     * Deliberately cheaper than `windowMetrics()`, which also reads the content bounds and asks
+     * the screen module which display the frame is on: this runs on a timer, and the expensive
+     * question is only worth asking once the cheap one has changed its answer.
+     */
+    const windowUsable = (): boolean => {
+        const window = options.window?.() ?? null;
+        return window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
+    };
+
+    const askClientsToRestate = (reason: string): void => {
+        const now = Date.now();
+        if (now - lastResyncAsk < RESYNC_MIN_INTERVAL_MS) return;
+        lastResyncAsk = now;
+        log(
+            `web host asking clients to re-state ${String(embed.parkedPaneIDs.length)} parked placement(s) (${reason})`
+        );
+        client?.requestGeometryResync();
+    };
+
+    /**
+     * Re-place everything this shell parked. Safe to call at any time: with nothing parked it
+     * does nothing, and on a window that is still away it leaves the books exactly as they are.
+     */
+    const restoreParkedViews = (reason: string): void => {
+        const waiting = embed.parkedPaneIDs.length;
+        if (waiting === 0) return;
+        if (!windowUsable()) {
+            watchWindowState();
+            return;
+        }
+        embed.refresh();
+        const stillParked = embed.parkedPaneIDs.length;
+        log(
+            `web host restoring ${String(waiting)} parked view(s) (${reason}): ` +
+                `${String(waiting - stillParked)} placed, ${String(stillParked)} still parked`
+        );
+        if (stillParked > 0) askClientsToRestate(reason);
+        watchWindowState();
+    };
+
+    /**
+     * Take every placed view back to the holder, keeping the placement (#75).
+     *
+     * The window's own state decides, not the event that called this. Measured on this Electron:
+     * `win.minimize()` emits `minimize`, `show` AND `hide`, and a `hide` can arrive tens of
+     * milliseconds AFTER the matching `restore` (observed at 20 ms in
+     * `scripts/ui-audit/web-view-restore.mjs`'s own run). Acting on that event alone parks every
+     * web pane's view while the window is sitting there perfectly visible - which is the shipped
+     * bug by a third route, since `releaseViews` used to delete the placement. Events are hints
+     * here; `windowUsable()` is the truth.
+     */
+    const parkPlacedViews = (reason: string): void => {
+        if (embed.embeddedPaneIDs.length === 0) return;
+        if (windowUsable()) {
+            log(`web host ignoring a ${reason} park: the window is visible and not minimised`);
+            watchWindowState();
+            return;
+        }
+        log(`web host parking ${String(embed.embeddedPaneIDs.length)} view(s) (${reason})`);
+        embed.parkAll(reason);
+    };
+
+    /**
+     * The reconciler. Runs only while this host holds a placement, so a shell with no web panes
+     * never arms a timer at all, and backs off to two seconds once the state stops changing.
+     */
+    function watchWindowState(): void {
+        if (watchTimer !== null) return;
+        if (embed.embeddedPaneIDs.length === 0 && embed.parkedPaneIDs.length === 0) {
+            watchDelay = WATCH_MIN_MS;
+            return;
+        }
+        watchTimer = setTimeout(() => {
+            watchTimer = null;
+            const before = `${String(embed.embeddedPaneIDs.length)}/${String(embed.parkedPaneIDs.length)}`;
+            if (windowUsable()) restoreParkedViews('window-usable-again');
+            else parkPlacedViews('window-not-visible');
+            const after = `${String(embed.embeddedPaneIDs.length)}/${String(embed.parkedPaneIDs.length)}`;
+            // Fast again after any change, slower while nothing is happening: a window can stay
+            // hidden for hours, and a tick that finds nothing has still woken the process.
+            watchDelay = before === after ? Math.min(WATCH_MAX_MS, Math.round(watchDelay * 1.5)) : WATCH_MIN_MS;
+            watchWindowState();
+        }, watchDelay);
+        watchTimer.unref?.();
+    }
 
     const dispatcher = createVerbDispatcher<HostTab>({
         registry,
@@ -582,6 +739,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         stop(): void {
             client?.stop();
+            if (watchTimer !== null) {
+                clearTimeout(watchTimer);
+                watchTimer = null;
+            }
             embed.releaseAll('host-stopped');
             for (const paneID of registry.paneIDs()) sessions.forget(paneID);
             registry.dispose();
@@ -600,10 +761,21 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         get embeddedPaneIDs(): readonly string[] {
             return embed.embeddedPaneIDs;
         },
+        get parkedPaneIDs(): readonly string[] {
+            return embed.parkedPaneIDs;
+        },
         releaseViews(reason = 'window-closed'): void {
             // The views outlive the window: put them back in the holder so every automation
-            // verb keeps working while there is nothing to look at.
+            // verb keeps working while there is nothing to look at. The placements go with it:
+            // a window that closed is not one this shell can put anything back into, and the
+            // next window's client reports for itself.
             embed.releaseAll(reason);
+        },
+        parkViews(reason = 'window-hidden'): void {
+            parkPlacedViews(reason);
+        },
+        restoreViews(reason = 'window-shown'): void {
+            restoreParkedViews(reason);
         }
     };
 }

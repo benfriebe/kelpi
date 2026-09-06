@@ -18,6 +18,7 @@ import {
     WEB_CONSOLE_LINE_MESSAGE,
     WEB_GEOMETRY_REPORT_MESSAGE,
     WEB_GEOMETRY_RESYNC_MESSAGE,
+    WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE,
     WEB_HOST_CAPABILITY,
     type SyncHub,
     type SyncSession
@@ -496,6 +497,43 @@ describe('geometry reports → pane-geometry notifies', () => {
             'WIN-1',
             'WIN-2'
         ]);
+    });
+
+    /*
+     * Issue #75. Registration is the moment only the daemon can see; this is the moment only the
+     * HOST can see - it parked a view for a reason no client ever heard about (a window with no
+     * metrics for an instant) and is holding a placement it cannot honour from its own books.
+     */
+    it('asks every client to re-state when the HOST says to', () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'electron', windowID: 'WIN-1' }));
+        const host = f.connect();
+        host.session.handleMessage(
+            hello({ kind: 'electron', name: 'kelpi-shell', capabilities: [WEB_HOST_CAPABILITY], windowID: 'WIN-1' })
+        );
+        const before = client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE).length;
+
+        host.session.handleMessage(JSON.stringify({ type: WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE }));
+
+        const asks = client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE);
+        expect(asks).toHaveLength(before + 1);
+        // The host's own window, exactly as the registration-time broadcast is scoped.
+        expect(asks.at(-1)).toMatchObject({ windowID: 'WIN-1' });
+    });
+
+    it('refuses the ask from a session that does not hold the host role', () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'electron', windowID: 'WIN-1' }));
+        hostWithWindow(f, 'WIN-1');
+        const before = client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE).length;
+
+        // An ordinary client (a browser on a phone) making every other client re-send would be a
+        // fan-out anything attached could trigger.
+        client.session.handleMessage(JSON.stringify({ type: WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE }));
+
+        expect(client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE)).toHaveLength(before);
     });
 
     /*

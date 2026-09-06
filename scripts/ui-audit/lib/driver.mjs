@@ -34,7 +34,7 @@
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
  * menu() / menuClick({id|path}) / press(accelerator) / counters() / armDialog({response}) /
  * notificationClick({index, action}) / notificationClose({index}) / window() / focus() /
- * blur(). See ../README.md for the scenario contract.
+ * blur() / hide() / minimize() / restore(). See ../README.md for the scenario contract.
  */
 
 import fs from 'node:fs';
@@ -168,6 +168,18 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
         window: () => request('window'),
         focus: () => request('focus'),
         blur: () => request('blur'),
+        /**
+         * What ⌘H / ⌘M do, and the two events that undo them (#75). Each answers
+         * `{ visible, minimized }` read back AFTER the call, or nulls with no window.
+         *
+         * These are real `BrowserWindow` calls: the shell parks every web pane's view on `hide`
+         * and `minimize` and restores it on `show` and `restore`, so a scenario that wants that
+         * behaviour has to move the actual window. `menu-click` refuses role rows, which is why
+         * ⌘H cannot be driven through the menu.
+         */
+        hide: () => request('hide'),
+        minimize: () => request('minimize'),
+        restore: () => request('restore'),
         close() {
             socket?.end();
             socket = null;

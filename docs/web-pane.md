@@ -890,6 +890,18 @@ Tab-less pane (a restored private pane, or a pane whose last tab was closed): gl
 8. Everything pasted into a PTY passes through the ANSI/C0 sanitiser (§11.6).
 9. Only `.shell` panes are valid paste destinations (inspect `--send-to`, batch send targets).
 10. Private panes never persist tab content, only the flag.
+11. **Whoever parked an embedded view is the one who un-parks it** (issue #75;
+    `packages/daemon/src/webpane/HOST_PROTOCOL.md` §3.5.2 is the contract, `webhost/embed.ts`
+    the implementation). A park the CLIENT asked for (`visible:false`: the pane hidden, the
+    workspace switched, the tab or pane closed, a menu covering it) is forgotten by the host and
+    can be undone only by a new report from the client, which is what stops a deliberately
+    hidden page reappearing over the workspace the user is looking at. A park the HOST performed
+    for a reason the client cannot see (the window hidden or minimised, or momentarily without
+    metrics to place into) keeps its placement and is undone by the host when the window is
+    usable again; if it cannot be, the host asks the daemon to broadcast `web-geometry-resync`
+    and the clients re-state. The host reconciles against the window's own state rather than its
+    events, because macOS emits none for `show`/`hide` and can deliver a `hide` after the
+    matching `restore` (measurements in §3.5.2 and `webhost/index.ts`).
 
 ---
 

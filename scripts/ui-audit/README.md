@@ -47,6 +47,7 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
 - `page` is `lib/cdp.mjs`'s page: `eval(js)`, `waitFor(js)`, `click(selector)`, `clickAt(x, y)`, `rightClick`, `key(code, { modifiers: d.MOD.meta | d.MOD.shift })`, `type(text)`, `drag`, `box(selector)`, `screenshot(file)`.
 - `harness` is the shell's native-surface channel (below).
 - `cli` is the sandbox's `kelpi`: `run(args, { env })` gives `{ code, stdout, stderr }`; `ok(args)` requires exit 0 and returns stdout. Pass `env: { KELPI_PANE_ID }` to speak as a pane.
+- `shell` is the shell process this runner launched: `lines` (every stdout/stderr line so far), `text()`, `waitForLine(pattern, label, timeoutMs)`. It is `null` under `--attach`, where the runner did not start the shell and cannot read its pipe, so a scenario that needs it must check and say so. Use it only for behaviour whose sole external evidence is a log line: the web-pane placement trail (`web pane <id> view owner=main|holder bounds=… (reason)`) is the case it was added for, because a native view is composited by the window and never appears in the renderer's own frames.
 - `rec.check(label, ok, detail)` is the assertion; `rec.note`, `rec.shot(page, label)`.
 - `d` is the driver module: `PAGE` (the testid anchors), `settle`, `settleDom`, `domPaneIDs`, `clickPaneHeader`, `focusPaneBody`, `runInTerminal`, `openSettingsRoot`, `openSettingsTab`, `clickMenuItem`, `openSubmenu`, `clickSubmenuItem`, `openSidebarMenu`, `contextMenuRows`, `clickDialogButton`, `findMenuItem`.
 
@@ -66,6 +67,7 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.notificationClick({ index, action })` | fires that notification's click handler, or the named action button's ("Open" / "Dismiss"), exactly as the OS would |
 | `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
 | `harness.window()`, `focus()`, `blur()` | the main window's focus and bounds; the dock only bounces while it is unfocused |
+| `harness.hide()`, `minimize()`, `restore()` | what ⌘H and ⌘M do to the window, and the two events that undo them; each answers `{ visible, minimized }` read back after the call. Real `BrowserWindow` calls, because the behaviour they exist for is the shell parking every web pane's view on `hide`/`minimize` and restoring it on `show`/`restore` (issue #75), which a synthesised event would not reproduce. They cannot be reached through `menuClick`/`press`: those are `role` rows, which `menu-click` refuses |
 
 Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | error }` out, if you want to speak it without the driver.
 

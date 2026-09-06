@@ -133,7 +133,8 @@ Rules:
   window anyway; the daemon's tag is a convenience, not a capability.
 - **`visible:false` means "put the view back"** — the pane was zoomed away, the workspace
   switched, the tab closed, or the client unmounted it. A zero-area rect is normalised to
-  `visible:false` by the daemon so there is exactly one rule to implement.
+  `visible:false` by the daemon so there is exactly one rule to implement. It also means "and
+  forget where it was": this is the one park a host must never undo by itself (§3.5.2).
 - **A parked view keeps its layout.** `visible:false` moves the view off screen; it must not
   resize it. Most hides are a menu or a popover over the pane (§3.6), and a page reflowed to the
   automation viewport comes back scrolled and laid out differently: one wider than the pane has
@@ -193,6 +194,64 @@ is stored on this side: the daemon still owns no geometry, it just knows when to
 `windowID` is scoped the way `reveal-pane`'s is - the check belongs to the client, since it is
 the party that knows which window it renders into. A host is free to ignore the whole mechanism:
 what reaches it is `pane-geometry`, exactly as before.
+
+### 3.5.2 Two kinds of park, and who may undo each (issue #75)
+
+§3.5.1 closed the case where the daemon knows to ask. This is the case where nobody does, and
+the rule it settles is one sentence:
+
+> **A park the CLIENT asked for is undone only by the client. A park the HOST performed for a
+> reason the client could not see is undone by the host, and the clients are asked to re-state
+> after any park the host cannot undo from its own books.**
+
+The host takes views off screen for reasons of its own: the user hid or minimised the window
+(⌘H, ⌥⌘H, ⌘M, the global hotkey's second press), or the window momentarily had no metrics to
+place into (a display reconfiguration, a Space switch that changes the active display). Those
+are not `visible:false` reports, nothing on the wire records them, and the client's reporter
+dedupes an identical re-render, so it has nothing to say when the window comes back. Before
+this rule the shell deleted the placement in both cases, and every embedded web pane came back
+an empty hole with its chrome still drawn round it, recoverable only by switching workspace away
+and back, resizing the window, or restarting the app.
+
+So a host **remembers** its own parks (`shell/src/webhost/embed.ts` ▸ `park()` keeps the
+placement with a `parked` flag, against `release()`, which forgets) and puts them back when the
+window is usable again. A host must NOT remember a `visible:false` report: that is the client
+saying it is not drawing the pane, and re-placing it would put a page the user navigated away
+from back on top of the workspace they are looking at, which is exactly what §3.5.1's
+"only `visible` entries" restriction protects.
+
+Two facts about the platform decided the shape of the shell's half, and are recorded here
+because any other host would meet them too. Measured on Electron 43.4.0 / Chromium 150,
+`docs/audit/n75-verify/electron-window-events.cjs`:
+
+```
+win.hide()      no events at all       win.show()     no events at all
+win.minimize()  minimize, show, hide   win.restore()  restore, show
+app.hide()      hide, and only while the app is actually the active one
+app.show()      no events at all
+```
+
+- **There is no dependable event for the moment a view can be placed again**, so a restore wired
+  only to a window's `show` does nothing on macOS. The shell reconciles against the window's own
+  state on a backing-off timer instead (150 ms after a change, 2 s at rest, and only while it
+  holds a placement at all), with the events as a fast path where they do fire.
+- **A `hide` can arrive tens of milliseconds AFTER the matching `restore`** (`minimize()` emits
+  `hide` too). So the events are hints and the window's state is the truth: a park is refused
+  while the window is visible and not minimised.
+
+When the host finds the window usable and still cannot honour a placement from its own books, it
+asks the daemon to send §3.5.1's broadcast:
+
+```jsonc
+// host → daemon                                     // daemon → every client
+{"type":"web-geometry-resync-request"}               {"type":"web-geometry-resync","windowID":"…"}
+```
+
+Accepted only from the connection currently holding the host role, and scoped to the `windowID`
+that host declared, exactly as the registration-time broadcast is. The daemon still stores no
+geometry: this only adds a second party allowed to say *when* to ask. Rate-limit it (the shell
+sends at most one every five seconds): the broadcast reaches every attached client, and a
+placement that cannot be honoured must not become a message per tick.
 
 ### 3.6 Poster: the still frame a parked pane wears (issue #12)
 

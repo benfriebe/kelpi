@@ -20,6 +20,22 @@
  *     be able to move a desktop user's views.
  *   - **No window, no placement.** With the window closed/hidden the pane keeps working exactly
  *     as it did before this module existed, off-screen in the holder.
+ *   - **Whoever parked a view is the one who un-parks it** (issue #75). Two kinds of park reach
+ *     this module and they are NOT the same fact:
+ *
+ *       `release()`  the CLIENT is not drawing that pane any more (hidden, workspace switched,
+ *                    tab closed, pane closed). The books forget it, and only a new report from
+ *                    the client can bring it back. That restriction is #34's safety argument:
+ *                    a pane parked on purpose must never be re-placed by anything but its owner.
+ *
+ *       `park()`     THIS SHELL took the view off screen for a reason the client cannot see: the
+ *                    user hid or minimised the window, or the window momentarily had no metrics
+ *                    to place into. The placement is KEPT with `parked: true`, and `refresh()`
+ *                    puts it back. Before #75 this went through `release()` too, so hiding the
+ *                    window (⌘H, ⌘M, the global hotkey's second press) left every web pane an
+ *                    empty hole with its chrome still drawn round it, for ever: the client's
+ *                    reporter dedupes an identical re-render, so nothing on the wire ever
+ *                    contradicted the state.
  *
  * It is generic over the view type and takes its attach/detach/bounds behaviour as hooks, so
  * the bookkeeping is testable without Electron.
@@ -68,14 +84,30 @@ export interface EmbedEvent {
 export interface EmbedController<V> {
     /** Apply one `pane-geometry` notification. */
     apply(geometry: PaneGeometry): EmbedOutcome;
-    /** Return a pane's view to the holder (pane closed, hidden, window gone). */
+    /**
+     * Return a pane's view to the holder and FORGET the placement: the client is no longer
+     * drawing that pane, so only a new report of its own may put it back.
+     */
     release(paneID: string, reason?: string): boolean;
     releaseAll(reason?: string): void;
+    /**
+     * Return a pane's view to the holder and REMEMBER where it was (#75): a park this shell
+     * performed for a reason the client cannot see, undone by `refresh()`.
+     */
+    park(paneID: string, reason?: string): boolean;
+    parkAll(reason?: string): void;
     /** A view is being destroyed: drop it from the books without touching it. */
     forget(view: V): boolean;
-    /** Re-apply the last geometry for every embedded pane (the view set changed). */
+    /**
+     * Re-apply the last geometry for every pane in the books, parked ones included (the view set
+     * changed, or the window came back). A parked placement that can be honoured is placed again
+     * and stops being parked; one that still cannot be (no window yet) stays parked.
+     */
     refresh(): void;
+    /** Panes whose view is in the window right now. */
     readonly embeddedPaneIDs: readonly string[];
+    /** Panes this shell parked and still owes a placement to (#75). */
+    readonly parkedPaneIDs: readonly string[];
     /**
      * Where a pane's view actually IS: the rounded, clamped DIP box the shell placed it at, plus
      * the client report that produced it. Issue #12's poster hangs off the pair — a still frame
@@ -104,6 +136,14 @@ interface Placement<V> {
      * withheld when it no longer holds (issue #12).
      */
     scaleFactor: number;
+    /**
+     * True while the view is in the holder because THIS SHELL put it there (#75), with the
+     * placement kept so `refresh()` can undo it. False means the view is in the window.
+     *
+     * There is deliberately no third state for "the client parked it": that placement is not in
+     * the map at all, which is what makes it impossible for a restore to resurrect it.
+     */
+    parked: boolean;
 }
 
 export function createEmbedController<V>(options: EmbedOptions<V>): EmbedController<V> {
@@ -117,8 +157,8 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         options.onChange?.({ paneID, outcome, bounds, reason });
     };
 
-    const detach = (paneID: string, placement: Placement<V>): void => {
-        placed.delete(paneID);
+    /** The hook, on a view that IS in the window. Never called for an already-parked placement. */
+    const detachView = (paneID: string, placement: Placement<V>): void => {
         try {
             options.hooks.detach(placement.view);
         } catch (error) {
@@ -129,7 +169,25 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
     const release = (paneID: string, reason = 'released'): boolean => {
         const placement = placed.get(paneID);
         if (placement === undefined) return false;
-        detach(paneID, placement);
+        placed.delete(paneID);
+        if (placement.parked) {
+            // Already in the holder: the view must not be detached twice, but the CLAIM has
+            // changed (a park this shell owed a placement to is now a park the client asked
+            // for), and the log line is the only place that is visible from outside.
+            announce(paneID, 'released', null, reason);
+            return true;
+        }
+        detachView(paneID, placement);
+        announce(paneID, 'released', null, reason);
+        return true;
+    };
+
+    /** #75: the same detach, with the placement kept so `refresh()` can undo it. */
+    const park = (paneID: string, reason = 'parked'): boolean => {
+        const placement = placed.get(paneID);
+        if (placement === undefined || placement.parked) return false;
+        placement.parked = true;
+        detachView(paneID, placement);
         announce(paneID, 'released', null, reason);
         return true;
     };
@@ -137,9 +195,22 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
     const place = (geometry: PaneGeometry, metrics: WindowMetrics): EmbedOutcome => {
         const bounds = viewBounds(geometry, metrics);
         if (bounds === null) {
-            // Hidden, zero-sized, or scrolled entirely out of the window: the holder is where
-            // a view with nowhere to be belongs.
-            release(geometry.paneID, geometry.visible ? 'off-screen' : 'hidden');
+            /*
+             * Nowhere to put it. Which of the two parks this is depends on WHO made it true:
+             *
+             *   - `visible:false` is the client saying it is not drawing the pane. Forget it,
+             *     or a later restore would put a deliberately hidden page back on screen (#34).
+             *   - a window with no content area at all is not the client's doing (#75's second
+             *     route: a display reconfiguration hands the window a 0x0 box for an instant).
+             *     Remember it, or the pane stays an empty hole until its rect changes for some
+             *     unrelated reason.
+             *   - anything else is a pane scrolled or dragged out of the window while the client
+             *     still believes it is placed. Forget it: the scroll that brings it back reports
+             *     a different rect, so the client's own dedupe cannot swallow the recovery.
+             */
+            if (!geometry.visible) release(geometry.paneID, 'hidden');
+            else if (metrics.contentWidth < 1 || metrics.contentHeight < 1) park(geometry.paneID, 'no-content-area');
+            else release(geometry.paneID, 'off-screen');
             return 'released';
         }
         const view = options.resolveView(geometry.paneID, geometry.tabID);
@@ -153,20 +224,25 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         const current = placed.get(geometry.paneID);
         if (current !== undefined && current.view !== view) {
             // A tab switch: the outgoing view must leave the window, or it keeps painting on
-            // top of the one that just became active.
-            detach(geometry.paneID, current);
+            // top of the one that just became active. A parked outgoing view is already in the
+            // holder, so only the book entry goes.
+            if (!current.parked) detachView(geometry.paneID, current);
+            placed.delete(geometry.paneID);
         }
         const attached = placed.get(geometry.paneID);
+        // A parked placement is a memory, not a view in the window: it has to be re-attached,
+        // not merely moved, or `setBounds` would position a child of the holder.
+        const inWindow = attached !== undefined && !attached.parked;
         try {
-            if (attached === undefined) options.hooks.attach(view, bounds);
+            if (!inWindow) options.hooks.attach(view, bounds);
             else if (!sameBounds(attached.bounds, bounds)) options.hooks.setBounds(view, bounds);
         } catch (error) {
             report(error, `embed-place ${geometry.paneID}`);
             return 'ignored';
         }
-        const changed = attached === undefined || !sameBounds(attached.bounds, bounds);
-        placed.set(geometry.paneID, { view, bounds, geometry, scaleFactor: metrics.scaleFactor });
-        if (changed) announce(geometry.paneID, 'placed', bounds, attached === undefined ? 'attached' : 'moved');
+        const changed = !inWindow || !sameBounds(attached.bounds, bounds);
+        placed.set(geometry.paneID, { view, bounds, geometry, scaleFactor: metrics.scaleFactor, parked: false });
+        if (changed) announce(geometry.paneID, 'placed', bounds, inWindow ? 'moved' : 'attached');
         return 'placed';
     };
 
@@ -184,8 +260,20 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             }
             const metrics = options.metrics();
             if (metrics === null) {
-                // No window to embed into (closed, hidden, not built yet).
-                release(geometry.paneID, 'no-window');
+                /*
+                 * No window to embed into: closed, destroyed, or hidden/minimised by the user
+                 * (`windowMetrics()` refuses all three). #75: this is a park with memory, not a
+                 * forget. A report that lands in the instant the window is not visible used to
+                 * delete the placement, and nothing on either side would ever restate it - the
+                 * client's reporter dedupes an identical re-render, so the pane stayed an empty
+                 * hole. A view REMEMBERED here is put back by `refresh()` when the window comes
+                 * back, and dropped for real by `releaseAll` when the window closes.
+                 *
+                 * A `visible:false` report still forgets: the client parking a pane is the one
+                 * park a restore must never undo, whatever the window is doing.
+                 */
+                if (!geometry.visible) release(geometry.paneID, 'hidden');
+                else park(geometry.paneID, 'no-window');
                 return 'released';
             }
             return place(geometry, metrics);
@@ -197,11 +285,18 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             for (const paneID of [...placed.keys()]) release(paneID, reason);
         },
 
+        park,
+
+        parkAll(reason = 'park-all') {
+            for (const paneID of [...placed.keys()]) park(paneID, reason);
+        },
+
         forget(view) {
             for (const [paneID, placement] of placed) {
                 if (placement.view !== view) continue;
                 // No hook call: the view is being destroyed, and `removeChildView` on a
-                // destroyed view is exactly the throw this exists to avoid.
+                // destroyed view is exactly the throw this exists to avoid. A parked entry goes
+                // the same way: its view is dying, so the memory of where it sat is worthless.
                 placed.delete(paneID);
                 announce(paneID, 'released', null, 'view-destroyed');
                 return true;
@@ -213,7 +308,9 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             const metrics = options.metrics();
             for (const [paneID, placement] of [...placed]) {
                 if (metrics === null) {
-                    release(paneID, 'no-window');
+                    // Still nowhere to place into. Keep the books rather than emptying them:
+                    // this is exactly the state `restoreViews()` is called again for (#75).
+                    park(paneID, 'no-window');
                     continue;
                 }
                 place(placement.geometry, metrics);
@@ -221,12 +318,19 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         },
 
         get embeddedPaneIDs() {
-            return [...placed.keys()];
+            return [...placed].filter(([, placement]) => !placement.parked).map(([paneID]) => paneID);
+        },
+
+        get parkedPaneIDs() {
+            return [...placed].filter(([, placement]) => placement.parked).map(([paneID]) => paneID);
         },
 
         placementOf(paneID) {
             const placement = placed.get(paneID);
-            return placement === undefined
+            // A parked placement is a memory of where the view WAS. Issue #12's poster hangs off
+            // this, and a picture laid out on the box of a view that is in the holder is exactly
+            // the wrong-box bug §3.6 refuses: "where the view actually IS" has to stay true.
+            return placement === undefined || placement.parked
                 ? null
                 : {
                       view: placement.view,

@@ -407,3 +407,26 @@ describe('keybind lines', () => {
         expect(test.keybindLines).toEqual([['super+p=unbind']]);
     });
 });
+
+describe('asking the daemon to re-ask the clients (#75)', () => {
+    it('sends the request once the host holds the role', () => {
+        const test = connected();
+        test.client.requestGeometryResync();
+        expect(test.latest().frames('web-geometry-resync-request')).toHaveLength(1);
+    });
+
+    it('says nothing before registration: a broadcast on behalf of nobody is not a request', () => {
+        const test = harness();
+        test.client.start();
+        test.latest().emit('open');
+        test.client.requestGeometryResync();
+        expect(test.latest().frames('web-geometry-resync-request')).toEqual([]);
+    });
+
+    it('says nothing after the role is revoked', () => {
+        const test = connected();
+        test.latest().deliver({ type: 'host-revoked', reason: 'superseded' });
+        test.client.requestGeometryResync();
+        expect(test.latest().frames('web-geometry-resync-request')).toEqual([]);
+    });
+});

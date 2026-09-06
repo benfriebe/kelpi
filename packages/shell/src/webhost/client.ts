@@ -26,6 +26,18 @@ import type { DaemonLocation } from '../daemon.js';
 import { shellHello } from '../hello.js';
 import { log, logError, warn } from '../log.js';
 
+/**
+ * Host → daemon: "ask every client to say where its web panes are" (issue #75).
+ *
+ * Spelled here rather than imported, the way `./geometry.ts` spells `pane-geometry` and the web
+ * client spells `web-geometry-resync` in its own `connection/socket.ts`: this connection speaks
+ * the daemon's WS vocabulary directly, and a shared constant would make the shell depend on the
+ * daemon's internals for a five-word string. The daemon's spelling is
+ * `daemon/src/ws/sync.ts` ▸ `WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE`, and
+ * `daemon/src/webpane/HOST_PROTOCOL.md` §3.5.2 is the contract.
+ */
+const WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE = 'web-geometry-resync-request';
+
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
 const RECONNECT_FACTOR = 2;
@@ -95,6 +107,19 @@ export interface WebHostClient {
      * swallowed (`./keys.ts`) — but the relay is generic, so nothing new is owed to the wire.
      */
     sendWindowCommand(command: string): void;
+    /**
+     * Ask the daemon to broadcast `web-geometry-resync` (issue #75, over #34's message).
+     *
+     * The daemon sends that of its own accord when a host registers, because that is the moment
+     * only it can see. This is the other moment, and only the HOST can see it: the shell is
+     * holding a placement it parked for a reason the client never saw (a window with no metrics
+     * for an instant) and cannot honour from its own books. The clients are the only party that
+     * knows where the holes are, so they are asked to say again.
+     *
+     * Fire-and-forget, like `sendWindowCommand`: there is no reply, and a request made while the
+     * socket is down is simply dropped - a host that reconnects gets a broadcast anyway.
+     */
+    requestGeometryResync(): void;
 }
 
 interface JsonRecord {
@@ -374,6 +399,13 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
                 // act on a chord pressed here.
                 ...(options.windowID === undefined ? {} : { windowID: options.windowID })
             });
+        },
+
+        requestGeometryResync(): void {
+            // Only a registered host may ask: the daemon checks that too, and asking before the
+            // role is held would be a broadcast on behalf of nobody.
+            if (!registered) return;
+            send({ type: WEB_GEOMETRY_RESYNC_REQUEST_MESSAGE });
         }
     };
 }

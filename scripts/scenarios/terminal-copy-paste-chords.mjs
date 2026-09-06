@@ -37,7 +37,26 @@ const LINE = `${MARK}-0123456789ABCDEF`;
 const POISON = `KELPI-POISON-${TAG}`;
 
 export default async function ({ page, cli, rec, d, sleep }) {
-    await d.settle(async () => (await d.domPaneIDs(page)).length > 0, { ceilingMs: 15_000, intervalMs: 200 });
+    /*
+     * A workspace of this scenario's own, for the reason `workspace-switch-keeps-the-caret.mjs`
+     * says out loud: "Default holds when this starts is whatever the scenarios before it left
+     * there." The battery runs every scenario against ONE sandbox, and by the time this one runs
+     * five earlier scenarios have split panes into Default. This file wants exactly two panes,
+     * finds pane A as `domPaneIDs()[0]` and pane B as "the one that is not A", and both of those
+     * are wrong in a workspace full of other people's panes: A is narrower than the 25 columns
+     * the drag below sweeps, so ⌘C copies one character, and "not A" is as likely to be a pane
+     * some other scenario left running as it is the ⌘D split.
+     *
+     * `workspace create` reveals the new workspace to every client, so the window is on it by the
+     * time the settle below returns, and it starts with exactly one pane.
+     */
+    const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Copy-${TAG}`, '--json']));
+    const workspaceID = created.workspace_id ?? created.id;
+    rec.check('a workspace of its own to copy in', typeof workspaceID === 'string', JSON.stringify(created));
+    if (typeof workspaceID !== 'string') return;
+    await d.settleDom(page, `document.querySelector('[data-workspace-id="${workspaceID}"]')`, { ceilingMs: 10_000 });
+    await d.settle(async () => (await d.domPaneIDs(page)).length === 1, { ceilingMs: 15_000, intervalMs: 200 });
+
     const paneA = (await d.domPaneIDs(page))[0];
     rec.check('a terminal pane to copy from', paneA !== undefined);
     if (paneA === undefined) return;
@@ -87,11 +106,14 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     // ── a second pane to paste into ────────────────────────────────────────────────
     await d.focusPaneBody(page, paneA);
+    const before = await d.domPaneIDs(page);
     await page.key('KeyD', { modifiers: d.MOD.meta, key: 'd' });
-    const split = await d.settle(async () => (await d.domPaneIDs(page)).length >= 2, { ceilingMs: 8_000 });
+    const split = await d.settle(async () => (await d.domPaneIDs(page)).length > before.length, { ceilingMs: 8_000 });
     rec.check('⌘D gave us a second pane to paste into', split);
     if (!split) return;
-    const paneB = (await d.domPaneIDs(page)).find((id) => id !== paneA);
+    // The pane ⌘D built, named by the set difference rather than by "the one that is not A":
+    // a workspace can hold more than two panes and only one of them is this scenario's.
+    const paneB = (await d.domPaneIDs(page)).find((id) => !before.includes(id));
     rec.note(`pane A ${String(paneA)} -> pane B ${String(paneB)}`);
 
     // ── pane A: printed text, then a real drag over it ─────────────────────────────

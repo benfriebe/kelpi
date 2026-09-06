@@ -826,7 +826,9 @@ export const HARNESS_OPS = [
     // parks its own views on `hide`/`minimize`) had no way to be reproduced from a script.
     'hide',
     'minimize',
-    'restore'
+    'restore',
+    // Issue #76's one, for the same reason: nothing a scenario can reach kills a renderer.
+    'crash'
 ] as const;
 export type HarnessOp = (typeof HARNESS_OPS)[number];
 
@@ -869,6 +871,12 @@ export interface HarnessSurface<T extends MenuEntryLike<T>> {
     readonly minimize: () => WindowVisibility | null;
     /** Undo either of the two above, whichever the window is in. Null without a window. */
     readonly restore: () => WindowVisibility | null;
+    /**
+     * Issue #76: kill the renderer behind a web pane's active tab, as macOS does under memory
+     * pressure. Returns the tab it killed, or null when that pane has no live view. Absent when
+     * the shell has no web-pane host (a window-only harness), which the op reports as a refusal.
+     */
+    readonly crashWebPane?: ((paneID: string) => { readonly paneID: string; readonly tabID: string } | null) | undefined;
     readonly counters: HarnessCounters;
 }
 
@@ -961,6 +969,21 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
                 return okResponse(id, surface.minimize() ?? { visible: null, minimized: null });
             case 'restore':
                 return okResponse(id, surface.restore() ?? { visible: null, minimized: null });
+            case 'crash': {
+                // Issue #76's trigger. The recovery it tests (dispose, rebuild, re-place) is
+                // three processes wide and none of it is reachable from a renderer, so the only
+                // honest test is to kill a real renderer and watch what the shell does next.
+                const paneID = params['paneID'];
+                if (typeof paneID !== 'string' || paneID.trim() === '') {
+                    return errorResponse(id, 'crash needs a non-empty "paneID"');
+                }
+                if (surface.crashWebPane === undefined) {
+                    return errorResponse(id, 'crash: this shell has no web pane host');
+                }
+                const killed = surface.crashWebPane(paneID);
+                if (killed === null) return errorResponse(id, `crash: no live view for pane ${paneID}`);
+                return okResponse(id, { paneID: killed.paneID, tabID: killed.tabID, crashed: true });
+            }
             default:
                 return errorResponse(id, `unknown op "${op}" (ops: ${HARNESS_OPS.join(', ')})`);
         }

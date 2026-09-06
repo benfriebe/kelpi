@@ -515,6 +515,20 @@ export type DomainAction =
           readonly title?: string | undefined;
       }
     | {
+          /**
+           * Issue #76 / web-pane.md §5.2: the tab has (or has regained) a browser view.
+           *
+           * Raised when a renderer dies on a pane whose only tab the reducer refuses to remove,
+           * and again when the daemon asks the host to rebuild it. Runtime only: the flag is
+           * never persisted (`@kelpi/core`'s `WebTab`).
+           */
+          readonly type: 'web-tab-live';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+          readonly live: boolean;
+      }
+    | {
           readonly type: 'scratchpad-content-changed';
           readonly workspaceID: string;
           readonly paneID: string;

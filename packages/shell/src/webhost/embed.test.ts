@@ -355,3 +355,63 @@ describe('refresh', () => {
         expect(h.detaches).toEqual([{ id: 'T1' }]);
     });
 });
+
+/**
+ * Issue #76's shell-side half: a view destroyed under a placement leaves the pane out of the
+ * books entirely, so `refresh()` cannot see it. The rebuilt view has to be placed from the rect
+ * the client last reported, because the client has no reason to report it again - the page hole
+ * never moved, and identical reports are dropped before they leave the renderer.
+ */
+describe('reapply after a view was destroyed', () => {
+    it('places the rebuilt view at the rect the crashed one occupied', () => {
+        const views: Record<string, FakeView | null> = { T1: { id: 'T1' } };
+        const h = harness({ views });
+        h.controller.apply(geometry());
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+
+        // The renderer died: the registry destroys the view, which unhooks it here.
+        expect(h.controller.forget(views['T1'] as FakeView)).toBe(true);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        // `refresh` walks the PLACED panes, and this one is no longer among them.
+        h.controller.refresh();
+        expect(h.attaches).toHaveLength(1);
+
+        views['T1'] = { id: 'T1-rebuilt' };
+        expect(h.controller.reapply(PANE)).toBe(true);
+        expect(h.attaches.map((entry) => entry.view.id)).toEqual(['T1', 'T1-rebuilt']);
+        expect(h.attaches[1]?.bounds).toEqual({ x: 10, y: 20, width: 400, height: 300 });
+    });
+
+    it('is a no-op for a pane that is already placed, and for one never reported', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        expect(h.controller.reapply(PANE)).toBe(true);
+        expect(h.attaches).toHaveLength(1);
+        expect(h.controller.reapply(OTHER)).toBe(false);
+    });
+
+    /**
+     * The one way this could become a worse bug than the one it fixes: a pane the user parked on
+     * purpose must not be put back on screen by a rebuild. It cannot be, because the remembered
+     * report is the LAST one and parking a pane is itself a report.
+     */
+    it('replays a hidden report as a release, not a placement', () => {
+        const views: Record<string, FakeView | null> = { T1: { id: 'T1' } };
+        const h = harness({ views });
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ visible: false }));
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+
+        views['T1'] = { id: 'T1-rebuilt' };
+        expect(h.controller.reapply(PANE)).toBe(false);
+        expect(h.attaches.map((entry) => entry.view.id)).toEqual(['T1']);
+    });
+
+    it('forgets the remembered rect when the pane itself closes', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.forgetPane(PANE);
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.controller.reapply(PANE)).toBe(false);
+    });
+});

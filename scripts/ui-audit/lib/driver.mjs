@@ -34,7 +34,8 @@
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
  * menu() / menuClick({id|path}) / press(accelerator) / counters() / armDialog({response}) /
  * notificationClick({index, action}) / notificationClose({index}) / window() / focus() /
- * blur() / hide() / minimize() / restore(). See ../README.md for the scenario contract.
+ * blur() / hide() / minimize() / restore() / crash(paneID). See ../README.md for the scenario
+ * contract.
  */
 
 import fs from 'node:fs';
@@ -180,6 +181,12 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
         hide: () => request('hide'),
         minimize: () => request('minimize'),
         restore: () => request('restore'),
+        /**
+         * #76: kill the renderer behind a web pane's active tab, as macOS does under memory
+         * pressure. Answers `{ paneID, tabID, crashed: true }`, or refuses when that pane has no
+         * live view. The shell's own recovery is what a caller then watches for.
+         */
+        crash: (paneID) => request('crash', { paneID }),
         close() {
             socket?.end();
             socket = null;

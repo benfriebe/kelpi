@@ -926,6 +926,44 @@ describe('respond', () => {
         }
     });
 
+    /**
+     * #76's `crash` op. The recovery it triggers spans three processes and none of it is
+     * reachable from a renderer, so the driver needs a way to kill a real one; these are the
+     * refusals that keep it from being a way to kill something else by accident.
+     */
+    it('crashes the named pane, and refuses every shape that is not one', () => {
+        const { surface } = fakeSurface();
+        const killed: string[] = [];
+        const withHost: HarnessSurface<FakeItem> = {
+            ...surface,
+            crashWebPane: (paneID) => {
+                killed.push(paneID);
+                return paneID === 'live-pane' ? { paneID, tabID: 'T7' } : null;
+            }
+        };
+        expect(respond(request('crash', { paneID: 'live-pane' }), withHost)).toEqual({
+            id: 1,
+            ok: true,
+            result: { paneID: 'live-pane', tabID: 'T7', crashed: true }
+        });
+        expect(killed).toEqual(['live-pane']);
+
+        expect(respond(request('crash', { paneID: 'gone-pane' }), withHost)).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('no live view for pane gone-pane')
+        });
+        expect(respond(request('crash'), withHost)).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('non-empty "paneID"')
+        });
+        expect(respond(request('crash', { paneID: '  ' }), withHost)).toMatchObject({ ok: false });
+        // A shell with no web-pane host says so rather than pretending it crashed something.
+        expect(respond(request('crash', { paneID: 'live-pane' }), surface)).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('no web pane host')
+        });
+    });
+
     it('answers with no application menu at all', () => {
         const { surface } = fakeSurface([]);
         expect(respond(request('menu'), surface)).toEqual({ id: 1, ok: true, result: { items: [] } });

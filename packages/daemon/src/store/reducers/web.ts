@@ -103,6 +103,11 @@ function closeTab(
     if (index < 0) return workspace;
     // The wire refuses this case with an error and the GUI turns it into a whole-pane close;
     // the reducer simply refuses to leave a web pane in a state no caller asked for.
+    //
+    // A close the HOST reported (a dead renderer) reaches the same refusal, and used to stop
+    // there: the pane kept its tab, the host kept no view, and every verb answered `web pane
+    // has no live tab`. `webpane/service.ts` now reads the refusal and marks the tab not-live
+    // through `web-tab-live` below, which is what puts §16.7's card on screen (issue #76).
     if (web.tabs.length === 1) return workspace;
 
     const tabs = web.tabs.filter((tab) => tab.id !== action.tabID);
@@ -204,6 +209,37 @@ function tabState(
     return syncHeader(withSidecar(workspace, action.paneID, next), action.paneID);
 }
 
+/**
+ * §5.2: mark a tab as having (or not having) a live browser view.
+ *
+ * `live: true` DELETES the flag rather than storing it, so a healthy tab is byte-identical to
+ * one that has never crashed: the sidecar is compared by reference all over the daemon (the
+ * workspace envelope's `webPanes !== webPanes` change test in `store/events.ts`), and a tab
+ * carrying `live:true` would broadcast a delta on every recovery for no visible difference.
+ */
+function tabLive(
+    workspace: WorkspaceState,
+    action: Extract<DomainAction, { type: 'web-tab-live' }>
+): WorkspaceState {
+    const web = sidecarOf(workspace, action.paneID);
+    if (web === null) return workspace;
+    const current = web.tabs.find((tab) => tab.id === action.tabID);
+    if (current === undefined) return workspace;
+    if ((current.live !== false) === action.live) return workspace;
+    const next: WebPaneState = {
+        ...web,
+        tabs: web.tabs.map((tab) => {
+            if (tab.id !== action.tabID) return tab;
+            if (action.live) {
+                const { live: _dropped, ...rest } = tab;
+                return rest;
+            }
+            return { ...tab, live: false };
+        })
+    };
+    return withSidecar(workspace, action.paneID, next);
+}
+
 export function reduceWebAction(state: DaemonState, action: DomainAction): DaemonState {
     switch (action.type) {
         case 'web-tab-open':
@@ -233,6 +269,10 @@ export function reduceWebAction(state: DaemonState, action: DomainAction): Daemo
         case 'web-tab-state':
             return updateWorkspace(state, action.workspaceID, (workspace) =>
                 tabState(workspace, action)
+            );
+        case 'web-tab-live':
+            return updateWorkspace(state, action.workspaceID, (workspace) =>
+                tabLive(workspace, action)
             );
         default:
             return state;

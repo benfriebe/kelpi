@@ -174,6 +174,14 @@ export interface WebPaneService {
      */
     forgetTab(paneID: string, tabID: string): void;
     /**
+     * §5.2 / issue #76: ask the host to build this pane's views again and mark its tabs live.
+     *
+     * The recovery for a dead renderer, reached automatically once per `AUTO_REBUILD_WINDOW_MS`
+     * and by the user's Reload with no limit at all. False when the pane is not a web pane (or
+     * the service has no store), which is the caller's cue to answer the ordinary way.
+     */
+    rebuildPane(paneID: string): boolean;
+    /**
      * Arm the page picker STICKY for a batch (WEB-127): unlike `kelpi web inspect`, the arm is not
      * consumed by the first pick, so the user keeps clicking elements into the panel.
      */
@@ -213,6 +221,19 @@ export interface WebPaneService {
     subscribeConsole(paneID: string, subscriber: ConsoleSubscriber): () => void;
     close(): void;
 }
+
+/**
+ * How long an automatic rebuild locks out the next one, per pane (§5.2, issue #76).
+ *
+ * The shape of the failure this bounds is a page that crashes its renderer AS IT LOADS: rebuild
+ * it and it dies again, immediately, for ever. One automatic recovery is worth having (a
+ * one-off renderer death, an OS memory reclaim, a GPU restart is invisible to the user and the
+ * page simply comes back); a second one inside the window is evidence the page itself is the
+ * problem, and the honest answer to that is the card with a Reload button on it. Thirty seconds
+ * is long enough that no crash-on-load can beat it and short enough that a page which crashed
+ * once this morning still recovers by itself this afternoon.
+ */
+export const AUTO_REBUILD_WINDOW_MS = 30_000;
 
 function paneStateArgs(paneID: string, web: WebPaneState): JsonObject {
     const active = resolvedActiveTab(web);
@@ -258,6 +279,9 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
     /** Web panes the host has been told about, so a re-render does not re-announce them. */
     const announced = new Set<string>();
+
+    /** §5.2: when each pane was last rebuilt, so a page that dies on load cannot loop. */
+    const rebuiltAt = new Map<string, number>();
 
     const webPaneOf = (paneID: string): { workspaceID: string; web: WebPaneState } | null => {
         if (store === undefined) return null;
@@ -360,6 +384,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                           inspectState.disposePane(event.paneID);
                           findState.disposePane(event.paneID);
                           batchState.disposePane(event.paneID);
+                          rebuiltAt.delete(event.paneID);
                           if (announced.delete(event.paneID)) {
                               host.notify('pane-close', { paneID: event.paneID });
                           }
@@ -374,6 +399,55 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                       host.notify('pane-open', paneStateArgs(event.paneID, found.web));
                   }
               });
+
+    // ── rebuilding a pane whose renderer died (§5.2, issue #76) ─────────────
+
+    /**
+     * Ask the host to build this pane's views again, at the URLs the daemon holds.
+     *
+     * There is no new verb for it: `pane-open` is idempotent by contract (HOST_PROTOCOL §1) and
+     * the host's registry already creates a view for any tab in the spec it does not hold
+     * (`shell/src/webhost/registry.ts` ▸ `openPane`), which is the same reconcile that rebuilds
+     * every pane when a shell reconnects. So a rebuild is one notify.
+     *
+     * The tab is marked live again HERE rather than when the page next reports a URL: a rebuilt
+     * view that lands on a dead host shows Kelpi's own error card (§4.3) and never emits a
+     * `page-state`, and leaving the "stopped responding" card over a perfectly good error card
+     * would be a worse lie than optimism. If the new renderer dies too, the next `tab-closed`
+     * marks it not-live again within milliseconds and the loop guard keeps the card up.
+     */
+    const rebuildPane = (paneID: string): boolean => {
+        if (store === undefined) return false;
+        const found = webPaneOf(paneID);
+        if (found === null) return false;
+        rebuiltAt.set(paneID, now());
+        for (const tab of found.web.tabs) {
+            if (tab.live !== false) continue;
+            store.dispatch({
+                type: 'web-tab-live',
+                workspaceID: found.workspaceID,
+                paneID,
+                tabID: tab.id,
+                live: true
+            });
+        }
+        // Re-read: the dispatches above replaced the sidecar, and the host must be handed the
+        // tabs as they are now, not as they were before the flag came off.
+        const refreshed = webPaneOf(paneID);
+        if (refreshed === null) return false;
+        announced.add(paneID);
+        host.notify('pane-open', paneStateArgs(paneID, refreshed.web));
+        return true;
+    };
+
+    /**
+     * One automatic rebuild per pane per window. The user's Reload is never rate-limited: it is
+     * a person asking, and a person who asks twice means it.
+     */
+    const mayAutoRebuild = (paneID: string): boolean => {
+        const last = rebuiltAt.get(paneID);
+        return last === undefined || now() - last >= AUTO_REBUILD_WINDOW_MS;
+    };
 
     // ── host events ─────────────────────────────────────────────────────────
 
@@ -577,12 +651,50 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (found === null) return;
         // §WEB-019: the page closed itself; the arm it carried dies with it.
         forgetTab(event.paneID, event.tabID);
+        // The reducer refuses to remove a pane's only tab (`store/reducers/web.ts`), so this is
+        // the shape of the crash the user reports: chrome over nothing. Read the refusal BEFORE
+        // dispatching, because after it the state looks exactly as it did.
+        const sole = found.web.tabs.length === 1 && found.web.tabs[0]?.id === event.tabID;
         store.dispatch({
             type: 'web-tab-close',
             workspaceID: found.workspaceID,
             paneID: event.paneID,
             tabID: event.tabID
         });
+        // A pane with other tabs needs nothing more: the reducer activated the left neighbour,
+        // the host destroyed the dead view and the client's next geometry report - which names
+        // the NEW active tab, so it is not a duplicate - places the neighbour. Only the sole-tab
+        // pane is stuck, because nothing about it changed.
+        if (!sole) return;
+        if (mayAutoRebuild(event.paneID)) {
+            // One free recovery, and no card for it: a renderer the OS reclaimed, or one taken
+            // down by a GPU restart, comes back at its own URL and the user sees a reload. A
+            // "this page stopped responding" card that vanished half a second later would be a
+            // worse report of that than the reload itself.
+            rebuildPane(event.paneID);
+            return;
+        }
+        /*
+         * A second death inside the window: the page is what is broken, and rebuilding it again
+         * would crash, rebuild, crash for ever. So the daemon stops, marks the tab not-live, and
+         * hands the decision back - §16.7's "This page stopped responding" card, whose Reload
+         * runs `rebuildPane` with no rate limit at all, because a person asking twice means it.
+         */
+        store.dispatch({
+            type: 'web-tab-live',
+            workspaceID: found.workspaceID,
+            paneID: event.paneID,
+            tabID: event.tabID,
+            live: false
+        });
+        report(
+            new Error(
+                `web pane ${event.paneID}: renderer died again within ` +
+                    `${String(AUTO_REBUILD_WINDOW_MS)} ms of the last rebuild; showing the ` +
+                    'stopped-responding card rather than rebuilding in a loop'
+            ),
+            'tab-closed'
+        );
     };
 
     return {
@@ -608,6 +720,10 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
         forgetTab(paneID, tabID) {
             forgetTab(paneID, tabID);
+        },
+
+        rebuildPane(paneID) {
+            return rebuildPane(paneID);
         },
 
         retargetFind(paneID, nextTabID) {

@@ -287,6 +287,13 @@ export interface WebTabEntry {
     readonly active: boolean;
     readonly title: string;
     readonly url: string;
+    /**
+     * `false` when the tab has no browser view behind it: its renderer died and the daemon has
+     * not rebuilt it (web-pane.md §5.2, issue #76). **Absent means live**, so a healthy reply is
+     * byte-identical to the one that shipped before the flag existed. `kelpi web reload` on such
+     * a tab rebuilds the pane instead of failing `web pane has no live tab`.
+     */
+    readonly live?: boolean;
 }
 
 export interface WebTabsReply extends WebPaneReplyBase {

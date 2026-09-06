@@ -315,6 +315,20 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             const target = resolveScope(ctx, msg, reply, { requireActiveTab: true });
             if (target === null) return;
             const tabID = target.activeTab?.id ?? '';
+            /*
+             * §5.2 / issue #76: reload is the verb for "bring this page back", so it is also the
+             * verb for a page whose renderer died. Forwarding it would ask the host to reload a
+             * view it does not have and come back `web pane has no live tab` - the dead end the
+             * user reported, and the one this branch removes. `rebuildPane` re-announces the
+             * pane instead, and the host builds the view from the URL the daemon still holds.
+             *
+             * The client's "This page stopped responding" card routes its Reload button through
+             * here, so the card's one action and `kelpi web reload` are the same code path.
+             */
+            if (target.activeTab?.live === false && service.rebuildPane(target.paneID)) {
+                ok(reply, { ...baseFields(target), tab_id: tabID, rebuilt: true });
+                return;
+            }
             forward(
                 reply,
                 target,
@@ -374,7 +388,11 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                     url: tab.url,
                     title: tab.title,
                     index,
-                    active: tab.id === activeID
+                    active: tab.id === activeID,
+                    // §5.2: present only when the tab has no browser view behind it, so an
+                    // agent reading this reply can tell "the page is gone" from "the page is
+                    // fine" without every healthy tab growing a field (issue #76).
+                    ...(tab.live === false ? { live: false } : {})
                 }))
             });
         }),

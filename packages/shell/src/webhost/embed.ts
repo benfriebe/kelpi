@@ -98,12 +98,30 @@ export interface EmbedController<V> {
     parkAll(reason?: string): void;
     /** A view is being destroyed: drop it from the books without touching it. */
     forget(view: V): boolean;
+    /** The pane itself is gone: release it and forget the rect it used to be reported at. */
+    forgetPane(paneID: string, reason?: string): void;
     /**
      * Re-apply the last geometry for every pane in the books, parked ones included (the view set
      * changed, or the window came back). A parked placement that can be honoured is placed again
      * and stops being parked; one that still cannot be (no window yet) stays parked.
      */
     refresh(): void;
+    /**
+     * Re-apply the last geometry this pane was given, even though it is no longer placed.
+     *
+     * `refresh()` walks the PLACED panes, so it cannot help a pane whose only view was just
+     * destroyed: `forget` deleted the placement, and the pane is now a stranger. That is the
+     * state a dead renderer leaves behind (issue #76), and it is why a rebuilt view used to sit
+     * in the holder with the client seeing no reason to re-state a rect that never changed.
+     *
+     * The remembered report is the last one this controller ACCEPTED, hidden reports included,
+     * which is what makes replaying it safe: a pane parked because its workspace went away
+     * remembers `visible:false` and re-applying it releases again rather than putting a page on
+     * a screen the user is not looking at.
+     *
+     * Returns true when a remembered report was re-applied and the pane ended up placed.
+     */
+    reapply(paneID: string): boolean;
     /** Panes whose view is in the window right now. */
     readonly embeddedPaneIDs: readonly string[];
     /** Panes this shell parked and still owes a placement to (#75). */
@@ -148,6 +166,15 @@ interface Placement<V> {
 
 export function createEmbedController<V>(options: EmbedOptions<V>): EmbedController<V> {
     const placed = new Map<string, Placement<V>>();
+    /**
+     * The last report this controller accepted for each pane, placed or not (issue #76).
+     *
+     * Separate from `placed` on purpose: `placed` is "where a view IS" and is emptied by every
+     * park, every close and every `forget`, while this is "where the client last said the hole
+     * is" and survives all three. Only `reapply` reads it, and only for a pane the host is
+     * rebuilding a view for.
+     */
+    const reported = new Map<string, PaneGeometry>();
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
@@ -258,6 +285,9 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             ) {
                 return 'ignored';
             }
+            // Past both gates: this report is ours, so it is worth remembering whatever it then
+            // does with the view (see `reported` above).
+            reported.set(geometry.paneID, geometry);
             const metrics = options.metrics();
             if (metrics === null) {
                 /*
@@ -304,6 +334,11 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             return false;
         },
 
+        forgetPane(paneID, reason = 'pane-closed') {
+            release(paneID, reason);
+            reported.delete(paneID);
+        },
+
         refresh() {
             const metrics = options.metrics();
             for (const [paneID, placement] of [...placed]) {
@@ -315,6 +350,15 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
                 }
                 place(placement.geometry, metrics);
             }
+        },
+
+        reapply(paneID) {
+            if (placed.has(paneID)) return true;
+            const geometry = reported.get(paneID);
+            if (geometry === undefined) return false;
+            const metrics = options.metrics();
+            if (metrics === null) return false;
+            return place(geometry, metrics) === 'placed';
         },
 
         get embeddedPaneIDs() {

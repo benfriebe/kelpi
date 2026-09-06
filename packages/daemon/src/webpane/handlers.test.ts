@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { NO_HOST_ERROR, timeoutError } from './host.js';
+import { AUTO_REBUILD_WINDOW_MS } from './service.js';
 import {
     attachFakeHost,
     flush,
@@ -1015,5 +1016,136 @@ describe('host state mirroring', () => {
         const web = h.state().workspaces[0]?.webPanes[WEB_PANE];
         expect(web?.tabs.map((tab) => tab.id)).toEqual([WEB_TAB]);
         expect(web?.activeTabID).toBe(WEB_TAB);
+    });
+});
+
+/**
+ * Issue #76: a web pane whose renderer dies.
+ *
+ * The reducer refuses to remove a pane's only tab, so before this the daemon's answer to a dead
+ * renderer was to change nothing at all: the tab stayed, the host had no view for it, and every
+ * verb came back `web pane has no live tab`. §5.2 is now a recovery instead.
+ */
+describe('renderer death on a single-tab pane (§5.2, #76)', () => {
+    const paneOpens = (host: ReturnType<typeof attachFakeHost>) =>
+        host.notifies.filter((entry) => entry.verb === 'pane-open');
+    const tabOf = (h: ReturnType<typeof webHarness>) =>
+        h.state().workspaces[0]?.webPanes[WEB_PANE]?.tabs[0];
+
+    it('rebuilds the pane at its URL, once, with no card', () => {
+        const h = webHarness();
+        const host = attachFakeHost(h.service);
+        const before = paneOpens(host).length;
+
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+
+        // The tab survives the refused close, and it is LIVE: the daemon has asked for a view.
+        expect(tabOf(h)).toMatchObject({ id: WEB_TAB, url: 'https://example.com' });
+        expect(tabOf(h)?.live).toBeUndefined();
+        // One `pane-open`, carrying the tab the host must rebuild and the URL to rebuild it at.
+        const rebuilt = paneOpens(host).slice(before);
+        expect(rebuilt).toHaveLength(1);
+        expect(rebuilt[0]?.args).toMatchObject({ paneID: WEB_PANE, activeTabID: WEB_TAB });
+        expect(rebuilt[0]?.args['tabs']).toEqual([
+            { id: WEB_TAB, url: 'https://example.com', title: '' }
+        ]);
+    });
+
+    it('stops after the second death inside the window and marks the tab not-live', () => {
+        const h = webHarness();
+        const host = attachFakeHost(h.service);
+        const before = paneOpens(host).length;
+
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+
+        // Exactly one rebuild: a page that crashes as it loads cannot spin the host.
+        expect(paneOpens(host).slice(before)).toHaveLength(1);
+        expect(tabOf(h)?.live).toBe(false);
+        // Still one tab, still at its URL - the card is drawn over a pane that still knows
+        // where it was.
+        expect(tabOf(h)).toMatchObject({ id: WEB_TAB, url: 'https://example.com', live: false });
+    });
+
+    it('allows another automatic rebuild once the window has passed', () => {
+        let clock = 1_000_000;
+        const h = webHarness({ now: () => clock });
+        const host = attachFakeHost(h.service);
+        const before = paneOpens(host).length;
+
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        clock += AUTO_REBUILD_WINDOW_MS - 1;
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        expect(paneOpens(host).slice(before)).toHaveLength(1);
+        expect(tabOf(h)?.live).toBe(false);
+
+        clock += 1;
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        expect(paneOpens(host).slice(before)).toHaveLength(2);
+        expect(tabOf(h)?.live).toBeUndefined();
+    });
+
+    it('turns `web-reload` on a dead tab into a rebuild instead of a host round trip', () => {
+        const h = webHarness();
+        const host = attachFakeHost(h.service);
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        expect(tabOf(h)?.live).toBe(false);
+
+        const before = paneOpens(host).length;
+        const calls = host.calls.length;
+        expect(h.reply({ command: 'web-reload', pane_id: WEB_PANE })).toEqual({
+            ok: true,
+            pane_id: WEB_PANE,
+            workspace_id: WORKSPACE,
+            tab_id: WEB_TAB,
+            rebuilt: true
+        });
+        // A rebuild notify, and NOT a `reload` RPC to a view the host does not have (which is
+        // what used to come back `web pane has no live tab`).
+        expect(paneOpens(host).slice(before)).toHaveLength(1);
+        expect(host.calls.slice(calls)).toEqual([]);
+        expect(tabOf(h)?.live).toBeUndefined();
+    });
+
+    it('leaves a healthy reload exactly as it was', () => {
+        const h = webHarness();
+        const host = attachFakeHost(h.service);
+        const before = paneOpens(host).length;
+        // `open`, not `reply`: a forwarded reload answers only when the host acks, which is the
+        // shape being preserved here.
+        h.open({ command: 'web-reload', pane_id: WEB_PANE, hard: true });
+        expect(paneOpens(host).slice(before)).toHaveLength(0);
+        expect(host.calls.at(-1)).toMatchObject({
+            verb: 'reload',
+            args: { paneID: WEB_PANE, tabID: WEB_TAB, hard: true }
+        });
+    });
+
+    it('reports the dead tab in `web-tabs`, and says nothing about a live one', () => {
+        const h = webHarness();
+        const host = attachFakeHost(h.service);
+        expect(h.reply({ command: 'web-tabs', pane_id: WEB_PANE })).toMatchObject({
+            tabs: [{ id: WEB_TAB, index: 0, active: true, url: 'https://example.com', title: '' }]
+        });
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        host.emit('tab-closed', WEB_PANE, {}, WEB_TAB);
+        expect(h.reply({ command: 'web-tabs', pane_id: WEB_PANE })).toMatchObject({
+            tabs: [{ id: WEB_TAB, active: true, live: false }]
+        });
+    });
+
+    /** A multi-tab pane is the case the reducer CAN handle, and it must stay handled. */
+    it('does not rebuild a pane that still has another tab', () => {
+        const h = webHarness({ ids: [OTHER_TAB] });
+        const host = attachFakeHost(h.service);
+        h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: 'b.test', make_active: true });
+        const before = paneOpens(host).length;
+
+        host.emit('tab-closed', WEB_PANE, {}, OTHER_TAB);
+        expect(paneOpens(host).slice(before)).toHaveLength(0);
+        const web = h.state().workspaces[0]?.webPanes[WEB_PANE];
+        expect(web?.tabs.map((tab) => tab.id)).toEqual([WEB_TAB]);
+        expect(web?.tabs[0]?.live).toBeUndefined();
     });
 });

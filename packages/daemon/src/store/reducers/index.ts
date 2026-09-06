@@ -84,6 +84,7 @@ const ROUTES = {
     'web-navigate': 'web',
     'web-set-private': 'web',
     'web-tab-state': 'web',
+    'web-tab-live': 'web',
     'scratchpad-content-changed': 'pane',
     'set-markdown-editing': 'pane',
     'set-markdown-font-size': 'pane',

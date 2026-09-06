@@ -426,6 +426,59 @@ describe('tab strip', () => {
         expect(empty.className).not.toContain('rounded');
     });
 
+    /**
+     * §16.7's second empty surface (issue #76): the page's renderer died.
+     *
+     * The user's report was "sometimes web panes just go blank and only show the browser
+     * chrome" and "no retry / reload option either". So what is asserted here is that the box
+     * says what happened and carries a button, and that the chrome the report describes as
+     * still-drawn is still drawn, because that half was never the bug.
+     */
+    it('draws the stopped-responding card, with the chrome intact, when the tab is not live', () => {
+        const { commands, sent } = fakeCommands();
+        const dead: readonly WebPaneTab[] = [{ ...(TABS[0] as WebPaneTab), live: false }, TABS[1] as WebPaneTab];
+        render(
+            <WebPane paneID={PANE} tabs={dead} activeTabID={TAB1} commands={commands} embedded={true} />
+        );
+
+        const card = screen.getByTestId(`web-crashed-${PANE}`);
+        expect(card.textContent).toContain('This page stopped responding');
+        expect(card.textContent).toContain('https://example.com/');
+        // The nav row and the tab strip stay exactly where they were.
+        expect(screen.getByTestId(`web-url-${PANE}`)).not.toBeNull();
+        expect(screen.getByTestId(`web-tabs-${PANE}`).textContent).toContain('Second');
+        // And the "open in the Kelpi app" note does not double up with it.
+        expect(screen.queryByTestId(`web-external-${PANE}`)).toBeNull();
+
+        fireEvent.click(screen.getByTestId(`web-crashed-reload-${PANE}`));
+        expect(sent).toEqual([{ verb: 'reload', args: [PANE] }]);
+    });
+
+    it('shows no card for a live tab, in either client', () => {
+        const { commands } = fakeCommands();
+        const view = render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} embedded={true} />
+        );
+        expect(screen.queryByTestId(`web-crashed-${PANE}`)).toBeNull();
+        view.rerender(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
+        expect(screen.queryByTestId(`web-crashed-${PANE}`)).toBeNull();
+        expect(screen.getByTestId(`web-external-${PANE}`)).not.toBeNull();
+    });
+
+    /** Liveness is per tab: switching to a healthy one puts the page back. */
+    it('follows the active tab, not the pane', () => {
+        const { commands } = fakeCommands();
+        const dead: readonly WebPaneTab[] = [{ ...(TABS[0] as WebPaneTab), live: false }, TABS[1] as WebPaneTab];
+        const view = render(
+            <WebPane paneID={PANE} tabs={dead} activeTabID={TAB1} commands={commands} embedded={true} />
+        );
+        expect(screen.queryByTestId(`web-crashed-${PANE}`)).not.toBeNull();
+        view.rerender(
+            <WebPane paneID={PANE} tabs={dead} activeTabID={TAB2} commands={commands} embedded={true} />
+        );
+        expect(screen.queryByTestId(`web-crashed-${PANE}`)).toBeNull();
+    });
+
     it('falls back to tabs[0] when activeTabID is stale (§17.2)', () => {
         const { commands } = fakeCommands();
         render(<WebPane paneID={PANE} tabs={TABS} activeTabID="gone" commands={commands} />);

@@ -38,7 +38,14 @@ export interface CreateTabInput {
     readonly isPrivate: boolean;
 }
 
-export type DestroyReason = 'tab-close' | 'pane-close' | 'private-flip' | 'reconcile' | 'dispose';
+export type DestroyReason =
+    | 'tab-close'
+    | 'pane-close'
+    | 'private-flip'
+    | 'reconcile'
+    | 'dispose'
+    /** The tab's renderer died (or the page destroyed itself); the view object is still ours. */
+    | 'renderer-gone';
 
 export interface RegistryHooks<V> {
     /** Build the view and start loading `url` (an empty URL loads nothing). */
@@ -68,7 +75,18 @@ export interface TabRegistry<V> {
     openTab(paneID: string, tabID: string, url: string, makeActive: boolean): boolean;
     closeTab(paneID: string, tabID: string): boolean;
     selectTab(paneID: string, tabID: string): boolean;
-    /** Drop a tab whose view died on its own (crash, `window.close()`) — nothing to destroy. */
+    /**
+     * Drop a tab whose RENDERER died on its own (a crash, `window.close()`).
+     *
+     * Issue #76: this used to drop the bookkeeping and stop, on the reading that a dead tab has
+     * nothing to destroy. It has. Only the renderer process is gone; the `WebContentsView` is
+     * still a child of whichever window it was placed in, still in the embed controller's
+     * books, and still covering the pane's page area with a blank rectangle nobody can navigate
+     * or reload. So it goes through the destroy hook like every other death, which unhooks it
+     * (`embed.forget`), un-parents it and closes its contents. Nothing is left placed, and the
+     * daemon's rebuild `pane-open` then lands on a pane with no view for that tab, which is
+     * exactly the case `openPane` reconciles by creating one.
+     */
     forgetTab(paneID: string, tabID: string): boolean;
     view(paneID: string, tabID: string): V | null;
     /** §17.2: the active tab always falls back to `tabs[0]`. */
@@ -230,6 +248,10 @@ export function createTabRegistry<V>(hooks: RegistryHooks<V>): TabRegistry<V> {
             if (tab === undefined) return false;
             const index = pane.tabs.indexOf(tab);
             pane.tabs = pane.tabs.filter((candidate) => candidate !== tab);
+            // Issue #76: the view object outlives its renderer, so it has to be taken down like
+            // any other. The hook is written to survive a half-dead view (every step is guarded)
+            // because that is the only state it is ever called in from here.
+            hooks.destroy(tab.view, 'renderer-gone');
             if (pane.activeTabID === tabID) {
                 const next = pane.tabs[Math.max(index - 1, 0)];
                 pane.activeTabID = next?.id ?? null;

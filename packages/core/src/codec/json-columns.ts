@@ -12,6 +12,16 @@ export interface WebTab {
     readonly id: string;
     readonly url: string;
     readonly title: string;
+    /**
+     * False while the host has no browser view for this tab and the daemon has not yet asked
+     * for one (issue #76: the renderer died and the reducer refused to remove the pane's only
+     * tab). Absent means live, which is what every tab that has never crashed looks like.
+     *
+     * **Runtime only.** `encodeWebTabsJSON` below writes `{id,url,title}` and `parseWebTab`
+     * reads only those three, so the flag never reaches the database: a pane restored from
+     * disk always starts with a live tab, because the host builds its view from scratch.
+     */
+    readonly live?: boolean | undefined;
 }
 
 function parseArrayJSON(text: string | null | undefined): unknown[] | null {

@@ -68,8 +68,15 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
 | `harness.window()`, `focus()`, `blur()` | the main window's focus and bounds; the dock only bounces while it is unfocused |
 | `harness.hide()`, `minimize()`, `restore()` | what ⌘H and ⌘M do to the window, and the two events that undo them; each answers `{ visible, minimized }` read back after the call. Real `BrowserWindow` calls, because the behaviour they exist for is the shell parking every web pane's view on `hide`/`minimize` and restoring it on `show`/`restore` (issue #75), which a synthesised event would not reproduce. They cannot be reached through `menuClick`/`press`: those are `role` rows, which `menu-click` refuses |
+| `harness.crash(paneID)` | kills the renderer behind that web pane's active tab (`webContents.forcefullyCrashRenderer`), as macOS does under memory pressure. Answers `{ paneID, tabID, crashed: true }`, or refuses with `no live view for pane <id>` when the pane has no view and `this shell has no web pane host` when there is no web host at all |
 
 Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | error }` out, if you want to speak it without the driver.
+
+### Crashing a pane on purpose
+
+`crash` exists because issue #76's recovery is three processes wide (a renderer dies in the shell, the shell disposes and re-places the view, the daemon re-announces the pane, the client draws a card if it does not) and only the last of those is reachable from a renderer. CDP's `Page.crash` is not an alternative: it needs a debugger attached to the PANE's own target, and `--remote-debugging-port` exposes the shell window's page, not the `WebContentsView` inside it.
+
+It kills a real process, so it is the one op that changes the instance under the test rather than reading it. Keep it to a sandbox (which is all `KELPI_HARNESS_SOCKET` ever reaches), and remember the daemon rebuilds the pane automatically for the FIRST death in 30 s: to see the "This page stopped responding" card, wait for the rebuild and crash it again (web-pane.md §5.2). `scripts/ui-audit/web-view-rebuild.mjs` and `scripts/scenarios/web-pane-crashed-card.mjs` both do exactly that.
 
 ### Notifications
 

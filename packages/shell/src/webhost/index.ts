@@ -105,6 +105,17 @@ export interface WebPaneHost {
      * asked to re-state what belongs on screen.
      */
     restoreViews(reason?: string): void;
+    /**
+     * Test-only (issue #76): kill the renderer behind a pane's ACTIVE tab, the way macOS does
+     * under memory pressure. Returns the tab it killed, or null when the pane has no view.
+     *
+     * Reached from exactly one place, the harness channel's `crash` op, which is itself gated on
+     * `KELPI_HARNESS_SOCKET` (`shell/src/harness.ts` documents the gate). It exists because the
+     * only honest way to test a crash recovery is to crash something: CDP's `Page.crash` needs a
+     * debugger attached to the pane's own target, which the shell does not expose, and every
+     * other route (memory pressure, a GPU restart) is not reproducible in a battery.
+     */
+    crashPaneRenderer(paneID: string): { readonly paneID: string; readonly tabID: string } | null;
 }
 
 /**
@@ -363,7 +374,12 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             },
             tabClosed: (paneID, tabID) => {
                 // The daemon drops the tab and re-activates the left neighbour; our registry
-                // forgets it without trying to destroy a view that is already gone.
+                // takes the dead view down through the destroy hook, which unhooks it from the
+                // embed controller and un-parents it (issue #76: a renderer that dies leaves a
+                // live `WebContentsView` covering the pane with nothing in it, and until this
+                // it stayed there). When the pane's ONLY tab dies the daemon cannot drop it, so
+                // it answers with a rebuild `pane-open` instead and the registry builds a fresh
+                // view from the URL it still holds.
                 registry.forgetTab(paneID, tabID);
                 client?.sendEvent('tab-closed', paneID, tabID, {});
             }
@@ -676,7 +692,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         // A private flip changes the partition, and the partition is sealed into the views —
         // dropping the handle first is what makes the rebuilt views land on the new store.
         if (verb === 'pane-set-private' && paneID !== '') sessions.forget(paneID);
-        if (verb === 'pane-close' && paneID !== '') embed.release(paneID, 'pane-closed');
+        if (verb === 'pane-close' && paneID !== '') embed.forgetPane(paneID, 'pane-closed');
         dispatcher.notify(verb, args);
         if (verb === 'pane-close' && paneID !== '') sessions.forget(paneID);
         // A tab-level change moves which view is the active one; re-apply the last geometry so
@@ -685,6 +701,21 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         if (verb === 'tab-open' || verb === 'tab-select' || verb === 'tab-close' || verb === 'pane-open') {
             embed.refresh();
         }
+        /*
+         * Issue #76, and the step `refresh()` above cannot take.
+         *
+         * A `pane-open` for a pane the host already knows is the daemon asking for a REBUILD:
+         * the pane's renderer died, its view was destroyed and `embed.forget` took the
+         * placement with it, so `refresh()` walks straight past a pane that is no longer in its
+         * books. The client will not help either - the page hole never moved, and the geometry
+         * reporter drops a report identical to the last one it sent - so without this the
+         * rebuilt view loads its URL in the off-screen holder and the user still sees nothing.
+         *
+         * `reapply` is a no-op for a pane that IS placed (a plain re-announce on host
+         * registration, where the client's own resync is the right source) and for one with no
+         * remembered rect (a pane being created now, whose first report has not arrived).
+         */
+        if (verb === 'pane-open' && paneID !== '') embed.reapply(paneID);
     };
 
     client = createWebHostClient({
@@ -776,6 +807,26 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         restoreViews(reason = 'window-shown'): void {
             restoreParkedViews(reason);
+        },
+        crashPaneRenderer(paneID: string): { paneID: string; tabID: string } | null {
+            const tabID = registry.activeTabID(paneID);
+            const tab = tabID === null ? null : registry.view(paneID, tabID);
+            if (tab === null || tabID === null) return null;
+            const contents = tab.contentsView.webContents;
+            if (contents.isDestroyed()) return null;
+            log(`web pane ${paneID} tab ${tabID}: harness crash requested`);
+            // One tick later, not inline: the kill starts a teardown that runs back through
+            // `render-process-gone` into `forgetTab` and the destroy hook, and the harness
+            // answers its socket synchronously. Deferring keeps the driver's reply ahead of the
+            // recovery it is about to watch for, instead of racing a socket write against it.
+            setImmediate(() => {
+                try {
+                    if (!contents.isDestroyed()) contents.forcefullyCrashRenderer();
+                } catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)), 'harness-crash');
+                }
+            });
+            return { paneID, tabID };
         }
     };
 }

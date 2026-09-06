@@ -380,6 +380,129 @@ describe('the ••• title-bar menu (APP-052/053/054)', () => {
     });
 });
 
+/**
+ * ⌘-click on a terminal cell (CONT-122 / TERM-052, #83).
+ *
+ * There was no test for this at all, which is how "⌘-click does nothing in a Codex pane" got as
+ * far as a user report: the sequencing that has to hold before the daemon is even asked (the
+ * root's capture-phase handler fires, the pane is identified, the pane's live grid is consulted,
+ * the pixel is divided into a CELL) was only ever exercised by the audit's `cmd-click-path` step,
+ * which asserts the OUTCOME and cannot say which link in the chain broke.
+ *
+ * jsdom gives every element a zero-size box, so the grid has to be staged: the host is given a
+ * measurable `clientWidth`/`clientHeight` (which is what `measureGeometry` divides by the
+ * engine's cell metrics to publish cols/rows) and a `getBoundingClientRect` (which is what
+ * `cellFromPoint` measures the click against). Both are the real code paths; only the numbers
+ * are supplied.
+ */
+describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
+    const HOST = { width: 800, height: 340 };
+    /** The fake engine's cell, and therefore an 80 × 17 grid in the box staged below. */
+    const CELL = { width: 10, height: 20 };
+
+    /** Stage a measurable grid on PANE_A's terminal host and wait for the pane to publish it. */
+    async function grid(): Promise<HTMLElement> {
+        const host = document.querySelector<HTMLElement>(`[data-pane-id="${PANE_A}"] [data-terminal-host]`);
+        if (host === null) throw new Error('the shell pane has no terminal host');
+        Object.defineProperty(host, 'clientWidth', { configurable: true, value: HOST.width });
+        Object.defineProperty(host, 'clientHeight', { configurable: true, value: HOST.height });
+        host.getBoundingClientRect = () =>
+            ({ left: 0, top: 0, right: HOST.width, bottom: HOST.height, x: 0, y: 0, ...HOST }) as DOMRect;
+        // jsdom has no ResizeObserver, so the pane listens for `resize` instead (TerminalPane).
+        await act(async () => {
+            window.dispatchEvent(new Event('resize'));
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        // `data-terminal-cell` is published by the same pass that publishes cols/rows, so its
+        // presence is the proof the geometry the click will be divided by actually exists. The
+        // attribute selector is load-bearing: the pane's OWN root carries it, and the grid wraps
+        // that in a container with the same `data-pane-id`.
+        await waitFor(() => {
+            const cell = document
+                .querySelector(`[data-pane-id="${PANE_A}"][data-terminal-cell]`)
+                ?.getAttribute('data-terminal-cell');
+            if (cell === null || cell === undefined || cell === '') {
+                throw new Error('the pane has not published its cell metrics');
+            }
+            expect(cell).toBe(`${CELL.width.toFixed(2)}x${CELL.height.toFixed(2)}`);
+        });
+        return host;
+    }
+
+    it('sends open-terminal-target for the cell the pixel landed in', async () => {
+        const h = setup();
+        const host = await grid();
+
+        // Down the middle of the box. `cellFromPoint` is `floor(offset / size * count)`, and
+        // the grid staged above is 800/10 = 80 columns by 340/20 = 17 rows.
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: HOST.width / 2, clientY: HOST.height / 2 });
+
+        expect(h.lastCommand('open-terminal-target')).toMatchObject({
+            command: 'open-terminal-target',
+            pane_id: PANE_A,
+            col: 40,
+            row: 8
+        });
+    });
+
+    it('opens the daemon’s URL through the system opener, and only for a ⌘-click', async () => {
+        const h = setup();
+        const host = await grid();
+        const open = vi.fn();
+        vi.stubGlobal('open', open);
+
+        // A PLAIN click is the TUI's, not ours: no round-trip at all.
+        fireEvent.click(host, { button: 0, clientX: 100, clientY: 100 });
+        expect(h.lastCommand('open-terminal-target')).toBeUndefined();
+
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        expect(h.lastCommand('open-terminal-target')).toBeDefined();
+        // #83: the URL the daemon answers is handed over WHOLE — a truncated address was half
+        // the user's report.
+        await act(async () => {
+            h.reply({ opened: 'external', url: 'https://example.com/wrapped/path/that/continues/here' });
+            await Promise.resolve();
+        });
+        expect(open).toHaveBeenCalledWith(
+            'https://example.com/wrapped/path/that/continues/here',
+            '_blank',
+            'noreferrer'
+        );
+        vi.unstubAllGlobals();
+    });
+
+    /**
+     * #83's silent-failure half. A link we refuse to hand the OS gets a word; a ⌘-click on prose
+     * or on empty screen deliberately gets nothing, because a toast on every stray ⌘-click is
+     * noise rather than help. Two tests rather than one: a toast lives for `ERROR_TOAST_MS`, so
+     * "no toast appeared" is only readable on a run that raised none.
+     */
+    it('says something when the daemon refused a link it was aimed at', async () => {
+        const h = setup();
+        const host = await grid();
+
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'none', reason: 'link-not-http', link: 'file:///etc/passwd' });
+            await Promise.resolve();
+        });
+        expect((await screen.findByText(/is not an http\(s\) address/)).textContent).toContain('file:///etc/passwd');
+    });
+
+    it('stays quiet for a ⌘-click that landed on prose or on empty screen', async () => {
+        const h = setup();
+        const host = await grid();
+
+        fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
+        await act(async () => {
+            h.reply({ opened: 'none' });
+            await Promise.resolve();
+        });
+        expect(screen.queryByText(/nothing was opened/)).toBeNull();
+        expect(screen.queryByText(/does not exist/)).toBeNull();
+    });
+});
+
 describe('the external $EDITOR pane (CONT-081 / CONT-090)', () => {
     it('offers the affordance over a markdown preview and sends the verb', async () => {
         const h = setup({ markdown: 'preview' });

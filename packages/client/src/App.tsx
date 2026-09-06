@@ -2140,6 +2140,12 @@ function Shell(props: AppProps): ReactElement {
              * The daemon decides: only a `.md` file that exists becomes a pane. Anything else
              * comes back described, and a URL is handed to the OS opener — which is exactly what
              * returning `false` to ghostty's action callback did in the Swift app.
+             *
+             * #83: a ⌘-click that was AIMED at a link and opened nothing now says so. The gate
+             * is the daemon's `reason`, never "opened is none", because a ⌘-click also lands on
+             * prose and on empty screen all day long and a toast for those would be noise. Two
+             * cases have one: a link with a scheme we refuse to hand the OS, and a URL a TUI's
+             * box border cut in half (which used to open the truncated address instead).
              */
             openTerminalTarget(paneID: string, row: number, col: number): boolean {
                 void commands.openTerminalTarget({ paneID, row, col }).then(
@@ -2156,6 +2162,20 @@ function Shell(props: AppProps): ReactElement {
                         }
                         if (opened === 'missing') {
                             notifyFailure('Open path', `${replyText(reply, 'path') ?? 'that file'} does not exist`);
+                            return;
+                        }
+                        const reason = replyText(reply, 'reason');
+                        if (reason === 'link-not-http') {
+                            const link = replyText(reply, 'link') ?? replyText(reply, 'token') ?? 'that link';
+                            notifyFailure('Open link', `${link} is not an http(s) address, so nothing was opened`);
+                            return;
+                        }
+                        if (reason === 'link-clipped') {
+                            const token = replyText(reply, 'token') ?? 'that link';
+                            notifyFailure(
+                                'Open link',
+                                `${token} runs into the box border, so it is probably cut off; nothing was opened`
+                            );
                         }
                     },
                     (error: unknown) => {

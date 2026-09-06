@@ -359,7 +359,7 @@ export const MAX_WHEEL_REPORTS_PER_EVENT = 64;
 export interface MouseReporter {
     /** True while an application has asked for mouse events. */
     readonly active: boolean;
-    /** True while a reported (non-shift-bypassed) drag is in progress. */
+    /** True while a reported (non-bypassed) drag is in progress. */
     readonly dragging: boolean;
     /** Returns true when the event was CONSUMED — the engine must not also see it. */
     down(event: PointerLike): boolean;
@@ -394,7 +394,7 @@ const DOM_BUTTONS: Record<number, MouseButton> = {
  */
 export function createMouseReporter(options: MouseReporterOptions): MouseReporter {
     /**
-     * Every button seen go down inside the pane — reported ones AND shift-bypassed ones.
+     * Every button seen go down inside the pane, reported ones AND bypassed ones (shift, meta).
      *
      * Ghostty keeps its `click_state` for bypassed presses too (`Surface.zig:3879-3886`:
      * "we mark the click state because we need that to properly make some mouse reports"), and
@@ -438,16 +438,28 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
     };
 
     /**
-     * Shift is the universal "let me select anyway" override, and it is ghostty's default
+     * The two "this gesture is the app's, not the application's" overrides.
+     *
+     * **Shift** is the universal "let me select anyway", and it is ghostty's default
      * (`mouse-shift-capture = false`; `Surface.zig:3844-3846` — "if we have shift-pressed and
      * we aren't allowed to capture it, then we do not do a mouse report").
      *
-     * It applies to BUTTON events, and to motion **only while a button is held**
+     * **⌘** is Kelpi's own link-and-path gesture (CONT-122 / TERM-052, #83). `modifiersOf` has
+     * no bit to report it with — the DEC protocol has none — so a ⌘-click under reporting used
+     * to be sent to the TUI as a *plain* button press AND processed as a ⌘-click here: the
+     * application under the cursor saw a click the user never made at it, which in a file
+     * picker or a diff view moves the selection out from under the link they were aiming at.
+     * Ghostty captures ⌘ for itself and reports nothing (`Surface.zig` sends the press only
+     * after its own binding set has declined it), so this matches it.
+     *
+     * Both apply to BUTTON events, and to motion **only while a button is held**
      * (`Surface.zig:4582-4589`: "This only applies if there is a mouse button pressed so that
-     * movement reports are not affected"). `scrollCallback` never consults it at all, so
-     * shift+wheel still reports — with the shift bit set — exactly as ghostty does.
+     * movement reports are not affected"). `scrollCallback` never consults either, so
+     * shift+wheel and ⌘+wheel still report — with whatever bits the protocol has — exactly as
+     * ghostty does. A plain click under reporting is untouched by all of this.
      */
-    const shifted = (event: PointerLike): boolean => event.shiftKey === true;
+    const bypassed = (event: PointerLike): boolean =>
+        event.shiftKey === true || event.metaKey === true;
 
     return {
         get active(): boolean {
@@ -462,7 +474,7 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
             if (button === undefined) return false;
             // Recorded even when the report is bypassed — see `held`.
             held.add(button);
-            if (shifted(event)) return false;
+            if (bypassed(event)) return false;
             const box = surface(event);
             if (box === null) return false;
             capturing = true;
@@ -478,7 +490,7 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
             const tracking = modes().mouseTracking;
             if (tracking === 'none') return false;
             // Shift + a held button = the user is selecting; hands off.
-            if (shifted(event) && held.size > 0) return false;
+            if (bypassed(event) && held.size > 0) return false;
             // `drag` (1002) reports motion only while a button is held; `any` (1003) always.
             if (tracking !== 'any' && held.size === 0) return false;
             const box = surface(event);
@@ -507,7 +519,7 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
             // A release for a press this pane never saw belongs to whoever did see it.
             if (!held.delete(button)) return false;
             if (held.size === 0) capturing = false;
-            if (shifted(event)) return false;
+            if (bypassed(event)) return false;
             const box = surface(event);
             if (box === null) return true;
             emit(

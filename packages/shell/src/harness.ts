@@ -21,8 +21,10 @@
  * plumbing). Over it a driver can read the application menu, click a row by id or label path,
  * press a chord and land where the OS would, count dock bounces, count and pre-answer message
  * boxes, read every notification the shell showed and click or close one as the OS would
- * (agent-lifecycle.md §7), and read, focus or blur the main window (the bounce is only
- * reachable while the window is unfocused, so `blur` is the step before "make an agent stop").
+ * (agent-lifecycle.md §7), read which URLs the shell handed the OS opener (#83, and under the
+ * harness the open is recorded INSTEAD of performed, never as well as), and read, focus or blur
+ * the main window (the bounce is only reachable while the window is unfocused, so `blur` is the
+ * step before "make an agent stop").
  *
  * What makes it safe. The gate is the env var being a non-empty path and nothing else
  * (`harnessSocketPath`): a user's shell, the packaged app, and every existing probe that sets
@@ -40,7 +42,7 @@
  * process, and nothing else is expected to find it.
  */
 
-import type { App, BrowserWindow, Dialog, Menu, MenuItem, MessageBoxReturnValue } from 'electron';
+import type { App, BrowserWindow, Dialog, Menu, MenuItem, MessageBoxReturnValue, shell as ElectronShell } from 'electron';
 import { rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 
@@ -59,6 +61,8 @@ import type { NotificationPresenter } from './notify.js';
 export interface HarnessOptions {
     readonly app: App;
     readonly dialog: Dialog;
+    /** Electron's `shell` module, for the `openExternal` wrapper (#83). */
+    readonly shell: typeof ElectronShell;
     readonly BrowserWindow: typeof BrowserWindow;
     readonly Menu: typeof Menu;
     readonly socketPath: string;
@@ -78,7 +82,7 @@ interface Running {
     readonly socketPath: string;
     readonly server: Server;
     readonly sockets: Set<Socket>;
-    /** Put `app.dock.bounce` and `dialog.showMessageBox` back the way they were. */
+    /** Put `app.dock.bounce`, `dialog.showMessageBox` and `shell.openExternal` back. */
     readonly restore: () => void;
     readonly log: (message: string) => void;
 }
@@ -104,6 +108,38 @@ function wrapDock(app: App, counters: HarnessCounters): () => void {
     };
     return () => {
         dock.bounce = original;
+    };
+}
+
+/**
+ * Record every `shell.openExternal`, and DO NOT perform it (#83).
+ *
+ * The opposite choice from `wrapDock`, deliberately. A dock bounce happens inside this app and a
+ * driver wants to see the shell do the real thing; an external open leaves the app entirely and
+ * launches the user's browser, and a battery of scenarios that pops a browser window onto the
+ * machine's screen every time it ⌘-clicks a link is not something anyone can run. So this
+ * swallows the call the same way `wrapDialog` swallows an armed message box: the record is
+ * complete, the side effect is not performed, and the caller's `Promise<void>` resolves exactly
+ * as the real one does. Only ever installed behind `KELPI_HARNESS_SOCKET` — a user's app has no
+ * wrapper and opens links for real.
+ *
+ * `main.ts`'s `openExternally` calls `shell.openExternal(...)` by property, so replacing the
+ * property is enough; `defineProperty` is the fallback for an Electron build that ships these as
+ * non-writable accessors, since a silently un-wrapped opener would read as "the app opened
+ * nothing" and be diagnosed as a product bug.
+ */
+function wrapExternalOpen(shell: typeof ElectronShell, counters: HarnessCounters): () => void {
+    const target = shell as unknown as { openExternal: (url: string, options?: unknown) => Promise<void> };
+    const original = target.openExternal;
+    const wrapper = async (url: string): Promise<void> => {
+        counters.recordExternalOpen(url);
+    };
+    target.openExternal = wrapper;
+    if (target.openExternal !== wrapper) {
+        Object.defineProperty(target, 'openExternal', { value: wrapper, configurable: true, writable: true });
+    }
+    return () => {
+        target.openExternal = original;
     };
 }
 
@@ -231,6 +267,7 @@ export function startHarness(options: HarnessOptions): void {
     const counters = new HarnessCounters();
     const restoreDock = wrapDock(options.app, counters);
     const restoreDialog = wrapDialog(options.dialog, counters);
+    const restoreExternalOpen = wrapExternalOpen(options.shell, counters);
     const restoreNotifications = wrapNotifications(counters, options.quietNotifications);
     const surface = makeSurface(options, counters);
     const sockets = new Set<Socket>();
@@ -269,6 +306,7 @@ export function startHarness(options: HarnessOptions): void {
         sockets,
         restore: () => {
             restoreNotifications();
+            restoreExternalOpen();
             restoreDialog();
             restoreDock();
         },

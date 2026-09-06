@@ -31,10 +31,20 @@
  * `GhosttyApp.swift:267-292` got a URL from libghostty's own link detection. Neither renderer
  * this port ships exposes one, so the split is the same one scrollback search already took: the
  * client computes the clicked **cell** from the pane's grid geometry, and the daemon — which
- * holds the authoritative `@xterm/headless` buffer — reads the token there, applies the Swift
- * trimming rules, resolves it against the pane's working directory and decides. Only a `.md`
- * file opens a markdown pane; everything else is reported back so the client can fall through
- * to the system opener, exactly as returning `false` did in Swift.
+ * holds the authoritative `@xterm/headless` buffer — decides what is there. Two reads, in order
+ * (#83):
+ *
+ * 1. the **OSC 8 hyperlink** on the cell (`hyperlinkAt`, `term/service.ts`). A TUI that emits
+ *    hyperlinks has told us the address outright, and the text under the cursor is only its
+ *    title; preferring the attribute is what makes a ⌘-click in a Codex pane work at all.
+ * 2. otherwise the **token** at the cell (`cellText` + `tokenAt`), with the Swift trimming
+ *    rules, resolved against the pane's working directory.
+ *
+ * Only a `.md` file opens a markdown pane; everything else is reported back so the client can
+ * fall through to the system opener, exactly as returning `false` did in Swift. A click that
+ * was AIMED at a link and refused carries `reason: 'link-not-http'` so the client can say so;
+ * a click on prose or empty screen carries no reason and stays silent, which is the difference
+ * between a useful message and a toast on every stray ⌘-click.
  *
  * ## `markdown-external-editor` (CONT-081…091)
  *
@@ -143,6 +153,26 @@ function integer(value: unknown): number | undefined {
 // ---------------------------------------------------------------------------
 
 /**
+ * Box-drawing and block characters, which are never part of a token either (#83).
+ *
+ * A full-screen TUI draws its frames out of these, and it draws them with NO padding cell when
+ * the content fills the box: ratatui renders `│https://example.com/x│`, and with `│` (U+2502)
+ * absent from the break set the token kept the border, `urlFromToken`'s scheme anchor failed and
+ * a ⌘-click on a perfectly ordinary URL did nothing at all. The ASCII `|` was already here; its
+ * Unicode cousins are what actual TUIs emit.
+ *
+ * The whole light/heavy/double block (U+2500…U+257F) plus the shade and full blocks a TUI uses
+ * for gauges and dividers (U+2588, U+2591…U+2593). None of them appear in a path or a URL, so
+ * there is nothing to lose by breaking on all of them.
+ */
+const BOX_DRAWING_BREAK: ReadonlySet<string> = (() => {
+    const characters = new Set<string>();
+    for (let code = 0x2500; code <= 0x257f; code += 1) characters.add(String.fromCodePoint(code));
+    for (const code of [0x2588, 0x2591, 0x2592, 0x2593]) characters.add(String.fromCodePoint(code));
+    return characters;
+})();
+
+/**
  * Characters that can never be *inside* a clicked path token.
  *
  * Whitespace ends a token; the quote/bracket/pipe set is the shell-and-prose punctuation that
@@ -150,7 +180,7 @@ function integer(value: unknown): number | undefined {
  * else — including `(`, `)`, `[`, `]`, `-`, `_`, `.` — stays, because those appear in real file
  * names; the trailing-punctuation trim below is what handles them at the edges.
  */
-const TOKEN_BREAK = new Set([' ', '\t', '\n', '\r', '"', "'", '`', '<', '>', '|']);
+const TOKEN_BREAK = new Set([' ', '\t', '\n', '\r', '"', "'", '`', '<', '>', '|', ...BOX_DRAWING_BREAK]);
 /** Wrappers stripped from both ends when they are balanced around the token. */
 const WRAPPERS: ReadonlyArray<readonly [string, string]> = [
     ['(', ')'],
@@ -193,6 +223,34 @@ export function tokenAt(line: string, offset: number): string | null {
     return token === '' ? null : token;
 }
 
+/**
+ * Did the token under `offset` run FLUSH into a box border, with no space between (#83)?
+ *
+ * A TUI that hard-wraps a URL inside a frame leaves the head row looking like
+ * `│https://example.com/wrapped/pa│`: the token is a perfectly valid URL and it is the WRONG
+ * one, because the rest of the address is on the next row and there is no wrap flag to re-join
+ * on. Opening it navigates the user somewhere they did not ask to go, which is the "occasionally
+ * it opens a wrong, truncated URL" half of the report.
+ *
+ * The signal is the absence of a padding cell. A TUI that fits a URL inside a box pads it
+ * (`│ https://short.example │`); one that fills the box to the border filled it because the text
+ * did not fit, which is the definition of the wrap. So this is an observation, not a guess at
+ * where the URL continues: nothing is joined and no address is manufactured. The caller reports
+ * it rather than opening, and the client says so.
+ *
+ * The cost is a box sized exactly to a complete URL, which would be declined with a message
+ * instead of opened. That is the deliberate trade: a message the user can act on beats a browser
+ * on the wrong page. A hyperlinked URL never reaches here at all — `hyperlinkAt` answers first
+ * and answers in full.
+ */
+export function clippedByBorder(line: string, offset: number): boolean {
+    if (offset < 0 || offset >= line.length) return false;
+    let end = offset;
+    while (end + 1 < line.length && !TOKEN_BREAK.has(line[end + 1] as string)) end += 1;
+    const next = line[end + 1];
+    return next !== undefined && BOX_DRAWING_BREAK.has(next);
+}
+
 /** `~` expansion + resolution against the pane's cwd + `standardizingPath`'s normalisation. */
 export function resolveTerminalPath(token: string, cwd: string, home: string): string {
     if (token === '~') return home;
@@ -201,9 +259,24 @@ export function resolveTerminalPath(token: string, cwd: string, home: string): s
     return path.normalize(path.resolve(cwd, token));
 }
 
+/** `scheme://…` — a thing the user was plainly aiming a link click at, whatever it turns out to be. */
+const SCHEME_ANCHOR = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+/**
+ * A token or an OSC 8 URI that ADDRESSES something, whether or not we will open it (#83).
+ *
+ * The difference between this and `urlFromToken` is the difference between a silent no-op and a
+ * word to the user: `file:///etc/passwd` and `slack://channel` are refused on purpose, and the
+ * client says so rather than eating the click, while a ⌘-click on prose or empty screen stays
+ * silent because there was nothing to open in the first place.
+ */
+export function looksLikeLink(token: string): boolean {
+    return SCHEME_ANCHOR.test(token);
+}
+
 /** A token that is a real URL rather than a path — the client hands these to the OS opener. */
 export function urlFromToken(token: string): string | null {
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) return null;
+    if (!SCHEME_ANCHOR.test(token)) return null;
     try {
         const parsed = new URL(token);
         return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null;
@@ -289,7 +362,35 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         const reads = ctx.term as Partial<{
             cellTextAsync(id: string, r: number, c: number): Promise<{ text: string; offset: number } | null>;
             cellText(id: string, r: number, c: number): { text: string; offset: number } | null;
+            hyperlinkAtAsync(id: string, r: number, c: number): Promise<string | null>;
+            hyperlinkAt(id: string, r: number, c: number): string | null;
         }>;
+
+        /*
+         * OSC 8 BEFORE the text scan (#83), because the escape sequence is the author's own
+         * statement of where the click goes and the display text is at best a copy of it.
+         *
+         * A TUI that hyperlinks its output (Codex does, every URL it prints) defeats the scan
+         * three separate ways at once: the visible text is a markdown title with no URL in it,
+         * the row is hard-wrapped by the TUI so `cellText` has no wrap flag to re-join on, and
+         * the box border is glued to the token. Reading the attribute answers all three, from
+         * either row of a wrapped link, with no guessing. The scan stays exactly as it was for
+         * everything that is not hyperlinked, which is every shell that ever printed a path.
+         */
+        const hyperlink =
+            reads.hyperlinkAtAsync !== undefined
+                ? await reads.hyperlinkAtAsync(paneID, row, col)
+                : (reads.hyperlinkAt?.(paneID, row, col) ?? null);
+        if (hyperlink !== null) {
+            const hyperlinkURL = urlFromToken(hyperlink);
+            if (hyperlinkURL !== null) {
+                return { ok: true, opened: 'external', url: hyperlinkURL, source: 'hyperlink' };
+            }
+            // A hyperlink we will not hand to the OS (`file:`, `slack:`, a malformed URI) is
+            // still a link the user clicked: say so instead of swallowing it.
+            return { ok: true, opened: 'none', reason: 'link-not-http', link: hyperlink, source: 'hyperlink' };
+        }
+
         const cell =
             reads.cellTextAsync !== undefined
                 ? await reads.cellTextAsync(paneID, row, col)
@@ -302,7 +403,19 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         // A real URL is ghostty's default-opener case: report it and let the client hand it to
         // the OS, which is what returning `false` from the Swift action callback did.
         const url = urlFromToken(token);
-        if (url !== null) return { ok: true, opened: 'external', url, token };
+        if (url !== null) {
+            // #83: a URL cut off by a box border is the WRONG url. Decline it, with a reason,
+            // rather than opening a truncated address (see `clippedByBorder`).
+            if (clippedByBorder(cell.text, cell.offset)) {
+                return { ok: true, opened: 'none', reason: 'link-clipped', token, source: 'token' };
+            }
+            return { ok: true, opened: 'external', url, token, source: 'token' };
+        }
+        // Aimed at a link, refused: a non-http(s) scheme. Reported, not swallowed (see
+        // `looksLikeLink`); the client turns this one into a toast and nothing else into one.
+        if (looksLikeLink(token)) {
+            return { ok: true, opened: 'none', reason: 'link-not-http', token, source: 'token' };
+        }
 
         const resolved = resolveTerminalPath(token, pane.workingDirectory, state.homeDirectory);
         // Case-sensitive, matching `path.hasSuffix(".md")` in `GhosttyApp.swift:280`.

@@ -274,6 +274,36 @@ describe('createMouseReporter — press, drag, release', () => {
         expect(h.written).toEqual(['\\e[<39;5;4M']); // 3 (no button) + 4 (shift) + 32 (motion)
     });
 
+    /**
+     * #83. ⌘ is Kelpi's own link gesture (CONT-122 / TERM-052) and the DEC protocol has no bit
+     * for it, so before this a ⌘-click under reporting reached the TUI as a PLAIN press: the
+     * application saw a click the user never aimed at it while the click was also being turned
+     * into an "open this link" round-trip. Ghostty captures ⌘ and reports nothing; so do we.
+     */
+    it('META bypasses reporting so a ⌘-click is not also a press for the TUI (#83)', () => {
+        const h = reporter();
+        expect(h.reporter.down({ clientX: 145, clientY: 111, button: 0, metaKey: true })).toBe(false);
+        expect(h.reporter.move({ clientX: 185, clientY: 131, button: 0, metaKey: true })).toBe(false);
+        expect(h.reporter.up({ clientX: 185, clientY: 131, button: 0, metaKey: true })).toBe(false);
+        expect(h.written).toEqual([]);
+        // And the press was still RECORDED, so a release that arrives without ⌘ (the user let
+        // the key go mid-gesture) is this pane's to handle and does not leak a stuck button.
+        expect(h.reporter.dragging).toBe(false);
+    });
+
+    it('meta does NOT suppress bare motion in any-motion mode, exactly as shift does not', () => {
+        const h = reporter({ mouseTracking: 'any' });
+        expect(h.reporter.move({ clientX: 145, clientY: 111, metaKey: true })).toBe(true);
+        expect(h.written).toEqual(['\\e[<35;5;4M']); // 3 (no button) + 32 (motion); ⌘ has no bit
+    });
+
+    it('a PLAIN click under reporting is untouched by the ⌘ bypass', () => {
+        const h = reporter();
+        expect(h.reporter.down({ clientX: 145, clientY: 111, button: 0, metaKey: false })).toBe(true);
+        expect(h.reporter.up({ clientX: 145, clientY: 111, button: 0 })).toBe(true);
+        expect(h.written).toEqual(['\\e[<0;5;4M', '\\e[<0;5;4m']);
+    });
+
     it('reports the modifiers held during the press', () => {
         const h = reporter();
         h.reporter.down({ clientX: 145, clientY: 111, button: 2, ctrlKey: true, altKey: true });

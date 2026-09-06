@@ -61,13 +61,19 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.menu()` | the application menu as a tree: `{ id, label, accelerator, enabled, visible, type, role, checked, submenu }` |
 | `harness.menuClick({ id })` or `({ path: ['View', 'Toggle Sidebar'] })` | fires that item's click handler as Electron would |
 | `harness.press('Cmd+Alt+S')` | lands a native accelerator: clicks the first enabled item bound to it (Electron spellings normalised) |
-| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response }, notifications, lastNotification, recentNotifications }` |
+| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response }, notifications, lastNotification, recentNotifications, externalOpens, lastExternalUrl }` |
 | `harness.armDialog({ response: 1 })` | the next native `dialog.showMessageBox` resolves with that instead of showing; one-shot |
 | `harness.notificationClick({ index, action })` | fires that notification's click handler, or the named action button's ("Open" / "Dismiss"), exactly as the OS would |
 | `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
 | `harness.window()`, `focus()`, `blur()` | the main window's focus and bounds; the dock only bounces while it is unfocused |
 
 Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | error }` out, if you want to speak it without the driver.
+
+### External opens
+
+`externalOpens` / `lastExternalUrl` are every `shell.openExternal` the shell asked for this run and the last URL it named, whole (#83). They exist because "the browser opened, at this address" is otherwise invisible to a driver: the URL goes to the OS and nothing about it comes back through CDP, the DOM or the CLI, which is what left the ⌘-click path (terminal-surface.md §7.6) with no live coverage of the thing it is for.
+
+**Under the channel the real open does NOT happen.** The wrapper records and swallows, exactly the way an armed `dialog.showMessageBox` is answered without being shown, and the caller's promise resolves as it always did. This is not a nicety: a battery that popped a browser window onto the machine every time a step ⌘-clicked a link would be unrunnable, and several sandboxes at once would fight over the foreground. A user's shell has no wrapper and opens links for real (`packages/shell/src/harness.ts` ▸ `wrapExternalOpen`). See `../scenarios/cmd-click-codex-links.mjs`.
 
 ### Notifications
 

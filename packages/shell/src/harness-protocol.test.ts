@@ -426,7 +426,9 @@ describe('HarnessCounters', () => {
             lastDialog: null,
             notifications: 0,
             lastNotification: null,
-            recentNotifications: []
+            recentNotifications: [],
+            externalOpens: 0,
+            lastExternalUrl: null
         });
     });
 
@@ -436,6 +438,22 @@ describe('HarnessCounters', () => {
         counters.recordBounce(undefined);
         counters.recordBounce('critical');
         expect(counters.snapshot()).toMatchObject({ dockBounces: 3, lastBounce: 'critical' });
+    });
+
+    /**
+     * #83. "The browser opened, with this URL" is otherwise unobservable from a driver, which is
+     * why the ⌘-click path had no live coverage at all. The URL is kept WHOLE: the bug being
+     * fixed is a truncated address, so a counter that trimmed one would be useless.
+     */
+    it('counts external opens and remembers the last URL in full', () => {
+        const counters = new HarnessCounters();
+        expect(counters.snapshot()).toMatchObject({ externalOpens: 0, lastExternalUrl: null });
+        counters.recordExternalOpen('https://example.com/first');
+        counters.recordExternalOpen('https://example.com/wrapped/path/that/continues/here?q=1#x');
+        expect(counters.snapshot()).toMatchObject({
+            externalOpens: 2,
+            lastExternalUrl: 'https://example.com/wrapped/path/that/continues/here?q=1#x'
+        });
     });
 
     it('arms once: the arm is consumed by the next take and gone after it', () => {
@@ -786,7 +804,9 @@ describe('respond', () => {
                 lastDialog: null,
                 notifications: 0,
                 lastNotification: null,
-                recentNotifications: []
+                recentNotifications: [],
+                externalOpens: 0,
+                lastExternalUrl: null
             }
         });
     });

@@ -457,7 +457,7 @@ describe('⌘-click a terminal cell (CONT-122 / TERM-052)', () => {
 
         fireEvent.click(host, { metaKey: true, button: 0, clientX: 100, clientY: 100 });
         expect(h.lastCommand('open-terminal-target')).toBeDefined();
-        // #83: the URL the daemon answers is handed over WHOLE — a truncated address was half
+        // #83: the URL the daemon answers is handed over WHOLE. A truncated address was half
         // the user's report.
         await act(async () => {
             h.reply({ opened: 'external', url: 'https://example.com/wrapped/path/that/continues/here' });

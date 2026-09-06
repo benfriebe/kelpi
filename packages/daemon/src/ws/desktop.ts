@@ -31,7 +31,7 @@
  * `GhosttyApp.swift:267-292` got a URL from libghostty's own link detection. Neither renderer
  * this port ships exposes one, so the split is the same one scrollback search already took: the
  * client computes the clicked **cell** from the pane's grid geometry, and the daemon — which
- * holds the authoritative `@xterm/headless` buffer — decides what is there. Two reads, in order
+ * holds the authoritative `@xterm/headless` buffer, decides what is there. Two reads, in order
  * (#83):
  *
  * 1. the **OSC 8 hyperlink** on the cell (`hyperlinkAt`, `term/service.ts`). A TUI that emits
@@ -240,7 +240,7 @@ export function tokenAt(line: string, offset: number): string | null {
  *
  * The cost is a box sized exactly to a complete URL, which would be declined with a message
  * instead of opened. That is the deliberate trade: a message the user can act on beats a browser
- * on the wrong page. A hyperlinked URL never reaches here at all — `hyperlinkAt` answers first
+ * on the wrong page. A hyperlinked URL never reaches here at all: `hyperlinkAt` answers first
  * and answers in full.
  */
 export function clippedByBorder(line: string, offset: number): boolean {
@@ -259,7 +259,7 @@ export function resolveTerminalPath(token: string, cwd: string, home: string): s
     return path.normalize(path.resolve(cwd, token));
 }
 
-/** `scheme://…` — a thing the user was plainly aiming a link click at, whatever it turns out to be. */
+/** `scheme://…`: a thing the user was plainly aiming a link click at, whatever it turns out to be. */
 const SCHEME_ANCHOR = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 
 /**

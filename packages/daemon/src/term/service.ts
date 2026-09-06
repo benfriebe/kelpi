@@ -651,7 +651,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      * A full-screen TUI does not print URLs the way a shell does. Codex, ratatui apps and an
      * increasing number of CLIs emit OSC 8 (`ESC ] 8 ; ; URI ST title ST`), where the cells hold
      * the TITLE and the address exists only as an attribute on them. `cellText` reads display
-     * text, so the token under such a click is a prose word and the URL is unreachable — which
+     * text, so the token under such a click is a prose word and the URL is unreachable, which
      * is exactly what "⌘-click does nothing in a Codex pane" was.
      *
      * **This reaches into xterm's private internals, deliberately, and here is the reasoning.**
@@ -662,7 +662,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      * incomplete emulator, and it would have to track the cursor to know which cells a link
      * covers) or to leave every hyperlinked URL unopenable. So: two private reads, both wrapped
      * in one try/catch that answers null, and `hyperlink.test.ts` drives a real OSC 8 sequence
-     * through the real emulator and reads it back — so an xterm upgrade that moves either of
+     * through the real emulator and reads it back, so an xterm upgrade that moves either of
      * them breaks that test rather than silently returning null forever.
      *
      * Row/col are the same VIEWPORT coordinates `cellText` takes, and the same `baseY` offset

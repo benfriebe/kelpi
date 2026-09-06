@@ -120,7 +120,7 @@ function wrapDock(app: App, counters: HarnessCounters): () => void {
  * machine's screen every time it ⌘-clicks a link is not something anyone can run. So this
  * swallows the call the same way `wrapDialog` swallows an armed message box: the record is
  * complete, the side effect is not performed, and the caller's `Promise<void>` resolves exactly
- * as the real one does. Only ever installed behind `KELPI_HARNESS_SOCKET` — a user's app has no
+ * as the real one does. Only ever installed behind `KELPI_HARNESS_SOCKET`: a user's app has no
  * wrapper and opens links for real.
  *
  * `main.ts`'s `openExternally` calls `shell.openExternal(...)` by property, so replacing the

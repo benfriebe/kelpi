@@ -1,5 +1,5 @@
 /**
- * `hyperlinkAt` — the OSC 8 read behind ⌘-clicking a link in a TUI pane (#83).
+ * `hyperlinkAt`: the OSC 8 read behind ⌘-clicking a link in a TUI pane (#83).
  *
  * **This test is the contract with `@xterm/headless`, and that is its whole job.** The read it
  * covers goes through two private fields (`line._extendedAttrs[x].urlId` and
@@ -18,7 +18,7 @@ const PANE = 'AAAAAAAA-0000-4000-8000-000000000001';
 const ESC = '\x1b';
 const ST = `${ESC}\\`;
 
-/** `ESC ] 8 ; params ; URI ST  text  ESC ] 8 ; ; ST` — the sequence Codex and friends emit. */
+/** `ESC ] 8 ; params ; URI ST  text  ESC ] 8 ; ; ST`: the sequence Codex and friends emit. */
 function osc8(uri: string, text: string): string {
     return `${ESC}]8;;${uri}${ST}${text}${ESC}]8;;${ST}`;
 }
@@ -65,7 +65,7 @@ describe('hyperlinkAt (#83)', () => {
      * The Codex case, reproduced without Codex: a ratatui-style box, CUP-positioned per row so
      * autowrap never fires and `isWrapped` is false on the tail row, with one hyperlink split
      * across two rows. `cellText` cannot re-join those rows (there is no wrap flag to key off,
-     * and guessing would manufacture URLs out of box interiors) — so the head row's token is a
+     * and guessing would manufacture URLs out of box interiors), so the head row's token is a
      * truncated URL and the tail row's is not a URL at all. The attribute is on BOTH rows.
      */
     it('answers the WHOLE uri from either row of a hard-wrapped link', async () => {

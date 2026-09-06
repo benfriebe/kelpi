@@ -676,7 +676,7 @@ export interface CountersSnapshot {
      *
      * "The browser opened" is otherwise unobservable from a driver: the OS takes the URL and
      * nothing about it comes back through CDP, the DOM or the CLI. Under the harness the real
-     * open is SWALLOWED as well as counted — see `harness.ts` ▸ `wrapExternalOpen`.
+     * open is SWALLOWED as well as counted; see `harness.ts` ▸ `wrapExternalOpen`.
      */
     readonly externalOpens: number;
     readonly lastExternalUrl: string | null;

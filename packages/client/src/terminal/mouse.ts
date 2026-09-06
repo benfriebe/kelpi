@@ -445,7 +445,7 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
      * we aren't allowed to capture it, then we do not do a mouse report").
      *
      * **⌘** is Kelpi's own link-and-path gesture (CONT-122 / TERM-052, #83). `modifiersOf` has
-     * no bit to report it with — the DEC protocol has none — so a ⌘-click under reporting used
+     * no bit to report it with (the DEC protocol has none), so a ⌘-click under reporting used
      * to be sent to the TUI as a *plain* button press AND processed as a ⌘-click here: the
      * application under the cursor saw a click the user never made at it, which in a file
      * picker or a diff view moves the selection out from under the link they were aiming at.
@@ -455,7 +455,7 @@ export function createMouseReporter(options: MouseReporterOptions): MouseReporte
      * Both apply to BUTTON events, and to motion **only while a button is held**
      * (`Surface.zig:4582-4589`: "This only applies if there is a mouse button pressed so that
      * movement reports are not affected"). `scrollCallback` never consults either, so
-     * shift+wheel and ⌘+wheel still report — with whatever bits the protocol has — exactly as
+     * shift+wheel and ⌘+wheel still report, with whatever bits the protocol has, exactly as
      * ghostty does. A plain click under reporting is untouched by all of this.
      */
     const bypassed = (event: PointerLike): boolean =>

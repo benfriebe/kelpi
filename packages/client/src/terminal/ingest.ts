@@ -87,8 +87,15 @@ export interface TerminalIngest {
     readonly paused: boolean;
 }
 
-/** Slice [offset, offset+chunk), backing off one unit rather than splitting a surrogate pair. */
-function sliceChunk(
+/**
+ * Slice [offset, offset+chunk), backing off one unit rather than splitting a surrogate pair.
+ *
+ * Exported because the renderer's MOUNT flush drains on the same rule (`renderer.ts`'s
+ * `queue()` / `pump()`): bytes that arrive before the engine exists never pass through this
+ * module's pump at all, and a flush that re-invented the slicing would be a second boundary
+ * rule to keep in step with this one.
+ */
+export function sliceChunk(
     data: Uint8Array | string,
     offset: number,
     chunkBytes: number

@@ -39,6 +39,7 @@
  */
 
 import { loadTerminalFonts, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
+import { REPLAY_CHUNK_BYTES, REPLAY_TICK_BUDGET_MS, sliceChunk } from './ingest';
 
 export type TerminalEngine = 'ghostty' | 'xterm';
 
@@ -343,8 +344,27 @@ export const DEFAULT_FONT_SIZE = 13;
 export const DEFAULT_SCROLLBACK_LINES = 10_000;
 /** ghostty-web counts bytes (issue #140); native Ghostty defaults to 10 MB. */
 export const DEFAULT_SCROLLBACK_BYTES = 5_000_000;
-/** Queued bytes tolerated before the engine is open; beyond this the oldest chunks go. */
-export const PENDING_WRITE_LIMIT_BYTES = 4 * 1024 * 1024;
+/**
+ * Queued bytes tolerated before the engine is open; beyond this the oldest chunks go.
+ *
+ * **1 MiB, down from 4 MB (issue #78).** Two reasons, and they agree:
+ *
+ *   - It is the daemon's own number. `DEFAULT_CLIENT_QUEUE_BYTES` (`daemon/src/ws/streams.ts`)
+ *     is 1 MiB: past that the daemon decides a client is too far behind to be worth queueing
+ *     for, drops what it has and re-seeds with a fresh replay. Holding more than the sender is
+ *     willing to hold buys nothing: the bytes above the line are the ones a re-seed replaces.
+ *   - It is what the budgeted mount flush can drain in a few frames. The flush writes for
+ *     `REPLAY_TICK_BUDGET_MS` (8 ms) and yields; at the parse rates measured on this tree
+ *     (`scripts/ui-audit/switch-freeze-storm.mjs`) 1 MiB is a handful of ticks. At 4 MB a pane
+ *     that overflows spends most of a second in the engine before it can be interrupted, and a
+ *     workspace switch mounts up to `DEFAULT_MOUNT_LIMIT` (12) panes at once.
+ *
+ * What it costs: a snapshot bigger than this loses its OLDEST rows (the queue drops from the
+ * front, behind the leading RIS: see `queue`), so a pane whose history is enormous comes back
+ * with the bottom of its scrollback rather than all of it. That is the same trade the engine
+ * already makes at `DEFAULT_SCROLLBACK_BYTES`, one order later.
+ */
+export const PENDING_WRITE_LIMIT_BYTES = 1024 * 1024;
 
 /**
  * Ceiling on how long one engine startup may hold the serialization gate (see
@@ -583,6 +603,16 @@ export function estimateCellSize(fontSize: number, fontFamily: string): CellSize
  * lives in. The cost is nothing after the first pane: `init()` returns an already-resolved
  * promise and the rest of the critical section is synchronous.
  *
+ * **What the gate holds, since issue #78: load, `open()`, geometry, and the FIRST 8 ms of the
+ * flush, not all of it.** The critical section is about instantiation: two panes must not be
+ * inside `load()` at once, and the first write into a terminal must not race another pane's
+ * `createTerminal`. A snapshot's remaining chunks are neither. By the time the drain's second
+ * tick runs there is exactly one WASM instance (that is what `init()`'s memo guarantees once
+ * the first load has settled), writes and allocations into it are ordinary synchronous calls on
+ * one thread, and the ordering that matters (this pane's own bytes, in arrival order) is the
+ * queue's job, not the gate's. Holding the whole parse here made a workspace switch N sequential
+ * multi-megabyte parses with nothing between them, which is the freeze the issue is about.
+ *
  * It is a *narrowing*, not a proof of absence, which is why the retry path exists too.
  */
 let engineStartupGate: Promise<void> = Promise.resolve();
@@ -697,6 +727,13 @@ class AdapterRenderer implements TerminalRenderer {
 
     private pending: (Uint8Array | string)[] = [];
     private pendingBytes = 0;
+    /**
+     * The mount flush in flight, or null (issue #78). Identity is the supersession token: a
+     * newer replay, a dispose or a poison replaces (or clears) it, and a pump that finds
+     * `this.draining !== current` after a write abandons the rest, the same rule
+     * `ingest.ts`'s pump follows for the application it is in the middle of.
+     */
+    private draining: { cancel: (() => void) | null } | null = null;
     private wantFocus = false;
     /**
      * §N20 — the SURFACE's focus, which is not the same thing as the DOM caret (`wantFocus`).
@@ -814,23 +851,22 @@ class AdapterRenderer implements TerminalRenderer {
             this.queue(data);
             return;
         }
-        // CONTAIN (run-F N1): ghostty-web's `write()` reaches straight into the shared WASM
-        // heap and can throw `RangeError: offset is out of bounds`. Unwrapped, that throw goes
-        // wherever the byte came from — the WebSocket message handler — as an unhandled
-        // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
-        // renderer exactly once, which is the signal the pane restarts on.
-        this.guard(() => terminal.write(data), 'write');
         /**
-         * §N24 — this was the replay: end the hold, in the SAME synchronous turn as the write.
-         *
-         * `reset()` + `write()` is `ingest.replay()`, and nothing else in the client produces
-         * that pair. Resuming here (rather than on a timer, or from the pane) is what makes the
-         * whole window atomic with respect to painting: the engine's grid changed, every frame
-         * since was suppressed, and the first frame allowed through is the one drawn from the
-         * snapshot that has just been parsed. `setPaintSuspended(false)` forces a full render,
-         * so that frame is complete rather than a dirty-row patch.
+         * A mount flush still draining owns the ORDER (issue #78). These bytes are the live
+         * tail behind a snapshot whose rows are still queued; handed to the engine now they
+         * would paint in front of history that has not been written yet. So they go to the back
+         * of the same queue and the pump keeps its promise: everything in arrival order, none
+         * of it in one synchronous parse.
          */
-        if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+        if (this.draining !== null) {
+            // Uncapped, unlike `queue()`: this is a CONTINUATION of a live stream, and cutting
+            // bytes out of the middle of one is the splice `ingest.ts`'s N23 note refuses. The
+            // drain it is waiting behind is bounded, so the wait is too.
+            this.pending.push(data);
+            this.pendingBytes += byteLength(data);
+            return;
+        }
+        this.deliver(terminal, data);
     }
 
     reset(): void {
@@ -860,6 +896,19 @@ class AdapterRenderer implements TerminalRenderer {
             this.pendingBytes = byteLength(TERMINAL_RESET_SEQUENCE);
             return;
         }
+        /**
+         * …and a reset while the MOUNT FLUSH is still draining supersedes it (issue #78).
+         *
+         * `ingest.replay()` is the only caller of `reset()`, and it always resets before it
+         * applies a snapshot: so this reset says a newer screen is arriving, and every row still
+         * queued from the older one is already inside it. Abandoning the remainder is
+         * `ingest.ts`'s own supersession rule, one layer down, and it is what keeps a stack of
+         * re-seeds (a workspace switched twice, a `pty-resync` behind a slow mount) costing the
+         * chunks already written rather than all of them. No CAN byte is needed here, unlike
+         * ingest's: the abandoned chunks were never handed to the parser, so there is no escape
+         * sequence half-read for the reset to be eaten by.
+         */
+        this.cancelDrain();
         // RIS in-stream rather than `terminal.reset()` — see the header note (ordering with
         // xterm's async write queue; ghostty-web's reset() frees the WASM terminal).
         this.guard(() => terminal.write(TERMINAL_RESET_SEQUENCE), 'reset');
@@ -1021,8 +1070,10 @@ class AdapterRenderer implements TerminalRenderer {
         if (wasHolding) this.announceHold(false);
         this.holdListeners.clear();
         this.releaseEngine();
-        this.pending = [];
-        this.pendingBytes = 0;
+        // Cancels the mount flush's next tick as well as emptying the queue (issue #78): a pane
+        // evicted mid-drain (every outgoing pane on a workspace switch) must not leave a timer
+        // that wakes up to write into a disposed engine.
+        this.cancelDrain();
         this.dataListeners.clear();
         this.bellListeners.clear();
         this.titleListeners.clear();
@@ -1119,8 +1170,9 @@ class AdapterRenderer implements TerminalRenderer {
     private poison(error: unknown): void {
         if (this.poisoned) return;
         this.poisoned = true;
-        this.pending = [];
-        this.pendingBytes = 0;
+        // Including a mount flush still in flight: the engine it was draining into is gone, and
+        // its next tick must not be a timer pointing at a dead adapter (issue #78).
+        this.cancelDrain();
         // §N24: a poisoned engine is about to be disposed and replaced — drop the hold rather
         // than leave a timer pointing at a dead adapter. Announced, so the pane's published
         // state cannot be left saying "held" for an engine that no longer exists.
@@ -1164,21 +1216,142 @@ class AdapterRenderer implements TerminalRenderer {
         }
     }
 
+    /**
+     * Hold bytes for an engine that does not exist yet, in pieces the flush can pace itself in.
+     *
+     * Sliced on the way IN (issue #78), on `ingest.ts`'s own boundary rule: the drain below
+     * spends a time budget in whole chunks, and a single multi-megabyte entry would be one
+     * unbudgeted WASM parse however carefully the drain is paced. The replay path already
+     * arrives pre-sliced (`ingest.pump` writes 64 KiB at a time, and before the engine exists
+     * every one of those writes lands here), so this is the belt for everything else: a direct
+     * `write()` from a test, an embedder, or a future caller that is not the ingest.
+     */
     private queue(data: Uint8Array | string): void {
-        this.pending.push(data);
-        this.pendingBytes += byteLength(data);
-        while (this.pendingBytes > PENDING_WRITE_LIMIT_BYTES && this.pending.length > 1) {
-            const dropped = this.pending.shift();
+        for (let offset = 0; offset < data.length; ) {
+            const { chunk, next } = sliceChunk(data, offset, REPLAY_CHUNK_BYTES);
+            this.pending.push(chunk);
+            this.pendingBytes += byteLength(chunk);
+            offset = next;
+        }
+        if (this.pendingBytes <= PENDING_WRITE_LIMIT_BYTES) return;
+        /**
+         * Over the cap, drop the OLDEST chunks, but never the leading RIS.
+         *
+         * The reset is what makes the snapshot behind it the whole truth, and `reset()` plants
+         * it at the head of the queue precisely because a remounting pane inherits the WASM slot
+         * a disposed one just freed (see `reset`). The pre-#78 loop shifted from index 0, so a
+         * queue that overflowed dropped the RIS FIRST and painted the new pane's history over
+         * its predecessor's screen: the exact defect the reset exists to prevent.
+         *
+         * Oldest-first (rather than `ingest.ts`'s drop-the-hold-whole) because nothing follows
+         * this queue: it IS the pane's screen, no re-seed is promised behind it, and the rows a
+         * user is looking at are at the END. The residual is that the first surviving chunk can
+         * begin mid-sequence and print a few stray characters on one row until the next redraw.
+         */
+        const keepReset = this.pending[0] === TERMINAL_RESET_SEQUENCE;
+        const floor = keepReset ? 1 : 0;
+        while (this.pendingBytes > PENDING_WRITE_LIMIT_BYTES && this.pending.length > floor + 1) {
+            const [dropped] = this.pending.splice(floor, 1);
             if (dropped === undefined) break;
             this.pendingBytes -= byteLength(dropped);
         }
     }
 
+    /** One chunk into the engine, plus §N24's "was this the replay?" question. */
+    private deliver(terminal: XtermLikeTerminal, data: Uint8Array | string): void {
+        // CONTAIN (run-F N1): ghostty-web's `write()` reaches straight into the shared WASM
+        // heap and can throw `RangeError: offset is out of bounds`. Unwrapped, that throw goes
+        // wherever the byte came from (the WebSocket message handler) as an unhandled
+        // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
+        // renderer exactly once, which is the signal the pane restarts on.
+        this.guard(() => terminal.write(data), 'write');
+        /**
+         * §N24, this was the replay: end the hold, in the SAME synchronous turn as the write.
+         *
+         * `reset()` + `write()` is `ingest.replay()`, and nothing else in the client produces
+         * that pair. Resuming here (rather than on a timer, or from the pane) is what makes the
+         * whole window atomic with respect to painting: the engine's grid changed, every frame
+         * since was suppressed, and the first frame allowed through is the one drawn from the
+         * snapshot that has just been parsed. `setPaintSuspended(false)` forces a full render,
+         * so that frame is complete rather than a dirty-row patch.
+         */
+        if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+    }
+
     /**
-     * The whole startup runs inside the page-wide gate — see `serializeEngineStartup`. The
-     * critical section is not just the WASM load: `open()` allocates the shared instance's
-     * terminal and the flush below is the first thing that writes into it, which is exactly
-     * where N1's `RangeError` landed.
+     * **The mount flush, budgeted (issue #78).**
+     *
+     * A pane that mounts while its engine is still loading queues its whole attach replay
+     * (`write()` above), and until this existed `open()` handed the lot to the engine in one
+     * `for` loop. ghostty-web parses a payload in ONE synchronous WASM call, so a workspace
+     * switch (which unmounts every outgoing pane and mounts every incoming one, up to
+     * `DEFAULT_MOUNT_LIMIT` of them) was N multi-megabyte parses back to back with nothing
+     * between them, no paint, no input, no flow-control ack. The wedged thread cannot ack, the
+     * daemon's queue overflows, and the overflow re-seeds with ANOTHER full replay
+     * (`ingest.ts:19-32`'s compounding loop, from the other end).
+     *
+     * So it drains on the same pump `ingest.ts` uses for a replay that arrives after the engine
+     * exists: write chunks until `REPLAY_TICK_BUDGET_MS` is spent, yield to the event loop,
+     * continue. The pane paints its history progressively instead of all at once, which is what
+     * a terminal has always done with a slow stream.
+     *
+     * `strict` marks the FIRST tick, which runs synchronously inside `loadExclusive` and so
+     * inside the startup gate. Two things ride on that: a normal-sized screen still lands
+     * before `open()` resolves, exactly as it did before this existed, and a planted write fault
+     * still THROWS out of the startup (run-F N1's contract: the pane hears a rejected `open()`
+     * and rebuilds) rather than being caught into a poison the caller never sees.
+     */
+    private pump(strict = false): void {
+        const current = this.draining;
+        if (current === null) return;
+        current.cancel = null;
+        const terminal = this.handle?.terminal;
+        if (terminal === undefined) {
+            this.draining = null;
+            return;
+        }
+        const start = Date.now();
+        while (this.pending.length > 0) {
+            const chunk = this.pending.shift();
+            if (chunk === undefined) break;
+            this.pendingBytes = Math.max(0, this.pendingBytes - byteLength(chunk));
+            if (strict) {
+                const planted = this.faults?.fault('write', this.engine);
+                if (planted !== undefined) throw new RangeError(planted);
+                terminal.write(chunk);
+                if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+            } else {
+                this.deliver(terminal, chunk);
+            }
+            // A write may have poisoned the engine, or fired a handler that superseded this
+            // drain (a newer replay's `reset()`), or torn the pane down outright.
+            if (this.disposed || this.poisoned || this.draining !== current) return;
+            if (Date.now() - start >= REPLAY_TICK_BUDGET_MS && this.pending.length > 0) {
+                const timer = setTimeout(() => this.pump(), 0);
+                // A drain timer must never hold a test runner (or Node) open on its own.
+                (timer as unknown as { unref?: () => void }).unref?.();
+                current.cancel = () => clearTimeout(timer);
+                return;
+            }
+        }
+        this.draining = null;
+    }
+
+    /** Abandon whatever the flush had left: a supersession, a poison, a teardown. */
+    private cancelDrain(): void {
+        const current = this.draining;
+        this.draining = null;
+        this.pending = [];
+        this.pendingBytes = 0;
+        current?.cancel?.();
+    }
+
+    /**
+     * The startup runs inside the page-wide gate: see `serializeEngineStartup`. The critical
+     * section is not just the WASM load: `open()` allocates the shared instance's terminal and
+     * the flush's first tick is the first thing that writes into it, which is exactly where
+     * N1's `RangeError` landed. What the gate does NOT hold, since issue #78, is the rest of
+     * that flush.
      */
     private load(element: HTMLElement): Promise<void> {
         return serializeEngineStartup(() => this.loadExclusive(element));
@@ -1264,14 +1437,18 @@ class AdapterRenderer implements TerminalRenderer {
                 terminal.resize(this.requestedCols, this.requestedRows);
             }
 
-            const queued = this.pending;
-            this.pending = [];
-            this.pendingBytes = 0;
-            for (const chunk of queued) {
-                const plantedWrite = this.faults?.fault('write', this.engine);
-                if (plantedWrite !== undefined) throw new RangeError(plantedWrite);
-                terminal.write(chunk);
-            }
+            /**
+             * The queued replay, drained on a time budget (issue #78): see `pump`.
+             *
+             * The first tick runs HERE, synchronously, so a normal-sized screen is on the engine
+             * before `open()` resolves exactly as it always was, and so run-F N1's planted write
+             * fault still rejects the startup. What changed is the tail: a multi-megabyte
+             * snapshot yields after 8 ms and finishes on its own timers, OUTSIDE the startup
+             * gate this method runs in: see `serializeEngineStartup`, which no longer holds
+             * every other pane behind one pane's whole parse.
+             */
+            this.draining = { cancel: null };
+            this.pump(true);
 
             // ghostty-web#100: `open()` focuses itself. Re-assert what the caller asked for.
             if (this.wantFocus) terminal.focus();
@@ -1282,6 +1459,9 @@ class AdapterRenderer implements TerminalRenderer {
             handle.setSurfaceFocus?.(this.wantSurfaceFocus);
         } catch (error) {
             this.poisoned = true;
+            // A first tick that threw leaves the rest of the queue pointing at an engine that is
+            // about to be freed (issue #78): drop it with the engine, in the same turn.
+            this.cancelDrain();
             this.releaseEngine();
             throw error;
         }

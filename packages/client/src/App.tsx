@@ -77,6 +77,7 @@ import {
     TopBar,
     menuAnchorFromEvent,
     readStoredSidebarWidth,
+    resetGestures,
     storeSidebarWidth,
     actionForTrigger,
     buildPaletteItems,
@@ -121,6 +122,7 @@ import {
     DESELECT_ALL_WORKSPACES_COMMAND,
     NEW_GROUP_COMMAND,
     NEW_WEB_PANE_COMMAND,
+    RECOVER_INTERFACE_COMMAND,
     SELECT_ALL_WORKSPACES_COMMAND,
     switchWorkspacePosition,
     workspaceSelectionReport
@@ -3099,6 +3101,19 @@ function Shell(props: AppProps): ReactElement {
             else if (command === NEW_WEB_PANE_COMMAND) actRef.current.newWebPaneFocused();
             else if (command === COMMAND_PALETTE_COMMAND) actRef.current.togglePalette();
             // The two menu-only rows: no binding in the Swift, so none here either.
+            /*
+             * §79 - View ▸ Recover Interface (⌃⌥⌘R), the client's half.
+             *
+             * The shell has already parked every native web-pane view by the time this arrives
+             * (`shell/src/menu.ts` ▸ `viewMenuTemplate`); this ends every live pointer gesture,
+             * which is the half a user cannot reach any other way once a drag has outlived its
+             * `pointerup`. Nothing else is touched: no reload, no navigation, no state reset,
+             * and nothing goes to the daemon. A run with nothing stuck logs one line and stops.
+             */
+            else if (command === RECOVER_INTERFACE_COMMAND) {
+                const ended = resetGestures('manual');
+                console.info(`recover interface: reset ${String(ended)} pointer gesture(s)`);
+            }
             else if (command === SELECT_ALL_WORKSPACES_COMMAND) actRef.current.selectAllWorkspaces();
             else if (command === DESELECT_ALL_WORKSPACES_COMMAND) actRef.current.deselectAllWorkspaces();
             else if (typeof command === 'string' && switchWorkspacePosition(command) !== null) {
@@ -4213,9 +4228,14 @@ function Shell(props: AppProps): ReactElement {
                         <SidebarResizer
                             width={sidebarWidth}
                             onResizeStart={() => setSidebarResizing(true)}
+                            /* Issue #79: the flag comes off when the GESTURE ends, not when a
+                               width is committed. `onCommit` is skipped for a press that never
+                               moved, and both are skipped entirely when the handle is unmounted
+                               mid-drag (⇧⌘S) - either of which used to leave `sidebarResizing`
+                               stuck true, and with it §WS-001's slide transition off the slot. */
+                            onResizeEnd={() => setSidebarResizing(false)}
                             onResize={setSidebarWidth}
                             onCommit={(width) => {
-                                setSidebarResizing(false);
                                 storeSidebarWidth(width);
                             }}
                         />

@@ -16,8 +16,9 @@
  * better and still per-client: it is not daemon state, so a second window is free to differ.
  */
 
-import { useRef, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, type ReactElement } from 'react';
 
+import { registerGestureReset } from './gesture-reset';
 import { tokens } from './tokens';
 
 export const SIDEBAR_MIN_WIDTH = 180;
@@ -70,27 +71,73 @@ export interface SidebarResizerProps {
      * why this is its own callback rather than "the first `onResize`".
      */
     readonly onResizeStart?: (() => void) | undefined;
+    /**
+     * Fired once whenever the gesture STOPS owning the width, whatever stopped it: the
+     * ordinary release, a `pointercancel`, or this handle being unmounted mid-drag.
+     *
+     * Separate from `onCommit` because the two answer different questions. `onCommit` means
+     * "persist this width" and only fires when there was a drag to persist; this one means
+     * "no gesture owns the width any more", and assembly needs it unconditionally to clear the
+     * flag that holds §WS-001's slide transition off the slot. Issue #79: that flag was cleared
+     * only from `onCommit`, so a drag whose `pointerup` never arrived left it stuck true.
+     */
+    readonly onResizeEnd?: (() => void) | undefined;
 }
 
 export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     const drag = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
+    /** The exact `removeEventListener` calls for the listeners that are actually installed. */
+    const detach = useRef<(() => void) | null>(null);
+    /*
+     * The window handlers outlive the render that installed them, so they read props through a
+     * ref rather than closing over them. Identity matters here beyond the usual staleness: a
+     * teardown that ran a LATER render's `end` would call `removeEventListener` with different
+     * function objects than the ones `pointerdown` added, and remove nothing at all.
+     */
+    const latest = useRef(props);
+    useEffect(() => {
+        latest.current = props;
+    });
 
-    const move = (event: PointerEvent): void => {
+    const move = useCallback((event: PointerEvent): void => {
         const state = drag.current;
         if (state === null) return;
         const next = clampSidebarWidth(state.startWidth + (event.clientX - state.startX));
         state.latest = next;
-        props.onResize(next);
-    };
+        latest.current.onResize(next);
+    }, []);
 
-    const end = (): void => {
+    const end = useCallback((): void => {
         const state = drag.current;
         drag.current = null;
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', end);
+        detach.current?.();
+        detach.current = null;
         document.body.style.removeProperty('cursor');
-        if (state !== null) props.onCommit?.(state.latest);
-    };
+        // Unconditional, and BEFORE the commit: this is the "nothing owns the width" signal,
+        // and it has to be delivered even for a pointerdown that never moved.
+        latest.current.onResizeEnd?.();
+        if (state !== null) latest.current.onCommit?.(state.latest);
+    }, []);
+
+    /*
+     * Issue #79: the handle is unmounted mid-drag by its own parent.
+     *
+     * `App.tsx` renders this only while `sidebarPhase !== 'closing'`, so ⇧⌘S during a drag
+     * takes the component away while its `window` listeners and the body's `col-resize` cursor
+     * are still installed. Without this teardown both outlive the component: the cursor stays a
+     * resize cursor over the whole app, and the orphaned `pointermove` keeps calling `onResize`
+     * on a callback that resizes a sidebar nobody is dragging.
+     */
+    useEffect(() => () => end(), [end]);
+
+    /*
+     * …and the release that is lost to something OUTSIDE this document: a pointer released over
+     * a web pane's native `WebContentsView`, or a Space switch that hides the window mid-drag.
+     * `chrome/gesture-reset.ts` fires this on `blur` and on the document going hidden, which is
+     * the only signal the renderer gets in either case. `end` is safe when no drag is running,
+     * which matters because blur is a common event.
+     */
+    useEffect(() => registerGestureReset(end), [end]);
 
     return (
         <div
@@ -116,8 +163,19 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
                 props.onResizeStart?.();
                 // The pointer leaves the 6 px strip immediately; the listeners are on the window
                 // so the drag keeps tracking, and the cursor stays a resize cursor throughout.
+                //
+                // `pointercancel` alongside `pointerup` (issue #79): the browser fires it
+                // instead of a release whenever it takes the pointer away mid-gesture (a
+                // touch turning into a scroll, the OS claiming the pointer, a capture being
+                // revoked). Without it, every one of those left the drag live forever.
                 window.addEventListener('pointermove', move);
                 window.addEventListener('pointerup', end);
+                window.addEventListener('pointercancel', end);
+                detach.current = () => {
+                    window.removeEventListener('pointermove', move);
+                    window.removeEventListener('pointerup', end);
+                    window.removeEventListener('pointercancel', end);
+                };
                 document.body.style.setProperty('cursor', 'col-resize');
             }}
             /*

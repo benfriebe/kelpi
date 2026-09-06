@@ -29,6 +29,9 @@ import {
     OPEN_FILE_ACCELERATOR,
     OPEN_FILE_COMMAND,
     OPEN_FILE_LABEL,
+    RECOVER_INTERFACE_ACCELERATOR,
+    RECOVER_INTERFACE_COMMAND,
+    RECOVER_INTERFACE_LABEL,
     SEED_TEST_GROUP_COMMAND,
     SEED_TEST_GROUP_LABEL,
     SELECT_ALL_WORKSPACES_COMMAND,
@@ -77,7 +80,10 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
             'forceReload',
             'toggleDevTools',
             'separator',
-            'togglefullscreen'
+            'togglefullscreen',
+            // Issue #79, appended so the two product toggles keep their shipped positions.
+            'separator',
+            RECOVER_INTERFACE_LABEL
         ]);
         expect(template[0]?.accelerator).toBe('Shift+CommandOrControl+S');
         expect(template[1]?.accelerator).toBe('CommandOrControl+I');
@@ -142,7 +148,56 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         // `docs/audit`'s `sidebar-remaining` matches exactly that substring and would go quietly
         // false if this fragment were ever reshaped instead of appended to.
         expect(VIEW_MENU_LOG_FRAGMENT.startsWith('View ▸ Toggle Sidebar (⌘⇧S)')).toBe(true);
-        expect(VIEW_MENU_LOG_FRAGMENT).toBe('View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I)');
+        expect(VIEW_MENU_LOG_FRAGMENT).toBe(
+            'View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I) + Recover Interface (⌃⌥⌘R)'
+        );
+    });
+
+    /**
+     * Issue #79: View ▸ Recover Interface, the row a person reaches for INSTEAD of relaunching.
+     *
+     * Two halves in two processes, and the ordering between them is the assertion: the main
+     * process parks the native views whatever the client does, because a wedged renderer is
+     * exactly the case where the relay goes unanswered.
+     */
+    it('runs both halves of Recover Interface, the main-process one unconditionally', () => {
+        const releaseWebViews = vi.fn();
+        const sendMenuRequest = vi.fn(() => true);
+        const template = viewMenuTemplate({ sendMenuRequest, releaseWebViews });
+        const row = template.at(-1);
+
+        expect(row?.label).toBe(RECOVER_INTERFACE_LABEL);
+        expect(row?.accelerator).toBe(RECOVER_INTERFACE_ACCELERATOR);
+        expect(RECOVER_INTERFACE_ACCELERATOR).toBe('CommandOrControl+Alt+Control+R');
+        // Nothing in the binding map claims it, and it is not the reload chord next door.
+        expect(RECOVER_INTERFACE_ACCELERATOR).not.toBe(FORCE_RELOAD_ACCELERATOR);
+
+        (row?.click as (() => void) | undefined)?.();
+        expect(releaseWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        expect(sendMenuRequest).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        // `app/file-menu.ts` states the same literal on the client side; a rename on either
+        // side has to fail here rather than produce a row that relays into nothing.
+        expect(RECOVER_INTERFACE_COMMAND).toBe('recover-interface');
+    });
+
+    it('parks the views even when no window takes the relay', () => {
+        const releaseWebViews = vi.fn();
+        const onUndelivered = vi.fn();
+        const template = viewMenuTemplate({ sendMenuRequest: () => false, onUndelivered, releaseWebViews });
+
+        (template.at(-1)?.click as (() => void) | undefined)?.();
+
+        expect(releaseWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        expect(onUndelivered).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+    });
+
+    it('is in the shipped menu, not behind the dev-only Debug section', () => {
+        // A recovery that only exists in a dev build would be theatre: the state it recovers from
+        // only happens in a real session.
+        const template = viewMenuTemplate({ sendMenuRequest: () => true });
+        expect(rows(template)).toContain(RECOVER_INTERFACE_LABEL);
+        // …and it survives a shell with no web host yet (the dep is optional).
+        expect(() => (template.at(-1)?.click as (() => void) | undefined)?.()).not.toThrow();
     });
 });
 

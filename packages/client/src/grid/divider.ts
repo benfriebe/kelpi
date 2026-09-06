@@ -82,6 +82,17 @@ export function dividerPaneTarget(layout: PaneLayout, splitPath: string): Divide
  * `(firstSizeAtDragStart + cumulativeDelta) / available`, never re-derived from the
  * re-rendered divider — that compounding bug is what made the Swift divider outrun the
  * cursor. Clamped, so the caller can feed it straight into a preview.
+ *
+ * The clamp is the DRAG clamp (issue #79): the snapshot carries the split's pixel extent, so
+ * `clampRatio` can bottom the gesture out at `MIN_PANE_EXTENT_PX` rather than at the bare 0.1
+ * that would let a drag sweep a pane down to ten columns and rewrap its whole scrollback into
+ * each intermediate width on the way. Nothing that applies a STORED ratio passes `available`,
+ * so no existing layout is re-clamped by this.
+ *
+ * **Horizontal splits only.** The floor is a COLUMN floor, and only a width change moves the
+ * column count: a vertical drag changes rows, which neither rewraps history nor reallocates the
+ * cell pool. Handing a vertical split the same 160 px would be a row floor nobody asked for and
+ * a real behaviour change (three rows today, nine after), so it is deliberately not applied.
  */
 export function ratioForDividerDrag(
     snapshot: DividerDragSnapshot,
@@ -90,7 +101,8 @@ export function ratioForDividerDrag(
 ): number {
     const translation: Point = { x: point.x - origin.x, y: point.y - origin.y };
     const delta = dividerDragDelta(snapshot.direction, translation);
-    return clampRatio(ratioFromDividerDrag(snapshot, delta));
+    const raw = ratioFromDividerDrag(snapshot, delta);
+    return snapshot.direction === 'horizontal' ? clampRatio(raw, snapshot.available) : clampRatio(raw);
 }
 
 /** Has the gesture moved far enough along the split axis to count as a drag (§7.4)? */

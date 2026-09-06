@@ -33,6 +33,7 @@ export {
     maxY,
     midX,
     midY,
+    MIN_PANE_EXTENT_PX,
     MIN_SPLIT_RATIO,
     minX,
     minY,

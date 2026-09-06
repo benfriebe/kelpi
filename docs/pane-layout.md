@@ -67,9 +67,10 @@ Invariants (maintained by the mutation functions, not enforced by a validator):
 const DIVIDER_THICKNESS = 2; // logical px between split children, in every split
 const DIVIDER_HIT_INSET = 6; // px per side the divider grab strip extends past the bar (§7.4)
 const DIVIDER_MIN_DRAG_DISTANCE = 1; // px along the split axis before a divider drag activates
+const MIN_PANE_EXTENT_PX = 160; // column floor for a horizontal DRAG only (§7.4, issue #79)
 ```
 
-All three live in `packages/core/src/layout/types.ts`.
+All four live in `packages/core/src/layout/types.ts`.
 
 ---
 
@@ -509,6 +510,19 @@ in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
   Both paths clamp to `[0.1, 0.9]` (§9.1) and set `currentLayoutIndex ← null`. A preview
   computed against an older tree is dropped the moment a fresh tree arrives unless the
   gesture is still running, in which case it re-applies to the newer tree.
+- **Column floor on a horizontal drag** (issue #79). A HORIZONTAL drag additionally clamps so
+  neither child falls below `MIN_PANE_EXTENT_PX` = 160 px, 20 columns at the shipped 8 px cell
+  (`measureCellSize`, `packages/client/src/terminal/fonts.ts:210`), by passing the snapshot's
+  `available` to `clampRatio(ratio, available)` (`packages/core/src/layout/types.ts`). A split
+  too narrow to give both children the floor gives them an even share instead. The reason is
+  cost, not taste: only a width change moves the column count, a column change rewraps the whole
+  scrollback (`ghostty_terminal_resize`, O(scrollback), plus `initCellPool` and two full-area
+  canvas blits), rewrapping is superlinear as the pane narrows, and a drag sweeps every
+  intermediate width on the way at ~10 Hz per pane. A VERTICAL drag keeps the bare `[0.1, 0.9]`:
+  it changes rows, which neither rewraps nor reallocates, and a 160 px row floor would be a
+  behaviour change nobody asked for. The floor applies **only to the drag**, `clampRatio` with
+  no `available` is unchanged, so a stored ratio replayed from the daemon, a layout template and
+  `pane resize --ratio` all behave exactly as before.
 - While a drag is active (and for `RESIZE_BADGE_LINGER_MS` = 750 ms after it ends, and
   likewise during window resizes) the grid sets a transient "resizing" flag used to overlay
   pane-size badges (`PaneGrid.tsx:83`); cosmetic only.

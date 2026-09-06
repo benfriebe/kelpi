@@ -63,6 +63,7 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
@@ -298,6 +299,26 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             window.addEventListener('resize', read);
             return () => window.removeEventListener('resize', read);
         }
+        /*
+         * Issue #79 asked whether the flush could come OFF while a pointer gesture holds the
+         * container - a drag lasts as long as the user holds the mouse down, where a slide is a
+         * fixed 250 ms - and the answer, measured rather than argued, is no.
+         *
+         * A `requestAnimationFrame`-scheduled read inside the callback (taken while
+         * `chrome/gesture-reset.ts` reported a gesture live, flush kept everywhere else) was run
+         * against `scripts/ui-audit/resize-lockout.mjs`'s grid probe, which is §N31's own
+         * instrument: a second `ResizeObserver` on this container reading how far the pane
+         * wrappers fall short of it. Over a 180 → 300 → 180 sidebar drag with eight panes it
+         * reported an unpainted band in **32 of 65 observations, worst 8.01 CSS px** - §N31
+         * exactly, moved from the slide onto the drag. rAF runs before the NEXT frame's
+         * rendering steps, so the debt is a frame however cheap the read is.
+         *
+         * The same run says the flush was not the bill anyway: CDP round trips during the drag
+         * came back p50 1 ms / p95 25 ms with the flush and p50 1 ms / p95 22 ms without it, on
+         * eight panes holding 300 000 lines each. What a width drag actually costs is the column
+         * change rewrapping every pane's scrollback, which is why this issue's other half is a
+         * column floor on the drag (`MIN_PANE_EXTENT_PX`) rather than anything here.
+         */
         const observer = new ResizeObserver(() => {
             flushSync(read);
         });
@@ -542,6 +563,29 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         },
         [attachListeners, onPanePointerMove, endPaneDrag]
     );
+
+    /*
+     * Issue #79: the release that never arrives.
+     *
+     * Both gestures above already handle `pointercancel` (`attachListeners`), which covers the
+     * browser taking the pointer away. It does NOT cover the pointer going somewhere this
+     * document cannot see it: released over a web pane's native `WebContentsView`, or the whole
+     * window leaving on a Space switch. In those cases the renderer's only signal is losing
+     * focus or the document going hidden, so `chrome/gesture-reset.ts` turns those into an end.
+     *
+     * The two gestures end differently on purpose. A divider COMMITS what the user has already
+     * dragged to (`endDividerDrag` flushes the throttled commit): the daemon has most of that
+     * ratio already, and snapping the split back would undo a move the user watched happen. A
+     * pane MOVE is CANCELLED: losing focus is not a drop, and rearranging someone's layout
+     * because they switched Space is a far worse outcome than making them drag again.
+     */
+    const resetGestures = useCallback((): void => {
+        if (moveRef.current !== null) dropTargetRef.current = null;
+        endPaneDrag();
+        endDividerDrag();
+    }, [endPaneDrag, endDividerDrag]);
+
+    useEffect(() => registerGestureReset(resetGestures), [resetGestures]);
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 

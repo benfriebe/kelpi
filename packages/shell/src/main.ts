@@ -99,6 +99,7 @@ import {
     type MenuAccelerators
 } from './menu.js';
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
+import { createUnresponsiveWatchdog } from './unresponsive.js';
 import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { isForwardableOpenPath } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
@@ -350,6 +351,27 @@ function applySecurityPolicy(window: BrowserWindow): void {
         logError(`renderer gone (${details.reason}); reloading`);
         if (!window.isDestroyed()) window.reload();
     });
+
+    /*
+     * Issue #79: the renderer that is alive and simply not answering.
+     *
+     * `render-process-gone` above is a death; this is a wedge, and until now the shell had
+     * nothing to say about one. `./unresponsive.ts` owns the rule (a single hang is ordinary
+     * heavy work, two inside a minute is not) and this is only its wiring: on the second strike
+     * every native web-pane view goes back to the off-screen holder, so its rect stops
+     * swallowing the clicks a person is trying to land on the chrome underneath.
+     */
+    const watchdog = createUnresponsiveWatchdog({
+        now: () => Date.now(),
+        log: (message) => warn(message),
+        park: (reason) => {
+            const parked = webHost?.embeddedPaneIDs.length ?? 0;
+            webHost?.releaseViews(reason);
+            return parked;
+        }
+    });
+    contents.on('unresponsive', () => watchdog.unresponsive());
+    contents.on('responsive', () => watchdog.responsive());
 }
 
 function applyPermissionPolicy(): void {
@@ -1188,7 +1210,16 @@ function buildMenu(): void {
             // shipped app's own View group. Both relay to the client, which owns the visibility
             // of both panels.
             label: 'View',
-            submenu: viewMenuTemplate(relay)
+            submenu: viewMenuTemplate({
+                ...relay,
+                // Issue #79: Recover Interface's main-process half. The client half rides the
+                // relay like every other row; this is the part a wedged renderer cannot do.
+                releaseWebViews: (reason) => {
+                    const parked = webHost?.embeddedPaneIDs.length ?? 0;
+                    webHost?.releaseViews(reason);
+                    log(`menu: Recover Interface parked ${String(parked)} web pane view(s) (${reason})`);
+                }
+            })
         },
         { role: 'windowMenu' },
         // §APP-028 / §SET-194: the Swift's `#if DEBUG` Debug ▸ Seed Test Group. `app.isPackaged`

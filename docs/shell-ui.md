@@ -51,7 +51,10 @@ One main window. Vertical stack:
   left-right resize cursor on hover, drag adjusts width clamped to **[180, 300]** (measured
   from the width at gesture start, so the edge tracks the cursor). The width is client-local
   (persisted per browser/window in `localStorage` under `kelpi.sidebar.width`; never daemon
-  state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`).
+  state; `packages/client/src/chrome/SidebarResizer.tsx:9-56`). The gesture ends on
+  `pointerup`, on `pointercancel`, on the handle unmounting mid-drag, and on the window losing
+  the pointer (see "Recovering a stuck window" below); every one of those routes fires
+  `onResizeEnd` and commits the width the user last saw.
 - When no workspace is active, the pane-grid slot shows an empty state: a large terminal
   glyph (48pt, very faint), "No workspace selected" (secondary text), and a
   "Create Workspace" button that opens the New Workspace sheet.
@@ -1381,10 +1384,54 @@ Close (⌘W), which asks the focused window's page to run `close_pane` and close
 only when the page reports nothing to close or does not answer within 500ms
 (`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Reload,
 Force Reload (⌥⌘R, moved off ⇧⌘R because that chord is `rename_workspace`), Toggle Developer
-Tools, Toggle Full Screen (`menu.ts:253-283`); Window (standard); Debug ▸ Seed Test Group
+Tools, Toggle Full Screen, Recover Interface (⌃⌥⌘R, see "Recovering a stuck window" below)
+(`menu.ts:253-283`); Window (standard); Debug ▸ Seed Test Group
 (unpackaged builds only; `menu.ts:493-521`); Help ▸ Kelpi Help (⌘?, §11). Every product row
 relays `menu-request` → daemon → `menu-command` → the client's own action, because the shell
 has no preload; the menu shape is logged for the smoke test.
+
+### Recovering a stuck window (issue #79)
+
+Two things can leave the window unusable without anything having crashed, and neither used to
+have an answer short of relaunching.
+
+**A pointer gesture the app never saw the end of.** The sidebar's resize handle and the pane
+grid's divider drag both work by putting `pointermove`/`pointerup` on `window` for the length of
+the gesture. A `pointerup` can genuinely go missing: released over a web pane's native
+`WebContentsView` (a sibling layer whose events this document never receives), a Space switch
+mid-drag, or the handle being unmounted by its own parent when ⇧⌘S closes the sidebar. Left
+live, the sidebar tracks the BARE cursor for the rest of the session and re-enters a full grid
+resize on every mouse move.
+
+- Each gesture handles `pointercancel` as well as `pointerup`, and tears its listeners (and the
+  body's `col-resize` cursor) down on unmount
+  (`packages/client/src/chrome/SidebarResizer.tsx`, `packages/client/src/grid/PaneGrid.tsx`).
+- Both register with `packages/client/src/chrome/gesture-reset.ts`, which ends every live
+  gesture on `window` `blur` and on the document going hidden. A divider COMMITS the ratio the
+  user already dragged to; a pane MOVE is CANCELLED, because losing focus is not a drop.
+- `SidebarResizer`'s `onResizeEnd` fires whenever the gesture stops owning the width, whatever
+  stopped it, so `App.tsx` clears `sidebarResizing` on the gesture rather than on the commit.
+
+**A renderer that is alive and not answering.** `webContents.on('unresponsive')`
+(`packages/shell/src/unresponsive.ts`, wired in `main.ts` ▸ `applySecurityPolicy`) logs the
+first hang and does nothing else: a workspace switch that starts eight terminal engines against
+multi-MB replays blocks the main thread past Chromium's hang monitor as a matter of course. A
+SECOND hang inside 60 s parks every native web-pane view back in the off-screen holder
+(`webHost.releaseViews('renderer-unresponsive')`), so those rects stop swallowing clicks meant
+for the chrome underneath. It never reloads, never quits and never shows a dialog. `responsive`
+logs how long the renderer was gone; the strike is still counting inside the window.
+
+**View ▸ Recover Interface (⌃⌥⌘R)** asks for both repairs on purpose. The main process parks
+every native view (unconditionally, because a wedged renderer is exactly when the relay goes
+unanswered) and the client runs `resetGestures`, which ends every live pointer gesture. Nothing
+else happens: no reload, no navigation, no state reset, and nothing goes to the daemon, so the
+row is safe to hit at any moment including one where the daemon is the thing that is stuck. It
+is in the shipped menu rather than behind the dev-only Debug section, since the state it
+recovers from only occurs in a real session.
+
+A view parked by either route is re-placed the next time the client states its geometry for that
+pane (`packages/client/src/webpane/geometry.ts`, issue #34's re-statement); the shell's own
+`window` `show` restore is issue #75's.
 
 ---
 

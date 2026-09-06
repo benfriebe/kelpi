@@ -9,7 +9,15 @@ import {
     shareForRatio,
     updatingSplitRatio
 } from './ratio.js';
-import { EMPTY_LAYOUT, leaf, split } from './types.js';
+import {
+    EMPTY_LAYOUT,
+    MAX_SPLIT_RATIO,
+    MIN_PANE_EXTENT_PX,
+    MIN_SPLIT_RATIO,
+    clampRatio,
+    leaf,
+    split
+} from './types.js';
 
 const A = 'AAAAAAAA-0000-0000-0000-000000000001';
 const B = 'BBBBBBBB-0000-0000-0000-000000000002';
@@ -178,5 +186,46 @@ describe('pane resize share math (§12.5)', () => {
         expect(currentPaneShare(layout, B)).toBe(0.25);
         expect(currentPaneShare(layout, C)).toBe(0.75);
         expect(currentPaneShare(leaf(A), A)).toBeNull();
+    });
+});
+
+/**
+ * Issue #79: `clampRatio`'s optional column floor.
+ *
+ * The floor exists to bound the cost of a DRAG (only a width change moves the column count, and
+ * a column change rewraps the whole scrollback), so it is opt-in per call: a caller that knows
+ * the split's pixel extent gets it, and every caller that does not - the daemon applying a
+ * stored ratio, a layout template, `updatingSplitRatio` - is byte-for-byte unchanged.
+ */
+describe('clampRatio column floor (#79)', () => {
+    it('is exactly the shipped [0.1, 0.9] with no pixel extent', () => {
+        expect(clampRatio(0.5)).toBe(0.5);
+        expect(clampRatio(0)).toBe(MIN_SPLIT_RATIO);
+        expect(clampRatio(1)).toBe(MAX_SPLIT_RATIO);
+        expect(clampRatio(0.02)).toBe(0.1);
+        expect(Number.isNaN(clampRatio(Number.NaN))).toBe(true);
+    });
+
+    it('keeps both children at MIN_PANE_EXTENT_PX when the extent is known', () => {
+        // 800 px: the floor is 0.2, so 0.1 is no longer reachable by a drag.
+        expect(clampRatio(0.02, 800)).toBeCloseTo(MIN_PANE_EXTENT_PX / 800, 12);
+        expect(clampRatio(0.99, 800)).toBeCloseTo(1 - MIN_PANE_EXTENT_PX / 800, 12);
+        // Inside the floor nothing moves.
+        expect(clampRatio(0.5, 800)).toBe(0.5);
+        expect(clampRatio(0.25, 800)).toBe(0.25);
+    });
+
+    it('falls back to an even share when the split is too narrow for two floors', () => {
+        // 200 px cannot give both children 160, so neither gets less than half.
+        expect(clampRatio(0.1, 200)).toBe(0.5);
+        expect(clampRatio(0.9, 200)).toBe(0.5);
+        expect(clampRatio(0.5, 320)).toBe(0.5);
+    });
+
+    it('ignores an extent that is not a usable number', () => {
+        expect(clampRatio(0.02, 0)).toBe(0.1);
+        expect(clampRatio(0.02, -80)).toBe(0.1);
+        expect(clampRatio(0.02, Number.NaN)).toBe(0.1);
+        expect(clampRatio(0.02, Number.POSITIVE_INFINITY)).toBe(0.1);
     });
 });

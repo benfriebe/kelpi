@@ -194,7 +194,7 @@ export async function buildAll(repoRoot, { log = () => {}, force = false } = {})
 
 // ── sandbox ─────────────────────────────────────────────────────────────────────────
 
-export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow } = {}) {
+export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow, harnessWindow } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexaudit-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -279,6 +279,25 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
          * caller passes it, so nothing loses the ability to override.
          */
         ...(auditWindow === undefined ? {} : { KELPI_AUDIT_WINDOW: auditWindow }),
+        /*
+         * The harness functional lane's placement (#65), the scenario runner's half of the same
+         * mechanism: `hidden` | `offscreen` | `onscreen`, read by `audit-window.ts` only when
+         * KELPI_HARNESS_SOCKET (set above, for every sandbox) is also set. Anything else, this
+         * one included, leaves the shell building a user's window.
+         *
+         * On the sandbox for the same reason `auditWindow` is: a scenario that relaunches the
+         * shell must get the same placement the first one had, or a run reports on two different
+         * windows. Two variables rather than reusing KELPI_AUDIT_WINDOW because the two lanes
+         * must stay independently gated: this one must never turn a probe into an audit run.
+         */
+        ...(harnessWindow === undefined ? {} : { KELPI_HARNESS_WINDOW: harnessWindow }),
+        // The lane's throttling escape hatch (`KELPI_HARNESS_WINDOW_THROTTLE=0` turns Chromium's
+        // background throttling off, the way the audit's lane does), forwarded from this process
+        // so "what does the flag actually buy?" stays a question you answer by running the
+        // scenarios twice rather than by arguing. Unset (normal use) this is a no-op.
+        ...(process.env['KELPI_HARNESS_WINDOW_THROTTLE'] === undefined
+            ? {}
+            : { KELPI_HARNESS_WINDOW_THROTTLE: process.env['KELPI_HARNESS_WINDOW_THROTTLE'] }),
         ...(clientDir === undefined ? {} : { KELPID_CLIENT_DIR: clientDir })
     };
 

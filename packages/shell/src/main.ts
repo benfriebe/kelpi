@@ -64,7 +64,7 @@ import {
     transparencyNeedsRelaunch,
     windowTransparency
 } from './appearance.js';
-import { auditWindowBounds, auditWindowLogLine, auditWindowPolicy, auditWindowVisibility } from './audit-window.js';
+import { auditWindowBounds, auditWindowLogLine, auditWindowVisibility, resolveWindowPolicy } from './audit-window.js';
 import { sendControlCommand } from './control.js';
 import {
     DaemonUnavailableError,
@@ -257,22 +257,22 @@ function isVisibleOnAllWorkspaces(): boolean {
 }
 
 /**
- * The origin the window WOULD have had if the audit had not moved it (`./audit-window.ts`).
+ * The origin the window WOULD have had if a test lane had not moved it (`./audit-window.ts`).
  *
- * Null for every launch that is not an audit run with a non-default placement. When it is set,
- * frame saves keep this origin instead of the parked one, so `window-state.json` — which the
- * `reattach-after-relaunch` step relaunches the shell against — holds the same rectangle an
- * onscreen run would have stored. Without it the stored frame is off the work area, the restore
- * clamp recentres it, and a step that is supposed to be about reattachment quietly becomes a
- * step about the clamp.
+ * Null for every launch that is not an audit or a harness-lane run with a non-default placement.
+ * When it is set, frame saves keep this origin instead of the parked one, so `window-state.json`
+ * (which the `reattach-after-relaunch` step relaunches the shell against) holds the same
+ * rectangle an onscreen run would have stored. Without it the stored frame is off the work area,
+ * the restore clamp recentres it, and a step that is supposed to be about reattachment quietly
+ * becomes a step about the clamp.
  */
-let auditRestoreOrigin: { x: number; y: number } | null = null;
+let parkedRestoreOrigin: { x: number; y: number } | null = null;
 
-/** `getNormalBounds()`, with the audit's parked origin swapped back out. */
+/** `getNormalBounds()`, with the lane's parked origin swapped back out. */
 function persistableBounds(window: BrowserWindow): Rect {
     const normal = window.getNormalBounds();
-    if (auditRestoreOrigin === null) return normal;
-    return { ...normal, x: auditRestoreOrigin.x, y: auditRestoreOrigin.y };
+    if (parkedRestoreOrigin === null) return normal;
+    return { ...normal, x: parkedRestoreOrigin.x, y: parkedRestoreOrigin.y };
 }
 
 function scheduleBoundsSave(window: BrowserWindow): void {
@@ -433,13 +433,15 @@ function createWindow(): BrowserWindow {
             `(background-opacity ${transparency.opacity.toFixed(2)}) ground ${ground}`
     );
     /*
-     * The audit's two window concessions — see `./audit-window.ts` for what they buy and why
-     * they are safe. With `KELPI_AUDIT` unset (every user launch, every packaged launch) the policy
-     * is Electron's own defaults and the three expressions below are the identity.
+     * The two window concessions a test lane gets. See `./audit-window.ts` for what they buy,
+     * why they are safe, and which two gates open them (the audit's `KELPI_AUDIT`, and #65's
+     * harness functional lane, `KELPI_HARNESS_SOCKET` + `KELPI_HARNESS_WINDOW`). With neither
+     * gate open (every user launch, every packaged launch) the policy is Electron's own
+     * defaults and the three expressions below are the identity.
      */
-    const audit = auditWindowPolicy(process.env);
-    const placedBounds = audit.active
-        ? auditWindowBounds(audit.placement, bounds, screen.getPrimaryDisplay().workArea)
+    const lane = resolveWindowPolicy(process.env);
+    const placedBounds = lane.active
+        ? auditWindowBounds(lane.placement, bounds, screen.getPrimaryDisplay().workArea)
         : bounds;
     const window = new BrowserWindow({
         ...placedBounds,
@@ -472,29 +474,36 @@ function createWindow(): BrowserWindow {
             webSecurity: true,
             spellcheck: false,
             /*
-             * Electron's default is `true`, and `auditWindowPolicy` returns `true` for every
-             * launch that is not an audit run — so this key is present with its default value
+             * Electron's default is `true`, and `resolveWindowPolicy` returns `true` for every
+             * launch neither test lane claimed, so this key is present with its default value
              * and the window a user gets is unchanged. Under `KELPI_AUDIT=1` it goes false, which
              * is what keeps a run alive when its window stops being the one nobody is looking
              * at: Chromium drops an occluded renderer's frame clock and timers to a crawl, and
              * the audit's animation steps advance on double-rAF gates, so they do not slow down
              * — they hang until they time out.
+             *
+             * #65's harness lane deliberately does NOT: a scenario waits from Node over CDP, not
+             * on the page's frame clock, and turning this off pins the render widget out of the
+             * hidden state, so the page reports itself visible for ever and the app never looks
+             * inactive, which silently disables the stop-only dock bounce the scenarios assert
+             * on. `./audit-window.ts` has that measurement and the opt-out for a run that wants
+             * the audit's behaviour anyway.
              */
-            backgroundThrottling: audit.backgroundThrottling
+            backgroundThrottling: lane.backgroundThrottling
         }
     });
 
-    auditRestoreOrigin = audit.active && audit.placement !== 'default' ? { x: bounds.x, y: bounds.y } : null;
-    if (audit.active) {
+    parkedRestoreOrigin = lane.active && lane.placement !== 'default' ? { x: bounds.x, y: bounds.y } : null;
+    if (lane.active) {
         /*
          * AppKit constrains the origin of a frame it is handed, so what was ASKED for and what
          * the window got are two different rectangles; both go in the log, because "which window
          * produced these pixels" is exactly the assumption a fidelity comparison rests on.
          * Re-asserted after `show()` too: showing a window re-runs the constraint.
          */
-        log(auditWindowLogLine(audit, placedBounds, window.getBounds()));
-        const visibility = auditWindowVisibility(audit.placement);
-        if (audit.placement !== 'default') {
+        log(auditWindowLogLine(lane, placedBounds, window.getBounds()));
+        const visibility = auditWindowVisibility(lane.placement);
+        if (lane.placement !== 'default') {
             window.once('show', () => {
                 try {
                     window.setBounds(placedBounds);
@@ -502,9 +511,11 @@ function createWindow(): BrowserWindow {
                     // window that has never been shown has no surface to make click-through.
                     if (visibility.opacity !== null) window.setOpacity(visibility.opacity);
                     if (visibility.ignoreMouseEvents) window.setIgnoreMouseEvents(true);
-                    log(auditWindowLogLine(audit, placedBounds, window.getBounds()));
+                    log(auditWindowLogLine(lane, placedBounds, window.getBounds()));
                 } catch (error) {
-                    warn(`audit window placement failed: ${error instanceof Error ? error.message : String(error)}`);
+                    warn(
+                        `${lane.lane} window placement failed: ${error instanceof Error ? error.message : String(error)}`
+                    );
                 }
             });
         }

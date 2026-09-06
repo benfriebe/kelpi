@@ -6,7 +6,9 @@ import {
     auditWindowBounds,
     auditWindowLogLine,
     auditWindowPolicy,
-    auditWindowVisibility
+    auditWindowVisibility,
+    harnessWindowPolicy,
+    resolveWindowPolicy
 } from './audit-window.js';
 
 const WORK_AREA = { x: 0, y: 25, width: 2456, height: 1304 };
@@ -62,6 +64,125 @@ describe('the audit window policy, when the audit does ask', () => {
         }
         expect(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'sideways' }).placement).toBe('default');
         expect(auditWindowPolicy({ KELPI_AUDIT: '1' }).placement).toBe('default');
+    });
+});
+
+describe('the harness functional lane is OFF unless BOTH of its variables ask for it (#65)', () => {
+    const SOCKET = '/tmp/nexaudit-scenario-x/harness.sock';
+
+    it('returns the shipped defaults for an empty environment', () => {
+        expect(harnessWindowPolicy({})).toEqual(SHIPPED_WINDOW_POLICY);
+        expect(resolveWindowPolicy({})).toEqual(SHIPPED_WINDOW_POLICY);
+    });
+
+    it('does nothing for a channel with no placement asked for', () => {
+        // `dev-instance.mjs` sets the socket for a window a human is looking at. The socket alone
+        // must never move it.
+        expect(harnessWindowPolicy({ KELPI_HARNESS_SOCKET: SOCKET })).toEqual(SHIPPED_WINDOW_POLICY);
+        expect(resolveWindowPolicy({ KELPI_HARNESS_SOCKET: SOCKET, KELPI_HARNESS: '1' })).toEqual(
+            SHIPPED_WINDOW_POLICY
+        );
+    });
+
+    it('does nothing for a placement with no channel behind it', () => {
+        // A stray KELPI_HARNESS_WINDOW with no driver to move the window back is a window the
+        // machine's owner cannot see and nobody is going to restore.
+        for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
+            expect(harnessWindowPolicy({ KELPI_HARNESS_WINDOW: placement })).toEqual(SHIPPED_WINDOW_POLICY);
+            expect(resolveWindowPolicy({ KELPI_HARNESS_WINDOW: placement, KELPI_HARNESS: '1' })).toEqual(
+                SHIPPED_WINDOW_POLICY
+            );
+        }
+    });
+
+    it('treats an empty or whitespace socket path as no channel, exactly as harnessSocketPath does', () => {
+        for (const socket of ['', '   ']) {
+            expect(harnessWindowPolicy({ KELPI_HARNESS_SOCKET: socket, KELPI_HARNESS_WINDOW: 'hidden' })).toEqual(
+                SHIPPED_WINDOW_POLICY
+            );
+        }
+    });
+
+    it('refuses "default" and any unknown placement, so the opt-in cannot be spelled like the opt-out', () => {
+        for (const placement of ['default', 'sideways', 'HIDDEN', '1', '']) {
+            expect(harnessWindowPolicy({ KELPI_HARNESS_SOCKET: SOCKET, KELPI_HARNESS_WINDOW: placement })).toEqual(
+                SHIPPED_WINDOW_POLICY
+            );
+        }
+    });
+});
+
+describe('the harness functional lane, when a scenario does ask', () => {
+    const SOCKET = '/tmp/nexaudit-scenario-x/harness.sock';
+    const laneEnv = (placement: string) => ({ KELPI_HARNESS_SOCKET: SOCKET, KELPI_HARNESS_WINDOW: placement });
+
+    it('carries the placement through and names itself', () => {
+        for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
+            const policy = harnessWindowPolicy(laneEnv(placement));
+            expect(policy.active).toBe(true);
+            expect(policy.lane).toBe('harness');
+            expect(policy.placement).toBe(placement);
+            expect(resolveWindowPolicy(laneEnv(placement))).toEqual(policy);
+        }
+    });
+
+    it('KEEPS the shipped background throttling, unlike the audit lane', () => {
+        // Measured, and the opposite of what this lane was first built to do. Turning throttling
+        // off pins the render widget out of the hidden state, so the page reports
+        // `visibilityState: 'visible'` for ever; the client reports that to the daemon, the
+        // daemon's isAppActive is exactly that value, and the stop-only dock bounce is gated on
+        // the app being INACTIVE. A lane with throttling off fails dock-bounce-stop-only at every
+        // placement, onscreen included: a test lane that changes the thing under test.
+        for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
+            expect(harnessWindowPolicy(laneEnv(placement)).backgroundThrottling).toBe(true);
+        }
+        expect(harnessWindowPolicy({ ...laneEnv('hidden'), KELPI_AUDIT_THROTTLE: '1' }).backgroundThrottling).toBe(true);
+    });
+
+    it('lets a run turn throttling off explicitly, and only for the exact string "0"', () => {
+        expect(
+            harnessWindowPolicy({ ...laneEnv('hidden'), KELPI_HARNESS_WINDOW_THROTTLE: '0' }).backgroundThrottling
+        ).toBe(false);
+        for (const value of ['', '1', 'false', 'off', 'no']) {
+            // A typo lands on the faithful side: the product still behaves like the product.
+            expect(
+                harnessWindowPolicy({ ...laneEnv('hidden'), KELPI_HARNESS_WINDOW_THROTTLE: value }).backgroundThrottling
+            ).toBe(true);
+        }
+    });
+
+    it('does not let the throttle hatch open the lane on its own', () => {
+        expect(harnessWindowPolicy({ KELPI_HARNESS_WINDOW_THROTTLE: '0' })).toEqual(SHIPPED_WINDOW_POLICY);
+        expect(resolveWindowPolicy({ KELPI_HARNESS_WINDOW_THROTTLE: '0', KELPI_HARNESS_SOCKET: SOCKET })).toEqual(
+            SHIPPED_WINDOW_POLICY
+        );
+    });
+
+    it("reuses the audit's geometry and visibility, rather than having its own", () => {
+        // The whole point of the lane living in this file: one measured placement table, two
+        // gates. A hidden scenario window is hidden the same way a hidden audit window is.
+        const policy = harnessWindowPolicy(laneEnv('hidden'));
+        expect(auditWindowVisibility(policy.placement)).toEqual({ opacity: 0, ignoreMouseEvents: true });
+        expect(auditWindowBounds('offscreen', BOUNDS, WORK_AREA)).toEqual(
+            auditWindowBounds(harnessWindowPolicy(laneEnv('offscreen')).placement, BOUNDS, WORK_AREA)
+        );
+    });
+
+    it('loses to the audit when both gates are open, because audit.mjs sets the socket too', () => {
+        const both = { KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'onscreen', ...laneEnv('hidden') };
+        expect(resolveWindowPolicy(both).lane).toBe('audit');
+        expect(resolveWindowPolicy(both).placement).toBe('onscreen');
+    });
+
+    it('tags its log line as the harness lane, so two concurrent runs are tellable apart', () => {
+        const line = auditWindowLogLine(harnessWindowPolicy(laneEnv('hidden')), BOUNDS, BOUNDS);
+        expect(line.startsWith('harness-window:')).toBe(true);
+        expect(line).toContain('placement=hidden');
+        expect(line).toContain('backgroundThrottling=true');
+        expect(line).toContain('opacity=0');
+        expect(
+            auditWindowLogLine(auditWindowPolicy({ KELPI_AUDIT: '1' }), BOUNDS, BOUNDS).startsWith('audit-window:')
+        ).toBe(true);
     });
 });
 

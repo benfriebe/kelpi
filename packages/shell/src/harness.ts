@@ -20,17 +20,21 @@
  * line per request (`./harness-protocol.ts` has the wire shape and every rule; this file is the
  * plumbing). Over it a driver can read the application menu, click a row by id or label path,
  * press a chord and land where the OS would, count dock bounces, count and pre-answer message
- * boxes, and read, focus or blur the main window (the bounce is only reachable while the window
- * is unfocused, so `blur` is the step before "make an agent stop").
+ * boxes, read every notification the shell showed and click or close one as the OS would
+ * (agent-lifecycle.md §7), and read, focus or blur the main window (the bounce is only
+ * reachable while the window is unfocused, so `blur` is the step before "make an agent stop").
  *
  * What makes it safe. The gate is the env var being a non-empty path and nothing else
  * (`harnessSocketPath`): a user's shell, the packaged app, and every existing probe that sets
  * `KELPI_HARNESS=1` or `KELPI_AUDIT=1` get no server, no socket file and no wrapper, and
  * `harness-protocol.test.ts` pins that the way `audit-window.test.ts` pins the window policy.
- * With the gate set, the two wrappers are property replacements on the live `app.dock` and
- * `dialog` objects (which is why `status.ts` and `quit.ts` call them by property, never through
- * a bound copy); both still call the original, except a message box a driver has armed an answer
- * for, which is resolved without being shown. The socket is unlinked before listening (a stale
+ * With the gate set, two of the three wrappers are property replacements on the live `app.dock`
+ * and `dialog` objects (which is why `status.ts` and `quit.ts` call them by property, never
+ * through a bound copy); both still call the original, except a message box a driver has armed
+ * an answer for, which is resolved without being shown. The third is notifications (#67), which
+ * have no property to replace, `new Notification(...)` is a class import, so `./notify.ts`
+ * and `./notify-present.ts` give them one seam to be wrapped at instead, and it still posts for
+ * real unless `KELPI_HARNESS_QUIET_NOTIFICATIONS=1`. The socket is unlinked before listening (a stale
  * file from a killed run) and again on `will-quit`. There is no auth on the socket because the
  * sandbox root it lives in is the auth: it is created 0700 by the harness that spawned this
  * process, and nothing else is expected to find it.
@@ -49,6 +53,8 @@ import {
     type HarnessSurface,
     type WindowSnapshot
 } from './harness-protocol.js';
+import { setNotificationPresenter } from './notify-present.js';
+import type { NotificationPresenter } from './notify.js';
 
 export interface HarnessOptions {
     readonly app: App;
@@ -56,6 +62,12 @@ export interface HarnessOptions {
     readonly BrowserWindow: typeof BrowserWindow;
     readonly Menu: typeof Menu;
     readonly socketPath: string;
+    /**
+     * `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` (#67): record every notification and post none.
+     * The caller reads the gate (`harnessQuietNotifications`) so both gates have one spelling
+     * each and neither is read anywhere a user's shell can reach.
+     */
+    readonly quietNotifications: boolean;
     /** The main window, read on every request: it can be replaced or destroyed mid-run. */
     readonly mainWindow: () => BrowserWindow | null;
     readonly log: (message: string) => void;
@@ -125,6 +137,46 @@ function wrapDialog(dialog: Dialog, counters: HarnessCounters): () => void {
     };
 }
 
+/**
+ * Record every notification the shell posts, and keep posting it (#67).
+ *
+ * Not a property replacement like the two above, because there is no property: `new
+ * Notification(...)` is a class import, which is exactly why the channel could not see a
+ * notification at all before this. `./notify-present.ts` is the seam that makes it wrappable, 
+ * one module-level function every site calls, and this swaps the presenter behind it and puts
+ * the previous one back on `stopHarness`.
+ *
+ * The site's own handlers are routed THROUGH the record rather than handed to the real
+ * notification directly, so `notification-click` fires the same closure the OS would and the
+ * record still learns about a close the OS started (a user swiping the banner away). All three
+ * are forwarded whether or not the site supplied one: an extra listener on an Electron
+ * `Notification` has no observable effect, and the alternative is a record that quietly stops
+ * tracking `closed` for the shell's own notices.
+ *
+ * `quiet` removes exactly one thing: the OS call. The record, the handlers and both ops behave
+ * identically, which is what lets a parallel run keep its Notification Centre to itself.
+ */
+function wrapNotifications(counters: HarnessCounters, quiet: boolean): () => void {
+    let original: NotificationPresenter;
+    const wrapper: NotificationPresenter = (request, handlers) => {
+        const entry = counters.openNotification(request, handlers);
+        entry.attach(
+            quiet
+                ? null
+                : original(request, {
+                      onClick: () => entry.dispatchClick(),
+                      onAction: (index) => entry.dispatchAction(index),
+                      onClose: () => entry.dispatchClose()
+                  })
+        );
+        return entry;
+    };
+    original = setNotificationPresenter(wrapper);
+    return () => {
+        setNotificationPresenter(original);
+    };
+}
+
 function makeSurface(options: HarnessOptions, counters: HarnessCounters): HarnessSurface<MenuItem> {
     const { app, BrowserWindow: Windows, Menu: Menus, mainWindow } = options;
     return {
@@ -179,6 +231,7 @@ export function startHarness(options: HarnessOptions): void {
     const counters = new HarnessCounters();
     const restoreDock = wrapDock(options.app, counters);
     const restoreDialog = wrapDialog(options.dialog, counters);
+    const restoreNotifications = wrapNotifications(counters, options.quietNotifications);
     const surface = makeSurface(options, counters);
     const sockets = new Set<Socket>();
 
@@ -215,6 +268,7 @@ export function startHarness(options: HarnessOptions): void {
         server,
         sockets,
         restore: () => {
+            restoreNotifications();
             restoreDialog();
             restoreDock();
         },

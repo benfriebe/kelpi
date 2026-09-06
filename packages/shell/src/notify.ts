@@ -93,6 +93,70 @@ export function notificationActionID(index: number): KelpiNotificationActionID |
     return KELPI_AGENT_ACTION_IDS[index] ?? null;
 }
 
+// ── the seam every notification goes through (#67) ──────────────────────────────────
+
+/**
+ * What the shell asks for when it posts a notification, as data.
+ *
+ * Every `new Notification(...)` the shell had was its own call to an Electron CLASS, which is
+ * why the harness channel could count `app.dock.bounce` and `dialog.showMessageBox` (property
+ * replacements on live objects) but not a single notification: there is no object to replace a
+ * property on, and an ESM import binding cannot be reassigned from outside the module. So the
+ * construction moved behind one function, `./notify-present.ts` ▸ `presentNotification`, and
+ * this is its argument. `optional` means "do not pass the key to Electron at all": a request
+ * that omits `silent` and `actions` builds the same options object the two `main.ts` notices
+ * built before the seam existed, which is what makes a user's shell byte-identical.
+ *
+ * `paneID` and `key` are carried for the harness's benefit and are never given to Electron:
+ * they are what makes agent-lifecycle.md §7.5's identifier (`kelpi-<paneID>`, "a newer
+ * notification for the same pane replaces the older one") assertable from a scenario.
+ */
+export interface KelpiNotificationRequest {
+    readonly title: string;
+    readonly body: string;
+    /** §7.5: `content.sound = .default` is `silent: false`. Omitted = Electron's own default. */
+    readonly silent?: boolean | undefined;
+    /** The `kelpi-agent` category's buttons, for the notifications that carry them (§AGNT-073). */
+    readonly actions?: readonly KelpiNotificationAction[] | undefined;
+    /** The pane this belongs to; null for the shell's own notices (the CLI and relaunch ones). */
+    readonly paneID?: string | null | undefined;
+    /** §7.5's dedupe identifier, where the caller has one. */
+    readonly key?: string | null | undefined;
+}
+
+/**
+ * The three things the OS can do to a posted notification, declared up front.
+ *
+ * Up front rather than `notification.on('click', …)` afterwards on purpose: the seam then has
+ * every handler in hand at construction, so the harness can fire the exact function the OS
+ * would have fired (`notification-click`, `notification-close`) without owning an event
+ * emitter of its own or guessing at event names. §7.5 is what these mean: the body tap and the
+ * "Open" action are the same behaviour, "Dismiss" only dismisses, and a close is a withdrawal.
+ */
+export interface KelpiNotificationHandlers {
+    /** The body tap. */
+    readonly onClick?: (() => void) | undefined;
+    /** An action button, by the INDEX macOS reports; `notificationActionID` names it. */
+    readonly onAction?: ((index: number) => void) | undefined;
+    /** The notification went away, whoever withdrew it. */
+    readonly onClose?: (() => void) | undefined;
+}
+
+/** What the caller holds afterwards: post it, and withdraw it (§7.5's replace-on-repost). */
+export interface KelpiNotificationHandle {
+    show(): void;
+    close(): void;
+}
+
+/**
+ * The seam's type. `./notify-present.ts` holds the real one; `./harness.ts` swaps in a
+ * recording wrapper around it, and only ever while `KELPI_HARNESS_SOCKET` is set.
+ */
+export type NotificationPresenter = (
+    request: KelpiNotificationRequest,
+    handlers: KelpiNotificationHandlers
+) => KelpiNotificationHandle;
+
 /**
  * The one-line shape `status.ts` logs when it posts, so the smoke and the audit can assert that
  * a REAL `Notification` was constructed with the category's actions — the buttons themselves

@@ -26,7 +26,6 @@
 import {
     BrowserWindow,
     Menu,
-    Notification,
     app,
     clipboard,
     dialog,
@@ -50,8 +49,10 @@ import {
     resolveCliLinkPath,
     type CliInstallResult
 } from './cli-install.js';
-import { harnessSocketPath } from './harness-protocol.js';
+import { harnessQuietNotifications, harnessSocketPath } from './harness-protocol.js';
 import { startHarness, stopHarness } from './harness.js';
+// #67: the seam every notification goes through, so the harness channel can count them.
+import { notificationsSupported, presentNotification } from './notify-present.js';
 import {
     createOpenFileQueue,
     runCliInstallPolicy,
@@ -770,9 +771,11 @@ function applyAppearanceSettings(): void {
     if (!transparencyNeedsRelaunch(windowIsTransparent, opacity)) return;
     const wanted = opacity < 1 ? 'transparent' : 'opaque';
     log(`window transparency change to ${wanted} needs a relaunch (background-opacity ${opacity.toFixed(2)})`);
-    if (relaunchNoticeShown || !Notification.isSupported()) return;
+    if (relaunchNoticeShown || !notificationsSupported()) return;
     relaunchNoticeShown = true;
-    new Notification({
+    // #67: through the seam, like every other notification the shell posts. No handlers and no
+    // pane: it is a sentence, not a route back into the app.
+    presentNotification({
         title: 'Window transparency changes on next launch',
         body:
             `background-opacity is now ${opacity.toFixed(2)}. Panes already follow it; ` +
@@ -920,8 +923,8 @@ function reportCliInstall(result: CliInstallResult, announce: boolean): void {
     if (!announce && settings.cliInstallNotifiedVersion === version) return;
     if (!announce) writeShellSettings(cliSettingsFile(), { ...settings, cliInstallNotifiedVersion: version });
 
-    if (!Notification.isSupported()) return;
-    new Notification({
+    if (!notificationsSupported()) return;
+    presentNotification({
         title: 'Kelpi CLI is out of date',
         body: `Could not update ${result.plan.linkPath}. Run this in a terminal:\n${result.plan.manualCommand}`
     }).show();
@@ -1484,6 +1487,7 @@ async function boot(): Promise<void> {
             BrowserWindow,
             Menu,
             socketPath: harnessSocket,
+            quietNotifications: harnessQuietNotifications(process.env),
             mainWindow: () => mainWindow,
             log,
             logError

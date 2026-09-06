@@ -997,6 +997,11 @@ with:
   on a genuine unfocused→focused transition (so unrelated re-renders — e.g. typing in
   the command palette — don't yank focus), and never while a sidebar text field is
   being edited.
+- The focus gain is spent when the claim is actually MADE, never on a refusal (issue #35).
+  A claim declined because a chrome text field holds the caret stays armed and is made when
+  that field lets go; the editor's release edge is tracked separately from it, so a claim
+  that never happened cannot blur a caret the editor does not hold
+  (`content/PlainTextEditor.tsx`, `armCaretClaim` in `app/pane-focus.ts`).
 - Editors additionally *release* keyboard focus explicitly on focused→unfocused so the
   next pane's claim isn't blocked.
 

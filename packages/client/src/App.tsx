@@ -130,7 +130,7 @@ import {
 import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
-import { focusPaneSurface, releaseFocusedPaneCaret } from './app/pane-focus';
+import { focusPaneSurface, handCaretToPaneWhenReady, releaseFocusedPaneCaret } from './app/pane-focus';
 import { useRemoteDaemons } from './app/remote-daemons';
 import { RemoteDaemonSections, type RemoteSelection } from './app/RemoteDaemonSections';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
@@ -531,6 +531,12 @@ function Shell(props: AppProps): ReactElement {
     /** Pending §8.5 focus hand-offs, cleared on unmount so none fires into a dead tree. */
     const revealTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
     /**
+     * Issue #74: the hand-off that keeps asking until the pane has mounted, at most one in
+     * flight. A second reveal supersedes the first - its destination is the one the user is
+     * being taken to - and unmount cancels whatever is left.
+     */
+    const revealHandoff = useRef<(() => void) | null>(null);
+    /**
      * §APP-028: workspace ids whose next `reveal-pane` this window should ignore, each with a
      * deadline (see `suppressReveal`). Exactly one gesture writes here — Debug ▸ Seed Test Group,
      * which creates workspaces the user did not ask to be taken to.
@@ -769,7 +775,19 @@ function Shell(props: AppProps): ReactElement {
             const timer = setTimeout(() => {
                 timers.delete(timer);
                 runtime.focusPane(target.workspaceID, target.paneID);
-                focusPaneSurface(target.paneID);
+                /*
+                 * Issue #74 - the hand-off keeps asking until there is a pane to hand it to.
+                 *
+                 * A reveal that crosses workspaces unmounts the outgoing panes and mounts the
+                 * incoming ones, so this `setTimeout(0)` runs while the destination does not
+                 * exist yet: `focusPaneSurface` found nothing and returned, silently, and the
+                 * agent `kelpi workspace create` had just launched came up wearing the ring with
+                 * the keyboard nowhere. The status-popover path knew this and fired twice
+                 * (§APP-076); this asks every frame until the surface is there, and is polite
+                 * about it, because a declined claim is now armed rather than lost (issue #35).
+                 */
+                revealHandoff.current?.();
+                revealHandoff.current = handCaretToPaneWhenReady(target.paneID);
             }, 0);
             timers.add(timer);
         });
@@ -777,6 +795,8 @@ function Shell(props: AppProps): ReactElement {
             off();
             for (const timer of timers) clearTimeout(timer);
             timers.clear();
+            revealHandoff.current?.();
+            revealHandoff.current = null;
         };
     }, [activateWorkspaceAndReveal, runtime, shellWindowID]);
 
@@ -2491,15 +2511,29 @@ function Shell(props: AppProps): ReactElement {
         runtime.reportVisiblePanes(workspace.id, visibleKey.length === 0 ? [] : visibleKey.split(','));
     }, [runtime, workspace, visibleKey]);
 
-    // A workspace switch re-asserts focus so the daemon's suppression math knows which pane
-    // this client is looking at (its per-connection focus starts empty).
+    /*
+     * A workspace switch re-asserts focus so the daemon's suppression math knows which pane
+     * this client is looking at (its per-connection focus starts empty).
+     *
+     * Issue #74 - and it is also where the CARET has to be handed over, which is the one
+     * cross-workspace jump that never did it. The palette, the status popover, a notification
+     * "Open" and the overlay-close paths all hand it explicitly; a switch made by clicking a
+     * sidebar row, or by ⌘1 to 9, relied entirely on the incoming panes' own claims, and the
+     * clicked ROW goes on holding the DOM caret while they come up (`chrome/Sidebar.tsx`'s
+     * mousedown does not `preventDefault`). The hand-off is polite and waits for the destination
+     * to mount, so a rename or the filter mid-edit keeps its caret and the pane collects it later
+     * through its own armed claim (issue #35).
+     */
     const workspaceID = workspace?.id ?? null;
     const workspaceFocusRef = useRef<string | null>(null);
     useEffect(() => {
         if (workspaceID === null || workspaceFocusRef.current === workspaceID) return;
         workspaceFocusRef.current = workspaceID;
         const current = selectActiveWorkspace(store.getState());
-        if (current !== null) runtime.focusPane(current.id, current.focusedPaneID);
+        if (current === null) return;
+        runtime.focusPane(current.id, current.focusedPaneID);
+        if (current.focusedPaneID === null) return;
+        return handCaretToPaneWhenReady(current.focusedPaneID);
     }, [workspaceID, runtime, store]);
 
     /**

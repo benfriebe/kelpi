@@ -28,7 +28,7 @@ import {
     type ReactElement
 } from 'react';
 
-import { PANE_SURFACE_ATTR, shouldGrabFocus } from '../app/pane-focus';
+import { PANE_SURFACE_ATTR, armCaretClaim } from '../app/pane-focus';
 import { cachedLineStarts, visibleLineWindow, type LineWindow } from './gutter';
 import { contentScrollStore, type ScrollStore } from './scroll';
 import { editorTextColor } from './types';
@@ -179,17 +179,40 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
      *     off-screen (its workspace is not the one on screen; a zoomed sibling covers it)
      *     would have taken the window's caret. `TerminalPane` has always gated on both, and a
      *     BACKGROUND create must not steal the keyboard from the pane the user is typing in.
+     *
+     * Issue #35 - and a THIRD thing, the explicit one: `wasFocused.current = claimable` ran
+     * unconditionally, so a claim the politeness rule DECLINED still spent the focus gain. Even
+     * a re-run for the same focus episode then read `wasFocused.current` as true and never tried
+     * again, which is worse than the terminal's version of the same defect: there nothing
+     * re-armed the claim, here the arming was actively thrown away. The gain is now spent only
+     * when the claim is actually MADE (`armCaretClaim`, the rule the web pane has carried since
+     * §N30's residual), and the editor stays armed until the field it deferred to lets go.
+     *
+     * Two refs, because the two edges ask different questions: `claimSpent` is "has this focus
+     * gain been used", and `wasClaimable` is the true → false transition that
+     * `releaseFirstResponderIfHeld` is the port of. Folding them into one is what tied the
+     * release to a claim that may never have happened.
      */
     const focused = props.focused === true;
     const onScreen = props.visible !== false;
     const claimable = focused && onScreen;
-    const wasFocused = useRef(false);
+    const claimSpent = useRef(false);
+    const wasClaimable = useRef(false);
     useEffect(() => {
         const area = areaRef.current;
         if (area === null) return;
-        if (claimable && !wasFocused.current && shouldGrabFocus(area)) area.focus();
-        if (!claimable && wasFocused.current && document.activeElement === area) area.blur();
-        wasFocused.current = claimable;
+        const lost = wasClaimable.current && !claimable;
+        wasClaimable.current = claimable;
+        if (!claimable) {
+            claimSpent.current = false;
+            if (lost && document.activeElement === area) area.blur();
+            return;
+        }
+        if (claimSpent.current) return;
+        return armCaretClaim(area, () => {
+            claimSpent.current = true;
+            areaRef.current?.focus();
+        });
     }, [claimable]);
 
     // A pane whose body unmounts (workspace switch, ⌘E back to preview) still owes its text.

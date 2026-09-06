@@ -542,11 +542,49 @@ follows exactly **one client at a time**, the *size owner*:
   that opens a markdown pane) forcibly move focus to a pane even if something else holds it;
   the client follows the store's `focusedPaneID`.
 - **Polite focus** (view-mount path, `shouldGrabFocus`,
-  `packages/client/src/app/pane-focus.ts:59-77`): when the focused pane's surface (re)mounts
+  `packages/client/src/app/pane-focus.ts`): when the focused pane's surface (re)mounts
   it grabs focus *unless* a text editor outside any pane currently holds it (sidebar rename
   field, command palette input): two guards: an app-level "sidebar editing" flag suppresses
   the grab, and a final check bails if the current focus owner is an editable element that is
   not another pane's surface. Prevents re-renders from stealing the caret mid-typing.
+- **Armed focus** (issue #35, `armCaretClaim`, `packages/client/src/app/pane-focus.ts`): a
+  claim the rule above DECLINED is not dropped, it stays armed and is made the moment the
+  caret it deferred to is let go. The pane's own effect deps (`[focused, visible, status]`
+  for a terminal, `[claimable]` for an editor) never change when a sidebar filter is
+  dismissed, so without this a pane focused by ⌘] / ⌘[, a sidebar row, `kelpi pane focus` or
+  an agent wore the ring and drew a blinking cursor while the keystrokes went to the field,
+  until the user clicked the pane a second time (the click blurs the field before the pane's
+  own handler runs). The gain is spent only when the claim is actually MADE; losing pane
+  focus disarms it, so an armed claim never outlives the ring that justified it. The engine
+  focusing its own host is not an answer (that is `Terminal.open()`'s auto-focus, which the
+  arbiter is about to undo), and a `focusout` is answered one task later, because the caret
+  is dropped to `<body>` for the length of a focus move. The web pane has carried the same
+  rule since §N30's residual (`webpane/WebPane.tsx`).
+- **The caret arbiter** (`openEngineFocusWindow` / `undoSurfaceAutoFocus`,
+  `packages/client/src/app/pane-focus.ts`): while any engine is inside its autofocus window
+  there is ONE owner of the caret for the whole window, and an engine that grabbed the caret
+  without being entitled to it hands it back to that owner. An owner is a caret that can be
+  IN USE, which is the same test polite focus makes: an editable element, not `<body>`, and
+  not one inside a host whose engine is still grabbing (that caret IS the grab). A button, a
+  sidebar row or the workspace switcher is therefore **not** an owner (issue #74) and the
+  caret goes to the pane wearing the ring instead. A rename or the palette still outranks the
+  ring.
+- **Cross-workspace handoff** (issue #74, `handCaretToPaneWhenReady`): a jump that crosses
+  workspaces unmounts the outgoing panes and mounts the incoming ones, so a handoff made in
+  the same turn as the activation has nothing to aim at. The workspace-switch effect and the
+  `reveal-pane` path therefore keep asking (bounded, ~30 frames) until the destination pane
+  has a surface, and are polite about it: a field mid-edit keeps its caret and the pane
+  collects it through its own armed claim.
+- **The cursor is drawn from PANE focus, not from who holds the caret**
+  (`surfaceFocused = focused && visible && windowFocused`,
+  `packages/client/src/terminal/TerminalPane.tsx`), a deliberate simplification of ghostty's
+  `isFirstResponder` term so the ring and the cursor always agree. Issues #35 and #74 are the
+  counter-example that made it visible (a ring and a blinking cursor over a pane with no
+  keyboard), and they are fixed at the source instead: the pane that wears the ring gets the
+  caret, or asks again when the field that declined it lets go. Following `activeElement`
+  here would re-decide on every focusin/focusout - including the transient blurs the engine's
+  own copy path performs - and would hollow the cursor while a rename borrows the caret,
+  which is exactly the divergence the simplification removes.
 - Focus-related quirk worth preserving: raising the window restores its previous
   focus owner first, so programmatic pane selection applies *after* that restoration
   (the focus dispatch is deferred one turn).

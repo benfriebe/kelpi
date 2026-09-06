@@ -76,6 +76,111 @@ export function shouldGrabFocus(host: HTMLElement | null): boolean {
 }
 
 /**
+ * Issue #35 - the same question a moment later: has the caret that said no been let go?
+ *
+ * {@link shouldGrabFocus} answers "may I take it NOW", and its `host.contains(active)` shortcut
+ * is there so an engine that has already focused its own textarea is not talked out of it. That
+ * shortcut is wrong as an answer to "has the blocker gone": a caret that has just landed inside
+ * the asking host is the ENGINE's own grab (`terminal.ts:636` and its `setTimeout(0)` backup),
+ * not the sidebar filter letting go, and treating it as an answer would spend the deferred claim
+ * on the transient the arbiter is about to undo. So this is the same rule with that one clause
+ * removed, and it is deliberately not exported: the only question anyone else asks is the first
+ * one.
+ */
+function caretBlockerGone(host: HTMLElement | null): boolean {
+    if (typeof document === 'undefined') return true;
+    const active = document.activeElement;
+    if (active === null || active === document.body) return true;
+    if (host !== null && host.contains(active)) return false;
+    if (!isEditable(active)) return true;
+    return isPaneSurfaceCaret(active);
+}
+
+/**
+ * Issue #35 - a claim that was DECLINED stays armed, and is answered when the caret it deferred
+ * to is let go.
+ *
+ * Declining is correct: a rename, the sidebar filter or the palette mid-edit must survive a pane
+ * taking the ring. What was missing is the SECOND attempt. A terminal's claim lived in an effect
+ * with deps `[focused, visible, status]` (`terminal/TerminalPane.tsx`) and an editor's spent its
+ * focus gain unconditionally (`content/PlainTextEditor.tsx`), so a declined claim was simply
+ * dropped: the pane wore the ring, drew a blinking cursor, and the keystrokes went to the field
+ * until the user clicked the pane a second time, the click blurring the field before the pane's
+ * own handler ran and so making the claim succeed.
+ *
+ * The web pane has had this rule since §N30's residual (`webpane/WebPane.tsx`): "Stay armed and
+ * re-decide when that changes. The gain is spent only when the claim is actually MADE, or on a
+ * guard that stands." There it re-decides on the props that block it; a chrome field is not a
+ * prop, so here the re-decision is driven by the document's own focus traffic. One listener,
+ * removed the moment the claim lands, and removed by the caller's cleanup if the pane loses
+ * focus first - so an armed claim can never outlive the ring that justified it.
+ *
+ * `claim` is the caller's own focus call (`renderer.focus()`, `area.focus()`), not a DOM call
+ * made from here: what is focusable inside a terminal host belongs to the engine.
+ *
+ * Returns the disarm function, so the caller's effect cleanup is the whole lifetime.
+ */
+export function armCaretClaim(host: HTMLElement | null, claim: () => void): () => void {
+    if (typeof document === 'undefined') return () => undefined;
+    if (shouldGrabFocus(host)) {
+        claim();
+        return () => undefined;
+    }
+    const owningDocument = host?.ownerDocument ?? document;
+    let armed = true;
+    let deferred: ReturnType<typeof setTimeout> | null = null;
+
+    function stop(): void {
+        armed = false;
+        if (deferred !== null) {
+            clearTimeout(deferred);
+            deferred = null;
+        }
+        owningDocument.removeEventListener('focusin', onFocusIn, true);
+        owningDocument.removeEventListener('focusout', onFocusOut, true);
+    }
+
+    /** The listeners come off BEFORE the claim, so the claim's own focus event cannot re-enter. */
+    function decide(): void {
+        if (!armed || !caretBlockerGone(host)) return;
+        stop();
+        claim();
+    }
+
+    /** The caret moved somewhere else outright: the answer is readable now. */
+    function onFocusIn(): void {
+        decide();
+    }
+
+    /**
+     * The field let go, and WHO has it is not known yet.
+     *
+     * `focusout` is dispatched with the document's `activeElement` already dropped to `<body>`,
+     * before the element gaining focus is dispatched its `focusin` - so deciding here would read
+     * "nobody has the caret" during every ordinary move between two chrome fields, and the pane
+     * would take a caret that was on its way to a rename. One task later the move has finished,
+     * and Escape in the sidebar filter (a blur with nothing taking it) is answered by the same
+     * line. `focusin` above still answers the common case synchronously; this is the tail.
+     */
+    function onFocusOut(): void {
+        if (!armed || deferred !== null) return;
+        deferred = setTimeout(() => {
+            deferred = null;
+            decide();
+        }, 0);
+    }
+
+    // Capture phase: a chrome field that stops propagation of its own focus events must not be
+    // able to strand an armed claim.
+    owningDocument.addEventListener('focusin', onFocusIn, true);
+    owningDocument.addEventListener('focusout', onFocusOut, true);
+    return (): void => {
+        if (!armed) return;
+        stop();
+    };
+}
+
+/**
  * The port of `releaseFirstResponderIfHeld` — a surface that has lost pane focus lets go.
  *
  * Only ever blurs a node INSIDE `host`, so a claim that already landed somewhere else (the
@@ -148,11 +253,28 @@ function isInsideArmingHost(node: Element): boolean {
  * `<body>` is nobody: a caret that has been dropped is not an owner to give anything back to,
  * and saying so here is what sends a reload down the ring branch (where it belongs) instead of
  * through a `body.focus()` that lands the window on no pane at all.
+ *
+ * Issue #74 - and neither is a BUTTON, a sidebar row or the workspace switcher, which is the
+ * same rule {@link shouldGrabFocus} already states one line up: what may not be moved is a caret
+ * that is IN USE, and only an editable element can be in use. Without this the arbiter and the
+ * politeness rule disagreed about what is worth protecting, and the disagreement was reachable
+ * with one click: a sidebar row is `<div role="option" tabIndex={-1}>` whose mousedown does not
+ * `preventDefault` (`chrome/Sidebar.tsx:1111-1152,2411-2446`), so after a workspace switch made
+ * by CLICKING a row, the row itself holds the caret. Every incoming pane then armed with the row
+ * as owner; the pane wearing the ring claimed correctly; and the LAST engine to finish its wasm
+ * load handed the caret it had grabbed back to the row, taking it off the pane that had just
+ * legitimately claimed it. The window drew a focus ring and a blinking cursor and took no
+ * keystrokes until the user clicked another pane and clicked back.
+ *
+ * A caret held by another pane's SURFACE stays an owner (that is §N35's "the pane the user is
+ * actually typing in", pinned below), because a surface's caret is editable by this test: the
+ * engine drives input through a hidden `<textarea>`.
  */
 function caretOwnerCandidate(node: Element | null): Element | null {
     if (node === null) return null;
     if (node === node.ownerDocument.body) return null;
     if (isInsideArmingHost(node)) return null;
+    if (!isEditable(node)) return null;
     return node;
 }
 
@@ -316,17 +438,79 @@ export function releaseFocusedPaneCaret(): void {
  * exposes no such handle. An editor pane has no terminal host at all; its marked surface IS the
  * focusable, which is why the lookup is over `PANE_SURFACE_ATTR` and not over
  * `[data-terminal-host]` as it was when only terminals could be handed the caret.
+ *
+ * Reports whether it found something to hand the caret TO. A pane that has not mounted yet, or
+ * whose engine has not built a surface yet, is the reason issue #74's reveal handoff was a silent
+ * no-op on a cross-workspace jump; {@link handCaretToPaneWhenReady} is that answer used.
  */
-export function focusPaneSurface(paneID: string): void {
-    if (typeof document === 'undefined') return;
+export function focusPaneSurface(paneID: string): boolean {
+    if (typeof document === 'undefined') return false;
     const pane = document.querySelector<HTMLElement>(`[data-pane-id="${paneID}"]`);
-    if (pane === null) return;
+    if (pane === null) return false;
     const surface = pane.querySelector<HTMLElement>(PANE_SURFACE_SELECTOR);
-    if (surface === null) return;
+    if (surface === null) return false;
     if (isEditable(surface)) {
         surface.focus?.();
-        return;
+        return true;
     }
     const focusable = surface.querySelector<HTMLElement>('textarea, canvas[tabindex], [tabindex]') ?? surface;
     focusable.focus?.();
+    return true;
+}
+
+/**
+ * How long {@link handCaretToPaneWhenReady} keeps asking, in wall clock.
+ *
+ * A budget rather than a frame count because what it is waiting for is a WASM load, and because
+ * a frame is not a fixed amount of time in a window the compositor is throttling. Long enough
+ * for an engine to come up on a cold sandbox, short enough that it cannot still be running when
+ * the user has moved on to something else.
+ */
+const CARET_HANDOFF_BUDGET_MS = 1_500;
+
+/**
+ * Issue #74 - the same handoff, for the paths where the destination does not exist yet.
+ *
+ * A jump that crosses workspaces unmounts the outgoing panes and mounts the incoming ones
+ * (`terminal/mount-policy.ts`), so a handoff made in the same turn as the activation has nothing
+ * to aim at: `focusPaneSurface` returns having found no pane, silently, which is what the
+ * `reveal-pane` path did on a `kelpi workspace create` and what made an agent launched that way
+ * come up with a ring and no keyboard. The status-popover path already knew this and fired twice
+ * (§APP-076); asking until there is an answer is that idea with the arbitrary number taken out.
+ *
+ * POLITE, unlike {@link focusPaneSurface} on the overlay-close paths, and that difference is the
+ * point: there the chrome field holding the caret IS the overlay that is closing, while here it
+ * is a sidebar rename or a filter the user is still typing in, which {@link shouldGrabFocus}
+ * exists to protect. Declining costs nothing now that a declined claim stays armed
+ * ({@link armCaretClaim}): the pane takes the caret itself the moment the field lets go.
+ *
+ * Returns a cancel function; it stops on its own once the question is settled.
+ */
+export function handCaretToPaneWhenReady(paneID: string): () => void {
+    if (typeof document === 'undefined') return () => undefined;
+    let cancelled = false;
+    const deadline = Date.now() + CARET_HANDOFF_BUDGET_MS;
+    const attempt = (): void => {
+        if (cancelled) return;
+        const pane = document.querySelector<HTMLElement>(`[data-pane-id="${paneID}"]`);
+        // A caret in use keeps its field, and the question is settled: the pane's own armed
+        // claim collects it when the field lets go.
+        if (pane !== null && !shouldGrabFocus(pane)) return;
+        /*
+         * The test is whether the caret LANDED, not whether a surface exists. A terminal host is
+         * marked the moment the pane mounts, while the element that can actually hold a caret is
+         * the `<textarea>` the engine builds when its wasm finishes loading, and `focus()` on the
+         * host in between is a silent no-op on a div with no tabindex. Asking again until the
+         * caret is inside the pane is what makes this wait for the engine rather than for React.
+         */
+        if (pane !== null && focusPaneSurface(paneID) && pane.contains(document.activeElement)) return;
+        if (Date.now() >= deadline) return;
+        const soon = globalThis.requestAnimationFrame;
+        if (typeof soon === 'function') soon(attempt);
+        else setTimeout(attempt, 16);
+    };
+    attempt();
+    return (): void => {
+        cancelled = true;
+    };
 }

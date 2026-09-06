@@ -1150,6 +1150,89 @@ describe('TerminalPane — helpers', () => {
         input.remove();
     });
 
+    /**
+     * Issue #35 - a claim the politeness rule DECLINED asks again.
+     *
+     * The pane is focused (⌘], a sidebar row, `kelpi pane focus`, an agent), and a chrome text
+     * field - the sidebar filter, a rename, the palette - holds the caret. Declining is right;
+     * dropping the claim is not. The effect's deps are `[focused, visible, status]` and none of
+     * them changes when the field is let go, so the pane wore the ring and drew a blinking cursor
+     * while every keystroke went to the field, until a second click on the pane blurred the field
+     * before the pane's own handler ran.
+     */
+    it('re-claims the caret when the chrome field that declined it lets go (issue #35)', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const filter = document.createElement('input');
+        document.body.appendChild(filter);
+        filter.focus();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        // Declined, and the field keeps its caret: the half that was already right.
+        expect(renderers.last().focusCount).toBe(0);
+        expect(document.activeElement).toBe(filter);
+
+        // Escape in the sidebar filter blurs it (`chrome/Sidebar.tsx`). Nothing else re-runs the
+        // effect; the armed claim is what answers.
+        await act(async () => {
+            filter.blur();
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(renderers.last().focusCount).toBe(1);
+        filter.remove();
+    });
+
+    it('…and a pane that lost the ring does not collect the caret later (issue #35)', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const filter = document.createElement('input');
+        document.body.appendChild(filter);
+        filter.focus();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+        expect(renderers.last().focusCount).toBe(0);
+
+        // The ring moves on while the claim is still armed: the cleanup disarms it, so the field
+        // letting go afterwards is somebody else's business.
+        view.rerender(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 340)}
+            />
+        );
+        await act(async () => {
+            filter.blur();
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(renderers.last().focusCount).toBe(0);
+        filter.remove();
+    });
+
     it('…and a FOCUSED pane keeps what its engine took (N35)', async () => {
         const pty = createFakePtyApi();
         const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });
@@ -1230,13 +1313,20 @@ describe('the engine-autofocus window, at scale (§N35 residuals)', () => {
      * caret twice on the way up (`open()` plus its `setTimeout(0)` backup).
      */
     async function reloadWithPanes(
-        count: number
+        count: number,
+        /**
+         * Issue #74's shape of the same reload: the ringed pane's engine DOES auto-focus (its
+         * wasm landed first, so it claims the caret correctly), and the caret started on
+         * something that is not a text field - a sidebar row after the click that switched
+         * workspace. The unfocused engines still finish last, which is the whole defect.
+         */
+        options: { readonly ringAutoFocuses?: boolean } = {}
     ): Promise<{ storm: ReturnType<typeof watchFocusStorm>; shells: HTMLElement[] }> {
         const storm = watchFocusStorm();
         const shells: HTMLElement[] = [];
-        // The ringed pane first, and WITHOUT the engine's auto-focus: on a reload it is the pane
-        // whose wasm has not landed yet that wears the ring, which is precisely why the losers
-        // had nowhere obviously right to put the caret and started trading it.
+        // The ringed pane first, and by default WITHOUT the engine's auto-focus: on a reload it
+        // is the pane whose wasm has not landed yet that wears the ring, which is precisely why
+        // the losers had nowhere obviously right to put the caret and started trading it.
         const ring = paneShell('pane-ring', true);
         shells.push(ring);
         render(
@@ -1245,7 +1335,9 @@ describe('the engine-autofocus window, at scale (§N35 residuals)', () => {
                 ptyApi={createFakePtyApi()}
                 focused
                 visible
-                createRenderer={createFakeRendererFactory().factory}
+                createRenderer={
+                    createFakeRendererFactory(options.ringAutoFocuses === true ? { autoFocusOnOpen: true } : {}).factory
+                }
                 measure={box(800, 340)}
             />,
             { container: ring }
@@ -1328,6 +1420,55 @@ describe('the engine-autofocus window, at scale (§N35 residuals)', () => {
         });
         return null;
     }
+
+    /**
+     * Issue #74 - the workspace switch, in the units this file measures §N35 in.
+     *
+     * Clicking a workspace's sidebar row leaves the caret on the ROW (`<div role="option"
+     * tabIndex={-1}>`, whose mousedown does not `preventDefault`), then unmounts every outgoing
+     * pane and mounts the incoming ones. The pane wearing the ring claims the caret as it should;
+     * the LAST engine to finish its wasm load then grabs it, is told it is not entitled, and hands
+     * it to the arbiter's owner - which was the row. The window drew a ring and a blinking cursor
+     * and took no keystrokes until the user clicked another pane and clicked back.
+     */
+    it('gives the caret to the ringed pane, not to the sidebar ROW that had it (issue #74)', async () => {
+        const row = document.createElement('div');
+        row.setAttribute('role', 'option');
+        row.setAttribute('tabindex', '-1');
+        row.setAttribute('data-testid', 'workspace-row');
+        document.body.appendChild(row);
+        row.focus();
+        expect(document.activeElement).toBe(row);
+
+        const { storm, shells } = await reloadWithPanes(3, { ringAutoFocuses: true });
+        const ringHost = shells[0]?.querySelector('[data-terminal-host]') as HTMLElement;
+        const held = document.activeElement;
+        storm.stop();
+
+        expect(ringHost.contains(held)).toBe(true);
+        expect(held).not.toBe(row);
+        for (const shell of shells) shell.remove();
+        row.remove();
+    });
+
+    /**
+     * …and the caret a person is USING is still untouchable, which is the same click one field
+     * over: a rename in flight when the switch happens keeps it, and the pane collects it when
+     * the rename ends (issue #35, below).
+     */
+    it('…and a rename in flight still outranks the ring (issue #74)', async () => {
+        const renaming = document.createElement('input');
+        document.body.appendChild(renaming);
+        renaming.focus();
+
+        const { storm, shells } = await reloadWithPanes(3, { ringAutoFocuses: true });
+        const held = document.activeElement;
+        storm.stop();
+
+        expect(held).toBe(renaming);
+        for (const shell of shells) shell.remove();
+        renaming.remove();
+    });
 
     it('keeps the caret when the pane takes the ring in the SAME commit as the grab (§N35 residual b)', async () => {
         const pty = createFakePtyApi();

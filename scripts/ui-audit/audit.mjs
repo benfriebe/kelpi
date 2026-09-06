@@ -11912,7 +11912,7 @@ function buildFlows(ctx) {
                 const preview = await page.eval(
                     `(document.querySelector('[data-testid="worktree-preview"]')?.innerText ?? '').replace(/\\n/g, ' | ')`
                 );
-                const expectedPath = `${sandbox.home}/nex/worktrees/repo/Audit-WT`;
+                const expectedPath = `${sandbox.home}/kelpi/worktrees/repo/Audit-WT`;
                 recorder.note(`preview: ${String(preview)}`);
                 recorder.check(
                     'the preview shows the sanitized folder the daemon will actually create',
@@ -12024,7 +12024,7 @@ function buildFlows(ctx) {
                 const preview = await page.eval(
                     `(document.querySelector('[data-testid="new-workspace-worktree-preview"]')?.innerText ?? '').replace(/\\n/g, ' | ')`
                 );
-                const expectedPath = `${sandbox.home}/nex/worktrees/repo/audit-branch`;
+                const expectedPath = `${sandbox.home}/kelpi/worktrees/repo/audit-branch`;
                 recorder.note(`preview: ${String(preview)}`);
                 recorder.check(
                     'the preview shows the sanitized worktree path',
@@ -18810,7 +18810,7 @@ function buildFlows(ctx) {
                         const input = document.querySelector('[data-testid="worktree-base-path-input"]');
                         if (input === null) return false;
                         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                        setter.call(input, '~/nex/worktrees/<repo>');
+                        setter.call(input, '~/kelpi/worktrees/<repo>');
                         input.dispatchEvent(new Event('input', { bubbles: true }));
                         return true;
                     })()`

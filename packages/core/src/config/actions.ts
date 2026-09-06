@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (53 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (56 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -55,6 +55,12 @@ export const KELPI_ACTIONS = [
     // markdown pane, a chrome text field and a web page keep the Edit menu's own Copy/Paste.
     'copy',
     'paste',
+    // Terminal line editing (#82). Ghostty's macOS "natural text editing" defaults, as named
+    // actions because Kelpi's binding grammar has no `text:` payload; see the Terminal category
+    // in docs/config-keybindings.md §4.
+    'kill_line_backward',
+    'move_to_line_start',
+    'move_to_line_end',
     // Web pane (hidden from Settings; all ship unbound)
     'web_focus_url_bar',
     'web_back',

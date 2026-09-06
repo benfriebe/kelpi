@@ -43,10 +43,11 @@
  *   - **⌘, and ⌘/ ⌘?** open Settings and Help through their own window listeners rather than
  *     through the binding map (they are OS menu-bar items in the Swift app, and there is no
  *     `KelpiAction` for either). The content-pane set folds them in for exactly this reason;
- *   - **⌘C and ⌘V** are subtracted even though the map binds them (`copy` / `paste`, #81):
- *     they are terminal actions the client declines for a web pane, and this relay cancels a
- *     chord in the page BEFORE the client is asked, so relaying them would take a page's own
- *     Copy and Paste and give nothing back. See `PAGE_OWNED_ACTIONS`.
+ *   - **⌘C, ⌘V and ⌘⌫** are subtracted even though the map binds them (`copy` / `paste`, #81;
+ *     `kill_line_backward`, #82): they are terminal actions the client declines for a web pane,
+ *     and this relay cancels a chord in the page BEFORE the client is asked, so relaying them
+ *     would take a page's own Copy, Paste and delete-to-line-start and give nothing back. See
+ *     `PAGE_OWNED_ACTIONS`.
  *     (The older carve-out for bare ⌘[ / ⌘] is gone; `claimedChords` says why.)
  *
  * ## The native menu gets there first, for sixteen of them (#47)
@@ -213,7 +214,17 @@ const WINDOW_LISTENER_CHORDS: readonly string[] = ['meta+Comma', 'meta+Slash', '
  * A user who rebinds `copy` to some other chord moves this carve-out with it, because the
  * exclusion is by ACTION and the map is the input.
  */
-const PAGE_OWNED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['copy', 'paste']);
+const PAGE_OWNED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
+    'copy',
+    'paste',
+    // #82: ⌘Backspace is macOS's own delete-to-line-start in any text field, and this action
+    // sends a terminal byte the client declines to produce for a web pane. Same argument.
+    // (⌘← / ⌘→ stay claimed regardless: `PRIORITY_LAYER_CHORDS` holds them as the browser's
+    // Back and Forward, which is what they mean inside a page and is unchanged by #82.)
+    'kill_line_backward',
+    'move_to_line_start',
+    'move_to_line_end'
+]);
 
 /**
  * A trigger's chord key, or null when this boundary will not carry it.
@@ -243,9 +254,10 @@ function relayableChordKey(trigger: KeyTrigger): string | null {
  * #33 is that this answer follows the user's config rather than a hardcoded list, and the only
  * way to keep that true is for the set to have no other input.
  *
- * One subtraction, `PAGE_OWNED_ACTIONS` above: ⌘C and ⌘V. Both are terminal actions the client
+ * One subtraction, `PAGE_OWNED_ACTIONS` above: ⌘C, ⌘V and ⌘⌫. All are terminal actions the client
  * declines for a web pane, and this relay cancels a chord in the page before the client is asked,
- * so relaying them would take a page's own Copy and Paste and give nothing back.
+ * so relaying them would take a page's own Copy, Paste and delete-to-line-start and give nothing
+ * back.
  *
  * The OTHER subtraction is gone. Bare ⌘[ / ⌘] used to be carved out on the grounds that
  * "inside a page they are back/forward, which the page may itself want" - which is wrong twice

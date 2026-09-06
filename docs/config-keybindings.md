@@ -491,7 +491,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-53 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+56 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -593,6 +593,46 @@ selection on every press (terminal-surface.md section 12.1), so an agent pane me
 constantly, and a ⌘C that sometimes interrupted the agent would be worse than the bug being
 fixed. ⌃C is the interrupt and is untouched.
 
+### Category "Terminal" (visible)
+
+| raw value | display name | default | layer | condition / effect |
+|---|---|---|---|---|
+| `kill_line_backward` | Delete to Line Start | ⌘⌫ | monitor | writes `0x15` (⌃U) to the focused terminal pane; falls through when the focused pane has no terminal renderer |
+| `move_to_line_start` | Move to Line Start | ⌘← | monitor | writes `0x01` (⌃A); same condition |
+| `move_to_line_end` | Move to Line End | ⌘→ | monitor | writes `0x05` (⌃E); same condition |
+
+**Ghostty's macOS defaults, matched exactly** (#82). `ghostty-org/ghostty`,
+`src/config/Config.zig:7315-7334`, darwin branch of `Keybinds.init`, under the comment "Natural
+text editing keybinds": `super+arrow_right` -> `text: "\x05"`, `super+arrow_left` ->
+`text: "\x01"`, `super+backspace` -> `text: "\x15"`. The same block also ships
+`alt+arrow_left` -> `esc: "b"` and `alt+arrow_right` -> `esc: "f"`; those are Option chords, not
+the ⌘ set #82 is about, and are deliberately not shipped here.
+
+**Why three named actions rather than a `text:` payload.** Ghostty spells these as text
+bindings. Kelpi's grammar cannot: a `keybind` value is split at its last `=` and the right side
+must be a known `KelpiAction` (section 1.4). Adding a payload would change the parser, the
+config writer's diff algorithm (section 5.3), the Settings recorder and the action vocabulary,
+for three chords. Named actions cost one line each and keep every existing mechanism: they can
+be rebound, unbound, listed in Settings and shown in the Help overlay.
+
+**Why bindings rather than a terminal-encoder rule.** Two reasons, and the second is Ghostty's
+own. A bound chord is consumed by the client's window-level dispatcher before the pane's
+capture-phase kitty interceptor runs, so the mapping sits above the kitty layer and an
+application that negotiated the protocol still gets `0x15` rather than `CSI 127;9u`. And
+`unbind` has to be able to reach it: Config.zig:7315-7319 says "This forces these keys to go
+back to legacy encoding (not fixterms) [...] If people want to get back to the fixterm encoding
+they can set the keybinds to `unbind`." With `keybind = super+backspace=unbind` in the config
+file, ⌘Backspace is unclaimed again and terminal-surface.md section 10.2 encodes it as before.
+
+Inside a **web pane** all three stay with the page (`packages/shell/src/webhost/keys.ts`
+`PAGE_OWNED_ACTIONS`): ⌘⌫ is macOS's own delete-to-line-start in a text field, and ⌘← / ⌘→ are
+Back and Forward through the priority layer of section 7.3, which runs first either way.
+Inside a **content pane's preview frame** they stay with the frame for the same reason
+(`packages/client/src/content/bridge.ts` `FRAME_UNCLAIMED_ACTIONS`).
+
+Risk, stated: a user whose shell rebinds ⌃U sees that binding fire on ⌘⌫. That is exactly what
+Ghostty and iTerm users see.
+
 ### Category "Web Pane (active when web pane focused)" (HIDDEN from Settings)
 
 These 11 ship unbound and are NOT rendered in the Settings keybindings table (the table
@@ -651,7 +691,7 @@ applying(overrides: [trigger, action][])  // section 1.4 semantics
 One trigger maps to at most one action. One action may own any number of triggers
 (defaults give `focus_next_pane`/`focus_previous_pane` two each).
 
-### 5.2 The default map (42 triggers)
+### 5.2 The default map (45 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -675,6 +715,8 @@ shift+super+g=new_group
 ctrl+shift+left=move_pane_left       ctrl+shift+right=move_pane_right
 ctrl+shift+down=move_pane_down       ctrl+shift+up=move_pane_up
 super+c=copy                         super+v=paste
+super+backspace=kill_line_backward
+super+left=move_to_line_start        super+right=move_to_line_end
 ```
 
 ### 5.3 Writing keybinding overrides (`writeKeybindings(map)`)
@@ -1374,8 +1416,8 @@ registries instead); nothing persists to a per-app preferences store.
   error string of section 8.3, cleared by any later `ok` report); an amber advisory when
   the hotkey shadows an in-app binding (section 8.5).
 - **Action table** (`packages/client/src/settings/KeybindingsTab.tsx`): sections in fixed
-  order `Pane Management, Navigation, Workspaces, View, Files, Search, Clipboard` (the
-  web-pane category and `unbind` are excluded). Each row: display name; ALL bound trigger chips
+  order `Pane Management, Navigation, Workspaces, View, Files, Search, Clipboard, Terminal`
+  (the web-pane category and `unbind` are excluded). Each row: display name; ALL bound trigger chips
   (configString-sorted), each with an "x" to remove that one trigger (section 5.4); a
   Record button (the inline recorder of section 13.2); a Reset button enabled only when the
   action's trigger list differs from its default list (`reset-keybindings {action}`).

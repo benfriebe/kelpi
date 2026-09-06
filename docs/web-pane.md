@@ -288,7 +288,7 @@ All tab state lives in `WebPaneState`; the runtime layer keeps a live view per t
 ### 5.2 Host-initiated tab death and popups
 
 - **`window.open` is denied outright** (`setWindowOpenHandler` → `deny`, `packages/shell/src/webhost/tab.ts:602-608`): the daemon mints tab ids, so the host cannot conjure a tab for a popup. `target=_blank` links and scripted popups do nothing.
-- **Renderer crash / destroyed view**: `render-process-gone` and `destroyed` (outside the host's own teardown) emit a `tab-closed` host event (`tab.ts:700-707`). The shell forgets the view without trying to destroy it again (`packages/shell/src/webhost/index.ts:316-320`); the daemon drops the inspector arm if it pointed at that tab and dispatches `web-tab-close` (`packages/daemon/src/webpane/service.ts:569-581`), which activates the left neighbour exactly as a wire close does.
+- **Renderer crash / destroyed view**: `render-process-gone` and `destroyed` (outside the host's own teardown) emit a `tab-closed` host event (`tab.ts:700-707`). The shell forgets the view without trying to destroy it again (`packages/shell/src/webhost/index.ts:316-320`); the daemon drops the inspector arm if it pointed at that tab and dispatches `web-tab-close` (`packages/daemon/src/webpane/service.ts:569-581`), which activates the left neighbour exactly as a wire close does. Forgetting a tab also takes its view **off the screen** (`registry.ts`'s `forget` hook → `embed.releaseView`, issue #72): a dead renderer left embedded in the shell window is a rectangle of nothing that swallows every click that lands on it, and the placement books are the only party that can move it.
 - **Single-tab pane**: the reducer refuses to remove the only tab (`packages/daemon/src/store/reducers/web.ts:104-106`), so a crashed sole tab stays in daemon state with no host view. Every later verb addressed to it fails `web pane has no live tab <uuid>` (`packages/shell/src/webhost/dispatch.ts:355-365`) until the pane is closed or the host re-registers and rebuilds it.
 
 ---
@@ -902,6 +902,16 @@ Tab-less pane (a restored private pane, or a pane whose last tab was closed): gl
     and the clients re-state. The host reconciles against the window's own state rather than its
     events, because macOS emits none for `show`/`hide` and can deliver a `hide` after the
     matching `restore` (measurements in §3.5.2 and `webhost/index.ts`).
+12. **A placement the host is still holding after it re-registers is unconfirmed until a client
+    re-states it** (issue #72; `HOST_PROTOCOL.md` §3.5.3). Geometry reported while the host slot
+    was empty is dropped by the daemon, `visible:false` included, and the client cannot re-state
+    a hide (`reassert()` re-sends only placements, and `hide()` deletes the entry), so a pane
+    hidden during a host outage would otherwise stay painted over the workspace the user
+    switched to. The host flags every placement on registration, any report about a pane clears
+    its flag, and what is still flagged after a short grace is released. Confirming rather than
+    parking-and-waiting is deliberate: parking every pane on every host reconnect is the
+    hole-flicker of issue #12, while a re-stated placement is an identical `pane-geometry` the
+    host applies as a no-op.
 
 ---
 

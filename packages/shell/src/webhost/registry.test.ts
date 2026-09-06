@@ -24,7 +24,11 @@ interface FakeView {
 function harness() {
     const created: FakeView[] = [];
     const destroyed: { view: FakeView; reason: DestroyReason }[] = [];
+    const forgotten: FakeView[] = [];
     const registry = createTabRegistry<FakeView>({
+        forget(view) {
+            forgotten.push(view);
+        },
         create(input: CreateTabInput) {
             const view: FakeView = {
                 id: input.tabID,
@@ -44,7 +48,7 @@ function harness() {
             view.visible = visible;
         }
     });
-    return { registry, created, destroyed };
+    return { registry, created, destroyed, forgotten };
 }
 
 const pane = (tabs: string[], activeTabID: string | null, isPrivate = false) => ({
@@ -121,11 +125,25 @@ describe('tabs', () => {
     });
 
     it('forgets a tab that died on its own without trying to destroy it', () => {
-        const { registry, destroyed } = harness();
+        const { registry, destroyed, created, forgotten } = harness();
         registry.openPane(pane(['t1', 't2'], 't2'));
         expect(registry.forgetTab('P1', 't2')).toBe(true);
         expect(destroyed).toHaveLength(0);
         expect(registry.activeTabID('P1')).toBe('t1');
+        /*
+         * Issue #72: and it SAYS so. A dead renderer's view can still be embedded in the shell
+         * window, where it is a rectangle of nothing that swallows every click, and this hook is
+         * the only notice the party holding it gets. (Rebuilding the tab is #76's.)
+         */
+        expect(forgotten).toEqual([created.find((view) => view.id === 't2')]);
+    });
+
+    it('says nothing about a tab it did not have', () => {
+        const { registry, forgotten } = harness();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.forgetTab('P1', 'nope')).toBe(false);
+        expect(registry.forgetTab('nope', 't1')).toBe(false);
+        expect(forgotten).toEqual([]);
     });
 
     it('reports misses instead of throwing', () => {

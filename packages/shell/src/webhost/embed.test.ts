@@ -39,27 +39,42 @@ function harness(
         views?: Record<string, FakeView | null>;
         metrics?: () => WindowMetrics | null;
         windowID?: string;
+        /** Make one hook throw, the way a real Electron call on a dying view does (#72). */
+        failing?: { attach?: boolean; detach?: boolean; setBounds?: boolean };
     } = {}
 ) {
     const attaches: { view: FakeView; bounds: ViewBounds }[] = [];
     const detaches: FakeView[] = [];
     const moves: { view: FakeView; bounds: ViewBounds }[] = [];
     const events: EmbedEvent[] = [];
+    const errors: { message: string; context: string }[] = [];
     const views = options.views ?? { T1: { id: 'T1' } };
 
     const controller = createEmbedController<FakeView>({
         resolveView: (_paneID, tabID) => views[tabID ?? 'T1'] ?? null,
         metrics: options.metrics ?? (() => METRICS),
         hooks: {
-            attach: (view, bounds) => attaches.push({ view, bounds }),
-            detach: (view) => detaches.push(view),
-            setBounds: (view, bounds) => moves.push({ view, bounds })
+            attach: (view, bounds) => {
+                // The shell's own hook adds the view to the window and THEN sizes and shows it,
+                // so a throw here means "already a child of the window, and half set up".
+                attaches.push({ view, bounds });
+                if (options.failing?.attach === true) throw new Error('setBounds after addChildView failed');
+            },
+            detach: (view) => {
+                detaches.push(view);
+                if (options.failing?.detach === true) throw new Error('detach failed');
+            },
+            setBounds: (view, bounds) => {
+                moves.push({ view, bounds });
+                if (options.failing?.setBounds === true) throw new Error('setBounds failed');
+            }
         },
         ...(options.windowID === undefined ? {} : { windowID: options.windowID }),
-        onChange: (event) => events.push(event)
+        onChange: (event) => events.push(event),
+        onError: (error, context) => errors.push({ message: error.message, context })
     });
 
-    return { controller, attaches, detaches, moves, events, views };
+    return { controller, attaches, detaches, moves, events, errors, views };
 }
 
 describe('placing a view', () => {
@@ -325,6 +340,128 @@ describe('a park this shell performs, and undoes (issue #75)', () => {
         expect(h.attaches.map((entry) => entry.view.id)).toEqual(['T1', 'T2']);
         expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
         expect(h.controller.parkedPaneIDs).toEqual([]);
+    });
+});
+
+describe('the books and the window cannot disagree (issue #72)', () => {
+    it('rolls an attach back when it throws part-way, so no view is left in the window unbooked', () => {
+        const h = harness({ failing: { attach: true } });
+        expect(h.controller.apply(geometry())).toBe('ignored');
+        expect(h.attaches).toHaveLength(1);
+        // The rollback: whatever the hook managed to do is undone by the detach it pairs with.
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'released', reason: 'attach-failed' });
+        expect(h.errors.map((entry) => entry.context)).toContain(`embed-place ${PANE}`);
+    });
+
+    it('keeps the books when a MOVE throws: the view is still where they say it is', () => {
+        const h = harness({ failing: { setBounds: true } });
+        h.controller.apply(geometry());
+        expect(h.controller.apply(geometry({ rect: { x: 10, y: 20, w: 400, h: 500 } }))).toBe('ignored');
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        // Still the bounds that were actually applied, not the ones that failed.
+        expect(h.controller.placementOf(PANE)?.bounds).toEqual({ x: 10, y: 20, width: 400, height: 300 });
+    });
+
+    it('drops the placement even when the detach hook throws', () => {
+        const h = harness({ failing: { detach: true } });
+        h.controller.apply(geometry());
+        expect(h.controller.release(PANE, 'pane-closed')).toBe(true);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.errors.map((entry) => entry.context)).toContain(`embed-detach ${PANE}`);
+    });
+
+    it('releaseView takes a named view off screen whichever pane is holding it', () => {
+        const h = harness({ views: { T1: { id: 'T1' }, T9: { id: 'T9' } } });
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ paneID: OTHER, tabID: 'T9' }));
+        expect(h.controller.releaseView(h.views['T9'] as FakeView, 'renderer-gone')).toBe(true);
+        // The hook DOES run, unlike `forget`: the view is alive, it is just not wanted.
+        expect(h.detaches).toEqual([{ id: 'T9' }]);
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.events.at(-1)).toMatchObject({ reason: 'renderer-gone' });
+        expect(h.controller.releaseView({ id: 'stranger' })).toBe(false);
+    });
+
+    it('releaseView on a parked placement drops it without detaching twice', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        expect(h.controller.releaseView(h.views['T1'] as FakeView, 'renderer-gone')).toBe(true);
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+    });
+});
+
+describe('confirm or drop, after the host re-registers (issue #72)', () => {
+    it('drops a placement no client re-stated', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        expect(h.controller.markUnconfirmed()).toBe(1);
+        expect(h.controller.releaseUnconfirmed('unclaimed-after-reconnect')).toEqual([PANE]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'released', reason: 'unclaimed-after-reconnect' });
+    });
+
+    it('keeps one the client re-stated, and moves nothing doing it', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.markUnconfirmed();
+        // The resync broadcast lands and the client re-sends the identical report.
+        expect(h.controller.apply(geometry())).toBe('placed');
+        expect(h.controller.releaseUnconfirmed()).toEqual([]);
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        // The whole point of confirming rather than parking: no hole flicker (issue #12).
+        expect(h.attaches).toHaveLength(1);
+        expect(h.detaches).toEqual([]);
+    });
+
+    it('counts a re-statement that HIDES the pane as confirmation too', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.markUnconfirmed();
+        h.controller.apply(geometry({ visible: false }));
+        expect(h.controller.releaseUnconfirmed()).toEqual([]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+    });
+
+    it('does not treat geometry from another window as confirmation', () => {
+        const h = harness({ windowID: 'WIN' });
+        h.controller.apply(geometry());
+        h.controller.markUnconfirmed();
+        h.controller.apply(geometry({ ownWindow: false }));
+        h.controller.apply(geometry({ shellWindowID: 'OTHER-WINDOW' }));
+        expect(h.controller.releaseUnconfirmed()).toEqual([PANE]);
+    });
+
+    it('sweeps a parked placement as well: a claim is a claim wherever the view is sitting', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        h.controller.markUnconfirmed();
+        expect(h.controller.releaseUnconfirmed()).toEqual([PANE]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        // The view is already in the holder, so the sweep must not detach it a second time.
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+    });
+
+    it('a second mark replaces the first rather than accumulating', () => {
+        const h = harness({ views: { T1: { id: 'T1' }, T9: { id: 'T9' } } });
+        h.controller.apply(geometry());
+        h.controller.markUnconfirmed();
+        h.controller.apply(geometry({ paneID: OTHER, tabID: 'T9' }));
+        expect(h.controller.markUnconfirmed()).toBe(2);
+        h.controller.apply(geometry());
+        expect(h.controller.releaseUnconfirmed()).toEqual([OTHER]);
+    });
+
+    it('has nothing to sweep when the host holds nothing', () => {
+        const h = harness();
+        expect(h.controller.markUnconfirmed()).toBe(0);
+        expect(h.controller.releaseUnconfirmed()).toEqual([]);
     });
 });
 

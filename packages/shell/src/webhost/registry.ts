@@ -46,6 +46,15 @@ export interface RegistryHooks<V> {
     destroy(view: V, reason: DestroyReason): void;
     /** Only the active tab is shown; background tabs keep running JS (§5). */
     show(view: V, visible: boolean): void;
+    /**
+     * A tab is being dropped WITHOUT being destroyed: its view died on its own (issue #72).
+     *
+     * There is nothing to tear down - that already happened - but the view may still be
+     * embedded in the shell window, and a dead renderer left there is a rectangle of nothing
+     * that swallows every click. `forgetTab` used to drop the tab and say nothing, so the only
+     * party that could take it off screen never heard.
+     */
+    forget?(view: V): void;
 }
 
 export interface RegistryTab<V> {
@@ -230,6 +239,8 @@ export function createTabRegistry<V>(hooks: RegistryHooks<V>): TabRegistry<V> {
             if (tab === undefined) return false;
             const index = pane.tabs.indexOf(tab);
             pane.tabs = pane.tabs.filter((candidate) => candidate !== tab);
+            // #72: nothing to destroy, but somebody may still be holding this view on screen.
+            hooks.forget?.(tab.view);
             if (pane.activeTabID === tabID) {
                 const next = pane.tabs[Math.max(index - 1, 0)];
                 pane.activeTabID = next?.id ?? null;

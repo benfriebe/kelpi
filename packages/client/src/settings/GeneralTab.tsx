@@ -120,7 +120,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
         <div className="flex flex-col gap-4" data-testid="settings-tab-general">
             <SettingsSection
                 title="Worktrees"
-                hint="Worktrees are created at <base path>/<name>. Use <repo> in the base path to substitute the repository: at the start it resolves to the full repo path (e.g. <repo>/.claude/worktrees), elsewhere it resolves to the repository's directory name (e.g. ~/nex/worktrees/<repo>)."
+                hint="Worktrees are created at <base path>/<name>. Use <repo> in the base path to substitute the repository: at the start it resolves to the full repo path (e.g. <repo>/.claude/worktrees), elsewhere it resolves to the repository's directory name (e.g. ~/kelpi/worktrees/<repo>)."
                 testID="general-worktrees"
             >
                 <TextField
@@ -131,7 +131,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                     // 180 px.
                     plain
                     value={general.worktreeBasePath}
-                    placeholder="~/nex/worktrees/<repo>"
+                    placeholder="~/kelpi/worktrees/<repo>"
                     onCommit={(next) => {
                         // A blank field means "the default"; the parser treats an empty value
                         // that way too, so the two ends agree without a special case here.

@@ -23,6 +23,15 @@ export const SELECT_ALL_WORKSPACES_COMMAND = 'select-all-workspaces';
 /** File ▸ Deselect All Workspaces — menu-only; the shell greys it while nothing is selected. */
 export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
 
+/**
+ * View ▸ Recover Interface (⌃⌥⌘R) — `chrome/gesture-reset.ts` ▸ `resetGestures` (issue #79).
+ *
+ * The shell's half of the row parks every native web-pane view; this is the client's half, and
+ * it is the one that unsticks a gesture whose `pointerup` never arrived. Stated here rather than
+ * imported for the same reason `seed-test-group` is, and pinned in both suites.
+ */
+export const RECOVER_INTERFACE_COMMAND = 'recover-interface';
+
 /** File ▸ Switch to Workspace 1…9 (⌘1…⌘9), as `switch-workspace-1` … `switch-workspace-9`. */
 export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
 

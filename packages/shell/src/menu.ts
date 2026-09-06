@@ -336,7 +336,15 @@ export interface MenuRelayDeps {
     readonly accelerators?: MenuAccelerators | undefined;
 }
 
-export type ViewMenuDeps = MenuRelayDeps;
+export interface ViewMenuDeps extends MenuRelayDeps {
+    /**
+     * Issue #79's main-process half of View ▸ Recover Interface: park every native web-pane view
+     * back in the off-screen holder. Runs whatever the client does with the relay, because the
+     * views are the half a wedged renderer cannot help with. Omitted (tests, a shell with no web
+     * host yet) means the row still relays to the client.
+     */
+    readonly releaseWebViews?: ((reason: string) => void) | undefined;
+}
 
 /** One relay row: try the client, and say so rather than swallowing a click nobody took. */
 function relayRow(
@@ -368,6 +376,31 @@ function relayRow(
 export const FORCE_RELOAD_ACCELERATOR = 'CommandOrControl+Alt+R';
 
 /**
+ * View ▸ Recover Interface (⌃⌥⌘R) — issue #79's escape hatch.
+ *
+ * The row exists for the state the issue describes: a gesture the app never saw the end of, so
+ * the sidebar chases the bare cursor, and native web-pane views sitting over a window whose
+ * renderer is not answering. Both are recoverable without losing a single pane, and until this
+ * row there was no way to ask for that except relaunching.
+ *
+ * It does two things, in the two processes that own them: the MAIN process parks every native
+ * `WebContentsView` back in its off-screen holder (so nothing native is intercepting the mouse),
+ * and the CLIENT runs `chrome/gesture-reset.ts`'s `resetGestures` (so no drag is still live).
+ * The client half rides the ordinary `menu-request` → daemon → `menu-command` relay that every
+ * other product row uses, which is why the command name is stated in both packages and pinned
+ * in both test suites, exactly as `seed-test-group` is.
+ *
+ * **It is in the shipped menu, not behind the Debug section.** A dev-only recovery for a bug
+ * that only bites in a real session would be theatre. It is deliberately last in the View menu,
+ * under a separator, and carries a chord nothing in the binding map claims: ⌃⌥⌘R is one hand
+ * away from the ⌥⌘R that reloads, and the point is that a person reaching for a reload has a
+ * gentler thing to hit first.
+ */
+export const RECOVER_INTERFACE_LABEL = 'Recover Interface';
+export const RECOVER_INTERFACE_ACCELERATOR = 'CommandOrControl+Alt+Control+R';
+export const RECOVER_INTERFACE_COMMAND = 'recover-interface';
+
+/**
  * The View submenu: the two *product* toggles first, in the shipped app's own order, then the
  * web-contents roles the shell has always carried.
  */
@@ -385,7 +418,19 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         { role: 'forceReload', accelerator: FORCE_RELOAD_ACCELERATOR },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { role: 'togglefullscreen' },
+        { type: 'separator' },
+        {
+            label: RECOVER_INTERFACE_LABEL,
+            accelerator: RECOVER_INTERFACE_ACCELERATOR,
+            click: () => {
+                // The main process's half runs first and unconditionally: it is the one a wedged
+                // renderer cannot do for itself, and the relay below may well go unanswered.
+                deps.releaseWebViews?.(RECOVER_INTERFACE_COMMAND);
+                if (deps.sendMenuRequest(RECOVER_INTERFACE_COMMAND)) return;
+                deps.onUndelivered?.(RECOVER_INTERFACE_COMMAND);
+            }
+        }
     ];
 }
 
@@ -651,7 +696,11 @@ export function debugMenuLogFragment(isPackaged: boolean): string {
  * `View ▸ Toggle Sidebar (⌘⇧S)`, so the second row is APPENDED rather than folded into a
  * different shape.
  */
-export const VIEW_MENU_LOG_FRAGMENT = `View ▸ ${TOGGLE_SIDEBAR_LABEL} (⌘⇧S) + ${TOGGLE_INSPECTOR_LABEL} (⌘I)`;
+export const VIEW_MENU_LOG_FRAGMENT =
+    `View ▸ ${TOGGLE_SIDEBAR_LABEL} (⌘⇧S) + ${TOGGLE_INSPECTOR_LABEL} (⌘I)` +
+    // Issue #79, appended for the same reason the inspector toggle was: `sidebar-remaining`
+    // asserts the prefix above as a substring, so the third row goes on the end.
+    ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)`;
 
 /**
  * `File ▸ …`, as `main.ts` logs it.

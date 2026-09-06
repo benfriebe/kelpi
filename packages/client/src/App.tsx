@@ -54,6 +54,7 @@ import { useStore } from 'zustand';
 
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { copySelection, pasteIntoFocusedPane } from './app/clipboard';
+import { sendLineEdit } from './app/line-editing';
 import { describeTarget, type DaemonTarget } from './app/config';
 import {
     OPEN_PANEL_MESSAGE,
@@ -2336,6 +2337,24 @@ function Shell(props: AppProps): ReactElement {
                 });
             },
 
+            /**
+             * #82 - the three macOS line-editing chords, as terminal bytes.
+             *
+             * ⌘⌫ / ⌘← / ⌘→ send `0x15` / `0x01` / `0x05`, which is Ghostty's shipped darwin set
+             * (`src/config/Config.zig:7315-7334`). As a BINDING, so it sits above the kitty
+             * layer (a bound chord never reaches the pane's interceptor) and so `unbind`
+             * restores the fixterm encoding, which is what Ghostty's own comment promises.
+             */
+            lineEdit(action: KelpiAction): boolean {
+                return sendLineEdit(action, {
+                    focusedPaneID: focused,
+                    writerFor: (paneID) => {
+                        const handle = paneHandle(paneID);
+                        return handle === null ? null : (data: string) => handle.write(data);
+                    }
+                });
+            },
+
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */
             pasteImage(paneID: string, file: Blob): boolean {
                 return uploadPastedImage(paneID, file);
@@ -2936,6 +2955,11 @@ function Shell(props: AppProps): ReactElement {
             // page. Binding them is also what stops the kitty interceptor encoding them (#80).
             copy: () => act.copySelection(),
             paste: () => act.pasteIntoFocusedPane(),
+            // #82: Ghostty's macOS natural-text-editing set, above the kitty layer because a
+            // bound chord is consumed before the pane's interceptor runs.
+            kill_line_backward: ({ action }) => act.lineEdit(action),
+            move_to_line_start: ({ action }) => act.lineEdit(action),
+            move_to_line_end: ({ action }) => act.lineEdit(action),
             reopen_closed_pane: () => act.reopenClosedPane(),
             create_scratchpad: () => act.createScratchpad(),
             // CONT-120 / APP-020. Default ⌘O, and the File menu's "Preview Markdown…" reaches

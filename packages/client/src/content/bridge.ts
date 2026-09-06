@@ -308,16 +308,25 @@ export function chordKeysForTrigger(trigger: KeyTrigger): string[] {
 }
 
 /**
- * Actions a content frame must NEVER claim, whatever the binding map says (#81).
+ * Actions a content frame must NEVER claim, whatever the binding map says (#81, #82).
  *
- * `copy` and `paste` are bound by default (⌘C / ⌘V) and they are terminal actions: the host's
- * handlers decline the moment the focused pane has no terminal renderer, which a markdown or
- * diff preview never does. Relaying them would be strictly destructive, because the frame's half
- * of the relay calls `preventDefault()` BEFORE the host gets to decline: the frame's own
- * document would stop copying its own selection and nothing would copy it instead. A preview's
- * Copy belongs to the preview.
+ * `copy`, `paste` and the three line-editing chords are bound by default (⌘C, ⌘V, ⌘⌫, ⌘←, ⌘→)
+ * and every one of them is a TERMINAL action: the host's handlers decline the moment the focused
+ * pane has no terminal renderer, which a markdown or diff preview never has. Relaying them would
+ * be strictly destructive, because the frame's half of the relay calls `preventDefault()` BEFORE
+ * the host gets to decline: the frame's own document would stop copying its own selection and
+ * nothing would copy it instead. A preview's Copy belongs to the preview.
  */
-const FRAME_UNCLAIMED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['copy', 'paste']);
+const FRAME_UNCLAIMED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
+    'copy',
+    'paste',
+    // #82: the same argument. ⌘⌫ / ⌘← / ⌘→ are macOS text-editing chords inside a document, and
+    // the host's line-editing actions decline for a content pane, so relaying them would cancel
+    // the frame's own handling and put nothing in its place.
+    'kill_line_backward',
+    'move_to_line_start',
+    'move_to_line_end'
+]);
 
 /**
  * The whole claimed set for a binding map, deduped and sorted (so the message a frame gets is

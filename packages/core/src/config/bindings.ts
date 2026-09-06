@@ -43,7 +43,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 42 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 45 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -81,6 +81,13 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     // app's dispatcher is a window capture listener and runs first (§7.2).
     'super+c=copy',
     'super+v=paste',
+    // #82: Ghostty's macOS natural-text-editing defaults, byte for byte
+    // (`src/config/Config.zig:7315-7334`: super+backspace -> text \x15, super+left -> \x01,
+    // super+right -> \x05). Bindings rather than an encoder rule, so `unbind` restores the
+    // fixterm encoding exactly as Ghostty's own comment promises.
+    'super+backspace=kill_line_backward',
+    'super+left=move_to_line_start',
+    'super+right=move_to_line_end',
     'shift+super+space=cycle_layout',
     'super+p=command_palette',
     'shift+super+n=create_scratchpad',

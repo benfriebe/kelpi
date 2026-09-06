@@ -643,7 +643,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * it. `terminal/pane-registry.ts` has the full argument.
              */
             const offRegistry = registerTerminalPane(paneID, {
-                selection: () => rendererRef.current?.selection() ?? ''
+                selection: () => rendererRef.current?.selection() ?? '',
+                // #82: the mirrored `input` frame, the same one `renderer.onData` takes above,
+                // because what an action like ⌘Backspace produces IS a keystroke (§8.2).
+                write: (data) => {
+                    streamRef.current?.write(data);
+                }
             });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies

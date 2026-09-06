@@ -21,16 +21,23 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 53 bindable actions and the 16 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(53);
-        expect(new Set(KELPI_ACTIONS).size).toBe(53);
+    it('has the 56 bindable actions and the 16 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(56);
+        expect(new Set(KELPI_ACTIONS).size).toBe(56);
         expect(MENU_BAR_ACTIONS.size).toBe(16);
     });
 });
 
 describe('the default map', () => {
-    it('ships 42 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(42);
+    it('ships 45 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(45);
+    });
+
+    // #82: Ghostty's macOS natural-text-editing set, matched exactly (Config.zig:7315-7334).
+    it('binds the three line-editing chords by default', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+backspace'))).toBe('kill_line_backward');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+left'))).toBe('move_to_line_start');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+right'))).toBe('move_to_line_end');
     });
 
     // #81: ⌘C and ⌘V are Kelpi's own chords now, not the Edit menu role's alone.

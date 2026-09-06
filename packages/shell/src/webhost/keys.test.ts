@@ -203,9 +203,14 @@ describe('the set follows the config file', () => {
      * the page BEFORE the client is asked, and the client declines for a web pane, so a page
      * would lose Copy and Paste and get nothing back.
      */
-    it('leaves ⌘C and ⌘V with the page even though the map binds them (#81)', () => {
+    it('leaves ⌘C, ⌘V and ⌘⌫ with the page even though the map binds them (#81, #82)', () => {
         expect(DEFAULTS.has('meta+KeyC')).toBe(false);
         expect(DEFAULTS.has('meta+KeyV')).toBe(false);
+        expect(DEFAULTS.has('meta+Backspace')).toBe(false);
+        // ⌘← / ⌘→ ARE still claimed: the priority layer holds them as the browser's Back and
+        // Forward, which #82 does not touch.
+        expect(DEFAULTS.has('meta+ArrowLeft')).toBe(true);
+        expect(DEFAULTS.has('meta+ArrowRight')).toBe(true);
         // And the carve-out follows a REBIND, because it is by action rather than by chord.
         const rebound = claimedChordsForLines([...DEFAULT_KEYBIND_LINES, 'shift+super+c=copy']);
         expect(rebound.has('shift+meta+KeyC')).toBe(false);

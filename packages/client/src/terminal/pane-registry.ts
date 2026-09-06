@@ -41,6 +41,19 @@ export interface TerminalPaneHandle {
      * Read at call time, never pushed: see the module header.
      */
     selection(): string;
+    /**
+     * Bytes straight to this pane's PTY, as a KEYSTROKE (#82).
+     *
+     * The mirrored `input` frame, which is the same one the kitty encoder's presses take, so a
+     * chord an action produced reaches a synchronise-input sibling exactly as the keystroke it
+     * stands in for would (terminal-surface.md section 8.2). Deliberately not the daemon's
+     * `pane send` path: that is programmatic, is never mirrored, and runs the paste filter,
+     * which strips the C0 byte this exists to send.
+     *
+     * A pane whose stream is not up yet swallows the write rather than throwing: the action
+     * has already consumed the chord and a rejected promise in a key handler helps nobody.
+     */
+    write(data: string): void;
 }
 
 const handles = new Map<string, TerminalPaneHandle>();

@@ -44,7 +44,7 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(row?.textContent).toContain('-');
     });
 
-    it('groups rows under the seven visible categories', () => {
+    it('groups rows under the eight visible categories', () => {
         renderHelp();
         const groups = [...document.querySelectorAll('[data-help-category]')].map((node) =>
             node.getAttribute('data-help-category')
@@ -56,7 +56,8 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
             'View',
             'Files',
             'Search',
-            'Clipboard'
+            'Clipboard',
+            'Terminal'
         ]);
     });
 
@@ -79,6 +80,21 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         expect(copy?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌘C');
         const paste = document.querySelector('[data-help-action="paste"]');
         expect(paste?.querySelector('[data-help-shortcut]')?.getAttribute('data-help-shortcut')).toBe('⌘V');
+    });
+
+    // #82: the three chords a user has to be able to find in order to unbind them.
+    it('shows the Terminal line-editing chords in the live map', () => {
+        renderHelp();
+        const shortcut = (action: string): string | null | undefined =>
+            document
+                .querySelector(`[data-help-action="${action}"]`)
+                ?.querySelector('[data-help-shortcut]')
+                ?.getAttribute('data-help-shortcut');
+        // `⌘Delete` is the display spelling `keyTriggerDisplayStringForPlatform` gives the
+        // backspace key today; the chord is ⌘Backspace either way.
+        expect(shortcut('kill_line_backward')).toBe('⌘Delete');
+        expect(shortcut('move_to_line_start')).toBe('⌘←');
+        expect(shortcut('move_to_line_end')).toBe('⌘→');
     });
 
     it('closes on the button, on the backdrop and on Escape', () => {

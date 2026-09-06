@@ -1,9 +1,9 @@
 /**
  * The Settings action catalog (config-keybindings.md §4, §13.1).
  *
- * The 53 bindable actions, their display names, and the categories the Keybindings table
+ * The 56 bindable actions, their display names, and the categories the Keybindings table
  * renders as sections — in the fixed order §13.1 names: `Pane Management, Navigation,
- * Workspaces, View, Files, Search, Clipboard`. The eleven `web_*` actions are catalogued too but marked
+ * Workspaces, View, Files, Search, Clipboard, Terminal`. The eleven `web_*` actions are catalogued too but marked
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
  * hard-coded priority layer), while still being legal to bind by hand in the config file.
  *
@@ -22,11 +22,12 @@ export const SETTINGS_CATEGORIES = [
     'Files',
     'Search',
     'Clipboard',
+    'Terminal',
     'Web Pane'
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
-/** §4's seven visible sections, in the order §13.1 fixes. `Web Pane` is deliberately absent. */
+/** §4's eight visible sections, in the order §13.1 fixes. `Web Pane` is deliberately absent. */
 export const VISIBLE_CATEGORIES: readonly SettingsCategory[] = [
     'Pane Management',
     'Navigation',
@@ -34,7 +35,8 @@ export const VISIBLE_CATEGORIES: readonly SettingsCategory[] = [
     'View',
     'Files',
     'Search',
-    'Clipboard'
+    'Clipboard',
+    'Terminal'
 ];
 
 export interface ActionEntry {
@@ -98,6 +100,10 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
 
     { action: 'copy', category: 'Clipboard', label: 'Copy' },
     { action: 'paste', category: 'Clipboard', label: 'Paste' },
+
+    { action: 'kill_line_backward', category: 'Terminal', label: 'Delete to Line Start' },
+    { action: 'move_to_line_start', category: 'Terminal', label: 'Move to Line Start' },
+    { action: 'move_to_line_end', category: 'Terminal', label: 'Move to Line End' },
 
     { action: 'web_focus_url_bar', category: 'Web Pane', label: 'Web: Focus URL Bar' },
     { action: 'web_back', category: 'Web Pane', label: 'Web: Back' },

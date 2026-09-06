@@ -1035,8 +1035,43 @@ before its key encoder ever runs.
 Every other ⌘ chord still encodes (`⌘B` is `CSI 98;9u`). Chords Kelpi has a *binding* for never
 reach this layer at all: the app's dispatcher is a window-level capture listener and has
 already consumed them (`packages/client/src/chrome/keys.ts`, `installKeyDispatcher`). ⌘Backspace
-is deliberately NOT in this table: #82 maps it in the binding layer instead, so `unbind` restores
-its fixterm encoding, which is Ghostty's own rule for its natural-text-editing defaults.
+is deliberately NOT in this table: section 10.3 maps it in the binding layer instead, so `unbind`
+restores its fixterm encoding, which is Ghostty's own rule for its natural-text-editing defaults.
+
+### 10.3 The macOS line-editing chords (#82)
+
+Three ⌘ chords are mapped to terminal bytes in the **binding layer**, above everything in
+section 10:
+
+| chord | action | byte | what it is |
+|---|---|---|---|
+| ⌘⌫ | `kill_line_backward` | `0x15` | ⌃U, readline `unix-line-discard` |
+| ⌘← | `move_to_line_start` | `0x01` | ⌃A, beginning-of-line |
+| ⌘→ | `move_to_line_end` | `0x05` | ⌃E, end-of-line |
+
+This is Ghostty's shipped macOS set, byte for byte (`src/config/Config.zig:7315-7334`; the
+defaults table and the reasoning live in docs/config-keybindings.md section 4, category
+"Terminal"). Before it, ⌘Backspace was byte-identical to a bare Backspace, because the legacy
+encoder drops super: `super+Backspace` -> `0x7f`, verified by driving the vendored
+`ghostty-vt.wasm` key encoder directly. Under the kitty protocol it was `CSI 127;9u`, which a
+TUI ignores. That is the whole of #82's "sometimes": one character in a shell pane, nothing at
+all in an agent pane.
+
+**Where the bytes go.** The action writes to the focused pane's PTY through the pane's own
+registered handle (`packages/client/src/terminal/pane-registry.ts`, `write`), on the **mirrored
+`input` frame**, because what the chord stands in for is a keystroke (section 8.2). Not the
+daemon's `pane send` path: that is programmatic, is never mirrored, and runs the section 9.1
+paste filter, which strips the C0 byte this exists to send.
+
+**Above the kitty layer, by construction.** The client's key dispatcher is a window-level
+capture listener, so a BOUND chord is consumed before the pane's capture-phase interceptor sees
+it (section 10.2). An application that negotiated the protocol therefore receives `0x15` rather
+than a super chord it has no meaning for. `keybind = super+backspace=unbind` gives the fixterm
+encoding back, which is what section 10.2.1's table means by leaving ⌘Backspace out of the
+encoder's own exemptions.
+
+Backspace with any other modifier is unchanged: bare `0x7f`, `ctrl` `0x08`, `alt` `ESC 0x7f`,
+and the kitty forms when a pane has negotiated the protocol.
 
 ---
 

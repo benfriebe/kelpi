@@ -98,6 +98,6 @@ describe('App.tsx key-action registry', () => {
         // Without this, a reformat that broke the regex would make every assertion above pass
         // vacuously — the failure mode the smoke-contract test guards the same way.
         expect(wiredActions()).toHaveLength(KELPI_ACTIONS.length);
-        expect(KELPI_ACTIONS).toHaveLength(53);
+        expect(KELPI_ACTIONS).toHaveLength(56);
     });
 });

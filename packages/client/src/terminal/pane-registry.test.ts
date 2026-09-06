@@ -11,15 +11,21 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { paneHandle, registerTerminalPane, registeredPaneCount } from './pane-registry';
 
 const releases: (() => void)[] = [];
+/** Everything any registered pane was asked to write, in order (#82). */
+const written: string[] = [];
 
 function register(paneID: string, selection: () => string): () => void {
-    const release = registerTerminalPane(paneID, { selection });
+    const release = registerTerminalPane(paneID, {
+        selection,
+        write: (data) => written.push(`${paneID}:${data}`)
+    });
     releases.push(release);
     return release;
 }
 
 afterEach(() => {
     while (releases.length > 0) releases.pop()?.();
+    written.length = 0;
 });
 
 describe('the terminal pane registry', () => {
@@ -52,6 +58,14 @@ describe('the terminal pane registry', () => {
         // reuses the id). It must not take the live handle with it.
         release();
         expect(paneHandle('pane-3')?.selection()).toBe('new');
+    });
+
+    // #82: the write seam the line-editing actions use, on the pane the registry names.
+    it('routes a write to the pane it was registered for', () => {
+        register('pane-w1', () => '');
+        register('pane-w2', () => '');
+        paneHandle('pane-w2')?.write('\u0015');
+        expect(written).toEqual(['pane-w2:\u0015']);
     });
 
     it('counts what is registered', () => {

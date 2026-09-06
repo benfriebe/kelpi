@@ -1044,6 +1044,33 @@ async function webPhase() {
                 placed.trim()
             );
 
+            /*
+             * Issue #77: the same line, on disk.
+             *
+             * Everything above reads the shell's stdout, which a packaged app launched from the
+             * Dock does not have. The file sink is the only reason a user's "web panes went
+             * blank" report can be checked against what the shell actually did with its views,
+             * so the smoke asserts that the placement line reached it. `--user-data-dir` points
+             * at this sandbox, so the file under test is this run's and never the developer's.
+             */
+            const logFile = path.join(sandbox.userData, 'logs', 'shell.log');
+            const onDisk = await waitFor(
+                'the shell log file to carry the placement line',
+                () => {
+                    if (!fs.existsSync(logFile)) return false;
+                    const text = fs.readFileSync(logFile, 'utf8');
+                    return text.includes(`web pane ${paneID} view owner=`) ? text : false;
+                },
+                10_000
+            ).catch(() => null);
+            check(
+                'the shell writes its log to a file, with the view owner trail in it (#77)',
+                onDisk !== null && onDisk.includes('view owner=main'),
+                onDisk === null
+                    ? `no "view owner=" line in ${logFile}`
+                    : `${logFile} (${String(onDisk.length)} bytes, ${String(onDisk.split('\n').length - 1)} lines)`
+            );
+
             // ── issue #12: the poster, taken off the view that is on screen right now ──
             //
             // This is the assumption the whole fix rests on and the one no unit test can

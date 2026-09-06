@@ -1335,6 +1335,20 @@ Finder file-opens are forwarded as the ordinary `open` control command; cold-lau
 are parked and replayed in arrival order once the daemon connection is up, a parked file
 raises no window, and only markdown paths are forwarded (`launch.ts` `createOpenFileQueue`).
 
+Logging (`packages/shell/src/log.ts`, `packages/shell/src/log-file.ts`): every shell line is
+`[shell] …` on stdout **and** appended to `<userData>/logs/shell.log` (issue #77): for a
+packaged app `~/Library/Application Support/Kelpi/logs/shell.log`, and for a sandboxed one
+(the smokes, the audit harness, `dev-instance.mjs`) the `--user-data-dir` that run was given.
+The file is opened by the instance that wins the single-instance lock, closed on `will-quit`,
+and bounded at 4 MB across two generations (`shell.log`, `shell.log.1`); the live file can
+exceed the cap by the one line that crossed it. The sink never throws: a directory it cannot
+create or write leaves the shell on stdout alone, which is what it had before the file existed.
+The path is printed on stdout at startup (`shell log file: …`). `log()`, `warn()` and
+`logError()` are the only entry points, so this is invisible to every call site. It exists
+because the shell's `web pane <id> view owner=main|holder bounds=… (reason)` line is the only
+external evidence of where a web pane's view went, and a report from a user's machine has to be
+checkable against it.
+
 Desktop notifications (`packages/shell/src/notify.ts:26-52`,
 `packages/shell/src/status.ts:583-654`): the Electron shell makes no permission request
 (`Notification.isSupported()` is the whole gate; the browser client asks from a user

@@ -1506,11 +1506,14 @@ survive 1s-cadence status updates in the row beneath it.
 **Focus management.** Keyboard-focus handoff is sequenced deliberately (palette close →
 200ms → focus surface; popover row click → focus surface before dismissal; suppression of
 focus grabs while sidebar text fields are editing). In the client this collapses to
-`element.focus()` ordering, and four rules hold: (a) closing the palette/search always
+`element.focus()` ordering, and five rules hold: (a) closing the palette/search always
 returns focus to the focused pane; (b) inline editors are never robbed of focus by
 re-renders; (c) selecting a pane from tray/status popovers focuses it *after* switching
-workspaces; (d) a handoff that was declined because a field is mid-edit is not lost, the
-pane collects the caret when the field lets go (issue #35).
+workspaces; (d) switching workspace hands the caret to the destination's focused pane, and
+keeps asking until that pane has mounted, because the switch unmounts the outgoing panes and
+mounts the incoming ones - the clicked sidebar row otherwise goes on holding the DOM caret
+(issue #74, `handCaretToPaneWhenReady`); (e) a handoff that was declined because a field is
+mid-edit is not lost, the pane collects the caret when the field lets go (issue #35).
 
 **Timers to reproduce:** 600ms focused-pane status auto-clear; 750ms resize-overlay
 linger; 650ms drag spring-load; 40pt/3pt/15ms drag auto-scroll; 1s pulse animation; 1s

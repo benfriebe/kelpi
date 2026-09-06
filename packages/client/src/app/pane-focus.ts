@@ -253,11 +253,28 @@ function isInsideArmingHost(node: Element): boolean {
  * `<body>` is nobody: a caret that has been dropped is not an owner to give anything back to,
  * and saying so here is what sends a reload down the ring branch (where it belongs) instead of
  * through a `body.focus()` that lands the window on no pane at all.
+ *
+ * Issue #74 - and neither is a BUTTON, a sidebar row or the workspace switcher, which is the
+ * same rule {@link shouldGrabFocus} already states one line up: what may not be moved is a caret
+ * that is IN USE, and only an editable element can be in use. Without this the arbiter and the
+ * politeness rule disagreed about what is worth protecting, and the disagreement was reachable
+ * with one click: a sidebar row is `<div role="option" tabIndex={-1}>` whose mousedown does not
+ * `preventDefault` (`chrome/Sidebar.tsx:1111-1152,2411-2446`), so after a workspace switch made
+ * by CLICKING a row, the row itself holds the caret. Every incoming pane then armed with the row
+ * as owner; the pane wearing the ring claimed correctly; and the LAST engine to finish its wasm
+ * load handed the caret it had grabbed back to the row, taking it off the pane that had just
+ * legitimately claimed it. The window drew a focus ring and a blinking cursor and took no
+ * keystrokes until the user clicked another pane and clicked back.
+ *
+ * A caret held by another pane's SURFACE stays an owner (that is §N35's "the pane the user is
+ * actually typing in", pinned below), because a surface's caret is editable by this test: the
+ * engine drives input through a hidden `<textarea>`.
  */
 function caretOwnerCandidate(node: Element | null): Element | null {
     if (node === null) return null;
     if (node === node.ownerDocument.body) return null;
     if (isInsideArmingHost(node)) return null;
+    if (!isEditable(node)) return null;
     return node;
 }
 
@@ -421,17 +438,79 @@ export function releaseFocusedPaneCaret(): void {
  * exposes no such handle. An editor pane has no terminal host at all; its marked surface IS the
  * focusable, which is why the lookup is over `PANE_SURFACE_ATTR` and not over
  * `[data-terminal-host]` as it was when only terminals could be handed the caret.
+ *
+ * Reports whether it found something to hand the caret TO. A pane that has not mounted yet, or
+ * whose engine has not built a surface yet, is the reason issue #74's reveal handoff was a silent
+ * no-op on a cross-workspace jump; {@link handCaretToPaneWhenReady} is that answer used.
  */
-export function focusPaneSurface(paneID: string): void {
-    if (typeof document === 'undefined') return;
+export function focusPaneSurface(paneID: string): boolean {
+    if (typeof document === 'undefined') return false;
     const pane = document.querySelector<HTMLElement>(`[data-pane-id="${paneID}"]`);
-    if (pane === null) return;
+    if (pane === null) return false;
     const surface = pane.querySelector<HTMLElement>(PANE_SURFACE_SELECTOR);
-    if (surface === null) return;
+    if (surface === null) return false;
     if (isEditable(surface)) {
         surface.focus?.();
-        return;
+        return true;
     }
     const focusable = surface.querySelector<HTMLElement>('textarea, canvas[tabindex], [tabindex]') ?? surface;
     focusable.focus?.();
+    return true;
+}
+
+/**
+ * How long {@link handCaretToPaneWhenReady} keeps asking, in wall clock.
+ *
+ * A budget rather than a frame count because what it is waiting for is a WASM load, and because
+ * a frame is not a fixed amount of time in a window the compositor is throttling. Long enough
+ * for an engine to come up on a cold sandbox, short enough that it cannot still be running when
+ * the user has moved on to something else.
+ */
+const CARET_HANDOFF_BUDGET_MS = 1_500;
+
+/**
+ * Issue #74 - the same handoff, for the paths where the destination does not exist yet.
+ *
+ * A jump that crosses workspaces unmounts the outgoing panes and mounts the incoming ones
+ * (`terminal/mount-policy.ts`), so a handoff made in the same turn as the activation has nothing
+ * to aim at: `focusPaneSurface` returns having found no pane, silently, which is what the
+ * `reveal-pane` path did on a `kelpi workspace create` and what made an agent launched that way
+ * come up with a ring and no keyboard. The status-popover path already knew this and fired twice
+ * (§APP-076); asking until there is an answer is that idea with the arbitrary number taken out.
+ *
+ * POLITE, unlike {@link focusPaneSurface} on the overlay-close paths, and that difference is the
+ * point: there the chrome field holding the caret IS the overlay that is closing, while here it
+ * is a sidebar rename or a filter the user is still typing in, which {@link shouldGrabFocus}
+ * exists to protect. Declining costs nothing now that a declined claim stays armed
+ * ({@link armCaretClaim}): the pane takes the caret itself the moment the field lets go.
+ *
+ * Returns a cancel function; it stops on its own once the question is settled.
+ */
+export function handCaretToPaneWhenReady(paneID: string): () => void {
+    if (typeof document === 'undefined') return () => undefined;
+    let cancelled = false;
+    const deadline = Date.now() + CARET_HANDOFF_BUDGET_MS;
+    const attempt = (): void => {
+        if (cancelled) return;
+        const pane = document.querySelector<HTMLElement>(`[data-pane-id="${paneID}"]`);
+        // A caret in use keeps its field, and the question is settled: the pane's own armed
+        // claim collects it when the field lets go.
+        if (pane !== null && !shouldGrabFocus(pane)) return;
+        /*
+         * The test is whether the caret LANDED, not whether a surface exists. A terminal host is
+         * marked the moment the pane mounts, while the element that can actually hold a caret is
+         * the `<textarea>` the engine builds when its wasm finishes loading, and `focus()` on the
+         * host in between is a silent no-op on a div with no tabindex. Asking again until the
+         * caret is inside the pane is what makes this wait for the engine rather than for React.
+         */
+        if (pane !== null && focusPaneSurface(paneID) && pane.contains(document.activeElement)) return;
+        if (Date.now() >= deadline) return;
+        const soon = globalThis.requestAnimationFrame;
+        if (typeof soon === 'function') soon(attempt);
+        else setTimeout(attempt, 16);
+    };
+    attempt();
+    return (): void => {
+        cancelled = true;
+    };
 }

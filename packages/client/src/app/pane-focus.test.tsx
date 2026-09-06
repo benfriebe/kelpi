@@ -27,6 +27,7 @@ import {
     armCaretClaim,
     engineFocusWindowOwner,
     focusPaneSurface,
+    handCaretToPaneWhenReady,
     isPaneSurfaceCaret,
     openEngineFocusWindow,
     releaseFocusedPaneCaret,
@@ -70,12 +71,31 @@ function mountChromeField(): HTMLInputElement {
 }
 
 /**
+ * A sidebar workspace row, verbatim: `<div role="option" tabIndex={-1}>`
+ * (`chrome/Sidebar.tsx:1111-1152`). Its mousedown handler does not `preventDefault`, so after
+ * the click that switches workspace the ROW is what holds the DOM caret - issue #74's holder.
+ */
+function mountSidebarRow(): HTMLElement {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'option');
+    row.setAttribute('tabindex', '-1');
+    row.setAttribute('data-testid', 'workspace-row');
+    document.body.appendChild(row);
+    return row;
+}
+
+/**
  * One task, which is what an armed claim waits for after a `focusout`: the caret is dropped to
  * `<body>` for the length of a focus move, so the decision is taken once the move has landed.
  */
 const settleFocus = async (): Promise<void> => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+/** The pane wrapper the grid draws for a pane that wears the ring (`grid/PaneGrid.tsx:650-652`). */
+function ring(host: HTMLElement): void {
+    (host.closest('[data-pane-id]') as HTMLElement).setAttribute('data-focused', 'true');
+}
 
 // ── the rule itself ─────────────────────────────────────────────────────────────────
 
@@ -364,6 +384,76 @@ describe('the engine-autofocus arbiter (§N35 residual a)', () => {
 });
 
 /**
+ * Issue #74 - WHICH carets the arbiter is allowed to protect.
+ *
+ * The reported symptom is one click long: switch workspace by clicking its sidebar row, and the
+ * focused pane draws its ring and its cursor and takes no keystrokes until you click another
+ * pane and click back. The row is a `tabindex=-1` div that holds the DOM caret after the click,
+ * every incoming pane armed with it as the arbiter's owner, and the LAST engine to finish its
+ * wasm load handed the caret to the row - off the pane that had just claimed it correctly.
+ *
+ * The rule these pin is the one `shouldGrabFocus` already stated: only a caret that can be IN
+ * USE is worth protecting, and only an editable element can be.
+ */
+describe('the arbiter never protects a caret that cannot be typed into (issue #74)', () => {
+    const RING = 'DDDDDDDD-0000-4000-8000-000000000030';
+    const ARRIVING = 'DDDDDDDD-0000-4000-8000-000000000031';
+
+    /** The workspace switch, in the units the arbiter sees it in. */
+    function switchWithCaretOn(holder: HTMLElement): { ringed: ReturnType<typeof mountFakeTerminal>; close: () => void } {
+        const ringed = mountFakeTerminal(RING);
+        ring(ringed.host);
+        holder.focus();
+        const arriving = mountFakeTerminal(ARRIVING);
+        const close = openEngineFocusWindow(arriving.host);
+        // The unfocused pane's engine, finishing last: `Terminal.open()` ends with `this.focus()`.
+        arriving.area.focus();
+        undoSurfaceAutoFocus(arriving.host);
+        return { ringed, close };
+    }
+
+    it('a SIDEBAR ROW is not an owner, so the caret goes to the pane wearing the ring', () => {
+        const row = mountSidebarRow();
+        const { ringed, close } = switchWithCaretOn(row);
+        expect(document.activeElement).toBe(ringed.area);
+        close();
+    });
+
+    it('…and neither is a BUTTON (the status popover, a toolbar, the workspace switcher)', () => {
+        const button = document.createElement('button');
+        document.body.appendChild(button);
+        const { ringed, close } = switchWithCaretOn(button);
+        expect(document.activeElement).toBe(ringed.area);
+        close();
+    });
+
+    it('…but a rename or the palette still is: an editable caret outranks the ring', () => {
+        const renaming = mountChromeField();
+        const { close } = switchWithCaretOn(renaming);
+        expect(engineFocusWindowOwner()).toBe(renaming);
+        expect(document.activeElement).toBe(renaming);
+        close();
+    });
+
+    it('a row that takes the caret DURING a wasm load is not adopted either', () => {
+        const ringed = mountFakeTerminal(RING);
+        ring(ringed.host);
+        const arriving = mountFakeTerminal(ARRIVING);
+        const close = openEngineFocusWindow(arriving.host);
+
+        // The click lands while the engines are still coming up, which is exactly the order a
+        // workspace switch produces: the row is focused, then the panes mount.
+        mountSidebarRow().focus();
+        expect(engineFocusWindowOwner()).toBeNull();
+
+        arriving.area.focus();
+        undoSurfaceAutoFocus(arriving.host);
+        expect(document.activeElement).toBe(ringed.area);
+        close();
+    });
+});
+
+/**
  * Issue #35 - a claim that was DECLINED asks again.
  *
  * The politeness rule saying no is correct; dropping the claim afterwards is what left a pane
@@ -467,6 +557,48 @@ describe('armCaretClaim (issue #35)', () => {
         });
         expect(claims).toBe(1);
         disarm();
+    });
+});
+
+/**
+ * Issue #74's other half - a hand-off with nothing to hand the caret TO.
+ *
+ * A jump that crosses workspaces unmounts the outgoing panes and mounts the incoming ones, so
+ * the hand-off made in the same turn as the activation found no pane and returned silently.
+ */
+describe('handCaretToPaneWhenReady (issue #74)', () => {
+    const LATE = 'DDDDDDDD-0000-4000-8000-000000000034';
+
+    it('hands the caret over as soon as the destination pane has mounted', async () => {
+        const row = mountSidebarRow();
+        row.focus();
+        const cancel = handCaretToPaneWhenReady(LATE);
+        // Nothing yet: the pane is still being built, and the row keeps the caret meanwhile.
+        expect(document.activeElement).toBe(row);
+
+        const arriving = mountFakeTerminal(LATE);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(document.activeElement).toBe(arriving.area);
+        cancel();
+    });
+
+    it('does not take a caret that is in use - a rename mid-edit keeps it', async () => {
+        const renaming = mountChromeField();
+        renaming.focus();
+        const cancel = handCaretToPaneWhenReady(LATE);
+        mountFakeTerminal(LATE);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(document.activeElement).toBe(renaming);
+        cancel();
+    });
+
+    it('changes nothing while the destination never appears (it is bounded, not a spin)', async () => {
+        const row = mountSidebarRow();
+        row.focus();
+        const cancel = handCaretToPaneWhenReady('no-such-pane');
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(document.activeElement).toBe(row);
+        cancel();
     });
 });
 

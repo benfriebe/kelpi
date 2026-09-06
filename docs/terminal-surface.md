@@ -543,6 +543,31 @@ follows exactly **one client at a time**, the *size owner*:
   arbiter is about to undo), and a `focusout` is answered one task later, because the caret
   is dropped to `<body>` for the length of a focus move. The web pane has carried the same
   rule since §N30's residual (`webpane/WebPane.tsx`).
+- **The caret arbiter** (`openEngineFocusWindow` / `undoSurfaceAutoFocus`,
+  `packages/client/src/app/pane-focus.ts`): while any engine is inside its autofocus window
+  there is ONE owner of the caret for the whole window, and an engine that grabbed the caret
+  without being entitled to it hands it back to that owner. An owner is a caret that can be
+  IN USE, which is the same test polite focus makes: an editable element, not `<body>`, and
+  not one inside a host whose engine is still grabbing (that caret IS the grab). A button, a
+  sidebar row or the workspace switcher is therefore **not** an owner (issue #74) and the
+  caret goes to the pane wearing the ring instead. A rename or the palette still outranks the
+  ring.
+- **Cross-workspace handoff** (issue #74, `handCaretToPaneWhenReady`): a jump that crosses
+  workspaces unmounts the outgoing panes and mounts the incoming ones, so a handoff made in
+  the same turn as the activation has nothing to aim at. The workspace-switch effect and the
+  `reveal-pane` path therefore keep asking (bounded, ~30 frames) until the destination pane
+  has a surface, and are polite about it: a field mid-edit keeps its caret and the pane
+  collects it through its own armed claim.
+- **The cursor is drawn from PANE focus, not from who holds the caret**
+  (`surfaceFocused = focused && visible && windowFocused`,
+  `packages/client/src/terminal/TerminalPane.tsx`), a deliberate simplification of ghostty's
+  `isFirstResponder` term so the ring and the cursor always agree. Issues #35 and #74 are the
+  counter-example that made it visible (a ring and a blinking cursor over a pane with no
+  keyboard), and they are fixed at the source instead: the pane that wears the ring gets the
+  caret, or asks again when the field that declined it lets go. Following `activeElement`
+  here would re-decide on every focusin/focusout - including the transient blurs the engine's
+  own copy path performs - and would hollow the cursor while a rename borrows the caret,
+  which is exactly the divergence the simplification removes.
 - Focus-related quirk worth preserving: raising the window restores its previous
   focus owner first, so programmatic pane selection applies *after* that restoration
   (the focus dispatch is deferred one turn).

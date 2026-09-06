@@ -36,6 +36,15 @@ const dedupeKey = (paneID) => `kelpi-${paneID}`;
 const liveFor = (counters, paneID) =>
     counters.recentNotifications.filter((record) => record.key === dedupeKey(paneID) && !record.closed);
 
+// What this scenario actually exercises (verify.mjs's scenario rule selects it by these).
+export const covers = [
+    'packages/shell/src/notify.ts',
+    'packages/shell/src/notify-present.ts',
+    'packages/shell/src/status.ts',
+    'packages/core/src/agent/notifications.ts',
+    'packages/daemon/src/handlers/app/events.ts'
+];
+
 export default async function ({ page, harness, cli, rec, d, sleep }) {
     // ── a pane to play the agent in, and a workspace to leave it behind in ──────────
     const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));

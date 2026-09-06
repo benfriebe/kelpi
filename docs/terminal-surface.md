@@ -1000,6 +1000,44 @@ Kelpi's own layer on both sides of the wire:
   (`:3u`) is written as the un-mirrored `inputDirect` frame, so only the press that carries
   the input reaches a synchronise-input sibling (section 8.2).
 
+#### 10.2.1 The chords Kelpi keeps for itself (#80)
+
+Five ⌘ chords are **never** encoded, at any flag set, and are handed to the layers below the
+interceptor exactly as if the protocol were off:
+
+| chord | who gets it instead |
+|---|---|
+| ⌘V | the paste path (section 12.2) |
+| ⌘C | the copy path (section 12.1) |
+| ⌘X | the shell's Edit menu |
+| ⌘A | the shell's Edit menu |
+| ⌘Z | the shell's Edit menu |
+
+`isSystemEditingChord` (`packages/client/src/terminal/kitty-keyboard.ts`) is the test: **super
+held, ctrl and alt not**, and the produced key lowercased is one of `v c x a z`. Shift is
+tolerated (⌘⇧Z is Redo), ctrl and alt never are, so `ctrl+c` stays the interrupt and `ctrl+i`
+stays distinguishable from Tab.
+
+Why: the interceptor `preventDefault()`s everything it consumes, and `preventDefault()` on ⌘V
+is the end of paste. Both fallbacks live below the page. The engine deliberately returns from
+its `keydown` handler without preventing ⌘V and ⌘C so the browser's own `paste` / `copy`
+events fire (`vendor/ghostty-web-patched/source/lib/input-handler.ts:373-386`), and the
+shell's `{ role: 'editMenu' }` is downstream of the renderer
+(`packages/shell/src/main.ts`). Encoding `CSI 118;9u` instead is what made ⌘V stop
+pasting for as long as an application had the protocol on, which was the user's report in #80.
+
+The cost, stated rather than hidden: an application that legitimately wants a super chord does
+not get these five. **Ghostty makes the same trade on macOS** - `super+v` and `super+c` are
+`paste_from_clipboard` / `copy_to_clipboard` in its shipped darwin defaults
+(`src/config/Config.zig`, the `Keybinds.init` darwin block), and a Ghostty binding is consumed
+before its key encoder ever runs.
+
+Every other ⌘ chord still encodes (`⌘B` is `CSI 98;9u`). Chords Kelpi has a *binding* for never
+reach this layer at all: the app's dispatcher is a window-level capture listener and has
+already consumed them (`packages/client/src/chrome/keys.ts`, `installKeyDispatcher`). ⌘Backspace
+is deliberately NOT in this table: #82 maps it in the binding layer instead, so `unbind` restores
+its fixterm encoding, which is Ghostty's own rule for its natural-text-editing defaults.
+
 ---
 
 ## 11. Mouse input (client-side spec)

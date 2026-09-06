@@ -162,6 +162,36 @@ describe('TerminalPane — kitty keyboard protocol', () => {
         expect(h.engineEvents).toEqual(['keydown']);
     });
 
+    /**
+     * #80. The pane's interceptor calls `preventDefault()` on everything it consumes, and
+     * `preventDefault()` on ⌘V is the end of paste: the engine passes the chord through
+     * un-prevented precisely so the browser's `paste` event fires, and the shell's Edit menu is
+     * downstream of the page. So the assertion is BOTH halves, not just "no bytes": nothing on
+     * the stream, the engine still saw the key, and the event is still cancelable.
+     */
+    it('keeps the macOS system-editing chords for the layers below (#80)', async () => {
+        const h = await kittyHarness(11);
+        const notPrevented: boolean[] = [];
+        for (const key of ['v', 'c', 'x', 'a', 'z']) {
+            notPrevented.push(
+                fireEvent.keyDown(h.engine, { key, code: `Key${key.toUpperCase()}`, metaKey: true })
+            );
+        }
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.pty.last().directInput).toEqual([]);
+        expect(h.engineEvents).toEqual(['keydown', 'keydown', 'keydown', 'keydown', 'keydown']);
+        // `fireEvent` returns false when a listener called preventDefault. All five must be true.
+        expect(notPrevented).toEqual([true, true, true, true, true]);
+    });
+
+    it('still encodes every OTHER super chord, so the exemption is the five and no more', async () => {
+        const h = await kittyHarness(11);
+        fireEvent.keyDown(h.engine, { key: 'b', code: 'KeyB', metaKey: true });
+        fireEvent.keyDown(h.engine, { key: 'Backspace', code: 'Backspace', metaKey: true });
+        expect(h.pty.last().input).toEqual([esc('[98;9u'), esc('[127;9u')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
     it('bypasses composition entirely, by the flag and by the window', async () => {
         const h = await kittyHarness(11);
         // `isComposing` on the event itself.

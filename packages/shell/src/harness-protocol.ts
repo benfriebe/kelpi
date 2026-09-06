@@ -24,6 +24,13 @@
  * keystroke would reach.
  */
 
+// §7.5's shapes, from the module that owns them; both are pure, so this file stays testable.
+import type {
+    KelpiNotificationHandle,
+    KelpiNotificationHandlers,
+    KelpiNotificationRequest
+} from './notify.js';
+
 // ── the gate ────────────────────────────────────────────────────────────────────────
 
 /**
@@ -41,6 +48,23 @@ export function harnessSocketPath(env: Readonly<Record<string, string | undefine
     const value = env['KELPI_HARNESS_SOCKET'];
     if (typeof value !== 'string' || value.trim() === '') return null;
     return value;
+}
+
+/**
+ * Whether a recorded notification should also be SHOWN (#67).
+ *
+ * Under the channel the shell keeps posting for real, because a real banner is harmless to a
+ * scenario and a recorder that suppresses the thing under test is the mistake `audit-window.ts`
+ * refuses `hide()` for. `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` is for the runs where it is not
+ * harmless — a machine running several sandboxes at once, or one whose Notification Centre a
+ * human is also reading — and it only ever removes the OS call: the record, the handlers and
+ * `notification-click` / `notification-close` behave identically either way.
+ *
+ * A second gate rather than a value on the first, and read only inside `startHarness`, so it is
+ * inert without `KELPI_HARNESS_SOCKET`: on its own it must never change a user's shell.
+ */
+export function harnessQuietNotifications(env: Readonly<Record<string, string | undefined>>): boolean {
+    return env['KELPI_HARNESS_QUIET_NOTIFICATIONS'] === '1';
 }
 
 // ── requests and responses ──────────────────────────────────────────────────────────
@@ -474,11 +498,179 @@ export interface DialogArm {
     readonly checkboxChecked: boolean;
 }
 
+// ── notifications (#67) ─────────────────────────────────────────────────────────────
+
+/**
+ * How many shown notifications the channel keeps. Twenty because a scenario asserts ORDER and
+ * §7.5's replace-on-repost over a handful of events, not over a session; the count and the last
+ * one are exact for the whole run either way, and only the window drops.
+ */
+export const NOTIFICATION_HISTORY = 20;
+
+/** One notification the shell actually showed, as a scenario reads it. */
+export interface NotificationRecord {
+    /** Its ordinal in the run, counting from 0 and never reused; `notifications - 1` is the last. */
+    readonly seq: number;
+    readonly title: string;
+    readonly body: string;
+    /** The action buttons' text, in the order macOS would show them (§AGNT-073: Open, Dismiss). */
+    readonly actions: readonly string[];
+    /** The pane it belongs to, or null for the shell's own notices. */
+    readonly paneID: string | null;
+    readonly silent: boolean;
+    /** §7.5's identifier, `kelpi-<paneID>`, which is what makes replace-on-repost assertable. */
+    readonly key: string | null;
+    /** False when `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` recorded it without posting it. */
+    readonly displayed: boolean;
+    /** True once it has been withdrawn: by the OS, by a replacement, or by `notification-close`. */
+    readonly closed: boolean;
+}
+
+/** What `notification-click` answers with. */
+export interface NotificationFired {
+    readonly seq: number;
+    readonly title: string;
+    /** The action button's text, or null when it was the body tap. */
+    readonly action: string | null;
+    /** The index macOS would have reported for that button, or null for the body tap. */
+    readonly actionIndex: number | null;
+}
+
+/**
+ * A notification the channel is standing in front of.
+ *
+ * It IS the `KelpiNotificationHandle` the call site gets back from `presentNotification`, so
+ * `status.ts`'s replace-on-repost `close()` and its "Dismiss" branch run through here as well;
+ * and it holds the site's own handlers, so `notification-click` calls the exact function macOS
+ * would have called rather than a re-implementation of what clicking means. `#delegate` is the
+ * real Electron notification underneath, or null under the quiet gate — which is the ONLY
+ * difference the gate makes.
+ *
+ * Pure of Electron on purpose: the delegate is structural, so `harness-protocol.test.ts` drives
+ * every path with a recording double.
+ */
+export class RecordedNotification implements KelpiNotificationHandle {
+    readonly #handlers: KelpiNotificationHandlers;
+    readonly #onShow: (entry: RecordedNotification) => number;
+    #delegate: KelpiNotificationHandle | null = null;
+    #record: NotificationRecord;
+    #shown = false;
+    #closeDispatched = false;
+
+    constructor(
+        request: KelpiNotificationRequest,
+        handlers: KelpiNotificationHandlers,
+        onShow: (entry: RecordedNotification) => number
+    ) {
+        this.#handlers = handlers;
+        this.#onShow = onShow;
+        this.#record = {
+            seq: -1,
+            title: request.title,
+            body: request.body,
+            actions: (request.actions ?? []).map((action) => action.text),
+            paneID: request.paneID ?? null,
+            // Electron's default is an audible notification, so an unset `silent` is false.
+            silent: request.silent === true,
+            key: request.key ?? null,
+            displayed: false,
+            closed: false
+        };
+    }
+
+    get record(): NotificationRecord {
+        return this.#record;
+    }
+
+    /** The real notification, or null when the quiet gate said to record and not post. */
+    attach(delegate: KelpiNotificationHandle | null): void {
+        this.#delegate = delegate;
+    }
+
+    /**
+     * Recorded HERE, not at construction: a notification that is built and never shown was
+     * never shown, and `status.ts` builds one before it decides anything. A second `show()` on
+     * the same object re-posts it rather than adding a record; no site does that today, and
+     * this comment is where that decision lives if one starts.
+     */
+    show(): void {
+        if (!this.#shown) {
+            this.#shown = true;
+            this.#record = { ...this.#record, seq: this.#onShow(this), displayed: this.#delegate !== null };
+        }
+        this.#delegate?.show();
+    }
+
+    /** Withdraw it. The site's `onClose` fires exactly once however the close arrived. */
+    close(): void {
+        this.#delegate?.close();
+        this.dispatchClose();
+    }
+
+    /** The OS's `click` event, or `notification-click` with no action. */
+    dispatchClick(): void {
+        this.#handlers.onClick?.();
+    }
+
+    /** The OS's `action` event, by the index macOS reports. */
+    dispatchAction(index: number): void {
+        this.#handlers.onAction?.(index);
+    }
+
+    /**
+     * The OS's `close` event, or our own `close()`. Guarded because both can happen for one
+     * withdrawal: `close()` calls the real notification, whose own `close` event comes straight
+     * back through here, and `status.ts`'s handler would otherwise run twice.
+     */
+    dispatchClose(): void {
+        if (this.#closeDispatched) return;
+        this.#closeDispatched = true;
+        this.#record = { ...this.#record, closed: true };
+        this.#handlers.onClose?.();
+    }
+
+    /**
+     * `notification-click`: the body tap, or the named action button, as the OS would deliver
+     * it. A missing handler is an error rather than a silent success — a scenario asserting
+     * that clicking Open focuses the pane must not pass against a notification nobody wired.
+     */
+    fire(action: string | undefined): NotificationFired | string {
+        const name = this.#record.title === '' ? '(untitled)' : this.#record.title;
+        const where = `notification ${String(this.#record.seq)} ("${name}")`;
+        if (action === undefined) {
+            if (this.#handlers.onClick === undefined) return `${where} has no click handler`;
+            this.dispatchClick();
+            return { seq: this.#record.seq, title: this.#record.title, action: null, actionIndex: null };
+        }
+        // Compared the way a user reads a button, for the same reason a menu path is.
+        const wanted = normaliseLabel(action);
+        const actionIndex = this.#record.actions.findIndex((text) => normaliseLabel(text) === wanted);
+        if (actionIndex === -1) {
+            const known =
+                this.#record.actions.length === 0 ? 'it has no actions' : `actions: ${this.#record.actions.join(', ')}`;
+            return `${where} has no action "${action}" (${known})`;
+        }
+        if (this.#handlers.onAction === undefined) return `${where} has no action handler`;
+        this.dispatchAction(actionIndex);
+        return {
+            seq: this.#record.seq,
+            title: this.#record.title,
+            action: this.#record.actions[actionIndex] ?? action,
+            actionIndex
+        };
+    }
+}
+
 export interface CountersSnapshot {
     readonly dockBounces: number;
     readonly lastBounce: string | null;
     readonly dialogs: number;
     readonly lastDialog: DialogRecord | null;
+    /** Every notification SHOWN this run, not every one built. */
+    readonly notifications: number;
+    readonly lastNotification: NotificationRecord | null;
+    /** The last `NOTIFICATION_HISTORY` of them, oldest first: ordering and §7.5's dedupe. */
+    readonly recentNotifications: readonly NotificationRecord[];
 }
 
 /**
@@ -498,6 +690,8 @@ export class HarnessCounters {
     #dialogs = 0;
     #lastDialog: { record: DialogRecord } | null = null;
     #arm: DialogArm | null = null;
+    #notifications = 0;
+    #shownNotifications: RecordedNotification[] = [];
 
     recordBounce(type: string | undefined): void {
         this.#dockBounces += 1;
@@ -532,12 +726,52 @@ export class HarnessCounters {
         handle.record = { ...handle.record, response };
     }
 
+    /**
+     * Stand in front of one notification (#67). The caller wires the real one underneath with
+     * `attach`; the record only enters the history when the returned handle is shown.
+     */
+    openNotification(request: KelpiNotificationRequest, handlers: KelpiNotificationHandlers): RecordedNotification {
+        return new RecordedNotification(request, handlers, (entry) => this.#recordShown(entry));
+    }
+
+    #recordShown(entry: RecordedNotification): number {
+        const seq = this.#notifications;
+        this.#notifications += 1;
+        this.#shownNotifications.push(entry);
+        if (this.#shownNotifications.length > NOTIFICATION_HISTORY) this.#shownNotifications.shift();
+        return seq;
+    }
+
+    /**
+     * The notification `notification-click` / `notification-close` mean, by its position in the
+     * HISTORY (which is what `counters()` hands back), newest last. Omitted is the most recent,
+     * which is what a scenario wants nine times in ten; negative counts from the end. Not the
+     * run-wide `seq`, because the history drops its oldest and an absolute ordinal would start
+     * failing at the twenty-first notification of a run.
+     */
+    notificationAt(index: unknown): RecordedNotification | string {
+        const list = this.#shownNotifications;
+        const last = list[list.length - 1];
+        if (last === undefined) return 'no notification has been shown yet';
+        if (index === undefined) return last;
+        if (typeof index !== 'number' || !Number.isInteger(index)) return '"index" must be an integer';
+        const at = index < 0 ? list.length + index : index;
+        const found = list[at];
+        if (found === undefined) {
+            return `index ${String(index)} is outside the ${String(list.length)} notification(s) the channel is holding (0..${String(list.length - 1)}, or -1 for the most recent)`;
+        }
+        return found;
+    }
+
     snapshot(): CountersSnapshot {
         return {
             dockBounces: this.#dockBounces,
             lastBounce: this.#lastBounce,
             dialogs: this.#dialogs,
-            lastDialog: this.#lastDialog === null ? null : { ...this.#lastDialog.record }
+            lastDialog: this.#lastDialog === null ? null : { ...this.#lastDialog.record },
+            notifications: this.#notifications,
+            lastNotification: this.#shownNotifications[this.#shownNotifications.length - 1]?.record ?? null,
+            recentNotifications: this.#shownNotifications.map((entry) => entry.record)
         };
     }
 }
@@ -582,6 +816,8 @@ export const HARNESS_OPS = [
     'press',
     'counters',
     'dialog-arm',
+    'notification-click',
+    'notification-close',
     'window',
     'focus',
     'blur'
@@ -664,6 +900,29 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
                 const arm = parseDialogArm(params);
                 if (typeof arm === 'string') return errorResponse(id, arm);
                 return okResponse(id, surface.counters.arm(arm));
+            }
+            case 'notification-click': {
+                // §7.5's two clickable things: the body tap ("Open / default click": activates
+                // the app, switches workspace, focuses the pane) and an action button by name.
+                // Both run the site's own handler, so what a scenario exercises is the shipped
+                // path and not a second implementation of it.
+                const found = surface.counters.notificationAt(params['index']);
+                if (typeof found === 'string') return errorResponse(id, found);
+                const action = params['action'];
+                if (action !== undefined && typeof action !== 'string') {
+                    return errorResponse(id, 'notification-click "action" must be a string');
+                }
+                const fired = found.fire(action);
+                if (typeof fired === 'string') return errorResponse(id, fired);
+                return okResponse(id, fired);
+            }
+            case 'notification-close': {
+                // What the OS does when the user swipes a banner away, and what §7.5's
+                // replace-on-repost does to the pane's previous toast.
+                const found = surface.counters.notificationAt(params['index']);
+                if (typeof found === 'string') return errorResponse(id, found);
+                found.close();
+                return okResponse(id, { seq: found.record.seq, title: found.record.title, closed: true });
             }
             case 'window': {
                 const snapshot = surface.window();

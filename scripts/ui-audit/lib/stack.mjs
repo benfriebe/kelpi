@@ -298,6 +298,14 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         ...(process.env['KELPI_HARNESS_WINDOW_THROTTLE'] === undefined
             ? {}
             : { KELPI_HARNESS_WINDOW_THROTTLE: process.env['KELPI_HARNESS_WINDOW_THROTTLE'] }),
+        // `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` (#67): the channel records every notification
+        // either way; this stops the shell also POSTING them to the machine's notification
+        // centre. Forwarded from this process for the same reason the throttle flag is — the
+        // sandbox env is closed, so a variable a human exported would otherwise never arrive —
+        // and unset (normal use) it is a no-op and the toasts appear as they always have.
+        ...(process.env['KELPI_HARNESS_QUIET_NOTIFICATIONS'] === undefined
+            ? {}
+            : { KELPI_HARNESS_QUIET_NOTIFICATIONS: process.env['KELPI_HARNESS_QUIET_NOTIFICATIONS'] }),
         ...(clientDir === undefined ? {} : { KELPID_CLIENT_DIR: clientDir })
     };
 

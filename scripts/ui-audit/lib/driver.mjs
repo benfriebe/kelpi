@@ -33,7 +33,8 @@
  * The page object is `lib/cdp.mjs`'s: eval / waitFor / click(selector) / clickAt / rightClick /
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
  * menu() / menuClick({id|path}) / press(accelerator) / counters() / armDialog({response}) /
- * window() / focus() / blur(). See ../README.md for the scenario contract.
+ * notificationClick({index, action}) / notificationClose({index}) / window() / focus() /
+ * blur(). See ../README.md for the scenario contract.
  */
 
 import fs from 'node:fs';
@@ -147,10 +148,23 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
         menuClick: (target) => request('menu-click', target),
         /** Land a native accelerator: clicks the first enabled menu item bound to it. */
         press: (accelerator) => request('press', { accelerator }),
-        /** { dockBounces, lastBounce, dialogs, lastDialog }. */
+        /** { dockBounces, lastBounce, dialogs, lastDialog, notifications, lastNotification, recentNotifications }. */
         counters: () => request('counters'),
         /** The NEXT native dialog resolves with this instead of showing. One-shot. */
         armDialog: ({ response, checkboxChecked = false }) => request('dialog-arm', { response, checkboxChecked }),
+        /**
+         * Click a notification the shell showed, as the OS would (#67): the body tap, or the
+         * named action button ('Open' / 'Dismiss', agent-lifecycle.md §7.5). `index` is a
+         * position in `counters().recentNotifications` (newest last, negatives from the end);
+         * omitted means the most recent one.
+         */
+        notificationClick: ({ index, action } = {}) =>
+            request('notification-click', {
+                ...(index === undefined ? {} : { index }),
+                ...(action === undefined ? {} : { action })
+            }),
+        /** Close one, firing its close handler exactly as a swiped-away banner does. */
+        notificationClose: ({ index } = {}) => request('notification-close', index === undefined ? {} : { index }),
         window: () => request('window'),
         focus: () => request('focus'),
         blur: () => request('blur'),

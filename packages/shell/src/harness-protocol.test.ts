@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
     HARNESS_OPS,
     HarnessCounters,
+    NOTIFICATION_HISTORY,
     LineBuffer,
     acceleratorMatches,
     closestLabels,
     encodeResponse,
     findByAccelerator,
     findMenuItem,
+    harnessQuietNotifications,
     harnessSocketPath,
     menuClickVerdict,
     messageBoxSpecFrom,
@@ -24,6 +26,7 @@ import {
     type MenuEntryLike,
     type WindowSnapshot
 } from './harness-protocol.js';
+import type { KelpiNotificationHandle, KelpiNotificationRequest } from './notify.js';
 
 // ── fixtures ────────────────────────────────────────────────────────────────────────
 
@@ -416,7 +419,15 @@ describe('findByAccelerator', () => {
 
 describe('HarnessCounters', () => {
     it('starts empty', () => {
-        expect(new HarnessCounters().snapshot()).toEqual({ dockBounces: 0, lastBounce: null, dialogs: 0, lastDialog: null });
+        expect(new HarnessCounters().snapshot()).toEqual({
+            dockBounces: 0,
+            lastBounce: null,
+            dialogs: 0,
+            lastDialog: null,
+            notifications: 0,
+            lastNotification: null,
+            recentNotifications: []
+        });
     });
 
     it('counts bounces and remembers the last type, defaulting to informational', () => {
@@ -464,6 +475,204 @@ describe('HarnessCounters', () => {
         expect(counters.snapshot().lastDialog?.response).toBe(1);
         // A snapshot is a copy: settling later does not rewrite one already handed out.
         expect(before.lastDialog?.response).toBeNull();
+    });
+});
+
+// ── notifications (#67) ─────────────────────────────────────────────────────────────
+
+/** The real Electron notification the channel stands in front of, as a recorder. */
+function fakeDelegate(): { shows: number; closes: number; handle: KelpiNotificationHandle } {
+    const state = { shows: 0, closes: 0, handle: null as unknown as KelpiNotificationHandle };
+    state.handle = {
+        show: () => {
+            state.shows += 1;
+        },
+        close: () => {
+            state.closes += 1;
+        }
+    };
+    return state;
+}
+
+/** `agentNotificationSpec`'s shape, as `status.ts` hands it to the seam. */
+function agentRequest(overrides: Partial<KelpiNotificationRequest> = {}): KelpiNotificationRequest {
+    return {
+        title: 'Kelpi',
+        body: 'Agent is waiting for input',
+        silent: false,
+        actions: [
+            { type: 'button', text: 'Open' },
+            { type: 'button', text: 'Dismiss' }
+        ],
+        paneID: 'PANE-A',
+        key: 'kelpi-PANE-A',
+        ...overrides
+    };
+}
+
+describe('the quiet-notification gate', () => {
+    it('is off unless KELPI_HARNESS_QUIET_NOTIFICATIONS is exactly 1', () => {
+        expect(harnessQuietNotifications({})).toBe(false);
+        expect(harnessQuietNotifications({ KELPI_HARNESS_QUIET_NOTIFICATIONS: '' })).toBe(false);
+        expect(harnessQuietNotifications({ KELPI_HARNESS_QUIET_NOTIFICATIONS: '0' })).toBe(false);
+        expect(harnessQuietNotifications({ KELPI_HARNESS_QUIET_NOTIFICATIONS: 'true' })).toBe(false);
+        expect(harnessQuietNotifications({ KELPI_HARNESS_QUIET_NOTIFICATIONS: '1' })).toBe(true);
+        // Neither harness marker implies it: the socket alone must not silence a run's toasts.
+        expect(harnessQuietNotifications({ KELPI_HARNESS_SOCKET: '/tmp/h.sock', KELPI_HARNESS: '1' })).toBe(false);
+    });
+});
+
+describe('recording notifications', () => {
+    it('records a notification when it is SHOWN, not when it is built', () => {
+        const counters = new HarnessCounters();
+        const entry = counters.openNotification(agentRequest(), {});
+        // status.ts builds one, then decides; a built-and-dropped notification was never shown.
+        expect(counters.snapshot()).toMatchObject({ notifications: 0, lastNotification: null });
+        entry.show();
+        expect(counters.snapshot()).toMatchObject({
+            notifications: 1,
+            lastNotification: {
+                seq: 0,
+                title: 'Kelpi',
+                body: 'Agent is waiting for input',
+                // §AGNT-073's set, in the order macOS shows it.
+                actions: ['Open', 'Dismiss'],
+                paneID: 'PANE-A',
+                silent: false,
+                key: 'kelpi-PANE-A',
+                closed: false
+            }
+        });
+    });
+
+    it('passes show and close through to the real notification, and records displayed', () => {
+        const counters = new HarnessCounters();
+        const delegate = fakeDelegate();
+        const entry = counters.openNotification(agentRequest(), {});
+        entry.attach(delegate.handle);
+        entry.show();
+        entry.close();
+        expect([delegate.shows, delegate.closes]).toEqual([1, 1]);
+        expect(counters.snapshot().lastNotification).toMatchObject({ displayed: true, closed: true });
+    });
+
+    it('under the quiet gate records everything and posts nothing', () => {
+        const counters = new HarnessCounters();
+        // No delegate is exactly what `wrapNotifications(counters, true)` attaches.
+        const entry = counters.openNotification(agentRequest(), {});
+        entry.attach(null);
+        entry.show();
+        expect(counters.snapshot()).toMatchObject({
+            notifications: 1,
+            lastNotification: { displayed: false, title: 'Kelpi' }
+        });
+    });
+
+    it('defaults the fields Electron defaults, for a notification with no category', () => {
+        const counters = new HarnessCounters();
+        counters
+            .openNotification({ title: 'Kelpi CLI is out of date', body: 'Could not update /usr/local/bin/kelpi' }, {})
+            .show();
+        expect(counters.snapshot().lastNotification).toMatchObject({
+            actions: [],
+            paneID: null,
+            key: null,
+            // An unset `silent` is an audible notification, which is Electron's own default.
+            silent: false
+        });
+    });
+
+    it(`keeps the last ${String(NOTIFICATION_HISTORY)} shown, oldest first, while the count stays exact`, () => {
+        const counters = new HarnessCounters();
+        for (let index = 0; index < NOTIFICATION_HISTORY + 5; index += 1) {
+            counters.openNotification(agentRequest({ title: `n${String(index)}` }), {}).show();
+        }
+        const snapshot = counters.snapshot();
+        expect(snapshot.notifications).toBe(NOTIFICATION_HISTORY + 5);
+        expect(snapshot.recentNotifications).toHaveLength(NOTIFICATION_HISTORY);
+        // Oldest first, and `seq` is the run-wide ordinal, so the window's start is visible.
+        expect(snapshot.recentNotifications[0]).toMatchObject({ title: 'n5', seq: 5 });
+        expect(snapshot.lastNotification).toMatchObject({ title: `n${String(NOTIFICATION_HISTORY + 4)}` });
+    });
+
+    it('fires the OS click and action handlers the call site registered', () => {
+        const counters = new HarnessCounters();
+        const fired: string[] = [];
+        const entry = counters.openNotification(agentRequest(), {
+            onClick: () => fired.push('click'),
+            onAction: (index) => fired.push(`action:${String(index)}`)
+        });
+        entry.show();
+        expect(entry.fire(undefined)).toMatchObject({ seq: 0, action: null, actionIndex: null });
+        // By NAME, resolved against the record's own action list, so the two cannot drift.
+        expect(entry.fire('Open')).toMatchObject({ action: 'Open', actionIndex: 0 });
+        expect(entry.fire('dismiss')).toMatchObject({ action: 'Dismiss', actionIndex: 1 });
+        expect(fired).toEqual(['click', 'action:0', 'action:1']);
+    });
+
+    it('refuses an action the notification does not carry, and a handler it never had', () => {
+        const counters = new HarnessCounters();
+        const withActions = counters.openNotification(agentRequest(), { onClick: () => {} });
+        withActions.show();
+        // Named, so a typo in a scenario is a one-line fix rather than a silent pass.
+        expect(withActions.fire('Snooze')).toContain('actions: Open, Dismiss');
+        expect(withActions.fire('Open')).toContain('no action handler');
+        const bare = counters.openNotification({ title: 'Kelpi CLI is out of date', body: '' }, {});
+        bare.show();
+        expect(bare.fire(undefined)).toContain('no click handler');
+        expect(bare.fire('Open')).toContain('it has no actions');
+    });
+
+    it('fires close exactly once however the close arrived', () => {
+        const counters = new HarnessCounters();
+        let closes = 0;
+        const delegate = fakeDelegate();
+        const entry = counters.openNotification(agentRequest(), {
+            onClose: () => {
+                closes += 1;
+            }
+        });
+        entry.attach(delegate.handle);
+        entry.show();
+        // `close()` closes the real one, whose own close event comes straight back through
+        // `dispatchClose`, status.ts's live-map handler must not run twice for one withdrawal.
+        entry.close();
+        entry.dispatchClose();
+        entry.close();
+        expect(closes).toBe(1);
+        expect(counters.snapshot().lastNotification?.closed).toBe(true);
+    });
+
+    it('addresses a notification by its position in the history, newest by default', () => {
+        const counters = new HarnessCounters();
+        const first = counters.openNotification(agentRequest({ title: 'first' }), {});
+        const second = counters.openNotification(agentRequest({ title: 'second' }), {});
+        expect(counters.notificationAt(undefined)).toBe('no notification has been shown yet');
+        first.show();
+        second.show();
+        expect(counters.notificationAt(undefined)).toBe(second);
+        expect(counters.notificationAt(0)).toBe(first);
+        expect(counters.notificationAt(-1)).toBe(second);
+        expect(counters.notificationAt(-2)).toBe(first);
+        expect(counters.notificationAt(2)).toContain('outside the 2 notification(s)');
+        expect(counters.notificationAt('0')).toBe('"index" must be an integer');
+        expect(counters.notificationAt(1.5)).toBe('"index" must be an integer');
+    });
+
+    it('§7.5: a repost under the same key closes the previous one, so only one is live', () => {
+        // The shape status.ts produces: `liveNotifications.get(key)?.close()` before the new one
+        // is shown. The record is what makes "replaces the older one" assertable from outside.
+        const counters = new HarnessCounters();
+        const first = counters.openNotification(agentRequest({ body: 'a question' }), {});
+        first.show();
+        first.close();
+        const second = counters.openNotification(agentRequest({ body: 'a question' }), {});
+        second.show();
+        const snapshot = counters.snapshot();
+        const live = snapshot.recentNotifications.filter((record) => record.key === 'kelpi-PANE-A' && !record.closed);
+        expect(snapshot.notifications).toBe(2);
+        expect(live).toHaveLength(1);
+        expect(live[0]).toMatchObject({ seq: 1 });
     });
 });
 
@@ -570,8 +779,73 @@ describe('respond', () => {
         expect(respond(request('counters'), surface)).toEqual({
             id: 1,
             ok: true,
-            result: { dockBounces: 1, lastBounce: 'informational', dialogs: 0, lastDialog: null }
+            result: {
+                dockBounces: 1,
+                lastBounce: 'informational',
+                dialogs: 0,
+                lastDialog: null,
+                notifications: 0,
+                lastNotification: null,
+                recentNotifications: []
+            }
         });
+    });
+
+    it('notification-click fires the body tap or the named action, and refuses the rest', () => {
+        const { surface } = fakeSurface();
+        const fired: string[] = [];
+        surface.counters
+            .openNotification(agentRequest({ title: 'needs you' }), {
+                onClick: () => fired.push('click'),
+                onAction: (index) => fired.push(`action:${String(index)}`)
+            })
+            .show();
+        expect(respond(request('notification-click'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { seq: 0, title: 'needs you', action: null, actionIndex: null }
+        });
+        // §7.5: the "Open" button and the body tap are the same behaviour, by different routes.
+        expect(respond(request('notification-click', { action: 'Open' }), surface)).toMatchObject({
+            ok: true,
+            result: { action: 'Open', actionIndex: 0 }
+        });
+        expect(respond(request('notification-click', { index: 7 }), surface)).toMatchObject({ ok: false });
+        expect(respond(request('notification-click', { action: 7 }), surface)).toMatchObject({
+            ok: false,
+            error: 'notification-click "action" must be a string'
+        });
+        expect(fired).toEqual(['click', 'action:0']);
+    });
+
+    it('notification-close withdraws it and marks the record closed', () => {
+        const { surface } = fakeSurface();
+        let closed = 0;
+        surface.counters
+            .openNotification(agentRequest(), {
+                onClose: () => {
+                    closed += 1;
+                }
+            })
+            .show();
+        expect(respond(request('notification-close'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { seq: 0, title: 'Kelpi', closed: true }
+        });
+        expect(closed).toBe(1);
+        expect(surface.counters.snapshot().lastNotification?.closed).toBe(true);
+    });
+
+    it('answers both notification ops before anything has been shown', () => {
+        const { surface } = fakeSurface();
+        // A scenario that clicks too early hears why, rather than hanging or passing.
+        expect(respond(request('notification-click'), surface)).toEqual({
+            id: 1,
+            ok: false,
+            error: 'no notification has been shown yet'
+        });
+        expect(respond(request('notification-close'), surface)).toMatchObject({ ok: false });
     });
 
     it('window, focus and blur, with and without a window', () => {

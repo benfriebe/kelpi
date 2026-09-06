@@ -61,11 +61,29 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.menu()` | the application menu as a tree: `{ id, label, accelerator, enabled, visible, type, role, checked, submenu }` |
 | `harness.menuClick({ id })` or `({ path: ['View', 'Toggle Sidebar'] })` | fires that item's click handler as Electron would |
 | `harness.press('Cmd+Alt+S')` | lands a native accelerator: clicks the first enabled item bound to it (Electron spellings normalised) |
-| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response } }` |
+| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response }, notifications, lastNotification, recentNotifications }` |
 | `harness.armDialog({ response: 1 })` | the next native `dialog.showMessageBox` resolves with that instead of showing; one-shot |
+| `harness.notificationClick({ index, action })` | fires that notification's click handler, or the named action button's ("Open" / "Dismiss"), exactly as the OS would |
+| `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
 | `harness.window()`, `focus()`, `blur()` | the main window's focus and bounds; the dock only bounces while it is unfocused |
 
 Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | error }` out, if you want to speak it without the driver.
+
+### Notifications
+
+`new Notification(...)` is a class import, so there is no property to replace the way `app.dock.bounce` and `dialog.showMessageBox` are replaced. Every notification the shell posts therefore goes through one seam instead (`packages/shell/src/notify-present.ts`; `notify.ts` has the request shape and `harness-protocol.ts` the recording rules), and the channel swaps the presenter behind it. A user's shell is unchanged: the seam builds the same options object each call site built, passes on only the keys it was given, and registers only the listeners the caller supplied, `notify-present.test.ts` pins that.
+
+A notification is recorded when it is SHOWN, not when it is built, and each record is:
+
+```
+{ seq, title, body, actions: string[], paneID: string|null, silent, key: string|null, displayed, closed }
+```
+
+`seq` is its ordinal in the run; `key` is agent-lifecycle.md §7.5's identifier (`kelpi-<paneID>`), which is what makes replace-on-repost assertable, a pane never has two records with the same `key` and `closed: false`. `counters().notifications` is the exact count for the whole run and `recentNotifications` is the last 20, oldest first. The `index` both ops take is a position in THAT list (negatives count from the end), and omitting it means the most recent one.
+
+Both ops call the call site's own handler, so what a scenario exercises is the shipped path: `notificationClick()` runs §7.5's default click (activate, switch to that workspace, focus that pane) and `notificationClick({ action: 'Open' })` runs the button that §AGNT-073 registers alongside it. See `../scenarios/notification-shown-and-opened.mjs`.
+
+Under the channel the shell still posts for real, which is harmless. `KELPI_HARNESS_QUIET_NOTIFICATIONS=1` (forwarded to the sandbox by `lib/stack.mjs`, like the throttle flag) records without posting, for a machine running several sandboxes at once or one whose Notification Centre a human is also reading; it changes nothing else, and `displayed` on the record says which way a run went.
 
 ## The functional lane: no screen, several at once
 
@@ -79,7 +97,7 @@ node scripts/scenario.mjs --no-build --window hidden b ; wait         # two at o
 
 Each run already gets its own run dir, socket, database and ephemeral ports, so parallelism was only ever blocked by the window. Measured on this machine: **four full runs at once, 4 × 23 checks, all green, each scenario at its serial time** (3.4 s / 1.7 s / 1.6 s per run against a 3.4 / 1.8 / 1.6 serial control). The results directory is stamped to the millisecond and disambiguated by pid, so parallel runs never write over each other.
 
-**Safe for**: everything a scenario asserts, which is DOM state, CDP input, the CLI, the harness channel's menu / accelerators / dialogs / dock counters, and the app's own activity signalling. **Not safe for**: anything that measures pixels. Under `hidden` a screenshot comes back blank white (`Page.captureScreenshot` composites the window's alpha), under `offscreen` it comes back at half resolution with sub-pixel geometry quantised differently. `rec.shot` writes that caveat into the note it records, and `results.json` carries the placement, so a picture is never silently worth less than it looks. Pixel checks belong in the audit.
+**Safe for**: everything a scenario asserts, which is DOM state, CDP input, the CLI, the harness channel's menu / accelerators / dialogs / dock counters / notification records, and the app's own activity signalling. **Not safe for**: anything that measures pixels. Under `hidden` a screenshot comes back blank white (`Page.captureScreenshot` composites the window's alpha), under `offscreen` it comes back at half resolution with sub-pixel geometry quantised differently. `rec.shot` writes that caveat into the note it records, and `results.json` carries the placement, so a picture is never silently worth less than it looks. Pixel checks belong in the audit.
 
 ### What was measured
 
@@ -92,6 +110,8 @@ One second of each, per placement, blurred as well as focused, because `dock-bou
 | `offscreen` | 76 | 76 | 220 | visible | **1** | 1280×820 real | 2/3 |
 | `onscreen` | 121 | 121 | 208 | visible | 2 | 2560×1640 real | 2/3 |
 | `hidden`, `KELPI_HARNESS_WINDOW_THROTTLE=0` | 121 | 121 | 220 | visible | 2 | blank | 2/3 |
+
+The table is that measurement, and it was taken over the three scenarios that existed then. `notification-shown-and-opened` (#67) came later: 20/20 at `hidden` and 20/20 at `offscreen`, which is the difference between it and `dock-bounce-stop-only`. Its preconditions are the daemon's suppression matrix (§7.1/§7.2 need `!isFocused || !isAppActive`, and it parks the agent's pane in a workspace that is not the active one), not the window's occlusion, so a placement nothing ever covers costs it nothing. It has not been run at `onscreen`, which takes the screen.
 
 Two findings decided the design.
 
@@ -152,7 +172,7 @@ Explicit, and never silent: the reason is printed when the plan is printed, prin
 - The functional lane is scenarios only. The AUDIT is still one visible window per run: 107 of its 118 steps are `needs-eyes`, so a placement that costs the pictures costs it its product (`audit-window.ts` has that table; offscreen reproduced 113 of 118 steps and turned two green assertions red).
 - Nothing enforces the lane's caveat. A scenario can still take a screenshot under `--window hidden` and assert on it; the note says the pixels are worthless, and no code stops you.
 - `dock-bounce-stop-only` cannot run at `--window onscreen` or `--window offscreen` (above). A scenario that needs an inactive app needs a window macOS agrees is not visible.
-- Notifications are not counted yet: `new Notification(...)` is a class import and is not wrapped. The dock and dialogs are.
+- The channel sees the notifications the SHELL posts. The browser client's own `Notification` (`client/src/state/notifications.ts`) is a different presenter on the other side of CDP, and §7.5's two halves withdraw on different triggers; a scenario that wants the client's toast asserts on the page.
 - The helpers in `driver.mjs` are copies of the audit's private ones, not shared with it. The audit can be pointed at the driver once the phone campaign stops touching `audit.mjs`.
 - **The rule checks that something exercises the surface, never that it exercises YOUR change.** A `covers` entry is a claim by whoever wrote it, and nothing verifies the claim: once `confirm-dialog-keys` covers `Sidebar.tsx`, every future `Sidebar.tsx` change is discharged by it, including the ones it does not press. That is the same bargain the surface map already makes (maintained, not inferred), and it is why the PR still says which scenario ran and what it asserted.
 - Discharging is per DIFF, not per file: one scenario written anywhere in `scripts/scenarios/`, or one edit to `audit.mjs`, satisfies the rule for every UI file in that diff. `verify.mjs` prints the files no `covers` entry names, so the gap is visible; it does not refuse on it.

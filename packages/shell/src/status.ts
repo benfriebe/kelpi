@@ -29,7 +29,7 @@
  * a daemon that is gone is worse than no badge.
  */
 
-import { Menu, Notification, Tray, app, nativeImage, nativeTheme } from 'electron';
+import { Menu, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
 import { type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
@@ -58,8 +58,16 @@ import {
     type IconIndicator,
     type TrayStatusPalette
 } from './icon.js';
+// #67: the one seam every notification the shell posts goes through, so the harness channel
+// can see it without a class import to intercept.
+import { notificationsSupported, presentNotification } from './notify-present.js';
 // §AGNT-073: the `kelpi-agent` category — its two actions and the index→action mapping.
-import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
+import {
+    agentNotificationSpec,
+    notificationActionID,
+    notificationLogLine,
+    type KelpiNotificationHandle
+} from './notify.js';
 import {
     parseShellAction,
     parseWorkspaceSelection,
@@ -313,7 +321,7 @@ export function createStatusController(options: StatusOptions): StatusController
     const pendingFlushes = new Map<string, (ok: boolean) => void>();
     let requestSeq = 0;
     /** `kelpi-<paneID>` replace-on-repost identity (agent-lifecycle.md §7.5). */
-    const liveNotifications = new Map<string, Notification>();
+    const liveNotifications = new Map<string, KelpiNotificationHandle>();
 
     /**
      * Pull the fields the main process acts on out of a settings payload.
@@ -616,7 +624,7 @@ export function createStatusController(options: StatusOptions): StatusController
     }
 
     function notify(message: JsonRecord): void {
-        if (!Notification.isSupported()) return;
+        if (!notificationsSupported()) return;
         const paneID = readString(message, 'paneID');
         const workspaceID = readString(message, 'workspaceID');
         const title = readString(message, 'title') ?? 'Kelpi';
@@ -635,29 +643,41 @@ export function createStatusController(options: StatusOptions): StatusController
         // §AGNT-073: every agent notification carries the `kelpi-agent` category's action set,
         // built in one place so the two buttons are always the same two, in the same order.
         const spec = agentNotificationSpec({ title, body });
-        const notification = new Notification({
-            title: spec.title,
-            body: spec.body,
-            silent: spec.silent,
-            // Electron's `NotificationAction[]` is mutable; the spec's is not, by design.
-            actions: spec.actions.map((action) => ({ type: action.type, text: action.text }))
-        });
-        notification.on('click', open);
-        notification.on('action', (_event, index) => {
-            // Index → name, never a bare `index === 0`: the mapping lives with the actions.
-            const action = notificationActionID(index);
-            if (action === 'open') {
-                open();
-                return;
+        // The handlers go in up front rather than onto the object afterwards (#67): one call
+        // holds everything the OS can do to this notification, which is what lets the harness
+        // channel fire the very same closures for `notification-click` / `notification-close`.
+        // `notification` is assigned from the call and only READ from inside the handlers, all
+        // of which run later.
+        let notification: KelpiNotificationHandle | null = null;
+        notification = presentNotification(
+            {
+                title: spec.title,
+                body: spec.body,
+                silent: spec.silent,
+                actions: spec.actions,
+                // Not Electron's: §7.5's identity, so a driver can assert the dedupe.
+                paneID: paneID ?? null,
+                key
+            },
+            {
+                onClick: open,
+                onAction: (index) => {
+                    // Index → name, never a bare `index === 0`: the mapping lives with the actions.
+                    const action = notificationActionID(index);
+                    if (action === 'open') {
+                        open();
+                        return;
+                    }
+                    // "Dismiss" does nothing beyond dismissing (§AGNT-075). macOS closes the
+                    // notification itself when an action is chosen; this makes it true either way
+                    // and lets the `close` handler drop it from the live map.
+                    if (action === 'dismiss') notification?.close();
+                },
+                onClose: () => {
+                    if (liveNotifications.get(key) === notification) liveNotifications.delete(key);
+                }
             }
-            // "Dismiss" does nothing beyond dismissing (§AGNT-075). macOS closes the
-            // notification itself when an action is chosen; this makes it true either way and
-            // lets the `close` handler drop it from the live map.
-            if (action === 'dismiss') notification.close();
-        });
-        notification.on('close', () => {
-            if (liveNotifications.get(key) === notification) liveNotifications.delete(key);
-        });
+        );
         liveNotifications.set(key, notification);
         notification.show();
         // The buttons live in the OS notification centre, where no screenshot reaches: this line

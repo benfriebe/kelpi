@@ -630,20 +630,20 @@ function BlankHarness(props: {
     useBlankWebPaneURLFocus(targets, props.onFocus, props.attached ?? true);
     return (
         <div>
-            <button type="button" data-testid="add-blank" onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: '' }])}>
+            <button type="button" data-testid="add-blank" onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: '', tabIDs: [TAB1] }])}>
                 blank pane
             </button>
             <button
                 type="button"
                 data-testid="add-loaded"
-                onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: 'https://example.com/' }])}
+                onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: 'https://example.com/', tabIDs: [TAB1] }])}
             >
                 loaded pane
             </button>
             <button
                 type="button"
                 data-testid="url-arrives"
-                onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: 'https://example.com/' }])}
+                onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: 'https://example.com/', tabIDs: [TAB1] }])}
             >
                 url arrives
             </button>
@@ -651,10 +651,28 @@ function BlankHarness(props: {
                 type="button"
                 data-testid="add-blank-tab"
                 onClick={() =>
-                    setTargets([{ paneID: PANE, activeTabID: TAB2, activeURL: '' }])
+                    setTargets([{ paneID: PANE, activeTabID: TAB2, activeURL: '', tabIDs: [TAB1, TAB2] }])
                 }
             >
                 blank tab
+            </button>
+            <button
+                type="button"
+                data-testid="two-blank-tabs"
+                onClick={() =>
+                    setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: '', tabIDs: [TAB1, TAB2] }])
+                }
+            >
+                two tabs, first active
+            </button>
+            <button
+                type="button"
+                data-testid="cycle-to-tab2"
+                onClick={() =>
+                    setTargets([{ paneID: PANE, activeTabID: TAB2, activeURL: '', tabIDs: [TAB1, TAB2] }])
+                }
+            >
+                cycle to the other one
             </button>
         </div>
     );
@@ -687,6 +705,31 @@ describe('a blank web pane claims the URL bar (WEB-002)', () => {
         render(<BlankHarness onFocus={(paneID) => focused.push(paneID)} />);
         fireEvent.click(screen.getByTestId('add-loaded'));
         fireEvent.click(screen.getByTestId('add-blank-tab'));
+        expect(focused).toEqual([PANE]);
+    });
+
+    /**
+     * Issue #33 - cycling is not opening, and keying on the ACTIVE tab could not tell.
+     *
+     * `blankTargetKey` was `pane:activeTab`, so ⌘⇧] onto a tab that already existed produced a
+     * key the rule had never seen and read as an arrival. WEB-002 then took the caret to the URL
+     * bar, and the priority layer's URL-bar exception declined every further ⌘⇧]
+     * (config-keybindings.md 7.3): the tab strip moved exactly once and jammed. Invisible until
+     * the keyboard actually followed the pane, which is why it surfaced with the chord relay.
+     */
+    it('does not bump when cycling onto a blank tab that already existed', () => {
+        const focused: string[] = [];
+        render(<BlankHarness onFocus={(paneID) => focused.push(paneID)} />);
+        fireEvent.click(screen.getByTestId('two-blank-tabs'));
+        expect(focused).toEqual([PANE]);
+
+        // ⌘⇧]: TAB2 was there all along, so this is a switch, not an opening.
+        fireEvent.click(screen.getByTestId('cycle-to-tab2'));
+        expect(focused).toEqual([PANE]);
+
+        // …and back again, as many times as the user likes.
+        fireEvent.click(screen.getByTestId('two-blank-tabs'));
+        fireEvent.click(screen.getByTestId('cycle-to-tab2'));
         expect(focused).toEqual([PANE]);
     });
 

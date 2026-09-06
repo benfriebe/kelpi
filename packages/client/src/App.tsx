@@ -930,7 +930,14 @@ function Shell(props: AppProps): ReactElement {
                 const web = workspace?.webPanes[paneID];
                 const tabs = web?.tabs ?? [];
                 const tab = tabs.find((candidate) => candidate.id === web?.activeTabID) ?? tabs[0] ?? null;
-                return { paneID, activeTabID: tab?.id ?? null, activeURL: tab?.url ?? '' };
+                return {
+                    paneID,
+                    activeTabID: tab?.id ?? null,
+                    activeURL: tab?.url ?? '',
+                    // Every tab, so the rule can tell a CREATED tab from one that just became
+                    // active: cycling onto a blank tab is not an opening (issue #33).
+                    tabIDs: tabs.map((candidate) => candidate.id)
+                };
             }),
         [webPaneIDs, workspace]
     );

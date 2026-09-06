@@ -154,17 +154,44 @@ export interface BlankURLTarget {
     /** The active tab's id, or null for a pane with no tab at all. */
     readonly activeTabID: string | null;
     readonly activeURL: string;
+    /**
+     * EVERY tab in the pane, not just the active one.
+     *
+     * Without it the rule cannot tell a tab that has just been CREATED from one that merely
+     * became active, and those need opposite answers - see the note on `blankTargetKey`.
+     */
+    readonly tabIDs: readonly string[];
 }
 
 /**
- * The signature that decides whether a target is NEW: pane + which tab is active.
+ * The signature of one TAB's existence: pane + tab.
  *
- * A tab's URL filling in (the load landing) must not re-bump — only the arrival of a pane, or
- * of a tab, can. That is exactly the Swift split: `openWebPanePath` and `webPaneOpenNewTab`
- * bump `webPaneURLFocusTokens` at creation time and nothing else ever does.
+ * Deliberately not "pane + which tab is ACTIVE", which is what this was, because the two are
+ * indistinguishable when there is only ever one entry per pane - and they must not be. A tab's
+ * URL filling in (the load landing) must not re-bump, and neither must CYCLING to a tab that
+ * already existed; only the arrival of a pane, or of a tab, can. That is exactly the Swift
+ * split: `openWebPanePath` and `webPaneOpenNewTab` bump `webPaneURLFocusTokens` at creation time
+ * and nothing else ever does.
+ *
+ * Keying on the active tab broke that, and the failure was not subtle once the keyboard actually
+ * followed the pane (issue #33): ⌘⇧] onto a blank tab looked like an arrival, WEB-002 took the
+ * caret to the URL bar, and the URL-bar exception in the priority layer then declined every
+ * further ⌘⇧] (config-keybindings.md 7.3). The tab strip moved once and jammed.
  */
-function blankTargetKey(target: BlankURLTarget): string {
-    return `${target.paneID}:${target.activeTabID ?? ''}`;
+function blankTargetKey(paneID: string, tabID: string | null): string {
+    return `${paneID}:${tabID ?? ''}`;
+}
+
+/** Every tab that currently EXISTS, which is what makes a closed tab prune itself. */
+function existingTabKeys(targets: readonly BlankURLTarget[]): Set<string> {
+    const keys = new Set<string>();
+    for (const target of targets) {
+        for (const tabID of target.tabIDs) keys.add(blankTargetKey(target.paneID, tabID));
+        // A pane with no tabs at all still has an identity to adopt, or its first tab would
+        // read as an arrival into a pane nobody had seen.
+        if (target.tabIDs.length === 0) keys.add(blankTargetKey(target.paneID, null));
+    }
+    return keys;
 }
 
 /**
@@ -202,14 +229,14 @@ export function useBlankWebPaneURLFocus(
             return;
         }
         const previous = seen.current;
-        const next = new Set(targets.map(blankTargetKey));
-        seen.current = next;
+        seen.current = existingTabKeys(targets);
         // First pass: adopt whatever is on screen without stealing focus. A client that
         // reloaded (or attached to a running daemon) is not "opening" these panes, and the
         // Swift app only ever bumped on the action that created one.
         if (previous === null) return;
         for (const target of targets) {
-            if (previous.has(blankTargetKey(target))) continue;
+            // "Did this TAB exist last time?" - not "was it the one on screen last time?".
+            if (previous.has(blankTargetKey(target.paneID, target.activeTabID))) continue;
             if (target.activeURL.trim() !== '') continue;
             focusURLBar(target.paneID);
         }

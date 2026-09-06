@@ -11,8 +11,10 @@ import {
     CLIPBOARD_IMAGE_DIR,
     MAX_PASTE_IMAGE_BYTES,
     SHELL_ACTION_EVENT,
+    clippedByBorder,
     createDesktopChannel,
     isDesktopCommand,
+    looksLikeLink,
     resolveTerminalPath,
     shellEscapePath,
     tokenAt,
@@ -42,6 +44,8 @@ function fixture(
     options: {
         editor?: string | null;
         cell?: { text: string; offset: number } | null;
+        /** The OSC 8 URI the clicked cell carries (#83); absent means the pane has none. */
+        hyperlink?: string | null;
         exists?: boolean;
         restart?: boolean;
     } = {}
@@ -53,9 +57,13 @@ function fixture(
     // as the real `TerminalStateServiceImpl` provides it.
     const term = h.term as unknown as {
         cellTextAsync?: (id: string, r: number, c: number) => Promise<{ text: string; offset: number } | null>;
+        hyperlinkAtAsync?: (id: string, r: number, c: number) => Promise<string | null>;
     };
     if (options.cell !== undefined) {
         term.cellTextAsync = async () => options.cell ?? null;
+    }
+    if (options.hyperlink !== undefined) {
+        term.hyperlinkAtAsync = async () => options.hyperlink ?? null;
     }
     const channel = createDesktopChannel({
         ctx: h.ctx,
@@ -113,6 +121,50 @@ describe('tokenAt (CONT-122 trimming)', () => {
         expect(tokenAt('a b', 1)).toBeNull();
         expect(tokenAt('abc', 9)).toBeNull();
         expect(tokenAt('', 0)).toBeNull();
+    });
+
+    /**
+     * #83. A TUI draws its frames out of box-drawing characters and, when the content fills the
+     * box, glues them straight onto it with no padding cell. With `│` absent from the break set
+     * the token kept the border and `urlFromToken`'s scheme anchor failed, so a ⌘-click on a
+     * perfectly ordinary URL inside a ratatui box did nothing at all.
+     */
+    it('breaks on box-drawing and block characters, not just the ASCII pipe', () => {
+        expect(tokenAt('│https://example.com/x│', 5)).toBe('https://example.com/x');
+        expect(tokenAt('│docs/notes.md│', 3)).toBe('docs/notes.md');
+        // The heavy, double and rounded variants a TUI picks between, and the blocks it draws
+        // gauges out of.
+        expect(tokenAt('┃notes.md┃', 2)).toBe('notes.md');
+        expect(tokenAt('║notes.md║', 2)).toBe('notes.md');
+        expect(tokenAt('█notes.md░', 2)).toBe('notes.md');
+        expect(tokenAt('─notes.md─', 2)).toBe('notes.md');
+        // And the border cell itself is not a token.
+        expect(tokenAt('│https://example.com/x│', 0)).toBeNull();
+    });
+});
+
+describe('clippedByBorder (#83)', () => {
+    it('is true only when the token runs FLUSH into a border, with no padding cell', () => {
+        // The head row of a hard-wrapped URL: the box was filled, so the address continues.
+        expect(clippedByBorder('│https://example.com/wrapped/pa│', 5)).toBe(true);
+        // The same box with a URL that fitted: a TUI pads what fits.
+        expect(clippedByBorder('│ https://example.com/x │', 5)).toBe(false);
+        // Nothing to the right at all: an ordinary line of shell output.
+        expect(clippedByBorder('open https://example.com/x', 8)).toBe(false);
+        expect(clippedByBorder('open https://example.com/x and more', 8)).toBe(false);
+        expect(clippedByBorder('', 0)).toBe(false);
+        expect(clippedByBorder('abc', 9)).toBe(false);
+    });
+});
+
+describe('looksLikeLink (#83)', () => {
+    it('is the difference between a refused link and a click on prose', () => {
+        expect(looksLikeLink('https://example.com/x')).toBe(true);
+        expect(looksLikeLink('file:///etc/passwd')).toBe(true);
+        expect(looksLikeLink('slack://channel?id=1')).toBe(true);
+        expect(looksLikeLink('docs/notes.md')).toBe(false);
+        expect(looksLikeLink('cargo')).toBe(false);
+        expect(looksLikeLink('example.com/x')).toBe(false);
     });
 });
 
@@ -236,6 +288,79 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
             opened: 'none'
         });
+    });
+
+    /**
+     * #83. The whole reason ⌘-click did nothing in a Codex pane: the address is in an OSC 8
+     * attribute and the visible text is a title, so the token scan reads prose. The attribute
+     * is read FIRST, and it wins over whatever the scan would have said.
+     */
+    it('prefers the OSC 8 hyperlink at the cell over the token under it', async () => {
+        const f = fixture({
+            hyperlink: 'https://example.com/full/path',
+            cell: { text: 'see the docs now', offset: 8 }
+        });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 8 })).toMatchObject({
+            ok: true,
+            opened: 'external',
+            url: 'https://example.com/full/path',
+            source: 'hyperlink'
+        });
+    });
+
+    it('falls back to the token scan when the cell carries no hyperlink', async () => {
+        const f = fixture({ hyperlink: null, cell: { text: 'open https://example.com/x', offset: 8 } });
+        expect(await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 8 })).toMatchObject({
+            ok: true,
+            opened: 'external',
+            url: 'https://example.com/x',
+            source: 'token'
+        });
+    });
+
+    /**
+     * The silent-failure half of #83. A ⌘-click AIMED at a link that we refuse to hand the OS
+     * comes back with a reason so the client can say a word; a ⌘-click on prose or on empty
+     * screen deliberately does not, because a toast on every stray ⌘-click is noise.
+     */
+    it('reports a refused link with a reason, and stays silent about prose', async () => {
+        const refusedLink = fixture({ hyperlink: 'file:///etc/passwd', cell: null });
+        expect(await refusedLink.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 2 })).toMatchObject({
+            ok: true,
+            opened: 'none',
+            reason: 'link-not-http',
+            link: 'file:///etc/passwd'
+        });
+
+        const refusedToken = fixture({ cell: { text: 'see slack://channel now', offset: 6 } });
+        expect(await refusedToken.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 })).toMatchObject({
+            ok: true,
+            opened: 'none',
+            reason: 'link-not-http',
+            token: 'slack://channel'
+        });
+
+        // The head row of a hard-wrapped URL inside a ratatui box: a valid URL, and the WRONG
+        // one. Declined with a reason rather than opened truncated.
+        const clipped = fixture({ cell: { text: '  │https://example.com/wrapped/pa│', offset: 8 } });
+        expect(await clipped.channel.run('open-terminal-target', { pane_id: P0, row: 2, col: 8 })).toMatchObject({
+            ok: true,
+            opened: 'none',
+            reason: 'link-clipped',
+            token: 'https://example.com/wrapped/pa'
+        });
+        // The same box with a URL that FITTED opens, because a TUI pads what fits.
+        const fitted = fixture({ cell: { text: '  │ https://example.com/x │', offset: 9 } });
+        expect(await fitted.channel.run('open-terminal-target', { pane_id: P0, row: 2, col: 9 })).toMatchObject({
+            ok: true,
+            opened: 'external',
+            url: 'https://example.com/x'
+        });
+
+        const prose = fixture({ cell: { text: 'cargo build --release', offset: 2 } });
+        const quiet = await prose.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 2 });
+        expect(quiet).toMatchObject({ ok: true, opened: 'none' });
+        expect(quiet['reason']).toBeUndefined();
     });
 
     it('refuses an unknown pane, a non-terminal pane and a missing cell', async () => {

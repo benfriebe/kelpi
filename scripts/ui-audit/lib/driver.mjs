@@ -149,7 +149,13 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
         menuClick: (target) => request('menu-click', target),
         /** Land a native accelerator: clicks the first enabled menu item bound to it. */
         press: (accelerator) => request('press', { accelerator }),
-        /** { dockBounces, lastBounce, dialogs, lastDialog, notifications, lastNotification, recentNotifications }. */
+        /**
+         * { dockBounces, lastBounce, dialogs, lastDialog, notifications, lastNotification,
+         * recentNotifications, externalOpens, lastExternalUrl }.
+         *
+         * `externalOpens` / `lastExternalUrl` are `shell.openExternal` calls (#83), and under
+         * the harness the open is RECORDED INSTEAD OF PERFORMED, so nothing launches a browser.
+         */
         counters: () => request('counters'),
         /** The NEXT native dialog resolves with this instead of showing. One-shot. */
         armDialog: ({ response, checkboxChecked = false }) => request('dialog-arm', { response, checkboxChecked }),

@@ -671,6 +671,15 @@ export interface CountersSnapshot {
     readonly lastNotification: NotificationRecord | null;
     /** The last `NOTIFICATION_HISTORY` of them, oldest first: ordering and §7.5's dedupe. */
     readonly recentNotifications: readonly NotificationRecord[];
+    /**
+     * Every `shell.openExternal` the shell asked for this run, and the last URL it named (#83).
+     *
+     * "The browser opened" is otherwise unobservable from a driver: the OS takes the URL and
+     * nothing about it comes back through CDP, the DOM or the CLI. Under the harness the real
+     * open is SWALLOWED as well as counted; see `harness.ts` ▸ `wrapExternalOpen`.
+     */
+    readonly externalOpens: number;
+    readonly lastExternalUrl: string | null;
 }
 
 /**
@@ -683,6 +692,10 @@ export interface CountersSnapshot {
  * the whole run hostage until a human clicks it; armed, the wrapper answers it without showing
  * it, and the record still says what the box would have asked. The arm is one-shot so a stale
  * answer from an earlier step can never swallow a later dialog silently.
+ *
+ * `externalOpens` / `lastExternalUrl` are the same idea for `shell.openExternal` (#83): a URL
+ * the shell hands the OS leaves no trace a driver can read, and the ⌘-click path's whole point
+ * is which URL arrives there.
  */
 export class HarnessCounters {
     #dockBounces = 0;
@@ -692,10 +705,18 @@ export class HarnessCounters {
     #arm: DialogArm | null = null;
     #notifications = 0;
     #shownNotifications: RecordedNotification[] = [];
+    #externalOpens = 0;
+    #lastExternalUrl: string | null = null;
 
     recordBounce(type: string | undefined): void {
         this.#dockBounces += 1;
         this.#lastBounce = type ?? 'informational';
+    }
+
+    /** A URL the shell handed to the OS opener (#83). Recorded whole, never trimmed. */
+    recordExternalOpen(url: string): void {
+        this.#externalOpens += 1;
+        this.#lastExternalUrl = url;
     }
 
     arm(arm: DialogArm): { armed: true } {
@@ -771,7 +792,9 @@ export class HarnessCounters {
             lastDialog: this.#lastDialog === null ? null : { ...this.#lastDialog.record },
             notifications: this.#notifications,
             lastNotification: this.#shownNotifications[this.#shownNotifications.length - 1]?.record ?? null,
-            recentNotifications: this.#shownNotifications.map((entry) => entry.record)
+            recentNotifications: this.#shownNotifications.map((entry) => entry.record),
+            externalOpens: this.#externalOpens,
+            lastExternalUrl: this.#lastExternalUrl
         };
     }
 }

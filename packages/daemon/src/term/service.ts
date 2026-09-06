@@ -55,6 +55,21 @@ export const DEFAULT_ROWS = 24;
 type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof Terminal>[0]>['windowsPty']>;
 
 /**
+ * The two private xterm shapes `hyperlinkAt` reads (#83). Named here rather than inlined so the
+ * blast radius of an emulator upgrade is one declaration, and so the read site stays readable.
+ * Every field is optional: the reader treats a missing one as "no hyperlink", never as an error.
+ * See `hyperlinkAt` for why the private path is taken at all.
+ */
+interface XtermCoreLine {
+    readonly _extendedAttrs?: Record<number, { readonly urlId?: number } | undefined> | undefined;
+}
+interface XtermCoreWithLinks {
+    readonly _inputHandler?:
+        | { readonly _oscLinkService?: { getLinkData(id: number): { uri?: string } | undefined } | undefined }
+        | undefined;
+}
+
+/**
  * THE REFLOW POLICY — read this before touching `applyGrid`.
  *
  * A shell's line editor repaints on `SIGWINCH` assuming the terminal did **not** move its
@@ -628,6 +643,60 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     ): Promise<{ text: string; offset: number } | null> {
         await this.flush(paneID);
         return this.cellText(paneID, row, col);
+    }
+
+    /**
+     * The OSC 8 hyperlink URI attached to a VIEWPORT cell, or null (#83).
+     *
+     * A full-screen TUI does not print URLs the way a shell does. Codex, ratatui apps and an
+     * increasing number of CLIs emit OSC 8 (`ESC ] 8 ; ; URI ST title ST`), where the cells hold
+     * the TITLE and the address exists only as an attribute on them. `cellText` reads display
+     * text, so the token under such a click is a prose word and the URL is unreachable, which
+     * is exactly what "⌘-click does nothing in a Codex pane" was.
+     *
+     * **This reaches into xterm's private internals, deliberately, and here is the reasoning.**
+     * `@xterm/headless` parses OSC 8 and stores it (the id on the cell's extended attributes,
+     * the URI in an `OscLinkService`), but exposes neither through its public API: the only
+     * public consumer is `xterm`'s DOM/canvas renderer, which this daemon does not run. The
+     * alternatives were to re-parse the PTY stream for OSC 8 alongside the emulator (a second
+     * incomplete emulator, and it would have to track the cursor to know which cells a link
+     * covers) or to leave every hyperlinked URL unopenable. So: two private reads, both wrapped
+     * in one try/catch that answers null, and `hyperlink.test.ts` drives a real OSC 8 sequence
+     * through the real emulator and reads it back, so an xterm upgrade that moves either of
+     * them breaks that test rather than silently returning null forever.
+     *
+     * Row/col are the same VIEWPORT coordinates `cellText` takes, and the same `baseY` offset
+     * applies, so the alternate screen (where a TUI lives) reads correctly. No wrap-joining is
+     * needed or wanted: every cell of a link carries the id, so the tail row of a hard-wrapped
+     * hyperlink answers the whole URI just as the head row does.
+     */
+    hyperlinkAt(paneID: string, row: number, col: number): string | null {
+        const entry = this.panes.get(paneID);
+        if (!entry) return null;
+        if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
+        try {
+            const buffer = entry.term.buffer.active;
+            const y = Math.max(0, buffer.baseY) + Math.floor(row);
+            if (y >= buffer.length) return null;
+            const line = buffer.getLine(y);
+            if (!line) return null;
+            // `buffer.getLine` hands back an API view; the extended attributes live on the core
+            // line it wraps, indexed by CELL column (which is what the client sends).
+            const core = (line as unknown as { _line?: XtermCoreLine })._line;
+            const urlId = core?._extendedAttrs?.[Math.floor(col)]?.urlId;
+            if (typeof urlId !== 'number' || urlId === 0) return null;
+            const links = (entry.term as unknown as { _core?: XtermCoreWithLinks })._core
+                ?._inputHandler?._oscLinkService;
+            const uri = links?.getLinkData(urlId)?.uri;
+            return typeof uri === 'string' && uri !== '' ? uri : null;
+        } catch {
+            return null;
+        }
+    }
+
+    async hyperlinkAtAsync(paneID: string, row: number, col: number): Promise<string | null> {
+        await this.flush(paneID);
+        return this.hyperlinkAt(paneID, row, col);
     }
 
     /**

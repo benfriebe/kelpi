@@ -713,22 +713,68 @@ happens.
 ### 7.6 Open URL / CMD-click on `.md` path (`OPEN_URL`)
 
 A ⌘-click on a terminal cell is a daemon round-trip (`open-terminal-target`,
-`packages/daemon/src/ws/desktop.ts:272-332`; the client sends the clicked cell from
-`packages/client/src/App.tsx:2066-2067`, `:3704`). The client sends `pane_id`, `row`, `col`;
-the daemon reads the wrap-joined logical line under that cell from its own buffer
-(`cellText`, `packages/daemon/src/term/service.ts:589-637`) and takes the token at that
-offset:
+`packages/daemon/src/ws/desktop.ts`; the client sends the clicked cell from
+`packages/client/src/App.tsx` `onRootClickCapture` → `cellFromPoint`). The client sends
+`pane_id`, `row`, `col`; the daemon makes **two reads at that cell, in this order**:
+
+**1. The OSC 8 hyperlink on the cell** (`hyperlinkAt`, `packages/daemon/src/term/service.ts`).
+A TUI that emits `ESC ] 8 ; ; URI ST title ST` has stated the address outright and the cells
+hold only its title, so the attribute wins over anything the text scan could say. It is read
+from the emulator's own buffer (through private xterm internals, behind a try/catch that falls
+back to the scan; `packages/daemon/src/term/hyperlink.test.ts` drives a real OSC 8 sequence
+through the real emulator so an upgrade breaks the test rather than the feature). An `http(s)`
+URI → `opened: "external", url, source: "hyperlink"`; any other scheme →
+`opened: "none", reason: "link-not-http"`.
+
+**2. Otherwise the token under the cell.** The daemon reads the wrap-joined logical line
+(`cellText`, `packages/daemon/src/term/service.ts`) and takes the token at that offset:
 - the token is trimmed of trailing `.`, then `,;:`, then `.` again, and a balanced wrapper
-  pair (`()`, `[]`, `<>`, quotes) is stripped (`tokenAt`, `desktop.ts:168-193`);
-- an `http(s)://` URL → reply `opened: "external", url` and the client hands it to the OS
-  opener (`urlFromToken`, `desktop.ts:205-213`);
+  pair (`()`, `[]`, `<>`, quotes) is stripped (`tokenAt`, `desktop.ts`);
+- a token breaks on whitespace, on the shell-and-prose punctuation (double quote, apostrophe,
+  backtick, `<`, `>`, `|`), **and on the box-drawing and block characters**
+  U+2500…U+257F, U+2588 and U+2591…U+2593. A TUI draws its
+  frames out of those and glues them straight onto the content when the box is full
+  (`│https://example.com/x│`), and with `│` absent from the break set the border stayed on the
+  token and the click did nothing;
+- an `http(s)://` URL → reply `opened: "external", url, source: "token"` and the client hands
+  it to the OS opener (`urlFromToken`, `desktop.ts`);
+- **unless that URL runs flush into a box border**, with no padding cell between them
+  (`clippedByBorder`, `desktop.ts`) → `opened: "none", reason: "link-clipped"`. A TUI pads a URL
+  that fits inside its frame; one that touches the border filled the frame, which means the rest
+  of the address is on the next row. Nothing is joined and no address is invented: the click is
+  declined with a message instead of opening a truncated URL, which is the "occasionally it opens
+  a wrong, truncated URL" half of the report. The cost is a box sized exactly to a complete URL,
+  which is declined with a message rather than opened; a hyperlinked URL never reaches this rule,
+  because read 1 answered it in full;
+- a token with some other `scheme://` → `opened: "none", reason: "link-not-http"`;
 - otherwise the token is resolved against the pane's `workingDirectory` (with `~` expansion
-  and path normalisation, `resolveTerminalPath`, `desktop.ts:196-202`); if it ends in `.md`
+  and path normalisation, `resolveTerminalPath`, `desktop.ts`); if it ends in `.md`
   (case-sensitive) **and the file exists** → open a markdown pane beside the source pane and
   focus the source pane first (`opened: "markdown"`); a `.md` token whose file is missing
   answers `opened: "missing"` and nothing opens (deliberate: a ⌘-click on prose must not leave
   a broken preview behind);
-- anything else → `opened: "none"`.
+- anything else → `opened: "none"`, with no `reason`.
+
+**A `reason` is what the client is allowed to speak about.** `opened: "missing"`,
+`reason: "link-not-http"` and `reason: "link-clipped"` raise a short toast; a bare
+`opened: "none"` raises nothing, because a ⌘-click lands on prose and on empty screen all day
+long and a toast for each would be noise.
+
+**Hard-wrapped rows are NOT re-joined.** A full-screen TUI positions the cursor per row, so
+autowrap never fires and `isWrapped` is false on both rows of a URL it split; `cellText` joins
+only across `isWrapped`. Where the URL is hyperlinked, read 1 answers the whole address from
+either row and there is nothing to fix. Where it is plain text inside a frame, the head row is
+declined as `link-clipped` and the tail row is not a URL at all, so nothing opens either way.
+Re-joining was considered and rejected: there is no wrap flag to key off, so a join would be a
+guess that manufactures URLs out of box interiors. **The remaining gap**: a URL hard-wrapped at
+the pane's right margin with no border to touch. Its head row is a valid URL with nothing after
+it, and the daemon cannot tell it from one that genuinely ends there, so it opens the head
+fragment. Emit OSC 8 (or print the URL on its own line) if you need that case to work.
+
+**A ⌘-click under mouse reporting is not also sent to the TUI.** `mouse.ts` treats `metaKey`
+as a report bypass exactly as it treats `shiftKey` (section 11), because the DEC protocol has
+no bit for ⌘ and the application would otherwise see a plain press it was never aimed at.
+Ghostty does the same. Plain clicks under reporting are unchanged.
 
 ### 7.7 In-terminal search actions (`START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED`)
 
@@ -1154,12 +1200,16 @@ and the kitty forms when a pane has negotiated the protocol.
   only when the cell changed, X10's 223-cell ceiling, and raw bytes (not UTF-8) on the wire
   for the X10 and URXVT formats. Turning reporting on suppresses the engine's selection for
   the same events, which is what a real terminal does, with ghostty's
-  `mouse-shift-capture = false` default as the escape hatch (`mouse.ts:440-450`): a
+  `mouse-shift-capture = false` default as the escape hatch (`mouse.ts` ▸ `bypassed`): a
   shift-held button press or release is recorded as held but not reported and is handed to
-  the engine, so shift-drag still selects while an application owns the mouse (`:459-465`,
-  `:503-510`); shift-held motion bypasses reporting only while a button is down, so a bare
-  shift+move under mode 1003 still reports (`:477-481`); shift+wheel is still reported, with
-  the shift bit set (`:519-544`). `mouseTracking: 'none'` resets the reporter.
+  the engine, so shift-drag still selects while an application owns the mouse; shift-held
+  motion bypasses reporting only while a button is down, so a bare shift+move under mode 1003
+  still reports; shift+wheel is still reported, with the shift bit set. **⌘ is the second
+  bypass, and it is Kelpi's own** (#83): ⌘-click is the link-and-path gesture (section 7.6) and
+  the DEC protocol has no bit for ⌘, so a ⌘-held press or release is recorded as held and not
+  reported, which is what stops a TUI seeing a plain click the user never aimed at it. Ghostty
+  captures ⌘ the same way. Neither bypass touches a PLAIN click, which reports exactly as it
+  always did. `mouseTracking: 'none'` resets the reporter.
 - No mouse mirroring to sync groups: every report is written as the un-mirrored
   `inputDirect` PTY frame (section 8.2), never as `input`.
 

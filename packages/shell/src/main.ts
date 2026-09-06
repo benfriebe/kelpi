@@ -1541,6 +1541,9 @@ async function boot(): Promise<void> {
         startHarness({
             app,
             dialog,
+            // #83: the harness counts (and swallows) `shell.openExternal`, which `openExternally`
+            // above reaches by property for exactly that reason.
+            shell,
             BrowserWindow,
             Menu,
             socketPath: harnessSocket,

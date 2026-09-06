@@ -62,7 +62,7 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.menu()` | the application menu as a tree: `{ id, label, accelerator, enabled, visible, type, role, checked, submenu }` |
 | `harness.menuClick({ id })` or `({ path: ['View', 'Toggle Sidebar'] })` | fires that item's click handler as Electron would |
 | `harness.press('Cmd+Alt+S')` | lands a native accelerator: clicks the first enabled item bound to it (Electron spellings normalised) |
-| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response }, notifications, lastNotification, recentNotifications }` |
+| `harness.counters()` | `{ dockBounces, lastBounce, dialogs, lastDialog: { title, message, buttons, response }, notifications, lastNotification, recentNotifications, externalOpens, lastExternalUrl }` |
 | `harness.armDialog({ response: 1 })` | the next native `dialog.showMessageBox` resolves with that instead of showing; one-shot |
 | `harness.notificationClick({ index, action })` | fires that notification's click handler, or the named action button's ("Open" / "Dismiss"), exactly as the OS would |
 | `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
@@ -77,6 +77,12 @@ Newline-delimited JSON on the socket, `{ id, op, ... }` in, `{ id, ok, result | 
 `crash` exists because issue #76's recovery is three processes wide (a renderer dies in the shell, the shell disposes and re-places the view, the daemon re-announces the pane, the client draws a card if it does not) and only the last of those is reachable from a renderer. CDP's `Page.crash` is not an alternative: it needs a debugger attached to the PANE's own target, and `--remote-debugging-port` exposes the shell window's page, not the `WebContentsView` inside it.
 
 It kills a real process, so it is the one op that changes the instance under the test rather than reading it. Keep it to a sandbox (which is all `KELPI_HARNESS_SOCKET` ever reaches), and remember the daemon rebuilds the pane automatically for the FIRST death in 30 s: to see the "This page stopped responding" card, wait for the rebuild and crash it again (web-pane.md §5.2). `scripts/ui-audit/web-view-rebuild.mjs` and `scripts/scenarios/web-pane-crashed-card.mjs` both do exactly that.
+
+### External opens
+
+`externalOpens` / `lastExternalUrl` are every `shell.openExternal` the shell asked for this run and the last URL it named, whole (#83). They exist because "the browser opened, at this address" is otherwise invisible to a driver: the URL goes to the OS and nothing about it comes back through CDP, the DOM or the CLI, which is what left the ⌘-click path (terminal-surface.md §7.6) with no live coverage of the thing it is for.
+
+**Under the channel the real open does NOT happen.** The wrapper records and swallows, exactly the way an armed `dialog.showMessageBox` is answered without being shown, and the caller's promise resolves as it always did. This is not a nicety: a battery that popped a browser window onto the machine every time a step ⌘-clicked a link would be unrunnable, and several sandboxes at once would fight over the foreground. A user's shell has no wrapper and opens links for real (`packages/shell/src/harness.ts` ▸ `wrapExternalOpen`). See `../scenarios/cmd-click-codex-links.mjs`.
 
 ### Notifications
 

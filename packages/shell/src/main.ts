@@ -630,7 +630,7 @@ function createWindow(): BrowserWindow {
      * Hiding and minimising, and the two events that undo them (issue #75).
      *
      * Resizing/moving the window changes the content area under every embedded view; the client
-     * re-measures and reports, so nothing is recomputed here — but a window that leaves the
+     * re-measures and reports, so nothing is recomputed here, but a window that leaves the
      * screen entirely must not keep views parented to it.
      *
      * These four lines are a matched set, and for a long time only the first two existed. A

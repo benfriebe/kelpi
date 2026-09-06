@@ -19,6 +19,7 @@
 
 import type { JsonObject } from '@kelpi/protocol';
 
+import { expectOwnFocusHandoff } from '../chrome/gesture-reset';
 import type { CommandReply } from '../connection';
 
 /** Anything that can put a request object on the wire — `CommandClient` satisfies it. */
@@ -189,12 +190,29 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
                 pane_id: paneID,
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
             }),
-        focusView: (paneID, tabID) =>
-            sender.raw({
+        focusView: (paneID, tabID) => {
+            /*
+             * Issue #79's registry, told that the blur it is about to see is ours.
+             *
+             * The shell answers this verb with `contents.focus()` on the pane's native view, so
+             * a `blur` lands on the client's `window` a millisecond or two later. It means the
+             * keyboard moved to a sibling widget of this same window; it does not mean the
+             * pointer left, and `chrome/gesture-reset.ts` would otherwise end every live gesture
+             * on it. Pressing a web pane's header does both at once - arms the pane-move gesture
+             * and focuses the pane - so before this the move was cancelled before it could cross
+             * the drag threshold, and a web pane could not be dragged onto another one at all.
+             *
+             * Here rather than at the call sites because this is the only door: `WebPane`'s
+             * claim effect, its URL-bar submit and `App.tsx`'s reveal handoff all come through
+             * it, and a caller added later is covered without knowing the rule exists.
+             */
+            expectOwnFocusHandoff();
+            return sender.raw({
                 command: 'web-focus-view',
                 pane_id: paneID,
                 ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
-            }),
+            });
+        },
         blurView: (paneID) =>
             sender.raw({
                 command: 'web-blur-view',

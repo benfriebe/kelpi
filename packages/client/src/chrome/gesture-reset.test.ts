@@ -7,7 +7,13 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerGestureReset, registeredGestureCount, resetGestures } from './gesture-reset';
+import {
+    expectOwnFocusHandoff,
+    registerGestureReset,
+    registeredGestureCount,
+    resetGestures,
+    setGestureResetClock
+} from './gesture-reset';
 
 const unregisters: Array<() => void> = [];
 
@@ -17,6 +23,7 @@ function register(reset: (reason: string) => void): void {
 
 afterEach(() => {
     while (unregisters.length > 0) unregisters.pop()?.();
+    setGestureResetClock(null);
 });
 
 function hide(state: 'hidden' | 'visible'): void {
@@ -80,6 +87,61 @@ describe('gesture reset registry', () => {
         window.dispatchEvent(new Event('blur'));
         expect(again).toHaveBeenCalledWith('blur');
         off2();
+    });
+
+    /*
+     * The integration of #79 with the web pane's keyboard claim. Focusing a web pane makes the
+     * client send `web-focus-view`; the shell answers with `contents.focus()` on the pane's
+     * native view and this document is blurred by its own request. Pressing a web pane's HEADER
+     * does that AND arms the pane-move gesture, so an unqualified reset cancelled the move two
+     * milliseconds after it started.
+     */
+    describe('a blur the client asked for itself', () => {
+        it('ends nothing, and only the ONE blur it predicted', () => {
+            const reset = vi.fn();
+            register(reset);
+
+            expectOwnFocusHandoff();
+            window.dispatchEvent(new Event('blur'));
+            expect(reset).not.toHaveBeenCalled();
+
+            // The prediction is spent. A second blur is the ordinary kind again, even though it
+            // lands well inside the same grace window.
+            window.dispatchEvent(new Event('blur'));
+            expect(reset).toHaveBeenCalledTimes(1);
+            expect(reset).toHaveBeenCalledWith('blur');
+        });
+
+        it('expires, so a prediction nothing answered cannot swallow a real blur later', () => {
+            let clock = 1_000;
+            setGestureResetClock(() => clock);
+            const reset = vi.fn();
+            register(reset);
+
+            expectOwnFocusHandoff();
+            // The handoff never produced a blur (the verb was refused, the view was gone). Time
+            // passes; the next blur is the user leaving.
+            clock += 251;
+            window.dispatchEvent(new Event('blur'));
+
+            expect(reset).toHaveBeenCalledTimes(1);
+            expect(reset).toHaveBeenCalledWith('blur');
+        });
+
+        it('does not excuse the document going hidden, or the recovery chord', () => {
+            const reset = vi.fn();
+            register(reset);
+
+            expectOwnFocusHandoff();
+            hide('hidden');
+            expect(reset).toHaveBeenCalledWith('hidden');
+
+            reset.mockClear();
+            hide('visible');
+            expectOwnFocusHandoff();
+            expect(resetGestures('manual')).toBe(1);
+            expect(reset).toHaveBeenCalledWith('manual');
+        });
     });
 
     it('lets a reset unregister itself from inside the run', () => {

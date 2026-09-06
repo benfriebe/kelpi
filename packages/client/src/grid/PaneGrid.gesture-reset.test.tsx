@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { leaf, split, type Rect } from '@kelpi/core/layout';
 
+import { expectOwnFocusHandoff, setGestureResetClock } from '../chrome/gesture-reset';
 import { PaneGrid, type PaneGridProps } from './PaneGrid';
 import { firePointer, stubBoundingRect, testPane } from './testing';
 
@@ -44,6 +45,7 @@ function hide(): void {
 afterEach(() => {
     cleanup();
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    setGestureResetClock(null);
     vi.useRealTimers();
 });
 
@@ -92,6 +94,53 @@ describe('PaneGrid gestures end on blur and on the document going hidden (issue 
         act(() => window.dispatchEvent(new Event('blur')));
 
         expect(onMovePane).not.toHaveBeenCalled();
+        act(() => firePointer(window, 'pointerup', { clientX: 600, clientY: 300 }));
+        expect(onMovePane).not.toHaveBeenCalled();
+    });
+
+    /*
+     * The integration defect this pins: pressing a WEB pane's header both arms the move and
+     * focuses the pane, and focusing a web pane hands the window's keyboard to its native view
+     * (`webpane/commands.ts` ▸ `focusView` → the shell's `contents.focus()`). The blur that
+     * answers landed about two milliseconds after the `pointerdown` and cancelled the gesture
+     * before it had crossed `PANE_MOVE_DRAG_THRESHOLD`, so no drop highlight was ever published
+     * and a web pane could not be dragged onto another one at all.
+     *
+     * The sequence below is that runtime order exactly: press, the claim, the blur it caused,
+     * and only then the drag.
+     */
+    it('does NOT cancel a pane move for the blur the pane’s own focus handoff caused', () => {
+        const onMovePane = vi.fn();
+        renderGrid({ onMovePane });
+        const header = screen.getByTestId('pane-header-a');
+        act(() => firePointer(header, 'pointerdown', { clientX: 100, clientY: 12 }));
+
+        // What focusing a web pane does, and what Blink sends back a moment later.
+        act(() => {
+            expectOwnFocusHandoff();
+            window.dispatchEvent(new Event('blur'));
+        });
+
+        act(() => firePointer(window, 'pointermove', { clientX: 600, clientY: 300 }));
+        act(() => firePointer(window, 'pointerup', { clientX: 600, clientY: 300 }));
+
+        expect(onMovePane).toHaveBeenCalledWith('a', 'b', expect.any(String));
+    });
+
+    it('still cancels the move for the NEXT blur, which nobody asked for', () => {
+        const onMovePane = vi.fn();
+        renderGrid({ onMovePane });
+        const header = screen.getByTestId('pane-header-a');
+        act(() => firePointer(header, 'pointerdown', { clientX: 100, clientY: 12 }));
+        act(() => {
+            expectOwnFocusHandoff();
+            window.dispatchEvent(new Event('blur'));
+        });
+        act(() => firePointer(window, 'pointermove', { clientX: 600, clientY: 300 }));
+
+        // The user leaves mid-drag. One prediction absorbs one blur, and this is not it.
+        act(() => window.dispatchEvent(new Event('blur')));
+
         act(() => firePointer(window, 'pointerup', { clientX: 600, clientY: 300 }));
         expect(onMovePane).not.toHaveBeenCalled();
     });

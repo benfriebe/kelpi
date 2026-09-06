@@ -24,6 +24,28 @@
  * hidden. `resetGestures` is also exported on its own, because the shell's recovery chord
  * (shell-ui.md §"Recovering a stuck window") needs to run exactly this from the outside.
  *
+ * ## The one blur that means nothing of the sort
+ *
+ * "The window lost focus" is not the same statement as "the keyboard left this document", and in
+ * a window that hosts native `WebContentsView` siblings the two come apart. Focusing a WEB pane
+ * makes the client send `web-focus-view` (`webpane/WebPane.tsx`'s claim effect), the shell
+ * answers it with `contents.focus()` on that pane's view (`shell/webhost/index.ts`), and Blink
+ * takes page focus off the client's renderer: a `blur` on this `window`, with the pointer still
+ * held, the gesture still ours, and the app still the one the user is looking at.
+ *
+ * That is not hypothetical. Pressing a web pane's HEADER both arms the pane-move gesture and
+ * focuses the pane, so the claim's blur landed about two milliseconds after the `pointerdown`
+ * and cancelled the move before it had crossed the drag threshold. A web pane could not be
+ * dragged onto another one at all: no drop highlight was ever published, so nothing parked the
+ * target's view and nothing was ever dropped.
+ *
+ * {@link expectOwnFocusHandoff} is the seam. The client is the only party that can tell its own
+ * handoff from the user's, because it is the one asking for it, and it asks through exactly one
+ * door (`webpane/commands.ts` ▸ `focusView`). A blur it has predicted ends no gesture; every
+ * other blur still ends all of them. A release landing IN a page never comes through here: that
+ * focus change is the shell's own answer to a click (`shell/webhost/view-focus.ts` §N29), so
+ * the case this module was written for is untouched.
+ *
  * A reset is not a cancel: each gesture decides what ending early means. Both of today's
  * callers COMMIT what the user has already dragged to, because a gesture that vanishes should
  * leave the divider (or the sidebar edge) where the user last saw it, not snap it back.
@@ -40,7 +62,31 @@ export type GestureResetReason = 'blur' | 'hidden' | 'manual';
 const resets = new Set<GestureReset>();
 let installed = false;
 
+/**
+ * How long a predicted blur stays predicted.
+ *
+ * The wait is a round trip (client → daemon → shell → `contents.focus()` → Blink's `blur` back
+ * into this document), which `scripts/ui-audit/audit.mjs`'s `web-popup-layering` step measured
+ * at one to two milliseconds. This is that with room for a machine under load, and it is still
+ * far too short to hold a state in: leaving the app inside the same few frames as focusing a web
+ * pane is not a gesture a person can make, and the cost if one somehow did is the pre-#79
+ * behaviour for a single blur.
+ */
+const OWN_FOCUS_HANDOFF_MS = 250;
+
+/** When the predicted blur stops being expected. `0` = nothing is expected. */
+let ownHandoffUntil = 0;
+
+/** The clock, as a seam: the unit tests drive it rather than sleeping. */
+let now: () => number = () => Date.now();
+
 function onBlur(): void {
+    if (ownHandoffUntil > now()) {
+        // One handoff, one blur: consumed here so the NEXT blur is read normally even if it
+        // arrives inside the same window.
+        ownHandoffUntil = 0;
+        return;
+    }
     runResets('blur');
 }
 
@@ -63,6 +109,9 @@ function uninstall(): void {
     window.removeEventListener('blur', onBlur);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     installed = false;
+    // Nothing is registered any more, so a prediction made for the gestures that just went away
+    // must not outlive them: a jsdom test that renders nothing leaves no global state behind.
+    ownHandoffUntil = 0;
 }
 
 function runResets(reason: GestureResetReason): number {
@@ -103,7 +152,33 @@ export function resetGestures(reason: GestureResetReason = 'manual'): number {
     return runResets(reason);
 }
 
+/**
+ * "The blur that is about to arrive is one I asked for."
+ *
+ * Called by `webpane/commands.ts` ▸ `focusView`, the client's single door to
+ * `contents.focus()` on a web pane's native view. The `blur` that answers it is this document
+ * handing the keyboard to a sibling widget of its own window, not the pointer leaving (see the
+ * module note), so it ends no gesture. Exactly one blur is absorbed, and only within
+ * {@link OWN_FOCUS_HANDOFF_MS}; a prediction nothing answers simply expires.
+ *
+ * Safe with no window and no gestures registered: it is a timestamp, not a listener.
+ */
+export function expectOwnFocusHandoff(): void {
+    ownHandoffUntil = now() + OWN_FOCUS_HANDOFF_MS;
+}
+
 /** Test seam: how many gestures are registered right now. */
 export function registeredGestureCount(): number {
     return resets.size;
+}
+
+/**
+ * Test seam: drive the clock this module reads, and the prediction it holds.
+ *
+ * `setGestureResetClock(null)` restores `Date.now` and clears any live prediction, which is what
+ * a suite's `afterEach` wants.
+ */
+export function setGestureResetClock(clock: (() => number) | null): void {
+    now = clock ?? (() => Date.now());
+    ownHandoffUntil = 0;
 }

@@ -81,7 +81,7 @@ import {
     type HotkeyStatusReport,
     type HotkeySwapResult
 } from './hotkey.js';
-import { log, logError, warn } from './log.js';
+import { log, logError, startLogFile, stopLogFile, warn } from './log.js';
 import {
     CLOSE_PANE_EXPRESSION,
     appMenuTemplate,
@@ -1500,6 +1500,22 @@ if (!app.requestSingleInstanceLock()) {
     log('another Kelpi shell owns the single-instance lock; exiting');
     app.exit(0);
 } else {
+    /*
+     * #77: the log on disk, opened by the instance that WON the lock and by no other.
+     *
+     * Here rather than in `boot()` because most of what a blank-web-pane report needs to be
+     * checked against (the daemon discovery, the window creation, every `view owner=` line) is
+     * already flowing by the time the app is ready, and a second launch that exits above must
+     * not append to, or rotate, the file the running shell holds open.
+     *
+     * `app.getPath('userData')` is resolvable before `ready` and honours `--user-data-dir`, so a
+     * sandboxed shell (the smokes, the audit harness, `dev-instance.mjs`) writes into its own
+     * sandbox and never into the user's. The path goes on stdout because the whole point is
+     * being able to tell somebody where to look.
+     */
+    const logFile = startLogFile(app.getPath('userData'));
+    log(logFile === null ? 'shell log: file sink unavailable, stdout only' : `shell log file: ${logFile}`);
+
     app.on('second-instance', (_event, argv) => {
         showWindow();
         for (const arg of argv.slice(1)) {
@@ -1591,6 +1607,9 @@ if (!app.requestSingleInstanceLock()) {
         // Unlinks the harness socket and restores the wrapped methods; a no-op for a user's
         // shell, which never started one.
         stopHarness();
+        // Last, so everything above is on disk before the descriptor goes (#77). Writes after
+        // this one fall back to stdout rather than failing.
+        stopLogFile();
         // Deliberately absent: anything that would signal, kill or stop the daemon.
     });
 

@@ -117,7 +117,9 @@ async function main() {
     });
 
     const sandbox = await makeSandbox(repoRoot, { label: 'restore', clientDir, auditWindow: options.window });
-    const daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose });
+    // `let`, because the last section restarts it: issue #72 needs the host's slot to be empty,
+    // and only a daemon that went away and came back produces that.
+    let daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose });
     let shell = null;
     let page = null;
     let harness = null;
@@ -314,6 +316,117 @@ async function main() {
             /tick \d+/.test(ticked.stdout),
             `${ticked.stdout.trim()}${ticked.stderr.trim() === '' ? '' : ` [stderr: ${ticked.stderr.trim()}]`}`
         );
+
+        /*
+         * ── 10. issue #72: a hide issued while the host slot was empty ─────────────
+         *
+         * The mirror of #34, and the half that fix does not reach: not a placement that was
+         * lost, but a HIDE that was lost. The daemon drops geometry while no host is attached,
+         * including `visible:false`; the shell keeps its views across a host socket drop on
+         * purpose (that is what makes live pages survive a `kelpid` restart); and the client
+         * cannot re-state a hide, because `reassert()` re-sends only placements and `hide()`
+         * deletes the entry. So the pane's page stays on screen over the workspace the user
+         * switched TO.
+         *
+         * The trigger is the issue's own: restart the daemon, and switch workspace while the
+         * shell's host connection is still backing off (up to 15 s). The run dir keeps its
+         * token, so the new daemon is the same daemon as far as every socket is concerned.
+         *
+         * A freeze (`SIGSTOP`, as `web-view-revive.mjs` uses for #34) is deliberately NOT the
+         * trigger here and cannot be: the host's socket has no liveness check of its own, so a
+         * frozen daemon leaves it connected and every message merely queued. Nothing empties
+         * the host slot except the daemon actually going away.
+         */
+        log('  restarting the sandbox daemon so the host slot goes empty (issue #72)…');
+        // Back to the pane's own workspace and make sure it is on screen first.
+        await settleOwner(paneID, 'main', 20_000, 'the pane to be placed before the restart');
+        await sleep(1000);
+        const beforeRestart = ownerOf(paneID);
+        const restartMark = sinceIndex();
+        const shellMark = shell.lines.length;
+
+        /*
+         * SIGKILL, not the harness's ordinary `stop()`, and the difference is the whole test.
+         * A daemon asked to stop politely REVOKES the host role first (`host-revoked` with
+         * reason `shutdown`), and the shell answers that by destroying every view and every
+         * placement - a different code path, which passes this assertion on any build. #72 is
+         * about reason `disconnected`, the socket simply going away, which is the one case the
+         * shell deliberately KEEPS its views for. Measured: with `stop()` the final park's
+         * reason is `shutdown`; with SIGKILL it is `unclaimed-after-reconnect`.
+         */
+        daemon.child.kill('SIGKILL');
+        await waitFor('the daemon to be gone', () => daemon.exited, 15_000);
+        await daemon.stop();
+        // Long enough for the host's reconnect backoff to grow past a couple of seconds: it
+        // doubles on every failed dial (500 ms, 1 s, 2 s, 4 s, 8 s), and every dial while the
+        // daemon is down fails. That is what buys the window the hide has to land in.
+        await sleep(11_000);
+        daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose });
+        await waitForHealthz(sandbox.base, 30_000);
+        await assertSandboxDaemon(sandbox, daemon.child.pid);
+
+        // The client redials on its own within a second or so; the switch is a click in the UI,
+        // exactly as a user would do it.
+        const switchedAt = await waitFor(
+            'the client to reconnect and take the workspace switch',
+            async () =>
+                (await page.eval(`(() => {
+                    const rows = [...document.querySelectorAll('[data-testid="workspace-row"]')];
+                    const row = rows.find((r) => (r.textContent ?? '').includes('elsewhere'));
+                    row?.click();
+                    return row !== undefined && !(row.getAttribute('data-active') === 'true');
+                })()`)) === true
+                    ? Date.now()
+                    : false,
+            30_000
+        );
+
+        const registeredLine = await waitFor(
+            'the web host to register with the new daemon',
+            async () => shell.lines.slice(shellMark).some((line) => /web host registered/.test(line)),
+            40_000
+        ).then(
+            () => Date.now(),
+            () => null
+        );
+        check(
+            'the workspace switch happened while the host slot was empty (the precondition)',
+            registeredLine !== null && registeredLine > switchedAt,
+            registeredLine === null
+                ? 'the host never re-registered'
+                : `switch at +0 ms, host registered +${String(registeredLine - switchedAt)} ms`
+        );
+
+        const gone = await settleOwner(paneID, 'holder', 15_000, 'the stale placement to be dropped');
+        const finalPark = placements.slice(restartMark).filter((entry) => entry.paneID === paneID).at(-1);
+        check(
+            'the outgoing pane’s view is off screen after the host re-registers (#72)',
+            gone !== null,
+            gone === null
+                ? `ISSUE #72: still ${String(ownerOf(paneID)?.owner)} at ${String(beforeRestart?.bounds)}`
+                : `reason=${String(finalPark?.reason)} · ${String(gone - switchedAt)} ms after the switch`
+        );
+        /*
+         * The reason, because one way of passing this would be vacuous and two are not.
+         *
+         *   `unclaimed-after-reconnect`  the sweep: nobody re-stated the placement, so the host
+         *                                dropped its own claim. This is the fix.
+         *   `hidden`                     the client happened to re-state the hide after the
+         *                                reconnect. It sometimes does and sometimes does not
+         *                                (measured: three runs, two of each), which is exactly
+         *                                why the issue calls the window narrow, and it is a
+         *                                correct outcome by a route this PR did not add.
+         *   `shutdown`                   the daemon revoked the role and the shell threw every
+         *                                view away. That happens on a POLITE stop and passes on
+         *                                any build, so it is refused here: the kill above is
+         *                                what keeps this test about #72.
+         */
+        check(
+            '…and not because the host role was revoked (which would pass on any build)',
+            finalPark !== undefined && finalPark.reason !== 'shutdown',
+            `reason=${String(finalPark?.reason)}`
+        );
+
         if (options.verbose) {
             for (const entry of placements) log(`    ${JSON.stringify(entry)}`);
         }

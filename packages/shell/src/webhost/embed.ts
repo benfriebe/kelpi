@@ -101,6 +101,23 @@ export interface EmbedController<V> {
     /** The pane itself is gone: release it and forget the rect it used to be reported at. */
     forgetPane(paneID: string, reason?: string): void;
     /**
+     * Take THIS view off screen and out of the books, whichever pane is holding it (#72).
+     *
+     * `release()` addresses a pane and `forget()` refuses to touch the view; this is for the
+     * cases in between, where a particular view must not be left parented to the window: a tab
+     * about to be destroyed, or one whose renderer died. The view is still alive at both of
+     * those moments, so the detach hook runs and the view goes back to the holder.
+     */
+    releaseView(view: V, reason?: string): boolean;
+    /**
+     * #72: the host re-registered, so every placement it is holding is a claim nobody has
+     * confirmed since. Flags them all and returns how many; each is un-flagged by the next
+     * report that names its pane, and `releaseUnconfirmed` drops whatever is left.
+     */
+    markUnconfirmed(): number;
+    /** Release every placement still unconfirmed. Returns the pane ids that were dropped. */
+    releaseUnconfirmed(reason?: string): readonly string[];
+    /**
      * Re-apply the last geometry for every pane in the books, parked ones included (the view set
      * changed, or the window came back). A parked placement that can be honoured is placed again
      * and stops being parked; one that still cannot be (no window yet) stays parked.
@@ -175,6 +192,16 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
      * rebuilding a view for.
      */
     const reported = new Map<string, PaneGeometry>();
+    /**
+     * #72: panes whose placement no client has confirmed since the host re-registered.
+     *
+     * A set rather than a flag on `Placement`, because it is not a property of the placement: it
+     * is a question about the OUTSIDE world that is open for a couple of seconds after a
+     * reconnect and closed for the rest of the process's life. It is also not `reported` above:
+     * that is what the client last SAID, kept for ever so a rebuilt view can be put back; this
+     * is whether the client has said it again SINCE the reconnect.
+     */
+    const unconfirmed = new Set<string>();
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
@@ -197,6 +224,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         const placement = placed.get(paneID);
         if (placement === undefined) return false;
         placed.delete(paneID);
+        unconfirmed.delete(paneID);
         if (placement.parked) {
             // Already in the holder: the view must not be detached twice, but the CLAIM has
             // changed (a park this shell owed a placement to is now a park the client asked
@@ -260,12 +288,40 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         // A parked placement is a memory, not a view in the window: it has to be re-attached,
         // not merely moved, or `setBounds` would position a child of the holder.
         const inWindow = attached !== undefined && !attached.parked;
-        try {
-            if (!inWindow) options.hooks.attach(view, bounds);
-            else if (!sameBounds(attached.bounds, bounds)) options.hooks.setBounds(view, bounds);
-        } catch (error) {
-            report(error, `embed-place ${geometry.paneID}`);
-            return 'ignored';
+        if (!inWindow) {
+            try {
+                options.hooks.attach(view, bounds);
+            } catch (error) {
+                /*
+                 * #72's first leak path. `attach` is not one call: the shell's hook adds the
+                 * view to the window and THEN sizes it, shows it and clears its viewport pin
+                 * (`./index.ts`). A throw in any of those left the view a child of the window
+                 * with no entry in these books, so nothing would ever take it off screen again:
+                 * a dead page over the workspace, swallowing every click that lands on it.
+                 *
+                 * The rollback is best-effort and its own failure is only reported: what matters
+                 * is that the books and the window cannot disagree about a view being placed.
+                 */
+                report(error, `embed-place ${geometry.paneID}`);
+                try {
+                    options.hooks.detach(view);
+                } catch (rollback) {
+                    report(rollback, `embed-place-rollback ${geometry.paneID}`);
+                }
+                placed.delete(geometry.paneID);
+                unconfirmed.delete(geometry.paneID);
+                announce(geometry.paneID, 'released', null, 'attach-failed');
+                return 'ignored';
+            }
+        } else if (!sameBounds(attached.bounds, bounds)) {
+            try {
+                options.hooks.setBounds(view, bounds);
+            } catch (error) {
+                // The view is still in the window at the bounds the books already record, so
+                // nothing here is inconsistent: the move simply did not happen.
+                report(error, `embed-move ${geometry.paneID}`);
+                return 'ignored';
+            }
         }
         const changed = !inWindow || !sameBounds(attached.bounds, bounds);
         placed.set(geometry.paneID, { view, bounds, geometry, scaleFactor: metrics.scaleFactor, parked: false });
@@ -288,6 +344,10 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             // Past both gates: this report is ours, so it is worth remembering whatever it then
             // does with the view (see `reported` above).
             reported.set(geometry.paneID, geometry);
+            // #72: it is also a client SPEAKING about that pane, which is the only thing that can
+            // confirm a placement the host is holding across a reconnect. Whatever the report
+            // then decides (place, park, release), the CLAIM has been re-stated by its owner.
+            unconfirmed.delete(geometry.paneID);
             const metrics = options.metrics();
             if (metrics === null) {
                 /*
@@ -328,6 +388,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
                 // destroyed view is exactly the throw this exists to avoid. A parked entry goes
                 // the same way: its view is dying, so the memory of where it sat is worthless.
                 placed.delete(paneID);
+                unconfirmed.delete(paneID);
                 announce(paneID, 'released', null, 'view-destroyed');
                 return true;
             }
@@ -337,6 +398,30 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         forgetPane(paneID, reason = 'pane-closed') {
             release(paneID, reason);
             reported.delete(paneID);
+            unconfirmed.delete(paneID);
+        },
+
+        releaseView(view, reason = 'view-released') {
+            for (const [paneID, placement] of placed) {
+                if (placement.view !== view) continue;
+                return release(paneID, reason);
+            }
+            return false;
+        },
+
+        markUnconfirmed() {
+            unconfirmed.clear();
+            for (const paneID of placed.keys()) unconfirmed.add(paneID);
+            return unconfirmed.size;
+        },
+
+        releaseUnconfirmed(reason = 'unconfirmed') {
+            const dropped: string[] = [];
+            for (const paneID of [...unconfirmed]) {
+                if (release(paneID, reason)) dropped.push(paneID);
+            }
+            unconfirmed.clear();
+            return dropped;
         },
 
         refresh() {

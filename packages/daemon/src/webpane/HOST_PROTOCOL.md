@@ -60,7 +60,11 @@ pane (§3), so a shell that starts after the daemon — or reconnects after a cr
 exactly the panes the daemon has. Build them idempotently. The pages come back **empty and
 unplaced**: the daemon holds no geometry to replay, so it asks the clients to re-state theirs
 instead (§3.5.1) and the placements arrive right behind these frames as ordinary
-`pane-geometry` notifications.
+`pane-geometry` notifications. A host that **kept** its views across the drop (which is what
+makes live pages survive a `kelpid` restart) must treat every placement it is still holding as
+unconfirmed until a report names it again, and drop what none does (§3.5.3): geometry reported
+while the slot was empty was thrown away, so a pane hidden during the outage would otherwise
+stay on screen for ever.
 
 ---
 
@@ -252,6 +256,37 @@ that host declared, exactly as the registration-time broadcast is. The daemon st
 geometry: this only adds a second party allowed to say *when* to ask. Rate-limit it (the shell
 sends at most one every five seconds): the broadcast reaches every attached client, and a
 placement that cannot be honoured must not become a message per tick.
+
+### 3.5.3 A hide issued while the host slot was empty (issue #72)
+
+The mirror of §3.5.1, and the half it does not reach: not a placement that was lost but a
+**hide** that was lost. Three correct behaviours compose into a wrong one.
+
+1. The daemon **drops geometry while no host is attached** (`webpane/service.ts`
+   `notifyGeometry`), and that includes `visible:false`.
+2. A host **keeps its views across a socket drop** (reason `disconnected`), deliberately: that
+   is what makes live pages survive a `kelpid` restart. But "keeps them" means keeps them ON
+   SCREEN.
+3. `reassert()` **re-states only placements** (§3.5.1), which is its whole safety argument, and
+   the client could not re-state the hide even if asked: `hide()` deletes the entry, so by the
+   time the host is back there is no record on the client that the pane was ever placed.
+
+Net: after the host re-registers it holds a placement no party still believes in, and nothing
+contradicts it until that pane's geometry changes for some unrelated reason. The user sees a
+page painted over the workspace they switched to.
+
+**The rule: on registration, a host must treat every placement it is still holding as
+unconfirmed, and drop what no client re-states.** The resync broadcast of §3.5.1 goes out at the
+same moment, so the clients say what they are drawing within a frame or two; anything not named
+by a report after a short grace (the shell allows two seconds) was a claim nobody makes any
+more. The host is the only party that knows what it is still holding, so it is the only one that
+can drop the claim.
+
+**Confirm, do not park-and-wait.** Parking everything on registration and letting the
+re-statements put it back reaches the same end state and is the shape #12 was about: every web
+pane's page would blink out and back on every host reconnect. Confirming moves nothing in the
+common case, because a re-stated placement is an identical `pane-geometry` that the host applies
+as a no-op.
 
 ### 3.6 Poster: the still frame a parked pane wears (issue #12)
 

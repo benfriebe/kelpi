@@ -82,10 +82,18 @@ export interface TabRegistry<V> {
      * nothing to destroy. It has. Only the renderer process is gone; the `WebContentsView` is
      * still a child of whichever window it was placed in, still in the embed controller's
      * books, and still covering the pane's page area with a blank rectangle nobody can navigate
-     * or reload. So it goes through the destroy hook like every other death, which unhooks it
-     * (`embed.forget`), un-parents it and closes its contents. Nothing is left placed, and the
-     * daemon's rebuild `pane-open` then lands on a pane with no view for that tab, which is
-     * exactly the case `openPane` reconciles by creating one.
+     * or reload. So it goes through the destroy hook like every other death, which takes it out
+     * of the embed controller's books (`beforeDestroy` -> `embed.releaseView`), un-parents it and
+     * closes its contents. Nothing is left placed, and the daemon's rebuild `pane-open` then
+     * lands on a pane with no view for that tab, which is exactly the case `openPane` reconciles
+     * by creating one.
+     *
+     * That release is also issue #72's requirement of this path: a dead renderer left embedded in
+     * the shell window is a rectangle of nothing that swallows every click landing on it, and the
+     * placement books are the only party that can move it. #72 closed that with a separate
+     * `forget` hook, written against a `forgetTab` that still destroyed nothing; the destroy hook
+     * reaches the same books AND closes the contents, so the hook would only be a second way to
+     * say it.
      */
     forgetTab(paneID: string, tabID: string): boolean;
     view(paneID: string, tabID: string): V | null;
@@ -250,7 +258,8 @@ export function createTabRegistry<V>(hooks: RegistryHooks<V>): TabRegistry<V> {
             pane.tabs = pane.tabs.filter((candidate) => candidate !== tab);
             // Issue #76: the view object outlives its renderer, so it has to be taken down like
             // any other. The hook is written to survive a half-dead view (every step is guarded)
-            // because that is the only state it is ever called in from here.
+            // because that is the only state it is ever called in from here. It is also what
+            // takes the view off the screen, which is #72's requirement of this path.
             hooks.destroy(tab.view, 'renderer-gone');
             if (pane.activeTabID === tabID) {
                 const next = pane.tabs[Math.max(index - 1, 0)];

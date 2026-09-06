@@ -124,7 +124,12 @@ describe('tabs', () => {
      * Issue #76. This used to assert the opposite - `destroyed` empty - on the reading that a
      * tab whose renderer died has nothing left to take down. It has: the `WebContentsView` is
      * still parented, still in the embed controller's books, and still covering the pane. The
-     * destroy hook is what unhooks it (`beforeDestroy` → `embed.forget`), so it has to run.
+     * destroy hook is what unhooks it (`beforeDestroy` -> `embed.releaseView`), so it has to run.
+     *
+     * That single call is also issue #72's requirement of this path, which is why #72's separate
+     * `forget` hook is not here: a dead renderer left embedded in the window is a rectangle of
+     * nothing that swallows every click, and the destroy hook is the notice the party holding it
+     * gets. One path off the screen, not two.
      */
     it('takes down the view of a tab whose renderer died', () => {
         const { registry, destroyed } = harness();
@@ -133,6 +138,15 @@ describe('tabs', () => {
         expect(destroyed).toEqual([{ view: expect.objectContaining({ id: 't2' }), reason: 'renderer-gone' }]);
         expect(registry.activeTabID('P1')).toBe('t1');
         expect(registry.view('P1', 't2')).toBeNull();
+    });
+
+    /** #72: and it says NOTHING for a tab it never had, so the sweep cannot fire on a miss. */
+    it('says nothing about a tab it did not have', () => {
+        const { registry, destroyed } = harness();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.forgetTab('P1', 'nope')).toBe(false);
+        expect(registry.forgetTab('nope', 't1')).toBe(false);
+        expect(destroyed).toEqual([]);
     });
 
     /**

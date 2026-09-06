@@ -319,10 +319,20 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             // channel the native menu bar already uses.
             client?.sendWindowCommand(chordCommand(chord));
         },
-        // A destroyed view must leave the embed controller's books BEFORE Electron tears it
-        // down, or the next placement would try to remove a child that no longer exists.
+        /*
+         * A destroyed view must leave the embed controller's books BEFORE Electron tears it
+         * down, or the next placement would try to remove a child that no longer exists.
+         *
+         * #72: and it must leave the WINDOW too, which `forget()` deliberately does not do. The
+         * view is still alive at this moment (`createTabHooks.destroy` calls this before
+         * `dispose`), so the ordinary detach runs and the view goes back to the holder, where
+         * `destroy` then removes it. Without this the view stayed a child of the shell window
+         * with no entry in the books, and only its own destruction took it off screen: for a
+         * `pane-close` that is immediate, but for the reconcile path it is a dead page sitting
+         * over the workspace until Chromium gets round to it.
+         */
         beforeDestroy: (tab) => {
-            embed.forget(tab);
+            embed.releaseView(tab, 'view-destroyed');
         },
         events: {
             console: (paneID, tabID, payload) => {
@@ -398,6 +408,14 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         show: releaseBeforeHide(hooks.show, (tab) => {
             releaseKeyboardIfHeld(tab, 'hidden');
         })
+        /*
+         * #72 wired a `forget` hook here for the tab whose renderer died: dropped from the
+         * registry without being destroyed, its view still embedded in the shell window, a dead
+         * rectangle eating every click that landed on it. #76 then made `forgetTab` take that
+         * view down through the destroy hook instead, and `beforeDestroy` above is the release
+         * #72 asked for. So the hook is gone and the requirement is not: one path off the
+         * screen, not two.
+         */
     });
 
     /**
@@ -451,8 +469,18 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                  * for every park that does NOT go through a tab switch - a hidden pane, a
                  * workspace change, a closing window - where the view is still visible and still
                  * holding the keyboard when it gets here.
+                 *
+                 * #72: guarded, like every step below it. This hook has ONE job that must happen
+                 * whatever else fails - the view leaves the window and goes back to the holder -
+                 * and the books are cleared before it runs, so a throw part-way used to leave a
+                 * view parented to the window that nothing would ever take off screen again.
+                 * Each step reports and continues instead.
                  */
-                releaseKeyboardIfHeld(tab, 'parked');
+                try {
+                    releaseKeyboardIfHeld(tab, 'parked');
+                } catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)), 'detach-keyboard');
+                }
                 if (window !== null && !window.isDestroyed()) {
                     try {
                         window.contentView.removeChildView(view);
@@ -479,9 +507,19 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                  * a child that overhangs it is still laid out at its own size, but keeping every
                  * parked view inside the holder's box costs nothing.
                  */
-                const { width, height } = view.getBounds();
-                view.setBounds({ x: 0, y: 0, width, height });
-                tab.setEmbedded(false);
+                try {
+                    const { width, height } = view.getBounds();
+                    view.setBounds({ x: 0, y: 0, width, height });
+                } catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)), 'detach-bounds');
+                }
+                try {
+                    tab.setEmbedded(false);
+                } catch (error) {
+                    // A CDP call on a tab whose renderer has already gone. The re-parent below
+                    // is the part that matters and must not be skipped for it (#72).
+                    onError(error instanceof Error ? error : new Error(String(error)), 'detach-embedded');
+                }
                 holderWindow().contentView.addChildView(view);
             },
             setBounds: (tab, bounds) => {
@@ -618,6 +656,58 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         embed.parkAll(reason);
     };
 
+    /*
+     * ── #72: a hide issued while the host slot was empty ────────────────────────────
+     *
+     * Three correct behaviours compose into a wrong one. The daemon drops geometry while no
+     * host is attached (`webpane/service.ts` ▸ `notifyGeometry`), including `visible:false`.
+     * This host keeps its views across a socket drop, deliberately, because that is what makes
+     * live pages survive a `kelpid` restart - but "keeps them" means keeps them ON SCREEN. And
+     * the client cannot re-state a hide even if asked: `reassert()` re-sends only placements
+     * (#34's safety rule), and its `hide()` deletes the entry outright, so by the time the host
+     * is back there is no record on the client that the pane was ever placed.
+     *
+     * Net: after the host re-registers it holds a placement no party still believes in, and
+     * nothing will contradict it until that pane's geometry changes for some unrelated reason.
+     *
+     * **Confirm or drop, rather than drop and wait to be told.** On re-registration every
+     * placement is flagged unconfirmed; the daemon's `web-geometry-resync` broadcast (#34) makes
+     * the clients re-state what they are drawing within a frame or two, and any report about a
+     * pane clears its flag. What is still unconfirmed after a short grace was a claim nobody
+     * makes any more, and it goes.
+     *
+     * The issue proposes parking everything up front and letting the re-statements put back what
+     * belongs. That is the same idea one step cruder, and it is the shape #12 was about: every
+     * web pane's page would blink out and back on EVERY host reconnect, which is precisely the
+     * hole-flicker the issue rejects the daemon-side version for. Confirming instead means the
+     * common case (every pane still on screen) moves nothing at all: the re-statements arrive,
+     * `apply()` sees identical bounds and does nothing, and the sweep finds nothing to drop.
+     * #75's parked flag is the wrong tool here for a related reason: a park with memory is a
+     * claim the shell WILL restore, and on re-registration the point is to stop claiming.
+     */
+    const CLAIM_GRACE_MS = 2_000;
+    let claimTimer: NodeJS.Timeout | null = null;
+
+    const sweepUnclaimedPlacements = (): void => {
+        const held = embed.markUnconfirmed();
+        if (held === 0) return;
+        log(
+            `web host holding ${String(held)} placement(s) across the reconnect; ` +
+                `${String(CLAIM_GRACE_MS)} ms for the clients to re-state them`
+        );
+        if (claimTimer !== null) clearTimeout(claimTimer);
+        claimTimer = setTimeout(() => {
+            claimTimer = null;
+            const dropped = embed.releaseUnconfirmed('unclaimed-after-reconnect');
+            log(
+                dropped.length === 0
+                    ? 'web host: every placement was re-stated after the reconnect'
+                    : `web host dropped ${String(dropped.length)} placement(s) no client re-stated after the reconnect`
+            );
+        }, CLAIM_GRACE_MS);
+        claimTimer.unref?.();
+    };
+
     /**
      * The reconciler. Runs only while this host holds a placement, so a shell with no web panes
      * never arms a timer at all, and backs off to two seconds once the state stops changing.
@@ -747,6 +837,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         onRegistered: (hostID, superseded) => {
             log(`web host ready (${hostID}${superseded ? ', took over' : ''}) — waiting for pane-open replay`);
+            sweepUnclaimedPlacements();
         },
         onRevoked: (reason) => {
             if (reason === 'disconnected') {
@@ -773,6 +864,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             if (watchTimer !== null) {
                 clearTimeout(watchTimer);
                 watchTimer = null;
+            }
+            if (claimTimer !== null) {
+                clearTimeout(claimTimer);
+                claimTimer = null;
             }
             embed.releaseAll('host-stopped');
             for (const paneID of registry.paneIDs()) sessions.forget(paneID);

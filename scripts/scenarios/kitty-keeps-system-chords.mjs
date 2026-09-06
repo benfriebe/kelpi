@@ -147,4 +147,24 @@ export default async function ({ page, cli, rec, d, sleep }) {
         after.includes('^[[118;9u') ? 'the CSI u sequence is on screen' : 'absent'
     );
     await rec.shot(page, 'kitty-cmd-v-pasted');
+
+    /*
+     * Put the pane back the way it was found.
+     *
+     * The battery runs every scenario against ONE sandbox, and both this file and
+     * `terminal-copy-paste-chords.mjs` take `domPaneIDs(page)[0]`, so this is literally the same
+     * pane. Left as it stands at the last assertion it has `cat -vt` in the foreground and the
+     * kitty protocol pushed at `>3u`, which means the next scenario's `clear`, its `for` loop and
+     * its `printf '\\033[?1000h'` are all just text echoed at `cat`: its drag then selects this
+     * scenario's leftovers, its ⌘C copies them, and its mouse mode never arrives.
+     *
+     * `cmd-click-codex-links.mjs` and `cmd-backspace-line-kill.mjs` both already end this way;
+     * this file is the one that came first and did not. Exactly the three things it turned on,
+     * turned off: the foreground reader, the kitty stack, bracketed paste.
+     */
+    await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
+    await sleep(600);
+    await d.runInTerminal(page, `printf '\\033[?2004l\\033[<1u'`, { settleMs: 500 });
+    await d.runInTerminal(page, 'stty sane', { settleMs: 500 });
+    await d.runInTerminal(page, 'clear', { settleMs: 500 });
 }

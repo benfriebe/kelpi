@@ -487,7 +487,35 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         // Raw text: normalization is the daemon's (§4.1), the same code path the CLI uses.
         void commands.navigate(paneID, value);
         pending.current = null;
-    }, [commands, draft, paneID]);
+        /*
+         * Return ENDS the edit, and the caret goes to the page - what every browser does, and
+         * what the claim effect below cannot do for us.
+         *
+         * That effect refuses whenever a chrome text field holds the caret ("the user is typing
+         * an address, and the page must not take it back when that URL lands"), which is right
+         * for every keystroke up to this one and wrong for this one. Submitting is the moment
+         * the address stops being edited, so it is the moment the refusal has to be lifted, and
+         * only the submit itself knows that.
+         *
+         * Both halves are needed and they do different jobs. The blur is what this DOCUMENT
+         * thinks: while the URL bar holds `document.activeElement`, `isChromeTextEditing()` is
+         * true and the priority layer declines ⌘⇧[ / ⌘⇧] / ⌘← by design (config-keybindings.md
+         * 7.3's URL-bar exception), so leaving it focused jams the pane's own shortcuts. The
+         * `focusView` is what the WINDOW thinks: the page is a native view, and only the host
+         * can hand it the keyboard.
+         *
+         * `focusView` is also what keeps §N30 from undoing this. The nav guard preserves
+         * whoever held the keyboard when a navigation started and hands it back on commit, and
+         * that owner is the URL bar - but a deliberate claim in flight cancels the restore
+         * (`shell/webhost/nav-focus.ts`), and this is exactly that claim.
+         */
+        const caret = typeof document === 'undefined' ? null : document.activeElement;
+        if (caret instanceof HTMLElement && chromeTextIsFocused(caret)) caret.blur();
+        const tabID = active?.id ?? null;
+        // Not for a browser client: it has no native view to hand anything to, and its
+        // placeholder card is not somewhere a caret can live.
+        if (embedded && tabID !== null) void commands.focusView(paneID, tabID);
+    }, [commands, draft, paneID, active, embedded]);
 
     // ── find, storage panel, ⌘L ─────────────────────────────────────────────────────
 
@@ -525,7 +553,23 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         // applied here, after it, so the token is the one thing that can cause it.
         input.focus();
         input.select();
-    }, [focusURLToken]);
+        /*
+         * Issue #33 - and the address bar has to be able to RECEIVE what is typed next.
+         *
+         * `focus()` is a statement about this document. The page is a native view that holds the
+         * WINDOW's keyboard, and no DOM call can take it: ⌘L selected the whole address, showed
+         * a caret, and every keystroke after it went into the page. The mirror image of the
+         * submit path, which has to push the keyboard the other way.
+         *
+         * `blurView` is the inverse of `focus-view`, and only the host can do it. Requested
+         * after the DOM focus rather than before purely for readability - it is a round trip
+         * through the daemon, so it lands later either way, and the selection is already in
+         * place when the keyboard arrives.
+         *
+         * Not for a browser client: nothing there is holding the keyboard hostage.
+         */
+        if (embedded) void commands.blurView(paneID);
+    }, [focusURLToken, embedded, commands, paneID]);
 
     /** The pane's subtree: every chrome text field it can put a caret in is a descendant. */
     const paneRef = useRef<HTMLDivElement | null>(null);

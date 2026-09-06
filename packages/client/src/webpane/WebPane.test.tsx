@@ -79,6 +79,7 @@ function fakeCommands(
             // WEB-043's keyboard handoff fires on the unfocused→focused transition, so any test
             // that focuses a pane goes through it.
             focusView: record('focusView'),
+            blurView: record('blurView'),
             // Issue #12: the still frame a covered pane asks for before it parks.
             poster: record('poster', options.poster ?? POSTER_REPLY),
             // Issue #32: opening the find bar is how its caret gets into the pane.

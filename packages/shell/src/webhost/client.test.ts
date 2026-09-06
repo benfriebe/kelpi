@@ -80,6 +80,7 @@ interface Harness {
     readonly notifies: { verb: string; args: JsonObject }[];
     readonly revoked: string[];
     readonly registrations: { hostID: string; superseded: boolean }[];
+    readonly keybindLines: (readonly string[])[];
     latest(): FakeSocket;
 }
 
@@ -95,6 +96,7 @@ function harness(
     const notifies: { verb: string; args: JsonObject }[] = [];
     const revoked: string[] = [];
     const registrations: { hostID: string; superseded: boolean }[] = [];
+    const keybindLines: (readonly string[])[] = [];
 
     const client = createWebHostClient({
         location: location('http://127.0.0.1:4242', 'tok'),
@@ -109,6 +111,7 @@ function harness(
             notifies.push({ verb, args });
             overrides.notify?.(verb, args);
         },
+        onKeybindLines: (lines) => keybindLines.push(lines),
         onRegistered: (hostID, superseded) => registrations.push({ hostID, superseded }),
         onRevoked: (reason) => revoked.push(reason),
         socketFactory: () => {
@@ -126,6 +129,7 @@ function harness(
         notifies,
         revoked,
         registrations,
+        keybindLines,
         latest: () => sockets[sockets.length - 1] as FakeSocket
     };
 }
@@ -335,5 +339,71 @@ describe('role lifecycle', () => {
         expect(test.sockets).toHaveLength(2);
         test.latest().emit('open');
         expect(test.latest().frames('hello')[0]?.['token']).toBe('tok2');
+    });
+});
+
+/**
+ * Issue #33 - the config the chord relay's claimed set is derived from.
+ *
+ * The set has to follow the user's `keybind` lines, and this connection is the only one in the
+ * main process that sees them whole. What matters is that it is told on EVERY connect (not only
+ * on a write) and that silence is distinguishable from an empty list.
+ */
+describe('keybind lines', () => {
+    it('reports the lines the handshake carried', () => {
+        const test = harness();
+        test.client.start();
+        test.latest().emit('open');
+        test.latest().deliver({
+            type: 'welcome',
+            protocolVersion: WS_PROTOCOL_VERSION,
+            clientID: 'c1',
+            settings: { keybindLines: ['super+d=unbind', 'ctrl+alt+j=split_right'] }
+        });
+        expect(test.keybindLines).toEqual([['super+d=unbind', 'ctrl+alt+j=split_right']]);
+    });
+
+    it('reports a later write, so a rebind does not wait for a reconnect', () => {
+        const test = connected();
+        test.latest().deliver({ type: 'settings-changed', settings: { keybindLines: ['super+j=split_right'] } });
+        expect(test.keybindLines).toEqual([['super+j=split_right']]);
+    });
+
+    it('says nothing when the daemon carries no settings at all', () => {
+        // A daemon booted without a settings service sends no `settings` key. Reading that as
+        // "the user unbound everything" would kill every forwarded chord.
+        const test = connected();
+        expect(test.keybindLines).toEqual([]);
+        test.latest().deliver({ type: 'settings-changed', settings: 'nonsense' });
+        expect(test.keybindLines).toEqual([]);
+    });
+
+    it('reports an empty list as an empty list - that is a real config, not silence', () => {
+        const test = connected();
+        test.latest().deliver({ type: 'settings-changed', settings: { keybindLines: [] } });
+        expect(test.keybindLines).toEqual([[]]);
+    });
+
+    it('drops non-string entries rather than the whole message', () => {
+        const test = connected();
+        test.latest().deliver({ type: 'settings-changed', settings: { keybindLines: ['super+j=split_right', 7, null] } });
+        expect(test.keybindLines).toEqual([['super+j=split_right']]);
+    });
+
+    it('re-reports on every reconnect, so a config that changed while away is picked up', () => {
+        vi.useFakeTimers();
+        const test = connected();
+        test.latest().emit('close', 1006);
+        vi.advanceTimersByTime(2_000);
+        const next = test.latest();
+        expect(test.sockets).toHaveLength(2);
+        next.emit('open');
+        next.deliver({
+            type: 'welcome',
+            protocolVersion: WS_PROTOCOL_VERSION,
+            clientID: 'c2',
+            settings: { keybindLines: ['super+p=unbind'] }
+        });
+        expect(test.keybindLines).toEqual([['super+p=unbind']]);
     });
 });

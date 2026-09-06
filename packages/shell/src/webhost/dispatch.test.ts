@@ -112,6 +112,8 @@ function harness(
         canWriteCookies?: boolean;
         /** Issue #12: where the embedder says this pane's view is placed. */
         viewPlacement?: DispatchDeps<FakeTab>['viewPlacement'];
+        /** Issue #33: absent models a host with no window to give the keyboard back to. */
+        restoreClientKeyboard?: DispatchDeps<FakeTab>['restoreClientKeyboard'];
     } = {}
 ) {
     const tabs: FakeTab[] = [];
@@ -153,6 +155,9 @@ function harness(
     const dispatcher = createVerbDispatcher<FakeTab>({
         registry,
         storage,
+        ...(options.restoreClientKeyboard === undefined
+            ? {}
+            : { restoreClientKeyboard: options.restoreClientKeyboard }),
         writeScreenshot,
         ...(options.viewPlacement === undefined ? {} : { viewPlacement: options.viewPlacement })
     });
@@ -243,6 +248,41 @@ describe('navigation', () => {
         // Both resolve the ACTIVE tab when the caller names none — the chrome usually does not.
         await dispatcher.call('focus-view', { paneID: scope.paneID });
         expect(tab.focuses).toBe(2);
+    });
+
+    /**
+     * Issue #33 - `focus-view`'s inverse: the client taking the window's keyboard back.
+     *
+     * The page is a native view that keeps the window's keyboard until something takes it, and
+     * the client's own DOM focus cannot. Without this the ring moved off a web pane and the
+     * keystrokes stayed in the page.
+     */
+    it('hands the keyboard back to the client, and takes no tab to do it', async () => {
+        let restores = 0;
+        const { dispatcher } = harness({
+            restoreClientKeyboard: () => {
+                restores += 1;
+                return true;
+            }
+        });
+        // No paneID, no tabID: the destination is the window, not a page.
+        await expect(dispatcher.call('blur-view', {})).resolves.toEqual({ ok: true, restored: true });
+        expect(restores).toBe(1);
+    });
+
+    it('reports a refused handoff as an answer, not an error', async () => {
+        // `restored: false` is what an inactive window says: there is no keyboard here to move,
+        // and a caller must not read that as a failure worth retrying.
+        const { dispatcher } = harness({ restoreClientKeyboard: () => false });
+        await expect(dispatcher.call('blur-view', {})).resolves.toEqual({ ok: true, restored: false });
+    });
+
+    it('answers honestly for a host with no window to hand the keyboard to', async () => {
+        const { dispatcher } = harness();
+        await expect(dispatcher.call('blur-view', {})).resolves.toEqual({
+            ok: false,
+            error: 'this host cannot hand the keyboard back'
+        });
     });
 
     it('answers honestly for a host that cannot stop or focus', async () => {

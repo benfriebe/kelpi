@@ -49,6 +49,25 @@ export interface WebHostClientOptions {
     readonly call: (verb: string, args: JsonObject) => Promise<JsonObject>;
     /** Apply one `host-notify` (daemon-owned state mirrored onto real views). */
     readonly notify: (verb: string, args: JsonObject) => void;
+    /**
+     * The daemon's `keybind` line values, from `welcome.settings` and every `settings-changed`.
+     *
+     * Issue #33: the chord relay's claimed set is derived from the binding map, and this is the
+     * connection that can see it. The renderer's copy is no use - the whole point of the relay is
+     * the keystrokes the renderer never gets.
+     *
+     * The status socket also carries these lines now (`../status.ts` ▸ `ShellDaemonSettings`,
+     * added by #47 for the menu accelerators), so this is a second reader in the same process
+     * rather than the only one. Deliberately still its own read: the two sockets have independent
+     * lifetimes - this one must work before the window has loaded, while it is reloading and
+     * while it is closed (see the module header), and a status resync must not be able to disturb
+     * the host - so coupling the relay's set to the status connection's would trade a duplicated
+     * three-line parse for a dependency the composition root exists to avoid.
+     *
+     * Fires on every (re)connect, not only on a write: a host that reconnects to a daemon whose
+     * config changed while it was away must not keep forwarding the old set.
+     */
+    readonly onKeybindLines?: ((lines: readonly string[]) => void) | undefined;
     readonly onRegistered?: ((hostID: string, superseded: boolean) => void) | undefined;
     /**
      * The role is gone: another shell took over, the daemon is stopping, or the socket dropped.
@@ -89,6 +108,22 @@ function isRecord(value: unknown): value is JsonRecord {
 function readString(source: JsonRecord, key: string): string | undefined {
     const value = source[key];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * `settings.keybindLines` out of a `welcome` or a `settings-changed`, or null when the message
+ * carries none.
+ *
+ * Null rather than `[]`: an empty list is a legitimate answer (a config file with no `keybind`
+ * lines resolves to the shipped defaults), while a daemon too old to sync settings has said
+ * nothing at all - and the caller must not read silence as "the user unbound everything".
+ */
+function readKeybindLines(message: JsonRecord): readonly string[] | null {
+    const settings = message['settings'];
+    if (!isRecord(settings)) return null;
+    const lines = settings['keybindLines'];
+    if (!Array.isArray(lines)) return null;
+    return lines.filter((line): line is string => typeof line === 'string');
 }
 
 export function createWebHostClient(options: WebHostClientOptions): WebHostClient {
@@ -138,10 +173,21 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
         }
         if (!isRecord(parsed)) return;
         switch (parsed['type']) {
-            case 'welcome':
+            case 'welcome': {
                 attempt = 0;
                 log(`web host ws connected ${wsUrl()}`);
+                const lines = readKeybindLines(parsed);
+                if (lines !== null) options.onKeybindLines?.(lines);
                 return;
+            }
+            // The config file changed under us (issue #33). Same payload shape as `welcome`'s,
+            // broadcast to every attached session, so a rebound chord reaches the relay without
+            // waiting for a reconnect.
+            case 'settings-changed': {
+                const lines = readKeybindLines(parsed);
+                if (lines !== null) options.onKeybindLines?.(lines);
+                return;
+            }
             case 'host-registered': {
                 registered = true;
                 const hostID = readString(parsed, 'hostID') ?? '';

@@ -15,7 +15,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { KeyEventLike } from '../chrome';
-import { chromeTextIsFocused, createWebPanePriority, type FocusedWebPane } from './priority';
+import {
+    chromeTextIsFocused,
+    createWebPanePriority,
+    parseChordCommand,
+    replayChordCommand,
+    type FocusedWebPane
+} from './priority';
 
 const KEY = {
     L: 37,
@@ -190,5 +196,109 @@ describe('chromeTextIsFocused', () => {
         expect(chromeTextIsFocused(inside)).toBe(true);
         expect(chromeTextIsFocused(null)).toBe(false);
         expect(chromeTextIsFocused({})).toBe(false);
+    });
+});
+
+/**
+ * The relay decoder (issue #33).
+ *
+ * The shell cannot dispatch into this window itself, so a chord a page swallowed arrives as a
+ * `menu-command` string and is turned back into a real `keydown` here. Two spellings share the
+ * prefix, and telling them apart is the whole job: the legacy one leaves ⌘ implied, which a
+ * hand-written constant still depends on, while the explicit one exists so a chord that holds no
+ * ⌘ at all - `move_pane_left` is ⌃⇧← - can be said without being mistaken for one that does.
+ */
+describe('parseChordCommand', () => {
+    it('reads the legacy ⌘-implied form, which `CLOSE_PANE_CHORD_COMMAND` is written in', () => {
+        expect(parseChordCommand('web-chord:KeyW')).toEqual({
+            code: 'KeyW',
+            metaKey: true,
+            shiftKey: false,
+            ctrlKey: false,
+            altKey: false
+        });
+        expect(parseChordCommand('web-chord:BracketRight:shift')).toEqual({
+            code: 'BracketRight',
+            metaKey: true,
+            shiftKey: true,
+            ctrlKey: false,
+            altKey: false
+        });
+    });
+
+    it('reads an explicit modifier list, ⌘ included only when it is named', () => {
+        expect(parseChordCommand('web-chord:ArrowLeft:ctrl:shift')).toEqual({
+            code: 'ArrowLeft',
+            metaKey: false,
+            shiftKey: true,
+            ctrlKey: true,
+            altKey: false
+        });
+        expect(parseChordCommand('web-chord:ArrowRight:meta:alt')).toEqual({
+            code: 'ArrowRight',
+            metaKey: true,
+            shiftKey: false,
+            ctrlKey: false,
+            altKey: true
+        });
+    });
+
+    it('does not confuse ⌘⇧D with ⌃⇧D', () => {
+        expect(parseChordCommand('web-chord:KeyD:meta:ctrl:shift')?.metaKey).toBe(true);
+        expect(parseChordCommand('web-chord:KeyD:ctrl:shift')?.metaKey).toBe(false);
+    });
+
+    it('ignores a token it does not know rather than dropping the chord', () => {
+        // A newer shell talking to an older client degrades to the modifiers this one has.
+        expect(parseChordCommand('web-chord:KeyD:meta:hyper')).toEqual({
+            code: 'KeyD',
+            metaKey: true,
+            shiftKey: false,
+            ctrlKey: false,
+            altKey: false
+        });
+    });
+
+    it('declines anything that is not a chord command', () => {
+        expect(parseChordCommand('help')).toBeNull();
+        expect(parseChordCommand('web-chord:')).toBeNull();
+    });
+});
+
+describe('replayChordCommand', () => {
+    function captured(command: string): KeyboardEvent | null {
+        let seen: KeyboardEvent | null = null;
+        const listener = (event: Event): void => {
+            seen = event as KeyboardEvent;
+        };
+        window.addEventListener('keydown', listener, true);
+        try {
+            replayChordCommand(command);
+        } finally {
+            window.removeEventListener('keydown', listener, true);
+        }
+        return seen;
+    }
+
+    it('puts every modifier on the synthesised event', () => {
+        const event = captured('web-chord:ArrowLeft:ctrl:shift');
+        expect(event?.code).toBe('ArrowLeft');
+        expect(event?.ctrlKey).toBe(true);
+        expect(event?.shiftKey).toBe(true);
+        expect(event?.metaKey).toBe(false);
+        expect(event?.altKey).toBe(false);
+    });
+
+    it('still replays a legacy ⌘ chord as ⌘', () => {
+        const event = captured('web-chord:KeyD');
+        expect(event?.metaKey).toBe(true);
+        expect(event?.ctrlKey).toBe(false);
+    });
+
+    it('dispatches somewhere the dispatcher will not read as a text field', () => {
+        // The target must not be an editable element, or dispatcher step 6 drops every action
+        // outside MENU_BAR_ACTIONS and a relayed ⌘D would never split.
+        const event = captured('web-chord:KeyD');
+        expect((event?.target as HTMLElement | null)?.tagName).toBe('BODY');
     });
 });

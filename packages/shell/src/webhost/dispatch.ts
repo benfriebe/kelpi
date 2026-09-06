@@ -249,6 +249,15 @@ export interface DispatchDeps<V extends TabController = TabController> {
     readonly viewPlacement?:
         | ((paneID: string) => { bounds: ViewBounds; cssScale: number } | null)
         | undefined;
+    /**
+     * `blur-view`'s other half: hand the window's keyboard back to the client's renderer.
+     *
+     * The inverse of `focus-view`, and it lives here as a dep rather than on a tab because the
+     * destination is not a tab - it is the window, which only the composition root knows about
+     * (`./index.ts` ▸ `restoreKeyboard`). Returns false when there is no keyboard in this window
+     * to move, which a caller reports rather than retries.
+     */
+    readonly restoreClientKeyboard?: (() => boolean) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -830,6 +839,26 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 if (found.tab.focusView === undefined) return failure('this host cannot focus a view');
                 found.tab.focusView();
                 return OK;
+            }
+            /*
+             * The inverse of `focus-view` (issue #33): the client is taking the keyboard back.
+             *
+             * A web pane's page is a native view that owns the window's keyboard while it has it,
+             * so the client moving its own ring to another pane changes nothing about where a
+             * keystroke goes - `focusPaneSurface` is DOM focus, and DOM focus cannot outrank a
+             * sibling widget. With the mouse that never showed: the press itself makes the
+             * renderer first responder. From the keyboard nothing does it, so ⌘[ / ⌥⌘← landed
+             * the ring on a terminal that would not type.
+             *
+             * Deliberately takes no tab: "give the keyboard to the client" is a statement about
+             * the window, and the client is the only thing that knows its ring moved (§N29's
+             * rule, from the other side - the shell reports gestures, the client owns the ring).
+             */
+            case 'blur-view': {
+                if (deps.restoreClientKeyboard === undefined) {
+                    return failure('this host cannot hand the keyboard back');
+                }
+                return { ok: true, restored: deps.restoreClientKeyboard() };
             }
             case 'url': {
                 const found = tabOf(args);

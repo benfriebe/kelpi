@@ -338,4 +338,54 @@ describe('the caret follows the ring OUT of a web pane (issue #32)', () => {
         expect(document.activeElement).toBe(url);
         expect(url.value).toBe('half-typed-add');
     });
+
+    /**
+     * Issue #33 - the mirror image, and the one a mouse can never show.
+     *
+     * The page holds the window's keyboard while it has it, and DOM focus cannot take it back
+     * from a sibling widget. A mouse press moves the ring AND makes this renderer first
+     * responder, so the platform hid the gap; a keyboard focus move does not, so ⌘[ / ⌥⌘← put
+     * the ring on a pane that would not type.
+     */
+    it('asks the host for the keyboard back when the ring leaves the web pane (#33)', async () => {
+        const h = setup();
+
+        act(() => {
+            h.socket().emit(viewFocus());
+        });
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(WEB_PANE);
+        });
+        const before = h.webCommands('web-blur-view').length;
+
+        act(() => {
+            fireEvent.keyDown(document.activeElement ?? window, {
+                code: 'BracketLeft',
+                key: '[',
+                metaKey: true
+            });
+        });
+
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(SHELL_PANE);
+        });
+        await waitFor(() => {
+            expect(h.webCommands('web-blur-view').length).toBeGreaterThan(before);
+        });
+        // Named with the pane the keyboard is coming FROM, which is what the daemon scopes on.
+        expect(h.webCommands('web-blur-view').at(-1)).toMatchObject({ pane_id: WEB_PANE });
+    });
+
+    it('does not take the keyboard while the web pane still wears the ring', async () => {
+        // Firing on every render, or while the page is still focused, would pull the keyboard
+        // out from under someone deliberately typing into the page.
+        const h = setup();
+        act(() => {
+            h.socket().emit(viewFocus());
+        });
+        await waitFor(() => {
+            expect(focusedPaneID()).toBe(WEB_PANE);
+        });
+        expect(h.webCommands('web-blur-view')).toEqual([]);
+    });
 });

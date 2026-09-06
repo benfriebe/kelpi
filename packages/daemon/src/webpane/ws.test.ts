@@ -762,6 +762,46 @@ describe('the GUI-only tab/stop/focus verbs (WEB-016 / WEB-032 / WEB-043)', () =
             });
         }
     });
+
+    /**
+     * Issue #33 - and the reason this is its own test rather than another entry in the loop
+     * above.
+     *
+     * `web-blur-view` was added to `WEB_COMMANDS` and nowhere else, and `WEB_COMMANDS` is only
+     * the FIRST of two gates: `webCommand` then names, one by one, which of them go to the GUI
+     * handler. Missing from that second list, the command did not error - it fell through to the
+     * console-subscribe path and answered `{ok:true}` with a drain of console lines. A caller
+     * that only checks `ok` sees success, the host is never called, and the feature is silently
+     * dead. Which is exactly what happened, three times, before a WS probe caught it.
+     *
+     * So this asserts the HOST RPC, not the reply's `ok`.
+     */
+    it('forwards blur-view to the host, with no tab (the window is the destination)', async () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'b0',
+                payload: { command: 'web-blur-view', pane_id: WEB_PANE }
+            })
+        );
+
+        const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+        expect(rpc['verb']).toBe('blur-view');
+        host.session.handleMessage(
+            JSON.stringify({ type: 'host-rpc-reply', id: rpc['id'], reply: { ok: true, restored: true } })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toMatchObject({
+            ok: true,
+            pane_id: WEB_PANE
+        });
+    });
 });
 
 describe('nav-state host event (WEB-032 / WEB-033)', () => {

@@ -491,7 +491,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-51 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+53 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -568,6 +568,31 @@ Legend:
 | `toggle_search` | Toggle Search | ⌘F | monitor | unconditional |
 | `close_search` | Close Search | Escape (no modifiers) | monitor | only when a pane search is active in the workspace; else falls through (Escape reaches the terminal) |
 
+### Category "Clipboard" (visible)
+
+| raw value | display name | default | layer | condition |
+|---|---|---|---|---|
+| `copy` | Copy | ⌘C | monitor | only when the focused pane has a live terminal renderer AND its selection is non-empty; else falls through (to the Edit menu's Copy, or to nothing) |
+| `paste` | Paste | ⌘V | monitor | only when the focused pane has a live terminal renderer; else falls through (to the Edit menu's Paste) |
+
+Both are Kelpi's own rather than the shell's `{ role: 'editMenu' }` alone, for two reasons
+(#81, #80). The Edit menu's Copy copies the DOM selection, and a terminal pane's DOM selection
+is the engine's hidden textarea, which is always empty: ⌘C therefore left the clipboard holding
+its previous contents and the next ⌘V pasted the old text. And an unbound ⌘ chord reaches the
+pane's kitty interceptor, which encoded it (terminal-surface.md section 10.2.1); a BOUND chord
+is consumed by the dispatcher in the window capture phase and never gets there.
+
+The Edit menu keeps both roles and stays the fallback: whenever the condition fails the chord is
+not consumed, so a chrome text field, a markdown editor, a diff pane and a web page all keep the
+native Copy and Paste. Nothing double-fires, because the page consumes the chord first (section
+7.1's ordering, `packages/shell/src/menu.ts`); an Edit-menu Copy that also ran would overwrite
+what the `copy` action just wrote, which is exactly what the live scenario asserts it does not.
+
+`copy` on an EMPTY selection declines rather than sending `0x03`: mouse reporting clears the
+selection on every press (terminal-surface.md section 12.1), so an agent pane meets that case
+constantly, and a ⌘C that sometimes interrupted the agent would be worse than the bug being
+fixed. ⌃C is the interrupt and is untouched.
+
 ### Category "Web Pane (active when web pane focused)" (HIDDEN from Settings)
 
 These 11 ship unbound and are NOT rendered in the Settings keybindings table (the table
@@ -626,7 +651,7 @@ applying(overrides: [trigger, action][])  // section 1.4 semantics
 One trigger maps to at most one action. One action may own any number of triggers
 (defaults give `focus_next_pane`/`focus_previous_pane` two each).
 
-### 5.2 The default map (40 triggers)
+### 5.2 The default map (42 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -649,6 +674,7 @@ super+p=command_palette              shift+super+n=create_scratchpad
 shift+super+g=new_group
 ctrl+shift+left=move_pane_left       ctrl+shift+right=move_pane_right
 ctrl+shift+down=move_pane_down       ctrl+shift+up=move_pane_up
+super+c=copy                         super+v=paste
 ```
 
 ### 5.3 Writing keybinding overrides (`writeKeybindings(map)`)
@@ -1348,8 +1374,8 @@ registries instead); nothing persists to a per-app preferences store.
   error string of section 8.3, cleared by any later `ok` report); an amber advisory when
   the hotkey shadows an in-app binding (section 8.5).
 - **Action table** (`packages/client/src/settings/KeybindingsTab.tsx`): sections in fixed
-  order `Pane Management, Navigation, Workspaces, View, Files, Search` (the web-pane
-  category and `unbind` are excluded). Each row: display name; ALL bound trigger chips
+  order `Pane Management, Navigation, Workspaces, View, Files, Search, Clipboard` (the
+  web-pane category and `unbind` are excluded). Each row: display name; ALL bound trigger chips
   (configString-sorted), each with an "x" to remove that one trigger (section 5.4); a
   Record button (the inline recorder of section 13.2); a Reset button enabled only when the
   action's trigger list differs from its default list (`reset-keybindings {action}`).

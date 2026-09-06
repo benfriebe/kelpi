@@ -32,6 +32,33 @@ export interface HelpCliEntry {
     readonly description: string;
 }
 
+export interface HelpMouseEntry {
+    readonly gesture: string;
+    readonly description: string;
+}
+
+/**
+ * The pointer gestures a terminal pane answers, and the one nothing else in the app says out
+ * loud (#81).
+ *
+ * **Shift+drag** is the whole reason this section exists. Once an application turns on mouse
+ * reporting, a press inside the pane is sent to that application instead of starting a
+ * selection, and any selection already made is cleared (terminal-surface.md section 12.1;
+ * ghostty's own rule, `Surface.zig:3850-3852`). Shift is the bypass, and it is ghostty's
+ * `mouse-shift-capture = false` default rather than an invention. Without it written down, "I
+ * can't copy text out of my agent pane" is unanswerable: dragging in a pane running Claude Code
+ * or vim simply does nothing visible, and there is no affordance anywhere that says why.
+ */
+export const HELP_MOUSE_ENTRIES: readonly HelpMouseEntry[] = [
+    { gesture: 'Drag', description: 'select text in a terminal pane' },
+    { gesture: 'Double-click', description: 'select the word under the pointer' },
+    {
+        gesture: 'Shift+drag',
+        description: 'select text even while an app owns the mouse (vim, Claude Code, less)'
+    },
+    { gesture: '⌘-click', description: 'open the path or URL under the pointer' }
+];
+
 /**
  * The CLI pointers. Deliberately short: this is a signpost, not `kelpi --help` reproduced in the
  * window, and every line here is a verb a GUI user reaches for and cannot otherwise find.
@@ -194,6 +221,27 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
                                 </div>
                             );
                         })}
+                    </section>
+
+                    <section data-testid="help-mouse" className="mt-4">
+                        <h2 className="mb-2 text-[13px] font-semibold">Mouse</h2>
+                        <div className="flex flex-col">
+                            {HELP_MOUSE_ENTRIES.map((entry) => (
+                                <div
+                                    key={entry.gesture}
+                                    data-help-gesture={entry.gesture}
+                                    className="flex items-baseline justify-between gap-4 py-[3px] text-[12px]"
+                                >
+                                    <span style={{ color: tokens.textSecondary }}>{entry.description}</span>
+                                    <span
+                                        className="shrink-0 font-mono text-[11px]"
+                                        style={{ color: tokens.textPrimary }}
+                                    >
+                                        {entry.gesture}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
                     </section>
 
                     <section data-testid="help-cli" className="mt-4">

@@ -53,6 +53,7 @@ import {
 import { useStore } from 'zustand';
 
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
+import { copySelection, pasteIntoFocusedPane } from './app/clipboard';
 import { describeTarget, type DaemonTarget } from './app/config';
 import {
     OPEN_PANEL_MESSAGE,
@@ -188,6 +189,7 @@ import {
     TerminalPane,
     createMountPolicy,
     mergeTerminalPalette,
+    paneHandle,
     resolveTerminalTheme,
     terminalFontStack,
     terminalPaletteCssVars,
@@ -1303,6 +1305,74 @@ function Shell(props: AppProps): ReactElement {
          * half, and the two are idempotent.
          */
         /**
+         * TERM-043's upload, factored out of `pasteImage` so #81's paste action can reach it
+         * too: a clipboard holding a PNG and no text takes this route from both entry points.
+         */
+        const uploadPastedImage = (paneID: string, file: Blob): true => {
+            void file
+                .arrayBuffer()
+                .then(async (buffer) => {
+                    const bytes = new Uint8Array(buffer);
+                    // Chunked so a multi-megabyte screenshot does not blow the call stack the
+                    // way `String.fromCharCode(...bytes)` would.
+                    let binary = '';
+                    for (let index = 0; index < bytes.length; index += 8192) {
+                        binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+                    }
+                    const reply = await commands.pasteImage({ paneID, data: btoa(binary) });
+                    if (!isOkReply(reply)) notifyFailure('Paste image', replyError(reply));
+                })
+                .catch((error: unknown) => {
+                    notifyFailure('Paste image', error instanceof Error ? error.message : String(error));
+                });
+            return true;
+        };
+
+        /**
+         * #81: terminal-surface.md §12.2's resolution order, run against the real clipboard.
+         *
+         * 1. a non-empty string goes through the daemon's paste pipeline (`drop-text`), which is
+         *    where the bracketed-paste envelope and the sync-input mirror already are;
+         * 2. no text but a PNG takes TERM-043's image route;
+         * 3. neither types nothing.
+         *
+         * A refused or unavailable clipboard is reported rather than swallowed: the chord is
+         * consumed before the read resolves, so a silent failure would be a dead paste with no
+         * explanation anywhere.
+         */
+        const pasteClipboardInto = async (paneID: string): Promise<void> => {
+            const clipboard = navigator.clipboard as Clipboard | undefined;
+            if (clipboard === undefined) {
+                notifyFailure('Paste', 'this browser exposes no clipboard');
+                return;
+            }
+            let text: string;
+            try {
+                text = await clipboard.readText();
+            } catch (error: unknown) {
+                notifyFailure('Paste', error instanceof Error ? error.message : String(error));
+                return;
+            }
+            if (text !== '') {
+                run('Paste', commands.dropText({ paneID, text }));
+                return;
+            }
+            // §12.2 step 2. `read()` is the only way to reach the bytes, and a clipboard that
+            // refuses it (or holds nothing readable) is step 3: type nothing, say nothing.
+            if (typeof clipboard.read !== 'function') return;
+            try {
+                for (const item of await clipboard.read()) {
+                    const type = item.types.find((candidate) => candidate === 'image/png');
+                    if (type === undefined) continue;
+                    uploadPastedImage(paneID, await item.getType(type));
+                    return;
+                }
+            } catch {
+                /* nothing readable on the clipboard: §12.2 step 3 types nothing */
+            }
+        };
+
+        /**
          * §WS-100: a group this client created is revealed by its header, the same one-shot the
          * workspace create path uses. `run` cannot do it — the id is in the reply.
          */
@@ -2233,25 +2303,65 @@ function Shell(props: AppProps): ReactElement {
                 return run('Drop path', commands.dropText({ paneID, text }));
             },
 
+            /**
+             * #81 - ⌘C over a terminal selection.
+             *
+             * Reads the FOCUSED pane's selection live (`terminal/pane-registry.ts`) and writes it
+             * to this machine's clipboard. Two `false` returns, and both are the dispatcher's
+             * fall-through rather than a swallow (§7.2 step 7):
+             *
+             *  - the focused pane has no terminal renderer (markdown, diff, web, or a terminal
+             *    whose engine is still opening), so ⌘C keeps meaning the Edit menu's Copy;
+             *  - the selection is EMPTY, which is macOS's own answer to ⌘C with nothing
+             *    selected: nothing happens.
+             *
+             * The empty case deliberately does NOT synthesise `0x03`. #81 floated that, and it
+             * is unsafe here: mouse reporting clears the selection on every press
+             * (`TerminalPane.tsx`, ghostty's `Surface.zig:3850-3852` rule), so in an agent pane
+             * the selection is empty far more often than not, and a ⌘C that sometimes sends
+             * SIGINT would interrupt the agent the user was trying to copy from. ⌃C is the
+             * interrupt and is untouched; the engine passes ⌘C through without encoding it
+             * (`input-handler.ts:382-386`), so falling through types nothing.
+             */
+            copySelection(): boolean {
+                const clipboard = navigator.clipboard as Clipboard | undefined;
+                return copySelection({
+                    focusedPaneID: focused,
+                    selectionFor: (paneID) => paneHandle(paneID)?.selection() ?? null,
+                    writeText:
+                        clipboard === undefined || typeof clipboard.writeText !== 'function'
+                            ? null
+                            : (text) => clipboard.writeText(text),
+                    onError: (detail) => notifyFailure('Copy', detail)
+                });
+            },
+
+            /**
+             * #81 - ⌘V into the FOCUSED terminal pane.
+             *
+             * Kelpi's own paste rather than the Edit menu role's, which pastes into whatever
+             * DOM node holds the caret and therefore misses the pane whenever the engine's
+             * hidden textarea does not (#35). The bytes go through the daemon's paste pipeline
+             * (`daemon/src/pty/input.ts` `sendText`, reached by `drop-text`), which is where the
+             * bracketed-paste envelope, the §9.1 paste filter and the sync-input mirror already
+             * live and where terminal-surface.md §12.2 says a paste belongs.
+             *
+             * Asynchronous by necessity: the clipboard cannot be read synchronously, so the
+             * chord is consumed first and the resolution order of §12.2 runs after. A clipboard
+             * with no text but a PNG takes the image route, which is the same one the window's
+             * `paste` listener uses for a drag-dropped or synthetic paste event.
+             */
+            pasteIntoFocusedPane(): boolean {
+                return pasteIntoFocusedPane({
+                    focusedPaneID: focused,
+                    isTerminalPane: (paneID) => paneHandle(paneID) !== null,
+                    deliver: pasteClipboardInto
+                });
+            },
+
             /** TERM-043 — hand a pasted image to the daemon, which writes it and types its path. */
             pasteImage(paneID: string, file: Blob): boolean {
-                void file
-                    .arrayBuffer()
-                    .then(async (buffer) => {
-                        const bytes = new Uint8Array(buffer);
-                        // Chunked so a multi-megabyte screenshot does not blow the call stack the
-                        // way `String.fromCharCode(...bytes)` would.
-                        let binary = '';
-                        for (let index = 0; index < bytes.length; index += 8192) {
-                            binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
-                        }
-                        const reply = await commands.pasteImage({ paneID, data: btoa(binary) });
-                        if (!isOkReply(reply)) notifyFailure('Paste image', replyError(reply));
-                    })
-                    .catch((error: unknown) => {
-                        notifyFailure('Paste image', error instanceof Error ? error.message : String(error));
-                    });
-                return true;
+                return uploadPastedImage(paneID, file);
             },
 
             /** Install CLI / Check for Updates — things only the Electron shell can do. */
@@ -2871,6 +2981,11 @@ function Shell(props: AppProps): ReactElement {
             // Conditional binding: Escape only belongs to the search while one is OPEN, so an
             // idle Escape falls straight through to the terminal (TERM-115).
             close_search: () => act.closeSearch(),
+            // #81: both decline when the focused pane has no terminal renderer, so ⌘C / ⌘V keep
+            // meaning the Edit menu's Copy / Paste in a markdown pane, a chrome field or a web
+            // page. Binding them is also what stops the kitty interceptor encoding them (#80).
+            copy: () => act.copySelection(),
+            paste: () => act.pasteIntoFocusedPane(),
             reopen_closed_pane: () => act.reopenClosedPane(),
             create_scratchpad: () => act.createScratchpad(),
             // CONT-120 / APP-020. Default ⌘O, and the File menu's "Preview Markdown…" reaches

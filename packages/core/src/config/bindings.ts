@@ -43,7 +43,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 40 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 42 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -77,6 +77,10 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'shift+super+t=reopen_closed_pane',
     'super+f=toggle_search',
     'escape=close_search',
+    // #81. Binding them is also what keeps the kitty interceptor from ever seeing them: the
+    // app's dispatcher is a window capture listener and runs first (§7.2).
+    'super+c=copy',
+    'super+v=paste',
     'shift+super+space=cycle_layout',
     'super+p=command_palette',
     'shift+super+n=create_scratchpad',

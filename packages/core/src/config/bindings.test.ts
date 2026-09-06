@@ -21,16 +21,22 @@ const trigger = (config: string) => {
 };
 
 describe('the action table', () => {
-    it('has the 51 bindable actions and the 16 menu-bar ones', () => {
-        expect(KELPI_ACTIONS).toHaveLength(51);
-        expect(new Set(KELPI_ACTIONS).size).toBe(51);
+    it('has the 53 bindable actions and the 16 menu-bar ones', () => {
+        expect(KELPI_ACTIONS).toHaveLength(53);
+        expect(new Set(KELPI_ACTIONS).size).toBe(53);
         expect(MENU_BAR_ACTIONS.size).toBe(16);
     });
 });
 
 describe('the default map', () => {
-    it('ships 40 triggers', () => {
-        expect(DEFAULT_KEYBINDINGS.size).toBe(40);
+    it('ships 42 triggers', () => {
+        expect(DEFAULT_KEYBINDINGS.size).toBe(42);
+    });
+
+    // #81: ⌘C and ⌘V are Kelpi's own chords now, not the Edit menu role's alone.
+    it('binds the clipboard chords by default', () => {
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+c'))).toBe('copy');
+        expect(actionForTrigger(DEFAULT_KEYBINDINGS, trigger('super+v'))).toBe('paste');
     });
 
     it('binds the documented defaults', () => {

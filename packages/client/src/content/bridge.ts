@@ -47,7 +47,7 @@
  * an opaque origin), or the copy button and scroll tracking go quiet with no other symptom.
  */
 
-import type { KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
+import type { KelpiAction, KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
 
 import { CODE_TO_KEY_CODE } from '../chrome/keys';
 
@@ -308,12 +308,25 @@ export function chordKeysForTrigger(trigger: KeyTrigger): string[] {
 }
 
 /**
+ * Actions a content frame must NEVER claim, whatever the binding map says (#81).
+ *
+ * `copy` and `paste` are bound by default (⌘C / ⌘V) and they are terminal actions: the host's
+ * handlers decline the moment the focused pane has no terminal renderer, which a markdown or
+ * diff preview never does. Relaying them would be strictly destructive, because the frame's half
+ * of the relay calls `preventDefault()` BEFORE the host gets to decline: the frame's own
+ * document would stop copying its own selection and nothing would copy it instead. A preview's
+ * Copy belongs to the preview.
+ */
+const FRAME_UNCLAIMED_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>(['copy', 'paste']);
+
+/**
  * The whole claimed set for a binding map, deduped and sorted (so the message a frame gets is
  * stable across renders and a test can read it).
  */
 export function chordKeysForBindings(bindings: KeyBindingMap): string[] {
     const keys = new Set<string>();
     for (const binding of bindings.values()) {
+        if (FRAME_UNCLAIMED_ACTIONS.has(binding.action)) continue;
         for (const key of chordKeysForTrigger(binding.trigger)) keys.add(key);
     }
     return [...keys].sort();

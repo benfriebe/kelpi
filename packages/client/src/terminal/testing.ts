@@ -267,6 +267,19 @@ export class FakeRenderer implements TerminalRenderer {
         for (const listener of [...this.selectionListeners]) listener(selection);
     }
 
+    /**
+     * The selection goes away and NOTHING is notified.
+     *
+     * Not a convenience: it is what the vendored engine actually does.
+     * `SelectionManager.clearSelection()` does not fire its change emitter
+     * (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:227`) and the mousedown that
+     * starts a new selection calls it directly (`:439`), so "the highlight is gone and no
+     * listener ran" is a real state a pane can be in. #81's read has to survive it.
+     */
+    clearSelectionSilently(): void {
+        this.selected = '';
+    }
+
     /** The user typed: what the engine would emit on `onData`. */
     emitData(data: string): void {
         for (const listener of [...this.dataListeners]) listener(data);

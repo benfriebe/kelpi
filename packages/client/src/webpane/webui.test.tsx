@@ -320,6 +320,65 @@ const SAVED: readonly WebFavourite[] = [
     { id: 'f1', url: 'https://example.com/', title: 'Example', created_at: '', label: 'Example' }
 ];
 
+/**
+ * Issue #33 - Return ends the edit, and the caret goes to the page.
+ *
+ * The claim effect refuses whenever a chrome text field holds the caret, which is right for every
+ * keystroke while an address is being typed and wrong for the one that submits it. Leaving the
+ * caret in the bar is not just untidy: the priority layer declines ⌘⇧[ / ⌘⇧] / ⌘← while chrome
+ * text has it (config-keybindings.md 7.3), so the pane's own shortcuts jam until the user clicks
+ * the page.
+ */
+describe('submitting an address', () => {
+    it('lets the URL bar go and hands the keyboard to the page', () => {
+        const fake = fakeCommands();
+        render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} embedded />
+        );
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        input.focus();
+        fireEvent.change(input, { target: { value: 'example.org' } });
+        expect(document.activeElement).toBe(input);
+
+        fireEvent.submit(input.closest('form') as HTMLFormElement);
+
+        expect(fake.sent.map((entry) => entry.verb)).toContain('navigate');
+        // The document's half: nothing in this pane's chrome holds the caret any more.
+        expect(document.activeElement).not.toBe(input);
+        // The window's half: only the host can give a native view the keyboard.
+        const focus = fake.sent.find((entry) => entry.verb === 'focusView');
+        expect(focus?.args).toEqual([PANE, TAB1]);
+    });
+
+    it('does not reach for a native view a browser client does not have', () => {
+        // No `embedded`: the page is a placeholder card, and there is nothing to focus.
+        const fake = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} />);
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        input.focus();
+        fireEvent.change(input, { target: { value: 'example.org' } });
+        fireEvent.submit(input.closest('form') as HTMLFormElement);
+
+        expect(fake.sent.map((entry) => entry.verb)).toContain('navigate');
+        expect(fake.sent.some((entry) => entry.verb === 'focusView')).toBe(false);
+    });
+
+    it('leaves an empty address alone', () => {
+        const fake = fakeCommands();
+        render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} embedded />
+        );
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        input.focus();
+        fireEvent.change(input, { target: { value: '   ' } });
+        fireEvent.submit(input.closest('form') as HTMLFormElement);
+
+        expect(fake.sent.some((entry) => entry.verb === 'navigate')).toBe(false);
+        // Nothing was submitted, so nothing was handed over: the caret stays where it was.
+        expect(document.activeElement).toBe(input);
+    });
+});
+
 describe('the URL-bar star', () => {
     it('fills for a saved URL and is hollow otherwise', () => {
         const fake = fakeCommands();

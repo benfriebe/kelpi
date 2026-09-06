@@ -307,7 +307,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 51 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 56 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -1512,7 +1512,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 51 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 56 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -1573,8 +1573,8 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 52 enum cases total; 51 bindable (excludes `unbind`);
+14. **Count sanity for tests**: 57 enum cases total; 56 bindable (excludes `unbind`);
     13 ship unbound (`open_diff`, `toggle_sync_input`, 11 `web_*`); the default map has
-    exactly 40 trigger entries (38 distinct actions bound; focus next/prev own two
-    triggers each). The Settings table shows 40 actions (51 minus the 11 hidden web
+    exactly 45 trigger entries (43 distinct actions bound; focus next/prev own two
+    triggers each). The Settings table shows 45 actions (56 minus the 11 hidden web
     actions).

@@ -148,7 +148,8 @@ import {
     replyError,
     replySearchMatch,
     replyText,
-    type CommandReply
+    type CommandReply,
+    type WebGeometryResyncMessage
 } from './connection';
 import {
     DiffPane,
@@ -704,6 +705,43 @@ function Shell(props: AppProps): ReactElement {
         [runtime, shellWindowID]
     );
     useEffect(() => () => webGeometry.dispose(), [webGeometry]);
+
+    /**
+     * Issue #34 - re-state the placements whenever the party holding them has forgotten them.
+     *
+     * The reporter's dedupe is a claim about the far end ("the host already has this rect"),
+     * and two events falsify it without changing anything this document can see:
+     *
+     *   - **this socket came back.** The daemon parks every view a closing connection had
+     *     placed (`ws/sync.ts` `releaseGeometry`) and expects the NEXT client's first report to
+     *     re-place them - but a reconnect is not a next client. The page did not reload, so the
+     *     reporter is the same object with the same cache, and a still layout says nothing.
+     *   - **a host registered.** Reports arriving while no host is attached are dropped
+     *     outright (`webpane/service.ts` `notifyGeometry`), so a `kelpid` restart or the shell
+     *     host's own reconnect backoff loses every placement with no drop on this side at all.
+     *     Only the daemon can see that happen, so only the daemon can say so.
+     *
+     * Both leave the same dead state: an empty hole where the page was, with the pane's chrome
+     * still drawn around it, that no reload, navigation or resize can recover.
+     *
+     * `welcome` rather than `status` because it is the frame that proves a daemon is on the
+     * other end; the first `welcome` of a page has nothing to re-state, so subscribing after
+     * the handshake costs nothing. `reassert` re-sends only what this client believes is
+     * PLACED, so a pane parked on purpose (a hidden workspace, a menu over it) stays parked.
+     */
+    useEffect(() => {
+        const offWelcome = runtime.connection.on('welcome', () => webGeometry.reassert());
+        const offResync = runtime.connection.on('web-geometry-resync', (message: WebGeometryResyncMessage) => {
+            // Scoped like `reveal-pane`: the daemon fans it out unfiltered because the check
+            // belongs to the party that knows which window it is running in.
+            if (message.windowID !== undefined && message.windowID !== shellWindowID) return;
+            webGeometry.reassert();
+        });
+        return () => {
+            offWelcome();
+            offResync();
+        };
+    }, [runtime, shellWindowID, webGeometry]);
 
     /**
      * A clicked desktop notification, arriving the long way round: shell → daemon → every

@@ -17,6 +17,7 @@ import {
     REVEAL_REQUEST_MESSAGE,
     WEB_CONSOLE_LINE_MESSAGE,
     WEB_GEOMETRY_REPORT_MESSAGE,
+    WEB_GEOMETRY_RESYNC_MESSAGE,
     WEB_HOST_CAPABILITY,
     type SyncHub,
     type SyncSession
@@ -462,6 +463,79 @@ describe('geometry reports → pane-geometry notifies', () => {
         const before = host.ofType('host-notify').length;
         client.session.close();
         expect(host.ofType('host-notify')).toHaveLength(before);
+    });
+
+    /*
+     * Issue #34's second path. The daemon stores no geometry, so a host that registers gets
+     * none with its `pane-open` replay - and every report made while the slot was empty was
+     * dropped. The clients are the only party that knows where the holes are, so they are
+     * asked; without the ask, a `kelpid` restart (or the shell host's own reconnect backoff)
+     * loses every placement with no drop on the client side at all.
+     */
+    it('asks every client to re-state its placements when a host registers', () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'electron', name: 'kelpi-web', windowID: 'WIN-1' }));
+        const before = client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE).length;
+
+        hostWithWindow(f, 'WIN-1');
+
+        const asks = client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE);
+        expect(asks).toHaveLength(before + 1);
+        // Scoped to the host's own window, so a client rendering elsewhere can ignore it.
+        expect(asks.at(-1)).toMatchObject({ windowID: 'WIN-1' });
+    });
+
+    it('asks again on every takeover, since each new host starts empty', () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'electron', windowID: 'WIN-1' }));
+        hostWithWindow(f, 'WIN-1');
+        hostWithWindow(f, 'WIN-2');
+        expect(client.transport.ofType(WEB_GEOMETRY_RESYNC_MESSAGE).map((m) => m['windowID'])).toEqual([
+            'WIN-1',
+            'WIN-2'
+        ]);
+    });
+
+    /*
+     * Issue #34, the race that closing the client-drop path would otherwise leave open: the
+     * client's own `resync()` closes and redials at once, so the replacement session can place
+     * a view before the daemon has processed the old socket's close.
+     */
+    it('does not park a pane the reconnected client has already placed again', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const first = f.connect();
+        first.session.handleMessage(hello({ kind: 'electron' }));
+        first.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+
+        // The same UI, back on a new socket, re-stating what it is drawing a hole for.
+        const second = f.connect();
+        second.session.handleMessage(hello({ kind: 'electron' }));
+        second.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+
+        const before = host.ofType('host-notify').length;
+        first.session.close();
+        expect(host.ofType('host-notify')).toHaveLength(before);
+    });
+
+    it('still parks a pane no live client claims, and one claimed only from another window', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const first = f.connect();
+        first.session.handleMessage(hello({ kind: 'electron' }));
+        first.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+        // A second UI in a DIFFERENT window: the host ignores its reports (`ownWindow:false`),
+        // so it is no reason to leave a view sitting in WIN-1.
+        const elsewhere = f.connect();
+        elsewhere.session.handleMessage(hello({ kind: 'electron' }));
+        elsewhere.session.handleMessage(geometry({ shellWindowID: 'WIN-2' }));
+
+        first.session.close();
+
+        const last = host.ofType('host-notify').at(-1);
+        expect(last?.['args']).toMatchObject({ paneID: WEB_PANE, visible: false, shellWindowID: 'WIN-1' });
     });
 
     it('never answers a report (it is a report, not a command)', () => {

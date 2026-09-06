@@ -28,10 +28,15 @@
  *   t.sleep
  * It passes when every `rec.check` is true and it throws nothing. Exit code 1 otherwise.
  *
+ * A scenario may also declare what source it drives, which is how `verify.mjs` decides to re-run
+ * it for a change that never touched this directory:
+ *   export const covers = ['packages/client/src/chrome/Sidebar.tsx', 'packages/shell/src/menu.ts'];
+ *
  * WHY A SEPARATE RUNNER from the audit: the audit is a fixed regression battery that measures
  * the app; a scenario is written for one change, by the person or agent making it, and run
- * against the tree that carries it. verify.mjs will learn to require one when a UI surface
- * changes; until then the rule is social. See scripts/ui-audit/README.md.
+ * against the tree that carries it. `verify.mjs` now REQUIRES one when a UI surface changes and
+ * runs what it selected (`--no-build --window hidden` in both tiers); the rule is no longer
+ * social. See scripts/ui-audit/README.md ▸ The rule.
  */
 
 import fs from 'node:fs';

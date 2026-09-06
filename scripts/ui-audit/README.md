@@ -6,7 +6,7 @@ Three things live here, for three jobs:
 |---|---|---|
 | `audit.mjs` | the regression battery: ~127 fixed steps of real gestures against a real window, with screenshots, run by `verify.mjs --full` and every promote | proving the app has not regressed |
 | `lib/driver.mjs` | one import that boots or attaches to an instance and gives you the page, the shell's native surfaces and the helpers | testing the change you are making |
-| `../scenario.mjs` + `../scenarios/*.mjs` | a runner and the scenarios written with the driver, one per behaviour | the same, as a repeatable file |
+| `../scenario.mjs` + `../scenarios/*.mjs` | a runner and the scenarios written with the driver, one per behaviour, selected and run by `verify.mjs` in both tiers | the same, as a repeatable file |
 
 The audit measures. A scenario checks one thing, is written by whoever changes that thing, and runs against the tree that carries the change. Issues #47, #53 and #55 were fixed with unit tests only, because the only way to exercise them for real was to add a step to a 29,000-line file; the scenarios beside this README are what those fixes should have shipped with.
 
@@ -107,7 +107,45 @@ That is a property of those two placements, not a scenario bug and not a product
 
 ## The rule
 
-A change to a UI surface ships with a scenario (or an audit step) that exercises it against the real app, and its PR says which one ran. Unit tests pin the reducer; they do not press the key. `verify.mjs` does not yet enforce this; until it does, the reviewer asks.
+**A change to a UI surface ships with a scenario (or an audit step) that exercises it against the real app, and `verify.mjs` runs it.** Unit tests pin the reducer; they do not press the key. The rule was social until it was not: #47, #53 and #55 were each fixed with unit tests alone, the promote's "full audit passed" never pressed what they changed, and all three shipped broken.
+
+A UI surface is everything under `packages/client/src/` and `packages/shell/src/` (the client's rendered surfaces, and the main process that owns the menu, the accelerators, the native dialogs, the dock and the window). Documentation and this harness are never UI. A `SURFACES` entry in `verify.mjs` can add `ui: true` to claim a path outside those two trees. The decision is one pure module, `lib/verify-plan.mjs`, unit-tested under the root vitest's `harness` project.
+
+**What verify does now.** On a diff that touches a UI surface it refuses, naming the files, unless one of these is true:
+
+- a scenario **`covers`** the file (below), in which case verify RUNS that scenario;
+- the diff writes or edits a scenario under `scripts/scenarios/` (untracked ones count: `git diff` cannot see a new file, so verify asks git for those separately), in which case verify runs it;
+- the diff edits `audit.mjs`, i.e. it added an audit step;
+- you opted out, out loud (below).
+
+Both tiers run scenarios at `--no-build --window hidden`, so a battery never takes the screen for them and never races another run:
+
+| tier | what runs |
+|---|---|
+| `verify.mjs` (impact-scoped) | the scenario files the diff touched, plus every scenario whose `covers` intersects the diff. Before the scoped audit, because a scenario is seconds and the audit is minutes. |
+| `verify.mjs --full` | every scenario, after the shell tests and before the audit. `self-upgrade.mjs` runs `--full`, so this is on the path of every promote. |
+
+Bundles are built once by verify (content-hashed, ~0.05 s when the tree has not moved) because both the scenario step and the audit run `--no-build`, and `dist/` is gitignored.
+
+### `covers`
+
+A scenario names the source it drives, and verify re-runs it whenever that source moves:
+
+```js
+export const covers = ['packages/client/src/chrome/Sidebar.tsx', 'packages/shell/src/menu.ts'];
+```
+
+Entries are exact paths or directory prefixes (`packages/core/src/config/`), matched on path segments, so `chrome` never claims `chromeless.ts`. Without it the only scenarios a diff could select are the ones it happens to edit, which is the wrong set twice over: a `Sidebar.tsx` change would re-run nothing, and a scenario nobody touched would never guard anything again. Declare what the scenario actually presses, not everything it transitively depends on; the three scenarios here say why they chose theirs, in a comment above the export.
+
+### The opt-out
+
+```bash
+node scripts/verify.mjs --no-scenario "why this change cannot be exercised"
+```
+
+Explicit, and never silent: the reason is printed when the plan is printed, printed again on the last line of the run, and written to `docs/audit/verify-latest/verify-report.json` beside the list of UI files it left unexercised. A reason is required; `--no-scenario` on its own exits 2.
+
+**A pure refactor that touches UI files still needs it**, and that is the point rather than an oversight: "this one cannot break anything" is the sentence every diff says about itself, and a rule that accepts it exempts everything. What the flag buys is that the claim is on the record with a name against it.
 
 ## Where this stops
 
@@ -116,3 +154,7 @@ A change to a UI surface ships with a scenario (or an audit step) that exercises
 - `dock-bounce-stop-only` cannot run at `--window onscreen` or `--window offscreen` (above). A scenario that needs an inactive app needs a window macOS agrees is not visible.
 - Notifications are not counted yet: `new Notification(...)` is a class import and is not wrapped. The dock and dialogs are.
 - The helpers in `driver.mjs` are copies of the audit's private ones, not shared with it. The audit can be pointed at the driver once the phone campaign stops touching `audit.mjs`.
+- **The rule checks that something exercises the surface, never that it exercises YOUR change.** A `covers` entry is a claim by whoever wrote it, and nothing verifies the claim: once `confirm-dialog-keys` covers `Sidebar.tsx`, every future `Sidebar.tsx` change is discharged by it, including the ones it does not press. That is the same bargain the surface map already makes (maintained, not inferred), and it is why the PR still says which scenario ran and what it asserted.
+- Discharging is per DIFF, not per file: one scenario written anywhere in `scripts/scenarios/`, or one edit to `audit.mjs`, satisfies the rule for every UI file in that diff. `verify.mjs` prints the files no `covers` entry names, so the gap is visible; it does not refuse on it.
+- `git diff` drives all of this, so an untracked source file is invisible to the tier AND to the rule. Untracked SCENARIOS are looked up separately (that false refusal was worth the extra call); untracked client or shell files are a pre-existing hole in `verify.mjs`, unchanged here.
+- Nothing runs the rule at commit or push time. It is a `verify.mjs` gate, which means it is on the promote path (`--full`) and on the path of anyone who runs verify, and nowhere else.

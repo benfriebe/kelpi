@@ -1,5 +1,5 @@
 /**
- * The two window concessions the UI audit needs, and nothing else.
+ * Where a test window goes, and whether Chromium is allowed to throttle it. Two lanes use it.
  *
  * A full audit run is ~120 steps of real gestures against a real window. Two facts about that
  * window cost the run minutes and cost the machine's owner their screen:
@@ -15,9 +15,16 @@
  *      safe turned out to be a measurement rather than a preference — see the table below, and
  *      note that the answer on this platform is currently "none of them".
  *
- * Both are **audit-only**. `KELPI_AUDIT` is set by `scripts/ui-audit/audit.mjs` (and by nothing a
- * user or a packaged build ever runs), so with it unset this module returns the shipped defaults
- * and `createWindow` builds byte-identical options — `audit-window.test.ts` pins exactly that.
+ * Both are **test-only**, and there are two lanes that ask for them, each with its own gate and
+ * its own reason (`resolveWindowPolicy` is where they meet):
+ *
+ *   - the **audit**, `KELPI_AUDIT=1` + `KELPI_AUDIT_WINDOW`, set by `scripts/ui-audit/audit.mjs`;
+ *   - the **harness functional lane**, `KELPI_HARNESS_SOCKET` + `KELPI_HARNESS_WINDOW`, set by
+ *     `scripts/ui-audit/lib/driver.mjs` ▸ `boot({ window })` for a scenario run (#65, below).
+ *
+ * Neither gate is a thing a user or a packaged build ever sets, so with both unset this module
+ * returns the shipped defaults and `createWindow` builds byte-identical options:
+ * `audit-window.test.ts` pins exactly that, for each gate and for the two of them crossed.
  *
  * ## Which placements are safe, measured
  *
@@ -59,6 +66,60 @@
  * what stops a run dying when the owner raises a window over the audit's, and both full runs above
  * were assertion-identical with it on.
  *
+ * ## The harness functional lane, measured (#65)
+ *
+ * The verdicts above are the AUDIT's, and they are about pixels: 107 of its 118 steps are
+ * `needs-eyes`, so a placement that costs the pictures costs the audit its product. A scenario
+ * (`scripts/scenarios/`) asserts on DOM state, CLI replies, harness counters and native menu
+ * state; its screenshots are for a human to glance at afterwards. Those are two different
+ * contracts over the same three placements, so the placements were measured again against the
+ * second one.
+ *
+ * Re-measured on this Electron for the scenario contract, one second of each, window blurred as
+ * well as focused because a scenario blurs it (`dock-bounce-stop-only` must: the dock only
+ * bounces while the app is inactive, and `BrowserWindow.blur()` on macOS is `orderBack:`, which
+ * puts the frame behind every other window on the screen):
+ *
+ *   | placement, throttling  | rAF focused | rAF blurred | timers/s blurred | `visibilityState` blurred | dpr | CDP screenshot |
+ *   | ---------------------- | ----------- | ----------- | ---------------- | ------------------------- | --- | -------------- |
+ *   | `hidden`,   shipped    | 121         | **0**       | **6**            | **hidden**                | 2   | 2560×1640 **blank white** |
+ *   | `hidden`,   throttle=0 | 121         | 121         | 220              | visible                   | 2   | blank white |
+ *   | `onscreen`, shipped    | 121         | 121         | 208              | visible                   | 2   | 2560×1640 real |
+ *   | `offscreen`, either    |  76         |  76         | 220              | visible                   | **1** | 1280×820 real |
+ *
+ * The surprise is the second row, and it is why this lane keeps Chromium's throttling ON while
+ * the audit's lane turns it off. `backgroundThrottling: false` does not merely keep the timers
+ * running: Electron implements it by pinning the render widget out of the hidden state, so the
+ * page reports `visibilityState: 'visible'` forever. The client reports exactly that value to
+ * the daemon (`client/src/state/bridge.ts` ▸ `reportVisibility`), the daemon's `isAppActive` is
+ * `presence().anyVisible` (`daemon/src/boot/compose.ts`), and the stop-only dock bounce is gated
+ * on the app being INACTIVE (agent-lifecycle §7.1). So a lane with throttling off silently tells
+ * the product that somebody is always looking at it, and `dock-bounce-stop-only` fails on a real
+ * behaviour change the lane introduced, measured at every placement and not just `hidden`:
+ * `--window onscreen` failed it too. A test lane that changes the thing under test is the exact
+ * failure this file rejects `hide()` and `minimize()` for; throttling off is the same mistake in
+ * a quieter costume, so it is opt-in (`KELPI_HARNESS_WINDOW_THROTTLE=0`) and never the default.
+ *
+ * With the shipped throttling all three scenarios pass at `hidden`, at their onscreen speeds
+ * (3.4 s / 1.7 s / 1.6 s against a 3.4 / 1.8 / 1.6 control), because a scenario does not wait on
+ * the page's own frame clock: `settle`, `settleDom` and `page.waitFor` poll from Node over CDP,
+ * and `Runtime.evaluate` is answered by a throttled renderer as promptly as by a busy one. That
+ * is the whole finding: the audit needed the flag because its animation steps advance on
+ * double-rAF gates INSIDE the page; nothing in a scenario does.
+ *
+ *   - **`hidden` is the lane.** Same bounds, same backing scale, zero opacity, click-through: the
+ *     screen stays the machine owner's and several runs overlap. What it costs is the pixels, and
+ *     `driver.mjs` ▸ `recorder` writes that caveat into every screenshot note rather than leaving
+ *     a white PNG to be diagnosed as a rendering bug.
+ *   - **`offscreen` is the fallback** for a scenario that wants a real picture without the screen:
+ *     true pixels at half resolution, rAF ~76 /s (a window on no display gets a 60 Hz-class frame
+ *     clock rather than the panel's 120).
+ *   - **`onscreen` and `offscreen` never look inactive.** Neither is ever occluded (one is parked
+ *     where nothing covers it, the other is on no screen at all), so a blurred window there still
+ *     reports itself visible and the daemon still calls the app active. Both fail
+ *     `dock-bounce-stop-only`, and that scenario now says so in its own words rather than reading
+ *     as "a stop does not bounce the dock".
+ *
  * There is no Electron in here — the policy and the geometry are plain data, so both are unit
  * tested without a GUI.
  */
@@ -92,9 +153,17 @@ export type AuditWindowPlacement = 'default' | 'hidden' | 'offscreen' | 'onscree
 
 const PLACEMENTS: readonly AuditWindowPlacement[] = ['default', 'hidden', 'offscreen', 'onscreen'];
 
+/**
+ * Which gate opened, if any. Only `shipped` is reachable without a test harness setting a
+ * variable, and only `shipped` is what a user's launch gets.
+ */
+export type WindowPolicyLane = 'shipped' | 'audit' | 'harness';
+
 export interface AuditWindowPolicy {
-    /** Is this process running under the audit harness at all? */
+    /** Is this process running under a test harness that wants a placement at all? */
     readonly active: boolean;
+    /** Which lane asked. `shipped` iff `active` is false. */
+    readonly lane: WindowPolicyLane;
     /** `webPreferences.backgroundThrottling`. `true` is Electron's default and the shipped value. */
     readonly backgroundThrottling: boolean;
     readonly placement: AuditWindowPlacement;
@@ -103,6 +172,7 @@ export interface AuditWindowPolicy {
 /** What a shipped launch gets: Electron's own defaults, decided by nothing in this file. */
 export const SHIPPED_WINDOW_POLICY: AuditWindowPolicy = {
     active: false,
+    lane: 'shipped',
     backgroundThrottling: true,
     placement: 'default'
 };
@@ -129,9 +199,75 @@ export function auditWindowPolicy(env: Readonly<Record<string, string | undefine
     const placement = requested !== undefined && PLACEMENTS.includes(requested) ? requested : 'default';
     return {
         active: true,
+        lane: 'audit',
         backgroundThrottling: env['KELPI_AUDIT_THROTTLE'] === '1',
         placement
     };
+}
+
+/**
+ * The placements the harness functional lane offers. `default` is deliberately NOT one of them.
+ *
+ * A scenario run picks a placement on purpose, and "the value that means I did not choose" and
+ * "the value I chose" must not be the same string: `KELPI_HARNESS_WINDOW=default` would be
+ * indistinguishable from the variable being absent, and a lane whose opt-in can be spelled the
+ * same as its opt-out is a lane that will one day be entered by accident. Unset or unknown means
+ * no lane at all, which is a user's window (`SHIPPED_WINDOW_POLICY`) rather than a placed one.
+ * `onscreen` is the lane's visible member: same lane, same machinery, window on the screen. It is
+ * a control for the other two, not the runner's default; `scenario.mjs` defaults to no lane at
+ * all, because an `onscreen` window is parked where nothing covers it and so never looks
+ * inactive (see the third bullet in the header's lane section).
+ */
+const HARNESS_PLACEMENTS: readonly AuditWindowPlacement[] = ['hidden', 'offscreen', 'onscreen'];
+
+/**
+ * The harness functional lane's policy (#65): a scenario window that need not own the screen.
+ *
+ * The gate is BOTH `KELPI_HARNESS_SOCKET` naming a channel (`./harness-protocol.ts` ▸
+ * `harnessSocketPath` is the one that opens it; the test is restated here rather than imported
+ * so this module keeps importing nothing) AND `KELPI_HARNESS_WINDOW` naming one of
+ * `HARNESS_PLACEMENTS`. Two variables, because either alone already means something else:
+ * `KELPI_HARNESS_SOCKET` is set by `dev-instance.mjs` for a window a human is looking at, and a
+ * stray `KELPI_HARNESS_WINDOW` in some future environment must not move a window that has no
+ * driver behind it to move it back.
+ *
+ * `KELPI_AUDIT` is not consulted at all, and the audit's own gate is not consulted here: the two
+ * lanes are read separately and `resolveWindowPolicy` decides between them, so neither can
+ * quietly change the other's behaviour.
+ *
+ * Throttling KEEPS Electron's shipped `true`, which is the opposite of what the audit's lane
+ * does and was decided by running the scenarios both ways. `KELPI_HARNESS_WINDOW_THROTTLE=0`
+ * turns it off for a run that wants the audit's behaviour; see the header's second table for why
+ * that is an opt-in and not the default.
+ */
+export function harnessWindowPolicy(env: Readonly<Record<string, string | undefined>>): AuditWindowPolicy {
+    const socket = env['KELPI_HARNESS_SOCKET'];
+    if (typeof socket !== 'string' || socket.trim() === '') return SHIPPED_WINDOW_POLICY;
+    const requested = env['KELPI_HARNESS_WINDOW'] as AuditWindowPlacement | undefined;
+    if (requested === undefined || !HARNESS_PLACEMENTS.includes(requested)) return SHIPPED_WINDOW_POLICY;
+    return {
+        active: true,
+        lane: 'harness',
+        // Shipped `true` unless a run explicitly asks for the audit's behaviour. A typo lands on
+        // the faithful side, which is the side where the product still behaves like the product.
+        backgroundThrottling: env['KELPI_HARNESS_WINDOW_THROTTLE'] !== '0',
+        placement: requested
+    };
+}
+
+/**
+ * The one call `createWindow` makes: the audit's lane, else the harness lane, else the shipped
+ * defaults.
+ *
+ * The audit wins a tie because an audit run is the stricter contract: it measures pixels, and
+ * `scripts/ui-audit/audit.mjs` sets `KELPI_HARNESS_SOCKET` too (the native surfaces its steps
+ * click are on the far side of that channel), so a run with both variables set is an audit run
+ * that also has a channel, never a scenario. Order, not precedence in the vocabulary sense: the
+ * two lanes never disagree about geometry, only about which gate is allowed to open it.
+ */
+export function resolveWindowPolicy(env: Readonly<Record<string, string | undefined>>): AuditWindowPolicy {
+    const audit = auditWindowPolicy(env);
+    return audit.active ? audit : harnessWindowPolicy(env);
 }
 
 /**
@@ -190,9 +326,17 @@ export function auditWindowBounds(
 /**
  * The line `createWindow` logs when the policy is active.
  *
- * Emitted only under `KELPI_AUDIT`, so a shipped log is unchanged; the audit reads it back to prove
+ * Emitted only when a lane opened, so a shipped log is unchanged; the audit reads it back to prove
  * the run it *thinks* was hidden actually was (and, via `actual`, what AppKit did with the origin
- * it was handed). Note that `shell.log` holds only the LAST shell's lines — `reattach-after-relaunch`
+ * it was handed), and `driver.boot` waits for the harness lane's copy before it hands a scenario
+ * a page, so "the placement did not take" fails at boot instead of as a puzzling screenshot.
+ *
+ * The tag names the lane, `audit-window:` or `harness-window:`, because the two runs otherwise
+ * produce the same line and a log with both in it (a scenario run started while an audit runs) is
+ * the case where telling them apart matters. Everything after the tag is identical, so a reader
+ * that only wants the placement can match `placement=`.
+ *
+ * Note that `shell.log` holds only the LAST shell's lines, since `reattach-after-relaunch`
  * starts a second one — which is why `results.json`'s `meta.windowPlacement` states it for the
  * whole run as well.
  */
@@ -201,7 +345,8 @@ export function auditWindowLogLine(policy: AuditWindowPolicy, requested: AuditRe
         `${String(Math.round(value.x))},${String(Math.round(value.y))} ${String(Math.round(value.width))}x${String(Math.round(value.height))}`;
     const visibility = auditWindowVisibility(policy.placement);
     return (
-        `audit-window: placement=${policy.placement} backgroundThrottling=${String(policy.backgroundThrottling)} ` +
+        `${policy.lane === 'harness' ? 'harness' : 'audit'}-window: ` +
+        `placement=${policy.placement} backgroundThrottling=${String(policy.backgroundThrottling)} ` +
         `opacity=${visibility.opacity === null ? 'default' : String(visibility.opacity)} ` +
         `clickThrough=${String(visibility.ignoreMouseEvents)} ` +
         `requested=${rect(requested)} actual=${rect(actual)}`

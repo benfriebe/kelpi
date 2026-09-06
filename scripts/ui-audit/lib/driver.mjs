@@ -21,8 +21,14 @@
  *
  * TWO WAYS IN
  *   const t = await boot({ repoRoot })                      // own sandbox: daemon + shell + CDP
+ *   const t = await boot({ repoRoot, window: 'hidden' })    // the same, without the screen (#65)
  *   const t = await attach({ debugPort, harnessSocket })    // a `dev-instance.mjs` already up
  * Both give `{ page, harness, ... }`; `boot` also gives `cli`, `sandbox`, `stop()`.
+ *
+ * `window` is the functional lane: `hidden`, `offscreen` or `onscreen`, and unset is the window
+ * every scenario got before the lane existed. Hidden frees the machine's screen and lets several
+ * runs overlap, at the cost of the screenshots; `boot`'s own doc has what each placement is worth
+ * and the README has the measurements.
  *
  * The page object is `lib/cdp.mjs`'s: eval / waitFor / click(selector) / clickAt / rightClick /
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
@@ -351,8 +357,19 @@ export async function clickDialogButton(page, label) {
 /**
  * What a scenario reports through. Every `check` is a named boolean with an optional detail;
  * screenshots land beside the results so a human (or an agent with eyes) can look at a failure.
+ *
+ * `placement` is the harness lane the instance is running at (#65), and the only thing the
+ * recorder does with it is tell the truth about the pictures. A screenshot taken at `hidden`
+ * comes back blank and one taken at `offscreen` comes back at half resolution, and a note that
+ * just says `shot: foo.png` invites the reader to conclude the app rendered nothing. Every note
+ * from a lane that is not painting truthfully carries the caveat, so a picture is never silently
+ * worth less than it looks.
  */
-export function recorder({ name, outDir }) {
+export function recorder({ name, outDir, placement }) {
+    const shotCaveat = {
+        hidden: 'BLANK: a zero-opacity window composites to white through CDP; assertions only',
+        offscreen: '1x backing store: half resolution, sub-pixel geometry quantised differently'
+    }[placement];
     fs.mkdirSync(outDir, { recursive: true });
     const results = [];
     const notes = [];
@@ -374,14 +391,23 @@ export function recorder({ name, outDir }) {
             shots += 1;
             const file = path.join(outDir, `${name}-${String(shots).padStart(2, '0')}-${label.replace(/[^a-z0-9-]+/gi, '-')}.png`);
             await page.screenshot(file);
-            notes.push(`shot: ${file}`);
+            const note = shotCaveat === undefined ? `shot: ${file}` : `shot: ${file}  [${placement}: ${shotCaveat}]`;
+            notes.push(note);
+            if (shotCaveat !== undefined) process.stdout.write(`         ${note}\n`);
             return file;
         },
         get failed() {
             return results.filter((r) => !r.ok);
         },
         summary() {
-            return { name, checks: results.length, failed: results.filter((r) => !r.ok).length, results, notes };
+            return {
+                name,
+                ...(placement === undefined ? {} : { placement }),
+                checks: results.length,
+                failed: results.filter((r) => !r.ok).length,
+                results,
+                notes
+            };
         }
     };
 }
@@ -419,20 +445,71 @@ export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(
 }
 
 /**
+ * The placements `boot({ window })` accepts; `boot`'s doc says what each costs.
+ *
+ * There is deliberately no default member. `window` unset means the lane does not open and the
+ * shell builds the window it has always built: the same rectangle, the same throttling, the
+ * same everything, so a run that does not ask for the lane is unchanged by its existence. That
+ * matters more than it sounds: `onscreen` was tried as the default and it parks the frame at the
+ * work area's origin, where nothing ever covers it, which makes the window permanently
+ * un-occluded and quietly breaks every check that needs an INACTIVE app (see
+ * `scripts/scenarios/dock-bounce-stop-only.mjs`).
+ */
+export const WINDOW_PLACEMENTS = ['hidden', 'offscreen', 'onscreen'];
+/** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
+export const SHIPPED_WINDOW_PLACEMENT = 'default';
+
+/**
  * Boot a private sandbox (own run dir, socket, DB, ports; throwaway state) with the daemon, the
  * dev Electron shell and a CDP connection to the client window. The shell carries
  * KELPI_HARNESS (it quits if this process dies) and KELPI_HARNESS_SOCKET (the channel).
+ *
+ * `window` is the harness functional lane (#65), and it is what lets more than one scenario run
+ * on one machine at a time. Unset is the shipped window, exactly as before the lane existed:
+ *
+ *   - `hidden`: the same window, same bounds, same backing scale, at zero opacity and
+ *     click-through. The screen stays the owner's and N runs can overlap. Assertions are
+ *     unaffected (DOM, CDP input, the harness channel, the CLI, and the app's own activity
+ *     signalling); `page.screenshot` composites the window's alpha and comes back BLANK, so
+ *     `rec.shot` says so in the note it writes rather than leaving a white PNG to be puzzled over.
+ *   - `offscreen`: parked past the work area. Also frees the screen, screenshots are real, but
+ *     AppKit gives an off-screen window a 1× backing store: half the resolution and every
+ *     sub-pixel quantity quantised differently (`packages/shell/src/audit-window.ts` has the
+ *     numbers). It is also never occluded, so the app never looks inactive there.
+ *   - `onscreen`: visible, parked at the work area's origin. The lane's visible member, useful
+ *     as a control; same never-occluded caveat as `offscreen`.
+ *
+ * The placement is verified rather than assumed: the shell logs `harness-window: placement=…` at
+ * window creation, and the boot waits for that line, so a lane that silently did not open fails
+ * here instead of hundreds of assertions later.
  */
-export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000 } = {}) {
+export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window } = {}) {
+    if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
+        throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
+    }
     if (build) await buildAll(repoRoot, { log });
     // clientDir is what makes the daemon serve the app rather than its placeholder (#37).
-    const sandbox = await makeSandbox(repoRoot, { label, clientDir: path.join(repoRoot, 'packages', 'client', 'dist') });
+    const sandbox = await makeSandbox(repoRoot, {
+        label,
+        clientDir: path.join(repoRoot, 'packages', 'client', 'dist'),
+        harnessWindow: window
+    });
     const harnessSocket = sandbox.harnessSocket ?? path.join(sandbox.root, 'harness.sock');
     const daemon = startDaemon(sandbox, { repoRoot });
     clearBackgroundTaskPolicy(daemon.child?.pid);
     await waitForHealthz(sandbox.base);
     const shell = startShell(sandbox, { repoRoot, extraEnv: { KELPI_HARNESS_SOCKET: harnessSocket } });
     clearBackgroundTaskPolicy(shell.child?.pid);
+    // Before CDP, because a `hidden` window that did not actually go hidden is a run that has
+    // taken the owner's screen without saying so. The shell only logs this line when the lane
+    // opened, so waiting for it is also the check that both halves of the gate arrived.
+    const windowLogLine =
+        window === undefined
+            ? null
+            : String(await shell.waitForLine(/harness-window: placement=/, `the shell to place its window (${window})`, 45_000));
+    if (windowLogLine !== null && !windowLogLine.includes(`placement=${window}`)) {
+        throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
+    }
     const page = await connectClient(sandbox.debugPort, { repoRoot, timeoutMs });
     const harness = harnessClient(harnessSocket);
     await settle(async () => {
@@ -462,6 +539,9 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         page,
         harness,
         cli,
+        /** The placement this instance is actually running at, proven by the shell's own log line. */
+        windowPlacement: window ?? SHIPPED_WINDOW_PLACEMENT,
+        windowLogLine,
         debugPort: sandbox.debugPort,
         async stop() {
             if (stopped) return;

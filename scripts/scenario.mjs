@@ -8,6 +8,15 @@
  *   node scripts/scenario.mjs scripts/scenarios/foo.mjs --no-build
  *   node scripts/scenario.mjs --attach 57384 --harness ~/tmp/kelpi-x/harness.sock <name>
  *   node scripts/scenario.mjs --keep <name>                    # leave the sandbox up afterwards
+ *   node scripts/scenario.mjs --window hidden <name>           # without taking the screen (#65)
+ *
+ * `--window hidden | offscreen | onscreen` opens the harness functional lane. Unset, nothing about
+ * the run changes: the shell builds the window it always built. `hidden` gives the machine's owner
+ * their screen back and lets several runs overlap (two, three, four at once, each in its own
+ * sandbox) at the cost of the screenshots, which come back blank; `rec.shot` says so in the note
+ * it writes. Assertions are unaffected: the DOM, CDP input, the harness channel, the CLI and the
+ * app's own activity signalling all behave the same. Never use it for a check that measures pixels.
+ * See ui-audit/README.md for the measurements and for what `onscreen`/`offscreen` cost.
  *
  * A scenario is an ES module whose default export is `async (t) => {}` receiving:
  *   t.page      the CDP page (lib/cdp.mjs): eval, waitFor, click, key, type, box, screenshot
@@ -39,7 +48,7 @@ const value = (flag) => {
     const index = args.indexOf(flag);
     return index >= 0 ? args[index + 1] : undefined;
 };
-const flagsWithValues = new Set(['--attach', '--harness', '--out']);
+const flagsWithValues = new Set(['--attach', '--harness', '--out', '--window']);
 const positional = args.filter((a, i) => !a.startsWith('--') && !flagsWithValues.has(args[i - 1] ?? ''));
 
 const scenariosDir = path.join(repoRoot, 'scripts', 'scenarios');
@@ -58,8 +67,21 @@ if (files.length === 0) {
     process.exit(2);
 }
 
+// Unset is the shipped window: the lane never opens and a run is exactly what it was before it
+// existed. See driver.mjs ▸ WINDOW_PLACEMENTS for why `onscreen` is not the default.
+const placement = value('--window');
+if (placement !== undefined && !driver.WINDOW_PLACEMENTS.includes(placement)) {
+    console.error(`--window ${placement}: want ${driver.WINDOW_PLACEMENTS.join(' | ')}`);
+    process.exit(2);
+}
+
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios', stamp);
+let outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios', stamp);
+// Runs in parallel are the point of the hidden lane, and two started inside the same millisecond
+// share a stamp: without this they would write their screenshots and their results.json into one
+// directory and the second would win. The pid is appended only when it is actually needed, so a
+// serial run's path shape is unchanged.
+if (value('--out') === undefined && fs.existsSync(outDir)) outDir = `${outDir}-${String(process.pid)}`;
 fs.mkdirSync(outDir, { recursive: true });
 const log = (line) => console.log(`[scenario] ${line}`);
 
@@ -68,6 +90,10 @@ const log = (line) => console.log(`[scenario] ${line}`);
 let t;
 const attachPort = value('--attach');
 if (attachPort !== undefined) {
+    // --window is a property of a shell this runner LAUNCHES. An instance that is already up was
+    // placed by whoever started it, so saying nothing is the only honest thing to do here: the
+    // recorder gets no placement and writes its screenshot notes without a caveat it cannot back.
+    if (value('--window') !== undefined) log('--window is ignored with --attach: the instance is already placed');
     log(`attaching to debug port ${attachPort}${value('--harness') ? ` and harness ${value('--harness')}` : ''}`);
     t = await driver.attach({
         debugPort: Number(attachPort),
@@ -76,8 +102,15 @@ if (attachPort !== undefined) {
     });
 } else {
     log(`booting a sandbox${has('--no-build') ? ' (no build)' : ' (building first; skip with --no-build)'}`);
-    t = await driver.boot({ repoRoot, label: 'scenario', build: !has('--no-build'), log });
-    log(`up: ${t.sandbox.base}  debug ${String(t.debugPort)}  harness ${t.harness.path}`);
+    t = await driver.boot({ repoRoot, label: 'scenario', build: !has('--no-build'), log, window: placement });
+    log(
+        `up: ${t.sandbox.base}  debug ${String(t.debugPort)}  harness ${t.harness.path}  ` +
+            `window ${t.windowPlacement}${
+                t.windowPlacement === 'hidden' || t.windowPlacement === 'offscreen'
+                    ? ' (functional lane: the screenshots are not trustworthy)'
+                    : ''
+            }`
+    );
 }
 
 const stop = async () => {
@@ -98,7 +131,7 @@ let anyFailed = false;
 for (const file of files) {
     const name = path.basename(file, '.mjs');
     log(`▶ ${name}`);
-    const rec = driver.recorder({ name, outDir });
+    const rec = driver.recorder({ name, outDir, placement: t.windowPlacement });
     const started = Date.now();
     try {
         const mod = await import(pathToFileURL(file).href);
@@ -118,7 +151,12 @@ for (const file of files) {
     log(`${summary.failed === 0 ? '✓' : '✗'} ${name}: ${String(summary.checks - summary.failed)}/${String(summary.checks)} checks in ${String(Math.round(summary.ms / 100) / 10)}s`);
 }
 
-fs.writeFileSync(path.join(outDir, 'results.json'), `${JSON.stringify({ stamp, files, summaries }, null, 2)}\n`);
+// The placement goes in the file, not just the terminal: a results.json read a week later must
+// say whether its blank screenshots are a bug or the lane.
+fs.writeFileSync(
+    path.join(outDir, 'results.json'),
+    `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, summaries }, null, 2)}\n`
+);
 log(`results: ${path.join(outDir, 'results.json')}`);
 await stop();
 process.exit(anyFailed ? 1 : 0);

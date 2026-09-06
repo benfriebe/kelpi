@@ -5,6 +5,23 @@
  * agent-lifecycle.md §7.2, §7.3, §14 invariant 6. The bounce is a native call nothing in the
  * page can observe, so the count comes from the shell's harness channel. The bounce only fires
  * while the window is unfocused (status.ts), so the scenario blurs it first.
+ *
+ * PRECONDITION, learned from running this under the functional lane's placements (#65). Blurring
+ * is not one condition but two, and the scenario used to check only the easy one:
+ *
+ *   1. the SHELL must see an unfocused window: `status.ts` ▸ `attention-request` is gated on
+ *      `!host.isWindowFocused()`, and `harness.blur()` settles that;
+ *   2. the DAEMON must believe the app is inactive before it broadcasts `attention-request` at
+ *      all (agent-lifecycle §7.1). Its `isAppActive` is `presence().anyVisible`, which is the
+ *      clients' reported `document.visibilityState` and nothing else, so the bounce needs the
+ *      renderer to go hidden, which happens when AppKit stops counting the window as visible.
+ *
+ * `BrowserWindow.blur()` is `orderBack:` on macOS, so (2) follows from (1) only when something
+ * is then in front of the window: true at the shipped placement (the frame sits where other
+ * windows are) and true at `--window hidden` (a zero-opacity frame is not visible to AppKit's
+ * occlusion at all), false at `--window onscreen` and `--window offscreen`, where nothing ever
+ * covers the frame. Without the check below that reads as "a stop does not bounce the dock",
+ * which is a diagnosis of the product for a property of the placement.
  */
 export default async function ({ page, harness, cli, rec, d, sleep }) {
     const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));
@@ -15,7 +32,22 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
 
     await harness.blur();
     const win = await harness.window();
-    rec.check('the window is unfocused, so a bounce would be allowed', win.focused === false, JSON.stringify(win));
+    rec.check('the window is unfocused, so the SHELL would allow a bounce', win.focused === false, JSON.stringify(win));
+
+    // The other half, and the one that actually decides whether a bounce is ever requested.
+    const wentHidden = await d.settle(async () => (await page.eval(`document.visibilityState === 'hidden'`)) === true, {
+        ceilingMs: 4_000,
+        intervalMs: 100
+    });
+    rec.check(
+        'the page reports itself hidden, so the DAEMON will call the app inactive',
+        wentHidden,
+        wentHidden
+            ? undefined
+            : 'the blurred window is still visible to AppKit, so document.visibilityState stayed "visible" and the ' +
+              'daemon suppresses attention-request. Expected at --window onscreen and --window offscreen, where ' +
+              'nothing ever covers the frame; run this scenario at --window hidden or with no --window at all.'
+    );
 
     const start = await harness.counters();
     rec.note(`counters before: ${JSON.stringify(start)}`);

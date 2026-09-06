@@ -353,7 +353,7 @@ function applySecurityPolicy(window: BrowserWindow): void {
     });
 
     /*
-     * Issue #79 — the renderer that is alive and simply not answering.
+     * Issue #79: the renderer that is alive and simply not answering.
      *
      * `render-process-gone` above is a death; this is a wedge, and until now the shell had
      * nothing to say about one. `./unresponsive.ts` owns the rule (a single hang is ordinary

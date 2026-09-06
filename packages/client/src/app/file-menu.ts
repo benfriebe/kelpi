@@ -24,7 +24,7 @@ export const SELECT_ALL_WORKSPACES_COMMAND = 'select-all-workspaces';
 export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
 
 /**
- * View ▸ Recover Interface (⌃⌥⌘R) — `chrome/gesture-reset.ts` ▸ `resetGestures` (issue #79).
+ * View ▸ Recover Interface (⌃⌥⌘R), `chrome/gesture-reset.ts` ▸ `resetGestures` (issue #79).
  *
  * The shell's half of the row parks every native web-pane view; this is the client's half, and
  * it is the one that unsticks a gesture whose `pointerup` never arrived. Stated here rather than

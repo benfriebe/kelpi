@@ -94,7 +94,7 @@ describe('ratioForDividerDrag', () => {
     });
 
     /**
-     * Issue #79 — a horizontal drag bottoms out on the COLUMN floor, not on the bare 0.1.
+     * Issue #79: a horizontal drag bottoms out on the COLUMN floor, not on the bare 0.1.
      *
      * `MIN_PANE_EXTENT_PX` (160 px, 20 columns at the shipped 8 px cell) over this split's 798 px
      * is 0.2005…, so a drag off the left edge stops there and one off the right stops at its

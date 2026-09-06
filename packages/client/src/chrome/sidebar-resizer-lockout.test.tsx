@@ -1,5 +1,5 @@
 /**
- * Issue #79 — the sidebar drag that never ends.
+ * Issue #79: the sidebar drag that never ends.
  *
  * `Sidebar.bulk.test.tsx` already pins the happy path (§WS-002: snapshot tracking, the clamp,
  * the release). This file pins the three ways the release never arrives, each of which left
@@ -8,7 +8,7 @@
  * re-entered a full grid resize on every mouse move.
  *
  * jsdom has no `PointerEvent`, so every event here is a real bubbling `MouseEvent` with the
- * pointer type name — the same shape `Sidebar.bulk.test.tsx` uses, and for the same reason:
+ * pointer type name, the same shape `Sidebar.bulk.test.tsx` uses, and for the same reason:
  * Testing Library's synthesized events arrive without `clientX`.
  */
 

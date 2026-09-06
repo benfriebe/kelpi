@@ -190,7 +190,7 @@ describe('pane resize share math (§12.5)', () => {
 });
 
 /**
- * Issue #79 — `clampRatio`'s optional column floor.
+ * Issue #79: `clampRatio`'s optional column floor.
  *
  * The floor exists to bound the cost of a DRAG (only a width change moves the column count, and
  * a column change rewraps the whole scrollback), so it is opt-in per call: a caller that knows

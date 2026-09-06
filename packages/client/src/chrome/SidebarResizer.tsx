@@ -120,7 +120,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     }, []);
 
     /*
-     * Issue #79 — the handle is unmounted mid-drag by its own parent.
+     * Issue #79: the handle is unmounted mid-drag by its own parent.
      *
      * `App.tsx` renders this only while `sidebarPhase !== 'closing'`, so ⇧⌘S during a drag
      * takes the component away while its `window` listeners and the body's `col-resize` cursor

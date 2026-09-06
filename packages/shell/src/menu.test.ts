@@ -154,7 +154,7 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
     });
 
     /**
-     * Issue #79 — View ▸ Recover Interface, the row a person reaches for INSTEAD of relaunching.
+     * Issue #79: View ▸ Recover Interface, the row a person reaches for INSTEAD of relaunching.
      *
      * Two halves in two processes, and the ordering between them is the assertion: the main
      * process parks the native views whatever the client does, because a wedged renderer is

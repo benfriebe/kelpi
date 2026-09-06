@@ -185,8 +185,8 @@ export function rectContains(rect: Rect, point: Point): boolean {
  * split has to share. NaN propagates (matches Swift's `min(max(r, 0.1), 0.9)`, where NaN
  * comparisons are all false and the original value falls through).
  *
- * `available` is the split's extent along its own axis, in CSS px — `SplitDividerInfo.available`
- * — and is what turns the ratio into a pane size. Callers without it (the daemon applying a
+ * `available` is the split's extent along its own axis, in CSS px, `SplitDividerInfo.available`
+ *, and is what turns the ratio into a pane size. Callers without it (the daemon applying a
  * stored ratio, a layout template) get exactly the old behaviour.
  */
 export function clampRatio(ratio: number, available?: number): number {

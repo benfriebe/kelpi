@@ -1,5 +1,5 @@
 /**
- * Issue #79 — the global gesture reset (`chrome/gesture-reset.ts`).
+ * Issue #79: the global gesture reset (`chrome/gesture-reset.ts`).
  *
  * The registry itself, over jsdom's `window`. The two callers are pinned where they live:
  * `sidebar-resizer-lockout.test.tsx` and `grid/PaneGrid.gesture-reset.test.tsx`.

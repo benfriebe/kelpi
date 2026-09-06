@@ -376,7 +376,7 @@ function relayRow(
 export const FORCE_RELOAD_ACCELERATOR = 'CommandOrControl+Alt+R';
 
 /**
- * View ▸ Recover Interface (⌃⌥⌘R) — issue #79's escape hatch.
+ * View ▸ Recover Interface (⌃⌥⌘R), issue #79's escape hatch.
  *
  * The row exists for the state the issue describes: a gesture the app never saw the end of, so
  * the sidebar chases the bare cursor, and native web-pane views sitting over a window whose

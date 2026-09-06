@@ -1,5 +1,5 @@
 /**
- * Issue #79 — the grid's gestures end when the pointer leaves this document.
+ * Issue #79: the grid's gestures end when the pointer leaves this document.
  *
  * `PaneGrid.test.tsx` pins the divider drag's maths and its ordinary release. This file pins the
  * releases that never arrive: a `pointerup` delivered to a web pane's native `WebContentsView`,

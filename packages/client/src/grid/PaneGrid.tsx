@@ -565,7 +565,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     );
 
     /*
-     * Issue #79 — the release that never arrives.
+     * Issue #79: the release that never arrives.
      *
      * Both gestures above already handle `pointercancel` (`attachListeners`), which covers the
      * browser taking the pointer away. It does NOT cover the pointer going somewhere this

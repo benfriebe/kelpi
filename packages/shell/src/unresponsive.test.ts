@@ -1,5 +1,5 @@
 /**
- * Issue #79 — the renderer watchdog's two-strike rule.
+ * Issue #79: the renderer watchdog's two-strike rule.
  *
  * The whole point of the module is that it does NOT act on the first `unresponsive`: a workspace
  * switch that starts eight engines against multi-MB replays blocks the main thread past

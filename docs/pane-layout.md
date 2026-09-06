@@ -511,8 +511,8 @@ in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
   computed against an older tree is dropped the moment a fresh tree arrives unless the
   gesture is still running, in which case it re-applies to the newer tree.
 - **Column floor on a horizontal drag** (issue #79). A HORIZONTAL drag additionally clamps so
-  neither child falls below `MIN_PANE_EXTENT_PX` = 160 px — 20 columns at the shipped 8 px cell
-  (`measureCellSize`, `packages/client/src/terminal/fonts.ts:210`) — by passing the snapshot's
+  neither child falls below `MIN_PANE_EXTENT_PX` = 160 px, 20 columns at the shipped 8 px cell
+  (`measureCellSize`, `packages/client/src/terminal/fonts.ts:210`), by passing the snapshot's
   `available` to `clampRatio(ratio, available)` (`packages/core/src/layout/types.ts`). A split
   too narrow to give both children the floor gives them an even share instead. The reason is
   cost, not taste: only a width change moves the column count, a column change rewraps the whole
@@ -520,7 +520,7 @@ in `packages/client/src/grid/PaneGrid.tsx`, with the gesture maths in
   canvas blits), rewrapping is superlinear as the pane narrows, and a drag sweeps every
   intermediate width on the way at ~10 Hz per pane. A VERTICAL drag keeps the bare `[0.1, 0.9]`:
   it changes rows, which neither rewraps nor reallocates, and a 160 px row floor would be a
-  behaviour change nobody asked for. The floor applies **only to the drag** — `clampRatio` with
+  behaviour change nobody asked for. The floor applies **only to the drag**, `clampRatio` with
   no `available` is unchanged, so a stored ratio replayed from the daemon, a layout template and
   `pane resize --ratio` all behave exactly as before.
 - While a drag is active (and for `RESIZE_BADGE_LINGER_MS` = 750 ms after it ends, and

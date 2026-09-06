@@ -216,6 +216,44 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
             window.blur();
             return window.isFocused();
         },
+        /*
+         * #75's three. Real calls, not simulated events: the behaviour under test is what the
+         * shell does when its window actually leaves the screen, and a synthesised event would
+         * run the handler while leaving the window (and the views parented to it) where they
+         * were.
+         *
+         * `hide` is `app.hide()` on macOS, because that is what ⌘H IS: `menu.ts`'s
+         * `{ role: 'hide' }`, ⌥⌘H's `hideOthers`, and the global hotkey's second press
+         * (`main.ts` ▸ `toggleFrontmost`) all end in `app.hide()`. `BrowserWindow.hide()` is a
+         * different thing that looks the same from a script and is NOT what a user does; it is
+         * also, measured on this Electron, the one that emits no `hide` event at all. Using it
+         * here would have made a harness that could not reproduce the bug it was written for.
+         */
+        hide: () => {
+            const window = liveWindow(mainWindow);
+            if (window === null) return null;
+            if (process.platform === 'darwin') app.hide();
+            else window.hide();
+            return { visible: window.isVisible(), minimized: window.isMinimized() };
+        },
+        minimize: () => {
+            const window = liveWindow(mainWindow);
+            if (window === null) return null;
+            window.minimize();
+            return { visible: window.isVisible(), minimized: window.isMinimized() };
+        },
+        restore: () => {
+            const window = liveWindow(mainWindow);
+            if (window === null) return null;
+            // Every direction, in this order, because a caller says "restore" without knowing
+            // which of the three states the window is in: the app hidden, the window ordered
+            // out, or the window minimised. Each call is a no-op in the states it does not
+            // apply to, so `restore` is safe to send unconditionally.
+            if (process.platform === 'darwin') app.show();
+            if (window.isMinimized()) window.restore();
+            if (!window.isVisible()) window.show();
+            return { visible: window.isVisible(), minimized: window.isMinimized() };
+        },
         counters
     };
 }

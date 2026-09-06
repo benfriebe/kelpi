@@ -183,6 +183,151 @@ describe('whose geometry it is', () => {
     });
 });
 
+describe('a park this shell performs, and undoes (issue #75)', () => {
+    it('parkAll takes every view back to the holder but keeps the placement', () => {
+        const h = harness({ views: { T1: { id: 'T1' }, T9: { id: 'T9' } } });
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ paneID: OTHER, tabID: 'T9' }));
+        h.controller.parkAll('window-hidden');
+        expect(h.detaches.map((view) => view.id).sort()).toEqual(['T1', 'T9']);
+        // Not in the window any more...
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        // ...but still owed a placement, which is the whole difference from releaseAll.
+        expect([...h.controller.parkedPaneIDs].sort()).toEqual([PANE, OTHER].sort());
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'released', reason: 'window-hidden' });
+    });
+
+    it('refresh puts a parked view back, attaching it rather than moving it', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        h.controller.refresh();
+        // Two attaches, no setBounds: a parked view is a child of the HOLDER, so positioning it
+        // would leave the page off screen at the right coordinates.
+        expect(h.attaches.map((entry) => entry.view.id)).toEqual(['T1', 'T1']);
+        expect(h.moves).toEqual([]);
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'placed', reason: 'attached' });
+    });
+
+    it('re-clamps against the window the view comes back to, not the one it left', () => {
+        let metrics: WindowMetrics = METRICS;
+        const h = harness({ metrics: () => metrics });
+        h.controller.apply(geometry({ rect: { x: 10, y: 20, w: 400, h: 300 } }));
+        h.controller.parkAll('window-minimized');
+        // The user resized the window while it was minimised.
+        metrics = { contentWidth: 300, contentHeight: 200, scaleFactor: 1 };
+        h.controller.refresh();
+        expect(h.attaches.at(-1)?.bounds).toEqual({ x: 10, y: 20, width: 290, height: 180 });
+    });
+
+    it('a pane the CLIENT hid while the window was away is NOT brought back', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        // The workspace switched (or the pane was closed) while the window was hidden.
+        expect(h.controller.apply(geometry({ visible: false }))).toBe('released');
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        h.controller.refresh();
+        expect(h.attaches).toHaveLength(1);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+    });
+
+    it('the view is detached exactly once however many parks arrive', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        h.controller.parkAll('window-minimized');
+        expect(h.controller.park(PANE, 'again')).toBe(false);
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+    });
+
+    it('releaseAll drops a parked placement without touching the view again', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        h.controller.releaseAll('window-closed');
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        h.controller.refresh();
+        expect(h.attaches).toHaveLength(1);
+    });
+
+    it('forgets a parked placement when its view is destroyed', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        expect(h.controller.forget(h.views['T1'] as FakeView)).toBe(true);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+    });
+
+    it('does not offer a parked placement as where the view IS (the poster’s box, issue #12)', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        expect(h.controller.placementOf(PANE)).not.toBeNull();
+        h.controller.parkAll('window-hidden');
+        expect(h.controller.placementOf(PANE)).toBeNull();
+    });
+
+    it('a report arriving while the window has no metrics parks rather than forgets', () => {
+        let window: WindowMetrics | null = METRICS;
+        const h = harness({ metrics: () => window });
+        h.controller.apply(geometry());
+        window = null;
+        expect(h.controller.apply(geometry())).toBe('released');
+        expect(h.controller.parkedPaneIDs).toEqual([PANE]);
+        expect(h.events.at(-1)).toMatchObject({ reason: 'no-window' });
+        window = METRICS;
+        h.controller.refresh();
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+    });
+
+    it('a hide report with no window still forgets, so a deliberate park survives the restore', () => {
+        let window: WindowMetrics | null = METRICS;
+        const h = harness({ metrics: () => window });
+        h.controller.apply(geometry());
+        window = null;
+        expect(h.controller.apply(geometry({ visible: false }))).toBe('released');
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        window = METRICS;
+        h.controller.refresh();
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+    });
+
+    it('a window with no content area parks; a pane scrolled out of one still forgets', () => {
+        let metrics: WindowMetrics = METRICS;
+        const h = harness({ metrics: () => metrics });
+        h.controller.apply(geometry());
+        // A display reconfiguration: the window is there and has no box at all.
+        metrics = { contentWidth: 0, contentHeight: 0, scaleFactor: 1 };
+        h.controller.apply(geometry());
+        expect(h.controller.parkedPaneIDs).toEqual([PANE]);
+        expect(h.events.at(-1)).toMatchObject({ reason: 'no-content-area' });
+
+        metrics = METRICS;
+        h.controller.refresh();
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        // …whereas a pane dragged out of a perfectly good window is the client's business.
+        h.controller.apply(geometry({ rect: { x: 5000, y: 0, w: 400, h: 300 } }));
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        expect(h.events.at(-1)).toMatchObject({ reason: 'off-screen' });
+    });
+
+    it('a tab switch onto a parked pane attaches the new view and leaves no second entry', () => {
+        const h = harness({ views: { T1: { id: 'T1' }, T2: { id: 'T2' } } });
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+        h.controller.apply(geometry({ tabID: 'T2' }));
+        // The outgoing view is already in the holder: detaching it again would remove a child
+        // of a window it is not in.
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        expect(h.attaches.map((entry) => entry.view.id)).toEqual(['T1', 'T2']);
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+    });
+});
+
 describe('refresh', () => {
     it('re-applies the last geometry once the view finally exists', () => {
         const views: Record<string, FakeView | null> = {};

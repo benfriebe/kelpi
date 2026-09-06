@@ -80,13 +80,18 @@ interface FakeSurfaceState {
     readonly clicked: FakeItem[];
     window: WindowSnapshot | null;
     focused: boolean;
+    /** #75's two window states, tracked the way a real `BrowserWindow` reports them. */
+    visible: boolean;
+    minimized: boolean;
 }
 
 function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<FakeItem>; state: FakeSurfaceState } {
     const state: FakeSurfaceState = {
         clicked: [],
         window: { focused: true, visible: true, bounds: { x: 10, y: 20, width: 800, height: 600 } },
-        focused: true
+        focused: true,
+        visible: true,
+        minimized: false
     };
     const surface: HarnessSurface<FakeItem> = {
         platform: 'darwin',
@@ -107,6 +112,24 @@ function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<F
             if (state.window === null) return null;
             state.focused = false;
             return false;
+        },
+        hide: () => {
+            if (state.window === null) return null;
+            state.visible = false;
+            state.focused = false;
+            return { visible: state.visible, minimized: state.minimized };
+        },
+        minimize: () => {
+            if (state.window === null) return null;
+            state.minimized = true;
+            state.focused = false;
+            return { visible: state.visible, minimized: state.minimized };
+        },
+        restore: () => {
+            if (state.window === null) return null;
+            state.minimized = false;
+            state.visible = true;
+            return { visible: state.visible, minimized: state.minimized };
         },
         counters: new HarnessCounters()
     };
@@ -865,6 +888,42 @@ describe('respond', () => {
         });
         expect(respond(request('focus'), surface)).toEqual({ id: 1, ok: true, result: { focused: null } });
         expect(respond(request('blur'), surface)).toEqual({ id: 1, ok: true, result: { focused: null } });
+    });
+
+    it('hide, minimize and restore report the window state they left behind (#75)', () => {
+        const { surface } = fakeSurface();
+        expect(respond(request('hide'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { visible: false, minimized: false }
+        });
+        expect(respond(request('restore'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { visible: true, minimized: false }
+        });
+        expect(respond(request('minimize'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { visible: true, minimized: true }
+        });
+        expect(respond(request('restore'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { visible: true, minimized: false }
+        });
+    });
+
+    it('hide, minimize and restore answer nulls rather than an error with no window', () => {
+        const { surface, state } = fakeSurface();
+        state.window = null;
+        for (const op of ['hide', 'minimize', 'restore']) {
+            expect(respond(request(op), surface)).toEqual({
+                id: 1,
+                ok: true,
+                result: { visible: null, minimized: null }
+            });
+        }
     });
 
     it('answers with no application menu at all', () => {

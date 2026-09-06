@@ -4,6 +4,15 @@
  * shell-ui.md §12.2. The fix landed with a unit test; this is the check that would have
  * caught the original divergence, because it presses the real keys against the real dialog.
  */
+
+/**
+ * The source this presses, so `verify.mjs` re-runs it when that source moves (the scenario rule;
+ * ui-audit/README.md ▸ The rule). `Sidebar.tsx` renders the rows, raises the confirmation and owns
+ * the capture-phase Escape/Return handler that IS the assertion; `ContextMenu.tsx` is the row menu
+ * the Delete verb is clicked in, and a change to how it dismisses would take the dialog with it.
+ */
+export const covers = ['packages/client/src/chrome/Sidebar.tsx', 'packages/client/src/chrome/ContextMenu.tsx'];
+
 export default async function ({ page, cli, rec, d }) {
     const name = `doomed-${Date.now().toString(36)}`;
     const created = await cli.run(['workspace', 'create', '--name', name, '--json']);

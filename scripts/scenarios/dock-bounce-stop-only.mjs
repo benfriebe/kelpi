@@ -23,6 +23,20 @@
  * covers the frame. Without the check below that reads as "a stop does not bounce the dock",
  * which is a diagnosis of the product for a property of the placement.
  */
+
+/**
+ * The source this presses (the scenario rule; ui-audit/README.md ▸ The rule). `status.ts` holds the
+ * one bounce path, the `attention-request` case and its window-focus gate; `agents.ts` owns the
+ * waiting set whose entry deliberately does NOT bounce, which is the negative half of this check;
+ * `handlers/app/events.ts` is the daemon end that decides an `attention-request` is broadcast at
+ * all (agent-lifecycle §7.1), and it is the half no shell-side unit test can reach.
+ */
+export const covers = [
+    'packages/shell/src/status.ts',
+    'packages/shell/src/agents.ts',
+    'packages/daemon/src/handlers/app/events.ts'
+];
+
 export default async function ({ page, harness, cli, rec, d, sleep }) {
     const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));
     const paneID = created.pane_id;

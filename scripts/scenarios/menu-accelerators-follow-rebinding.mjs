@@ -13,6 +13,15 @@
  */
 import fs from 'node:fs';
 
+/**
+ * The source this presses (the scenario rule; ui-audit/README.md ▸ The rule). `menu.ts` builds the
+ * menu and derives every accelerator on it from the binding map; `hotkey.ts` is
+ * `acceleratorForTrigger`, the trigger-to-Electron-spelling step this scenario compares as chords
+ * precisely because it is easy to get subtly wrong; `core/src/config/` is where a trigger's default
+ * and the accumulate/unbind semantics (§1.3) live, which is what the rebind below exercises.
+ */
+export const covers = ['packages/shell/src/menu.ts', 'packages/shell/src/hotkey.ts', 'packages/core/src/config/'];
+
 const TOGGLE = /^toggle sidebar$/i;
 const sidebarShown = (page) => page.eval(`document.querySelector('[data-testid="sidebar"]') !== null`);
 

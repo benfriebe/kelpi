@@ -1489,6 +1489,9 @@ async function boot(): Promise<void> {
             socketPath: harnessSocket,
             quietNotifications: harnessQuietNotifications(process.env),
             mainWindow: () => mainWindow,
+            // #76: the `crash` op. Read through the module variable, never captured, because
+            // the host is rebuilt on a daemon re-point and stopped on quit.
+            crashWebPane: (paneID) => webHost?.crashPaneRenderer(paneID) ?? null,
             log,
             logError
         });
@@ -1573,6 +1576,45 @@ if (!app.requestSingleInstanceLock()) {
             showWindow();
         }
         status?.acknowledgeActivation();
+    });
+
+    /*
+     * Issue #76: every process death in this app, named, in one place.
+     *
+     * The user's report was "web panes just go blank" and the shell had almost nothing to say
+     * about it. The only `render-process-gone` handlers were per-`webContents` — this window's
+     * (`attachContentGuards`) and a web tab's (`webhost/tab.ts`) — so a renderer belonging to
+     * neither died silently, and a GPU or utility process dying left no trace at all even though
+     * a GPU restart can take every renderer in the app with it, which is one of the ways a pane
+     * goes blank in the wild.
+     *
+     * Two events rather than one, because Electron splits them and `child-process-gone` says so
+     * explicitly: it fires for the GPU, utility, zygote and sandbox helpers and NOT for
+     * renderers. `reason` is Chromium's ('crashed', 'oom', 'killed', 'launch-failed', …) and
+     * `exitCode` its own; both are printed raw, because the point is diagnosis rather than a
+     * message for a user. The per-tab warning is kept as well: it names the pane and the tab,
+     * which is what makes a report actionable, and this one names the process.
+     */
+    app.on('render-process-gone', (_event, contents, details) => {
+        let url = '';
+        try {
+            url = contents.isDestroyed() ? '' : contents.getURL();
+        } catch {
+            // A renderer this far gone can refuse even this; the reason below is the point.
+        }
+        logError(
+            `renderer process gone: reason=${details.reason} exitCode=${String(details.exitCode)}` +
+                `${url === '' ? '' : ` url=${url}`}`
+        );
+    });
+
+    app.on('child-process-gone', (_event, details) => {
+        logError(
+            `child process gone: type=${details.type} reason=${details.reason} ` +
+                `exitCode=${String(details.exitCode)}` +
+                `${details.name === undefined ? '' : ` name=${details.name}`}` +
+                `${details.serviceName === undefined ? '' : ` service=${details.serviceName}`}`
+        );
     });
 
     app.on('window-all-closed', () => {

@@ -120,12 +120,41 @@ describe('tabs', () => {
         expect(registry.view('P1', 't2')?.visible).toBe(false);
     });
 
-    it('forgets a tab that died on its own without trying to destroy it', () => {
+    /**
+     * Issue #76. This used to assert the opposite - `destroyed` empty - on the reading that a
+     * tab whose renderer died has nothing left to take down. It has: the `WebContentsView` is
+     * still parented, still in the embed controller's books, and still covering the pane. The
+     * destroy hook is what unhooks it (`beforeDestroy` → `embed.forget`), so it has to run.
+     */
+    it('takes down the view of a tab whose renderer died', () => {
         const { registry, destroyed } = harness();
         registry.openPane(pane(['t1', 't2'], 't2'));
         expect(registry.forgetTab('P1', 't2')).toBe(true);
-        expect(destroyed).toHaveLength(0);
+        expect(destroyed).toEqual([{ view: expect.objectContaining({ id: 't2' }), reason: 'renderer-gone' }]);
         expect(registry.activeTabID('P1')).toBe('t1');
+        expect(registry.view('P1', 't2')).toBeNull();
+    });
+
+    /**
+     * The rebuild half of #76, and the reason the daemon needs no new host verb: a pane whose
+     * only tab died is announced again with the SAME tab id, and `openPane`'s reconcile builds
+     * a view for any tab in the spec it does not hold.
+     */
+    it('rebuilds a dead sole tab from a re-announced pane-open', () => {
+        const { registry, created, destroyed } = harness();
+        registry.openPane(pane(['t1'], 't1'));
+        expect(registry.forgetTab('P1', 't1')).toBe(true);
+        expect(registry.pane('P1')?.tabs).toHaveLength(0);
+
+        registry.openPane(pane(['t1'], 't1'));
+        expect(created).toHaveLength(2);
+        expect(destroyed).toHaveLength(1);
+        expect(registry.activeTabID('P1')).toBe('t1');
+        // A fresh view, at the URL the daemon still holds, and visible because it is active.
+        const rebuilt = created[1];
+        expect(rebuilt?.destroyed).toBeNull();
+        expect(rebuilt?.url).toBe('https://t1/');
+        expect(rebuilt?.visible).toBe(true);
     });
 
     it('reports misses instead of throwing', () => {

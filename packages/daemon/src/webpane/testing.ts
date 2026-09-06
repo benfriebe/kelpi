@@ -224,6 +224,11 @@ export interface WebHarnessOptions {
     /** Seed the workspace with a web pane (default true). */
     readonly withWebPane?: boolean | undefined;
     readonly nonce?: (() => string) | undefined;
+    /**
+     * The service's clock. Fixed at `NOW` unless a test moves it, which only the rebuild
+     * window (§5.2's `AUTO_REBUILD_WINDOW_MS`) needs so far.
+     */
+    readonly now?: (() => number) | undefined;
 }
 
 /** A workspace with one shell pane, plus (by default) a web pane holding one tab. */
@@ -258,7 +263,7 @@ export function webHarness(options: WebHarnessOptions = {}): WebHarness {
 
     const service = createWebPaneService({
         store,
-        now: () => NOW,
+        now: options.now ?? ((): number => NOW),
         paste: (paneID, text, pasteOptions) => {
             input.sendText(paneID, text, { bare: !pasteOptions.submit });
         },

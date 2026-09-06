@@ -820,7 +820,8 @@ export const HARNESS_OPS = [
     'notification-close',
     'window',
     'focus',
-    'blur'
+    'blur',
+    'crash'
 ] as const;
 export type HarnessOp = (typeof HARNESS_OPS)[number];
 
@@ -848,6 +849,12 @@ export interface HarnessSurface<T extends MenuEntryLike<T>> {
     readonly focus: () => boolean | null;
     /** `blur()`; returns `isFocused()` afterwards, or null without a window. */
     readonly blur: () => boolean | null;
+    /**
+     * Issue #76: kill the renderer behind a web pane's active tab, as macOS does under memory
+     * pressure. Returns the tab it killed, or null when that pane has no live view. Absent when
+     * the shell has no web-pane host (a window-only harness), which the op reports as a refusal.
+     */
+    readonly crashWebPane?: ((paneID: string) => { readonly paneID: string; readonly tabID: string } | null) | undefined;
     readonly counters: HarnessCounters;
 }
 
@@ -932,6 +939,21 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
                 return okResponse(id, { focused: surface.focus() });
             case 'blur':
                 return okResponse(id, { focused: surface.blur() });
+            case 'crash': {
+                // Issue #76's trigger. The recovery it tests (dispose, rebuild, re-place) is
+                // three processes wide and none of it is reachable from a renderer, so the only
+                // honest test is to kill a real renderer and watch what the shell does next.
+                const paneID = params['paneID'];
+                if (typeof paneID !== 'string' || paneID.trim() === '') {
+                    return errorResponse(id, 'crash needs a non-empty "paneID"');
+                }
+                if (surface.crashWebPane === undefined) {
+                    return errorResponse(id, 'crash: this shell has no web pane host');
+                }
+                const killed = surface.crashWebPane(paneID);
+                if (killed === null) return errorResponse(id, `crash: no live view for pane ${paneID}`);
+                return okResponse(id, { paneID: killed.paneID, tabID: killed.tabID, crashed: true });
+            }
             default:
                 return errorResponse(id, `unknown op "${op}" (ops: ${HARNESS_OPS.join(', ')})`);
         }

@@ -63,6 +63,12 @@ export interface WebPaneTab {
     readonly id: string;
     readonly url: string;
     readonly title?: string | null | undefined;
+    /**
+     * §5.2 / issue #76: `false` when the tab's renderer died and the host has no view for it.
+     * **Absent means live** — the daemon only ever writes the flag to turn it off, so nothing
+     * that has not crashed carries it.
+     */
+    readonly live?: boolean | null | undefined;
 }
 
 export interface WebPaneProps {
@@ -1335,6 +1341,22 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 )}
                 {tabs.length === 0 ? (
                     <EmptyPaneNote paneID={paneID} />
+                ) : active?.live === false ? (
+                    /*
+                     * §16.7 / issue #76 — the page's renderer died and there is no view behind
+                     * this hole. The user's words for the state this replaces were "only show
+                     * the browser chrome, but aren't rendering the body of the browser at all"
+                     * and "no retry / reload option either".
+                     *
+                     * It renders in BOTH clients, embedded and browser: in the shell the native
+                     * view that would cover this box no longer exists, which is the whole point,
+                     * so nothing is drawn over the card.
+                     */
+                    <CrashedPageNote
+                        paneID={paneID}
+                        url={liveURL}
+                        onReload={() => void commands.reload(paneID)}
+                    />
                 ) : embedded ? null : (
                     <PageNote
                         testID={`web-external-${paneID}`}
@@ -1402,6 +1424,57 @@ function EmptyPaneNote({ paneID }: { readonly paneID: string }): ReactElement {
                 <span className="text-[10px]" style={{ color: tokens.textTertiary }}>
                     Type a URL above and press Return
                 </span>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * §16.7's second empty surface: the page stopped responding (issue #76).
+ *
+ * `PageNote` with a button, and it is a card for exactly the reason `PageNote` is one: the box
+ * is NOT the page, and a bare centred stack in a pane that usually holds a website reads as a
+ * website that has gone strange. `EmptyPaneNote` can be bare because a tab-less pane has never
+ * had a page in it.
+ *
+ * Reload goes through `commands.reload`, the same `web-reload` the nav row's button sends and
+ * the same one `kelpi web reload` sends. The daemon reads the not-live flag and turns that one
+ * verb into a rebuild (`daemon/src/webpane/handlers.ts`), so there is one recovery path and
+ * three doors into it rather than a button with its own private wire command.
+ */
+function CrashedPageNote(props: {
+    readonly paneID: string;
+    readonly url: string;
+    readonly onReload: () => void;
+}): ReactElement {
+    return (
+        <div className="flex h-full w-full items-center justify-center p-4">
+            <div
+                data-testid={`web-crashed-${props.paneID}`}
+                className="flex max-w-full flex-col items-center gap-2 rounded-lg px-5 py-4 text-center"
+                style={{
+                    background: tokens.surfaceBackground,
+                    border: `1px solid ${tokens.divider}`,
+                    color: tokens.textSecondary
+                }}
+            >
+                <span className="text-[13px] font-medium" style={{ color: tokens.textPrimary }}>
+                    This page stopped responding
+                </span>
+                <span className="max-w-[46ch] text-[11px]" style={{ color: tokens.textTertiary }}>
+                    {props.url === ''
+                        ? 'Its renderer was closed by the system. Reload to open it again.'
+                        : `${props.url} was closed by the system. Reload to open it again.`}
+                </span>
+                <button
+                    type="button"
+                    data-testid={`web-crashed-reload-${props.paneID}`}
+                    className="mt-1 cursor-pointer rounded px-3 py-1 text-[11px] font-medium"
+                    style={{ background: tokens.accent, color: tokens.windowBackground }}
+                    onClick={props.onReload}
+                >
+                    Reload
+                </button>
             </div>
         </div>
     );

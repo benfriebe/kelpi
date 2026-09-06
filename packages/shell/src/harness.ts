@@ -70,6 +70,12 @@ export interface HarnessOptions {
     readonly quietNotifications: boolean;
     /** The main window, read on every request: it can be replaced or destroyed mid-run. */
     readonly mainWindow: () => BrowserWindow | null;
+    /**
+     * #76: kill the renderer behind a web pane's active tab (the `crash` op). Looked up lazily
+     * for the same reason the window is - the web host is created after the launch sequence and
+     * can be stopped - and absent while there is no host, which the op reports as a refusal.
+     */
+    readonly crashWebPane?: ((paneID: string) => { readonly paneID: string; readonly tabID: string } | null) | undefined;
     readonly log: (message: string) => void;
     readonly logError: (message: string, error?: unknown) => void;
 }
@@ -216,6 +222,7 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
             window.blur();
             return window.isFocused();
         },
+        ...(options.crashWebPane === undefined ? {} : { crashWebPane: options.crashWebPane }),
         counters
     };
 }

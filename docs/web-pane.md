@@ -280,7 +280,7 @@ All tab state lives in `WebPaneState`; the runtime layer keeps a live view per t
  "tabs":[{"id":"…","url":"https://…","title":"…","index":0,"active":true}, …]}
 ```
 
-`active` compares against the *resolved* active tab (fallback tabs[0]).
+`active` compares against the *resolved* active tab (fallback tabs[0]). A tab whose renderer died and has not been rebuilt carries `"live":false` as well (§5.2, issue #76); the key is **absent** on a healthy tab, so a reply for a pane that has never crashed is byte-identical to the one that shipped before the flag existed.
 
 - `web-tab-new` `{url, make_active}` → mints tab id, replies `{ok, pane_id, tab_id, workspace_id, url:<normalized>, active:<makeActive>}` then dispatches the open.
 - `web-tab-close` / `web-tab-select` → `{ok, pane_id, workspace_id, tab_id}` (close refuses the last tab, see above).
@@ -288,8 +288,12 @@ All tab state lives in `WebPaneState`; the runtime layer keeps a live view per t
 ### 5.2 Host-initiated tab death and popups
 
 - **`window.open` is denied outright** (`setWindowOpenHandler` → `deny`, `packages/shell/src/webhost/tab.ts:602-608`): the daemon mints tab ids, so the host cannot conjure a tab for a popup. `target=_blank` links and scripted popups do nothing.
-- **Renderer crash / destroyed view**: `render-process-gone` and `destroyed` (outside the host's own teardown) emit a `tab-closed` host event (`tab.ts:700-707`). The shell forgets the view without trying to destroy it again (`packages/shell/src/webhost/index.ts:316-320`); the daemon drops the inspector arm if it pointed at that tab and dispatches `web-tab-close` (`packages/daemon/src/webpane/service.ts:569-581`), which activates the left neighbour exactly as a wire close does.
-- **Single-tab pane**: the reducer refuses to remove the only tab (`packages/daemon/src/store/reducers/web.ts:104-106`), so a crashed sole tab stays in daemon state with no host view. Every later verb addressed to it fails `web pane has no live tab <uuid>` (`packages/shell/src/webhost/dispatch.ts:355-365`) until the pane is closed or the host re-registers and rebuilds it.
+- **Renderer crash / destroyed view**: `render-process-gone` and `destroyed` (outside the host's own teardown) emit a `tab-closed` host event (`tab.ts`). The shell then takes the dead view down through the **destroy hook** (`registry.forgetTab` → `hooks.destroy(view, 'renderer-gone')`), which is what unhooks it from the embed controller (`beforeDestroy` → `embed.forget`), un-parents it and closes its contents. Only the renderer process died: the `WebContentsView` is still a child of the shell window at the pane's bounds, and leaving it there is what the user saw as "chrome over nothing" (issue #76). Daemon-side, the inspector arm is dropped if it pointed at that tab and `web-tab-close` is dispatched, which activates the left neighbour exactly as a wire close does. A pane with other tabs needs nothing more: the client's next geometry report names the NEW active tab, so it is not a duplicate, and the neighbour is placed.
+- **Single-tab pane (the recovery, issue #76)**: the reducer still refuses to remove the only tab (`packages/daemon/src/store/reducers/web.ts`), so the pane keeps its tab and its URL with no host view behind it. The daemon reads that refusal in `tabClosedEvent` (`packages/daemon/src/webpane/service.ts`) and answers it:
+  - **first death** → `rebuildPane`: one `pane-open` notify, which the host's registry reconciles by building a view for the tab it no longer holds (HOST_PROTOCOL §1's idempotence is the whole mechanism; there is no rebuild verb). The shell then re-places it from the rect the client last reported (`embed.reapply`, called on every `pane-open`) — necessary because `embed.forget` took the placement with it and the client has no reason to re-report a hole that never moved. Nothing is marked, no card appears: a renderer the OS reclaimed simply comes back, and the user sees a reload.
+  - **a second death within `AUTO_REBUILD_WINDOW_MS` (30 s)** → no rebuild. A page that crashes as it loads would otherwise crash-rebuild-crash for ever. The tab is marked **not live** (`web-tab-live` action; `WebTab.live === false`, runtime only and never persisted) and the client draws §16.7's "This page stopped responding" card. The shell logs every death three ways now: per tab (`renderer gone (<reason>)`, which names the pane and the tab), app-wide for any renderer (`app.on('render-process-gone')` in `main.ts`), and app-wide for the GPU, utility, zygote and sandbox helpers (`app.on('child-process-gone')` beside it — Electron splits the two events and the child one explicitly excludes renderers). The GPU line matters because a GPU restart can take every renderer in the app with it, which is one of the ways a pane goes blank in the wild and previously left no trace at all.
+  - **the way back** is `web-reload`. On a not-live tab the handler calls `rebuildPane` instead of forwarding a `reload` RPC to a view the host does not have (`packages/daemon/src/webpane/handlers.ts`), so the card's Reload button, the nav row's reload and `kelpi web reload` are one code path. A user-driven rebuild is never rate-limited; only the automatic one is. `web-tabs` replies carry `live:false` for such a tab and say nothing at all about a healthy one.
+  - Verbs other than reload still fail `web pane has no live tab <uuid>` (`packages/shell/src/webhost/dispatch.ts`) while the card is up, which is honest: there is no page to read.
 
 ---
 
@@ -470,7 +474,7 @@ Requests below omit the scope fields (`pane_id`/`target`/`workspace`) for brevit
 | `web-navigate` | `url` (required) | `{tab_id, url:<normalized>}`; navigates active tab. Reply is sent once the host acks the navigate (still before the load finishes, `handlers.ts:232-256`); the normalized URL is written to state first. |
 | `web-url` | — | `{tab_id, url, title}`: live values read from the host; falls back to state's active-tab url/title when no host is attached or the host answers `ok:false` (`handlers.ts:259-288`). |
 | `web-back` / `web-forward` | — | `{}` ack (optimistic; a no-op when history can't move still acks ok). |
-| `web-reload` | `hard?` | `{}` ack. |
+| `web-reload` | `hard?` | `{}` ack. **Exception (§5.2, issue #76):** when the active tab's `live` is `false` the daemon does not forward a `reload` RPC at all — the host has no view to reload and would answer `web pane has no live tab`. It calls `rebuildPane` and replies `{tab_id, rebuilt:true}` straight away. Never rate-limited: only the AUTOMATIC rebuild is. |
 | `web-capture` | `mode` (default `meta`) | §8.4. Unknown mode → `unknown capture mode 'x' (allowed: meta, text, screenshot, dom, all)`. |
 | `web-tabs` / `web-tab-new` / `web-tab-close` / `web-tab-select` | §5.1 | §5.1 |
 | `web-console` | `since?`, `level?`, `clear?`, `follow?` | §9 |
@@ -874,7 +878,11 @@ The `</>` button toggles a docked web inspector for the active tab. It sends the
 
 ### 16.7 Empty state
 
-Tab-less pane (a restored private pane, or a pane whose last tab was closed): globe glyph, "New web pane", "Type a URL above and press Return". A fresh blank open is not tab-less: §3.2 always builds one tab (url `""`), so it shows an empty page area with the URL bar's placeholder and the caret in the bar.
+Two surfaces share the page area when there is no page in it, and the chrome (nav row, tab strip) is drawn around both.
+
+**Tab-less pane** (a restored private pane, or a pane whose last tab was closed): globe glyph, "New web pane", "Type a URL above and press Return", as a **bare centred stack** — no card, no border, no fill (`web-empty-<paneID>`). A fresh blank open is not tab-less: §3.2 always builds one tab (url `""`), so it shows an empty page area with the URL bar's placeholder and the caret in the bar.
+
+**Stopped responding** (issue #76, §5.2): the active tab's `live` is `false`, so its renderer died twice inside the rebuild window and the daemon stopped rebuilding it. A **card** (`web-crashed-<paneID>`) reading "This page stopped responding" over "`<url>` was closed by the system. Reload to open it again.", with a **Reload** button (`web-crashed-reload-<paneID>`) that sends `web-reload` — which the daemon turns into a rebuild for exactly this state. A card rather than a bare stack for the reason `PageNote` is one: this box is not the page, and a bare stack in a pane that usually holds a website reads as a website that has gone strange. It renders in both clients: in the shell the native view that would cover this box no longer exists, which is the point. Liveness is per tab, so switching to a healthy tab shows that tab's page normally.
 
 ---
 

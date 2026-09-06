@@ -1205,6 +1205,14 @@ Note the `for` wire key maps to the wait condition (`visible`, `hidden`, `exists
 `count=N`, `text=X`, `url-match`); the `count=`/`text=` suffixes are parsed downstream,
 not at the wire.
 
+Two reply-side notes, because they change what a caller sees without changing any request
+(web-pane.md §5.2, issue #76). A `web-tabs` tab entry carries `"live":false` when its renderer
+died and the daemon has not rebuilt it; the key is **absent** on a healthy tab, so a reply for a
+pane that has never crashed is unchanged. And `web-reload` on such a tab rebuilds the pane
+rather than reaching a browser view that no longer exists: it answers `{"ok":true,…,"rebuilt":true}`
+instead of `{"ok":false,"error":"web pane has no live tab <uuid>"}`. Neither is a new wire field:
+`live` and `rebuilt` are reply keys, and §7 below is the REQUEST dictionary.
+
 ---
 
 ## 7. Full wire-field dictionary

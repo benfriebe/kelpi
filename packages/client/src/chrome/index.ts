@@ -52,6 +52,13 @@ export {
     storeSidebarWidth,
     type SidebarResizerProps
 } from './SidebarResizer';
+export {
+    registerGestureReset,
+    registeredGestureCount,
+    resetGestures,
+    type GestureReset,
+    type GestureResetReason
+} from './gesture-reset';
 export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
 export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
 export {

@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, type ReactElement } from 'react';
 
+import { registerGestureReset } from './gesture-reset';
 import { tokens } from './tokens';
 
 export const SIDEBAR_MIN_WIDTH = 180;
@@ -128,6 +129,15 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
      * on a callback that resizes a sidebar nobody is dragging.
      */
     useEffect(() => () => end(), [end]);
+
+    /*
+     * …and the release that is lost to something OUTSIDE this document: a pointer released over
+     * a web pane's native `WebContentsView`, or a Space switch that hides the window mid-drag.
+     * `chrome/gesture-reset.ts` fires this on `blur` and on the document going hidden, which is
+     * the only signal the renderer gets in either case. `end` is safe when no drag is running,
+     * which matters because blur is a common event.
+     */
+    useEffect(() => registerGestureReset(end), [end]);
 
     return (
         <div

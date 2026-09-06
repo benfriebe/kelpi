@@ -63,6 +63,7 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
@@ -542,6 +543,29 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         },
         [attachListeners, onPanePointerMove, endPaneDrag]
     );
+
+    /*
+     * Issue #79 — the release that never arrives.
+     *
+     * Both gestures above already handle `pointercancel` (`attachListeners`), which covers the
+     * browser taking the pointer away. It does NOT cover the pointer going somewhere this
+     * document cannot see it: released over a web pane's native `WebContentsView`, or the whole
+     * window leaving on a Space switch. In those cases the renderer's only signal is losing
+     * focus or the document going hidden, so `chrome/gesture-reset.ts` turns those into an end.
+     *
+     * The two gestures end differently on purpose. A divider COMMITS what the user has already
+     * dragged to (`endDividerDrag` flushes the throttled commit): the daemon has most of that
+     * ratio already, and snapping the split back would undo a move the user watched happen. A
+     * pane MOVE is CANCELLED: losing focus is not a drop, and rearranging someone's layout
+     * because they switched Space is a far worse outcome than making them drag again.
+     */
+    const resetGestures = useCallback((): void => {
+        if (moveRef.current !== null) dropTargetRef.current = null;
+        endPaneDrag();
+        endDividerDrag();
+    }, [endPaneDrag, endDividerDrag]);
+
+    useEffect(() => registerGestureReset(resetGestures), [resetGestures]);
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 

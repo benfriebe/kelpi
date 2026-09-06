@@ -114,6 +114,45 @@ describe('sidebar resizer: a gesture always ends (issue #79)', () => {
         expect(onResizeEnd).toHaveBeenCalledTimes(1);
     });
 
+    it('ends the drag when the window loses focus (released over a native web view)', () => {
+        const onResize = vi.fn();
+        const onCommit = vi.fn();
+        const onResizeEnd = vi.fn();
+        render(
+            <SidebarResizer width={220} onResize={onResize} onCommit={onCommit} onResizeEnd={onResizeEnd} />
+        );
+        press(screen.getByTestId('sidebar-resizer'), 220);
+        moveTo(270);
+
+        // A web pane's `WebContentsView` is a sibling layer: the release lands in ANOTHER web
+        // contents and this document never sees a pointerup at all. Losing focus is the signal.
+        window.dispatchEvent(new Event('blur'));
+
+        expect(onResizeEnd).toHaveBeenCalledTimes(1);
+        expect(onCommit).toHaveBeenCalledWith(270);
+        expect(document.body.style.cursor).toBe('');
+        onResize.mockClear();
+        moveTo(180);
+        expect(onResize).not.toHaveBeenCalled();
+    });
+
+    it('ends the drag when the document goes hidden (a Space switch mid-drag)', () => {
+        const onResize = vi.fn();
+        const onResizeEnd = vi.fn();
+        render(<SidebarResizer width={220} onResize={onResize} onResizeEnd={onResizeEnd} />);
+        press(screen.getByTestId('sidebar-resizer'), 220);
+        moveTo(240);
+
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+
+        expect(onResizeEnd).toHaveBeenCalledTimes(1);
+        onResize.mockClear();
+        moveTo(300);
+        expect(onResize).not.toHaveBeenCalled();
+    });
+
     it('a second drag after an unmount-interrupted one still tracks (the teardown is not sticky)', () => {
         const first = render(<SidebarResizer width={220} onResize={vi.fn()} />);
         press(screen.getByTestId('sidebar-resizer'), 220);

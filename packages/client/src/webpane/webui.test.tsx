@@ -329,6 +329,45 @@ const SAVED: readonly WebFavourite[] = [
  * text has it (config-keybindings.md 7.3), so the pane's own shortcuts jam until the user clicks
  * the page.
  */
+/**
+ * Issue #33 - ⌘L has to take the KEYBOARD, not just the caret.
+ *
+ * `input.focus()` is a statement about this document; the page is a native view holding the
+ * window's keyboard, and no DOM call can take that. Without the handoff ⌘L selected the whole
+ * address, drew a caret, and everything typed after it went into the page - the exact mirror of
+ * the submit path, which has to push the keyboard back the other way.
+ */
+describe('⌘L', () => {
+    it('asks the host for the keyboard as well as selecting the address', () => {
+        const fake = fakeCommands();
+        const { rerender } = render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} embedded focusURLToken={0} />
+        );
+        expect(fake.sent.some((entry) => entry.verb === 'blurView')).toBe(false);
+
+        rerender(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} embedded focusURLToken={1} />
+        );
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        expect(document.activeElement).toBe(input);
+        expect(input.selectionStart).toBe(0);
+        expect(input.selectionEnd).toBe(input.value.length);
+        expect(fake.sent.find((entry) => entry.verb === 'blurView')?.args).toEqual([PANE]);
+    });
+
+    it('does not ask a browser client, which has no native view holding anything', () => {
+        const fake = fakeCommands();
+        const { rerender } = render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} focusURLToken={0} />
+        );
+        rerender(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} focusURLToken={1} />
+        );
+        expect(screen.getByTestId(`web-url-${PANE}`)).toBe(document.activeElement);
+        expect(fake.sent.some((entry) => entry.verb === 'blurView')).toBe(false);
+    });
+});
+
 describe('submitting an address', () => {
     it('lets the URL bar go and hands the keyboard to the page', () => {
         const fake = fakeCommands();

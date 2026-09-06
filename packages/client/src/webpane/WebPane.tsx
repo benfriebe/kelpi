@@ -553,7 +553,23 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         // applied here, after it, so the token is the one thing that can cause it.
         input.focus();
         input.select();
-    }, [focusURLToken]);
+        /*
+         * Issue #33 - and the address bar has to be able to RECEIVE what is typed next.
+         *
+         * `focus()` is a statement about this document. The page is a native view that holds the
+         * WINDOW's keyboard, and no DOM call can take it: ⌘L selected the whole address, showed
+         * a caret, and every keystroke after it went into the page. The mirror image of the
+         * submit path, which has to push the keyboard the other way.
+         *
+         * `blurView` is the inverse of `focus-view`, and only the host can do it. Requested
+         * after the DOM focus rather than before purely for readability - it is a round trip
+         * through the daemon, so it lands later either way, and the selection is already in
+         * place when the keyboard arrives.
+         *
+         * Not for a browser client: nothing there is holding the keyboard hostage.
+         */
+        if (embedded) void commands.blurView(paneID);
+    }, [focusURLToken, embedded, commands, paneID]);
 
     /** The pane's subtree: every chrome text field it can put a caret in is a descendant. */
     const paneRef = useRef<HTMLDivElement | null>(null);

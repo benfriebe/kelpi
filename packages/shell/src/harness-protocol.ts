@@ -851,7 +851,20 @@ export const HARNESS_OPS = [
     'minimize',
     'restore',
     // Issue #76's one, for the same reason: nothing a scenario can reach kills a renderer.
-    'crash'
+    'crash',
+    /*
+     * Issue #109's two. The rule: a scenario seeds and reads the clipboard through the MAIN
+     * process, never through the page.
+     *
+     * The reason: `navigator.clipboard.writeText` / `readText` need the document to be focused,
+     * and every scenario that has blurred or hidden the window (or that simply ran while the
+     * machine's owner clicked something else) has lost that. Measured on 2026-09-08 00:13:
+     * `kitty-keeps-system-chords` failed its seed with `NotAllowedError: Document is not
+     * focused` in a hidden-lane battery, and passed alone. The main process has no such rule:
+     * Electron's `clipboard` is the same NSPasteboard, reachable whatever the window is doing.
+     */
+    'clipboard-read',
+    'clipboard-write'
 ] as const;
 export type HarnessOp = (typeof HARNESS_OPS)[number];
 
@@ -875,6 +888,19 @@ export interface WindowSnapshot {
 export interface WindowVisibility {
     readonly visible: boolean;
     readonly minimized: boolean;
+}
+
+/**
+ * The system pasteboard, as the two ops below need it (#109).
+ *
+ * Two functions rather than Electron's `clipboard` module so this file keeps its no-Electron
+ * rule, and so a test can drive the ops against a string in memory. `write` returns nothing:
+ * the op reads back afterwards, so the reply is an observation rather than an intention, the
+ * same choice `hide` / `minimize` / `restore` make.
+ */
+export interface HarnessClipboard {
+    readonly read: () => string;
+    readonly write: (text: string) => void;
 }
 
 /**
@@ -907,6 +933,12 @@ export interface HarnessSurface<T extends MenuEntryLike<T>> {
      * the shell has no web-pane host (a window-only harness), which the op reports as a refusal.
      */
     readonly crashWebPane?: ((paneID: string) => { readonly paneID: string; readonly tabID: string } | null) | undefined;
+    /**
+     * #109: the system pasteboard, for the `clipboard-read` / `clipboard-write` ops. Required,
+     * unlike `crashWebPane`, because there is always a pasteboard: a surface that could not
+     * reach it would make a scenario's seed fail in the way this op exists to stop.
+     */
+    readonly clipboard: HarnessClipboard;
     readonly counters: HarnessCounters;
 }
 
@@ -1013,6 +1045,17 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
                 const killed = surface.crashWebPane(paneID);
                 if (killed === null) return errorResponse(id, `crash: no live view for pane ${paneID}`);
                 return okResponse(id, { paneID: killed.paneID, tabID: killed.tabID, crashed: true });
+            }
+            // #109's two. The reply to a write is the pasteboard READ BACK, so a caller that
+            // seeded the clipboard has proof in the same round trip rather than an "ok" that
+            // only means the call did not throw.
+            case 'clipboard-read':
+                return okResponse(id, { text: surface.clipboard.read() });
+            case 'clipboard-write': {
+                const text = params['text'];
+                if (typeof text !== 'string') return errorResponse(id, 'clipboard-write needs a string "text"');
+                surface.clipboard.write(text);
+                return okResponse(id, { text: surface.clipboard.read() });
             }
             default:
                 return errorResponse(id, `unknown op "${op}" (ops: ${HARNESS_OPS.join(', ')})`);

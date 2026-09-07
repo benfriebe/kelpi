@@ -1554,6 +1554,10 @@ async function boot(): Promise<void> {
             // #83: the harness counts (and swallows) `shell.openExternal`, which `openExternally`
             // above reaches by property for exactly that reason.
             shell,
+            // #109: the `clipboard-read` / `clipboard-write` ops. Nothing about the module is
+            // wrapped; the ops are the driver's only way to touch the pasteboard from outside a
+            // focused document.
+            clipboard,
             BrowserWindow,
             Menu,
             socketPath: harnessSocket,

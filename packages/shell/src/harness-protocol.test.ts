@@ -83,6 +83,8 @@ interface FakeSurfaceState {
     /** #75's two window states, tracked the way a real `BrowserWindow` reports them. */
     visible: boolean;
     minimized: boolean;
+    /** #109's pasteboard, as a string: the ops are the subject, not Electron's module. */
+    clipboardText: string;
 }
 
 function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<FakeItem>; state: FakeSurfaceState } {
@@ -91,7 +93,8 @@ function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<F
         window: { focused: true, visible: true, minimized: false, bounds: { x: 10, y: 20, width: 800, height: 600 } },
         focused: true,
         visible: true,
-        minimized: false
+        minimized: false,
+        clipboardText: 'whatever was there before'
     };
     const surface: HarnessSurface<FakeItem> = {
         platform: 'darwin',
@@ -130,6 +133,17 @@ function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<F
             state.minimized = false;
             state.visible = true;
             return { visible: state.visible, minimized: state.minimized };
+        },
+        /*
+         * #109. Deliberately independent of `state.focused`: the whole point of the ops is that
+         * the main process reaches the pasteboard whatever the window is doing, and a fake that
+         * refused while blurred would be modelling the renderer's rule rather than this one.
+         */
+        clipboard: {
+            read: () => state.clipboardText,
+            write: (text) => {
+                state.clipboardText = text;
+            }
         },
         counters: new HarnessCounters()
     };
@@ -982,6 +996,47 @@ describe('respond', () => {
             ok: false,
             error: expect.stringContaining('no web pane host')
         });
+    });
+
+    /**
+     * #109's two ops. They exist because `navigator.clipboard` in the page throws
+     * `NotAllowedError: Document is not focused` once the window is blurred or hidden, which is
+     * a state most of the scenario battery puts it in deliberately; the main process has no such
+     * rule. So the checks here are the shape of the seam, not the pasteboard's behaviour:
+     * a write is READ BACK in its own reply, and a non-string refuses rather than being coerced.
+     */
+    it('clipboard-write seeds the pasteboard and answers with what it reads back (#109)', () => {
+        const { surface, state } = fakeSurface();
+        expect(respond(request('clipboard-write', { text: 'KELPI-KITTY-PASTE-AB12' }), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { text: 'KELPI-KITTY-PASTE-AB12' }
+        });
+        expect(state.clipboardText).toBe('KELPI-KITTY-PASTE-AB12');
+        expect(respond(request('clipboard-read'), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { text: 'KELPI-KITTY-PASTE-AB12' }
+        });
+        // The empty string is a legal payload, not a missing one: a scenario clears the
+        // pasteboard with it before measuring what a copy put there.
+        expect(respond(request('clipboard-write', { text: '' }), surface)).toEqual({
+            id: 1,
+            ok: true,
+            result: { text: '' }
+        });
+        expect(state.clipboardText).toBe('');
+    });
+
+    it('clipboard-write refuses anything that is not a string, and leaves the pasteboard alone', () => {
+        const { surface, state } = fakeSurface();
+        for (const params of [{}, { text: 42 }, { text: null }, { text: ['a'] }]) {
+            expect(respond(request('clipboard-write', params), surface)).toMatchObject({
+                ok: false,
+                error: expect.stringContaining('needs a string "text"')
+            });
+        }
+        expect(state.clipboardText).toBe('whatever was there before');
     });
 
     it('answers with no application menu at all', () => {

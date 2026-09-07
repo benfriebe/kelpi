@@ -34,8 +34,8 @@
  * key(code, {modifiers}) / type / drag / box / screenshot. `harness` is the shell channel:
  * menu() / menuClick({id|path}) / press(accelerator) / counters() / armDialog({response}) /
  * notificationClick({index, action}) / notificationClose({index}) / window() / focus() /
- * blur() / hide() / minimize() / restore() / crash(paneID). See ../README.md for the scenario
- * contract.
+ * blur() / hide() / minimize() / restore() / crash(paneID) / clipboardRead() /
+ * clipboardWrite(text). See ../README.md for the scenario contract.
  */
 
 import fs from 'node:fs';
@@ -193,6 +193,22 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
          * live view. The shell's own recovery is what a caller then watches for.
          */
         crash: (paneID) => request('crash', { paneID }),
+        /**
+         * #109: the system clipboard, through the MAIN process.
+         *
+         * The rule: a scenario seeds or reads the clipboard through here, never through the
+         * page. The reason: `navigator.clipboard.writeText` / `readText` throw
+         * `NotAllowedError: Document is not focused` the moment the window is not focused, and
+         * a battery blurs it (`dock-bounce-stop-only`), hides it, or simply runs while the
+         * machine's owner clicks elsewhere. Measured 2026-09-08 00:13:
+         * `kitty-keeps-system-chords` failed its seed that way in the hidden lane and passed
+         * alone. Electron's `clipboard` is the same NSPasteboard with no focus rule on it.
+         *
+         * `clipboardWrite` answers with the pasteboard read back AFTER the write, so a caller
+         * gets its proof in the same round trip: `(await harness.clipboardWrite(x)).text === x`.
+         */
+        clipboardRead: () => request('clipboard-read'),
+        clipboardWrite: (text) => request('clipboard-write', { text }),
         close() {
             socket?.end();
             socket = null;
@@ -491,8 +507,13 @@ export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(
  * same everything, so a run that does not ask for the lane is unchanged by its existence. That
  * matters more than it sounds: `onscreen` was tried as the default and it parks the frame at the
  * work area's origin, where nothing ever covers it, which makes the window permanently
- * un-occluded and quietly breaks every check that needs an INACTIVE app (see
- * `scripts/scenarios/dock-bounce-stop-only.mjs`).
+ * un-occluded.
+ *
+ * No placement, `hidden` included, is a way to make the app look INACTIVE: measured for #109,
+ * AppKit counts a zero-opacity frame as visible too, so a blurred window reports
+ * `visibilityState: 'visible'` everywhere unless something is in front of it. A scenario that
+ * needs an inactive app drives it with `harness.hide()` and restores afterwards
+ * (`scripts/scenarios/dock-bounce-stop-only.mjs` is the worked example).
  */
 export const WINDOW_PLACEMENTS = ['hidden', 'offscreen', 'onscreen'];
 /** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
@@ -514,9 +535,10 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  *   - `offscreen`: parked past the work area. Also frees the screen, screenshots are real, but
  *     AppKit gives an off-screen window a 1× backing store: half the resolution and every
  *     sub-pixel quantity quantised differently (`packages/shell/src/audit-window.ts` has the
- *     numbers). It is also never occluded, so the app never looks inactive there.
+ *     numbers). It is never occluded, so blurring alone never makes the app look inactive there.
  *   - `onscreen`: visible, parked at the work area's origin. The lane's visible member, useful
- *     as a control; same never-occluded caveat as `offscreen`.
+ *     as a control; same never-occluded caveat as `offscreen`. Neither caveat blocks a scenario
+ *     any more: `harness.hide()` reaches the inactive state at every placement (#109).
  *
  * The placement is verified rather than assumed: the shell logs `harness-window: placement=…` at
  * window creation, and the boot waits for that line, so a lane that silently did not open fails

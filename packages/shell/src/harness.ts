@@ -24,7 +24,9 @@
  * (agent-lifecycle.md §7), read which URLs the shell handed the OS opener (#83, and under the
  * harness the open is recorded INSTEAD of performed, never as well as), and read, focus or blur
  * the main window (the bounce is only reachable while the window is unfocused, so `blur` is the
- * step before "make an agent stop").
+ * step before "make an agent stop"), and read or seed the system clipboard (#109: the page's own
+ * `navigator.clipboard` refuses once the window is not focused, which is the state most of the
+ * battery deliberately puts it in).
  *
  * What makes it safe. The gate is the env var being a non-empty path and nothing else
  * (`harnessSocketPath`): a user's shell, the packaged app, and every existing probe that sets
@@ -42,7 +44,16 @@
  * process, and nothing else is expected to find it.
  */
 
-import type { App, BrowserWindow, Dialog, Menu, MenuItem, MessageBoxReturnValue, shell as ElectronShell } from 'electron';
+import type {
+    App,
+    BrowserWindow,
+    Dialog,
+    Menu,
+    MenuItem,
+    MessageBoxReturnValue,
+    clipboard as ElectronClipboard,
+    shell as ElectronShell
+} from 'electron';
 import { rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 
@@ -63,6 +74,16 @@ export interface HarnessOptions {
     readonly dialog: Dialog;
     /** Electron's `shell` module, for the `openExternal` wrapper (#83). */
     readonly shell: typeof ElectronShell;
+    /**
+     * Electron's `clipboard` module, for the `clipboard-read` / `clipboard-write` ops (#109).
+     *
+     * Nothing is wrapped here, unlike the dock and the dialog: the ops are a way IN to the
+     * pasteboard, not a record of what the app did to it. The reason a scenario needs one at
+     * all is that `navigator.clipboard` in the page refuses with `NotAllowedError: Document is
+     * not focused` whenever the window has been blurred or hidden, which most of the battery
+     * does on purpose; the main process has no such rule.
+     */
+    readonly clipboard: typeof ElectronClipboard;
     readonly BrowserWindow: typeof BrowserWindow;
     readonly Menu: typeof Menu;
     readonly socketPath: string;
@@ -298,6 +319,14 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
             return { visible: window.isVisible(), minimized: window.isMinimized() };
         },
         ...(options.crashWebPane === undefined ? {} : { crashWebPane: options.crashWebPane }),
+        // #109. `readText`/`writeText` with no arguments is the plain-text pasteboard, which is
+        // the one `navigator.clipboard` writes and the one every clipboard scenario measures.
+        clipboard: {
+            read: () => options.clipboard.readText(),
+            write: (text) => {
+                options.clipboard.writeText(text);
+            }
+        },
         counters
     };
 }

@@ -53,6 +53,24 @@ export default async function ({ page, harness, rec, d, sleep }) {
             await page.mouse('mouseMoved', handle.cx + (dx * step) / 10, handle.cy, { button: 'left', buttons: 1 });
             await sleep(16);
         }
+        /*
+         * Wait for the width the LAST move produced, not for whichever one React had flushed
+         * when the last `mouseMoved` call returned (#109). Two equal reads in a row is the
+         * cheapest proof the gesture's own state has caught up. It matters because three checks
+         * below compare a later width against this one by exact equality, so a half-flushed
+         * read here would go red somewhere else entirely and read as a resize that happened
+         * when it should not have.
+         */
+        let previous = null;
+        await d.settle(
+            async () => {
+                const now = await widthOf();
+                const stable = now !== null && now === previous;
+                previous = now;
+                return stable;
+            },
+            { ceilingMs: 2_000, intervalMs: 50 }
+        );
         return { x: handle.cx + dx, y: handle.cy };
     };
 
@@ -104,7 +122,18 @@ export default async function ({ page, harness, rec, d, sleep }) {
     let held = await sweepHeld(60);
     const widened = await widthOf();
     rec.check('dragging right widens the sidebar', widened > start, `${String(start)} → ${String(widened)} px`);
-    rec.check('the body carries the drag cursor while the gesture runs', (await cursor()) === 'col-resize', String(await cursor()));
+    /*
+     * A settle, not a single read (#109). The rule: an assertion that something HAS happened
+     * polls; only an assertion that something has NOT happened dwells and reads once. The
+     * reason: `document.body.style.cursor` is written by the gesture's own React effect, which
+     * lands a frame or more after the CDP `mousePressed` returns, and `sweepHeld`'s fixed
+     * sleeps are 16 ms apart. Measured 2026-09-07 21:07Z (promote #1): this read came back
+     * empty under load and the whole promote died on it; it passed in three isolations the same
+     * day. The button is still down for the whole poll, so nothing but the write is being waited
+     * for, and a cursor that never arrives still fails at the ceiling.
+     */
+    const carriesTheDragCursor = await d.settle(async () => (await cursor()) === 'col-resize', { ceilingMs: 3_000, intervalMs: 50 });
+    rec.check('the body carries the drag cursor while the gesture runs', carriesTheDragCursor, String(await cursor()));
 
     // ⇧⌘S while the button is still down: App.tsx stops rendering the handle.
     rec.check('the sidebar closes mid-drag (View ▸ Toggle Sidebar, i.e. ⇧⌘S)', await toggleSidebar(false));

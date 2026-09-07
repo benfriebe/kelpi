@@ -21,7 +21,7 @@
 import type { JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import {
@@ -45,6 +45,35 @@ const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
 const PANE_C = 'DDDDDDDD-0000-4000-8000-000000000003';
 const NOW = 1_755_500_000_000;
+
+/**
+ * The ceiling every `waitFor` in this file runs to, instead of the library's default 1 s (#109).
+ *
+ * The rule: a wait's ceiling is sized for the machine the suite actually runs on, not for an
+ * idle one. Every wait here is the same shape (fire a `menu-command` at a scripted socket, then
+ * wait for React to flush the state it moves) and the work behind it takes single-digit
+ * milliseconds; the ceiling is slack for a scheduler, not budget for the assertion.
+ *
+ * The measurement: on 2026-09-08 (promote attempt #2) "Select All shows the sidebar first when
+ * it is hidden, and still selects" went red with `expected [] to deeply equal [3 ids]` inside a
+ * 1 s `waitFor`, on a machine at load average 37 running the battery in parallel. The same test
+ * passes 19/19 alone. Nothing about the product changed; the effect simply had not been given a
+ * timeslice yet. 5 s is far past anything this file's waits legitimately need, so a real
+ * regression still fails, only later.
+ */
+const LOADED = { timeout: 5_000 } as const;
+
+/**
+ * The file's own ceiling, above `LOADED`'s, and set here rather than in `vitest.config.ts` so it
+ * covers this file and no other.
+ *
+ * Vitest's default `testTimeout` is 5 s, the same number as `LOADED`, and a `waitFor` can only
+ * report the assertion it gave up on if the test outlives it. Left equal, every slow wait dies
+ * as "Test timed out in 5000ms" with no clue which expectation it was on. Measured: that is
+ * exactly what the first run of this change produced. The headroom is for the diagnosis; the
+ * assertion's ceiling is still `LOADED`.
+ */
+vi.setConfig({ testTimeout: 15_000 });
 
 /** Three top-level workspaces, so ⌘2's row is unambiguous and Select All has something to do. */
 function snapshotState(): JsonObject {
@@ -145,7 +174,7 @@ describe('File ▸ New Group (§WS-151 / §SET-144)', () => {
                 name: 'New Group',
                 workspace_ids: []
             });
-        });
+        }, LOADED);
         // Not the form: the footer's field asks for a name up front, and this gesture does not.
         expect(screen.queryByLabelText('Group name')).toBeNull();
     });
@@ -171,7 +200,7 @@ describe('File ▸ New Web Pane (§WS-151 / §SET-145)', () => {
                 private: false,
                 pane_id: PANE_A
             });
-        });
+        }, LOADED);
     });
 
     it('ignores a New Web Pane relay addressed to a different shell window', () => {
@@ -189,13 +218,13 @@ describe('File ▸ Command Palette (§WS-151)', () => {
         h.fire(COMMAND_PALETTE_COMMAND);
         await waitFor(() => {
             expect(screen.getByTestId('command-palette')).toBeTruthy();
-        });
+        }, LOADED);
 
         // It is a TOGGLE, exactly as ⌘P is — the Swift row sends `toggleCommandPalette`.
         h.fire(COMMAND_PALETTE_COMMAND);
         await waitFor(() => {
             expect(screen.queryByTestId('command-palette')).toBeNull();
-        });
+        }, LOADED);
     });
 
     it('ignores a palette relay addressed to a different shell window', () => {
@@ -211,16 +240,19 @@ describe('File ▸ Switch to Workspace 1…9 (§WS-151)', () => {
         expect(activeID()).toBe(W1);
 
         h.fire(`${SWITCH_WORKSPACE_COMMAND_PREFIX}2`);
+        // Both inside the wait, for the reason the Select All tests below give: the row's
+        // `data-active` and the `visibility-report` are written by different commits, and a
+        // read on the line after the wait is a read of whichever one landed first.
         await waitFor(() => {
             expect(activeID()).toBe(W2);
-        });
-        // …and the daemon is told, on the same report a sidebar click sends.
-        expect(h.activeReports().at(-1)).toMatchObject({ workspaceID: W2 });
+            // …and the daemon is told, on the same report a sidebar click sends.
+            expect(h.activeReports().at(-1)).toMatchObject({ workspaceID: W2 });
+        }, LOADED);
 
         h.fire(`${SWITCH_WORKSPACE_COMMAND_PREFIX}3`);
         await waitFor(() => {
             expect(activeID()).toBe(W3);
-        });
+        }, LOADED);
     });
 
     it('does nothing for a position past the end, and never for a malformed one', async () => {
@@ -235,7 +267,7 @@ describe('File ▸ Switch to Workspace 1…9 (§WS-151)', () => {
 
         await waitFor(() => {
             expect(h.activeReports().length).toBe(before);
-        });
+        }, LOADED);
         expect(activeID()).toBe(W1);
         // …and the parser the client uses is the one whose format the shell's own is pinned to.
         expect(switchWorkspacePosition('switch-workspace-4')).toBe(4);
@@ -258,12 +290,12 @@ describe('File ▸ Select All / Deselect All Workspaces (§WS-151)', () => {
         h.fire(SELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(selectedIDs().sort()).toEqual([W1, W2, W3].sort());
-        });
+        }, LOADED);
 
         h.fire(DESELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(selectedIDs()).toEqual([]);
-        });
+        }, LOADED);
     });
 
     it('reports the count to the shell, deduped, starting from the 0 it states on mount', async () => {
@@ -272,13 +304,13 @@ describe('File ▸ Select All / Deselect All Workspaces (§WS-151)', () => {
         // carries the selection the previous page reported before it went away.
         await waitFor(() => {
             expect(h.selectionReports()[0]).toMatchObject({ type: 'workspace-selection', selected: 0 });
-        });
+        }, LOADED);
         const afterMount = h.selectionReports().length;
 
         h.fire(SELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(h.selectionReports().at(-1)).toMatchObject({ selected: 3 });
-        });
+        }, LOADED);
 
         // Selecting all again changes nothing, and must therefore say nothing.
         const afterSelect = h.selectionReports().length;
@@ -289,7 +321,7 @@ describe('File ▸ Select All / Deselect All Workspaces (§WS-151)', () => {
         h.fire(DESELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(h.selectionReports().at(-1)).toMatchObject({ selected: 0 });
-        });
+        }, LOADED);
         expect(h.selectionReports().length).toBeGreaterThan(afterMount);
     });
 
@@ -298,15 +330,20 @@ describe('File ▸ Select All / Deselect All Workspaces (§WS-151)', () => {
         h.fire(SELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(h.selectionReports().at(-1)).toMatchObject({ selected: 3 });
-        });
+        }, LOADED);
 
         // §WS-001's toggle unmounts the sidebar, and the selection lives in it — so it really is
         // gone, and a shell left believing in it would offer a Deselect All that clears nothing.
         h.fire('toggle-sidebar');
+        // Inside the wait, not after it (#109). The sidebar leaving the DOM and the report
+        // going out are two different commits: the unmount is what the first is waiting for and
+        // the report is written by the cleanup that follows it. Measured: read on the line after
+        // this wait it came back `selected: 3` once in twenty local runs, and the same test
+        // passes alone. Asserting both here is exactly as strong and cannot see the gap.
         await waitFor(() => {
             expect(screen.queryByTestId('sidebar-slot')).toBeNull();
-        });
-        expect(h.selectionReports().at(-1)).toMatchObject({ selected: 0 });
+            expect(h.selectionReports().at(-1)).toMatchObject({ selected: 0 });
+        }, LOADED);
     });
 
     it('Select All shows the sidebar first when it is hidden, and still selects', async () => {
@@ -314,19 +351,19 @@ describe('File ▸ Select All / Deselect All Workspaces (§WS-151)', () => {
         h.fire('toggle-sidebar');
         await waitFor(() => {
             expect(screen.queryByTestId('sidebar-slot')).toBeNull();
-        });
+        }, LOADED);
 
         h.fire(SELECT_ALL_WORKSPACES_COMMAND);
         await waitFor(() => {
             expect(selectedIDs().sort()).toEqual([W1, W2, W3].sort());
-        });
+        }, LOADED);
     });
 
     it('Deselect All with nothing selected changes nothing and says nothing', async () => {
         const h = setup();
         await waitFor(() => {
             expect(h.selectionReports().length).toBeGreaterThan(0);
-        });
+        }, LOADED);
         const before = h.selectionReports().length;
 
         h.fire(DESELECT_ALL_WORKSPACES_COMMAND);
@@ -403,7 +440,7 @@ describe('the same two gestures from the keyboard', () => {
                 name: 'New Group',
                 workspace_ids: []
             });
-        });
+        }, LOADED);
     });
 
     it('⌘⇧O opens the blank web pane the New Web Pane row opens', async () => {
@@ -417,6 +454,6 @@ describe('the same two gestures from the keyboard', () => {
                 url: 'about:blank',
                 pane_id: PANE_A
             });
-        });
+        }, LOADED);
     });
 });

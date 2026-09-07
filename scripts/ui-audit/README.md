@@ -66,7 +66,7 @@ CDP reaches the client, which is a web page. The application menu, native accele
 | `harness.armDialog({ response: 1 })` | the next native `dialog.showMessageBox` resolves with that instead of showing; one-shot |
 | `harness.notificationClick({ index, action })` | fires that notification's click handler, or the named action button's ("Open" / "Dismiss"), exactly as the OS would |
 | `harness.notificationClose({ index })` | fires its close handler, as a swiped-away banner does |
-| `harness.window()`, `focus()`, `blur()` | the main window's focus and bounds; the dock only bounces while it is unfocused |
+| `harness.window()`, `focus()`, `blur()` | the main window's focus, bounds, `visible` and `minimized`; the dock only bounces while it is unfocused. `minimized` is there so a scenario can OBSERVE what a chord did without calling `minimize()` and being the thing that did it (#95) |
 | `harness.hide()`, `minimize()`, `restore()` | what ⌘H and ⌘M do to the window, and the two events that undo them; each answers `{ visible, minimized }` read back after the call. Real `BrowserWindow` calls, because the behaviour they exist for is the shell parking every web pane's view on `hide`/`minimize` and restoring it on `show`/`restore` (issue #75), which a synthesised event would not reproduce. They cannot be reached through `menuClick`/`press`: those are `role` rows, which `menu-click` refuses |
 | `harness.crash(paneID)` | kills the renderer behind that web pane's active tab (`webContents.forcefullyCrashRenderer`), as macOS does under memory pressure. Answers `{ paneID, tabID, crashed: true }`, or refuses with `no live view for pane <id>` when the pane has no view and `this shell has no web pane host` when there is no web host at all |
 
@@ -184,6 +184,17 @@ Explicit, and never silent: the reason is printed when the plan is printed, prin
 
 ## Where this stops
 
+- **A native menu accelerator cannot be pressed from here at all** (#95, measured on this
+  Electron). A CDP-injected key event has no backing `NSEvent`, and Electron's macOS handler for
+  an unhandled key is `[[NSApp mainMenu] performKeyEquivalent:event.os_event]`, a message to nil
+  for a synthetic event. A probe that pressed ⌘H and ⌘M through CDP with `document.body` focused,
+  i.e. with nothing consuming them, left `harness.window()` at `visible: true, minimized: false`
+  every time. `harness.press('Cmd+H')` is not a way round it either: it finds the row and calls
+  its handler, and a macOS-native `role` row's work happens in Cocoa rather than in that click,
+  so the app stays up. `menu()` reads the row and its accelerator, `hide()`/`minimize()` do the
+  window call, and what happens between a chord and the accelerator is unreachable. A scenario
+  about such a chord asserts the two ends: the row exists with that accelerator, and the page
+  left the key un-prevented (`terminal-leaves-platform-chords.mjs`).
 - The functional lane is scenarios only. The AUDIT is still one visible window per run: 107 of its 118 steps are `needs-eyes`, so a placement that costs the pictures costs it its product (`audit-window.ts` has that table; offscreen reproduced 113 of 118 steps and turned two green assertions red).
 - Nothing enforces the lane's caveat. A scenario can still take a screenshot under `--window hidden` and assert on it; the note says the pixels are worthless, and no code stops you.
 - `dock-bounce-stop-only` cannot run at `--window onscreen` or `--window offscreen` (above). A scenario that needs an inactive app needs a window macOS agrees is not visible.

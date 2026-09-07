@@ -858,6 +858,13 @@ export type HarnessOp = (typeof HARNESS_OPS)[number];
 export interface WindowSnapshot {
     readonly focused: boolean;
     readonly visible: boolean;
+    /**
+     * `isMinimized()`, so a scenario can OBSERVE ⌘M without calling `minimize()` and thereby
+     * being the thing that minimised it (#95). `visible` cannot stand in for it: a miniaturised
+     * window on macOS answers `isVisible()` differently from a hidden app, and the two states
+     * have different undo events (`restore` vs `show`).
+     */
+    readonly minimized: boolean;
     readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
 }
 
@@ -978,7 +985,7 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
             }
             case 'window': {
                 const snapshot = surface.window();
-                return okResponse(id, snapshot ?? { focused: null, visible: null, bounds: null });
+                return okResponse(id, snapshot ?? { focused: null, visible: null, minimized: null, bounds: null });
             }
             case 'focus':
                 return okResponse(id, { focused: surface.focus() });

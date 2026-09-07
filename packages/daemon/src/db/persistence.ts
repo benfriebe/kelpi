@@ -37,6 +37,8 @@ import { initializeSchema } from './schema.js';
 
 /** §5.2 — the Swift app's quiet period, kept so save churn matches. */
 export const SAVE_DEBOUNCE_MS = 500;
+/** Continuous activity must still reach disk at least once per five seconds. */
+export const SAVE_MAX_WAIT_MS = 5_000;
 
 export type PersistencePhase = 'open' | 'load' | 'save';
 
@@ -48,6 +50,7 @@ export interface PersistenceOptions {
     /** Run the migration ledger at construction. Default true. */
     readonly migrate?: boolean | undefined;
     readonly debounceMs?: number | undefined;
+    readonly maxWaitMs?: number | undefined;
     /**
      * Every failure, as it happens, with the phase that produced it. Defaults to a no-op.
      * `onDegraded` is the louder companion: this one fires for anything at all.
@@ -200,6 +203,7 @@ const UPSERT_APP_STATE =
 
 export function createPersistence(options: PersistenceOptions = {}): SqlitePersistence {
     const debounceMs = options.debounceMs ?? SAVE_DEBOUNCE_MS;
+    const maxWaitMs = Math.max(debounceMs, options.maxWaitMs ?? SAVE_MAX_WAIT_MS);
     const onError = options.onError;
     const onDegraded = options.onDegraded;
     const clock = options.now ?? Date.now;
@@ -292,7 +296,13 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
 
     let pending: PersistedSnapshot | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let maxTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+
+    const cancelMaxTimer = (): void => {
+        if (maxTimer !== null) clearTimeout(maxTimer);
+        maxTimer = null;
+    };
 
     const cancelTimer = (): void => {
         if (timer === null) return;
@@ -436,6 +446,7 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
 
     const flush = (): boolean => {
         cancelTimer();
+        cancelMaxTimer();
         const next = pending;
         pending = null;
         if (next === null) return db !== null && !lastSaveFailed;
@@ -470,12 +481,12 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
             // WRITE, not the capture, so the last one wins and intermediates are dropped (§5.2).
             pending = snapshot;
             cancelTimer();
-            timer = setTimeout(() => {
-                timer = null;
-                const next = pending;
-                pending = null;
-                if (next !== null) writeSnapshot(next);
-            }, debounceMs);
+            timer = setTimeout(flush, debounceMs);
+            // This deadline belongs to the dirty batch, so later updates cannot move it.
+            if (maxTimer === null) {
+                maxTimer = setTimeout(flush, maxWaitMs);
+                maxTimer.unref?.();
+            }
             // Never hold the event loop open for a pending save; SIGTERM calls flush().
             timer.unref?.();
         },
@@ -483,6 +494,7 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
         saveNow(snapshot) {
             if (closed) return false;
             cancelTimer();
+            cancelMaxTimer();
             pending = null;
             if (db === null) {
                 noteDroppedSave();

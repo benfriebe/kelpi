@@ -30,21 +30,30 @@ let tempCounter = 0;
 
 /** Temp file + rename, preserving the original mode when there is one. */
 export function writeFileAtomic(filePath: string, text: string): void {
-    const directory = path.dirname(filePath);
+    // Renaming over the caller's path would replace a symlink instead of editing its target.
+    // A dangling link must also survive: refuse it rather than turning it into a new file.
+    let target = filePath;
+    try {
+        target = fs.realpathSync(filePath);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' ||
+            fs.lstatSync(filePath, { throwIfNoEntry: false })?.isSymbolicLink()) throw error;
+    }
+    const directory = path.dirname(target);
     tempCounter += 1;
     const temp = path.join(
         directory,
-        `.${path.basename(filePath)}.kelpi-${String(process.pid)}-${String(tempCounter)}.tmp`
+        `.${path.basename(target)}.kelpi-${String(process.pid)}-${String(tempCounter)}.tmp`
     );
-    fs.writeFileSync(temp, text, 'utf8');
+    fs.writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
     try {
-        const mode = fs.statSync(filePath).mode & 0o777;
+        const mode = fs.statSync(target).mode & 0o777;
         fs.chmodSync(temp, mode);
     } catch {
         // New file (or unreadable stat): the default mode is correct.
     }
     try {
-        fs.renameSync(temp, filePath);
+        fs.renameSync(temp, target);
     } catch (error) {
         try {
             fs.rmSync(temp, { force: true });
@@ -62,6 +71,8 @@ export interface EditorOptions {
     readonly writeFile?: ((filePath: string, text: string) => void) | undefined;
     /** Called after a successful save (the service re-renders + notifies subscribers). */
     readonly onSaved?: ((paneID: string, text: string) => void) | undefined;
+    /** Keep subscribers informed while a failed save leaves their buffer dirty. */
+    readonly onSaveFailed?: ((paneID: string, error: Error) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly debounceMs?: number | undefined;
 }
@@ -118,9 +129,10 @@ export function createEditorBuffers(options: EditorOptions): EditorBuffers {
             options.onSaved?.(paneID, buffer.text);
             return true;
         } catch (error) {
-            // §4.2: "Write errors are logged, not surfaced." The buffer stays dirty so the next
-            // keystroke (or the shutdown flush) retries.
-            options.onError?.(toError(error), `editor save ${paneID}`);
+            // Preserve the buffer for retry and tell both the log and attached editors.
+            const failure = toError(error);
+            options.onError?.(failure, `editor save ${paneID}`);
+            options.onSaveFailed?.(paneID, failure);
             return false;
         }
     };

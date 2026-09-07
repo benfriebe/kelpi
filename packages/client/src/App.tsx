@@ -56,7 +56,7 @@ import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { copySelection, pasteIntoFocusedPane } from './app/clipboard';
 import { sendLineEdit } from './app/line-editing';
-import type { DaemonTarget } from './app/config';
+import type { DaemonTarget, StorageLike } from './app/config';
 import {
     OPEN_PANEL_MESSAGE,
     cellFromPoint,
@@ -134,9 +134,11 @@ import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
-import { useRemoteDaemons } from './app/remote-daemons';
+import { useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteDaemonSections, type RemoteSelection } from './app/RemoteDaemonSections';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
+import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
+import { PhoneShell, phoneVisiblePaneIDs, usePhoneView } from './phone';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     SEED_TEST_GROUP_COMMAND,
@@ -258,6 +260,14 @@ export interface AppProps {
     readonly mountLimit?: number | undefined;
     /** Skip the `runtime.connect()` / `dispose()` lifecycle (a test driving it by hand). */
     readonly autoConnect?: boolean | undefined;
+    /**
+     * The window the form factor is read from. Assembly never passes it (the page's own window is
+     * the default); a jsdom test hands in `phone/testing.ts`'s fake to render the phone shell.
+     */
+    readonly formFactorWindow?: FormFactorWindow | undefined;
+    /** The phone shell's two test seams (`phone/PhoneShell.tsx`): the host list's storage and how a host is dialled. */
+    readonly phoneHostStorage?: StorageLike | null | undefined;
+    readonly phoneRuntimeFactory?: RemoteRuntimeFactory | undefined;
 }
 
 /**
@@ -881,15 +891,34 @@ function Shell(props: AppProps): ReactElement {
     const paneByID = useMemo(() => new Map(panes.map((pane) => [pane.id, pane])), [panes]);
     const paneOrder = useMemo(() => (workspace === null ? EMPTY_IDS : layoutPaneOrder(workspace)), [workspace]);
     const synced = useMemo(() => (workspace === null ? EMPTY_IDS : syncedPaneIDs(workspace)), [workspace]);
-    const visible = useMemo(
-        () =>
-            visiblePaneIDs({
-                paneOrder,
-                zoomedPaneID: workspace?.zoomedPaneID ?? null,
-                workspaceActive: true
-            }),
-        [paneOrder, workspace]
-    );
+    /*
+     * The phone shell (docs/MOBILE-PLAN.md lane B; `phone/PhoneShell.tsx`). ONE decision, read
+     * from the form factor, and everything phone-shaped hangs off it: a desktop window answers
+     * `desktop` and renders the tree below byte for byte as it always has. The view state lives
+     * here rather than in the shell because the visible-pane report - what the daemon fans PTY
+     * bytes out for, what the mount policy may mount - has to know whether the phone is showing
+     * one pane or the whole layout.
+     */
+    const formFactor = useFormFactor(props.formFactorWindow ?? defaultFormFactorWindow());
+    const phoneActive = formFactor === 'phone';
+    const phoneView = usePhoneView({ enabled: phoneActive, focusedPaneID, paneOrder });
+    const phoneMode = phoneView.mode;
+    const phoneShownPaneID = phoneView.shownPaneID;
+    const phoneRemoteSelected = phoneView.remote !== null;
+    const visible = useMemo(() => {
+        const layoutVisible = visiblePaneIDs({
+            paneOrder,
+            zoomedPaneID: workspace?.zoomedPaneID ?? null,
+            workspaceActive: true
+        });
+        if (!phoneActive) return layoutVisible;
+        return phoneVisiblePaneIDs({
+            mode: phoneMode,
+            shownPaneID: phoneShownPaneID,
+            layoutVisible,
+            remoteSelected: phoneRemoteSelected
+        });
+    }, [paneOrder, workspace, phoneActive, phoneMode, phoneShownPaneID, phoneRemoteSelected]);
     const currentLayout = useMemo<PredefinedLayoutKind | null>(() => {
         const index = workspace?.currentLayoutIndex ?? null;
         return index === null ? null : (PREDEFINED_LAYOUT_ORDER[index] ?? null);
@@ -4229,6 +4258,25 @@ function Shell(props: AppProps): ReactElement {
     // ── render ──────────────────────────────────────────────────────────────────────
 
     const ready = daemon.hasSnapshot;
+
+    /**
+     * The palette, built once and mounted by whichever tree is on screen: the desktop's content
+     * row (§M53) or the phone shell's content box. Same element, same props, one place.
+     */
+    const palette = (
+        <CommandPalette
+            open={ui.palette.open}
+            query={ui.palette.query}
+            onQueryChange={(query) => store.getState().setPaletteQuery(query)}
+            items={paletteItems}
+            onConfirm={onPaletteConfirm}
+            onDismiss={() => store.getState().setPaletteOpen(false)}
+            onFocusHandoff={onFocusHandoff}
+            fallbackPaneID={focusedPaneID}
+            bucket={bucket}
+            formFactorWindow={props.formFactorWindow}
+        />
+    );
     const target = props.target ?? { url: undefined, token: undefined, fromQuery: false };
 
     return (
@@ -4255,6 +4303,74 @@ function Shell(props: AppProps): ReactElement {
             onDrop={onDrop}
             onClickCapture={onRootClickCapture}
         >
+            {phoneActive ? (
+                /*
+                 * The phone shell replaces the title bar, the sidebar, the grid, the inspector and
+                 * the footer; the overlays below (banner, Settings, Help, menus, gates, toasts)
+                 * are shared, because they are the same surfaces on both form factors (B5 already
+                 * draws Settings and the palette as sheets under this form factor).
+                 */
+                <PhoneShell
+                    runtime={runtime}
+                    state={kelpi}
+                    ready={ready}
+                    target={target}
+                    workspace={workspace}
+                    focusedPaneID={focusedPaneID}
+                    view={phoneView}
+                    bucket={bucket}
+                    homeDirectory={daemonHome}
+                    configuredDaemons={[...remoteDaemonRuntimes.values()]}
+                    renderPane={renderPane}
+                    grid={{
+                        renderPaneOverlay,
+                        renameRequest,
+                        getPaneDimensions,
+                        onPaneContextMenu,
+                        onNewWebPane: act.newWebPane,
+                        onFocusPane: act.focusPane,
+                        onClosePane: act.closePane,
+                        onRenamePane: act.renamePane,
+                        onSplitPane: act.splitPane,
+                        onToggleZoom: act.toggleZoom,
+                        onToggleMarkdownEdit: act.toggleMarkdownEdit,
+                        onRefreshDiff: act.refreshDiff,
+                        onCopyDocument,
+                        onSetFontSize: act.setFontSize,
+                        onRestartAgent: act.restartAgent,
+                        onDwellClear: act.dwellClear,
+                        dwellEnabled: isAppActive(ui),
+                        onMovePane: act.movePaneAdjacent,
+                        onCreatePane: act.createPane,
+                        onSetRatio: (splitPath, ratio, commit) => {
+                            // Same two spellings as the desktop grid below (§LAY-061).
+                            if (commit.paneID === null) {
+                                act.setSplitRatioAtPath(splitPath, ratio);
+                                return;
+                            }
+                            act.setSplitRatio(commit.paneID, commit.share);
+                        }
+                    }}
+                    actions={{
+                        activateWorkspace: act.activateWorkspace,
+                        // The desktop's ⌘N opens the sidebar's form (§APP-018); the phone has no
+                        // sidebar, so its prompt collects the one field and creates outright.
+                        createWorkspace: (name) => act.createWorkspace(name, inheritGroupID, {}),
+                        focusPane: act.focusPane,
+                        closePane: act.closePane,
+                        renamePane: act.renamePane,
+                        createPane: act.createPane,
+                        toggleSyncInput: act.toggleSyncInput,
+                        openPalette: () => store.getState().setPaletteOpen(true),
+                        openSettings: () => openSettings()
+                    }}
+                    palette={palette}
+                    createRenderer={createRenderer}
+                    hostStorage={props.phoneHostStorage}
+                    remoteRuntimeFactory={props.phoneRuntimeFactory}
+                />
+            ) : (
+            <>
             <TopBar
                 workspaceName={workspace?.name ?? null}
                 workspaceColor={workspace?.color}
@@ -4676,22 +4792,13 @@ function Shell(props: AppProps): ReactElement {
               * 40 px (flush with the pane header, `docs/audit/run-O/104`) and swallowed both
               * strips. One level in is the whole fix; the panel's own `mt-10` is unchanged.
               */}
-            <CommandPalette
-                open={ui.palette.open}
-                query={ui.palette.query}
-                onQueryChange={(query) => store.getState().setPaletteQuery(query)}
-                items={paletteItems}
-                onConfirm={onPaletteConfirm}
-                onDismiss={() => store.getState().setPaletteOpen(false)}
-                onFocusHandoff={onFocusHandoff}
-                fallbackPaneID={focusedPaneID}
-                bucket={bucket}
-            />
+            {palette}
 
             {/*
               * C9 - the phone's one key bar, last in the row so it paints over the grid and under
               * the two overlays above it (the palette's scrim is z-40, the settings sheet z-50).
-              * It renders null on a desktop.
+              * It renders null on a desktop - and this row is only mounted on one: under the
+              * phone form factor `PhoneShell` mounts the same component on its own content box.
               */}
             <PhoneKeyBar paneID={focusedPaneID} contentRow={contentRowRef} />
             </div>
@@ -4726,6 +4833,8 @@ function Shell(props: AppProps): ReactElement {
                 onSelectPane={onSelectStatusPane}
                 {...(statsView === null ? {} : { systemStats: statsView })}
             />
+            </>
+            )}
 
             {ready && ui.connection !== 'connected' ? (
                 <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} />
@@ -4754,6 +4863,7 @@ function Shell(props: AppProps): ReactElement {
                  */
                 globalHotkeyError={globalHotkeyErrorFrom(hotkeyStatus)}
                 onClose={closeSettings}
+                formFactorWindow={props.formFactorWindow}
                 web={{
                     favourites: webUI.favourites,
                     actions: {

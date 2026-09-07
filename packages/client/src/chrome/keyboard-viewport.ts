@@ -248,15 +248,29 @@ export function bindKeyboardViewport(
 ): () => void {
     const tracker = createKeyboardViewportTracker(win);
     let pushes = 0;
+    /**
+     * What the attribute currently says, so a keyboard animation is not fifteen writes to
+     * `<html>`. A same-value attribute write still invalidates the root's style, and invalidating
+     * the root invalidates everything under it - on every frame of the one animation where the
+     * phone has the least time to spare.
+     */
+    let published: KeyboardViewportMode | null = null;
+
+    const publish = (mode: KeyboardViewportMode | null): void => {
+        if (mode === published) return;
+        published = mode;
+        if (mode === null) delete doc.documentElement.dataset['keyboardViewport'];
+        else doc.documentElement.dataset['keyboardViewport'] = mode;
+    };
 
     const apply = (): void => {
         if (currentFormFactor(win) !== 'phone') {
-            delete doc.documentElement.dataset['keyboardViewport'];
+            publish(null);
             pushes = 0;
             return;
         }
         const reading = tracker.read();
-        doc.documentElement.dataset['keyboardViewport'] = reading.mode;
+        publish(reading.mode);
         if (reading.offsetTop === 0 && reading.scrollTop === 0) {
             pushes = 0;
             return;
@@ -281,6 +295,6 @@ export function bindKeyboardViewport(
         stopWatching();
         viewport?.removeEventListener?.('scroll', apply);
         win.removeEventListener?.('scroll', apply);
-        delete doc.documentElement.dataset['keyboardViewport'];
+        publish(null);
     };
 }

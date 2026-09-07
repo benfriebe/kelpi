@@ -522,6 +522,21 @@ export interface FakePhoneWindow extends FormFactorWindow {
     raiseKeyboard(inset: number, frames?: number): void;
     /** Restore it, over `frames` resize events. */
     lowerKeyboard(frames?: number): void;
+    /**
+     * Take `inset` px off the LAYOUT viewport, in one step, the way Android Chrome does when it
+     * catches up with the keyboard at the end of the animation (C6). `0` puts it back.
+     *
+     * Fires the window's own `resize` and the visual viewport's, because Chrome fires both: the
+     * pane's form-factor watcher hears the first and its keyboard watcher the second, and the
+     * inset the second one computes is `innerHeight - viewport.height`, i.e. zero once the layout
+     * viewport has come down to meet the visual one.
+     */
+    shrinkWindow(inset: number): void;
+    /**
+     * Fire a visual-viewport `scroll` that moves nothing, which iOS does freely while a field is
+     * focused. The inset is unchanged, so nothing should follow from it.
+     */
+    scrollViewport(): void;
     /** Every `resize` event the viewport has fired since the window was made. */
     viewportEvents(): number;
     /** Live listener count, so a test can pin that a desktop pane subscribes to nothing. */
@@ -540,6 +555,7 @@ export function createFakePhoneWindow(
     const height = init.height ?? FAKE_PHONE_VIEWPORT.height;
     let coarse = init.coarse ?? true;
     let viewportHeight = height;
+    let windowHeight = height;
     let fired = 0;
     const media = new Set<() => void>();
     const windowResize = new Set<() => void>();
@@ -567,7 +583,9 @@ export function createFakePhoneWindow(
 
     return {
         innerWidth: width,
-        innerHeight: height,
+        get innerHeight(): number {
+            return windowHeight;
+        },
         visualViewport: {
             width,
             get height(): number {
@@ -606,6 +624,14 @@ export function createFakePhoneWindow(
         },
         lowerKeyboard(frames = 15): void {
             step(height, frames);
+        },
+        shrinkWindow(inset: number): void {
+            windowHeight = height - inset;
+            for (const listener of [...windowResize]) listener();
+            fire('resize');
+        },
+        scrollViewport(): void {
+            fire('scroll');
         },
         viewportEvents(): number {
             return fired;

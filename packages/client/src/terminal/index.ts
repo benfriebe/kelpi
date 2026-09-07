@@ -62,12 +62,14 @@ export {
     TERMINAL_RESIZES_ATTRIBUTE,
     TERMINAL_ROWS_ATTRIBUTE,
     clearPhoneTerminalState,
-    createSoftKeyboardInsetSource,
     heightUnderKeyboard,
+    keyboardBoxInset,
+    publishKeyboardInset,
     publishPhoneTerminalState,
-    useSettledSoftKeyboardInset,
+    watchSoftKeyboardMotion,
     type PhoneTerminalState,
-    type SoftKeyboardInsetSource
+    type SoftKeyboardMotion,
+    type SoftKeyboardMotionHandlers
 } from './keyboard-inset';
 
 export {

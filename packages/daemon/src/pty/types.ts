@@ -14,6 +14,9 @@ export interface PtyProcessHandle {
     readonly pid: number;
     write(data: string | Uint8Array): void;
     resize(cols: number, rows: number): void;
+    /** Stop/resume reading output when the daemon's emulator falls behind. */
+    pause?(): void;
+    resume?(): void;
     /** Best-effort signal delivery; must never throw (a dead child is not an error). */
     kill(signal?: string): void;
     onData(listener: (data: Uint8Array) => void): void;

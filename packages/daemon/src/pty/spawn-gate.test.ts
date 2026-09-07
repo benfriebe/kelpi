@@ -210,6 +210,9 @@ class FakePtyManager implements KelpiPtyManager {
     readonly writes: { paneID: string; data: string }[] = [];
     readonly resizes: { paneID: string; cols: number; rows: number }[] = [];
     readonly killed: string[] = [];
+    readonly outputFlow: string[] = [];
+    pauseOutput(paneID: string): void { this.outputFlow.push(`pause:${paneID}`); }
+    resumeOutput(paneID: string): void { this.outputFlow.push(`resume:${paneID}`); }
     private readonly live = new Set<string>();
 
     spawn(opts: PtySpawnOptions): void {
@@ -379,4 +382,18 @@ describe('the gated PtyManager', () => {
         expect(pty.pid(PANE)).toBeUndefined();
         expect(raw.resizes).toEqual([{ paneID: PANE, cols: 100, rows: 30 }]);
     });
+});
+
+
+it('forwards output backpressure without flushing deferred spawns', () => {
+    const pty = new FakePtyManager();
+    const gate = createPaneSpawnGate({ shouldDefer: () => true });
+    const spawn = vi.fn();
+    gate.defer(PANE, spawn);
+    const wrapped = withSpawnGate(pty, gate);
+    wrapped.pauseOutput(PANE);
+    wrapped.resumeOutput(PANE);
+    expect(pty.outputFlow).toEqual([`pause:${PANE}`, `resume:${PANE}`]);
+    expect(spawn).not.toHaveBeenCalled();
+    gate.close();
 });

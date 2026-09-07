@@ -242,6 +242,7 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
             return {
                 focused: window.isFocused(),
                 visible: window.isVisible(),
+                minimized: window.isMinimized(),
                 bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
             };
         },

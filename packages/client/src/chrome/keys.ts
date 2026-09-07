@@ -23,6 +23,16 @@
  * do not steal your keystrokes). A PANE's own surface — the terminal host, a scratchpad's or
  * markdown editor's textarea — is not chrome text: the full pane keymap stays live there, which
  * is what lets ⌘D split the very pane being typed into.
+ *
+ * **This module decides who owns a chord, including against the platform (#95).** Being a
+ * WINDOW capture listener is what makes the answer unambiguous: a chord the binding map claims
+ * is consumed here, `preventDefault()` + `stopPropagation()`, before any pane's own listeners
+ * run and before Chromium can report the key as unhandled. So a user who writes
+ * `keybind = super+m=split_right` gets a split and NOT Minimize, and the five chords macOS owns
+ * (⌘H, ⌥⌘H, ⌃⌘F, ⌘M, ⌘Q) reach the platform only because nothing in the map claims them and
+ * step 6 lets them fall through untouched. `@kelpi/core/config` ▸ `platform-chords.ts` states
+ * the set and the rule; `terminal/TerminalPane.tsx` is what keeps the terminal ENGINE from
+ * eating one on the way past.
  */
 
 import {
@@ -352,6 +362,12 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         //    platform canonicalization (§3.5) exactly like a map App.tsx passes in.
         const bindings = resolve(options.bindings ?? clientKeyBindings());
         const action = actionForTrigger(bindings, trigger);
+        // An unbound chord falls through UNTOUCHED, which is what hands ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and
+        // ⌘Q to the platform (#95). This step is the whole of the precedence rule: a chord the
+        // user's map claims is consumed HERE, with `preventDefault()`, so it never reaches the
+        // pane that would otherwise decline it and never reaches the menu accelerator either;
+        // one the map does not claim is the platform's. See `@kelpi/core/config` ▸
+        // `platform-chords.ts` and config-keybindings.md §7.4.
         if (action === null) return false;
 
         // While chrome text is being edited only the (former) menu-bar actions survive; a

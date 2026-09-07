@@ -88,7 +88,7 @@ interface FakeSurfaceState {
 function fakeSurface(items: FakeItem[] = fixture()): { surface: HarnessSurface<FakeItem>; state: FakeSurfaceState } {
     const state: FakeSurfaceState = {
         clicked: [],
-        window: { focused: true, visible: true, bounds: { x: 10, y: 20, width: 800, height: 600 } },
+        window: { focused: true, visible: true, minimized: false, bounds: { x: 10, y: 20, width: 800, height: 600 } },
         focused: true,
         visible: true,
         minimized: false
@@ -896,7 +896,7 @@ describe('respond', () => {
         expect(respond(request('window'), surface)).toEqual({
             id: 1,
             ok: true,
-            result: { focused: true, visible: true, bounds: { x: 10, y: 20, width: 800, height: 600 } }
+            result: { focused: true, visible: true, minimized: false, bounds: { x: 10, y: 20, width: 800, height: 600 } }
         });
         expect(respond(request('blur'), surface)).toEqual({ id: 1, ok: true, result: { focused: false } });
         expect(respond(request('focus'), surface)).toEqual({ id: 1, ok: true, result: { focused: true } });
@@ -904,7 +904,7 @@ describe('respond', () => {
         expect(respond(request('window'), surface)).toEqual({
             id: 1,
             ok: true,
-            result: { focused: null, visible: null, bounds: null }
+            result: { focused: null, visible: null, minimized: null, bounds: null }
         });
         expect(respond(request('focus'), surface)).toEqual({ id: 1, ok: true, result: { focused: null } });
         expect(respond(request('blur'), surface)).toEqual({ id: 1, ok: true, result: { focused: null } });

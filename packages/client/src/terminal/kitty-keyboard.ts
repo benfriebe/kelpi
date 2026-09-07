@@ -51,6 +51,12 @@
  * macOS system-editing chords (⌘V, ⌘C, ⌘X, ⌘A, ⌘Z) are never encoded, at any flags. See
  * `isSystemEditingChord` for why, and for the trade Ghostty makes identically (#80).
  *
+ * **A fifth, of the same kind:** the five chords the PLATFORM owns (⌘H, ⌥⌘H, ⌃⌘F, ⌘M, ⌘Q) are
+ * never encoded either. They are stated once, in `@kelpi/core/config` ▸ `PLATFORM_CHORDS`, so
+ * the shell's application menu and this encoder cannot disagree about the set; see that module
+ * for what is in it and why, and `TerminalPane`'s interceptor for the other half of handing
+ * them back, which is keeping the ENGINE from preventing their default (#95).
+ *
  * One divergence worth naming rather than burying: for a **shifted punctuation** key the
  * `unicode-key-code` this module reports is the *produced* glyph lowercased (`ctrl+@` → 64), not
  * the layout's unshifted key (kitty would say 50, the `2` under it). Letters are exact —
@@ -64,6 +70,8 @@
  * The guard lives at the call site (`TerminalPane`), which is where `isComposing` and the
  * `compositionstart`/`compositionend` window are observable.
  */
+
+import { isPlatformChord } from '@kelpi/core/config';
 
 /** Report `Esc`, `ctrl+key`, `alt+key` and the keypad unambiguously as `CSI … u`. */
 export const KITTY_DISAMBIGUATE = 0b1;
@@ -360,11 +368,18 @@ export function encodeKittyKey(event: KittyKeyEventLike, rawFlags: number): Uint
 
     const mods = kittyModifiers(event);
 
-    // ── the chords the platform owns, before any table is consulted (#80) ───────────
+    // ── the chords that are not this encoder's, before any table is consulted ───────
     //
-    // Deliberately FIRST, so it covers every branch below rather than only the text-key one:
-    // whatever the set grows to hold, the answer is the same null.
+    // Deliberately FIRST, so both rules cover every branch below rather than only the text-key
+    // one: whatever either set grows to hold, the answer is the same null.
+    //
+    // Two sets, two owners. `isSystemEditingChord` (#80) is the editing family, handed to
+    // fallbacks that live INSIDE the page. `isPlatformChord` (#95) is the five macOS
+    // application- and window-level chords, handed to the native menu accelerator that answers
+    // them - which only fires for a key the page did not consume, so an encoded ⌘H was the end
+    // of Hide exactly as an encoded ⌘V was the end of paste.
     if (isSystemEditingChord(event)) return null;
+    if (isPlatformChord(event)) return null;
 
     /** Any modifier at all — what decides whether Enter / Tab / Backspace keep their C0 byte. */
     const chorded = mods !== 0;

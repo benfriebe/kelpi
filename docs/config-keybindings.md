@@ -957,6 +957,63 @@ Modifier matching in this table: entries marked ⌘ require modifiers == exactly
 Everything not in the table is "not applicable" and proceeds to the normal binding map —
 which itself can then hit a `web_*` action (each guarded on pane.type == web).
 
+### 7.4 The chords the platform owns (#95)
+
+Five chords belong to macOS, and Kelpi's menu carries every one of them as an Electron `role`
+row whose work happens in Cocoa rather than in any handler of ours:
+
+| chord | role | accelerator Electron gives it | where the row is |
+|---|---|---|---|
+| ⌘H | `hide` | `Command+H` | Kelpi ▸ Hide Kelpi (`menu.ts` ▸ `appMenuTemplate`) |
+| ⌥⌘H | `hideOthers` | `Command+Alt+H` | Kelpi ▸ Hide Others |
+| ⌃⌘F | `togglefullscreen` | `Control+Command+F` | View ▸ Toggle Full Screen |
+| ⌘M | `minimize` | `CommandOrControl+M` | Window ▸ Minimize (Electron's `{ role: 'windowMenu' }`) |
+| ⌘Q | `quit` | `CommandOrControl+Q` | Kelpi ▸ Quit Kelpi |
+
+The set is stated once, in `packages/core/src/config/platform-chords.ts`
+(`PLATFORM_CHORDS`, `isPlatformChord`), and read by both sides: the app menu builds its Hide /
+Hide Others / Quit rows from it, and the client's terminal layers hand these events back rather
+than encoding them (terminal-surface.md section 10.2.2).
+
+**They are NOT bindable actions, and they are not in section 4's list.** There is no
+`hide_app` or `minimize_window`, for the same reason there is no `open_settings`: the shipped
+Swift app reaches all of them through the OS menu bar, so inventing an action name would put a
+line in the config file the shipped app cannot parse.
+
+**A user binding to one of them still wins.** These chords reach the platform only because
+nothing claims them, and the ordering is what enforces it: the client's dispatcher is a
+window-level capture listener (section 7.2), so
+
+```
+keybind = super+m=split_right
+```
+
+makes ⌘M split. Step 6 finds the action, the dispatcher consumes the event with
+`preventDefault()` + `stopPropagation()`, and a prevented key is never redispatched to a native
+accelerator, so Minimize does not also fire. Remove the line and ⌘M is the platform's again.
+This is Ghostty's own rule: a keybind is consumed before its key encoder runs.
+
+**The converse, stated because it is the surprising half:** an action whose handler DECLINES
+(section 7.2 step 7, "the condition failed") leaves the event unconsumed, so a platform chord
+bound to a conditional action reaches the platform on the presses where the condition does not
+hold. Bind one of these five only if you mean it.
+
+**Not in the set, deliberately:**
+
+- **⌘Z ⌘X ⌘C ⌘V ⌘A**, the Edit menu's roles. They are handled one layer up and for a different
+  reason: their fallbacks live INSIDE the page (terminal-surface.md section 10.2.1), and #81
+  binds ⌘C / ⌘V to the real `copy` / `paste` actions.
+- **⌘R, ⌥⌘R, ⌥⌘I** (Reload, Force Reload, Toggle Developer Tools). Chromium developer
+  affordances over Kelpi's own renderer, not platform conventions. A keystroke typed into a
+  shell that throws away every piece of view state the window is holding is a hazard, and
+  Ghostty has no such rows.
+- **⌘, and ⌘? / ⌘/** (Settings, Help). Kelpi's own, dispatched by their own window-level
+  capture listeners in `client/src/App.tsx` (section 4's note on both), which run before any
+  pane and consume the event. They already work from a focused terminal, and there is no `role`
+  row behind either.
+- **⌘W** (Close). Routed by Kelpi to close a PANE rather than the window, and in the map as
+  `close_pane`.
+
 ---
 
 ## 8. Global hotkey (system-wide)

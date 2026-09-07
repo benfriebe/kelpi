@@ -406,6 +406,76 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         expect(harness.pty.last().resizes.map((size) => size.rows)).not.toContain(12);
     });
 
+    /*
+     * C7's shape: the LAYOUT viewport shrinks with the visual one on every frame, which is what
+     * `interactive-widget=resizes-content` (`packages/client/index.html`) asks Chrome 108+ for.
+     *
+     * TWO facts here, and they are the two halves of "reconcile with C6".
+     *
+     * The first is that the pane takes no padding at all, on any frame. The keyboard the client
+     * can SEE is `innerHeight - visualViewport.height`, which is zero throughout: the window the
+     * pane is 100% of is already the space above the keyboard, and a padding on top of that would
+     * be the keyboard subtracted twice. It falls out of the arithmetic rather than a mode check.
+     *
+     * The second is that the daemon still hears the animation exactly once. The frames arrive at
+     * 16 ms and the transition runs for 240, so the ResizeObserver's debounce ceiling
+     * (`RESIZE_MAX_WAIT_MS`, 100 ms, deliberately there so a divider drag republishes ~10x/s)
+     * would republish two or three times through it. Measured on the base commit: three messages,
+     * because C6 armed its settle window off the derived INSET and this transition never moves
+     * one. The watcher compares the viewport's GEOMETRY now, so a keyboard that arrives as a
+     * shorter window is still a keyboard in flight.
+     */
+    it('takes no padding when the layout viewport shrinks WITH the keyboard, in one message (C7)', async () => {
+        const harness = await mountPane({ coarse: true });
+        const root = harness.root();
+        const before = harness.sent();
+        const FRAMES = 15;
+
+        for (let frame = 1; frame <= FRAMES; frame += 1) {
+            await act(async () => {
+                harness.win.raiseKeyboardResizingContent(Math.round((KEYBOARD_HEIGHT * frame) / FRAMES), 1);
+                observers.trigger();
+                await vi.advanceTimersByTimeAsync(16);
+            });
+            expect(root.style.paddingBottom).toBe('');
+            expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe('0');
+            expect(harness.sent()).toBe(before);
+        }
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + DEFAULT_RESIZE_DEBOUNCE_MS);
+        });
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+        expect(root.style.paddingBottom).toBe('');
+    });
+
+    /*
+     * The other half of the owner's round-5 report: the browser SCROLLING the visual viewport to
+     * keep the focused textarea in view, which is what Chrome does under its own default
+     * (`resizes-visual`) and what iOS does whether or not it is asked. `chrome/keyboard-viewport.ts`
+     * asks for the scroll back; this is what the pane does while the browser keeps it.
+     */
+    it('pads by what is LEFT of the keyboard when the browser scrolls the app (C7)', async () => {
+        const harness = await mountPane({ coarse: true });
+        await raiseKeyboard(harness.win);
+        expect(harness.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        const before = harness.sent();
+
+        await act(async () => {
+            harness.win.scrollViewportTo(120);
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + DEFAULT_RESIZE_DEBOUNCE_MS);
+        });
+
+        // 300 px of keyboard with 120 px of the app already scrolled past the bottom of the
+        // layout viewport leaves 180 px of it still hidden, and the padding is that. The prompt
+        // stays inside the band the person can see whether or not the guard gets the scroll back.
+        expect(harness.root().style.paddingBottom).toBe('180px');
+        expect(harness.sent() - before).toBe(1);
+        // 664 px of host at a 20 px cell.
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: 33 });
+    });
+
     it('sets the software-keyboard attributes on the engine textarea', async () => {
         const harness = await mountPane({ coarse: true, autoFocusOnOpen: true });
         const area = harness.root().querySelector('textarea');
@@ -463,8 +533,10 @@ describe('TerminalPane: and NOT on a desktop', () => {
         const desktop = await mountPane({ coarse: false });
 
         // Both panes watch the window for a form-factor change (they must, to notice a phone);
-        // the extra two listeners on the phone are the keyboard source's resize and scroll.
-        expect(phone.win.listenerCount() - desktop.win.listenerCount()).toBe(2);
+        // the extra three on the phone are the keyboard watcher's own: the visual viewport's
+        // resize and scroll, and (C7) the WINDOW's resize, which is how a keyboard arrives when
+        // the browser gives it the layout viewport's pixels rather than the visual viewport's.
+        expect(phone.win.listenerCount() - desktop.win.listenerCount()).toBe(3);
         expect(desktop.root().hasAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_ROWS_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_RESIZES_ATTRIBUTE)).toBe(false);

@@ -28778,6 +28778,14 @@ function buildFlows(ctx) {
          *      fifteen dispatched events: real layout, real `getBoundingClientRect`, one sample
          *      per frame. jsdom has no layout at all, so the unit tests can only assert the
          *      padding the pane wrote; this is where that padding becomes a shorter terminal.
+         *   4. THE ANCHOR (C7, owner device round 5). A pane may get SHORTER for a keyboard;
+         *      where the app starts may not move, and neither may the browser's own scroll. Both
+         *      are positions in a real layout, so both are facts a desktop Chromium can hold the
+         *      client to even though it has no keyboard to raise: the fake keyboard is a
+         *      `resizes-visual` one by construction, which is exactly the mode the owner's phone
+         *      was in, and the resizes-content half is driven by shadowing `innerHeight` too. The
+         *      honest limit is at the top of that block: nothing here makes a browser WANT to
+         *      scroll, so the owner's device is the only place the fix itself can be seen.
          *
          * A phone-lane step (lib/shards.mjs), so it owes the lane's clause: it clears the
          * emulation in a `finally`, and the shadow with it. It provisions nothing, moves no
@@ -28787,7 +28795,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-keyboard-inset',
             expect:
-                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; the pane box follows every frame of that animation in the frame it arrives, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more.',
+                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; the pane box follows every frame of that animation in the frame it arrives, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more. The app never scrolls for any of it: the served page asks for `interactive-widget=resizes-content`, the pane root starts where it started on every frame, the document has no overflow for a browser to scroll, and the client names the mode it is in (`resizes-visual` for the visual-viewport fake, `resizes-content` when the window shrinks with it, and the pane then takes no padding of its own).',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -28833,6 +28841,23 @@ function buildFlows(ctx) {
                         signal.formFactor === 'phone',
                         `data-form-factor=${String(signal.formFactor)} coarse=${String(signal.coarse)} ${String(signal.w)}x${String(signal.h)}`
                     );
+                    /*
+                     * C7 - the primary fix is a line of HTML, and this is the only gate that sees
+                     * the page the daemon actually SERVES rather than the file in the repo. What
+                     * it cannot see is the behaviour: no desktop Chromium has an interactive
+                     * widget to resize a viewport for, so whether Chrome honours the key is the
+                     * owner's device round.
+                     */
+                    const viewportMeta = String(
+                        await view.eval(
+                            `(document.querySelector('meta[name="viewport"]')?.getAttribute('content') ?? '(no viewport meta)')`
+                        )
+                    );
+                    recorder.check(
+                        'the served page asks a keyboard to take the LAYOUT viewport, not just the visual one (interactive-widget=resizes-content)',
+                        viewportMeta.includes('interactive-widget=resizes-content'),
+                        viewportMeta
+                    );
                     const before = await readPanes();
                     recorder.note(`under the phone viewport, before the keyboard: ${JSON.stringify(before)}`);
                     recorder.check(
@@ -28874,10 +28899,22 @@ function buildFlows(ctx) {
                                             id: el.getAttribute('data-pane-id'),
                                             inset: Number(el.getAttribute('data-terminal-keyboard-inset')),
                                             resizes: Number(el.getAttribute('data-terminal-resizes')),
-                                            host: host === null ? -1 : Math.round(host.getBoundingClientRect().height)
+                                            host: host === null ? -1 : Math.round(host.getBoundingClientRect().height),
+                                            // C7: where the pane's own box STARTS. The owner's round-5
+                                            // screenshots are this number moving.
+                                            top: Math.round(el.getBoundingClientRect().top)
                                         };
                                     });
+                                    // C7: everything a browser can move the app by without resizing it.
+                                    const scroll = () => ({
+                                        offsetTop: Math.round(vv.offsetTop),
+                                        scrollY: Math.round(window.scrollY),
+                                        scrollTop: Math.round(document.scrollingElement === null ? 0 : document.scrollingElement.scrollTop),
+                                        overflow: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+                                        mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                    });
                                     const rest = sample();
+                                    const restScroll = scroll();
                                     const frames = [];
                                     let events = 0;
                                     for (let frame = 1; frame <= ${String(FRAMES)}; frame += 1) {
@@ -28885,10 +28922,10 @@ function buildFlows(ctx) {
                                         window.__kelpiFakeKeyboard = px;
                                         vv.dispatchEvent(new Event('resize'));
                                         events += 1;
-                                        frames.push({ px, panes: sample() });
+                                        frames.push({ px, panes: sample(), scroll: scroll() });
                                         await new Promise((resolve) => setTimeout(resolve, 16));
                                     }
-                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight, rest, frames });
+                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight, rest, restScroll, frames });
                                 })()`
                             )
                         )
@@ -28949,6 +28986,54 @@ function buildFlows(ctx) {
                         spokeEarly.length === 0
                             ? `resize counts held at ${JSON.stringify([...restResizes.values()])} across every frame`
                             : `sent mid-animation: ${JSON.stringify(spokeEarly.slice(0, 4))}`
+                    );
+
+                    /*
+                     * C7 - the app never scrolls for the keyboard (owner device round 5).
+                     *
+                     * The pane's box may SHRINK for a keyboard; where the app STARTS may not
+                     * move, and neither may the browser's own scroll. Those two numbers are the
+                     * whole of the owner's report: Chrome scrolled the visual viewport to keep
+                     * the focused textarea in view, and a fixed 100% height shell answered by
+                     * taking its title bar and pane header off the top of the screen.
+                     *
+                     * This is a real Chromium with a real layout, so `top` and `offsetTop` are
+                     * facts here in a way jsdom cannot reach. What it is NOT is a test of the
+                     * fix: nothing in a desktop Chromium raises a keyboard, so nothing here makes
+                     * Chrome WANT to scroll. It pins the invariant and the shape of the app that
+                     * the invariant rests on (no document overflow, so a `scrollTo(0, 0)` can
+                     * only ever undo the browser's own move), and the owner's device is the only
+                     * place the scroll itself can be seen.
+                     */
+                    const restTops = new Map((raised.rest ?? []).map((pane) => [pane.id, pane.top]));
+                    const movedTops = (raised.frames ?? []).flatMap((frame) =>
+                        frame.panes
+                            .filter((pane) => pane.top !== restTops.get(pane.id))
+                            .map((pane) => ({ frame: frame.px, id: pane.id, top: pane.top, was: restTops.get(pane.id) }))
+                    );
+                    const scrolled = (raised.frames ?? []).filter(
+                        (frame) => frame.scroll.offsetTop !== 0 || frame.scroll.scrollY !== 0 || frame.scroll.scrollTop !== 0
+                    );
+                    recorder.check(
+                        'the app never scrolled for it: the pane root starts where it started, and nothing moved the viewport inside the window',
+                        restTops.size > 0 && movedTops.length === 0 && scrolled.length === 0,
+                        movedTops.length === 0 && scrolled.length === 0
+                            ? `pane tops held at ${JSON.stringify([...restTops.values()])} px, visualViewport.offsetTop and both scroll offsets 0 across all ${String(FRAMES)} frames`
+                            : `tops: ${JSON.stringify(movedTops.slice(0, 3))} scrolls: ${JSON.stringify(scrolled.slice(0, 3).map((frame) => frame.scroll))}`
+                    );
+                    recorder.check(
+                        'and there is nothing in the app for a browser to scroll: the shell is exactly its own window',
+                        raised.restScroll !== undefined && raised.restScroll.overflow === 0,
+                        `document overflow ${String(raised.restScroll?.overflow)} px (scrollHeight - clientHeight)`
+                    );
+                    // The detector, live: the harness fakes a keyboard by shadowing the VISUAL
+                    // viewport's height alone, which is `resizes-visual` by construction, and the
+                    // client names it from the measurements rather than from a user agent.
+                    const modes = [...new Set((raised.frames ?? []).map((frame) => frame.scroll.mode))];
+                    recorder.check(
+                        "the client named the mode it is in, and it is the one the harness is faking ('resizes-visual')",
+                        raised.restScroll?.mode === 'none' && modes.length === 1 && modes[0] === 'resizes-visual',
+                        `at rest ${String(raised.restScroll?.mode)}, under the fake keyboard ${JSON.stringify(modes)}`
                     );
                     // The settle window plus the pane's own measure/resize/repaint.
                     await sleep(600);
@@ -29044,18 +29129,122 @@ function buildFlows(ctx) {
                         restored.length > 0 && restored.every((pane) => pane.resizes === 1),
                         restored.map((pane) => `${String(pane.id)}: +${String(pane.resizes)}`).join('; ')
                     );
+
+                    /*
+                     * C7 - the OTHER mode, faked at the same seam.
+                     *
+                     * With `interactive-widget=resizes-content` the layout viewport shrinks with
+                     * the visual one, so `innerHeight` is shadowed here as well and the two move
+                     * together. That is a lie to script only: no real box changes, so this cannot
+                     * show the app following the window, and the owner's device is the only place
+                     * that half can be seen. What it CAN show is the reconciliation, which is the
+                     * one thing a wrong answer would break silently - the pane must take NO
+                     * padding of its own in this mode, because a window that has already given
+                     * the keyboard its pixels plus a padding of the same size is the keyboard
+                     * subtracted twice - and that the mode is read from the measurements alone.
+                     */
+                    const asContent = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(async () => {
+                                    const vv = window.visualViewport;
+                                    const real = window.innerHeight;
+                                    try {
+                                        // innerHeight is an OWN accessor on the window in this
+                                        // Chromium, not a prototype one, so DELETING the shadow
+                                        // does not put the real getter back: it leaves the
+                                        // property gone and every later step reading undefined.
+                                        // Measured on 2026-09-07, when it did exactly that. The
+                                        // descriptor is parked on the window so the step's own
+                                        // cleanup can put it back too.
+                                        window.__kelpiRealInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+                                        window.__kelpiFakeLayout = 0;
+                                        Object.defineProperty(window, 'innerHeight', {
+                                            configurable: true,
+                                            get() { return real - (window.__kelpiFakeLayout ?? 0); }
+                                        });
+                                        Object.defineProperty(vv, 'height', {
+                                            configurable: true,
+                                            get() { return window.innerHeight; }
+                                        });
+                                    } catch (error) {
+                                        return JSON.stringify({ ok: false, why: String(error) });
+                                    }
+                                    const read = () => Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => ({
+                                        id: el.getAttribute('data-pane-id'),
+                                        inset: Number(el.getAttribute('data-terminal-keyboard-inset'))
+                                    }));
+                                    const frames = [];
+                                    for (let frame = 1; frame <= 5; frame += 1) {
+                                        window.__kelpiFakeLayout = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / 5);
+                                        window.dispatchEvent(new Event('resize'));
+                                        vv.dispatchEvent(new Event('resize'));
+                                        frames.push({
+                                            px: window.__kelpiFakeLayout,
+                                            innerHeight: window.innerHeight,
+                                            viewport: vv.height,
+                                            mode: document.documentElement.dataset.keyboardViewport ?? '(unset)',
+                                            panes: read()
+                                        });
+                                        await new Promise((resolve) => setTimeout(resolve, 16));
+                                    }
+                                    if (window.__kelpiRealInnerHeight !== undefined) {
+                                        Object.defineProperty(window, 'innerHeight', window.__kelpiRealInnerHeight);
+                                        delete window.__kelpiRealInnerHeight;
+                                    }
+                                    delete vv.height;
+                                    delete window.__kelpiFakeLayout;
+                                    window.dispatchEvent(new Event('resize'));
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({
+                                        ok: true,
+                                        frames,
+                                        restored: window.innerHeight === real && vv.height === real
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`layout viewport shrinking with the keyboard: ${JSON.stringify(asContent)}`);
+                    recorder.check(
+                        'shadowing `innerHeight` as well is a usable seam, so the resizes-content shape can be driven at all',
+                        asContent.ok === true &&
+                            asContent.restored === true &&
+                            (asContent.frames ?? []).every((frame) => frame.innerHeight === frame.viewport),
+                        asContent.ok === true
+                            ? `${String((asContent.frames ?? []).length)} frames, last ${String((asContent.frames ?? []).at(-1)?.innerHeight)} px of window and viewport, real getters back: ${String(asContent.restored)}`
+                            : String(asContent.why)
+                    );
+                    recorder.check(
+                        'with the window shrinking WITH the keyboard the pane takes no padding of its own, so the keyboard is never subtracted twice',
+                        (asContent.frames ?? []).length > 0 &&
+                            (asContent.frames ?? []).every((frame) => frame.panes.length > 0 && frame.panes.every((pane) => pane.inset === 0)),
+                        JSON.stringify((asContent.frames ?? []).map((frame) => ({ px: frame.px, insets: frame.panes.map((pane) => pane.inset) })))
+                    );
+                    recorder.check(
+                        "and the client names THAT mode 'resizes-content', from the same two measurements",
+                        (asContent.frames ?? []).length > 0 && (asContent.frames ?? []).every((frame) => frame.mode === 'resizes-content'),
+                        JSON.stringify([...new Set((asContent.frames ?? []).map((frame) => frame.mode))])
+                    );
                 } finally {
                     // Belt and braces: an assertion that threw mid-transition must not hand the
-                    // next step a window whose visual viewport lies about its own height.
+                    // next step a window whose viewports lie about their own heights (C7 shadows
+                    // `innerHeight` as well as the visual viewport's `height`).
                     await view
                         .eval(
                             `(() => {
                                 const vv = window.visualViewport;
+                                if (window.__kelpiRealInnerHeight !== undefined) {
+                                    Object.defineProperty(window, 'innerHeight', window.__kelpiRealInnerHeight);
+                                    delete window.__kelpiRealInnerHeight;
+                                }
                                 if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
                                     delete vv.height;
                                     vv.dispatchEvent(new Event('resize'));
                                 }
                                 delete window.__kelpiFakeKeyboard;
+                                delete window.__kelpiFakeLayout;
+                                window.dispatchEvent(new Event('resize'));
                                 return true;
                             })()`
                         )
@@ -29066,14 +29255,23 @@ function buildFlows(ctx) {
                 const after = await view.eval(
                     `JSON.stringify({
                         formFactor: document.documentElement.dataset.formFactor ?? '(unset)',
+                        keyboardViewport: document.documentElement.dataset.keyboardViewport ?? '(unset)',
+                        innerHeight: window.innerHeight,
+                        viewport: window.visualViewport === null || window.visualViewport === undefined ? null : Math.round(window.visualViewport.height),
                         panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => el.getAttribute('data-terminal-rows'))
                     })`
                 );
                 const parsed = JSON.parse(String(after));
                 recorder.check(
                     'and NOT on desktop: with the emulation cleared the panes carry no phone state at all',
-                    parsed.formFactor === 'desktop' && parsed.panes.every((rows) => rows === null),
-                    `data-form-factor=${String(parsed.formFactor)}, data-terminal-rows: ${JSON.stringify(parsed.panes)}`
+                    parsed.formFactor === 'desktop' &&
+                        parsed.panes.every((rows) => rows === null) &&
+                        // C7 - and `<html>` carries no keyboard-viewport state either: a desktop
+                        // window is byte-identical to what it was before the phone program.
+                        parsed.keyboardViewport === '(unset)',
+                    `data-form-factor=${String(parsed.formFactor)}, data-keyboard-viewport=${String(parsed.keyboardViewport)}, ` +
+                        `${String(parsed.innerHeight)} px window over a ${String(parsed.viewport)} px viewport, ` +
+                        `data-terminal-rows: ${JSON.stringify(parsed.panes)}`
                 );
             }
         },

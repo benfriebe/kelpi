@@ -56,6 +56,37 @@
  * animation: the box and the number the daemon is told are read from the same DOM at the same
  * instant, so they can never disagree by a keyboard's height (which a settled VALUE, snapshotted
  * before the layout viewport moved, would).
+ *
+ * ## Which viewport actually moves, and the note that had it backwards (C7, device round 5)
+ *
+ * MOBILE-PLAN.md section 7 recorded C2's known limit as "on Android the LAYOUT viewport also
+ * shrinks for a keyboard". That is what Chrome did before 108 and it is not the default any more:
+ * since Chrome 108 the default is `interactive-widget=resizes-visual`, the layout viewport keeps
+ * its full height, only the visual viewport shrinks, and Chrome then SCROLLS the visual viewport
+ * to keep the focused element (the engine's hidden textarea, which sits at the prompt) in view.
+ * The owner's round-5 screenshots are that scroll: the title bar and the pane header off the top
+ * of the screen, the status footer surfacing above the keyboard. C7 asks for the other mode in
+ * `index.html` and owns the scroll guard for the engines that ignore the ask
+ * (`chrome/keyboard-viewport.ts`).
+ *
+ * Nothing here has to branch on the mode, and this is why: {@link readSoftKeyboardInset} is
+ * `innerHeight - visualViewport.height - offsetTop`, which is not "the keyboard" but "the part of
+ * the layout viewport's bottom that is hidden". A layout viewport that has already given those
+ * pixels up therefore reports zero, in the same frame it gives them up, and the padding comes off
+ * as the window shrinks. One rule, both modes, no double-apply. What C7 did have to change is
+ * what counts as a FRAME of a transition: the watcher below now compares the viewport's geometry
+ * rather than the derived inset, because under `resizes-content` a whole keyboard can arrive with
+ * the inset never leaving zero, and a transition nobody notices is a transition the settle rule
+ * does not gate - which would put the animation back on the ResizeObserver's debounce and its
+ * ceiling, i.e. back to several `SIGWINCH`es per keyboard.
+ *
+ * One residue, recorded rather than fixed: under `resizes-visual` the padding is measured to the
+ * bottom of the LAYOUT viewport, and the pane's bottom edge is a status footer above that, so the
+ * padding overshoots by the footer's height and the owner saw about 40 px of pane background
+ * under the key bar. Under `resizes-content` the padding is zero and the overshoot cannot happen.
+ * Fixing it for iOS means insetting by the overlap between the keyboard and the pane's own box
+ * rather than the window's, which changes what every C6 assertion measures; the device round
+ * decides whether iOS ever needs it.
  */
 
 import {
@@ -258,27 +289,65 @@ export interface SoftKeyboardMotionHandlers {
 }
 
 /**
- * Watch the visual viewport: every frame of the animation to `onMove`, one `onSettle` per
- * transition.
+ * The three heights a keyboard transition can move, read as one.
+ *
+ * Both viewports and the scroll between them, because C7 made the DERIVED inset an unreliable
+ * signal that anything is happening: under `interactive-widget=resizes-content` the layout
+ * viewport shrinks in step with the visual one, so a 300 px keyboard arrives with
+ * `readSoftKeyboardInset` reading zero on every frame of it.
+ */
+interface ViewportGeometry {
+    readonly layoutHeight: number;
+    readonly visualHeight: number;
+    readonly offsetTop: number;
+}
+
+function readViewportGeometry(win: FormFactorWindow): ViewportGeometry {
+    const viewport = win.visualViewport ?? null;
+    return {
+        layoutHeight: win.innerHeight,
+        visualHeight: viewport?.height ?? win.innerHeight,
+        offsetTop: viewport?.offsetTop ?? 0
+    };
+}
+
+function sameGeometry(a: ViewportGeometry, b: ViewportGeometry): boolean {
+    return a.layoutHeight === b.layoutHeight && a.visualHeight === b.visualHeight && a.offsetTop === b.offsetTop;
+}
+
+/**
+ * Watch the viewport: every frame of the animation to `onMove`, one `onSettle` per transition.
  *
  * Seeded from the CURRENT inset and silent about it: a pane that mounts while the keyboard is
  * already up reads {@link SoftKeyboardMotion.live} and applies it on its first pass, rather than
  * being told about a "transition" that never happened.
  *
  * The timer is armed by a CHANGE and left alone by a repeat, so the settle window means "120 ms
- * with the inset where it is" and a stream of identical readings (iOS fires `scroll` freely)
+ * with the viewport where it is" and a stream of identical readings (iOS fires `scroll` freely)
  * cannot hold it open. `onSettle` re-reads rather than replaying the value that armed it: the
  * point of the rule is the geometry at REST, and the arming value is by construction an
  * intermediate frame.
  *
- * The two shapes this has to be right for, both measured in `TerminalPane.keyboard.test.tsx`:
+ * What counts as a change is the GEOMETRY, not the inset, and that is C7's correction. The window
+ * is subscribed to for the same reason: under `resizes-content` a keyboard is a shorter window,
+ * so `window.resize` is the event that carries it and the visual viewport's own inset never
+ * moves. A transition the watcher cannot see is a transition the settle rule does not gate, and
+ * an ungated keyboard animation is back on the ResizeObserver's debounce and its ceiling, which
+ * is a `SIGWINCH` and a full TUI repaint every ~100 ms for the length of the animation.
  *
- *   - iOS: the layout viewport never moves, so the inset climbs 0 -> 300 over the animation and
- *     stays there. Fifteen moves, one settle at 300.
- *   - Android: the layout viewport catches up at the END, so the inset climbs 0 -> 300 over the
- *     animation and then drops back to 0 in one step as `innerHeight` shrinks by the same 300.
- *     Sixteen moves, one settle at 0 - and the box, which followed every one of them, is exactly
- *     where it should be, because the padding came off in the same frame the window shrank.
+ * The three shapes this has to be right for, all three measured in
+ * `TerminalPane.keyboard.test.tsx`:
+ *
+ *   - iOS (`resizes-visual`, and Chrome's default since 108): the layout viewport never moves, so
+ *     the inset climbs 0 -> 300 over the animation and stays there. Fifteen moves, one settle
+ *     at 300.
+ *   - the layout viewport catching up at the END: the inset climbs 0 -> 300 over the animation
+ *     and then drops back to 0 in one step as `innerHeight` shrinks by the same 300. Sixteen
+ *     moves, one settle at 0 - and the box, which followed every one of them, is exactly where it
+ *     should be, because the padding came off in the same frame the window shrank.
+ *   - Chrome 108+ under C7's `resizes-content` (`index.html`): both viewports shrink together, so
+ *     the inset never leaves 0 and the pane takes no padding at all. Fifteen moves that move
+ *     nothing, one settle at 0, and the box the settle measures is the one the browser gave it.
  */
 export function watchSoftKeyboardMotion(
     win: FormFactorWindow,
@@ -286,6 +355,7 @@ export function watchSoftKeyboardMotion(
     settleMs: number = PHONE_KEYBOARD_SETTLE_MS
 ): SoftKeyboardMotion {
     let live = readSoftKeyboardInset(win);
+    let geometry = readViewportGeometry(win);
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const clear = (): void => {
@@ -295,20 +365,22 @@ export function watchSoftKeyboardMotion(
     };
 
     const onViewportChange = (): void => {
-        const next = readSoftKeyboardInset(win);
+        const moved = readViewportGeometry(win);
         // A repeat is not a frame of anything: iOS fires `scroll` on the visual viewport without
         // moving it, and re-arming for those would push the settle out indefinitely.
-        if (next === live) return;
-        live = next;
+        if (sameGeometry(moved, geometry)) return;
+        geometry = moved;
+        live = readSoftKeyboardInset(win);
         clear();
         timer = setTimeout(() => {
             timer = null;
             handlers.onSettle(readSoftKeyboardInset(win));
         }, settleMs);
-        handlers.onMove(next);
+        handlers.onMove(live);
     };
 
     const stopWatching = watchSoftKeyboardInset(win, onViewportChange);
+    win.addEventListener?.('resize', onViewportChange);
 
     return {
         live: () => live,
@@ -316,6 +388,7 @@ export function watchSoftKeyboardMotion(
         dispose(): void {
             clear();
             stopWatching();
+            win.removeEventListener?.('resize', onViewportChange);
         }
     };
 }

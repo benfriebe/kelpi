@@ -104,7 +104,14 @@ const SURFACES = [
     },
     {
         prefix: 'packages/client/src/terminal/',
-        tests: ['packages/client/src/terminal'],
+        /*
+         * C7 put `chrome/keyboard-viewport.ts` on the other side of `terminal/testing.ts`'s fake
+         * phone window: it is the one fake with a keyboard animation, a visual-viewport scroll
+         * and a `scrollTo` to refuse, so the chrome module is driven through it. A change here
+         * therefore reaches the chrome suite as well as this one, the same way `phone/testing.ts`
+         * reaches the settings and chrome suites below.
+         */
+        tests: ['packages/client/src/terminal', 'packages/client/src/chrome'],
         steps: [
             'terminal-ls', 'terminal-long-line', 'terminal-full-width', 'terminal-glyphs',
             'terminal-nerdfont-prompt', 'terminal-size-matrix', 'terminal-resize-storm',
@@ -144,6 +151,10 @@ const SURFACES = [
             // `chrome/form-factor.ts` is the phone program's one decision, and the live step is
             // the only thing that can prove its media query against a real browser.
             'phone-form-factor',
+            // C7's `chrome/keyboard-viewport.ts` decides what a software keyboard did to the two
+            // viewports and keeps the app at the top of its own window; the keyboard step is
+            // where its mode detection meets a real layout and a real `visualViewport`.
+            'phone-keyboard-inset',
             // B5's phone sheet lives in `chrome/CommandPalette.tsx` beside the desktop card, and
             // where a field sits relative to a software keyboard is a layout-engine fact.
             'phone-palette-sheet'

@@ -40,6 +40,19 @@
  * SUBSCRIBED to, because on iOS a rotation reliably fires it and `window.resize` sometimes lands
  * a frame later; it is a change trigger, not a measurement.
  *
+ * C7 (2026-09-07) narrowed "the layout viewport does not move for a keyboard" to "on the engines
+ * that ignore `interactive-widget`". `index.html` now asks Chrome 108+ and Firefox 132+ for
+ * `resizes-content`, which shrinks the layout viewport by the keyboard on purpose, so on those
+ * engines `innerHeight` IS smaller while somebody is typing. Known consequence, recorded rather
+ * than special-cased, in the same spirit as the iPad mini above: a device whose narrow dimension
+ * is between 768 and 768 plus a keyboard can now cross the line while a keyboard is up. No phone
+ * can (390 is nowhere near 768 in either orientation) and no iPad can (iOS ignores the key); an
+ * ANDROID tablet in landscape is the shape that could, 1280x800 becoming 1280x450 as the keyboard
+ * opens. Undoing it means remembering the layout viewport's resting height and deciding against
+ * that instead, which is state this deliberately pure decision does not have;
+ * `chrome/keyboard-viewport.ts` keeps exactly that baseline for its own report and is where the
+ * number would come from when a device round asks for it.
+ *
  * ## There is deliberately no "Electron is always desktop" rule
  *
  * The shell answers `desktop` because its media queries answer desktop: a Mac window has a fine

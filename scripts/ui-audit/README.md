@@ -182,6 +182,29 @@ Explicit, and never silent: the reason is printed when the plan is printed, prin
 
 **A pure refactor that touches UI files still needs it**, and that is the point rather than an oversight: "this one cannot break anything" is the sentence every diff says about itself, and a rule that accepts it exempts everything. What the flag buys is that the claim is on the record with a name against it.
 
+## The battery runs to the end, and retries once (#109)
+
+`verify.mjs` used to exit on the first nonzero status, so one flaky check cost a 20-minute battery and, because `self-upgrade.mjs` gates a promote on `verify.mjs --full`, the release with it. Four promote attempts died that way on 2026-09-07 and 2026-09-08, each on a single wobble that passed in isolation minutes later: `dock-bounce-stop-only` (an occlusion precondition the environment could not meet), `stuck-drag-teardown` (a mid-gesture cursor read), `App.filemenu.test.tsx` at load average 37, and two daemon tests at load average 90.
+
+Two rules now, both in `lib/battery.mjs` and unit-tested there with a fake component runner:
+
+1. **Every component runs, whatever the one before it did**, and the run ends with a table of component, result, wall time and whether it was retried. The one exception is `build bundles`, which is a precondition rather than a check: the scenario lane, the audit and the smoke all drive what it produces, so past a red build the rest are marked `not run` instead of measuring a stale tree.
+2. **A red component is retried once, in isolation, and only what failed.** A vitest component re-runs the FILES it failed on, parsed out of the run's own `--reporter=json` report (never scraped from the terminal); the scenario lane re-runs the SCENARIOS it failed, one process and one sandbox each, read out of the lane's `results.json`; the packaged smoke re-runs itself. Green on that retry passes the component and the summary says which ones needed it. Red on the retry fails the battery and names the check that was red both times.
+
+A retry cannot launder a regression: a deterministic failure fails alone too, and the retry runs once, never twice. What it removes is the class of failure that is a property of the battery's own load rather than of the tree.
+
+The battery also caps its vitest runs at `--maxWorkers=8`, and the reason is not the worker count. Every daemon a test boots builds an editor resolver (`boot/compose.ts` ▸ `content/external-editor.ts`, CONT-082/084) and that resolver asks the user's LOGIN shell, so each boot forks a full `zsh -l -i -c`. Measured on a 16-core machine, root suite, two passes per cap, machine idle before each (run queue 2 to 8, load 12 to 14):
+
+| cap | wall | peak run queue | peak 1-minute load | peak login-shell probes |
+|---|---|---|---|---|
+| default (16) | 27.6, 27.6 s | 84, 92 | 23.6, 28.6 | 59, 32 |
+| `--maxWorkers=8` | 29.5, 29.1 s | 43, 37 | 22.2, 18.0 | 35, 35 |
+| `--maxWorkers=4` | 48.0, 47.5 s | 57, 185 (a neighbour landed in that pass) | 16.8, 15.9 | 32, 24 |
+
+Eight is the knee: it halves the run queue for 1.7 s, 6% of the suite and 0.14% of a 20-minute battery, while four costs another 18 s for a reduction the battery does not need. The cap is on the battery's commands rather than in `vitest.config.ts`, because a person running `npx vitest run` by hand wants every core: it is the battery's concurrency, running beside a scenario sandbox and an Electron audit, that is the hazard.
+
+Its machine-readable evidence lands in `docs/audit/verify-latest/battery/` (the vitest JSON reports and the lane's results, emptied at the start of every run), and the per-component records go into `verify-report.json` under `components`.
+
 ## Where this stops
 
 - **A native menu accelerator cannot be pressed from here at all** (#95, measured on this
@@ -204,3 +227,5 @@ Explicit, and never silent: the reason is printed when the plan is printed, prin
 - Discharging is per DIFF, not per file: one scenario written anywhere in `scripts/scenarios/`, or one edit to `audit.mjs`, satisfies the rule for every UI file in that diff. `verify.mjs` prints the files no `covers` entry names, so the gap is visible; it does not refuse on it.
 - `git diff` drives all of this, so an untracked source file is invisible to the tier AND to the rule. Untracked SCENARIOS are looked up separately (that false refusal was worth the extra call); untracked client or shell files are a pre-existing hole in `verify.mjs`, unchanged here.
 - Nothing runs the rule at commit or push time. It is a `verify.mjs` gate, which means it is on the promote path (`--full`) and on the path of anyone who runs verify, and nowhere else.
+- The retry is per COMPONENT, not per check. A vitest run that dies without naming a failed file (a crash, a config error, an OOM-killed worker) has nothing to isolate, so it is not retried and it is not excused: the battery fails and the summary says the report named nothing. The full audit is not retried at all, because its exit status is not its verdict: it exits 0 with failed assertions, and the REPORT read against the previous one with `compare-runs` is the gate.
+- A retry that goes green is a pass, and nothing files an issue about it. The run says which components needed one, twice, and `verify-report.json` keeps the record, but a check that wobbles every battery will keep wobbling until a person reads that line.

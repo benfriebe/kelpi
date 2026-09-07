@@ -417,6 +417,13 @@ node scripts/self-upgrade.mjs       # run the battery, package, and promote the 
                                     # and agent sessions come back and resume)
 ```
 
+A battery runs every component before it decides, and prints a table of what each cost and how
+it ended. A component that goes red is retried once, on its own, and only the part that failed:
+the test FILES a vitest run named in its JSON report, the SCENARIOS a lane failed, the packaged
+smoke as a whole. Green alone passes it and the run says which ones needed it; red alone fails
+the battery and names the check. Four promotes died on single wobbles before this existed
+(#109); `scripts/ui-audit/lib/battery.mjs` has the rules and the measurements.
+
 Beyond the unit suites, four **live** smokes boot real daemons on private paths (never
 the shared `/tmp/kelpi.sock`) and assert what only a running system can prove:
 

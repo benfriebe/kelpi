@@ -49,7 +49,9 @@ describe('prepareContentDocument', () => {
         });
 
         expect(prepared).not.toContain('"><script>alert(1)');
-        expect(prepared).toContain('&quot;&gt;&lt;script&gt;');
+        const parsed = new DOMParser().parseFromString(prepared, 'text/html');
+        expect(parsed.querySelector('base')?.getAttribute('href')).toBe('/pane-assets/"><script>alert(1)</script>/');
+        expect(parsed.querySelectorAll('script')).toHaveLength(1);
     });
 
     /**

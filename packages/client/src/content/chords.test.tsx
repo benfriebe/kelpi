@@ -113,7 +113,7 @@ function press(init: KeyboardEventInit & { code: string }): KeyboardEvent {
 
 /** Deliver a host → frame message the way the host's `postMessage` would. */
 function toFrame(message: Record<string, unknown>): void {
-    window.dispatchEvent(new MessageEvent('message', { data: { source: CONTENT_HOST_SOURCE, ...message } }));
+    window.dispatchEvent(new MessageEvent('message', { source: window, data: { source: CONTENT_HOST_SOURCE, ...message } }));
 }
 
 describe('the injected script', () => {
@@ -224,7 +224,7 @@ describe('the host replay', () => {
         });
         const off = installKeyDispatcher(window, dispatcher);
 
-        render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} />);
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} claimedChords={['8/KeyD']} />);
         window.dispatchEvent(
             new MessageEvent('message', {
                 data: {

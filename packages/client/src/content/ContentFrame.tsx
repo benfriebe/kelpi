@@ -39,6 +39,7 @@ import { PANE_HEADER_HEIGHT } from '../grid/PaneHeader';
 import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
 import {
     CONTENT_HOST_SOURCE,
+    chordKey,
     openExternalLink,
     parseBridgeMessage,
     prepareContentDocument,
@@ -435,6 +436,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                         shiftKey: message.shiftKey,
                         metaKey: message.metaKey
                     };
+                    if (!current.claimedChords?.includes(chordKey(chord))) return;
                     replayFrameChord(chord, current.replayTarget);
                     return;
                 }

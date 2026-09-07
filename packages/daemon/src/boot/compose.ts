@@ -479,6 +479,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      */
     let onPaneClipboardRequest: (paneID: string, request: Osc52Request) => void = () => {};
     const term = createTerminalStateService({
+        onBackpressure: (paneID, paused) => {
+            if (paused) pty.pauseOutput(paneID);
+            else pty.resumeOutput(paneID);
+        },
+        onError: (paneID, error) => report(error, `terminal write ${paneID}`),
         onDirectoryChange: (paneID, directory) => {
             try {
                 onPaneDirectory(paneID, directory);

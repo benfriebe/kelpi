@@ -54,6 +54,8 @@ export interface KelpiPtyManager extends PtyManager {
     /** Number of live PTYs (terminal-surface.md §14 `activeSurfaceCount`). */
     count(): number;
     paneIDs(): string[];
+    pauseOutput(paneID: string): void;
+    resumeOutput(paneID: string): void;
     /** Group membership query backing the pane-header sync badge (§8.1). */
     isSyncing(paneID: string): boolean;
     /** Union of every group containing the source, minus the source itself (§8.1). */
@@ -266,6 +268,18 @@ class PtyManagerImpl implements KelpiPtyManager {
         } catch (error) {
             this.onError?.(paneID, error);
         }
+    }
+
+    pauseOutput(paneID: string): void {
+        const entry = this.entries.get(paneID);
+        if (entry === undefined || entry.hasExited) return;
+        try { entry.proc.pause?.(); } catch (error) { this.onError?.(paneID, error); }
+    }
+
+    resumeOutput(paneID: string): void {
+        const entry = this.entries.get(paneID);
+        if (entry === undefined || entry.hasExited) return;
+        try { entry.proc.resume?.(); } catch (error) { this.onError?.(paneID, error); }
     }
 
     // -- teardown ----------------------------------------------------------

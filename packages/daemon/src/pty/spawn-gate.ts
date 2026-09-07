@@ -244,6 +244,8 @@ export function withSpawnGate(pty: KelpiPtyManager, gate: PaneSpawnGate): KelpiP
         resize(paneID: string, cols: number, rows: number): void {
             pty.resize(paneID, cols, rows);
         },
+        pauseOutput(paneID: string): void { pty.pauseOutput(paneID); },
+        resumeOutput(paneID: string): void { pty.resumeOutput(paneID); },
         kill(paneID: string): void {
             gate.cancel(paneID);
             pty.kill(paneID);

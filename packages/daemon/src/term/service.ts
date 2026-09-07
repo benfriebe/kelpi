@@ -50,6 +50,9 @@ type SerializeAddonInstance = InstanceType<typeof SerializeAddon>;
 export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const DEFAULT_COLS = 80;
 export const DEFAULT_ROWS = 24;
+/** Bound normal PTY read-ahead well below xterm's 50 MB write-discard threshold. */
+export const WRITE_HIGH_WATER_BYTES = 512 * 1024;
+export const WRITE_LOW_WATER_BYTES = 128 * 1024;
 
 /** `ITerminalOptions['windowsPty']`, minus the `undefined` `exactOptionalPropertyTypes` adds. */
 type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof Terminal>[0]>['windowsPty']>;
@@ -214,6 +217,9 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
 }
 
 export interface TerminalStateOptions {
+    /** Production pauses only the source PTY, never other panes or slow-client viewers. */
+    readonly onBackpressure?: (paneID: string, paused: boolean) => void;
+    readonly onError?: (paneID: string, error: unknown) => void;
     /** Scrollback lines retained per pane. Default 10 000. */
     readonly scrollback?: number;
     /** Raw ring-buffer capacity per pane, in bytes. Default 1 MiB. */
@@ -374,6 +380,12 @@ export function parseOsc7(data: string): string | null {
 const MIN_COLS = 2;
 const MIN_ROWS = 1;
 
+interface PendingWrite {
+    readonly bytes: number;
+    readonly data: Uint8Array | string;
+    readonly settle: () => void;
+}
+
 interface PaneTerminal {
     readonly term: HeadlessTerminal;
     readonly serializer: SerializeAddonInstance;
@@ -393,6 +405,11 @@ interface PaneTerminal {
     /** Force-settle hooks for in-flight writes, so dispose() can never strand a flush(). */
     readonly settlers: Set<() => void>;
     disposed: boolean;
+    readonly writes: PendingWrite[];
+    writeIndex: number;
+    writing: boolean;
+    pendingBytes: number;
+    outputPaused: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -431,7 +448,12 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly onModesChange: ((paneID: string, modes: VtModes) => void) | undefined;
     private readonly onKittyReply: ((paneID: string, reply: Uint8Array) => void) | undefined;
 
+    private readonly onBackpressure: TerminalStateOptions['onBackpressure'];
+    private readonly onWriteError: TerminalStateOptions['onError'];
+
     constructor(options: TerminalStateOptions = {}) {
+        this.onBackpressure = options.onBackpressure;
+        this.onWriteError = options.onError;
         this.scrollback = Math.max(0, Math.floor(options.scrollback ?? DEFAULT_SCROLLBACK_LINES));
         this.ringCapacityBytes = Math.max(1, Math.floor(options.ringCapacityBytes ?? DEFAULT_RING_CAPACITY_BYTES));
         this.defaultCols = sanitizeCols(options.defaultCols ?? DEFAULT_COLS, DEFAULT_COLS);
@@ -483,6 +505,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // flush()/captureAsync() can never hang on a callback that will now never fire.
         for (const settle of [...entry.settlers]) settle();
         entry.settlers.clear();
+        entry.writes.length = 0;
+        this.setOutputPaused(paneID, entry, false);
         entry.mouseFormat.dispose();
         entry.kitty.dispose();
         entry.serializer.dispose();
@@ -513,6 +537,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         entry.ring.append(typeof data === 'string' ? encoder.encode(data) : data);
 
         entry.issued += 1;
+        const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+        entry.pendingBytes += bytes;
         const target = entry;
         entry.tail = new Promise<void>((resolve) => {
             let settled = false;
@@ -524,12 +550,81 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 // Modes are only observable AFTER the chunk has been parsed, which is what this
                 // callback means. Compared rather than hooked so every mode this service reports
                 // (xterm's own `IModes` half included) is covered by one check.
-                this.publishModes(paneID, target);
-                resolve();
+                target.pendingBytes -= bytes;
+                try {
+                    if (!target.disposed) this.publishModes(paneID, target);
+                } catch (error) {
+                    this.reportWriteError(paneID, error);
+                } finally {
+                    if (target.pendingBytes <= WRITE_LOW_WATER_BYTES) this.setOutputPaused(paneID, target, false);
+                    resolve();
+                }
             };
             target.settlers.add(settle);
-            target.term.write(data, settle);
+            target.writes.push({ data, bytes, settle });
         });
+        if (entry.pendingBytes >= WRITE_HIGH_WATER_BYTES) this.setOutputPaused(paneID, entry, true);
+        this.drainWrites(paneID, entry);
+    }
+
+    private reportWriteError(paneID: string, error: unknown): void {
+        // Even a reporting hook must not strand a write or become an unhandled rejection.
+        try { this.onWriteError?.(paneID, error); } catch { /* reporting is best effort */ }
+    }
+
+    private setOutputPaused(paneID: string, entry: PaneTerminal, paused: boolean): void {
+        if (entry.outputPaused === paused) return;
+        entry.outputPaused = paused;
+        try { this.onBackpressure?.(paneID, paused); } catch (error) { this.reportWriteError(paneID, error); }
+    }
+
+    private drainWrites(paneID: string, entry: PaneTerminal): void {
+        if (entry.disposed || entry.writing) return;
+        const first = entry.writes[entry.writeIndex];
+        if (first === undefined) return;
+        const batch: PendingWrite[] = [first];
+        let bytes = first.bytes;
+        entry.writeIndex += 1;
+        // Coalesce small reads: a timer per line would make a 10,000-line burst take seconds.
+        // Keep strings and bytes separate so xterm retains its incremental decoding semantics.
+        while (entry.writeIndex < entry.writes.length) {
+            const next = entry.writes[entry.writeIndex]!;
+            if (typeof next.data !== typeof first.data || bytes + next.bytes > 64 * 1024) break;
+            batch.push(next);
+            bytes += next.bytes;
+            entry.writeIndex += 1;
+        }
+        const data = batch.length === 1 ? first.data : typeof first.data === 'string'
+            ? batch.map(item => item.data as string).join('')
+            : Buffer.concat(batch.map(item => item.data as Uint8Array));
+        if (entry.writeIndex === entry.writes.length) {
+            entry.writes.length = 0;
+            entry.writeIndex = 0;
+        } else if (entry.writeIndex * 2 >= entry.writes.length) {
+            // Release consumed buffers even when continuous output never empties the queue.
+            // Compact only after consuming half, keeping the copying cost amortized linear.
+            entry.writes.splice(0, entry.writeIndex);
+            entry.writeIndex = 0;
+        }
+        entry.writing = true;
+        let finished = false;
+        const finish = (): void => {
+            if (finished) return;
+            finished = true;
+            for (const item of batch) item.settle();
+            entry.writing = false;
+            // Leave xterm's write callback before handing it the next chunk. This also
+            // handles synchronous callbacks without recursively exhausting the JS stack.
+            queueMicrotask(() => this.drainWrites(paneID, entry));
+        };
+        try {
+            // Only one write per pane is ever outstanding inside xterm. Callers that
+            // synchronously feed a large burst cannot overflow its internal queue either.
+            entry.term.write(data, finish);
+        } catch (error) {
+            this.reportWriteError(paneID, error);
+            finish();
+        }
     }
 
     resize(paneID: string, cols: number, rows: number): void {
@@ -898,6 +993,11 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             mouseFormat,
             kitty,
             lastModes: IDLE_MODES,
+            writes: [],
+            writeIndex: 0,
+            writing: false,
+            pendingBytes: 0,
+            outputPaused: false,
             issued: 0,
             done: 0,
             tail: Promise.resolve(),

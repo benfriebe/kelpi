@@ -3,7 +3,7 @@
  * the composition boot performs. Only the PTY is stubbed (its bytes are the assertion).
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createTerminalInput } from '../../pty/index.js';
 import { createTerminalStateService } from '../../term/index.js';
@@ -39,7 +39,7 @@ describe('pane handlers over the real terminal seams', () => {
         handlePaneCapture({ command: 'pane-capture', target: P2, scrollback: false }, ctx, viewport);
         const full = stubReply();
         handlePaneCapture({ command: 'pane-capture', target: P2, scrollback: true }, ctx, full);
-        await settle();
+        await vi.waitFor(() => expect(viewport.closed && full.closed).toBe(true));
 
         const viewportText = viewport.only()['text'] as string;
         const fullText = full.only()['text'] as string;
@@ -56,7 +56,7 @@ describe('pane handlers over the real terminal seams', () => {
 
         const reply = stubReply();
         handlePaneCapture({ command: 'pane-capture', target: P2, lines: 2, scrollback: false }, ctx, reply);
-        await settle();
+        await vi.waitFor(() => expect(reply.closed).toBe(true));
 
         expect(reply.only()['text']).toBe('line 4\nline 5');
     });

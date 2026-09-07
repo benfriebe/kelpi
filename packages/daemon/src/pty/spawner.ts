@@ -44,6 +44,8 @@ export const nodePtySpawner: PtySpawner = (request: PtySpawnRequest): PtyProcess
         resize(cols: number, rows: number): void {
             proc.resize(cols, rows);
         },
+        pause(): void { proc.pause(); },
+        resume(): void { proc.resume(); },
         kill(signal?: string): void {
             try {
                 proc.kill(signal);

@@ -22,6 +22,7 @@ import { WS_CLOSE_CODES } from '../ws/sync.js';
 import type { PersistedSnapshot } from '../store/index.js';
 import { createDaemon, type Daemon } from './compose.js';
 import { readPortFile, writePortFile } from './port.js';
+import { stubArgv, writeAgentStubs } from './testing.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -130,6 +131,20 @@ function seedDatabase(dbPath: string, home: string, sessionID: string): void {
     persistence.close();
 }
 
+/**
+ * The lines a stub agent logged, once it has run. `daemon.restored` only promises the resume
+ * command was WRITTEN to the PTY; the shell that runs it gets there a moment later.
+ */
+async function eventuallyLogged(logPath: string, timeoutMs = 10_000): Promise<string[]> {
+    const deadline = Date.now() + timeoutMs;
+    let lines = stubArgv(logPath);
+    while (lines.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        lines = stubArgv(logPath);
+    }
+    return lines;
+}
+
 function readBack(dbPath: string): PersistedSnapshot | null {
     const persistence = createPersistence({ path: dbPath });
     const snapshot = persistence.load();
@@ -180,7 +195,16 @@ describe('createDaemon', () => {
         const settled = new Promise<void>((resolve) => {
             releaseSettle = resolve;
         });
-        const daemon = daemonFor(paths, { sleep: () => settled, settleMs: 5 });
+        // `claude --resume sess-keepme` is about to be typed into a real shell, so the pane's
+        // PATH gets a stub `claude` in front of whatever this machine has installed: a test
+        // must never launch the developer's actual agent CLI, and the stub's argv log is what
+        // proves the command reached a shell at all (`boot/testing.ts`).
+        const stubs = writeAgentStubs(paths.root);
+        const daemon = daemonFor(paths, {
+            sleep: () => settled,
+            settleMs: 5,
+            env: { KELPID_HELPERS_DIR: stubs.dir }
+        });
         const info = await daemon.start();
 
         expect(info.loadStatus).toBe('ok');
@@ -197,6 +221,9 @@ describe('createDaemon', () => {
         // Step 9: only now does the cleared state reach disk.
         daemon.persistence.flush();
         expect(readBack(paths.dbPath)?.workspaces[0]?.panes[0]?.agentSessionID).toBeNull();
+        // And "the resume commands have gone out" is a claim about a shell, not about the
+        // store: the pane's own `claude` really ran, once, with the seeded id.
+        expect(await eventuallyLogged(stubs.claudeLog)).toEqual(['--resume sess-keepme']);
     }, 20_000);
 
     it('keeps the session id in the DB when the daemon is stopped mid-restore', async () => {

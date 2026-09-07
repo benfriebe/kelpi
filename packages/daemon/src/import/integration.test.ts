@@ -16,6 +16,7 @@ import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon, type Daemon } from '../boot/index.js';
+import { stubArgv, writeAgentStubs, type AgentStubs } from '../boot/testing.js';
 import { createPersistence } from '../db/index.js';
 import { runImport } from './importer.js';
 import {
@@ -110,6 +111,8 @@ interface Scratch {
     readonly configPath: string;
     readonly source: string;
     readonly notes: string;
+    /** The `codex` / `claude` this run's panes resolve, instead of the machine's own. */
+    readonly stubs: AgentStubs;
 }
 
 function scratch(): Scratch {
@@ -127,7 +130,8 @@ function scratch(): Scratch {
         dbPath: path.join(root, 'nex.db'),
         configPath: path.join(root, 'config'),
         source: path.join(root, 'legacy.db'),
-        notes
+        notes,
+        stubs: writeAgentStubs(root)
     };
 }
 
@@ -227,7 +231,12 @@ function writeSource(paths: Scratch): void {
 
 async function boot(paths: Scratch): Promise<Daemon> {
     const daemon = createDaemon({
-        env: {},
+        // The restored agent pane is about to have `codex resume <id>` typed into a real
+        // shell, so the pane's PATH gets this run's stub `codex` in front of the machine's
+        // own (`boot/testing.ts`). Without it the real Codex starts, repaints the pane on its
+        // way to the trust prompt, and the screen this test reads back is whatever Codex
+        // decided to draw rather than what the restore typed.
+        env: { KELPID_HELPERS_DIR: paths.stubs.dir },
         home: paths.home,
         runDir: paths.runDir,
         controlSocketPath: paths.socketPath,
@@ -352,14 +361,26 @@ describe('import → boot', () => {
         expect(outcome.resumed).toEqual([PANE_A2]);
         expect(outcome.skipped).toEqual([]);
 
-        // The command really reached the PTY — and `agentKind` picked the codex verb rather
-        // than `claude --resume`.
+        // The command really reached the PTY, and `agentKind` picked the codex verb rather
+        // than `claude --resume`. The `codex` on this pane's PATH is the stub, so the only
+        // things that can be on the screen are the shell's echo of the typed line and the
+        // stub's own marker, and they stay there.
         const captured = await eventually(
             () => request(paths.socketPath, { command: 'pane-capture', target: PANE_A2, scrollback: true }),
             (reply) => typeof reply['text'] === 'string' && reply['text'].includes(`codex resume ${SESSION_ID}`)
         );
         expect(String(captured['text'])).toContain(`codex resume ${SESSION_ID}`);
         expect(String(captured['text'])).not.toContain('claude --resume');
+
+        // Stronger than the screen, and immune to anything drawing over it: the argv the
+        // pane's own shell handed the binary. Exactly one resume, with the imported session
+        // id, through the codex verb, and the claude stub was never invoked at all.
+        const logged = await eventually(
+            async () => stubArgv(paths.stubs.codexLog),
+            (lines) => lines.length > 0
+        );
+        expect(logged).toEqual([`resume ${SESSION_ID}`]);
+        expect(stubArgv(paths.stubs.claudeLog)).toEqual([]);
 
         // ── and the session id is cleared on disk only after the resume ──────
         expect(daemon.store.getState().workspaces[0]?.panes[1]?.agentSessionID).toBeNull();

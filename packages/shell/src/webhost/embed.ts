@@ -37,6 +37,15 @@
  *                    reporter dedupes an identical re-render, so nothing on the wire ever
  *                    contradicted the state.
  *
+ *     There is a THIRD, narrower park, and it is issue #96's: `parkAllHeld()`. View ▸ Recover
+ *     Interface (and the unresponsive watchdog's second strike) take every view off screen on
+ *     purpose and then ask the clients to say what they are still drawing. A held placement is
+ *     parked with its box remembered, exactly like `park()`, but `refresh()` will NOT put it
+ *     back: only the pane's own client re-stating its geometry may, and `releaseHeld()` drops
+ *     whatever nobody claimed. That is the whole point of the chord. A leaked view, one the
+ *     shell is holding for a pane no client draws any more, is precisely what a person reaching
+ *     for "recover" wants gone, and a reconciler that put it straight back would defeat it.
+ *
  * It is generic over the view type and takes its attach/detach/bounds behaviour as hooks, so
  * the bookkeeping is testable without Electron.
  */
@@ -96,6 +105,22 @@ export interface EmbedController<V> {
      */
     park(paneID: string, reason?: string): boolean;
     parkAll(reason?: string): void;
+    /**
+     * #96: park every placed view and HOLD it. `refresh()` will not put a held placement back,
+     * so the only thing that can is the pane's own client re-stating its geometry. Returns the
+     * panes that went to the holder (an already-parked one is left exactly as it is).
+     *
+     * This is Recover Interface's park. It is not `parkAll` with a different reason string: a
+     * recovery is a request to re-derive the truth from the clients, and a reconciler that
+     * re-placed everything from the shell's own books within 150 ms would put the leaked view
+     * back on screen along with the real ones.
+     */
+    parkAllHeld(reason?: string): readonly string[];
+    /**
+     * Release every placement still held: nobody re-stated it, so the shell stops claiming it.
+     * The view is already in the holder and stays there. Returns the panes dropped.
+     */
+    releaseHeld(reason?: string): readonly string[];
     /** A view is being destroyed: drop it from the books without touching it. */
     forget(view: V): boolean;
     /** The pane itself is gone: release it and forget the rect it used to be reported at. */
@@ -143,6 +168,8 @@ export interface EmbedController<V> {
     readonly embeddedPaneIDs: readonly string[];
     /** Panes this shell parked and still owes a placement to (#75). */
     readonly parkedPaneIDs: readonly string[];
+    /** Panes a recovery parked that no client has re-stated yet (#96). */
+    readonly heldPaneIDs: readonly string[];
     /**
      * Where a pane's view actually IS: the rounded, clamped DIP box the shell placed it at, plus
      * the client report that produced it. Issue #12's poster hangs off the pair — a still frame
@@ -202,6 +229,19 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
      * is whether the client has said it again SINCE the reconnect.
      */
     const unconfirmed = new Set<string>();
+    /**
+     * #96: panes a RECOVERY parked, which only their own client may un-park.
+     *
+     * A set beside `unconfirmed` rather than a flag on `Placement`, for the same reason that one
+     * is: it is not a property of the placement but a question about the outside world, open for
+     * the couple of seconds after the chord and closed for the rest of the process's life.
+     *
+     * Deliberately NOT expressed as "parked and unconfirmed", which the two existing flags would
+     * already spell: the reconnect sweep (#72) marks placements unconfirmed while they are still
+     * ON SCREEN, so a window hidden inside its grace window would produce that pair by accident
+     * and the views would never come back.
+     */
+    const heldForRestatement = new Set<string>();
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
@@ -225,6 +265,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         if (placement === undefined) return false;
         placed.delete(paneID);
         unconfirmed.delete(paneID);
+        heldForRestatement.delete(paneID);
         if (placement.parked) {
             // Already in the holder: the view must not be detached twice, but the CLAIM has
             // changed (a park this shell owed a placement to is now a park the client asked
@@ -348,6 +389,10 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             // confirm a placement the host is holding across a reconnect. Whatever the report
             // then decides (place, park, release), the CLAIM has been re-stated by its owner.
             unconfirmed.delete(geometry.paneID);
+            // #96: and it is the ONE thing that lifts a recovery's hold. The client has said what
+            // it is drawing, so `place()` below may put the view back (or `release()` may drop it
+            // for good, if what the client said was `visible:false`).
+            heldForRestatement.delete(geometry.paneID);
             const metrics = options.metrics();
             if (metrics === null) {
                 /*
@@ -381,6 +426,28 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             for (const paneID of [...placed.keys()]) park(paneID, reason);
         },
 
+        parkAllHeld(reason = 'recovery') {
+            const held: string[] = [];
+            for (const paneID of [...placed.keys()]) {
+                // An already-parked placement is left alone, hold and all: it is in the holder
+                // because the window is away (#75), and the shell still owes it a placement when
+                // the window comes back. Only a view that was ON SCREEN is the chord's business.
+                if (!park(paneID, reason)) continue;
+                heldForRestatement.add(paneID);
+                held.push(paneID);
+            }
+            return held;
+        },
+
+        releaseHeld(reason = 'unclaimed-after-recovery') {
+            const dropped: string[] = [];
+            for (const paneID of [...heldForRestatement]) {
+                if (release(paneID, reason)) dropped.push(paneID);
+            }
+            heldForRestatement.clear();
+            return dropped;
+        },
+
         forget(view) {
             for (const [paneID, placement] of placed) {
                 if (placement.view !== view) continue;
@@ -389,6 +456,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
                 // the same way: its view is dying, so the memory of where it sat is worthless.
                 placed.delete(paneID);
                 unconfirmed.delete(paneID);
+                heldForRestatement.delete(paneID);
                 announce(paneID, 'released', null, 'view-destroyed');
                 return true;
             }
@@ -399,6 +467,7 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
             release(paneID, reason);
             reported.delete(paneID);
             unconfirmed.delete(paneID);
+            heldForRestatement.delete(paneID);
         },
 
         releaseView(view, reason = 'view-released') {
@@ -427,6 +496,17 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
         refresh() {
             const metrics = options.metrics();
             for (const [paneID, placement] of [...placed]) {
+                /*
+                 * #96: a recovery's park is the shell's ONLY park it does not undo itself.
+                 *
+                 * Every other caller of `refresh()` (the window came back, a tab changed) is
+                 * asking "put back what you know", and that is right for a hide. A recovery is
+                 * asking the opposite: forget what you think you know and let the clients say it
+                 * again. Restoring a held placement here would put the leaked view, the one no
+                 * client draws any more and the whole reason the chord exists, straight back on
+                 * screen within one reconciler tick of the person pressing it.
+                 */
+                if (heldForRestatement.has(paneID)) continue;
                 if (metrics === null) {
                     // Still nowhere to place into. Keep the books rather than emptying them:
                     // this is exactly the state `restoreViews()` is called again for (#75).
@@ -452,6 +532,10 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
 
         get parkedPaneIDs() {
             return [...placed].filter(([, placement]) => placement.parked).map(([paneID]) => paneID);
+        },
+
+        get heldPaneIDs() {
+            return [...heldForRestatement];
         },
 
         placementOf(paneID) {

@@ -920,6 +920,16 @@ Two surfaces share the page area when there is no page in it, and the chrome (na
     parking-and-waiting is deliberate: parking every pane on every host reconnect is the
     hole-flicker of issue #12, while a re-stated placement is an identical `pane-geometry` the
     host applies as a no-op.
+13. **A recovery parks and waits, and its park is the one the host may not undo itself**
+    (issue #96; `HOST_PROTOCOL.md` §3.5.4). View ▸ Recover Interface and the unresponsive
+    watchdog take every embedded view off screen to unstick the window; they keep each placement
+    and HOLD it, ask the clients to re-state, and drop what nobody re-states after two seconds.
+    So every view a client still claims comes back and every view no client claims stays parked,
+    which is what the chord is for. Invariant 11's reconciler is what makes the hold necessary:
+    without it a recovery's views would be re-placed from the host's own books a tick later, the
+    leaked one included. Parking with the forgetting release instead (what shipped with #79) is
+    invariant 11's dead state by a third route, and was reported as web panes going blank until a
+    workspace switch.
 
 ---
 

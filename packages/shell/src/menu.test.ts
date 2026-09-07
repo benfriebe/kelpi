@@ -159,11 +159,16 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
      * Two halves in two processes, and the ordering between them is the assertion: the main
      * process parks the native views whatever the client does, because a wedged renderer is
      * exactly the case where the relay goes unanswered.
+     *
+     * #96 renamed the dep from `releaseWebViews` to `recoverWebViews`, and the rename is the fix
+     * rather than tidying: the main-process half must be the park that KEEPS every placement and
+     * asks the clients to re-state (`webHost.recoverViews`). With the forgetting release the row
+     * blanked every web pane until a workspace switch, which is the opposite of recovering.
      */
     it('runs both halves of Recover Interface, the main-process one unconditionally', () => {
-        const releaseWebViews = vi.fn();
+        const recoverWebViews = vi.fn();
         const sendMenuRequest = vi.fn(() => true);
-        const template = viewMenuTemplate({ sendMenuRequest, releaseWebViews });
+        const template = viewMenuTemplate({ sendMenuRequest, recoverWebViews });
         const row = template.at(-1);
 
         expect(row?.label).toBe(RECOVER_INTERFACE_LABEL);
@@ -173,21 +178,26 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         expect(RECOVER_INTERFACE_ACCELERATOR).not.toBe(FORCE_RELOAD_ACCELERATOR);
 
         (row?.click as (() => void) | undefined)?.();
-        expect(releaseWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        expect(recoverWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
         expect(sendMenuRequest).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        // The park first, then the relay: the views are the half a wedged renderer cannot do,
+        // and `sendMenuRequest` is the call that may block on it.
+        expect(recoverWebViews.mock.invocationCallOrder[0]).toBeLessThan(
+            sendMenuRequest.mock.invocationCallOrder[0] as number
+        );
         // `app/file-menu.ts` states the same literal on the client side; a rename on either
         // side has to fail here rather than produce a row that relays into nothing.
         expect(RECOVER_INTERFACE_COMMAND).toBe('recover-interface');
     });
 
     it('parks the views even when no window takes the relay', () => {
-        const releaseWebViews = vi.fn();
+        const recoverWebViews = vi.fn();
         const onUndelivered = vi.fn();
-        const template = viewMenuTemplate({ sendMenuRequest: () => false, onUndelivered, releaseWebViews });
+        const template = viewMenuTemplate({ sendMenuRequest: () => false, onUndelivered, recoverWebViews });
 
         (template.at(-1)?.click as (() => void) | undefined)?.();
 
-        expect(releaseWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
+        expect(recoverWebViews).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
         expect(onUndelivered).toHaveBeenCalledWith(RECOVER_INTERFACE_COMMAND);
     });
 

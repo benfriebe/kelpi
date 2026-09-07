@@ -23,6 +23,21 @@
  * again the moment the renderer draws a frame, instead of the user finding a window whose panes
  * swallow every click.
  *
+ * ## What puts the views back (issue #96)
+ *
+ * The park KEEPS each placement and asks every client to re-state it (`webHost.recoverViews`),
+ * so a pane a client still draws comes back on its own. The first version of this parked with
+ * the FORGETTING release, and the user's report was the consequence: "the web pane went blank,
+ * and was only recovered by going in and out of the workspace". A forgotten placement is a dead
+ * end - the client's geometry reporter dedupes an identical re-render, so nothing on either side
+ * ever contradicts it.
+ *
+ * The ask goes out while the renderer is still wedged, which is the point of the second half:
+ * a renderer that is not returning to its event loop cannot process a message either, so
+ * `responsive` asks again. Structurally the queued ask would arrive on its own once the loop
+ * comes back, and this is the case where it would not - the client's socket dropped during the
+ * wedge, so the message was delivered to a connection that no longer existed.
+ *
  * ## What it deliberately does NOT do
  *
  * It does not reload the window. A wedged renderer usually has the user's scrollback in it and
@@ -37,15 +52,25 @@
 /** A second strike inside this window parks the views. */
 export const UNRESPONSIVE_STRIKE_WINDOW_MS = 60_000;
 
-/** The `releaseViews` reason the park is recorded under, so a log reader can tell it apart. */
+/** The reason the park is recorded under, so a log reader can tell it apart. */
 export const UNRESPONSIVE_PARK_REASON = 'renderer-unresponsive';
 
 export interface UnresponsiveWatchdogOptions {
     /** `Date.now`, injected so the rule can be tested without a real minute. */
     readonly now: () => number;
     readonly log: (message: string) => void;
-    /** Park every native web view. Returns how many were parked, when the caller knows. */
+    /**
+     * Park every native web view, KEEPING each placement, and ask the clients to re-state it
+     * (#96: `webHost.recoverViews`, never the forgetting `releaseViews`). Returns how many were
+     * parked, when the caller knows.
+     */
     readonly park: (reason: string) => number | void;
+    /**
+     * #96: ask every client to re-state its placements. Called on `responsive` when this
+     * watchdog has parked, because the ask `park` already sent went to a renderer that could not
+     * process it. Absent (tests, a shell with no web host) means the queued ask is all there is.
+     */
+    readonly restate?: ((reason: string) => void) | undefined;
     /** Defaults to `UNRESPONSIVE_STRIKE_WINDOW_MS`. */
     readonly windowMs?: number | undefined;
 }
@@ -63,6 +88,8 @@ export function createUnresponsiveWatchdog(options: UnresponsiveWatchdogOptions)
     const windowMs = options.windowMs ?? UNRESPONSIVE_STRIKE_WINDOW_MS;
     let recent: number[] = [];
     let wedgedSince: number | null = null;
+    /** #96: a park has happened and the renderer has not answered since. */
+    let owesRestatement = false;
 
     return {
         unresponsive(): boolean {
@@ -80,6 +107,7 @@ export function createUnresponsiveWatchdog(options: UnresponsiveWatchdogOptions)
                 return false;
             }
             const parked = options.park(UNRESPONSIVE_PARK_REASON);
+            owesRestatement = true;
             options.log(
                 `renderer unresponsive (strike ${String(recent.length)} within ${String(seconds)}s); ` +
                     `parked ${typeof parked === 'number' ? String(parked) : 'every'} web pane view ` +
@@ -96,6 +124,12 @@ export function createUnresponsiveWatchdog(options: UnresponsiveWatchdogOptions)
                 `renderer responsive again${held === null ? '' : ` after ${String(held)}ms`}` +
                     ` (${String(recent.filter((stamp) => at - stamp < windowMs).length)} strike(s) still counting)`
             );
+            // #96: only after a park of ours, and only once. A renderer coming back from ordinary
+            // heavy work has nothing to re-state, and a broadcast reaches every attached client.
+            if (!owesRestatement) return;
+            owesRestatement = false;
+            options.restate?.(UNRESPONSIVE_PARK_REASON);
+            options.log(`asked every client to re-state its web-pane placements (${UNRESPONSIVE_PARK_REASON})`);
         },
 
         strikes(): readonly number[] {

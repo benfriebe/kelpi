@@ -40,6 +40,24 @@
  *   8. …and that pane still comes back when the user asks for it, so 7 is not just deadness;
  *   9. the page kept running the whole time.
  *
+ * ## Issue #96: View ▸ Recover Interface (the second section)
+ *
+ * The same instrument against the same dead state by a third route. #79 added the chord and
+ * parked with the FORGETTING release, so pressing it blanked every web pane until the user
+ * switched workspace away and back. The fix parks with the placement kept and held, and asks
+ * every client to re-state, which gives the recovery its actual product behaviour and the two
+ * assertions worth making:
+ *
+ *   - a view a client STILL CLAIMS goes to the holder and comes back `owner=main (attached)` in
+ *     the same box within a second, with the page still ticking;
+ *   - a view NO CLIENT CLAIMS stays in the holder, because it is never re-stated. That is the
+ *     leak the chord exists to shed, and it is constructed here by gagging the client's reports
+ *     for one pane through CDP (see `gagGeometryFor`), which is exactly the state the host is in
+ *     when it holds a placement for a pane no client draws any more.
+ *
+ * Both halves are driven through the real menu row (`harness.menuClick`), not a synthesised
+ * event: the row is where the two processes' halves are sequenced.
+ *
  * A real Space switch is the case the owner reported and Electron has no API for one, so it
  * stays a manual acceptance step; hide/show is the same code path (`windowMetrics()` refuses a
  * window that is not visible either way).
@@ -318,7 +336,167 @@ async function main() {
         );
 
         /*
-         * ── 10. issue #72: a hide issued while the host slot was empty ─────────────
+         * ── 10. issue #96: View ▸ Recover Interface ────────────────────────────────
+         *
+         * #79 added the chord for a window that has gone unusable (a pointer gesture nobody saw
+         * the end of, a renderer that is not answering) and its main-process half parked every
+         * native view with `releaseViews`, the FORGETTING release. So the chord blanked every web
+         * pane: the placement went with the view, the client still believed the pane was placed
+         * and its reporter drops an identical re-render, and only a workspace switch produced a
+         * fresh report. "Pressing the recover interface button caused the web pane to go blank,
+         * and was only recovered by going in and out of the workspace."
+         *
+         * Two panes, because the fix has two halves that pull in opposite directions and one
+         * pane cannot tell them apart:
+         *
+         *   `paneID`    a pane the client is still drawing. It must come BACK, in the same box,
+         *               within a frame or two, off the client's own re-statement.
+         *   `leakedID`  a placement no client claims. It must STAY parked. That is the state the
+         *               chord exists for, and a fix that simply restored from the shell's own
+         *               books would put this one back on screen too and recover nothing.
+         *
+         * The leak is constructed by gagging the CLIENT's reports for that pane inside the page:
+         * `WebSocket.prototype.send` drops its `web-geometry-report` frames and passes every
+         * other message through untouched. That is precisely the host's situation when it holds a
+         * placement for a pane no client draws any more, and it is the only construction that is
+         * reproducible in a battery: the routes users reach it by (a hide lost while the host slot
+         * was empty, a client that went away mid-frame) are races, and section 11 below spends
+         * eleven seconds and a daemon restart provoking one of them.
+         */
+        log('  issue #96: View ▸ Recover Interface…');
+        const secondOpen = await cli.run(['web', 'open', site.url], { timeoutMs: 60_000 });
+        const leakedID = (/open ok:\s*([0-9a-f-]{36})/i.exec(secondOpen.stdout) ?? [])[1];
+        if (leakedID === undefined) {
+            throw new Error(`no second web pane opened: ${secondOpen.stdout}${secondOpen.stderr}`);
+        }
+        await settleOwner(leakedID, 'main', 30_000, 'the second pane to be placed');
+        await settleOwner(paneID, 'main', 30_000, 'the first pane to be re-placed beside it');
+        // The split moved both boxes; let the layout stop moving, so what follows happens against
+        // a STILL layout. A layout that is still settling repairs itself by accident.
+        await sleep(2000);
+
+        const gagged = await page.eval(`(() => {
+            const w = window;
+            if (w.__kelpiGagged === undefined) {
+                w.__kelpiGagged = [];
+                w.__kelpiGagDropped = 0;
+                const original = WebSocket.prototype.send;
+                WebSocket.prototype.send = function (data) {
+                    if (typeof data === 'string' && data.indexOf('web-geometry-report') >= 0) {
+                        try {
+                            const parsed = JSON.parse(data);
+                            if (
+                                parsed &&
+                                parsed.type === 'web-geometry-report' &&
+                                w.__kelpiGagged.indexOf(parsed.paneID) >= 0
+                            ) {
+                                w.__kelpiGagDropped += 1;
+                                return undefined;
+                            }
+                        } catch (error) {
+                            /* not JSON we know: pass it on */
+                        }
+                    }
+                    return original.call(this, data);
+                };
+            }
+            if (w.__kelpiGagged.indexOf('${leakedID}') < 0) w.__kelpiGagged.push('${leakedID}');
+            return w.__kelpiGagged.length;
+        })()`);
+        check(
+            'a placement the client has forgotten can be constructed (the leak)',
+            gagged === 1,
+            `gagging ${String(gagged)} pane(s): ${leakedID.slice(0, 8)}`
+        );
+
+        const beforeChord = ownerOf(paneID);
+        const chordMark = sinceIndex();
+        const chordShellMark = shell.lines.length;
+        const clicked = await harness.menuClick({ path: ['View', 'Recover Interface'] });
+        const chordAt = Date.now();
+
+        /*
+         * Read the TRAIL rather than polling the current owner, and that is not a style choice.
+         * A working fix takes the view out and puts it back in tens of milliseconds, so a poll
+         * that samples every 5 ms can legitimately miss the holder state entirely and report
+         * "it never parked" about a build that parked and recovered perfectly. The trail is
+         * every line the shell printed, in order, so a park followed by a placement is provable
+         * however fast the pair went by.
+         */
+        const chordTrail = () => placements.slice(chordMark).filter((entry) => entry.paneID === paneID);
+        const parkedByChord = () =>
+            chordTrail().findIndex((entry) => entry.owner === 'holder' && entry.reason === 'recover-interface');
+        const backAfterChord = () => {
+            const at = parkedByChord();
+            return at < 0 ? undefined : chordTrail().slice(at + 1).find((entry) => entry.owner === 'main');
+        };
+        const chordDeadline = Date.now() + 10_000;
+        while (Date.now() < chordDeadline && backAfterChord() === undefined) await sleep(5);
+
+        check(
+            'the chord parks the claimed pane’s view (owner=holder, recover-interface)',
+            parkedByChord() >= 0,
+            `${JSON.stringify(clicked)} · ${JSON.stringify(chordTrail())}`
+        );
+        const back = backAfterChord();
+        check(
+            'the claimed pane comes back on screen, with no user action (#96)',
+            back !== undefined && back.at - chordAt <= 1_000,
+            back === undefined
+                ? 'ISSUE #96: the page is still in the off-screen holder'
+                : `${String(back.at - chordAt)} ms after the chord`
+        );
+        check(
+            'it comes back in the box it left',
+            back !== undefined && back.bounds === beforeChord?.bounds,
+            `${String(beforeChord?.bounds)} -> ${String(back?.bounds)}`
+        );
+        check(
+            '…as an attach, i.e. re-derived from the client rather than replayed from the books',
+            back?.reason === 'attached',
+            `reason=${back?.reason ?? 'none'}`
+        );
+
+        // Generous. The host's grace is two seconds; a fix that restored from its own books would
+        // have put this one back within one reconciler tick (150 ms), long before this.
+        await sleep(5000);
+        const wronglyBack = placements
+            .slice(chordMark)
+            .filter((entry) => entry.paneID === leakedID && entry.owner === 'main');
+        check(
+            'a placement no client re-states stays parked (#96)',
+            wronglyBack.length === 0 && ownerOf(leakedID)?.owner === 'holder',
+            wronglyBack.length === 0
+                ? `still ${String(ownerOf(leakedID)?.owner)} (${String(ownerOf(leakedID)?.reason)})`
+                : `put back on screen: ${JSON.stringify(wronglyBack)}`
+        );
+        const gagDropped = await page.eval('window.__kelpiGagDropped ?? -1');
+        check(
+            '…and the host dropped the claim it could not confirm',
+            shell.lines.some((line) => /no client re-stated after the recover-interface/.test(line)),
+            `${String(gagDropped)} report(s) gagged`
+        );
+        // The whole sequence, because a failure here is a statement about an ORDER and is
+        // unreadable from one "still in the holder".
+        for (const line of shell.lines.slice(chordShellMark)) {
+            if (/web pane .* view owner=|web host (park|restor|recovery|asking|dropped|:)|menu: Recover/.test(line)) {
+                log(`      ${line.trim()}`);
+            }
+        }
+
+        const tickedAfterChord = await cli.run(['web', 'text', '#t', '--target', paneID], { timeoutMs: 30_000 });
+        check(
+            'the page kept running through the recovery',
+            /tick \d+/.test(tickedAfterChord.stdout),
+            tickedAfterChord.stdout.trim()
+        );
+
+        // Un-gag: section 11 restarts the daemon, and a client that cannot report one of its
+        // panes would make that section's precondition mean something else.
+        await page.eval('(() => { window.__kelpiGagged = []; return true; })()');
+
+        /*
+         * ── 11. issue #72: a hide issued while the host slot was empty ─────────────
          *
          * The mirror of #34, and the half that fix does not reach: not a placement that was
          * lost, but a HIDE that was lost. The daemon drops geometry while no host is attached,

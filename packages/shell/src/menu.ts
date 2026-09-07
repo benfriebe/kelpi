@@ -342,8 +342,12 @@ export interface ViewMenuDeps extends MenuRelayDeps {
      * back in the off-screen holder. Runs whatever the client does with the relay, because the
      * views are the half a wedged renderer cannot help with. Omitted (tests, a shell with no web
      * host yet) means the row still relays to the client.
+     *
+     * #96 renamed it from `releaseWebViews`, and the rename is the fix: the park has to KEEP each
+     * placement and ask the clients to re-state it (`webHost.recoverViews`). The forgetting
+     * release this used to call left every web pane blank until a workspace switch.
      */
-    readonly releaseWebViews?: ((reason: string) => void) | undefined;
+    readonly recoverWebViews?: ((reason: string) => void) | undefined;
 }
 
 /** One relay row: try the client, and say so rather than swallowing a click nobody took. */
@@ -390,6 +394,11 @@ export const FORCE_RELOAD_ACCELERATOR = 'CommandOrControl+Alt+R';
  * other product row uses, which is why the command name is stated in both packages and pinned
  * in both test suites, exactly as `seed-test-group` is.
  *
+ * #96 fixed what the park left behind. It KEEPS every placement and asks the clients to re-state
+ * them, so a pane a client still draws is back on screen within a frame or two and one nobody
+ * draws stays in the holder. The first version parked with the forgetting release, and the row
+ * blanked every web pane until the user switched workspace away and back.
+ *
  * **It is in the shipped menu, not behind the Debug section.** A dev-only recovery for a bug
  * that only bites in a real session would be theatre. It is deliberately last in the View menu,
  * under a separator, and carries a chord nothing in the binding map claims: ⌃⌥⌘R is one hand
@@ -426,7 +435,7 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
             click: () => {
                 // The main process's half runs first and unconditionally: it is the one a wedged
                 // renderer cannot do for itself, and the relay below may well go unanswered.
-                deps.releaseWebViews?.(RECOVER_INTERFACE_COMMAND);
+                deps.recoverWebViews?.(RECOVER_INTERFACE_COMMAND);
                 if (deps.sendMenuRequest(RECOVER_INTERFACE_COMMAND)) return;
                 deps.onUndelivered?.(RECOVER_INTERFACE_COMMAND);
             }

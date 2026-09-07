@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
-import { useLayoutEffect, type ReactElement } from 'react';
+import { useLayoutEffect, useRef, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -13,6 +13,7 @@ import {
     measureGeometry,
     shouldGrabFocus
 } from './TerminalPane';
+import { PhoneKeyBar } from './PhoneKeyBar';
 import { paneHandle } from './pane-registry';
 import {
     createFakePhoneWindow,
@@ -1381,28 +1382,40 @@ describe('TerminalPane - who may summon the software keyboard (C5)', () => {
      * asking. It focuses the engine's own input node directly rather than through
      * `renderer.focus()`, and that is deliberate (see `showKeyboard`), so it is measured on the
      * DOM rather than on the renderer's counter.
+     *
+     * C9: the bar is the WINDOW's now, so the pane is mounted the way the app mounts it - inside
+     * the content row, with `PhoneKeyBar` hanging off the row's bottom edge and finding this pane
+     * through the registry. What the key does to the caret is unchanged, which is the point.
      */
     it('the key bar’s Show key still raises the keyboard, which is the whole point of the rule', async () => {
         const renderers = createFakeRendererFactory({ autoFocusOnOpen: true });
         const pty = createFakePtyApi();
-        const view = render(
-            <TerminalPane
-                paneID="pane-c5-show"
-                ptyApi={pty}
-                focused
-                visible
-                createRenderer={renderers.factory}
-                measure={box(390, 844)}
-                formFactorWindow={createFakePhoneWindow()}
-            />
-        );
+        const win = createFakePhoneWindow();
+        function Row(): ReactElement {
+            const row = useRef<HTMLDivElement | null>(null);
+            return (
+                <div ref={row} className="relative flex min-h-0 flex-1">
+                    <TerminalPane
+                        paneID="pane-c5-show"
+                        ptyApi={pty}
+                        focused
+                        visible
+                        createRenderer={renderers.factory}
+                        measure={box(390, 844)}
+                        formFactorWindow={win}
+                    />
+                    <PhoneKeyBar paneID="pane-c5-show" contentRow={row} formFactorWindow={win} />
+                </div>
+            );
+        }
+        const view = render(<Row />);
         await settle();
         await act(async () => {
             await vi.advanceTimersByTimeAsync(20);
         });
         const root = view.container.querySelector('[data-pane-id="pane-c5-show"]') as HTMLElement;
         const host = root.querySelector('[data-terminal-host]') as HTMLElement;
-        const toggle = root.querySelector('[data-terminal-key="hide-keyboard"]') as HTMLButtonElement;
+        const toggle = view.container.querySelector('[data-terminal-key="hide-keyboard"]') as HTMLButtonElement;
 
         // Down, by the only key that may do it…
         await act(async () => {

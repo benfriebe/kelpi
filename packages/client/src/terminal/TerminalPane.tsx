@@ -41,7 +41,7 @@ import {
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { offerSelection } from '../state/clipboard';
-import { KeyBar, dispatchPaste } from './KeyBar';
+import { dispatchPaste } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
@@ -49,13 +49,12 @@ import {
     PHONE_TEXT_INPUT_ATTRIBUTES,
     PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED,
     clearPhoneTerminalState,
-    keyboardBoxInset,
     publishKeyboardInset,
     publishPhoneTerminalState,
     watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
-import { registerTerminalPane } from './pane-registry';
+import { notifyTerminalPanes, registerTerminalPane } from './pane-registry';
 import {
     IDLE_PANE_MODES,
     createMouseReporter,
@@ -416,6 +415,47 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         rendererRef.current?.focus();
     }, []);
 
+    // ── what the WINDOW's key bar does to this pane (C9) ────────────────────────────
+    //
+    // These four were C1's props on a `<KeyBar>` this component rendered. The bar is one per
+    // WINDOW now (`terminal/PhoneKeyBar.tsx`), so they are published on the pane's registry handle
+    // instead and the bar calls them on whichever pane holds the caret. What each one does is
+    // unchanged, down to the node it resolves; see the comments on each.
+    //
+    // Declared here, above the mount effect, because that effect is what registers them.
+
+    /** A bar key, raised at the engine exactly as a physical one arrives (C1's routing decision). */
+    const sendKey = useCallback((init: TerminalKeyInit): boolean => rendererRef.current?.dispatchKey(init) ?? false, []);
+    /**
+     * Dismiss the software keyboard by letting the caret go, which is what `releasePaneCaret` does
+     * and what `renderer.blur()` does NOT: ghostty-web's `blur()` blurs the CONTAINER
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:866-870`) while the caret sits in the
+     * hidden textarea inside it, so the keyboard would stay up. The way back is the engine's own:
+     * its canvas has a `touchend` listener that focuses the textarea (`terminal.ts:490-493`), so
+     * tapping the terminal raises the keyboard again with nothing here involved.
+     */
+    const hideKeyboard = useCallback((): void => releasePaneCaret(hostRef.current), []);
+    /**
+     * …and the way back, for the bar's toggle only (device round 3, 2026-09-04).
+     *
+     * The same node `dispatchKey` and `pasteText` resolve, focused directly rather than through
+     * `renderer.focus()`: the engine's `focus()` focuses this textarea too
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:844-860`) and then schedules a second,
+     * delayed focus as a backup, which is a reasonable thing for an engine opening to do and a
+     * strange thing to trigger from a button. This is the ONLY focus the phone key bar can cause,
+     * and it happens only when the person taps a key that says Show.
+     */
+    const showKeyboard = useCallback((): void => engineKeyTarget(hostRef.current)?.focus(), []);
+    /**
+     * C4 - text into the terminal through the ENGINE's own paste path, which is where the
+     * bracketed-paste envelope is decided (`KeyBar.tsx` `dispatchPaste`). The pane owns the host,
+     * so the pane is what resolves the engine's input node.
+     */
+    const pasteText = useCallback(
+        (text: string): boolean => dispatchPaste(engineKeyTarget(hostRef.current), text),
+        []
+    );
+
     const hostRef = useRef<HTMLDivElement | null>(null);
     /**
      * §N24 — the pane's root node, so the resize→replay paint hold can be published without a
@@ -444,18 +484,18 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
     const restartRef = useRef<(() => void) | null>(null);
 
-    // ── the software keyboard (C2, C6, docs/MOBILE-PLAN.md §4) ──────────────────────
+    // ── the software keyboard (C2, C6, C9, docs/MOBILE-PLAN.md §4) ──────────────────
     //
-    // The ONE place a soft-keyboard inset is applied to a terminal (§7, "Keyboard inset
-    // ownership"): the key bar (C1) sits in flow at the bottom of the pane and shrinks the host
-    // by its own height through the ResizeObserver below, `PhoneShell` (B2) does not subtract the
-    // inset for panes, and the overlays (B5) apply it to themselves. The rule, the settle window
-    // and why C6 turned C2's arithmetic into a real box are in `keyboard-inset.ts`.
+    // §7's "Keyboard inset ownership" as C9 re-homed it: the inset is applied ONCE per window, by
+    // `terminal/PhoneKeyBar.tsx`, to the content area the pane grid and the window's one key bar
+    // both sit in. A pane does not apply it (it did until C9, because the bar was inside the pane),
+    // `PhoneShell` (B2) does not subtract it for panes, and the overlays (B5) apply it to
+    // themselves. What a pane still owns is the settle rule - one `resize` per transition - and
+    // the attributes the audit reads. The reasons are in `keyboard-inset.ts`.
     //
     // Nothing here does anything on a desktop: `useFormFactor` answers `desktop` for every window
-    // with a fine pointer, and on a desktop pane the effect below subscribes to nothing, writes
-    // no style, publishes no attribute and leaves `keyboardInsetRef` at the 0 every path treats
-    // as "no keyboard".
+    // with a fine pointer, and on a desktop pane the effect below subscribes to nothing, publishes
+    // no attribute and leaves `keyboardInsetRef` at the 0 every path treats as "no keyboard".
     const formFactorWindow = props.formFactorWindow ?? defaultFormFactorWindow();
     const phone = useFormFactor(formFactorWindow) === 'phone';
     const keyboardSettleMs = props.keyboardSettleMs ?? PHONE_KEYBOARD_SETTLE_MS;
@@ -762,7 +802,20 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // because what an action like ⌘Backspace produces IS a keystroke (§8.2).
                 write: (data) => {
                     streamRef.current?.write(data);
-                }
+                },
+                // C9: and the half the WINDOW's key bar uses. Every one of these is a function
+                // this component already had; publishing them here is what lets ONE bar at the
+                // bottom of the window act on whichever pane holds the caret, instead of each
+                // pane carrying a bar of its own inside its own box.
+                root: () => rootRef.current,
+                dispatchKey: sendKey,
+                pasteText,
+                showKeyboard,
+                hideKeyboard,
+                cellHeight: () => rendererRef.current?.cellSize().height ?? 0,
+                // `latest` is written in a LAYOUT effect (§N35 residual (b)), so this answers with
+                // the commit that gave the pane the ring rather than one commit later.
+                focusedOnScreen: () => latest.current.focused && latest.current.visible
             });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies
@@ -1287,55 +1340,47 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         return () => observer.disconnect();
     }, [scheduleGeometrySync]);
 
-    // ── the keyboard's inset, applied (C2, and C6's box) ───────────────────────────
+    // ── the keyboard, as this pane sees it (C2, C6's box, C9's owner) ──────────────
     //
-    // TWO clocks, deliberately, and this effect owns both (`keyboard-inset.ts` holds the reasons):
+    // TWO clocks, deliberately (`keyboard-inset.ts` holds the reasons), and C9 moved the first of
+    // them out of this component:
     //
-    //   - the BOX runs at the viewport's clock. Every `visualViewport` event moves the pane root's
-    //     bottom padding in the same task as the event, so the host, the engine canvas inside it
-    //     and the key bar below it ride the keyboard's animation instead of jumping to its
-    //     resting place a settle window later. It is a style write and an attribute write and
-    //     nothing else: no React render, like the paint-hold attributes beside it, because a
-    //     15-frame animation would otherwise be 15 renders of the whole pane and its bar.
-    //   - the DAEMON runs at the settle clock. ONE resize per transition, up and down, and this
-    //     is where that is true rather than merely likely: `onSettle` is what measures, and the
-    //     observer's own path is gated shut while the keyboard is moving.
+    //   - the BOX runs at the viewport's clock, and the WINDOW owns it now. C6 wrote the live
+    //     inset as a bottom padding on the pane ROOT, because C1's key bar sat inside the pane and
+    //     had to ride the keyboard with it. The bar is one per window (`terminal/PhoneKeyBar.tsx`),
+    //     so the padding is one per window too: `PhoneKeyBar` pads the content AREA in the same
+    //     task as every visual-viewport event, the pane grid inside it gets shorter, and this
+    //     pane's own `ResizeObserver` sees a shorter host exactly as it does for a divider drag.
+    //     That also fixes an arithmetic the pane-local padding got wrong: two STACKED panes each
+    //     took 300 px for one 300 px keyboard, because each padded itself, so 600 px of terminal
+    //     went for a 300 px keyboard. The window takes the keyboard's pixels once, where the
+    //     keyboard is.
+    //   - the DAEMON still runs at the settle clock, and that is still this effect's: ONE resize
+    //     per transition, up and down, because `onSettle` is what measures and the observer's own
+    //     path is gated shut while the keyboard is moving.
     //
-    // Measured (`phone-keyboard-inset`, and the jsdom tests beside it): a burst of frame-cadence
-    // `visualViewport` resizes taking the viewport down by 300 px moves the box on every one of
-    // them and produces exactly one `resize` on the pane's stream; the return to zero produces
-    // exactly one more.
-    const applyKeyboardInset = useCallback((inset: number): void => {
-        const root = rootRef.current;
-        if (root === null) return;
-        const applied = keyboardInsetRef.current;
-        let next = 0;
-        const host = hostRef.current;
-        if (inset > 0 && host !== null) {
-            const current = latest.current;
-            // The host as it stands PLUS what we already took off it, i.e. the box with no
-            // keyboard in it. One `clientHeight` read per frame, before the write, so the
-            // browser flushes layout once rather than thrashing.
-            const box = current.measure?.(host) ?? { width: host.clientWidth, height: host.clientHeight };
-            const capacity = box.height + applied;
-            next = keyboardBoxInset(capacity, inset, rendererRef.current?.cellSize().height ?? 0);
-        }
-        if (next === applied) return;
+    // What the pane still PUBLISHES is the inset in force on its box, per frame, because the audit
+    // reads it per pane (`phone-keyboard-inset`) and because "the daemon was told the rows this
+    // keyboard leaves" is a fact about a pane rather than about a window. It is the inset as
+    // measured here; the clamp that keeps a line to type on is the window's, and the two can only
+    // differ for a keyboard taller than the whole content area.
+    //
+    // Measured (`phone-keyboard-inset`, `phone-key-bar-split`, and the jsdom tests beside them): a
+    // burst of frame-cadence `visualViewport` resizes taking the viewport down by 300 px moves the
+    // content area's box on every one of them, shrinks every pane in the grid, and costs each pane
+    // exactly one `resize` on its stream; the return to zero costs one more.
+    const publishKeyboardBox = useCallback((inset: number): void => {
+        const next = Math.max(0, inset);
+        if (next === keyboardInsetRef.current) return;
         keyboardInsetRef.current = next;
-        // Padding, not a height: the root keeps its full box, so the pane's background still
-        // paints behind the keyboard and the focus ring still frames the pane rather than the
-        // gap. A desktop pane never reaches this line, so its inline style never grows the
-        // property at all (MOBILE-PLAN.md §3, principle 1).
-        if (next > 0) root.style.paddingBottom = `${String(next)}px`;
-        else root.style.removeProperty('padding-bottom');
-        publishKeyboardInset(root, next);
+        publishKeyboardInset(rootRef.current, next);
     }, []);
 
     useEffect(() => {
         phoneRef.current = phone;
         if (!phone) {
             keyboardMovingRef.current = false;
-            applyKeyboardInset(0);
+            publishKeyboardBox(0);
             clearPhoneTerminalState(rootRef.current);
             return;
         }
@@ -1347,13 +1392,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     // A resize already in flight would land an intermediate grid on the PTY
                     // behind us; not being in the race is cheaper than winning it.
                     clearResizeTimer();
-                    applyKeyboardInset(inset);
+                    publishKeyboardBox(inset);
                 },
                 onSettle: (inset) => {
                     keyboardMovingRef.current = false;
-                    // The box first, then the measurement, in that order and in one task: the
-                    // rows the daemon is told are the rows the pane can actually paint.
-                    applyKeyboardInset(inset);
+                    // The window has already moved the box: its listener and this one answer the
+                    // SAME viewport event, in the same task, and the box the settle measures is
+                    // therefore the one the keyboard left. The rows the daemon is told are the
+                    // rows the pane can actually paint.
+                    publishKeyboardBox(inset);
                     syncGeometry();
                 }
             },
@@ -1361,7 +1408,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         );
         // A pane that mounts (or turns into a phone) with the keyboard already up takes it
         // straight away: that is not a transition, so it neither arms the gate nor waits for it.
-        applyKeyboardInset(motion.live());
+        publishKeyboardBox(motion.live());
         syncGeometry();
         publishPhoneTerminalState(rootRef.current, {
             inset: keyboardInsetRef.current,
@@ -1371,9 +1418,23 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         return () => {
             motion.dispose();
             keyboardMovingRef.current = false;
-            applyKeyboardInset(0);
+            publishKeyboardBox(0);
         };
-    }, [phone, formFactorWindow, keyboardSettleMs, applyKeyboardInset, clearResizeTimer, syncGeometry]);
+    }, [phone, formFactorWindow, keyboardSettleMs, publishKeyboardBox, clearResizeTimer, syncGeometry]);
+
+    /*
+     * C9 - the window's key bar mounts on `focused && visible`, and this pane is the answer.
+     *
+     * The registry publishes the predicate as `focusedOnScreen()` and reads it at call time; what
+     * a pull cannot do is say that the answer MOVED, which it does whenever the ring moves or a
+     * sibling is zoomed - none of which touches this pane's engine, its handle or its DOM. One
+     * announcement per change, on the two props that decide it. Phone only: on a desktop nothing
+     * is subscribed, so an announcement would be a message to nobody.
+     */
+    useEffect(() => {
+        if (!phone) return;
+        notifyTerminalPanes();
+    }, [phone, focused, visible]);
 
     // ── the engine's textarea, told it is talking to a software keyboard (C2) ───────
     //
@@ -1574,47 +1635,6 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         current.onFocusRequest?.(current.paneID);
     }, []);
 
-    // ── the phone key bar (C1, docs/MOBILE-PLAN.md §4) ──────────────────────────────
-    //
-    // AND NOT ON DESKTOP: off `phone`, which is the pane's ONE reading of the program's one
-    // form-factor signal (`chrome/form-factor.ts`, resolved at the top of this component beside
-    // C2's keyboard inset). A desktop window, an Electron shell and a tablet render the tree they
-    // render today, unchanged, and the bar exists only where a software keyboard does.
-    // `focused && visible` on top of it because the bar belongs to the terminal a thumb is
-    // actually in: a background workspace's focused pane is neither on screen nor typed into.
-    const showKeyBar = phone && focused && visible;
-    /** A bar key, raised at the engine exactly as a physical one arrives (C1's routing decision). */
-    const sendKey = useCallback((init: TerminalKeyInit): boolean => rendererRef.current?.dispatchKey(init) ?? false, []);
-    /**
-     * Dismiss the software keyboard by letting the caret go, which is what `releasePaneCaret` does
-     * and what `renderer.blur()` does NOT: ghostty-web's `blur()` blurs the CONTAINER
-     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:866-870`) while the caret sits in the
-     * hidden textarea inside it, so the keyboard would stay up. The way back is the engine's own:
-     * its canvas has a `touchend` listener that focuses the textarea (`terminal.ts:490-493`), so
-     * tapping the terminal raises the keyboard again with nothing here involved.
-     */
-    const hideKeyboard = useCallback((): void => releasePaneCaret(hostRef.current), []);
-    /**
-     * …and the way back, for the bar's toggle only (device round 3, 2026-09-04).
-     *
-     * The same node `dispatchKey` and `pasteText` resolve, focused directly rather than through
-     * `renderer.focus()`: the engine's `focus()` focuses this textarea too
-     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:844-860`) and then schedules a second,
-     * delayed focus as a backup, which is a reasonable thing for an engine opening to do and a
-     * strange thing to trigger from a button. This is the ONLY focus the phone key bar can cause,
-     * and it happens only when the person taps a key that says Show.
-     */
-    const showKeyboard = useCallback((): void => engineKeyTarget(hostRef.current)?.focus(), []);
-    /**
-     * C4 - text into the terminal through the ENGINE's own paste path, which is where the
-     * bracketed-paste envelope is decided (`KeyBar.tsx` `dispatchPaste`). The pane owns the host,
-     * so the pane is what resolves the engine's input node.
-     */
-    const pasteText = useCallback(
-        (text: string): boolean => dispatchPaste(engineKeyTarget(hostRef.current), text),
-        []
-    );
-
     const retryStart = useCallback((): void => {
         restartRef.current?.();
     }, []);
@@ -1682,18 +1702,16 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             aria-label={terminalAccessibilityName(props.accessibilityName)}
             aria-describedby={`terminal-help-${paneID}`}
             /*
-             * C1 - the key bar is IN-FLOW below the host, so the host shrinks by the bar's height
-             * through the ResizeObserver the pane already has and the PTY hears about it once,
-             * like any other resize (MOBILE-PLAN.md §7, "Keyboard inset ownership"). A column
-             * flex box is the only way to say that; without the bar the class string is exactly
-             * the one this pane has always rendered, which is what "desktop is untouched" means
-             * down to the attribute.
+             * C9 - ONE class string, on a phone as on a desktop.
+             *
+             * C1's bar was a flex child of this element, so a phone pane became a column flex box
+             * and the host became a shrinkable flex item. The bar is one per WINDOW now
+             * (`terminal/PhoneKeyBar.tsx`, and the owner's 2026-09-08 report is why), so there is
+             * nothing below the host to make room for and the pane renders the tree it has always
+             * rendered - the same string on both form factors, which is a stronger statement of
+             * "desktop is untouched" than the branch it replaces.
              */
-            className={
-                showKeyBar
-                    ? `relative flex h-full w-full flex-col overflow-hidden ${className ?? ''}`
-                    : `relative h-full w-full overflow-hidden ${className ?? ''}`
-            }
+            className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
             style={{
                 backgroundColor: background,
                 visibility: visible ? 'visible' : 'hidden',
@@ -1730,23 +1748,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 not a chrome text field, and it is what `focusPaneSurface` hands the caret to. */}
             <div
                 ref={hostRef}
-                /* `min-h-0` is what lets the flex child actually give the bar its 45 px: a flex
-                   item's default `min-height: auto` refuses to shrink below its content. */
-                className={showKeyBar ? 'w-full min-h-0 flex-1' : 'h-full w-full'}
+                className="h-full w-full"
                 data-terminal-host=""
                 {...{ [PANE_SURFACE_ATTR]: '' }}
             />
-            {showKeyBar ? (
-                <KeyBar
-                    paneID={paneID}
-                    sendKey={sendKey}
-                    captureRoot={rootRef}
-                    hideKeyboard={hideKeyboard}
-                    showKeyboard={showKeyboard}
-                    pasteText={pasteText}
-                />
-
-            ) : null}
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
                 // is now the last stop on the retry path, not a dead end. The pane root still

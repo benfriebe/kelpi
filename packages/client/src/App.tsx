@@ -188,6 +188,7 @@ import {
     type Toast
 } from './state';
 import {
+    PhoneKeyBar,
     TerminalPane,
     createMountPolicy,
     mergeTerminalPalette,
@@ -3889,6 +3890,16 @@ function Shell(props: AppProps): ReactElement {
     const modalOpen =
         settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen || anyModalMounted;
 
+    /**
+     * C9 - the content row, for the phone's one key bar (`terminal/PhoneKeyBar.tsx`).
+     *
+     * The bar sits out of flow at this row's bottom edge and pads the row by its own height, so it
+     * needs the node; a ref rather than a wrapper element because a wrapper that exists only on a
+     * phone would re-parent (and therefore rebuild) every pane the moment the form factor flipped.
+     * Nothing writes to it on a desktop.
+     */
+    const contentRowRef = useRef<HTMLDivElement | null>(null);
+
     // ── drag-and-drop + ⌘-click (CONT-121/122, APP-103, TERM-040/041/052) ────────────
 
     /** Whether a file-shaped drag is over the window (the highlight; TERM-041). */
@@ -4288,8 +4299,18 @@ function Shell(props: AppProps): ReactElement {
               * `relative` because UI-FIDELITY M53 mounts the command palette's overlay on THIS
               * row (see its block at the row's end) — the Swift hangs it off the content
               * `HStack`, not off the window.
+              *
+              * C9 (docs/MOBILE-PLAN.md §4, §7) hangs the phone's ONE key bar off this row, as its
+              * last child and ONLY under the phone form factor: `PhoneKeyBar` sits out of flow at
+              * the row's bottom edge, spanning it, and pads the row by its own height plus the
+              * software keyboard's inset - so the bar is above the keyboard, nothing is drawn over
+              * a terminal, and every pane in the grid shrinks through the ResizeObserver it already
+              * has. The bar used to be mounted inside `TerminalPane`, which is why the owner's
+              * phone drew it inside one pane of a split (2026-09-08) rather than across the bottom
+              * of the window. On a desktop the component renders NOTHING and writes nothing to this
+              * row, which is why the row itself is untouched apart from the ref.
               */}
-            <div className="relative flex min-h-0 flex-1">
+            <div ref={contentRowRef} className="relative flex min-h-0 flex-1">
             {sidebarMounted ? (
                 /* §WS-001: the slot animates its WIDTH (that is what the pane grid is pushed
                    by); the panel inside keeps its full width and translates, so a 220px
@@ -4666,6 +4687,13 @@ function Shell(props: AppProps): ReactElement {
                 fallbackPaneID={focusedPaneID}
                 bucket={bucket}
             />
+
+            {/*
+              * C9 - the phone's one key bar, last in the row so it paints over the grid and under
+              * the two overlays above it (the palette's scrim is z-40, the settings sheet z-50).
+              * It renders null on a desktop.
+              */}
+            <PhoneKeyBar paneID={focusedPaneID} contentRow={contentRowRef} />
             </div>
 
             {/*

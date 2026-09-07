@@ -6,17 +6,28 @@
  * says this once for the whole phone program; it is repeated here because this module is where
  * the terminal's own geometry stops matching the desktop's.
  *
- * ## Who applies the inset (the coordinator's decision of 2026-09-03, MOBILE-PLAN.md §7)
+ * ## Who applies the inset (2026-09-03, MOBILE-PLAN.md §7; re-homed by C9 on 2026-09-08)
  *
- * The inset from `useSoftKeyboardInset` is applied to a terminal in exactly ONE place:
- * `TerminalPane`, under the phone form factor, through the functions below. Nobody else may:
+ * The inset is applied to the terminal side of the window in exactly ONE place, and it is one
+ * place per WINDOW: `terminal/PhoneKeyBar.tsx`, which pads the content area - the row that holds
+ * the pane grid, with the window's one key bar under it. Nobody else may:
  *
- *   - the key bar (C1) is rendered IN FLOW at the bottom of the pane, so the terminal host
- *     shrinks by the bar's own height through the pane's existing `ResizeObserver` path and the
+ *   - a PANE does not pad itself. It did until C9, because C1's key bar was mounted inside the
+ *     pane and had to ride the keyboard with it; the bar is one per window now (the owner's phone
+ *     drew a per-pane bar inside one pane of a split), so the box it sits in is the window's. A
+ *     pane measures the box it is given, exactly as it does for a divider drag, and still owns the
+ *     settle rule below - one `resize` per transition, per pane;
+ *   - the key bar (C1) is rendered IN FLOW at the bottom of that content area, so the pane grid
+ *     shrinks by the bar's own height through the `ResizeObserver` each pane already has and the
  *     two features never have to agree on a number;
  *   - `PhoneShell` (B2) does not subtract the inset for panes;
  *   - overlays that own their layout (the palette and settings sheets, B5) apply it to
  *     themselves, to their own box, and never to a pane.
+ *
+ * Applying it once, at the window, is also the arithmetic fixed: with each pane padding itself,
+ * two STACKED panes took 300 px of terminal EACH for one 300 px keyboard, and the 300 px the top
+ * pane gave up was a strip of pane background in the middle of the screen rather than the space
+ * the keyboard is in.
  *
  * ## The box follows the keyboard; the daemon hears the rest (C6, device round 4)
  *
@@ -30,13 +41,14 @@
  * owner's device round 4 saw exactly that: on the first keyboard after load the bar stayed behind
  * the keyboard, and later in the same session it rode it.
  *
- * So C6 makes the box the pane's own business. The live inset is applied as a bottom padding on
- * the pane root on EVERY visual-viewport event, at the viewport's own frame rate, in the same
- * task as the event: the host (a flex child, or `height: 100%` when there is no bar) loses
- * exactly those pixels, the bar rides the keyboard's animation, and the terminal's usable height
- * is then simply the box it has - no arithmetic, nothing to keep in step. {@link heightUnderKeyboard}
- * survives as the cap on that padding ({@link keyboardBoxInset}): the box never shrinks below one
- * cell, because a keyboard taller than the pane must still leave a line to type on.
+ * So C6 makes the box a real box rather than arithmetic. The live inset is applied as a bottom
+ * padding on EVERY visual-viewport event, at the viewport's own frame rate, in the same task as
+ * the event: the terminal loses exactly those pixels, the bar rides the keyboard's animation, and
+ * the terminal's usable height is then simply the box it has - no arithmetic, nothing to keep in
+ * step. {@link heightUnderKeyboard} survives as the cap on that padding
+ * ({@link keyboardBoxInset}): the box never shrinks below one cell, because a keyboard taller than
+ * the box must still leave a line to type on. C9 moved WHERE the padding is written (the content
+ * area, above the pane grid, rather than each pane root) and changed nothing about the rule.
  *
  * ## Why the daemon is told only once the keyboard has come to rest
  *
@@ -163,6 +175,12 @@ export const PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED: Readonly<Record<string, string
  * Live since C6, and written in the same task as the viewport event that moved it, so the audit
  * can sample it mid-animation and see the box tracking the keyboard rather than jumping to its
  * resting place a settle window later. At rest it is the same number C2 published.
+ *
+ * Since C9 the pane MEASURES this and the window APPLIES it (`terminal/PhoneKeyBar.tsx`, which
+ * pads the content area the grid sits in). Both halves answer the same viewport event in the same
+ * task, so the number here is the inset in force on this pane's box; the window's own
+ * `data-phone-keyboard-inset` is what it applied, and the two differ only under the one-cell clamp,
+ * i.e. for a keyboard taller than the whole content area.
  */
 export const KEYBOARD_INSET_ATTRIBUTE = 'data-terminal-keyboard-inset';
 
@@ -250,10 +268,13 @@ export function heightUnderKeyboard(height: number, inset: number, cellHeight: n
 /**
  * The bottom padding a pane may take for a keyboard `inset` px tall (C6).
  *
- * `capacity` is the host's height WITHOUT any keyboard padding, so the answer is the whole
- * keyboard whenever the pane can afford it and the clamp above whenever it cannot. Expressed as
+ * `capacity` is the box's height WITHOUT any keyboard padding, so the answer is the whole
+ * keyboard whenever the box can afford it and the clamp above whenever it cannot. Expressed as
  * the complement of {@link heightUnderKeyboard} rather than as its own `Math.min`, so the box and
  * the height a terminal may use are the same rule stated once.
+ *
+ * The caller is the window's content area since C9 (it was the pane root under C6), so `capacity`
+ * is the whole terminal side of the window and `cellHeight` is the focused pane's cell.
  */
 export function keyboardBoxInset(capacity: number, inset: number, cellHeight: number): number {
     return Math.max(0, capacity - heightUnderKeyboard(capacity, inset, cellHeight));

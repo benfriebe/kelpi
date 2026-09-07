@@ -13,9 +13,11 @@
  */
 
 import { act, cleanup, render } from '@testing-library/react';
+import { useRef, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { onClipboardOffer, resetClipboardOffersForTests, type ClipboardOffer } from '../state/clipboard';
+import { PhoneKeyBar } from './PhoneKeyBar';
 import { TerminalPane } from './TerminalPane';
 import {
     createFakePhoneWindow,
@@ -56,6 +58,8 @@ async function settle(): Promise<void> {
 interface Harness {
     readonly win: FakePhoneWindow;
     readonly pty: ReturnType<typeof createFakePtyApi>;
+    /** The content row, where C4's Copy pill lives now that the key bar is the window's (C9). */
+    readonly row: HTMLElement;
     readonly root: HTMLElement;
     readonly host: HTMLElement;
     /** A stand-in for the engine's own canvas: below the host, where both engines put theirs. */
@@ -68,18 +72,31 @@ async function mountPane({ coarse = true } = {}): Promise<Harness> {
     const win = createFakePhoneWindow({ ...PANE, coarse });
     const renderers = createFakeRendererFactory({ cell: CELL });
     const pty = createFakePtyApi();
-    const view = render(
-        <TerminalPane
-            paneID="pane-touch"
-            ptyApi={pty}
-            focused
-            visible
-            createRenderer={renderers.factory}
-            measure={() => ({ width: PANE.width, height: PANE.height })}
-            formFactorWindow={win}
-        />
-    );
+    /*
+     * The app's shape: the content row, with the pane in it and the window's one key bar hanging
+     * off its bottom edge (C9). The bar is here because C4's Copy pill is the bar's surface, and a
+     * long press is the gesture that raises it.
+     */
+    function Row(): ReactElement {
+        const row = useRef<HTMLDivElement | null>(null);
+        return (
+            <div ref={row} className="relative flex min-h-0 flex-1">
+                <TerminalPane
+                    paneID="pane-touch"
+                    ptyApi={pty}
+                    focused
+                    visible
+                    createRenderer={renderers.factory}
+                    measure={() => ({ width: PANE.width, height: PANE.height })}
+                    formFactorWindow={win}
+                />
+                <PhoneKeyBar paneID="pane-touch" contentRow={row} formFactorWindow={win} />
+            </div>
+        );
+    }
+    const view = render(<Row />);
     await settle();
+    const row = view.container.firstElementChild as HTMLElement;
     const root = view.container.querySelector('[data-pane-id="pane-touch"]') as HTMLElement;
     const host = root.querySelector('[data-terminal-host]') as HTMLElement;
     const engine = document.createElement('div');
@@ -88,7 +105,7 @@ async function mountPane({ coarse = true } = {}): Promise<Harness> {
         engine.addEventListener(type, () => engineEvents.push(type));
     }
     host.appendChild(engine);
-    return { win, pty, root, host, engine, engineEvents, renderer: () => renderers.last() };
+    return { win, pty, row, root, host, engine, engineEvents, renderer: () => renderers.last() };
 }
 
 /**
@@ -202,7 +219,7 @@ describe('a phone pane selects a word on a long press', () => {
         // C4's pill, reused: the press cannot write the clipboard itself (no transient
         // activation), so the offer is what puts a tap on the screen that can.
         expect(offers).toEqual([{ paneID: 'pane-touch', text: 'ripgrep', bytes: 7 }]);
-        expect(h.root.querySelector('[data-terminal-copy-pill]')).not.toBeNull();
+        expect(h.row.querySelector('[data-terminal-copy-pill]')).not.toBeNull();
         // And still nothing on the wire.
         expect(h.pty.last().input).toEqual([]);
         expect(h.pty.last().directInput).toEqual([]);
@@ -219,7 +236,7 @@ describe('a phone pane selects a word on a long press', () => {
         });
         expect(h.renderer().wordPresses).toHaveLength(1);
         expect(offers).toEqual([]);
-        expect(h.root.querySelector('[data-terminal-copy-pill]')).toBeNull();
+        expect(h.row.querySelector('[data-terminal-copy-pill]')).toBeNull();
         off();
     });
 

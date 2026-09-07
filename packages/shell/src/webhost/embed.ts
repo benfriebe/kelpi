@@ -42,8 +42,8 @@
  *     purpose and then ask the clients to say what they are still drawing. A held placement is
  *     parked with its box remembered, exactly like `park()`, but `refresh()` will NOT put it
  *     back: only the pane's own client re-stating its geometry may, and `releaseHeld()` drops
- *     whatever nobody claimed. That is the whole point of the chord — a leaked view (one the
- *     shell is holding for a pane no client draws any more) is precisely what a person reaching
+ *     whatever nobody claimed. That is the whole point of the chord. A leaked view, one the
+ *     shell is holding for a pane no client draws any more, is precisely what a person reaching
  *     for "recover" wants gone, and a reconciler that put it straight back would defeat it.
  *
  * It is generic over the view type and takes its attach/detach/bounds behaviour as hooks, so
@@ -106,7 +106,7 @@ export interface EmbedController<V> {
     park(paneID: string, reason?: string): boolean;
     parkAll(reason?: string): void;
     /**
-     * #96: park every placed view and HOLD it — `refresh()` will not put a held placement back,
+     * #96: park every placed view and HOLD it. `refresh()` will not put a held placement back,
      * so the only thing that can is the pane's own client re-stating its geometry. Returns the
      * panes that went to the holder (an already-parked one is left exactly as it is).
      *
@@ -502,9 +502,9 @@ export function createEmbedController<V>(options: EmbedOptions<V>): EmbedControl
                  * Every other caller of `refresh()` (the window came back, a tab changed) is
                  * asking "put back what you know", and that is right for a hide. A recovery is
                  * asking the opposite: forget what you think you know and let the clients say it
-                 * again. Restoring a held placement here would put the leaked view — the one no
-                 * client draws any more, which is the whole reason the chord exists — straight
-                 * back on screen, within one reconciler tick of the person pressing it.
+                 * again. Restoring a held placement here would put the leaked view, the one no
+                 * client draws any more and the whole reason the chord exists, straight back on
+                 * screen within one reconciler tick of the person pressing it.
                  */
                 if (heldForRestatement.has(paneID)) continue;
                 if (metrics === null) {

@@ -651,7 +651,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
      */
     const restoreParkedViews = (reason: string): void => {
         /*
-         * #96 — the one park this function is not allowed to undo, stated where the reconciler
+         * #96: the one park this function is not allowed to undo, stated where the reconciler
          * would otherwise undo it.
          *
          * Recover Interface (and the watchdog's second strike) park every view HELD and ask the

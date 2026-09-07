@@ -636,3 +636,33 @@ input {
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
+
+/*
+ * C3, owner device round 7: the scrollbar sits a few px from the pane's edge, not a cell in.
+ *
+ * The gap is arithmetic, not styling. The engine sizes its canvas INLINE to exactly
+ * `cols x cellWidth` (`vendor/ghostty-web-patched/source/lib/renderer.ts` `resize`), the pane
+ * gives the host whatever width its box has, and `cols` is that width FLOORED to whole cells - so
+ * up to one cell minus a pixel is left over. The canvas is a block at the start of the host, so
+ * the leftover lands on the RIGHT, and the engine paints its 8 px scrollbar 4 px in from the
+ * canvas's own right edge (`renderScrollbar`). The thumb therefore ends up `4 + remainder + the
+ * pane's own 4 px padding` from the screen edge, which on the owner's phone read as a strip of
+ * dead space about a cell wide beside the thumb.
+ *
+ * `margin-left: auto` on a block box with a definite width pushes it to the END of its
+ * containing block, so the remainder moves to the LEFT, where it is a text margin rather than a
+ * hole beside the scrollbar. Nothing else moves with it: the engine's hidden textarea and its
+ * preedit are `position: absolute` and set their own `margin: 0`, and both are placed from
+ * `canvas.offsetLeft` (`terminal.ts` `syncImeCaret`), which follows the margin. The port's mouse
+ * reporting measures its origin off the canvas's own rect too (`TerminalPane.measureMouseSurface`),
+ * so every cell still maps to the pixel it is painted at.
+ *
+ * PHONE ONLY, and no JavaScript: a desktop terminal's canvas keeps the remainder on the right,
+ * where it has always been. Measured by the audit's `phone-touch-scroll` step, which reads the
+ * canvas's right edge against the host's on both form factors, because a CSS box is a thing only
+ * a real layout engine can answer for.
+ */
+[data-form-factor='phone'] [data-terminal-host] > canvas {
+  margin-left: auto;
+  margin-right: 0;
+}

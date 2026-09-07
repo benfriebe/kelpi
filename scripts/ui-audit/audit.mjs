@@ -28750,10 +28750,10 @@ function buildFlows(ctx) {
         },
 
         /*
-         * C2 - the terminal under a software keyboard (MOBILE-PLAN.md §4, §7 "Keyboard inset
+         * C2/C6 - the terminal under a software keyboard (MOBILE-PLAN.md §4, §7 "Keyboard inset
          * ownership"). The live half of `terminal/keyboard-inset.ts`.
          *
-         * TWO facts, and neither can be established in jsdom.
+         * THREE facts, and none of them can be established in jsdom.
          *
          *   1. THE SEAM. jsdom has no visual viewport worth the name, so the unit tests drive a
          *      hand-written fake through the pane's injectable `formFactorWindow`. Whether the
@@ -28771,6 +28771,13 @@ function buildFlows(ctx) {
          *      same line that puts the message on the pane's stream, so the delta across the
          *      transition is a report of what the DAEMON was told rather than an inference from
          *      what the pane looks like afterwards.
+         *   3. THE MOTION (C6, owner device round 4). "The layout follows the keyboard" and "the
+         *      layout jumps to where the keyboard ended up" also end at the same rows, and the
+         *      difference between them is the whole of the owner's report. It is only observable
+         *      DURING the animation, so the box is sampled inside the same task as each of the
+         *      fifteen dispatched events: real layout, real `getBoundingClientRect`, one sample
+         *      per frame. jsdom has no layout at all, so the unit tests can only assert the
+         *      padding the pane wrote; this is where that padding becomes a shorter terminal.
          *
          * A phone-lane step (lib/shards.mjs), so it owes the lane's clause: it clears the
          * emulation in a `finally`, and the shadow with it. It provisions nothing, moves no
@@ -28780,7 +28787,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-keyboard-inset',
             expect:
-                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; removing the fake restores the rows in exactly one more.',
+                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; the pane box follows every frame of that animation in the frame it arrives, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more.',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -28840,6 +28847,14 @@ function buildFlows(ctx) {
                      * Raise the keyboard the way a keyboard actually arrives: over FRAMES steps,
                      * one `resize` per step, ~16 ms apart. A single jump would prove the inset is
                      * read; only the burst proves the settle rule absorbs an animation.
+                     *
+                     * C6 samples the BOX inside the same synchronous turn as each dispatched
+                     * event, before the browser can paint: `dispatchEvent` runs the pane's
+                     * listener to completion, so a `getBoundingClientRect()` on the next line
+                     * reports the host AFTER the pane has moved its padding, and every frame in
+                     * `frames` below is therefore "what the pane did with that event", never "what
+                     * it had done by the time this step looked". A pane that waited for the settle
+                     * window would sample its resting height fifteen times.
                      */
                     const raised = JSON.parse(
                         String(
@@ -28853,19 +28868,34 @@ function buildFlows(ctx) {
                                         configurable: true,
                                         get() { return window.innerHeight - (window.__kelpiFakeKeyboard ?? 0); }
                                     });
+                                    const sample = () => Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => {
+                                        const host = el.querySelector('[data-terminal-host]');
+                                        return {
+                                            id: el.getAttribute('data-pane-id'),
+                                            inset: Number(el.getAttribute('data-terminal-keyboard-inset')),
+                                            resizes: Number(el.getAttribute('data-terminal-resizes')),
+                                            host: host === null ? -1 : Math.round(host.getBoundingClientRect().height)
+                                        };
+                                    });
+                                    const rest = sample();
+                                    const frames = [];
                                     let events = 0;
                                     for (let frame = 1; frame <= ${String(FRAMES)}; frame += 1) {
-                                        window.__kelpiFakeKeyboard = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / ${String(FRAMES)});
+                                        const px = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / ${String(FRAMES)});
+                                        window.__kelpiFakeKeyboard = px;
                                         vv.dispatchEvent(new Event('resize'));
                                         events += 1;
+                                        frames.push({ px, panes: sample() });
                                         await new Promise((resolve) => setTimeout(resolve, 16));
                                     }
-                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight });
+                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight, rest, frames });
                                 })()`
                             )
                         )
                     );
-                    recorder.note(`fake keyboard: ${JSON.stringify(raised)}`);
+                    recorder.note(
+                        `fake keyboard: ${JSON.stringify({ ok: raised.ok, events: raised.events, height: raised.height, innerHeight: raised.innerHeight, rest: raised.rest })}`
+                    );
                     recorder.check(
                         'shadowing `height` on the live VisualViewport instance is a usable seam in this Chromium',
                         raised.ok === true &&
@@ -28874,6 +28904,51 @@ function buildFlows(ctx) {
                         raised.ok === true
                             ? `innerHeight ${String(raised.innerHeight)} - viewport ${String(raised.height)} = ${String(raised.innerHeight - raised.height)} px of keyboard`
                             : String(raised.why)
+                    );
+
+                    /*
+                     * C6 - the layout follows the animation (owner device round 4: "the pane
+                     * shifts after the keyboard has finished moving").
+                     *
+                     * Two facts about the same fifteen samples. The first is that the pane's own
+                     * BOX tracked every frame: the published inset is the frame's keyboard and the
+                     * host is that many pixels shorter than it was at rest, in the task the event
+                     * arrived in. The second is that the daemon heard none of it: the resize
+                     * counter is frozen for the whole animation, which is what makes "one message
+                     * per transition" a statement about the animation rather than about its end.
+                     */
+                    const restHeights = new Map((raised.rest ?? []).map((pane) => [pane.id, pane.host]));
+                    const framesOff = (raised.frames ?? []).flatMap((frame) =>
+                        frame.panes
+                            .map((pane) => ({
+                                frame: frame.px,
+                                id: pane.id,
+                                inset: pane.inset,
+                                shrank: (restHeights.get(pane.id) ?? 0) - pane.host,
+                                resizes: pane.resizes
+                            }))
+                            // A pane the keyboard is taller than keeps its last cell, so the box
+                            // is allowed to stop short of the frame; it may never lag it.
+                            .filter((pane) => pane.inset !== pane.frame || Math.abs(pane.shrank - pane.frame) > 1)
+                    );
+                    recorder.check(
+                        `the pane's box followed all ${String(FRAMES)} frames of the animation, in the frame each one arrived`,
+                        (raised.frames ?? []).length === FRAMES && restHeights.size > 0 && framesOff.length === 0,
+                        framesOff.length === 0
+                            ? `${String(FRAMES)} frames, ${String(restHeights.size)} pane(s): host ${JSON.stringify([...restHeights.values()])} px at rest, ` +
+                              `${JSON.stringify((raised.frames ?? []).at(-1)?.panes.map((pane) => pane.host) ?? [])} px at ${String(FAKE_KEYBOARD_PX)} px of keyboard`
+                            : `off by: ${JSON.stringify(framesOff.slice(0, 4))}`
+                    );
+                    const restResizes = new Map((raised.rest ?? []).map((pane) => [pane.id, pane.resizes]));
+                    const spokeEarly = (raised.frames ?? []).flatMap((frame) =>
+                        frame.panes.filter((pane) => pane.resizes !== restResizes.get(pane.id)).map((pane) => ({ frame: frame.px, id: pane.id, resizes: pane.resizes }))
+                    );
+                    recorder.check(
+                        'and the daemon heard nothing at all while the keyboard was still moving',
+                        restResizes.size > 0 && spokeEarly.length === 0,
+                        spokeEarly.length === 0
+                            ? `resize counts held at ${JSON.stringify([...restResizes.values()])} across every frame`
+                            : `sent mid-animation: ${JSON.stringify(spokeEarly.slice(0, 4))}`
                     );
                     // The settle window plus the pane's own measure/resize/repaint.
                     await sleep(600);

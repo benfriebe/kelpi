@@ -518,6 +518,10 @@ export function installFakeResizeObserver(): FakeResizeObservers {
  * `resize` - which is the input the settle rule exists to absorb.
  */
 export interface FakePhoneWindow extends FormFactorWindow {
+    /** How far the document has been scrolled, which C7's guard reads (`window.scrollY`). */
+    readonly scrollY: number;
+    /** What C7's guard calls to ask for the app back at the top of the window. */
+    scrollTo(x: number, y: number): void;
     /** Shrink the viewport to `innerHeight - inset` over `frames` resize events. */
     raiseKeyboard(inset: number, frames?: number): void;
     /** Restore it, over `frames` resize events. */
@@ -533,10 +537,31 @@ export interface FakePhoneWindow extends FormFactorWindow {
      */
     shrinkWindow(inset: number): void;
     /**
+     * Take `inset` px off BOTH viewports together, over `frames` events, which is what Chrome 108+
+     * does under C7's `interactive-widget=resizes-content` (`packages/client/index.html`): the
+     * layout viewport is shortened by the keyboard, so the app's own box is already the space
+     * above it and `readSoftKeyboardInset` never leaves zero. Each frame fires the window's
+     * `resize` and the viewport's, because a shorter layout viewport is both.
+     */
+    raiseKeyboardResizingContent(inset: number, frames?: number): void;
+    /**
      * Fire a visual-viewport `scroll` that moves nothing, which iOS does freely while a field is
      * focused. The inset is unchanged, so nothing should follow from it.
      */
     scrollViewport(): void;
+    /**
+     * Scroll the visual viewport down inside the layout one by `offsetTop` px and fire `scroll`,
+     * which is what Chrome does under `resizes-visual` to keep the focused element in view (C7,
+     * owner device round 5) and what iOS does to reveal a focused field.
+     */
+    scrollViewportTo(offsetTop: number): void;
+    /**
+     * Scroll the DOCUMENT instead, which is the shape iOS uses to reveal a focused field even
+     * under `overflow: hidden`. Fires the window's `scroll` and the viewport's.
+     */
+    scrollDocumentTo(scrollTop: number): void;
+    /** How many times something called `scrollTo` on this window. */
+    scrollCalls(): number;
     /** Every `resize` event the viewport has fired since the window was made. */
     viewportEvents(): number;
     /** Live listener count, so a test can pin that a desktop pane subscribes to nothing. */
@@ -549,16 +574,25 @@ export interface FakePhoneWindow extends FormFactorWindow {
 export const FAKE_PHONE_VIEWPORT = { width: 390, height: 844 };
 
 export function createFakePhoneWindow(
-    init: { width?: number; height?: number; coarse?: boolean } = {}
+    init: { width?: number; height?: number; coarse?: boolean; honoursScrollTo?: boolean } = {}
 ): FakePhoneWindow {
     const width = init.width ?? FAKE_PHONE_VIEWPORT.width;
     const height = init.height ?? FAKE_PHONE_VIEWPORT.height;
+    // Whether `scrollTo(0, 0)` actually puts the visual viewport back. Both answers are real:
+    // Firefox sets both viewport offsets, and whether Chrome does is its own open issue
+    // (WICG/visual-viewport#61), so C7's guard is written not to depend on the answer and the
+    // tests drive a window that grants it and one that refuses.
+    const honoursScrollTo = init.honoursScrollTo ?? true;
     let coarse = init.coarse ?? true;
     let viewportHeight = height;
     let windowHeight = height;
+    let viewportOffsetTop = 0;
+    let documentScrollTop = 0;
+    let scrollCalls = 0;
     let fired = 0;
     const media = new Set<() => void>();
     const windowResize = new Set<() => void>();
+    const windowScroll = new Set<() => void>();
     const viewportListeners = new Map<string, Set<() => void>>();
     const bucket = (type: string): Set<() => void> => {
         const existing = viewportListeners.get(type);
@@ -591,13 +625,27 @@ export function createFakePhoneWindow(
             get height(): number {
                 return viewportHeight;
             },
-            offsetTop: 0,
+            get offsetTop(): number {
+                return viewportOffsetTop;
+            },
             addEventListener(type: string, listener: () => void): void {
                 bucket(type).add(listener);
             },
             removeEventListener(type: string, listener: () => void): void {
                 bucket(type).delete(listener);
             }
+        },
+        get scrollY(): number {
+            return documentScrollTop;
+        },
+        scrollTo(_x: number, _y: number): void {
+            scrollCalls += 1;
+            // The document scroll is `scrollTo`'s own business in every engine, so it always
+            // comes back. The visual viewport's offset is the disputed half.
+            const moved = documentScrollTop !== 0 || (honoursScrollTo && viewportOffsetTop !== 0);
+            documentScrollTop = 0;
+            if (honoursScrollTo) viewportOffsetTop = 0;
+            if (moved) fire('scroll');
         },
         location: { search: '' },
         matchMedia(query: string) {
@@ -615,9 +663,11 @@ export function createFakePhoneWindow(
         },
         addEventListener(type: string, listener: () => void): void {
             if (type === 'resize') windowResize.add(listener);
+            if (type === 'scroll') windowScroll.add(listener);
         },
         removeEventListener(type: string, listener: () => void): void {
             windowResize.delete(listener);
+            windowScroll.delete(listener);
         },
         raiseKeyboard(inset: number, frames = 15): void {
             step(height - inset, frames);
@@ -630,14 +680,36 @@ export function createFakePhoneWindow(
             for (const listener of [...windowResize]) listener();
             fire('resize');
         },
+        raiseKeyboardResizingContent(inset: number, frames = 15): void {
+            const count = Math.max(1, frames);
+            for (let index = 1; index <= count; index += 1) {
+                const taken = Math.round((inset * index) / count);
+                windowHeight = height - taken;
+                viewportHeight = height - taken;
+                for (const listener of [...windowResize]) listener();
+                fire('resize');
+            }
+        },
         scrollViewport(): void {
             fire('scroll');
+        },
+        scrollViewportTo(offsetTop: number): void {
+            viewportOffsetTop = offsetTop;
+            fire('scroll');
+        },
+        scrollDocumentTo(scrollTop: number): void {
+            documentScrollTop = scrollTop;
+            for (const listener of [...windowScroll]) listener();
+            fire('scroll');
+        },
+        scrollCalls(): number {
+            return scrollCalls;
         },
         viewportEvents(): number {
             return fired;
         },
         listenerCount(): number {
-            let total = media.size + windowResize.size;
+            let total = media.size + windowResize.size + windowScroll.size;
             for (const set of viewportListeners.values()) total += set.size;
             return total;
         },

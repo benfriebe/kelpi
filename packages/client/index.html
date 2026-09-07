@@ -3,8 +3,29 @@
   <head>
     <meta charset="utf-8" />
     <!-- The client is a fixed application shell, not a document: no zoom-on-double-tap, and
-         the safe-area insets matter on a phone attached over a tailnet. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+         the safe-area insets matter on a phone attached over a tailnet.
+
+         `interactive-widget=resizes-content` is C7, and it is an owner-directed phone rule
+         (`chrome/form-factor.ts` says once that the whole phone program is a divergence from the
+         shipped Swift app). Chrome 108 made `resizes-visual` the DEFAULT on Android: a software
+         keyboard shrinks the visual viewport only, the layout viewport keeps its full height, and
+         Chrome then SCROLLS the visual viewport to keep the focused element in view. In a shell
+         that is `height: 100%` and `overflow: hidden` that scroll is the whole of the owner's
+         round-5 report: the title bar and the pane header left the top of the screen, and the
+         status footer - which lives below the panes, outside the layout viewport's visible part -
+         surfaced between the key bar and the keyboard.
+
+         `resizes-content` shrinks the LAYOUT viewport instead, so the app's 100% height IS the
+         space above the keyboard: the title bar stays on screen, the pane's ResizeObserver sees
+         the new height, and there is nothing left for the browser to scroll. Chrome 108+ and
+         Firefox 132+ honour it; every other engine, iOS and iPadOS included, ignores an unknown
+         viewport key, which is why `chrome/keyboard-viewport.ts` keeps the visual-viewport
+         arithmetic and a scroll guard for the browsers that do not.
+
+         MOBILE-PLAN.md section 7's C2 note said the opposite ("on Android the LAYOUT viewport
+         also shrinks for a keyboard"). It was written before the device round and it had the
+         default the wrong way round; the correction lives in `terminal/keyboard-inset.ts`. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark light" />
     <meta name="description" content="Kelpi — terminal workspaces served by the kelpid daemon" />
     <!-- The Kelpi mark, printed from `@kelpi/core/icon` by the client's build (see

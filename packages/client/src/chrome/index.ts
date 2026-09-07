@@ -182,6 +182,25 @@ export {
     type VisualViewportLike
 } from './form-factor';
 
+/**
+ * C7 - what a software keyboard does to the two viewports, and the rule that the app never
+ * scrolls for one. `index.html`'s `interactive-widget=resizes-content` is the other half.
+ */
+export {
+    KEYBOARD_SCROLL_RESET_ATTEMPTS,
+    KEYBOARD_VIEWPORT_ATTRIBUTE,
+    KEYBOARD_VIEWPORT_TOLERANCE_PX,
+    bindKeyboardViewport,
+    createKeyboardViewportTracker,
+    defaultKeyboardViewportWindow,
+    resolveKeyboardViewportMode,
+    type KeyboardViewportMode,
+    type KeyboardViewportReading,
+    type KeyboardViewportSample,
+    type KeyboardViewportTracker,
+    type KeyboardViewportWindow
+} from './keyboard-viewport';
+
 export {
     PANE_TYPE_ICONS,
     buildPaletteItems,

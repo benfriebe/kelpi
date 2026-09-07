@@ -19,7 +19,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
-import { bindFormFactorAttribute } from './chrome';
+import { bindFormFactorAttribute, bindKeyboardViewport } from './chrome';
 import { createAttentionSignal } from './chrome/attention';
 import { setAssetCredentialToken } from './content/asset-credential';
 import { createKelpiRuntime } from './state';
@@ -68,6 +68,14 @@ const runtime = createKelpiRuntime({
 // page: the phone program's one signal, published where CSS, the live audit and any non-React
 // caller can read it (`chrome/form-factor.ts`). Desktop is unaffected - it writes `desktop`.
 bindFormFactorAttribute();
+
+// C7: `data-keyboard-viewport` beside it, and the rule that the app never scrolls for a software
+// keyboard (`chrome/keyboard-viewport.ts`). Bound here rather than in a component because the
+// browser can scroll the app before anything has rendered - the scroll is the browser revealing a
+// focused field, and the field is the terminal engine's own textarea - and because there is
+// exactly one app to keep at the top of the window however many panes are on screen. Desktop is
+// unaffected: it writes no attribute and never reaches the guard.
+bindKeyboardViewport();
 
 const container = document.getElementById('root');
 if (container !== null) {

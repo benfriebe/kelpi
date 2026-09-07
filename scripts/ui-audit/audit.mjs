@@ -29309,7 +29309,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard key names the KEYBOARD and not the caret: it opens on Show with the caret on the engine textarea and nothing taking viewport space, turns into Hide the moment a keyboard faked at the visual viewport does take space, stays Hide across the tap that drops the caret (a tap is a request; the label is what is on screen) and reads Show again when that keyboard goes, including when it goes with the caret STILL in the textarea, which is Android\'s back gesture. The bar works with the keyboard down throughout: Esc and an arrow tapped with the caret off the engine still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard-viewport detector is probed before anything is tapped (none, resizes-visual under a fake keyboard, none again), so a label failure below can never be confused with a baseline inherited from the step before. The keyboard key names the KEYBOARD and not the caret: it opens on Show with the caret on the engine textarea and nothing taking viewport space, turns into Hide the moment a keyboard faked at the visual viewport does take space, stays Hide across the tap that drops the caret (a tap is a request; the label is what is on screen) and reads Show again when that keyboard goes, including when it goes with the caret STILL in the textarea, which is Android\'s back gesture. The bar works with the keyboard down throughout: Esc and an arrow tapped with the caret off the engine still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -29408,6 +29408,42 @@ function buildFlows(ctx) {
                         `label=${atMount.label} aria-pressed=${atMount.pressed} data-keyboard-viewport=${atMount.mode} ` +
                             `activeElement=${atMount.caret} inside the host=${String(atMount.inHost)}`
                     );
+
+                    /*
+                     * THE MODE THIS STEP INHERITS, probed before anything is tapped.
+                     *
+                     * Everything below reads the label, and since round 6 the label is C7's
+                     * `data-keyboard-viewport`, which is computed against a RESTING layout height
+                     * the client remembers across steps (`createKeyboardViewportTracker`: the
+                     * baseline is keyed to the window width and re-based by any taller layout
+                     * viewport). The step that runs immediately before this one shadows both
+                     * `window.innerHeight` and `visualViewport.height` and restores them again,
+                     * so "the detector still answers correctly with the window it was handed" is
+                     * a real thing to be wrong, and being wrong about it would surface here as a
+                     * label failure three assertions later with nothing to say why.
+                     *
+                     * So: none with no fake keyboard, resizes-visual with one, none again after.
+                     * A red here says the mode detector or the previous step's cleanup; a red
+                     * below it with this green says this step's own state. It is two viewport
+                     * events and it separates the two questions for good.
+                     */
+                    const probeUp = await fakeKeyboard(true);
+                    await sleep(250);
+                    const probeUpMode = String(await view.eval(`document.documentElement.dataset.keyboardViewport ?? '(unset)'`));
+                    await fakeKeyboard(false);
+                    await sleep(250);
+                    const probeDownMode = String(await view.eval(`document.documentElement.dataset.keyboardViewport ?? '(unset)'`));
+                    recorder.note(
+                        `keyboard-viewport probe: at rest ${String(atMount.mode)}, faked ${probeUpMode}, dropped ${probeDownMode} ` +
+                            `(${JSON.stringify(probeUp)})`
+                    );
+                    recorder.check(
+                        'the keyboard-viewport detector answers for the window this step was handed: none, resizes-visual under a fake keyboard, none again',
+                        atMount.mode === 'none' && probeUpMode === 'resizes-visual' && probeDownMode === 'none',
+                        `at rest ${String(atMount.mode)} -> faked ${probeUpMode} -> dropped ${probeDownMode}`
+                    );
+                    // The pane's rows come back before the geometry below is measured.
+                    await sleep(400);
 
                     /*
                      * IN FLOW, NOT OVER (MOBILE-PLAN.md §7, "Keyboard inset ownership"). The bar

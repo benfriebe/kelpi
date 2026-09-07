@@ -19,6 +19,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
+import { bindFormFactorAttribute } from './chrome';
 import { createAttentionSignal } from './chrome/attention';
 import { setAssetCredentialToken } from './content/asset-credential';
 import { createKelpiRuntime } from './state';
@@ -62,6 +63,11 @@ const runtime = createKelpiRuntime({
     client: { kind: 'browser', name: 'kelpi-web' },
     ...(attention === null ? {} : { onAttention: () => attention.request() })
 });
+
+// `data-form-factor` on `<html>`, before the first render and kept current for the life of the
+// page: the phone program's one signal, published where CSS, the live audit and any non-React
+// caller can read it (`chrome/form-factor.ts`). Desktop is unaffected - it writes `desktop`.
+bindFormFactorAttribute();
 
 const container = document.getElementById('root');
 if (container !== null) {

@@ -16,7 +16,7 @@ import type { StorageLike } from './app/config';
 import type { RemoteDaemonEntry } from './app/remote-daemons';
 import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { PHONE_HOSTS_KEY, PHONE_VIEW_MODE_KEY } from './phone';
+import { PHONE_HOSTS_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
@@ -338,19 +338,24 @@ describe('the workspace drawer', () => {
         expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
     });
 
-    it('opens on an edge swipe, and not on a swipe that starts away from the edge', () => {
+    it('does NOT open on an edge swipe (the edge is the phone\'s back gesture), and the back gesture closes an open sheet', () => {
         setup();
         const content = screen.getByTestId('phone-content');
-        fireEvent.touchStart(content, { touches: [{ clientX: 200, clientY: 300 }] });
-        fireEvent.touchMove(content, { touches: [{ clientX: 300, clientY: 300 }] });
+        fireEvent.touchStart(content, { touches: [{ clientX: 8, clientY: 300 }] });
+        fireEvent.touchMove(content, { touches: [{ clientX: 120, clientY: 305 }] });
         fireEvent.touchEnd(content, { touches: [] });
         expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
 
-        fireEvent.touchStart(content, { touches: [{ clientX: 8, clientY: 300 }] });
-        fireEvent.touchMove(content, { touches: [{ clientX: 30, clientY: 305 }] });
-        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
-        fireEvent.touchMove(content, { touches: [{ clientX: 70, clientY: 310 }] });
+        const depth = window.history.length;
+        tap('phone-open-workspaces');
         expect(screen.getByTestId('phone-workspace-drawer')).toBeTruthy();
+        expect(window.history.length).toBe(depth + 1);
+        expect(window.history.state).toEqual({ [PHONE_SHEET_HISTORY_STATE]: true });
+        // The system's back: the browser pops the entry and fires popstate.
+        act(() => {
+            window.dispatchEvent(new PopStateEvent('popstate'));
+        });
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
     });
 
     it('offers New workspace through a one-field prompt', () => {

@@ -157,6 +157,20 @@ export interface PhoneKeyBarProps {
     /** How long the viewport must hold still; defaults to `PHONE_KEYBOARD_SETTLE_MS`. */
     readonly keyboardSettleMs?: number | undefined;
     /**
+     * B1 - `paneID` names a terminal that is on its way: keep the bar's room in the row (and the
+     * bar itself on screen, with its keys inert) while the registry has no handle for it yet.
+     *
+     * The phone shell shows ONE pane at a time, so a switch UNMOUNTS the old terminal and mounts
+     * the new one. Read through the registry alone, that is a moment with no terminal: the bar's
+     * 45 px came off the row, the new pane measured the taller box and attached at that grid,
+     * the handle registered, the 45 px went back on, and the pane resized again - a reflow of a
+     * replay the person had just been shown, which is the "garbage that flashes" the owner saw on
+     * the device (2026-09-08; measured on the dev instance: rows 53 then 50 about 200 ms apart).
+     * A split grid never had the gap because its other pane kept the registry warm. False (the
+     * default, and the desktop's row) changes nothing.
+     */
+    readonly reserve?: boolean | undefined;
+    /**
      * How the content row's box is measured; defaults to `clientWidth`/`clientHeight`.
      *
      * The same seam `TerminalPane` carries, for the same reason: jsdom reports 0x0 for every
@@ -170,7 +184,8 @@ export function PhoneKeyBar({
     contentRow,
     formFactorWindow,
     keyboardSettleMs,
-    measure
+    measure,
+    reserve
 }: PhoneKeyBarProps): ReactElement | null {
     const win = formFactorWindow ?? defaultFormFactorWindow();
     const phone = useFormFactor(win) === 'phone';
@@ -208,8 +223,10 @@ export function PhoneKeyBar({
     /** …and the same number in state, because the bar's own `bottom` rides it. */
     const [keyboardInset, setKeyboardInset] = useState(0);
     /** Whether the row is currently making room for a bar. Read by {@link writeRowBox}. */
+    // The room is held for a reserved pane before its handle lands; see `reserve`.
+    const reserved = reserve === true && paneID !== null;
     const barShownRef = useRef(false);
-    barShownRef.current = target !== null;
+    barShownRef.current = target !== null || reserved;
     /**
      * The pane every callback below acts on, read at CALL time.
      *
@@ -277,7 +294,7 @@ export function PhoneKeyBar({
     useEffect(() => {
         if (!phone) return;
         writeRowBox();
-    }, [phone, target, writeRowBox]);
+    }, [phone, target, reserved, writeRowBox]);
 
     useEffect(() => {
         const row = contentRow.current;
@@ -336,7 +353,7 @@ export function PhoneKeyBar({
 
     // AND NOT ON DESKTOP: no element, no attributes, no bar. The content row is exactly the row
     // the app rendered before this component existed.
-    if (!phone || target === null || paneID === null) return null;
+    if (!phone || paneID === null || (target === null && !reserved)) return null;
 
     return (
         <div

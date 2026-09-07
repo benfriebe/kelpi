@@ -46,13 +46,20 @@ export {
 export { ORIGIN_HOST_KEY, type PhoneHostKind, type PhoneHostModel, type PhoneWorkspaceSelection } from './model';
 
 export {
-    PHONE_EDGE_SWIPE_DISTANCE_PX,
-    PHONE_EDGE_SWIPE_START_PX,
     PhoneShell,
     type PhoneGridProps,
     type PhoneShellActions,
     type PhoneShellProps
 } from './PhoneShell';
+
+export {
+    PHONE_SHEET_HISTORY_STATE,
+    defaultSheetHistory,
+    isSheetHistoryState,
+    useSheetHistory,
+    type SheetHistory,
+    type SheetHistoryLike
+} from './sheet-history';
 
 export { PhoneRemoteWorkspace, remoteShownPane, type PhoneRemoteWorkspaceProps } from './PhoneRemoteWorkspace';
 export { PhoneWorkspaceDrawer, connectionDotColor, type PhoneWorkspaceDrawerProps } from './PhoneWorkspaceDrawer';

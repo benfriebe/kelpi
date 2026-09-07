@@ -102,6 +102,8 @@ interface Harness {
     /** The row's padding in px, which is the bar's height plus whatever the keyboard has taken. */
     padding(): number;
     rerender(panes: Pane[]): Promise<void>;
+    /** The commit alone: the new pane is mounted but its engine has not registered yet. */
+    rerenderUnsettled(panes: Pane[]): void;
 }
 
 /**
@@ -114,6 +116,7 @@ function ContentRow(props: {
     win: FakePhoneWindow;
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
+    reserve?: boolean | undefined;
 }): ReactElement {
     const row = useRef<HTMLDivElement | null>(null);
     const focused = props.panes.find((pane) => pane.focused === true) ?? null;
@@ -141,6 +144,8 @@ function ContentRow(props: {
                 paneID={focused?.id ?? null}
                 contentRow={row}
                 formFactorWindow={props.win}
+                // The shell reserves for a TERMINAL pane only (`PhoneShell.tsx`); this mirrors it.
+                reserve={props.reserve === true && focused !== null && focused.terminal !== false}
                 measure={(element) => ({
                     width: WINDOW.width,
                     height: props.win.innerHeight - Number.parseFloat(element.style.paddingBottom || '0')
@@ -150,12 +155,12 @@ function ContentRow(props: {
     );
 }
 
-async function mount(panes: Pane[], { coarse = true } = {}): Promise<Harness> {
+async function mount(panes: Pane[], { coarse = true, reserve = false } = {}): Promise<Harness> {
     const win = createFakePhoneWindow({ ...WINDOW, coarse });
     const pty = createFakePtyApi();
     const renderers = createFakeRendererFactory({ cell: CELL });
     const element = (next: Pane[]): ReactElement => (
-        <ContentRow panes={next} win={win} pty={pty} renderers={renderers} />
+        <ContentRow panes={next} win={win} pty={pty} renderers={renderers} reserve={reserve} />
     );
     const view = render(element(panes));
     await settle();
@@ -202,6 +207,13 @@ async function mount(panes: Pane[], { coarse = true } = {}): Promise<Harness> {
         async rerender(next: Pane[]): Promise<void> {
             view.rerender(element(next));
             await settle();
+        },
+        rerenderUnsettled(next: Pane[]): void {
+            // A synchronous `act`: the commit and its effects (the old pane's unregister) run,
+            // the new engine's asynchronous start does not.
+            act(() => {
+                view.rerender(element(next));
+            });
         }
     };
     return harness;
@@ -578,5 +590,35 @@ describe('the software keyboard moves the box the bar and the grid share', () =>
         for (const id of ['left', 'right']) {
             expect(h.root(id).getAttribute('data-terminal-keyboard-inset')).toBe(String(KEYBOARD_HEIGHT));
         }
+    });
+});
+
+describe('B1 - a one-pane switch keeps the bar\'s room while the next terminal mounts', () => {
+    const A = 'AAAAAAAA-0000-4000-8000-00000000000a';
+    const B = 'BBBBBBBB-0000-4000-8000-00000000000b';
+
+    it('with `reserve`, the padding and the bar survive the moment between the old engine and the new', async () => {
+        const h = await mount([{ id: A, focused: true }], { reserve: true });
+        expect(h.padding()).toBe(KEY_BAR_HEIGHT_PX);
+        // The phone shell's switch: A is unmounted and B is mounted in one commit; B's engine
+        // registers a few microtasks later. This is the read the flash came from.
+        h.rerenderUnsettled([{ id: B, focused: true }]);
+        expect(h.padding()).toBe(KEY_BAR_HEIGHT_PX);
+        expect(h.bar()).not.toBeNull();
+        await settle();
+        expect(h.padding()).toBe(KEY_BAR_HEIGHT_PX);
+        expect(h.bar()).not.toBeNull();
+    });
+
+    // There is deliberately no jsdom control for "without `reserve` the room goes": the fake
+    // engine registers inside the same commit that unregisters the old one, so jsdom never has
+    // the gap a real engine's asynchronous start opens. The live `phone-shell` step measures it
+    // where it exists: the new pane's row count must not change across the switch.
+    it('reserves nothing for a pane that is not a terminal, or for no pane', async () => {
+        const h = await mount([{ id: A, focused: true, terminal: false }], { reserve: true });
+        expect(h.padding()).toBe(0);
+        expect(h.bar()).toBeNull();
+        await h.rerender([]);
+        expect(h.padding()).toBe(0);
     });
 });

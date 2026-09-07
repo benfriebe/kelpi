@@ -32602,7 +32602,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-shell',
             expect:
-                'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a 44 px header whose controls are all at least 44 px tall, naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The workspace drawer opens by button and by an edge swipe, lists the origin daemon with the active workspace row marked active, and closes on its scrim. The pane sheet lists every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the header renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
+                'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a 44 px header whose controls are all at least 44 px tall, naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The workspace drawer opens by button (never by an edge swipe, which is the phone\'s own back gesture), lists the origin daemon with the active workspace row marked active, and closes on its scrim. The pane sheet lists every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the header renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -32774,23 +32774,9 @@ function buildFlows(ctx) {
                         label: 'the drawer to close on its scrim'
                     });
 
-                    // ── the workspace drawer, by edge swipe ────────────────────────────
-                    await view.swipe({ x: 6, y: 420 }, { x: 180, y: 424 });
-                    const swiped = await view
-                        .waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') !== null`, {
-                            timeoutMs: 4000,
-                            label: 'the drawer after an edge swipe'
-                        })
-                        .then(() => true, () => false);
-                    recorder.check('an edge swipe opens the drawer', swiped === true, `drawer after swipe: ${String(swiped)}`);
-                    if (swiped) {
-                        await view.tap('[data-testid="phone-workspace-drawer-scrim"]');
-                        await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') === null`, {
-                            timeoutMs: 8000,
-                            label: 'the drawer to close again'
-                        });
-                    }
-
+                    // No edge swipe: on the owner's phone the edge is the system's back gesture
+                    // (device round, 2026-09-08), so the button is the drawer's only opener and a
+                    // swipe from the edge is left to the OS.
                     // ── the pane sheet, and a switch to a sibling ──────────────────────
                     await view.tap('[data-testid="phone-open-panes"]');
                     await view.waitFor(`document.querySelector('[data-testid="phone-pane-sheet"]') !== null`, {
@@ -32826,6 +32812,34 @@ function buildFlows(ctx) {
                             timeoutMs: 8000,
                             label: 'the sibling to replace the shown pane'
                         });
+                        /*
+                         * The switch must attach the new terminal ONCE, at the grid it will keep.
+                         * Owner device round (2026-09-08): "garbage symbols flash into a pane when
+                         * swapping". Measured on the dev instance: the new pane attached at 53
+                         * rows and was resized to 50 about 200 ms later, because the key bar's
+                         * 45 px left the content box between the old engine's unregister and the
+                         * new one's register, so the first replay was reflowed. `PhoneKeyBar`'s
+                         * `reserve` holds the room; this samples the new pane's rows through the
+                         * settle and asserts one value, with no paint hold that ended on a timeout.
+                         */
+                        const rowSamples = [];
+                        for (let sample = 0; sample < 24; sample++) {
+                            rowSamples.push(
+                                String(
+                                    await view.eval(
+                                        `(() => { const el = document.querySelector('[data-pane-id="${sibling}"][data-terminal-status]'); return el === null ? '(none)' : (el.getAttribute('data-terminal-rows') ?? '(unset)') + '/' + (el.getAttribute('data-terminal-status') ?? '') + '/' + (el.getAttribute('data-terminal-paint-hold-timeouts') ?? '0'); })()`
+                                    )
+                                )
+                            );
+                            await sleep(30);
+                        }
+                        const liveRows = new Set(rowSamples.filter((entry) => entry.includes('/live/')).map((entry) => entry.split('/')[0]));
+                        const holdTimeouts = new Set(rowSamples.map((entry) => entry.split('/')[2]));
+                        recorder.check(
+                            'the new pane attaches at one grid and stays there: its rows never change across the switch, and no paint hold timed out',
+                            liveRows.size === 1 && !liveRows.has('(unset)') && [...holdTimeouts].every((count) => count === '0' || count === undefined),
+                            `rows seen while live: ${[...liveRows].join(',') || '(none)'}; samples: ${rowSamples.join(' ')}`
+                        );
                         const switched = await readShell();
                         const zoomed = (await cli.json(['pane', 'list', '--json'])).filter((pane) => pane.is_zoomed === true).length;
                         recorder.check(

@@ -27,7 +27,7 @@
  * the origin all draw exactly as they do on the Mac.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode, type TouchEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
 import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
@@ -52,6 +52,7 @@ import { PhonePaneSheet } from './PhonePaneSheet';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
 import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
+import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
 import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
 import type { PhoneView } from './view';
 
@@ -99,15 +100,11 @@ export interface PhoneShellProps {
     readonly hostStorage?: StorageLike | null | undefined;
     readonly remoteRuntimeFactory?: RemoteRuntimeFactory | undefined;
     readonly location?: { readonly hostname: string } | null | undefined;
+    /** The history the sheets own an entry in (`sheet-history.ts`); a test hands in a fake. */
+    readonly sheetHistory?: SheetHistoryLike | null | undefined;
 }
 
 type Sheet = 'none' | 'workspaces' | 'panes' | 'menu' | 'host' | 'rename' | 'new-workspace';
-
-/** How far in from the left edge a touch may start and still be the drawer's swipe. */
-export const PHONE_EDGE_SWIPE_START_PX = 24;
-/** How far right it must travel (and how little vertically) before the drawer opens. */
-export const PHONE_EDGE_SWIPE_DISTANCE_PX = 48;
-const PHONE_EDGE_SWIPE_DRIFT_PX = 40;
 
 const ZERO_RECT = { x: 0, y: 0, width: 0, height: 0 } as const;
 const EMPTY_IDS: readonly string[] = [];
@@ -120,7 +117,18 @@ function defaultLocation(): { readonly hostname: string } | null {
 export function PhoneShell(props: PhoneShellProps): ReactElement {
     const { view, actions } = props;
     const [sheet, setSheet] = useState<Sheet>('none');
-    const closeSheet = useCallback(() => setSheet('none'), []);
+    /*
+     * The sheets own one history entry between them (`sheet-history.ts`): opening pushes it, the
+     * phone's back gesture pops it and closes whatever is open, and a Close/scrim/row tap pops
+     * it too. There is deliberately NO edge swipe to open the drawer: on the owner's phone the
+     * edge is the system's back gesture (device round, 2026-09-08), and a gesture that races the
+     * OS for the same edge loses on the days it matters. The button is the drawer's opener.
+     */
+    const history = useSheetHistory(() => setSheet('none'), props.sheetHistory);
+    useEffect(() => {
+        history.sync(sheet !== 'none');
+    }, [history, sheet]);
+    const closeSheet = useCallback(() => history.close(), [history]);
     /**
      * C9 - the content box, for the phone's ONE key bar (`terminal/PhoneKeyBar.tsx`). The bar
      * sits out of flow at this box's bottom edge and pads the box by its own height plus the
@@ -241,36 +249,6 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         [view, actions]
     );
 
-    // ── the drawer's edge swipe ─────────────────────────────────────────────────────
-
-    const swipe = useRef<{ x: number; y: number } | null>(null);
-    const onTouchStart = (event: TouchEvent<HTMLDivElement>): void => {
-        const touch = event.touches[0];
-        if (touch === undefined || event.touches.length !== 1) {
-            swipe.current = null;
-            return;
-        }
-        swipe.current = touch.clientX <= PHONE_EDGE_SWIPE_START_PX ? { x: touch.clientX, y: touch.clientY } : null;
-    };
-    const onTouchMove = (event: TouchEvent<HTMLDivElement>): void => {
-        const start = swipe.current;
-        const touch = event.touches[0];
-        if (start === null || touch === undefined) return;
-        const dx = touch.clientX - start.x;
-        const dy = Math.abs(touch.clientY - start.y);
-        if (dy > PHONE_EDGE_SWIPE_DRIFT_PX) {
-            swipe.current = null;
-            return;
-        }
-        if (dx >= PHONE_EDGE_SWIPE_DISTANCE_PX) {
-            swipe.current = null;
-            setSheet('workspaces');
-        }
-    };
-    const onTouchEnd = (): void => {
-        swipe.current = null;
-    };
-
     // ── the overflow menu ───────────────────────────────────────────────────────────
 
     const menuItems = useMemo<readonly PhoneMenuItem[]>(() => {
@@ -294,6 +272,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     }, [workspace, shownPane, remoteHost, verbs, actions]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
+
+    /** The pane the key bar aims at: the shown pane, or the grid's focused one on the origin. */
+    const keyBarPaneID = view.mode === 'pane' || remoteHost !== null ? shownPaneID : props.focusedPaneID;
+    const keyBarPane = keyBarPaneID === null ? null : (panes.find((pane) => pane.id === keyBarPaneID) ?? null);
 
     const paneTitle = shownPane === null ? null : paneDisplayTitle(shownPane, props.homeDirectory);
     const hostLabel = remoteHost === null ? null : remoteHost.name;
@@ -442,22 +424,14 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 </PhoneButton>
             </div>
 
-            <div
-                ref={contentRef}
-                data-testid="phone-content"
-                className="relative min-h-0 flex-1"
-                onTouchStartCapture={onTouchStart}
-                onTouchMoveCapture={onTouchMove}
-                onTouchEndCapture={onTouchEnd}
-                onTouchCancelCapture={onTouchEnd}
-            >
+            <div ref={contentRef} data-testid="phone-content" className="relative min-h-0 flex-1">
                 {content}
                 {props.ready ? null : <ConnectionSplash runtime={props.runtime} state={props.state} target={props.target} />}
                 {props.palette}
                 {/* Last in the box, so it paints over the pane and under the palette's scrim. The
                     bar aims at the pane that holds the caret's claim: the shown pane in `pane`
                     mode, the focused one in the grid, on whichever host is on screen. */}
-                <PhoneKeyBar paneID={view.mode === 'pane' ? shownPaneID : remoteHost === null ? props.focusedPaneID : shownPaneID} contentRow={contentRef} />
+                <PhoneKeyBar paneID={keyBarPaneID} contentRow={contentRef} reserve={keyBarPane !== null && keyBarPane.type === 'shell'} />
             </div>
 
             <PhoneWorkspaceDrawer

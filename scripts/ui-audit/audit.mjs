@@ -29720,6 +29720,280 @@ function buildFlows(ctx) {
         },
 
         /*
+         * C5 - WHO MAY SUMMON THE SOFTWARE KEYBOARD (docs/MOBILE-PLAN.md §4).
+         *
+         * **Owner-directed divergence from the shipped Swift app**, like every phone rule: the
+         * shipped app is a Mac app, so nothing here has a parity reference and nothing here can
+         * have one. `packages/client/src/chrome/form-factor.ts` says that once for the whole
+         * program; this is the audit's instance of it.
+         *
+         * The rule, from the owner's device round 4 (2026-09-07, Android Chrome, a real phone): on
+         * a phone the software keyboard is the person's EXPLICIT CHOICE. The engine's hidden
+         * textarea may take the caret from a direct tap on the terminal surface, and from the key
+         * bar's key when it reads Show, and from nothing else. No focus claim, no re-claim, no
+         * workspace or reveal handoff, no status change and no overlay close may put it back.
+         *
+         * WHY THIS IS A STEP OF ITS OWN, BESIDE `phone-key-bar`. That step already taps the bar
+         * with the keyboard down and watches the caret stay away, and it was green through the
+         * whole of round 4 while the owner's phone raised the keyboard on every single tap. The
+         * reason is mechanical: CDP's synthesized touch HONOURS the button's cancelled
+         * pointer-down, so focus never moves to the button and the state the bug lives in is never
+         * constructed. Android moves focus to the button anyway - measured on the device, recorded
+         * in `KeyBar.tsx`'s header - so the one thing this step does that no other does is
+         * reproduce that move explicitly, with `button.focus()` after each tap, and then ask
+         * whether anything in the client hands the caret back.
+         *
+         * FOCUS IS THE PROXY, as it is in `phone-key-bar`: CDP cannot show or hide an Android
+         * software keyboard and this is a Mac running Electron, but `document.activeElement` being
+         * the engine's textarea is exactly the condition that makes a phone put the keyboard up,
+         * and it is the condition the bar's own toggle reads.
+         *
+         * A phone-lane step (lib/shards.mjs), so it owes the lane's clause: it borrows the widest
+         * shell pane already on screen the way `phone-key-bar` does, leaves it at a prompt with the
+         * caret back on the engine, provisions nothing, moves no setting, creates and destroys no
+         * pane or workspace, and clears the emulation in a `finally`.
+         */
+        {
+            id: 'phone-caret-owner',
+            expect:
+                'Under a 390x844 phone viewport, with the software keyboard down (the caret off the engine and the bar’s key reading Show), tapping bar keys leaves it down EVEN WHEN THE PLATFORM MOVES FOCUS TO THE TAPPED BUTTON, which is what Android does and what CDP’s own touch does not: after each tap the step focuses the button itself and then watches the caret over two frames and a settle window - it must not land on the engine’s textarea and the key must still read Show. Opening Settings and closing it again leaves the keyboard down the same way. And NOT on desktop: with the emulation cleared, closing Settings hands the caret straight back to the focused pane’s surface, exactly as it does today.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-caret-owner: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const bar = `${body} [data-terminal-key-bar]`;
+                const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+
+                // Focus and tidy at DESKTOP size, exactly as `phone-key-bar` does: the pane has to
+                // be the focused one for the bar to mount at all.
+                await focusPaneBody(view, paneID);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                const handedIn = await readPhoneFrame(view);
+                const readRoster = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    panes: ${paneIDsExpr},
+                                    focused: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',
+                                    workspace: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''
+                                })`
+                            )
+                        )
+                    );
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+
+                /** Where the caret is, and what the bar's toggle says about it. */
+                const readCaret = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false,
+                                    label: (document.querySelector('${keyboardKey}')?.textContent ?? '(none)').trim()
+                                })`
+                            )
+                        )
+                    );
+                /*
+                 * TWO FRAMES AND A SETTLE, because the claims being watched for are not all
+                 * synchronous: one is an rAF retry loop with a 1.5 s budget
+                 * (`handCaretToPaneWhenReady`) and another lands on a `setTimeout(0)` after a
+                 * `focusout` (`armCaretClaim`), so a single read taken in the same turn as the tap
+                 * would miss both.
+                 */
+                const settleAndRead = async () => {
+                    const frames = [await readCaret()];
+                    await view.eval(
+                        `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`
+                    );
+                    frames.push(await readCaret());
+                    await sleep(600);
+                    frames.push(await readCaret());
+                    return frames;
+                };
+                /** Every reading in the window says the keyboard is still down. */
+                const stillDown = (frames) => frames.every((frame) => frame.inHost === false && frame.label === 'Show');
+                const describe = (frames) =>
+                    frames.map((frame) => `${frame.caret}${frame.inHost ? ' (in host)' : ''}/${frame.label}`).join(' -> ');
+                const scrollTo = async (selector) => {
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('${selector}');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                };
+
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('${bar}') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    // The keyboard starts UP (the pane was focused by a click on its body), and
+                    // the toggle is the one thing allowed to put it away.
+                    await scrollTo(keyboardKey);
+                    await view.tap(keyboardKey);
+                    await sleep(300);
+                    const down = await readCaret();
+                    recorder.note(`after tapping the keyboard key: ${JSON.stringify(down)}`);
+                    recorder.check(
+                        'the keyboard key puts the keyboard away: the caret leaves the engine and the key reads Show',
+                        down.inHost === false && down.label === 'Show',
+                        `activeElement=${down.caret} inside the host=${String(down.inHost)} key=${down.label}`
+                    );
+
+                    /*
+                     * THE TAPS, WITH ANDROID'S FOCUS MOVE. `esc`, `home`, `end` and `left` are
+                     * chosen because none of them changes the shell's line or its history, so the
+                     * pane is handed on exactly as it was found; `ctrl` appears twice so the latch
+                     * it arms is spent on itself rather than on the next step's first keystroke.
+                     */
+                    for (const id of ['esc', 'home', 'end', 'left', 'ctrl', 'ctrl']) {
+                        const key = `${body} [data-terminal-key="${id}"]`;
+                        await scrollTo(key);
+                        await view.tap(key);
+                        await sleep(120);
+                        // THE MOVE CDP DOES NOT MAKE. `page.tap` honours the button's cancelled
+                        // pointer-down, so without this the caret never leaves `<body>` and the
+                        // state the owner's phone is in is never constructed.
+                        const moved =
+                            String(
+                                await view.eval(
+                                    `(() => {
+                                        const key = document.querySelector('${key}');
+                                        if (key === null) return 'no-key';
+                                        key.focus();
+                                        return document.activeElement === key ? 'button' : (document.activeElement?.tagName ?? '(none)').toLowerCase();
+                                    })()`
+                                )
+                            ) === 'button';
+                        recorder.check(
+                            `the platform's focus move onto the ${id} key is reproduced (Android does this; CDP's touch does not)`,
+                            moved,
+                            moved ? 'the button holds the caret' : 'the button did not take the caret, so this tap proves nothing'
+                        );
+                        const frames = await settleAndRead();
+                        recorder.note(`${id}: ${JSON.stringify(frames)}`);
+                        recorder.check(
+                            `tapping ${id} with the keyboard down does not summon it back`,
+                            stillDown(frames),
+                            describe(frames)
+                        );
+                    }
+                    await recorder.shot(view, 'keys-tapped-keyboard-down');
+
+                    /*
+                     * AND THE OVERLAY CLOSE (device round 4, case G). Closing the Settings sheet
+                     * raised the keyboard on the owner's phone: the close path hands the caret back
+                     * to the focused pane's surface, which is right on a desktop - a window left
+                     * with the caret on a button that no longer exists types nowhere - and is a
+                     * keyboard nobody asked for here.
+                     */
+                    await openSettingsRoot(view);
+                    await view.waitFor(
+                        `document.querySelector('[data-testid="settings-window"][data-phone-sheet="true"]') !== null`,
+                        { timeoutMs: 10_000, label: 'the Settings phone sheet' }
+                    );
+                    await view.tap('[data-testid="settings-close"]');
+                    await view.waitFor(`document.querySelector('[data-testid="settings-window"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the sheet to close'
+                    });
+                    const afterClose = await settleAndRead();
+                    recorder.note(`after closing the Settings sheet: ${JSON.stringify(afterClose)}`);
+                    recorder.check(
+                        'closing the Settings sheet does not summon the keyboard either',
+                        stillDown(afterClose),
+                        describe(afterClose)
+                    );
+
+                    // The way back, which is the one focus the bar may cause: the person asked.
+                    await scrollTo(keyboardKey);
+                    await view.tap(keyboardKey);
+                    await sleep(300);
+                    const back = await readCaret();
+                    recorder.note(`after tapping Show: ${JSON.stringify(back)}`);
+                    recorder.check(
+                        'tapping Show still puts the caret back on the engine, which is the only way up',
+                        back.inHost === true && back.caret === 'textarea' && back.label === 'Hide',
+                        `activeElement=${back.caret} inside the host=${String(back.inHost)} key=${back.label}`
+                    );
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+                } finally {
+                    // A failed assertion must not hand the next step an open sheet or a 390 px
+                    // window, and nothing in here may raise.
+                    await forceCloseOverlay(view, '[data-testid="settings-window"]');
+                    await clearPhoneEmulation(view).catch(() => {});
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
+
+                const rosterAfter = await readRoster();
+                recorder.note(`roster after: ${JSON.stringify(rosterAfter)}`);
+                recorder.check(
+                    'the phone lane’s clause: the roster the spine reads is untouched',
+                    JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                    `${JSON.stringify(rosterBefore)} -> ${JSON.stringify(rosterAfter)}`
+                );
+
+                /*
+                 * AND NOT ON DESKTOP. The same overlay, in the same window, with a fine pointer:
+                 * closing it hands the caret straight back to the focused pane's surface. That is
+                 * `handBackPaneCaret`'s whole reason for existing (§10.4) and the phone rule above
+                 * must not cost it. Driven from a caret dropped on purpose, so "the pane got it
+                 * back" is a claim about the close rather than about where the caret already was.
+                 */
+                await view.eval(
+                    `(() => {
+                        const active = document.activeElement;
+                        if (active instanceof HTMLElement) active.blur();
+                        return document.activeElement === document.body;
+                    })()`
+                );
+                await openSettingsRoot(view);
+                await view
+                    .waitFor(`document.querySelector('[data-testid="settings-window"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the desktop Settings dialog'
+                    })
+                    .catch(() => {});
+                await view.click('[data-testid="settings-close"]').catch(() => {});
+                await view
+                    .waitFor(`document.querySelector('[data-testid="settings-window"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the desktop dialog to close'
+                    })
+                    .catch(() => {});
+                await sleep(400);
+                const desktopCaret = JSON.parse(
+                    String(
+                        await view.eval(
+                            `JSON.stringify({
+                                caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                inPane: document.querySelector('[data-pane-id][data-focused="true"] [data-pane-surface]')?.contains(document.activeElement) ?? false,
+                                bars: document.querySelectorAll('[data-terminal-key-bar]').length
+                            })`
+                        )
+                    )
+                );
+                recorder.note(`the desktop close handed the caret to: ${JSON.stringify(desktopCaret)}`);
+                recorder.check(
+                    'and NOT on desktop: closing Settings hands the caret back to the focused pane’s surface, as it always has',
+                    desktopCaret.inPane === true && desktopCaret.bars === 0,
+                    `activeElement=${desktopCaret.caret} inside the focused pane’s surface=${String(desktopCaret.inPane)}, ${String(desktopCaret.bars)} key bars`
+                );
+            }
+        },
+
+        /*
          * B5's live half for Settings (MOBILE-PLAN.md §4 B5).
          *
          * Three facts, none of which jsdom can establish.

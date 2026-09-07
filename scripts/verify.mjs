@@ -118,8 +118,12 @@ const SURFACES = [
             // place a real touch on a real 44px key reaches a real PTY, and the only place the
             // bar's Paste is measured against the engine's own bracketed-paste envelope
             // (docs/MOBILE-PLAN.md §4). All three are the phone lane's; the desktop terminal steps
-            // above are what pin that none of them moved anything anywhere else.
-            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste'
+            // above are what pin that none of them moved anything anywhere else. C5's
+            // `phone-caret-owner` is here for the same reason and one step further on: the pane's
+            // ONE claim on the caret lives in `TerminalPane.tsx` (`claimCaret`), and on a phone
+            // that claim IS the software keyboard, so a change in this directory can summon a
+            // keyboard nobody asked for.
+            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-caret-owner'
         ],
         smokes: ['smoke:terminal']
     },
@@ -159,7 +163,13 @@ const SURFACES = [
         tests: ['packages/client/src'],
         steps: [
             'web-page-click-focus', 'web-focus-handoff', 'terminal-cursor-focus', 'agent-lifecycle',
-            'reattach-after-relaunch', 'content-pane-keybindings', 'scratchpad-create'
+            'reattach-after-relaunch', 'content-pane-keybindings', 'scratchpad-create',
+            // C5: `app/pane-focus.ts` holds `mayClaimPaneCaret`, the one seam that decides whether
+            // the client may move the caret onto a pane surface without being asked - and on a
+            // phone that decision is whether a software keyboard comes up. The step is the phone
+            // lane's; the desktop focus steps above are what pin that its desktop answer is
+            // unchanged (docs/MOBILE-PLAN.md §4 C5).
+            'phone-caret-owner'
         ]
     },
     /*

@@ -29150,6 +29150,14 @@ function buildFlows(ctx) {
                                     const vv = window.visualViewport;
                                     const real = window.innerHeight;
                                     try {
+                                        // innerHeight is an OWN accessor on the window in this
+                                        // Chromium, not a prototype one, so DELETING the shadow
+                                        // does not put the real getter back: it leaves the
+                                        // property gone and every later step reading undefined.
+                                        // Measured on 2026-09-07, when it did exactly that. The
+                                        // descriptor is parked on the window so the step's own
+                                        // cleanup can put it back too.
+                                        window.__kelpiRealInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight');
                                         window.__kelpiFakeLayout = 0;
                                         Object.defineProperty(window, 'innerHeight', {
                                             configurable: true,
@@ -29180,7 +29188,10 @@ function buildFlows(ctx) {
                                         });
                                         await new Promise((resolve) => setTimeout(resolve, 16));
                                     }
-                                    delete window.innerHeight;
+                                    if (window.__kelpiRealInnerHeight !== undefined) {
+                                        Object.defineProperty(window, 'innerHeight', window.__kelpiRealInnerHeight);
+                                        delete window.__kelpiRealInnerHeight;
+                                    }
                                     delete vv.height;
                                     delete window.__kelpiFakeLayout;
                                     window.dispatchEvent(new Event('resize'));
@@ -29223,7 +29234,10 @@ function buildFlows(ctx) {
                         .eval(
                             `(() => {
                                 const vv = window.visualViewport;
-                                if (Object.getOwnPropertyDescriptor(window, 'innerHeight') !== undefined) delete window.innerHeight;
+                                if (window.__kelpiRealInnerHeight !== undefined) {
+                                    Object.defineProperty(window, 'innerHeight', window.__kelpiRealInnerHeight);
+                                    delete window.__kelpiRealInnerHeight;
+                                }
                                 if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
                                     delete vv.height;
                                     vv.dispatchEvent(new Event('resize'));

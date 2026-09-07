@@ -610,3 +610,29 @@ input {
     animation: none !important;
   }
 }
+
+/*
+ * C3 - the terminal under a thumb (docs/MOBILE-PLAN.md §4).
+ *
+ * **Owner-directed divergence from the shipped Swift app**, like every phone rule in this program
+ * (there is no Swift phone UI; `chrome/form-factor.ts` says so once for all of it).
+ *
+ * PHONE ONLY, keyed on the attribute `bindFormFactorAttribute` writes on <html>, so a desktop
+ * terminal's computed style is byte-identical to what it has always been. Three declarations,
+ * each for one thing a browser does to a canvas that a terminal must not do:
+ *
+ *   - `touch-action: none` hands every gesture to the pane's own listeners rather than to the
+ *     browser's panning and zooming. It is also what makes PINCH DO NOTHING, which is the plan's
+ *     rule: the terminal's zoom is a font-size setting, not a viewport scale.
+ *   - `user-select: none` (with the WebKit prefix iOS still needs) stops the platform's own text
+ *     selection UI appearing over a canvas that has no text in it to select - the selection lives
+ *     in the engine's cell buffer, and the long press is what reaches it.
+ *   - `-webkit-touch-callout: none` stops iOS Safari's press-and-hold callout, which would
+ *     otherwise open over the word the same press just selected.
+ */
+[data-form-factor='phone'] [data-terminal-host] {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}

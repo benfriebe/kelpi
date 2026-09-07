@@ -111,6 +111,26 @@ export function resetClipboardOffersForTests(): void {
     offerListeners.clear();
 }
 
+/**
+ * Offer text the USER selected, rather than text a program copied (C3's long press).
+ *
+ * The same registry and the same pill, because the problem is the same one: a phone browser will
+ * not write the clipboard without a gesture it recognises, and the gesture that made the selection
+ * is over by the time the selection exists. What differs is only where the text came from, which
+ * is why this is four lines rather than a second surface.
+ *
+ * `bytes` is measured here (`TextEncoder`), not counted in characters: the OSC 52 path takes the
+ * daemon's decoded byte count and the pill's label says "bytes", so a selection has to answer the
+ * same question in the same units - an emoji is four, not one.
+ *
+ * **Owner-directed divergence from the shipped Swift app**: a Mac app copies a selection to the
+ * pasteboard the moment the mouse comes up. See `chrome/form-factor.ts` for the program-wide note.
+ */
+export function offerSelection(paneID: string, text: string): void {
+    if (paneID === '' || text === '') return;
+    publishOffer({ paneID, text, bytes: new TextEncoder().encode(text).length });
+}
+
 function publishOffer(offer: ClipboardOffer): void {
     for (const listener of [...offerListeners]) listener(offer);
 }

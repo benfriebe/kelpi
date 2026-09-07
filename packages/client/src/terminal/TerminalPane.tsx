@@ -39,6 +39,7 @@ import {
 } from '../app/pane-focus';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
+import { offerSelection } from '../state/clipboard';
 import { KeyBar, dispatchPaste } from './KeyBar';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
@@ -71,6 +72,7 @@ import {
     type TerminalRendererFactory,
     type TerminalTheme
 } from './renderer';
+import { clearTouchScrollOffset, createTouchScroll, publishTouchScrollOffset } from './touch-scroll';
 
 /** Coalescing window for interactive resizes (terminal-surface.md §5, §15.4). */
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 100;
@@ -1006,6 +1008,139 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             reporter.reset();
         };
     }, []);
+
+    // ── C3: a finger on the terminal (docs/MOBILE-PLAN.md §4) ───────────────────────
+    //
+    // **Owner-directed divergence from the shipped Swift app**, like every phone rule in this
+    // program: there is no Swift phone UI, so a touch gesture has no parity reference
+    // (`chrome/form-factor.ts` carries the note for all of it).
+    //
+    // PHONE ONLY, and that is the whole "desktop is untouched" claim for this feature: the effect
+    // returns before it attaches anything unless `phone` is true, so a desktop terminal grows no
+    // touch listener, no attribute and no gesture machine - it is the tree it has always been,
+    // down to the byte (MOBILE-PLAN.md §3, principle 1).
+    //
+    // THE RULE THE SPIKE WROTE, enforced here and nowhere else: **a touch reaches the PTY only
+    // while an application has asked for the mouse**. With tracking `none` the gesture machine
+    // owns the contact and the only thing it can do is move a viewport; with tracking on, the
+    // same touch goes to the mouse reporter as button 0 at the cell under the finger, and the
+    // gesture machine never sees it. `PointerLike` is structural, so a `Touch` is one.
+    //
+    // Capture on the host, exactly as the mouse and the kitty interceptors are, so a consumed
+    // event never reaches the engine's canvas listeners BELOW it - which is what stops a scroll
+    // ending in the engine's own `touchend` focus (and, on a phone, the software keyboard coming
+    // up because someone read their scrollback). A plain TAP is deliberately not consumed: that
+    // focus is how a phone raises its keyboard at all.
+    useEffect(() => {
+        if (!phone) {
+            clearTouchScrollOffset(rootRef.current);
+            return;
+        }
+        const host = hostRef.current;
+        const root = rootRef.current;
+        if (host === null) return;
+        const reporter = mouseRef.current;
+
+        const scroller = createTouchScroll({
+            scrollLines: (delta) => rendererRef.current?.scrollLines(delta),
+            scrollOffset: () => rendererRef.current?.scrollOffset() ?? 0,
+            cellHeight: () => rendererRef.current?.cellSize().height ?? 0,
+            onLongPress: (point) => {
+                const renderer = rendererRef.current;
+                if (renderer === null) return;
+                // `selectWordAt` is optional on the interface: the fallback engine has no
+                // long-press selection, and a pane on it simply does not select (see
+                // `renderer.ts`). A press on blank space returns true and selects nothing, which
+                // is why the read below is what decides whether anything happened.
+                if (renderer.selectWordAt?.(point.clientX, point.clientY) !== true) return;
+                const text = renderer.selection();
+                if (text === '') return;
+                // The pill, not the clipboard: a long press has no transient activation behind
+                // it, so `navigator.clipboard.writeText` is refused on every mobile browser. C4's
+                // Copy pill IS the tap that has one, and this reuses it rather than growing a
+                // second surface (`state/clipboard.ts`).
+                offerSelection(paneID, text);
+            }
+        });
+
+        const consume = (event: Event): void => {
+            // `passive: false` below is what makes this legal; without it the browser ignores it
+            // and pans the page under the pane.
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        /** The contact this event is about; `touchend`'s `touches` list is already empty. */
+        const changed = (event: TouchEvent): Touch | null => event.changedTouches[0] ?? null;
+
+        const onStart = (event: TouchEvent): void => {
+            if (reporter?.active === true) {
+                scroller.cancel();
+                const touch = changed(event);
+                if (touch === null || !reporter.down(touch)) return;
+                consume(event);
+                // Ghostty's rule, the same one the mouse path follows (`Surface.zig:3850-3852`):
+                // once the application is being sent the gesture, a stale selection must go.
+                rendererRef.current?.clearSelection();
+                setSelectionLength(0);
+                return;
+            }
+            // A new contact clears the word the last long press left highlighted, and the mirror
+            // is written by hand BOTH ways. The engine's `clearSelection()` fires no change event
+            // (#81), so a clear nobody announced leaves `data-terminal-selection` reporting a
+            // highlight that is not on the screen - measured on this pane in the audit, which
+            // found a stale `1` from an earlier step surviving three gestures. After this line
+            // there is no selection, whoever cleared it, so the mirror says so.
+            if (rendererRef.current?.selection() !== '') rendererRef.current?.clearSelection();
+            setSelectionLength(0);
+            if (scroller.start(event)) consume(event);
+        };
+        const onMove = (event: TouchEvent): void => {
+            if (reporter?.active === true) {
+                const touch = changed(event);
+                if (touch !== null && reporter.move(touch)) consume(event);
+                return;
+            }
+            if (scroller.move(event)) consume(event);
+        };
+        const onEnd = (event: TouchEvent): void => {
+            if (reporter?.active === true) {
+                const touch = changed(event);
+                if (touch !== null && reporter.up(touch)) consume(event);
+                return;
+            }
+            if (scroller.end(event)) consume(event);
+        };
+        const onCancel = (): void => {
+            scroller.cancel();
+            reporter?.reset();
+        };
+
+        host.addEventListener('touchstart', onStart, { capture: true, passive: false });
+        host.addEventListener('touchmove', onMove, { capture: true, passive: false });
+        host.addEventListener('touchend', onEnd, { capture: true, passive: false });
+        host.addEventListener('touchcancel', onCancel, { capture: true, passive: false });
+
+        // The viewport's distance from the live bottom, mirrored onto the root for the audit.
+        // Subscribed rather than written after each gesture because the engine moves it too: any
+        // PTY byte snaps it back to the bottom (`renderer.ts` `onScrollChange`), and an attribute
+        // that only knew what a finger asked for would lie the moment the shell printed.
+        publishTouchScrollOffset(root, rendererRef.current?.scrollOffset() ?? 0);
+        const offScroll = rendererRef.current?.onScrollChange((offset) => {
+            publishTouchScrollOffset(rootRef.current, offset);
+        });
+
+        return () => {
+            host.removeEventListener('touchstart', onStart, { capture: true });
+            host.removeEventListener('touchmove', onMove, { capture: true });
+            host.removeEventListener('touchend', onEnd, { capture: true });
+            host.removeEventListener('touchcancel', onCancel, { capture: true });
+            scroller.cancel();
+            offScroll?.();
+            clearTouchScrollOffset(rootRef.current);
+        };
+        // `status` is in the deps for the reason C2's textarea effect has it: a restart builds a
+        // FRESH engine, and the scroll subscription belongs to the engine, not to the pane.
+    }, [phone, paneID, status]);
 
     // ── kitty keyboard: capture-phase interception (§TERM-030) ──────────────────────
     //

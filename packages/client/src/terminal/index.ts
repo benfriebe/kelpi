@@ -73,6 +73,25 @@ export {
 } from './keyboard-inset';
 
 export {
+    LONG_PRESS_MS,
+    MOMENTUM_DECAY_MS,
+    MOMENTUM_MAX_VELOCITY,
+    MOMENTUM_MIN_VELOCITY,
+    TERMINAL_SCROLL_ATTRIBUTE,
+    TOUCH_SLOP_PX,
+    VELOCITY_WINDOW_MS,
+    clearTouchScrollOffset,
+    createTouchScroll,
+    publishTouchScrollOffset,
+    type TouchEventLike,
+    type TouchGesture,
+    type TouchPointLike,
+    type TouchScroll,
+    type TouchScrollHost,
+    type TouchScrollOptions
+} from './touch-scroll';
+
+export {
     IDLE_PANE_MODES,
     MAX_WHEEL_REPORTS_PER_EVENT,
     NO_MODIFIERS,

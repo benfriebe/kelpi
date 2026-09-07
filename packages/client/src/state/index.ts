@@ -23,6 +23,7 @@ export {
 export {
     CLIPBOARD_WRITE_MESSAGE,
     createClipboardWriteHandler,
+    offerSelection,
     onClipboardOffer,
     parseClipboardWrite,
     resetClipboardOffersForTests,

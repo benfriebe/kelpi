@@ -22,6 +22,7 @@ import { resolveDaemonTarget, sanitizedSearch } from './app/config';
 import { bindFormFactorAttribute } from './chrome';
 import { createAttentionSignal } from './chrome/attention';
 import { setAssetCredentialToken } from './content/asset-credential';
+import { registerServiceWorker } from './pwa/register';
 import { createKelpiRuntime } from './state';
 import { configuredTerminalEngine, loadTerminalFonts } from './terminal';
 import { readShellWindowID } from './webpane/shell-window';
@@ -73,3 +74,8 @@ const container = document.getElementById('root');
 if (container !== null) {
     createRoot(container).render(<App runtime={runtime} target={target} />);
 }
+
+// After the render, and only in a browser that is not the Electron shell: `pwa/register.ts`
+// owns every reason not to. An installed phone app whose Mac is asleep opens on Kelpi's own
+// connection screen instead of Safari's error page; the desktop registers nothing.
+registerServiceWorker();

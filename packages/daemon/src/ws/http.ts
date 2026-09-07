@@ -152,7 +152,10 @@ export function resolveStaticPath(distDir: string, requestPath: string): string 
     return resolved;
 }
 
-function fileResponse(file: ResolvedFile, options: { immutable: boolean }): Response {
+function fileResponse(
+    file: ResolvedFile,
+    options: { immutable: boolean; extraHeaders?: Readonly<Record<string, string>> | undefined }
+): Response {
     const body = fs.readFileSync(file.path);
     return new Response(body, {
         status: 200,
@@ -162,7 +165,8 @@ function fileResponse(file: ResolvedFile, options: { immutable: boolean }): Resp
             'cache-control': options.immutable
                 ? 'public, max-age=31536000, immutable'
                 : 'no-cache',
-            etag: `W/"${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}"`
+            etag: `W/"${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}"`,
+            ...(options.extraHeaders ?? {})
         }
     });
 }
@@ -171,6 +175,35 @@ function fileResponse(file: ResolvedFile, options: { immutable: boolean }): Resp
 function isImmutableAsset(requestPath: string): boolean {
     return requestPath.startsWith('/assets/');
 }
+
+// ── the service worker (phone program A2) ───────────────────────────────────────────
+
+/**
+ * Where the client's build puts its service worker (`client/vite.config.ts`), at the site root
+ * and with no content hash.
+ */
+export const SERVICE_WORKER_PATH = '/sw.js';
+
+/**
+ * The two headers a service worker needs that an ordinary static file does not.
+ *
+ * `Service-Worker-Allowed: /` widens the maximum scope a registration may claim. A worker
+ * served from the root already defaults to `/`, so today this header changes nothing - it is
+ * here because the day the file moves under `/assets/` (a content hash would be the obvious
+ * reason to want that) the registration starts failing with a scope error and nothing else,
+ * and the fix is a header the client cannot send.
+ *
+ * `Cache-Control: no-cache` is what makes updates work at all. The browser re-fetches this
+ * exact URL to decide whether to install a new worker, and it compares BYTES; a cached copy is
+ * compared against itself, so an installed phone would keep an old shell until the HTTP cache
+ * expired. The static handler already answers everything outside `/assets/` `no-cache`, so this
+ * is a restatement, made explicit here and pinned by a test because the whole update story
+ * rests on it.
+ */
+const SERVICE_WORKER_HEADERS: Readonly<Record<string, string>> = {
+    'service-worker-allowed': '/',
+    'cache-control': 'no-cache'
+};
 
 // ── content-pane assets (M5) ────────────────────────────────────────────────────────
 
@@ -303,7 +336,15 @@ export function createHttpApp(options: HttpAppOptions): Hono {
             const direct = statFile(resolved) ?? statFile(path.join(resolved, 'index.html'));
             if (direct !== undefined) {
                 const immutable = isImmutableAsset(requestPath) && !direct.path.endsWith('index.html');
-                return fileResponse(direct, { immutable });
+                // A special case in the static handler rather than a route before the catch-all
+                // (the shape the pane-assets routes use): the worker IS a file in `distDir` and
+                // wants every other thing this handler does - the path safety check, the stat,
+                // the etag, the "client not built" answer when there is no build. Only two
+                // headers differ, so only two headers are added.
+                return fileResponse(direct, {
+                    immutable,
+                    ...(requestPath === SERVICE_WORKER_PATH ? { extraHeaders: SERVICE_WORKER_HEADERS } : {})
+                });
             }
 
             // SPA deep link: anything that isn't a file falls back to the shell document.

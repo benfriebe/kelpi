@@ -12,6 +12,7 @@
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "smoke:web": "node scripts/web-smoke.mjs",
+    "smoke:pwa": "node scripts/pwa-smoke.mjs",
     "smoke:terminal": "node scripts/terminal-smoke.mjs",
     "smoke:packaged": "node scripts/packaged-smoke.mjs",
     "icon": "node scripts/make-icon.mjs",

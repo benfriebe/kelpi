@@ -267,13 +267,43 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
                 bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
             };
         },
+        /*
+         * #109: what `focus` means depends on whether this window is ALLOWED to be the key one.
+         *
+         * A lane window (`--window hidden | offscreen | onscreen`) is built `focusable: false`
+         * (`./audit-window.ts` ▸ `auditWindowFocusable`) precisely so the machine's keyboard can
+         * never reach it, so `show()` + `focus()` here would be a request AppKit is right to
+         * refuse, and, before it was refused, was measured taking the owner's keystrokes into
+         * an invisible terminal. In that lane `focus` is the page-level half only: order the
+         * frame front without asking for key status, and hand the keyboard to the web contents,
+         * which is what CDP input is routed to. The other half, "the page believes it is
+         * focused", is CDP focus emulation and belongs to the driver
+         * (`scripts/ui-audit/lib/driver.mjs` ▸ `boot`), which is the side holding the session.
+         *
+         * `isFocused()` is still what comes back, unembellished: in the lane it is false and
+         * always will be, and a scenario reading it deserves the truth rather than a flattering
+         * `true`. No scenario asserts `focused === true`; the two that assert on this field
+         * (`dock-bounce-stop-only`, `notification-shown-and-opened`) assert `focused === false`.
+         */
         focus: () => {
             const window = liveWindow(mainWindow);
             if (window === null) return null;
-            window.show();
-            window.focus();
+            if (window.isFocusable()) {
+                window.show();
+                window.focus();
+            } else {
+                window.showInactive();
+                window.webContents.focus();
+            }
             return window.isFocused();
         },
+        /*
+         * `blur` stays a real `BrowserWindow.blur()`. In the lane it is a no-op on a window that
+         * was never key, and the scenarios that use it are asserting the state it leaves
+         * (`focused === false`), which a keyless window is already in. The page-level half is
+         * again the driver's: it turns focus emulation off so `document.hasFocus()` goes false,
+         * which is the signal the client actually reads.
+         */
         blur: () => {
             const window = liveWindow(mainWindow);
             if (window === null) return null;

@@ -145,6 +145,28 @@ The blur assertion stayed: window focus is the SHELL's half of the gate (`status
 
 That is a property of those two placements, not a scenario bug and not a product bug, but it is worth noting that the daemon's "is anyone looking?" is the renderer's document visibility alone, so a window that is visible but not the frontmost app counts as active. `client/src/state/activation.ts` already distinguishes the two (`appActive && documentVisible`) for the client's own dwell timer; the daemon does not. Out of scope here, and left alone deliberately.
 
+### No lane window is ever the key window (#109)
+
+**The rule: a lane window (`hidden`, `offscreen`, `onscreen`) never becomes the key window on its own, and the machine's real keyboard never reaches it.** Every keystroke a lane delivers goes through CDP (`Input.dispatchKeyEvent` and friends), which the render widget answers directly and which needs no key status, so the window has nothing to gain from being key and one very expensive thing to lose by it.
+
+What it used to lose. `hidden` paints the window at zero opacity and makes it click-through, and it was still shown with `show()`, which on macOS is `makeKeyAndOrderFront:` plus an app activation. Measured on the base tree at `--window hidden`, three questions answered from outside CDP:
+
+| | before | after |
+|---|---|---|
+| frontmost app right after boot | `Electron` | the person's own app |
+| `harness.focus()` with the person typing in TextEdit | took the key window: frontmost `Electron` | left it: frontmost `TextEdit` |
+| a CGEvent keystroke posted the way a physical one arrives, while CDP typed `echo caret-ok` | `sh-3.2$ echstructoure caret-ok` → `sh: echstructoure: command not found` | `sh-3.2$ echo caret-ok` → `caret-ok` |
+
+That is the machine's owner typing into an invisible test terminal while their own keystrokes vanish from wherever they thought they were typing, and it is the shape PR #113 recorded and could not attribute (`sh-3.2$ ortecho caret-ok`, `stctureecho caret-ok`), and the shape the phone program recorded as "`terminal-ls` can mangle its own typed fixture on a first run" (`cd <path>` arriving as ` to bcd <path>`).
+
+Every lane placement is `focusable: false` now (`packages/shell/src/audit-window.ts` ▸ `auditWindowFocusable`), which on macOS makes the frame refuse key status, so AppKit has nowhere to route a key event even when the app is frontmost and `show()`, `focus()` and `Page.bringToFront` all stop being able to steal it. The window is shown with `showInactive()`. The shell's log line carries `focusable=` so the policy is checkable from outside the process.
+
+What key status was buying is the page's own belief that it is focused, which the client genuinely reads (`TerminalPane.tsx` seeds `windowFocused` from `document.hasFocus()`, `chrome/attention.ts` gates on it) and which CDP key routing needs. The lane pays that back through `Emulation.setFocusEmulationEnabled` instead of through the OS, so **in the lane `harness.focus()` means "make the page believe it is focused" and `harness.blur()` the reverse**, rather than "make the OS window key". `driver.mjs` ▸ `boot` turns emulation on at boot and wraps the two ops; `audit.mjs` does the same for a placed audit run. Focus emulation does not touch `document.visibilityState`, so `harness.hide()` still drives the app inactive exactly as the section above describes.
+
+`harness.window().focused` is `false` for the whole of a lane run and says so honestly. No scenario asserts `focused === true`; the two that read the field (`dock-bounce-stop-only`, `notification-shown-and-opened`) assert `focused === false`, which is the state a keyless window is already in.
+
+The `default` placement (the on-screen full audit, and every user launch) keeps `focusable: true` and is unchanged: a visible window that could not be typed into would be a worse lie than the one this fixes. Measured: `fresh-boot,terminal-ls,terminal-cursor-focus` at the default placement is assertion-identical either side of the change, `terminal-cursor-focus`'s window-blur half included.
+
 ## The rule
 
 **A change to a UI surface ships with a scenario (or an audit step) that exercises it against the real app, and `verify.mjs` runs it.** Unit tests pin the reducer; they do not press the key. The rule was social until it was not: #47, #53 and #55 were each fixed with unit tests alone, the promote's "full audit passed" never pressed what they changed, and all three shipped broken.

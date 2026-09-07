@@ -917,7 +917,13 @@ export interface HarnessSurface<T extends MenuEntryLike<T>> {
     readonly clickItem: (item: T) => void;
     /** The main window, or null when there is none (or it is destroyed). */
     readonly window: () => WindowSnapshot | null;
-    /** `show()` + `focus()`; returns `isFocused()` afterwards, or null without a window. */
+    /**
+     * `show()` + `focus()`; returns `isFocused()` afterwards, or null without a window.
+     *
+     * #109: on a window that is not allowed to be the key one (every harness/audit LANE
+     * placement is built `focusable: false`) it is `showInactive()` + `webContents.focus()`
+     * instead, and the answer is honestly `false`. `./harness.ts` has the why.
+     */
     readonly focus: () => boolean | null;
     /** `blur()`; returns `isFocused()` afterwards, or null without a window. */
     readonly blur: () => boolean | null;

@@ -5542,7 +5542,7 @@ function buildFlows(ctx) {
                 recorder.note(`shell forwarding log: ${forwarded.slice(-3).join(' | ') || '(none)'}`);
                 recorder.check(
                     'the host took the chord from the page and gave it to Kelpi',
-                    forwarded.some((line) => line.includes('meta+KeyF')),
+                    forwarded.some((line) => line.includes('⌘KeyF')),
                     forwarded.at(-1) ?? '(none)'
                 );
                 const barPresent = await page.eval(
@@ -10106,7 +10106,7 @@ function buildFlows(ctx) {
                 const emptyBefore = await page.eval(
                     `(document.querySelector('[data-testid="global-hotkey-empty"]')?.innerText ?? '').trim()`
                 );
-                recorder.check('the unset state shows an em-dash', String(emptyBefore) === '—', String(emptyBefore));
+                recorder.check('the unset state shows a dash placeholder', String(emptyBefore) === '-', String(emptyBefore));
                 const repressBefore = await page.eval(
                     `document.querySelector('[data-testid="global-hotkey-repress-toggle"]')?.disabled === true`
                 );

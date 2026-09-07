@@ -1,4 +1,4 @@
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,10 +9,11 @@ import {
     TERMINAL_RESIZES_ATTRIBUTE,
     TERMINAL_ROWS_ATTRIBUTE,
     clearPhoneTerminalState,
-    createSoftKeyboardInsetSource,
     heightUnderKeyboard,
+    keyboardBoxInset,
+    publishKeyboardInset,
     publishPhoneTerminalState,
-    useSettledSoftKeyboardInset
+    watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createFakePhoneWindow } from './testing';
 
@@ -62,8 +63,20 @@ describe('the phone attributes a pane publishes', () => {
         expect(root.hasAttribute(TERMINAL_RESIZES_ATTRIBUTE)).toBe(false);
     });
 
+    it('moves the inset on its own for the per-frame path (C6)', () => {
+        const root = document.createElement('div');
+        publishPhoneTerminalState(root, { inset: 0, rows: 42, resizes: 1 });
+        publishKeyboardInset(root, 180);
+        expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe('180');
+        // …and leaves the daemon's two numbers exactly where the last resize left them: a frame
+        // of the animation is not a resize, and the audit reads the count as a delta.
+        expect(root.getAttribute(TERMINAL_ROWS_ATTRIBUTE)).toBe('42');
+        expect(root.getAttribute(TERMINAL_RESIZES_ATTRIBUTE)).toBe('1');
+    });
+
     it('survives a null root (the pane publishes before React has attached its ref)', () => {
         expect(() => publishPhoneTerminalState(null, { inset: 1, rows: 2, resizes: 3 })).not.toThrow();
+        expect(() => publishKeyboardInset(null, 4)).not.toThrow();
         expect(() => clearPhoneTerminalState(null)).not.toThrow();
     });
 });
@@ -83,137 +96,120 @@ describe('the phone text-input attributes', () => {
     });
 });
 
-describe('createSoftKeyboardInsetSource', () => {
-    it('seeds from the viewport, so a pane that mounts with the keyboard already up is right', () => {
-        const win = createFakePhoneWindow();
-        win.raiseKeyboard(300, 1);
-        const source = createSoftKeyboardInsetSource(win);
-        expect(source.read()).toBe(300);
-        source.dispose();
+describe('keyboardBoxInset (C6 - the padding the pane takes for the keyboard)', () => {
+    it('is the whole keyboard when the pane can afford it', () => {
+        expect(keyboardBoxInset(844, 300, 16)).toBe(300);
     });
 
-    it('publishes ONCE per transition, however many frames the animation takes', () => {
+    it('is nothing at all with no keyboard, which is every desktop pane', () => {
+        expect(keyboardBoxInset(844, 0, 16)).toBe(0);
+    });
+
+    it('never takes the last row: a keyboard taller than the pane still leaves a line to type on', () => {
+        // The complement of `heightUnderKeyboard(260, 300, 16) === 16`.
+        expect(keyboardBoxInset(260, 300, 16)).toBe(244);
+    });
+
+    it('takes nothing from a pane that is already shorter than one cell', () => {
+        expect(keyboardBoxInset(9, 300, 16)).toBe(0);
+    });
+});
+
+describe('watchSoftKeyboardMotion (C6)', () => {
+    /** Both callbacks, in the order they were called, as `move:N` / `settle:N`. */
+    function record(win: ReturnType<typeof createFakePhoneWindow>, settleMs?: number) {
+        const seen: string[] = [];
+        const motion = watchSoftKeyboardMotion(
+            win,
+            {
+                onMove: (inset) => seen.push(`move:${String(inset)}`),
+                onSettle: (inset) => seen.push(`settle:${String(inset)}`)
+            },
+            settleMs
+        );
+        return { seen, motion };
+    }
+
+    it('seeds from the viewport and says nothing about it', () => {
         const win = createFakePhoneWindow();
-        const source = createSoftKeyboardInsetSource(win);
-        const seen: number[] = [];
-        source.subscribe(() => seen.push(source.read()));
+        win.raiseKeyboard(300, 1);
+        const { seen, motion } = record(win);
+        // A pane that mounts with the keyboard already up reads `live()` on its first pass; that
+        // is not a transition, so it neither moves anything nor arms the settle.
+        expect(motion.live()).toBe(300);
+        expect(motion.moving()).toBe(false);
+        expect(seen).toEqual([]);
+        motion.dispose();
+    });
+
+    it('reports every frame of the animation and settles exactly once', () => {
+        const win = createFakePhoneWindow();
+        const { seen, motion } = record(win);
 
         // iOS animates for roughly 250-300 ms and fires `resize` on most frames.
         win.raiseKeyboard(300, 15);
         expect(win.viewportEvents()).toBe(15);
-        expect(seen).toEqual([]); // nothing published while the viewport is still moving
+        expect(seen.filter((event) => event.startsWith('move:')).length).toBe(15);
+        expect(seen.at(-1)).toBe('move:300');
+        expect(seen.some((event) => event.startsWith('settle:'))).toBe(false);
+        expect(motion.moving()).toBe(true);
 
         vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        expect(seen).toEqual([300]);
-
-        win.lowerKeyboard(15);
-        vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        expect(seen).toEqual([300, 0]);
-        expect(win.viewportEvents()).toBe(30);
-        source.dispose();
+        expect(seen.at(-1)).toBe('settle:300');
+        expect(seen.filter((event) => event.startsWith('settle:')).length).toBe(1);
+        expect(motion.moving()).toBe(false);
+        motion.dispose();
     });
 
-    it('publishes the value at REST, not the frame that armed the timer', () => {
+    it('settles on the value at REST, not the frame that armed the timer', () => {
         const win = createFakePhoneWindow();
-        const source = createSoftKeyboardInsetSource(win);
-        const seen: number[] = [];
-        source.subscribe(() => seen.push(source.read()));
+        const { seen, motion } = record(win);
 
         win.raiseKeyboard(100, 1);
         vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS - 20); // not settled yet
         win.raiseKeyboard(300, 1);
         vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        expect(seen).toEqual([300]);
-        source.dispose();
+        expect(seen.filter((event) => event.startsWith('settle:'))).toEqual(['settle:300']);
+        motion.dispose();
     });
 
-    it('says nothing at all about a wobble that comes back', () => {
+    it('follows a wobble out and back, and still settles only once', () => {
         const win = createFakePhoneWindow();
-        const source = createSoftKeyboardInsetSource(win);
-        const seen: number[] = [];
-        source.subscribe(() => seen.push(source.read()));
+        const { seen, motion } = record(win);
 
-        // iOS moves `offsetTop` on scroll and back again; the inset ends where it started.
+        // iOS moves `offsetTop` on scroll and back again. The box follows both ways - that is
+        // what "the layout follows the viewport" means - and the pane's own unchanged-geometry
+        // check is what keeps the daemon out of it (`TerminalPane.keyboard.test.tsx`).
         win.raiseKeyboard(40, 1);
         win.lowerKeyboard(1);
         vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS * 4);
-        expect(seen).toEqual([]);
-        source.dispose();
+        expect(seen).toEqual(['move:40', 'move:0', 'settle:0']);
+        motion.dispose();
+    });
+
+    it('ignores an event that repeats the inset, so a scroll storm cannot hold the settle open', () => {
+        const win = createFakePhoneWindow();
+        const { seen, motion } = record(win);
+
+        win.raiseKeyboard(300, 1);
+        for (let index = 0; index < 20; index += 1) {
+            vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS - 20);
+            win.scrollViewport();
+        }
+        vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
+        expect(seen).toEqual(['move:300', 'settle:300']);
+        motion.dispose();
     });
 
     it('drops its timer and its listeners on dispose', () => {
         const win = createFakePhoneWindow();
-        const source = createSoftKeyboardInsetSource(win);
-        const seen: number[] = [];
-        source.subscribe(() => seen.push(source.read()));
+        const { seen, motion } = record(win);
         expect(win.listenerCount()).toBeGreaterThan(0);
 
         win.raiseKeyboard(300, 3);
-        source.dispose();
+        motion.dispose();
         vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS * 4);
-        expect(seen).toEqual([]);
-        expect(win.listenerCount()).toBe(0);
-    });
-});
-
-describe('useSettledSoftKeyboardInset', () => {
-    it('subscribes to nothing and answers 0 when it is not enabled (every desktop pane)', () => {
-        const win = createFakePhoneWindow();
-        const { result } = renderHook(() => useSettledSoftKeyboardInset(false, win));
-        expect(result.current).toBe(0);
-        expect(win.listenerCount()).toBe(0);
-
-        act(() => {
-            win.raiseKeyboard(300, 15);
-            vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS * 4);
-        });
-        expect(result.current).toBe(0);
-    });
-
-    it('publishes the settled inset once the keyboard has come to rest', () => {
-        const win = createFakePhoneWindow();
-        const { result } = renderHook(() => useSettledSoftKeyboardInset(true, win));
-        expect(result.current).toBe(0);
-
-        act(() => {
-            win.raiseKeyboard(300, 15);
-        });
-        expect(result.current).toBe(0);
-
-        act(() => {
-            vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        });
-        expect(result.current).toBe(300);
-
-        act(() => {
-            win.lowerKeyboard(15);
-            vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        });
-        expect(result.current).toBe(0);
-    });
-
-    it('drops back to 0 and unsubscribes the moment it stops being enabled', () => {
-        const win = createFakePhoneWindow();
-        const { result, rerender } = renderHook(
-            ({ enabled }: { enabled: boolean }) => useSettledSoftKeyboardInset(enabled, win),
-            { initialProps: { enabled: true } }
-        );
-        act(() => {
-            win.raiseKeyboard(300, 4);
-            vi.advanceTimersByTime(PHONE_KEYBOARD_SETTLE_MS);
-        });
-        expect(result.current).toBe(300);
-
-        rerender({ enabled: false });
-        expect(result.current).toBe(0);
-        expect(win.listenerCount()).toBe(0);
-    });
-
-    it('unsubscribes on unmount', () => {
-        const win = createFakePhoneWindow();
-        const { unmount } = renderHook(() => useSettledSoftKeyboardInset(true, win));
-        expect(win.listenerCount()).toBeGreaterThan(0);
-        unmount();
+        expect(seen.some((event) => event.startsWith('settle:'))).toBe(false);
         expect(win.listenerCount()).toBe(0);
     });
 });

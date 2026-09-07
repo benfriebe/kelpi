@@ -47,9 +47,10 @@ import {
     PHONE_TEXT_INPUT_ATTRIBUTES,
     PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED,
     clearPhoneTerminalState,
-    heightUnderKeyboard,
+    keyboardBoxInset,
+    publishKeyboardInset,
     publishPhoneTerminalState,
-    useSettledSoftKeyboardInset
+    watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
 import { registerTerminalPane } from './pane-registry';
@@ -299,24 +300,24 @@ export interface TerminalPaneProps {
 /**
  * Cols/rows from the body box and the engine's cell metrics; `null` for a zero-size pass.
  *
- * `bottomInset` is the software keyboard's, and it is 0 everywhere but a phone with the keyboard
- * up (C2 - `keyboard-inset.ts` holds the rule and the reason it is arithmetic here rather than a
- * padding on the pane root). At 0 the arithmetic below is character for character what it was.
+ * No keyboard arithmetic, and that is C6's whole point: on a phone the pane shrinks its own box
+ * by the live inset (`keyboard-inset.ts`), so the height measured here is already the height the
+ * terminal has. C2's `bottomInset` parameter is gone with it - a second number describing the
+ * same keyboard is a second number that can disagree with the first, which is exactly what
+ * happened on Android when the layout viewport caught up at the end of the animation.
  */
 export function measureGeometry(
     element: HTMLElement,
     renderer: TerminalRenderer,
-    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined,
-    bottomInset = 0
+    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined
 ): TerminalGeometry | null {
     const box = measure?.(element) ?? { width: element.clientWidth, height: element.clientHeight };
     if (!Number.isFinite(box.width) || !Number.isFinite(box.height)) return null;
     if (box.width <= 0 || box.height <= 0) return null;
     const cell = renderer.cellSize();
     if (cell.width <= 0 || cell.height <= 0) return null;
-    const usable = heightUnderKeyboard(box.height, bottomInset, cell.height);
     const cols = Math.max(1, Math.floor(box.width / cell.width));
-    const rows = Math.max(1, Math.floor(usable / cell.height));
+    const rows = Math.max(1, Math.floor(box.height / cell.height));
     return { cols, rows };
 }
 
@@ -415,26 +416,32 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
     const restartRef = useRef<(() => void) | null>(null);
 
-    // ── the software keyboard (C2, docs/MOBILE-PLAN.md §4) ──────────────────────────
+    // ── the software keyboard (C2, C6, docs/MOBILE-PLAN.md §4) ──────────────────────
     //
     // The ONE place a soft-keyboard inset is applied to a terminal (§7, "Keyboard inset
     // ownership"): the key bar (C1) sits in flow at the bottom of the pane and shrinks the host
     // by its own height through the ResizeObserver below, `PhoneShell` (B2) does not subtract the
     // inset for panes, and the overlays (B5) apply it to themselves. The rule, the settle window
-    // and the reason none of this is a CSS padding are in `keyboard-inset.ts`.
+    // and why C6 turned C2's arithmetic into a real box are in `keyboard-inset.ts`.
     //
     // Nothing here does anything on a desktop: `useFormFactor` answers `desktop` for every window
-    // with a fine pointer, `useSettledSoftKeyboardInset(false, …)` subscribes to nothing and
-    // returns 0, and 0 is the value at which every path below is the pre-C2 one.
+    // with a fine pointer, and on a desktop pane the effect below subscribes to nothing, writes
+    // no style, publishes no attribute and leaves `keyboardInsetRef` at the 0 every path treats
+    // as "no keyboard".
     const formFactorWindow = props.formFactorWindow ?? defaultFormFactorWindow();
     const phone = useFormFactor(formFactorWindow) === 'phone';
-    const keyboardInset = useSettledSoftKeyboardInset(
-        phone,
-        formFactorWindow,
-        props.keyboardSettleMs ?? PHONE_KEYBOARD_SETTLE_MS
-    );
-    /** The inset the geometry is currently measured with; read by `syncGeometry`, not a prop. */
+    const keyboardSettleMs = props.keyboardSettleMs ?? PHONE_KEYBOARD_SETTLE_MS;
+    /** The inset the pane's BOX is shrunk by right now; the DOM's own copy of it is the padding. */
     const keyboardInsetRef = useRef(0);
+    /**
+     * True between the first frame of a keyboard transition and its settle.
+     *
+     * The gate on `scheduleGeometrySync`: a keyboard animation drives the host's ResizeObserver at
+     * frame rate now that the box follows it, and the observer's debounce has a CEILING
+     * (`RESIZE_MAX_WAIT_MS`) that exists to keep a divider drag republishing ~10x/s. Without the
+     * gate that ceiling would put two or three intermediate grids on the PTY per transition.
+     */
+    const keyboardMovingRef = useRef(false);
     /** Whether the published phone attributes are in force; refs, so `syncGeometry` can read it. */
     const phoneRef = useRef(false);
     /** `resize` messages this pane has put on its stream. The settle rule's whole point is this. */
@@ -524,7 +531,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (renderer === null || host === null) return;
         const current = latest.current;
         if (!current.visible) return; // idle while hidden; the daemon keeps draining the PTY
-        const next = measureGeometry(host, renderer, current.measure, keyboardInsetRef.current);
+        const next = measureGeometry(host, renderer, current.measure);
         if (next === null) return; // zero-size guard
         const previous = geometryRef.current;
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
@@ -555,6 +562,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      * publishes its geometry every `RESIZE_MAX_WAIT_MS` (see the constant — run-B L5).
      */
     const scheduleGeometrySync = useCallback((): void => {
+        // C6 - a keyboard in flight owns the box, and its settle owns the measurement that follows
+        // (`keyboard-inset.ts`). Dropping the observer's work rather than deferring it is the
+        // point: whatever the box ends up being, the settle measures THAT, once. Always false on
+        // a desktop pane, which never subscribes to a viewport at all.
+        if (keyboardMovingRef.current) {
+            clearResizeTimer();
+            pendingResizeSince.current = null;
+            return;
+        }
         const delay = latest.current.resizeDebounceMs ?? DEFAULT_RESIZE_DEBOUNCE_MS;
         const maxWait = latest.current.resizeMaxWaitMs ?? Math.max(delay, RESIZE_MAX_WAIT_MS);
         const now = Date.now();
@@ -1105,39 +1121,93 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         return () => observer.disconnect();
     }, [scheduleGeometrySync]);
 
-    // ── the keyboard's inset, applied (C2) ──────────────────────────────────────────
+    // ── the keyboard's inset, applied (C2, and C6's box) ───────────────────────────
     //
-    // ONE resize per keyboard transition, up and down, and this is where that is true rather
-    // than merely likely. The inset arriving here is already settled (`keyboard-inset.ts`), so
-    // this effect runs once per transition; it syncs DIRECTLY instead of through
-    // `scheduleGeometrySync`, because the debounce's ceiling exists to republish geometry ~10x/s
-    // during a continuous gesture (`RESIZE_MAX_WAIT_MS`) and a keyboard is not a gesture - it is
-    // one step. The pending timer is dropped first so a resize already in flight cannot land a
-    // second message behind this one; a trailing one would short-circuit on unchanged geometry
-    // anyway, but not being in the race is cheaper than winning it.
+    // TWO clocks, deliberately, and this effect owns both (`keyboard-inset.ts` holds the reasons):
     //
-    // Measured (`phone-keyboard-inset`, and the jsdom test beside it): a burst of frame-cadence
-    // `visualViewport` resizes taking the viewport down by 300 px produces exactly one `resize`
-    // on the pane's stream, and the return to zero produces exactly one more.
+    //   - the BOX runs at the viewport's clock. Every `visualViewport` event moves the pane root's
+    //     bottom padding in the same task as the event, so the host, the engine canvas inside it
+    //     and the key bar below it ride the keyboard's animation instead of jumping to its
+    //     resting place a settle window later. It is a style write and an attribute write and
+    //     nothing else: no React render, like the paint-hold attributes beside it, because a
+    //     15-frame animation would otherwise be 15 renders of the whole pane and its bar.
+    //   - the DAEMON runs at the settle clock. ONE resize per transition, up and down, and this
+    //     is where that is true rather than merely likely: `onSettle` is what measures, and the
+    //     observer's own path is gated shut while the keyboard is moving.
+    //
+    // Measured (`phone-keyboard-inset`, and the jsdom tests beside it): a burst of frame-cadence
+    // `visualViewport` resizes taking the viewport down by 300 px moves the box on every one of
+    // them and produces exactly one `resize` on the pane's stream; the return to zero produces
+    // exactly one more.
+    const applyKeyboardInset = useCallback((inset: number): void => {
+        const root = rootRef.current;
+        if (root === null) return;
+        const applied = keyboardInsetRef.current;
+        let next = 0;
+        const host = hostRef.current;
+        if (inset > 0 && host !== null) {
+            const current = latest.current;
+            // The host as it stands PLUS what we already took off it, i.e. the box with no
+            // keyboard in it. One `clientHeight` read per frame, before the write, so the
+            // browser flushes layout once rather than thrashing.
+            const box = current.measure?.(host) ?? { width: host.clientWidth, height: host.clientHeight };
+            const capacity = box.height + applied;
+            next = keyboardBoxInset(capacity, inset, rendererRef.current?.cellSize().height ?? 0);
+        }
+        if (next === applied) return;
+        keyboardInsetRef.current = next;
+        // Padding, not a height: the root keeps its full box, so the pane's background still
+        // paints behind the keyboard and the focus ring still frames the pane rather than the
+        // gap. A desktop pane never reaches this line, so its inline style never grows the
+        // property at all (MOBILE-PLAN.md §3, principle 1).
+        if (next > 0) root.style.paddingBottom = `${String(next)}px`;
+        else root.style.removeProperty('padding-bottom');
+        publishKeyboardInset(root, next);
+    }, []);
+
     useEffect(() => {
         phoneRef.current = phone;
-        const next = phone ? keyboardInset : 0;
-        const changed = keyboardInsetRef.current !== next;
-        keyboardInsetRef.current = next;
-        if (changed) {
-            clearResizeTimer();
-            syncGeometry();
-        }
         if (!phone) {
+            keyboardMovingRef.current = false;
+            applyKeyboardInset(0);
             clearPhoneTerminalState(rootRef.current);
             return;
         }
+        const motion = watchSoftKeyboardMotion(
+            formFactorWindow,
+            {
+                onMove: (inset) => {
+                    keyboardMovingRef.current = true;
+                    // A resize already in flight would land an intermediate grid on the PTY
+                    // behind us; not being in the race is cheaper than winning it.
+                    clearResizeTimer();
+                    applyKeyboardInset(inset);
+                },
+                onSettle: (inset) => {
+                    keyboardMovingRef.current = false;
+                    // The box first, then the measurement, in that order and in one task: the
+                    // rows the daemon is told are the rows the pane can actually paint.
+                    applyKeyboardInset(inset);
+                    syncGeometry();
+                }
+            },
+            keyboardSettleMs
+        );
+        // A pane that mounts (or turns into a phone) with the keyboard already up takes it
+        // straight away: that is not a transition, so it neither arms the gate nor waits for it.
+        applyKeyboardInset(motion.live());
+        syncGeometry();
         publishPhoneTerminalState(rootRef.current, {
-            inset: next,
+            inset: keyboardInsetRef.current,
             rows: geometryRef.current?.rows ?? 0,
             resizes: resizeMessages.current
         });
-    }, [phone, keyboardInset, clearResizeTimer, syncGeometry]);
+        return () => {
+            motion.dispose();
+            keyboardMovingRef.current = false;
+            applyKeyboardInset(0);
+        };
+    }, [phone, formFactorWindow, keyboardSettleMs, applyKeyboardInset, clearResizeTimer, syncGeometry]);
 
     // ── the engine's textarea, told it is talking to a software keyboard (C2) ───────
     //
@@ -1465,6 +1535,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // half) so row 1 doesn't sit flush against the pane edge; the host's
                 // `clientHeight` shrinks with it, so the rows the PTY is told about stay exactly
                 // the rows the canvas can paint and the bottom row is never clipped.
+                //
+                // The BOTTOM is deliberately not here. On a phone it is the software keyboard's
+                // (C6), written imperatively by `applyKeyboardInset` at the viewport's frame rate;
+                // React never renders the property, so it never fights that write, and a desktop
+                // pane's inline style is the same three declarations it has always had.
                 paddingLeft: props.paddingX ?? TERMINAL_EDGE_PADDING,
                 paddingRight: props.paddingX ?? TERMINAL_EDGE_PADDING,
                 paddingTop: props.paddingY ?? TERMINAL_EDGE_PADDING_TOP

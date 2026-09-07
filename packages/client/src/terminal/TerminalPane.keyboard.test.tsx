@@ -14,7 +14,7 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TerminalPane } from './TerminalPane';
+import { DEFAULT_RESIZE_DEBOUNCE_MS, TerminalPane } from './TerminalPane';
 import {
     KEYBOARD_INSET_ATTRIBUTE,
     PHONE_KEYBOARD_SETTLE_MS,
@@ -58,8 +58,24 @@ async function settle(): Promise<void> {
     });
 }
 
-function measure(): { width: number; height: number } {
-    return { ...PANE };
+/**
+ * The host's box, modelled.
+ *
+ * jsdom has no layout, so the seam has to do the one piece of CSS this feature turns on: the pane
+ * root's bottom padding (C6) comes off the host, because the host is either the flex child beside
+ * the key bar or a `height: 100%` child of the root's content box. `innerHeight` is in it too, so
+ * a test can shrink the LAYOUT viewport the way Android does and watch the box follow.
+ */
+function measureFor(win: FakePhoneWindow) {
+    return (element: HTMLElement): { width: number; height: number } => {
+        const root = element.closest('[data-pane-id]');
+        const padding =
+            root === null ? 0 : Number.parseFloat((root as HTMLElement).style.paddingBottom || '0');
+        return {
+            width: PANE.width,
+            height: win.innerHeight - (Number.isFinite(padding) ? padding : 0)
+        };
+    };
 }
 
 interface Harness {
@@ -87,7 +103,7 @@ function mount(options: {
             focused
             visible
             createRenderer={renderers.factory}
-            measure={measure}
+            measure={measureFor(options.win)}
             formFactorWindow={options.win}
         />
     );
@@ -223,6 +239,173 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         expect(harness.sent()).toBe(before);
     });
 
+    /*
+     * C6 (owner device round 4, 2026-09-07): "pass, but the pane shifts after the keyboard has
+     * finished moving". Under C2 the inset was arithmetic on the measured height and the pane's
+     * own box never moved, so everything the pane renders BELOW the terminal - the key bar - only
+     * followed a keyboard when the BROWSER shrank the layout viewport, which Android Chrome did
+     * intermittently and not at all on the first appearance after load (item A1). The box is the
+     * pane's own business now, and these are the two halves of that: it follows every frame, and
+     * the daemon still hears one message per transition.
+     */
+    it('moves its box on every frame of the animation, and the daemon hears none of them', async () => {
+        const harness = await mountPane({ coarse: true });
+        const root = harness.root();
+        const before = harness.sent();
+        expect(root.style.paddingBottom).toBe('');
+
+        // 15 frames at ~16 ms, one `visualViewport` resize each, exactly as iOS animates. Read
+        // back inside the same synchronous turn as the event: what is asserted is that the box
+        // moved IN the frame that carried the number, so it can never be a frame behind.
+        for (let frame = 1; frame <= 15; frame += 1) {
+            const inset = (KEYBOARD_HEIGHT * frame) / 15;
+            act(() => {
+                harness.win.raiseKeyboard(inset, 1);
+            });
+            expect(root.style.paddingBottom).toBe(`${String(inset)}px`);
+            expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(String(inset));
+            expect(harness.sent()).toBe(before);
+        }
+
+        // ...and then one message, for the geometry the box actually ended up with.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS);
+        });
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+    });
+
+    it('gives the box back frame by frame on the way down too', async () => {
+        const harness = await mountPane({ coarse: true });
+        await raiseKeyboard(harness.win);
+        const root = harness.root();
+        const before = harness.sent();
+
+        for (let frame = 14; frame >= 0; frame -= 1) {
+            const inset = (KEYBOARD_HEIGHT * frame) / 15;
+            act(() => {
+                harness.win.raiseKeyboard(inset, 1);
+            });
+            expect(root.style.paddingBottom).toBe(inset === 0 ? '' : `${String(inset)}px`);
+            expect(harness.sent()).toBe(before);
+        }
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS);
+        });
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_DOWN });
+    });
+
+    /*
+     * Item A1: "bar did not move with the keyboard at first; by B7 it was moving with it."
+     * The FIRST transition a pane ever sees arrives while its start chain is still running, and
+     * it has to land on the box like any other.
+     */
+    it('applies the very first keyboard after mount, before the start chain has settled', async () => {
+        const win = createFakePhoneWindow();
+        const harness = mount({ win });
+
+        // No `settle()`: the keyboard arrives while the engine is still being built.
+        await act(async () => {
+            win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
+        });
+        const root = harness.root();
+        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(String(KEYBOARD_HEIGHT));
+
+        // ...and once everything has run, the pane is on the keyboard's rows, not the window's.
+        await settle();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS * 2);
+        });
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+        expect(root.getAttribute(TERMINAL_ROWS_ATTRIBUTE)).toBe(String(ROWS_KEYBOARD_UP));
+    });
+
+    /*
+     * The Android shape, which MOBILE-PLAN.md section 7 recorded as C2's known limit: the visual
+     * viewport animates and then the LAYOUT viewport catches up in one step at the end, taking
+     * `innerHeight` down by the same 300 px and putting `readSoftKeyboardInset` back to zero. C2
+     * could not be right here - a settled VALUE of 300 subtracted from a window that had already
+     * lost 300 is 300 px of terminal collapsed twice - and C6 is, because the box and the
+     * measurement are read from the same DOM at the same instant.
+     */
+    it('survives the layout viewport catching up at the end, in exactly one message', async () => {
+        const harness = await mountPane({ coarse: true });
+        const root = harness.root();
+        const before = harness.sent();
+
+        await act(async () => {
+            harness.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
+        });
+        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+
+        await act(async () => {
+            // Chrome resizes the window: `innerHeight` 844 -> 544 with the viewport already at
+            // 544, so the keyboard the client can see goes to zero in the same frame.
+            harness.win.shrinkWindow(KEYBOARD_HEIGHT);
+            observers.trigger();
+        });
+        // The padding came off in that same frame, so the host is 544 px either way round and
+        // nothing jumped.
+        expect(root.style.paddingBottom).toBe('');
+        expect(harness.sent()).toBe(before);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + DEFAULT_RESIZE_DEBOUNCE_MS);
+        });
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+
+        // ...and back: the visual viewport runs ahead of the window, so the inset never leaves
+        // zero and the whole transition is the ordinary ResizeObserver path.
+        const raised = harness.sent();
+        await act(async () => {
+            harness.win.lowerKeyboard(15);
+            harness.win.shrinkWindow(0);
+            observers.trigger();
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + DEFAULT_RESIZE_DEBOUNCE_MS);
+        });
+        expect(harness.sent() - raised).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_DOWN });
+    });
+
+    /*
+     * The same shape with the window resize LATE - more than a settle window after the last
+     * animation frame, which is what a phone that has just loaded the page does.
+     *
+     * Measured on the base commit (2026-09-07): three messages and a visible collapse, 27 rows
+     * then 12 then 27, because a settled inset of 300 was subtracted from a window that had
+     * already lost the same 300. The box is read at measure time now, so there is one message and
+     * nothing to collapse.
+     */
+    it('and when the layout viewport is late, which is what the base could not survive', async () => {
+        const harness = await mountPane({ coarse: true });
+        const before = harness.sent();
+
+        await act(async () => {
+            harness.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + 80);
+        });
+        // The settle has already fired against the box the pane made for itself.
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+
+        await act(async () => {
+            harness.win.shrinkWindow(KEYBOARD_HEIGHT);
+            observers.trigger();
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS + DEFAULT_RESIZE_DEBOUNCE_MS);
+        });
+
+        // Nothing further to say: the window took the 300 px the padding was holding, so the host
+        // is the same 544 px it already was.
+        expect(harness.sent() - before).toBe(1);
+        expect(harness.root().style.paddingBottom).toBe('');
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
+        expect(harness.pty.last().resizes.map((size) => size.rows)).not.toContain(12);
+    });
+
     it('sets the software-keyboard attributes on the engine textarea', async () => {
         const harness = await mountPane({ coarse: true, autoFocusOnOpen: true });
         const area = harness.root().querySelector('textarea');
@@ -285,6 +468,41 @@ describe('TerminalPane: and NOT on a desktop', () => {
         expect(desktop.root().hasAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_ROWS_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_RESIZES_ATTRIBUTE)).toBe(false);
+    });
+
+    it('never grows a bottom padding, however far the visual viewport moves (C6)', async () => {
+        const phone = await mountPane({ coarse: true });
+        const desktop = await mountPane({ coarse: false });
+
+        await act(async () => {
+            desktop.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS * 2);
+        });
+
+        // The property is never written at all on a desktop, not written and then cleared: the
+        // inline style is the same three declarations the pane has had since long before C2.
+        expect(desktop.root().style.paddingBottom).toBe('');
+        expect(desktop.root().getAttribute('style')).not.toContain('padding-bottom');
+        // ...and the phone twin, on the same shaped window, does grow one.
+        await act(async () => {
+            phone.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS * 2);
+        });
+        expect(phone.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+    });
+
+    it('takes the padding back off a pane that stops being a phone', async () => {
+        const harness = await mountPane({ coarse: true });
+        await raiseKeyboard(harness.win);
+        expect(harness.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+
+        // An iPad that gains a Bluetooth mouse: `(pointer: coarse)` flips with no remount.
+        await act(async () => {
+            harness.win.setPointer(false);
+            await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS);
+        });
+        expect(harness.root().style.paddingBottom).toBe('');
+        expect(harness.root().getAttribute('style')).not.toContain('padding-bottom');
     });
 
     it('never touches the engine textarea', async () => {

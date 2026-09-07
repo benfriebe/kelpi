@@ -18,21 +18,27 @@
  *   - overlays that own their layout (the palette and settings sheets, B5) apply it to
  *     themselves, to their own box, and never to a pane.
  *
- * ## Why the inset is arithmetic and not padding
+ * ## The box follows the keyboard; the daemon hears the rest (C6, device round 4)
  *
- * The pane could shrink its host with a bottom padding and let the `ResizeObserver` notice. It
- * does not, and the reason is measured: the engine sizes its canvas INLINE to
- * `cols x cellWidth` by `rows x cellHeight`
- * (`vendor/ghostty-web-patched/source/lib/renderer.ts:441-446`) and appends it as the host's
- * first child with `display: block`, so an inline height beats the client's own
- * `[data-terminal-host] > * { height: 100% }` rule (`styles.css:424`) and the grid is already
- * top-anchored inside the host. Taking the keyboard off the MEASURED height therefore shrinks the
- * canvas from the bottom exactly as a padding would - the prompt line, which is the bottom row,
- * lands directly above the keyboard - while leaving the host's box, the mouse reporter's origin
- * and the focus ring's inset untouched. It is also the only form the rule can take that a jsdom
- * test can drive, because the pane measures through an injectable seam and jsdom has no layout.
+ * C2 applied the inset as ARITHMETIC on the measured height and never moved the pane's own box.
+ * That is enough for the rows - the engine sizes its canvas INLINE to `cols x cellWidth` by
+ * `rows x cellHeight` (`vendor/ghostty-web-patched/source/lib/renderer.ts:441-446`) and the grid
+ * is top-anchored, so a shorter grid IS a shorter canvas - but it is not enough for anything the
+ * pane renders BELOW the terminal. The key bar (C1) sits in flow at the bottom of a pane that is
+ * `h-full`, so under C2 it moved for a keyboard only when the BROWSER shrank the layout viewport,
+ * and whether Android Chrome does that (and when) is not something the client controls. The
+ * owner's device round 4 saw exactly that: on the first keyboard after load the bar stayed behind
+ * the keyboard, and later in the same session it rode it.
  *
- * ## Why the inset is settled before it is used
+ * So C6 makes the box the pane's own business. The live inset is applied as a bottom padding on
+ * the pane root on EVERY visual-viewport event, at the viewport's own frame rate, in the same
+ * task as the event: the host (a flex child, or `height: 100%` when there is no bar) loses
+ * exactly those pixels, the bar rides the keyboard's animation, and the terminal's usable height
+ * is then simply the box it has - no arithmetic, nothing to keep in step. {@link heightUnderKeyboard}
+ * survives as the cap on that padding ({@link keyboardBoxInset}): the box never shrinks below one
+ * cell, because a keyboard taller than the pane must still leave a line to type on.
+ *
+ * ## Why the daemon is told only once the keyboard has come to rest
  *
  * A software keyboard ANIMATES, and `visualViewport` fires `resize` on most frames while it does
  * (iOS's own transition is roughly 250-300 ms, i.e. on the order of 15 frames). The pane's
@@ -42,22 +48,24 @@
  * republishes is a `resize` on the pane's stream, a `SIGWINCH` on the PTY and a full repaint of
  * whatever TUI is running, for intermediate heights nobody will ever see.
  *
- * So the raw inset is settled HERE, before the pane ever measures with it: a new value is
- * published only once it has stopped changing for {@link PHONE_KEYBOARD_SETTLE_MS}. One settled
- * value per transition, one measurement, one resize message - up and down.
+ * So {@link PHONE_KEYBOARD_SETTLE_MS} gates WHEN the pane measures, not WHAT it measures: while
+ * the keyboard is in flight the pane moves its box and says nothing, and once the viewport has
+ * held still for the settle window it measures once and sends one message. One transition, one
+ * `resize` - up and down. That the gate is on the measurement rather than on the value is what
+ * makes it correct on Android too, where the layout viewport catches up at the END of the
+ * animation: the box and the number the daemon is told are read from the same DOM at the same
+ * instant, so they can never disagree by a keyboard's height (which a settled VALUE, snapshotted
+ * before the layout viewport moved, would).
  */
 
-import { useEffect, useState } from 'react';
-
 import {
-    defaultFormFactorWindow,
     readSoftKeyboardInset,
     watchSoftKeyboardInset,
     type FormFactorWindow
 } from '../chrome/form-factor';
 
 /**
- * How long the visual viewport must hold still before its inset counts as the keyboard's.
+ * How long the visual viewport must hold still before the pane measures and tells the daemon.
  *
  * 120 ms, and the two bounds it sits between are what fix it. The LOWER bound is the gap between
  * the resize events a keyboard animation produces: those arrive per frame, about 16.7 ms apart at
@@ -66,8 +74,13 @@ import {
  * before the rows change under them; an eighth of a second is below the ~200 ms at which a
  * response stops reading as immediate.
  *
+ * It delays the PTY only. The pane's own box follows the keyboard in the same task as each
+ * viewport event (C6), so nothing a person can see waits for this window; what waits is the
+ * `SIGWINCH` and the TUI repaint behind it.
+ *
  * Measured by the `phone-keyboard-inset` audit step, which dispatches a frame-cadence burst of
- * `visualViewport` resizes and asserts the pane sends the daemon exactly one `resize` for it.
+ * `visualViewport` resizes, asserts the pane's box tracks every one of them, and asserts the pane
+ * sends the daemon exactly one `resize` for the whole burst.
  */
 export const PHONE_KEYBOARD_SETTLE_MS = 120;
 
@@ -113,7 +126,13 @@ export const PHONE_TEXT_INPUT_ATTRIBUTES_CLEARED: Readonly<Record<string, string
 
 // ── the pane's published phone state ────────────────────────────────────────────────
 
-/** The settled keyboard inset in CSS px, as the pane last measured with it. */
+/**
+ * The keyboard inset in CSS px that the pane's BOX is currently shrunk by.
+ *
+ * Live since C6, and written in the same task as the viewport event that moved it, so the audit
+ * can sample it mid-animation and see the box tracking the keyboard rather than jumping to its
+ * resting place a settle window later. At rest it is the same number C2 published.
+ */
 export const KEYBOARD_INSET_ATTRIBUTE = 'data-terminal-keyboard-inset';
 
 /**
@@ -156,6 +175,18 @@ export function publishPhoneTerminalState(root: Element | null, state: PhoneTerm
     root.setAttribute(TERMINAL_RESIZES_ATTRIBUTE, String(state.resizes));
 }
 
+/**
+ * Publish just the inset, for the per-frame path (C6).
+ *
+ * The rows and the resize count belong to the daemon's story and move once per transition;
+ * the inset belongs to the box's and moves on every animation frame. Splitting them is what
+ * keeps a frame's work to one attribute write and no React render at all.
+ */
+export function publishKeyboardInset(root: Element | null, inset: number): void {
+    if (root === null) return;
+    root.setAttribute(KEYBOARD_INSET_ATTRIBUTE, String(inset));
+}
+
 /** Take the phone state back off a pane that has stopped being a phone. */
 export function clearPhoneTerminalState(root: Element | null): void {
     if (root === null) return;
@@ -171,9 +202,10 @@ export function clearPhoneTerminalState(root: Element | null): void {
  *
  * Clamped at one cell, never at zero: a keyboard taller than the pane (a split pane on a small
  * phone, where iOS's keyboard is around 300 px of an 844 px window) must still leave a line to
- * type on. Returning zero instead would trip the pane's zero-size guard, which would send NO
- * resize at all and leave the terminal at its full pre-keyboard rows - the exact defect the inset
- * exists to fix, in the one case where it matters most.
+ * type on. Returning zero instead would collapse the host to nothing and trip the pane's
+ * zero-size guard, which would send NO resize at all and leave the terminal at its full
+ * pre-keyboard rows - the exact defect the inset exists to fix, in the one case where it matters
+ * most.
  *
  * `inset <= 0` returns the height untouched, so a desktop pane (whose inset is always 0) takes
  * the identical arithmetic path it took before this function existed.
@@ -184,35 +216,77 @@ export function heightUnderKeyboard(height: number, inset: number, cellHeight: n
     return Math.max(floor, height - inset);
 }
 
+/**
+ * The bottom padding a pane may take for a keyboard `inset` px tall (C6).
+ *
+ * `capacity` is the host's height WITHOUT any keyboard padding, so the answer is the whole
+ * keyboard whenever the pane can afford it and the clamp above whenever it cannot. Expressed as
+ * the complement of {@link heightUnderKeyboard} rather than as its own `Math.min`, so the box and
+ * the height a terminal may use are the same rule stated once.
+ */
+export function keyboardBoxInset(capacity: number, inset: number, cellHeight: number): number {
+    return Math.max(0, capacity - heightUnderKeyboard(capacity, inset, cellHeight));
+}
+
 // ── the settle rule ─────────────────────────────────────────────────────────────────
 
-/** A settled inset, and a way to hear about it. Disposable, because it owns a timer. */
-export interface SoftKeyboardInsetSource {
-    /** The settled inset in CSS px. */
-    read(): number;
-    /** Called when `read()` would answer differently. Returns an unsubscribe. */
-    subscribe(listener: () => void): () => void;
+/**
+ * A keyboard in motion. Disposable, because it owns a timer and two viewport listeners.
+ */
+export interface SoftKeyboardMotion {
+    /** The inset the last viewport event reported, in CSS px. */
+    live(): number;
+    /** True between the first frame of a transition and its settle. */
+    moving(): boolean;
     dispose(): void;
 }
 
+/** What a watcher wants to hear. Both are called with the inset as it stands at that moment. */
+export interface SoftKeyboardMotionHandlers {
+    /**
+     * The viewport moved: a new inset, in the same task as the event that carried it. The box
+     * follows this one, so it must do no more work than a style write.
+     */
+    readonly onMove: (inset: number) => void;
+    /**
+     * The viewport has held still for the settle window: measure now, once. Called even when the
+     * inset ended where it began (an Android transition does exactly that - see below), because
+     * what settles is the LAYOUT, and the caller's own unchanged-geometry check is the thing that
+     * decides whether the daemon hears about it.
+     */
+    readonly onSettle: (inset: number) => void;
+}
+
 /**
- * Watch the visual viewport and publish its inset only once it has stopped moving.
+ * Watch the visual viewport: every frame of the animation to `onMove`, one `onSettle` per
+ * transition.
  *
- * Seeded from the CURRENT inset rather than from zero, so a pane that mounts while the keyboard
- * is already up measures itself correctly on its first pass instead of resizing once immediately
- * afterwards.
+ * Seeded from the CURRENT inset and silent about it: a pane that mounts while the keyboard is
+ * already up reads {@link SoftKeyboardMotion.live} and applies it on its first pass, rather than
+ * being told about a "transition" that never happened.
  *
- * The value published is re-read when the timer fires, not the one that armed it: the point of
- * the rule is the geometry at REST, and the value that armed the timer is by construction an
- * intermediate frame of the animation.
+ * The timer is armed by a CHANGE and left alone by a repeat, so the settle window means "120 ms
+ * with the inset where it is" and a stream of identical readings (iOS fires `scroll` freely)
+ * cannot hold it open. `onSettle` re-reads rather than replaying the value that armed it: the
+ * point of the rule is the geometry at REST, and the arming value is by construction an
+ * intermediate frame.
+ *
+ * The two shapes this has to be right for, both measured in `TerminalPane.keyboard.test.tsx`:
+ *
+ *   - iOS: the layout viewport never moves, so the inset climbs 0 -> 300 over the animation and
+ *     stays there. Fifteen moves, one settle at 300.
+ *   - Android: the layout viewport catches up at the END, so the inset climbs 0 -> 300 over the
+ *     animation and then drops back to 0 in one step as `innerHeight` shrinks by the same 300.
+ *     Sixteen moves, one settle at 0 - and the box, which followed every one of them, is exactly
+ *     where it should be, because the padding came off in the same frame the window shrank.
  */
-export function createSoftKeyboardInsetSource(
+export function watchSoftKeyboardMotion(
     win: FormFactorWindow,
+    handlers: SoftKeyboardMotionHandlers,
     settleMs: number = PHONE_KEYBOARD_SETTLE_MS
-): SoftKeyboardInsetSource {
-    let settled = readSoftKeyboardInset(win);
+): SoftKeyboardMotion {
+    let live = readSoftKeyboardInset(win);
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const listeners = new Set<() => void>();
 
     const clear = (): void => {
         if (timer === null) return;
@@ -221,64 +295,27 @@ export function createSoftKeyboardInsetSource(
     };
 
     const onViewportChange = (): void => {
+        const next = readSoftKeyboardInset(win);
+        // A repeat is not a frame of anything: iOS fires `scroll` on the visual viewport without
+        // moving it, and re-arming for those would push the settle out indefinitely.
+        if (next === live) return;
+        live = next;
         clear();
-        // Already where we published: a wobble that came back (iOS moves `offsetTop` on scroll
-        // and back again) is not a transition, and arming a timer for it would publish the same
-        // number and cost a measurement.
-        if (readSoftKeyboardInset(win) === settled) return;
         timer = setTimeout(() => {
             timer = null;
-            const next = readSoftKeyboardInset(win);
-            if (next === settled) return;
-            settled = next;
-            for (const listener of [...listeners]) listener();
+            handlers.onSettle(readSoftKeyboardInset(win));
         }, settleMs);
+        handlers.onMove(next);
     };
 
     const stopWatching = watchSoftKeyboardInset(win, onViewportChange);
 
     return {
-        read: () => settled,
-        subscribe(listener: () => void): () => void {
-            listeners.add(listener);
-            return () => listeners.delete(listener);
-        },
+        live: () => live,
+        moving: () => timer !== null,
         dispose(): void {
             clear();
             stopWatching();
-            listeners.clear();
         }
     };
-}
-
-/**
- * The settled software-keyboard inset, in CSS px, or 0 when `enabled` is false.
- *
- * `enabled` is the form-factor gate and it is a parameter rather than a read inside, so that a
- * desktop pane subscribes to NOTHING: no viewport listener, no timer, no state. The hook is still
- * called unconditionally (it is a hook), but on a desktop it does nothing at all and returns the
- * constant 0 that `heightUnderKeyboard` treats as "no keyboard".
- */
-export function useSettledSoftKeyboardInset(
-    enabled: boolean,
-    win: FormFactorWindow = defaultFormFactorWindow(),
-    settleMs: number = PHONE_KEYBOARD_SETTLE_MS
-): number {
-    const [inset, setInset] = useState(0);
-    useEffect(() => {
-        if (!enabled) {
-            setInset(0);
-            return;
-        }
-        const source = createSoftKeyboardInsetSource(win, settleMs);
-        setInset(source.read());
-        const off = source.subscribe(() => setInset(source.read()));
-        return () => {
-            off();
-            source.dispose();
-        };
-    }, [enabled, win, settleMs]);
-    // Belt and braces for the render in which `enabled` flips to false and the effect has not run
-    // yet: the answer a desktop pane sees is never a stale phone number.
-    return enabled ? inset : 0;
 }

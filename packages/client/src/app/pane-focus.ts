@@ -31,6 +31,8 @@
  * editable is chrome.
  */
 
+import { currentFormFactor, defaultFormFactorWindow, type FormFactorWindow } from '../chrome/form-factor';
+
 /**
  * Marks an element whose caret belongs to a PANE (the terminal host, an editor's textarea).
  *
@@ -38,6 +40,39 @@
  * engine and is a descendant of the host, so the lookup walks up with `closest`.
  */
 export const PANE_SURFACE_ATTR = 'data-pane-surface';
+
+/**
+ * C5 - may the client move the caret onto a pane surface WITHOUT being asked to?
+ *
+ * **Owner-directed divergence from the shipped Swift app**, like every phone rule: the shipped
+ * app is a Mac app, so there is no parity reference for any of this and there cannot be one
+ * (`chrome/form-factor.ts` says that once for the whole program). This is the caret layer's
+ * instance of it, and it is the ONE seam the phone rule is written at - everything below and in
+ * `terminal/TerminalPane.tsx` and `App.tsx` asks this rather than testing the form factor itself.
+ *
+ * On a desktop the answer is always yes and every path is byte for byte what it was: a window
+ * left with the caret on a button that no longer exists types nowhere, which is why the
+ * overlay-close handoff ({@link focusPaneSurface}) and the pane's own claim exist at all.
+ *
+ * On a PHONE the answer is no, because moving the caret onto a pane surface is not a focus
+ * change there - it is summoning a software keyboard over half the screen. Measured on the
+ * owner's phone (device round 4, 2026-09-07, Android Chrome): closing the Settings sheet raised
+ * the keyboard, because `closeSettings` hands the caret back to the focused pane and
+ * `focus()` on an editable IS how Android puts the keyboard up. So on a phone the keyboard is
+ * the person's EXPLICIT choice and it has exactly two ways up, neither of which comes through
+ * here: a direct tap on the terminal surface, which the engine's own `touchend` answers
+ * (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`), and the key bar's key when it
+ * reads Show (`terminal/TerminalPane.tsx` ▸ `showKeyboard`).
+ *
+ * Deliberately about EVERY pane surface and not only a terminal's: an editor pane's textarea
+ * raises the same keyboard, and a person who has put it away has not asked for it back there
+ * either. The caret is not moved AWAY from anything by this rule - `releasePaneCaret`,
+ * `releaseFocusedPaneCaret` and {@link undoSurfaceAutoFocus} are unchanged, and so is the
+ * engine's own grab when it opens: this governs claims, not releases.
+ */
+export function mayClaimPaneCaret(win: FormFactorWindow = defaultFormFactorWindow()): boolean {
+    return currentFormFactor(win) !== 'phone';
+}
 
 const PANE_SURFACE_SELECTOR = `[${PANE_SURFACE_ATTR}]`;
 
@@ -485,9 +520,15 @@ const CARET_HANDOFF_BUDGET_MS = 1_500;
  * ({@link armCaretClaim}): the pane takes the caret itself the moment the field lets go.
  *
  * Returns a cancel function; it stops on its own once the question is settled.
+ *
+ * C5 - and it does not run at all on a phone, where a handoff nobody asked for is a software
+ * keyboard nobody asked for ({@link mayClaimPaneCaret}). The check is here rather than inside
+ * `attempt` because this is a per-FRAME loop with a 1.5 s budget: asking once, at the top, is
+ * both the whole answer and the cheap place to ask it.
  */
-export function handCaretToPaneWhenReady(paneID: string): () => void {
+export function handCaretToPaneWhenReady(paneID: string, win?: FormFactorWindow): () => void {
     if (typeof document === 'undefined') return () => undefined;
+    if (!mayClaimPaneCaret(win)) return () => undefined;
     let cancelled = false;
     const deadline = Date.now() + CARET_HANDOFF_BUDGET_MS;
     const attempt = (): void => {

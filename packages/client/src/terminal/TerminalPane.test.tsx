@@ -15,10 +15,12 @@ import {
 } from './TerminalPane';
 import { paneHandle } from './pane-registry';
 import {
+    createFakePhoneWindow,
     createFakePtyApi,
     createFakeRendererFactory,
     installFakeResizeObserver,
-    type FakePaneStream
+    type FakePaneStream,
+    type FakePhoneWindow
 } from './testing';
 
 /**
@@ -1251,6 +1253,172 @@ describe('TerminalPane — helpers', () => {
 
         const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
         expect(host.contains(document.activeElement)).toBe(true);
+    });
+});
+
+/**
+ * C5 - a phone pane makes no claim on the caret, because the caret IS the software keyboard
+ * (docs/MOBILE-PLAN.md §4, owner device round 4, 2026-09-07, Android Chrome).
+ *
+ * **Owner-directed divergence from the shipped Swift app**, like every phone rule: the shipped
+ * app is a Mac app, so nothing here has a parity reference (`chrome/form-factor.ts` says that
+ * once for the whole program).
+ *
+ * The three sites that used to call `renderer.focus()` on this pane's behalf now go through one
+ * seam, `claimCaret`, and the seam asks `mayClaimPaneCaret`. The interesting one is the ARMED
+ * claim (issue #35): a claim that was declined because a chrome field held the caret stays armed
+ * and fires on the next focus move - and on a phone the next focus move is very often a key bar
+ * BUTTON, because Android moves focus to a tapped button whatever the button does about its own
+ * pointer-down (`KeyBar.tsx`'s header records that measurement). A button is not a caret worth
+ * protecting, so the armed claim answered it and the keyboard came back up.
+ *
+ * Every case below has its "and NOT on desktop" twin, which is what says the desktop paths are
+ * unchanged.
+ */
+describe('TerminalPane - who may summon the software keyboard (C5)', () => {
+    /** A chrome text field OUTSIDE any pane: the caret `shouldGrabFocus` declines to take. */
+    function mountChromeField(): HTMLInputElement {
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        return input;
+    }
+
+    /**
+     * Mount a pane whose claim is DECLINED, so the claim is left armed (issue #35), and then move
+     * the caret the way Android does when a bar key is tapped: onto a button.
+     *
+     * Returns the renderer's focus count across the move, which is the whole question - it is
+     * `renderer.focus()` that puts the caret in the engine's textarea and the keyboard on screen.
+     */
+    async function claimsAfterAButtonTakesTheCaret(win: FakePhoneWindow): Promise<number> {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        const field = mountChromeField();
+        field.focus();
+        render(
+            <TerminalPane
+                paneID="pane-c5"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(390, 844)}
+                formFactorWindow={win}
+            />
+        );
+        await settle();
+        const renderer = renderers.last();
+        // The field still has it, so the claim was declined and is armed.
+        expect(document.activeElement).toBe(field);
+        const before = renderer.focusCount;
+
+        const button = document.createElement('button');
+        button.tabIndex = -1;
+        document.body.appendChild(button);
+        await act(async () => {
+            button.focus();
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(20);
+        });
+        return renderer.focusCount - before;
+    }
+
+    it('does not answer an armed claim with the keyboard when a bar key takes the caret', async () => {
+        expect(await claimsAfterAButtonTakesTheCaret(createFakePhoneWindow())).toBe(0);
+    });
+
+    it('and NOT on desktop: the same armed claim still collects the caret the field let go of', async () => {
+        expect(await claimsAfterAButtonTakesTheCaret(createFakePhoneWindow({ coarse: false }))).toBe(1);
+    });
+
+    /**
+     * N15's resync - the caret comes back with the window. On a desktop that is the difference
+     * between a window that types and one that does not; on a phone it is the software keyboard
+     * coming up because the person switched back to the browser.
+     */
+    async function claimsWhenTheWindowComesBack(win: FakePhoneWindow): Promise<number> {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        render(
+            <TerminalPane
+                paneID="pane-c5-window"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(390, 844)}
+                formFactorWindow={win}
+            />
+        );
+        await settle();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(20);
+        });
+        const renderer = renderers.last();
+        const before = renderer.focusCount;
+        await act(async () => {
+            fireEvent(window, new Event('focus'));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(20);
+        });
+        return renderer.focusCount - before;
+    }
+
+    it('does not take the caret back when the window regains focus on a phone', async () => {
+        expect(await claimsWhenTheWindowComesBack(createFakePhoneWindow())).toBe(0);
+    });
+
+    it('and NOT on desktop: a window handed back still gets its caret (N15)', async () => {
+        expect(await claimsWhenTheWindowComesBack(createFakePhoneWindow({ coarse: false }))).toBe(1);
+    });
+
+    /**
+     * The one way up that stays: the key bar's key when it reads Show, which is the person
+     * asking. It focuses the engine's own input node directly rather than through
+     * `renderer.focus()`, and that is deliberate (see `showKeyboard`), so it is measured on the
+     * DOM rather than on the renderer's counter.
+     */
+    it('the key bar’s Show key still raises the keyboard, which is the whole point of the rule', async () => {
+        const renderers = createFakeRendererFactory({ autoFocusOnOpen: true });
+        const pty = createFakePtyApi();
+        const view = render(
+            <TerminalPane
+                paneID="pane-c5-show"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(390, 844)}
+                formFactorWindow={createFakePhoneWindow()}
+            />
+        );
+        await settle();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(20);
+        });
+        const root = view.container.querySelector('[data-pane-id="pane-c5-show"]') as HTMLElement;
+        const host = root.querySelector('[data-terminal-host]') as HTMLElement;
+        const toggle = root.querySelector('[data-terminal-key="hide-keyboard"]') as HTMLButtonElement;
+
+        // Down, by the only key that may do it…
+        await act(async () => {
+            fireEvent.click(toggle);
+            await Promise.resolve();
+        });
+        expect(host.contains(document.activeElement)).toBe(false);
+        expect(toggle.textContent).toBe('Show');
+
+        // …and back up, by the same key, which is the person asking for it.
+        await act(async () => {
+            fireEvent.click(toggle);
+            await Promise.resolve();
+        });
+        expect(host.contains(document.activeElement)).toBe(true);
+        expect(toggle.textContent).toBe('Hide');
     });
 });
 

@@ -30528,7 +30528,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-caret-owner',
             expect:
-                'Under a 390x844 phone viewport, with the software keyboard down (the caret off the engine and the bar’s key reading Show), tapping bar keys leaves it down EVEN WHEN THE PLATFORM MOVES FOCUS TO THE TAPPED BUTTON, which is what Android does and what CDP’s own touch does not: after each tap the step focuses the button itself and then watches the caret over two frames and a settle window - it must not land on the engine’s textarea and the key must still read Show. Opening Settings and closing it again leaves the keyboard down the same way. And NOT on desktop: with the emulation cleared, closing Settings hands the caret straight back to the focused pane’s surface, exactly as it does today.',
+                'Under a 390x844 phone viewport, a keyboard faked at the visual viewport turns the bar’s key into Hide (C8: the label names the keyboard, not the caret), tapping it takes the caret off the engine, and dropping the fake leaves the state the step is about: keyboard down, caret away, key reading Show. From there, tapping bar keys leaves it down EVEN WHEN THE PLATFORM MOVES FOCUS TO THE TAPPED BUTTON, which is what Android does and what CDP’s own touch does not: after each tap the step focuses the button itself and then watches the caret over two frames and a settle window - it must not land on the engine’s textarea and the key must still read Show. Opening Settings and closing it again leaves the keyboard down the same way. Tapping Show puts the caret back on the engine, and the key turns over when the keyboard it asked for actually arrives. And NOT on desktop: with the emulation cleared, closing Settings hands the caret straight back to the focused pane’s surface, exactly as it does today.',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -30559,7 +30559,14 @@ function buildFlows(ctx) {
                 const rosterBefore = await readRoster();
                 recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
 
-                /** Where the caret is, and what the bar's toggle says about it. */
+                /**
+                 * Where the caret is, what the bar's toggle says, and WHY it says it.
+                 *
+                 * The `mode` is C8's. Since device round 6 the toggle's face is read off C7's
+                 * `data-keyboard-viewport` wherever that is published, and off the caret only
+                 * where it is not, so a reading that prints the caret without the mode cannot
+                 * explain its own label. Every detail below prints both.
+                 */
                 const readCaret = async () =>
                     JSON.parse(
                         String(
@@ -30567,8 +30574,46 @@ function buildFlows(ctx) {
                                 `JSON.stringify({
                                     caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
                                     inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false,
-                                    label: (document.querySelector('${keyboardKey}')?.textContent ?? '(none)').trim()
+                                    label: (document.querySelector('${keyboardKey}')?.textContent ?? '(none)').trim(),
+                                    mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
                                 })`
+                            )
+                        )
+                    );
+
+                /**
+                 * C8 - raise or drop a software keyboard at the one seam a desktop Chromium has,
+                 * the same shadow `phone-keyboard-inset` and `phone-key-bar` use.
+                 *
+                 * This step needs it because of what the toggle now is. The previous cut opened
+                 * by tapping the keyboard key and asserting the caret left the engine, on the
+                 * assumption that a caret on the textarea IS a keyboard up, so the key must read
+                 * Hide. Round 6 retired that assumption: a programmatic focus does not raise
+                 * Android's keyboard, so the key reads the VIEWPORT, and under emulation nothing
+                 * takes viewport space - the key correctly reads Show, and a tap on a Show key is
+                 * a request for a keyboard rather than the dismiss this step needs. So one is
+                 * faked here first, which is also the only order the device ever sees: a person
+                 * taps Hide with a keyboard on screen.
+                 */
+                const FAKE_KEYBOARD_PX = 300;
+                const fakeKeyboard = async (up) =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    if (${String(up)}) {
+                                        Object.defineProperty(vv, 'height', {
+                                            configurable: true,
+                                            get() { return window.innerHeight - ${String(FAKE_KEYBOARD_PX)}; }
+                                        });
+                                    } else if (Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                        delete vv.height;
+                                    }
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ ok: true, innerHeight: window.innerHeight, viewport: Math.round(vv.height) });
+                                })()`
                             )
                         )
                     );
@@ -30610,17 +30655,51 @@ function buildFlows(ctx) {
                         timeoutMs: 20_000,
                         label: 'the key bar to mount under the phone viewport'
                     });
-                    // The keyboard starts UP (the pane was focused by a click on its body), and
-                    // the toggle is the one thing allowed to put it away.
+                    /*
+                     * PUT A KEYBOARD UP FIRST, then take it away with the key. The pane holds the
+                     * caret because a click on its body focused it, and since round 6 that is not
+                     * a keyboard: the key reads the viewport, so it reads Show until something
+                     * takes viewport space, and a tap on Show is the way IN. Faking one here is
+                     * what makes the tap below the dismiss this step is about, and it is the only
+                     * order a device ever produces.
+                     */
+                    const raisedKeyboard = await fakeKeyboard(true);
+                    await sleep(250);
+                    const up = await readCaret();
+                    recorder.note(
+                        `with a ${String(FAKE_KEYBOARD_PX)} px keyboard faked at the visual viewport: ${JSON.stringify({ raisedKeyboard, up })}`
+                    );
+                    recorder.check(
+                        'a keyboard taking viewport space turns the key into Hide (C8: the label names the keyboard, not the caret)',
+                        up.label === 'Hide' && up.mode === 'resizes-visual' && up.inHost === true,
+                        `key=${up.label} data-keyboard-viewport=${up.mode} activeElement=${up.caret} inside the host=${String(up.inHost)}`
+                    );
+                    // …and the toggle is the one thing allowed to put it away.
                     await scrollTo(keyboardKey);
                     await view.tap(keyboardKey);
                     await sleep(300);
                     const down = await readCaret();
                     recorder.note(`after tapping the keyboard key: ${JSON.stringify(down)}`);
                     recorder.check(
-                        'the keyboard key puts the keyboard away: the caret leaves the engine and the key reads Show',
-                        down.inHost === false && down.label === 'Show',
-                        `activeElement=${down.caret} inside the host=${String(down.inHost)} key=${down.label}`
+                        'the keyboard key puts the keyboard away: the caret leaves the engine',
+                        down.inHost === false,
+                        `activeElement=${down.caret} inside the host=${String(down.inHost)} key=${down.label} data-keyboard-viewport=${down.mode}`
+                    );
+                    /*
+                     * The key still reads Hide here, and that is C8 rather than a miss: the fake
+                     * keyboard is still taking the space, a tap is a REQUEST, and the label is
+                     * what is on screen. Dropping the fake is the platform answering, and THAT is
+                     * what turns the key over - into the Show the whole rest of this step needs.
+                     */
+                    await fakeKeyboard(false);
+                    await sleep(250);
+                    const settled = await readCaret();
+                    recorder.note(`with the fake keyboard dropped: ${JSON.stringify(settled)}`);
+                    recorder.check(
+                        'and once the keyboard has actually left, the key reads Show with the caret still away: the state every tap below is about',
+                        settled.inHost === false && settled.label === 'Show' && settled.mode === 'none',
+                        `activeElement=${settled.caret} inside the host=${String(settled.inHost)} key=${settled.label} ` +
+                            `data-keyboard-viewport=${settled.mode}`
                     );
 
                     /*
@@ -30696,13 +30775,50 @@ function buildFlows(ctx) {
                     recorder.note(`after tapping Show: ${JSON.stringify(back)}`);
                     recorder.check(
                         'tapping Show still puts the caret back on the engine, which is the only way up',
-                        back.inHost === true && back.caret === 'textarea' && back.label === 'Hide',
-                        `activeElement=${back.caret} inside the host=${String(back.inHost)} key=${back.label}`
+                        back.inHost === true && back.caret === 'textarea',
+                        `activeElement=${back.caret} inside the host=${String(back.inHost)} key=${back.label} data-keyboard-viewport=${back.mode}`
                     );
+                    /*
+                     * The LABEL does not follow the tap, and that is C8's rule rather than a
+                     * miss: nothing in a desktop Chromium raises a keyboard, so nothing takes
+                     * viewport space and the key honestly still reads Show. What turns it over is
+                     * the keyboard ARRIVING - on the device the next 250 ms of animation, here
+                     * the same fake as above - so the arrival is driven rather than assumed.
+                     */
+                    recorder.check(
+                        'and the key still reads Show, because the tap asked for a keyboard that no desktop Chromium can produce',
+                        back.label === 'Show' && back.mode === 'none',
+                        `key=${back.label} data-keyboard-viewport=${back.mode}`
+                    );
+                    await fakeKeyboard(true);
+                    await sleep(250);
+                    const arrived = await readCaret();
+                    recorder.note(`with the keyboard that Show asked for: ${JSON.stringify(arrived)}`);
+                    recorder.check(
+                        'and it turns into Hide when that keyboard arrives, over the caret the tap put back',
+                        arrived.label === 'Hide' && arrived.mode === 'resizes-visual' && arrived.inHost === true,
+                        `key=${arrived.label} data-keyboard-viewport=${arrived.mode} activeElement=${arrived.caret} ` +
+                            `inside the host=${String(arrived.inHost)}`
+                    );
+                    await fakeKeyboard(false);
+                    await sleep(400);
                     await runInTerminal(view, 'clear', { settleMs: 400 });
                 } finally {
-                    // A failed assertion must not hand the next step an open sheet or a 390 px
-                    // window, and nothing in here may raise.
+                    // A failed assertion must not hand the next step an open sheet, a 390 px
+                    // window, or (C8) a visual viewport that lies about its own height, and
+                    // nothing in here may raise.
+                    await view
+                        .eval(
+                            `(() => {
+                                const vv = window.visualViewport;
+                                if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                    delete vv.height;
+                                    vv.dispatchEvent(new Event('resize'));
+                                }
+                                return true;
+                            })()`
+                        )
+                        .catch(() => {});
                     await forceCloseOverlay(view, '[data-testid="settings-window"]');
                     await clearPhoneEmulation(view).catch(() => {});
                     await checkPhoneHandback(view, recorder, handedIn);

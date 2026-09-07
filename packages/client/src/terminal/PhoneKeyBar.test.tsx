@@ -207,6 +207,25 @@ async function mount(panes: Pane[], { coarse = true } = {}): Promise<Harness> {
     return harness;
 }
 
+/**
+ * A `touchstart` with a finger in it, built the way `TerminalPane.touch.test.tsx` builds one.
+ *
+ * jsdom has no `TouchEvent` constructor, so a touch event here is a plain `Event` with the two
+ * lists defined on it - and the LISTS are not decoration. C3's gesture machine reads
+ * `event.touches` on every touchstart the pane sees (`touch-scroll.ts` `only`), so an event
+ * dispatched without one throws inside the pane's own listener, where nothing catches it: vitest
+ * reports it as an unhandled error and the run exits non-zero with every test still passing. A
+ * browser cannot produce that event (`touches` is required on the interface), so the shape belongs
+ * here rather than a defensive read in the gesture machine.
+ */
+function touchStart(clientX: number, clientY: number): Event {
+    const event = new Event('touchstart', { bubbles: true, cancelable: true });
+    const points = [{ clientX, clientY }];
+    Object.defineProperty(event, 'touches', { value: points });
+    Object.defineProperty(event, 'changedTouches', { value: points });
+    return event;
+}
+
 /** A tap: the pointer-down the bar suppresses, then the click the browser raises anyway. */
 function tap(button: HTMLElement): void {
     act(() => {
@@ -417,7 +436,7 @@ describe('a tap hands the caret between terminals without letting it touch the b
         left.focus();
 
         const pointer = new Event('pointerdown', { bubbles: true, cancelable: true });
-        const touch = new Event('touchstart', { bubbles: true, cancelable: true });
+        const touch = touchStart(120, 400);
         act(() => {
             h.host('right').dispatchEvent(pointer);
             h.host('right').dispatchEvent(touch);

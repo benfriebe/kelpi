@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { harness, id, NOW, seededState, W1 } from '../store/testing.js';
 import { visiblePane, workspaceByID } from '../store/derived.js';
@@ -756,6 +756,29 @@ describe('appearance', () => {
         expect(seen[0]?.fontSize).toBe(20);
         expect(seen[0]?.html).toContain('font-size: 20px;');
         subscription.unsubscribe();
+        f.dispose();
+    });
+});
+
+describe('failed markdown saves', () => {
+    it('retains edits and edit mode on failure, then saves them on retry', async () => {
+        const f = fixture({ watch: false });
+        openMarkdown(f);
+        const seen: ContentPaneState[] = [];
+        const sub = await f.service.subscribe(MD, state => seen.push(state));
+        await f.service.setMode(MD, 'edit');
+        await f.service.setText(MD, 'unsaved work');
+        const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('ENOSPC'); });
+        try {
+            await expect(f.service.setMode(MD, 'view')).rejects.toThrow('ENOSPC');
+            await expect(f.service.save(MD)).rejects.toThrow('ENOSPC');
+            expect(await f.service.state(MD)).toMatchObject({ mode: 'edit', text: 'unsaved work', dirty: true, error: 'ENOSPC' });
+            expect(seen.at(-1)).toMatchObject({ dirty: true, error: 'ENOSPC' });
+            expect(fs.readFileSync(f.file, 'utf8')).toContain('# Title');
+        } finally { rename.mockRestore(); }
+        expect(await f.service.setMode(MD, 'view')).toMatchObject({ mode: 'view', text: 'unsaved work', dirty: false, error: null });
+        expect(fs.readFileSync(f.file, 'utf8')).toBe('unsaved work');
+        sub.unsubscribe();
         f.dispose();
     });
 });

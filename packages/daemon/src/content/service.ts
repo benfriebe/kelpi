@@ -273,6 +273,12 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             emit(entry);
             releaseIfIdle(entry);
         },
+        onSaveFailed: (paneID, error) => {
+            const entry = entries.get(paneID);
+            if (entry === undefined) return;
+            entry.error = error.message;
+            emit(entry);
+        },
         onError: (error, context) => report(error, context),
         ...(options.debounceMs !== undefined ? { debounceMs: options.debounceMs } : {})
     });
@@ -625,6 +631,10 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             }
             if (entry.mode === mode) return snapshot(entry);
 
+            if (mode === 'view') {
+                editor.flush(paneID);
+                if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save markdown');
+            }
             entry.mode = mode;
             store.dispatch({
                 type: 'set-markdown-editing',
@@ -639,7 +649,6 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 entry.watcher?.suspend();
                 if (!editor.isDirty(paneID)) editor.seed(paneID, targetOf(entry), entry.content);
             } else {
-                editor.flush(paneID);
                 await reloadFromDisk(entry);
                 startWatch(entry);
             }
@@ -663,6 +672,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         async save(paneID) {
             const entry = await ensure(paneID);
             editor.flush(paneID);
+            if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save content');
             return snapshot(entry);
         },
 

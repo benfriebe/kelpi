@@ -33,9 +33,11 @@ import {
     MENU_BAR_ACTIONS,
     isKelpiAction,
     parseKeybindValue,
+    platformChordsForRoles,
     resolveKeyBindings,
     triggersForAction,
-    type KelpiAction
+    type KelpiAction,
+    type PlatformChordRole
 } from '@kelpi/core/config';
 
 import { acceleratorForTrigger } from './hotkey.js';
@@ -604,6 +606,27 @@ export interface AppMenuDeps {
 }
 
 /**
+ * The role rows for the platform chords named, built from `@kelpi/core/config` (#95).
+ *
+ * The rows carry no accelerator of their own: Electron supplies each role's, and restating it
+ * here would be the drift this exists to prevent. What the shared list buys is that the CLIENT
+ * and this menu cannot disagree about the SET - a terminal pane hands ⌘H back because
+ * `PLATFORM_CHORDS` says the platform owns it, and the row that answers it is built from the
+ * same entry. Delete an entry and both sides lose it together.
+ *
+ * Minimize and Toggle Full Screen are in the list but not built here: they come from
+ * `{ role: 'windowMenu' }` (`main.ts`) and the View menu's `{ role: 'togglefullscreen' }`, which
+ * are Electron's own groups. `menu.test.ts` asserts every list entry is answered by a role row
+ * somewhere in the built menu, and `scripts/scenarios/terminal-leaves-platform-chords.mjs` reads
+ * the same thing off a LIVE menu, accelerators included.
+ */
+function platformRoleRows(roles: readonly PlatformChordRole[]): MenuItemConstructorOptions[] {
+    return platformChordsForRoles(roles).map(
+        (chord) => ({ role: chord.role }) as MenuItemConstructorOptions
+    );
+}
+
+/**
  * The macOS application ("Kelpi") submenu: Check for Updates… directly after About, exactly where
  * Sparkle's item sat.
  */
@@ -616,11 +639,13 @@ export function appMenuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[]
             click: () => deps.checkForUpdates()
         },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
+        // #95: derived, so the client's "leave these to the platform" list and the rows that
+        // answer them are one statement. `unhide` is not in the list - it carries no
+        // accelerator, so no pane can swallow it and nothing has to hand it back.
+        ...platformRoleRows(['hide', 'hideOthers']),
         { role: 'unhide' },
         { type: 'separator' },
-        { role: 'quit' }
+        ...platformRoleRows(['quit'])
     ];
 }
 

@@ -192,6 +192,61 @@ describe('TerminalPane — kitty keyboard protocol', () => {
         expect(h.engineEvents).toEqual([]);
     });
 
+    /**
+     * #95. The mirror image of the block above, and the difference is the whole fix.
+     *
+     * A system-editing chord is handed to fallbacks that live INSIDE the page, so the engine
+     * must still see it. A PLATFORM chord is answered by a native `role` accelerator, which
+     * fires only for a key the page did not consume, and the engine consumes every chord it
+     * can map, `preventDefault()` included. So the pane takes these away from the engine and
+     * leaves their default alone: `stopImmediatePropagation()` without `preventDefault()`.
+     *
+     * Asserted at BOTH flag sets, because the two layers fail differently: with the protocol
+     * off the engine was the one eating ⌘H, and with it on the encoder got there first.
+     */
+    const PLATFORM_PRESSES = [
+        { key: 'h', code: 'KeyH', metaKey: true },
+        { key: 'h', code: 'KeyH', metaKey: true, altKey: true },
+        { key: 'f', code: 'KeyF', metaKey: true, ctrlKey: true },
+        { key: 'm', code: 'KeyM', metaKey: true },
+        { key: 'q', code: 'KeyQ', metaKey: true }
+    ];
+
+    for (const flags of [0, 11]) {
+        it(`hands ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and ⌘Q to the platform with the protocol ${flags === 0 ? 'off' : 'on'} (#95)`, async () => {
+            const h = await kittyHarness(flags);
+            const notPrevented: boolean[] = [];
+            for (const press of PLATFORM_PRESSES) notPrevented.push(fireEvent.keyDown(h.engine, press));
+            // Nothing was encoded onto the stream…
+            expect(h.pty.last().input).toEqual([]);
+            expect(h.pty.last().directInput).toEqual([]);
+            // …the ENGINE never saw them, which is what stops it preventing their default…
+            expect(h.engineEvents).toEqual([]);
+            // …and nothing prevented the default, which is the condition Chromium redispatches
+            // an unhandled key on. `fireEvent` returns false when a listener prevented it.
+            expect(notPrevented).toEqual([true, true, true, true, true]);
+        });
+    }
+
+    it('guards keydown only: a release has nothing below it to protect it from (#95)', async () => {
+        const h = await kittyHarness(11);
+        // The engine registers zero `keyup` listeners in the real app, and the encoder has
+        // already declined the chord, so the release is left to travel exactly as it did.
+        expect(fireEvent.keyUp(h.engine, { key: 'h', code: 'KeyH', metaKey: true })).toBe(true);
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.pty.last().directInput).toEqual([]);
+        expect(h.engineEvents).toEqual(['keyup']);
+    });
+
+    it('is exact about the modifiers: the near misses still reach the terminal (#95)', async () => {
+        const h = await kittyHarness(11);
+        // ⇧⌘M is no role's accelerator, and ⌃⌘H is not Hide Others.
+        fireEvent.keyDown(h.engine, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
+        fireEvent.keyDown(h.engine, { key: 'h', code: 'KeyH', metaKey: true, ctrlKey: true });
+        expect(h.pty.last().input).toEqual([esc('[109;10u'), esc('[104;13u')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
     it('bypasses composition entirely, by the flag and by the window', async () => {
         const h = await kittyHarness(11);
         // `isComposing` on the event itself.

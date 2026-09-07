@@ -46,9 +46,12 @@ function snapshotState(): JsonObject {
     return store.getState() as unknown as JsonObject;
 }
 
-function settingsPayload(general: Record<string, unknown> = {}): Record<string, unknown> {
+function settingsPayload(
+    general: Record<string, unknown> = {},
+    keybindLines: readonly string[] = []
+): Record<string, unknown> {
     return {
-        keybindLines: [],
+        keybindLines,
         general: {
             focusFollowsMouse: false,
             focusFollowsMouseDelay: 100,
@@ -73,7 +76,10 @@ interface Harness {
     commandNames(): string[];
 }
 
-function setup(general: Record<string, unknown> = {}): Harness {
+function setup(
+    general: Record<string, unknown> = {},
+    keybindLines: readonly string[] = []
+): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({
@@ -96,7 +102,7 @@ function setup(general: Record<string, unknown> = {}): Harness {
             protocolVersion: 1,
             clientID: 'client-1',
             daemon: { version: '0.1.0', build: 'test', pid: 4242 },
-            settings: settingsPayload(general)
+            settings: settingsPayload(general, keybindLines)
         });
         socket.emit({ type: 'snapshot', seq: 0, state: snapshotState() });
     });
@@ -225,6 +231,64 @@ describe('§TERM-155 — a conditional binding falls through when its preconditi
         await waitFor(() => {
             const after = h.commands().filter((payload) => payload['command'] === 'terminal-search').length;
             expect(after).toBeGreaterThan(before);
+        });
+    });
+});
+
+/**
+ * #95 - the chords macOS owns, and the one thing that outranks them.
+ *
+ * The set lives in `@kelpi/core/config` ▸ `PLATFORM_CHORDS`; what is asserted here is the
+ * PRECEDENCE, through the real window and the real assembly, because nothing in the client
+ * enforces it explicitly. It falls out of where the dispatcher is installed: a window-level
+ * capture listener that consumes a bound chord with `preventDefault()` before any pane or any
+ * unhandled-key redispatch can see it.
+ *
+ * The observable is `defaultPrevented`, because that is the exact condition Chromium reports a
+ * key as unhandled on, and an unhandled key is the only kind Electron hands to the native
+ * `{ role: … }` accelerator (`shell/src/menu.ts`). The redispatch itself is reachable neither
+ * from jsdom nor from a CDP driver (measured; see
+ * `scripts/scenarios/terminal-leaves-platform-chords.mjs`), so this is the last link either of
+ * them can press.
+ */
+describe('#95 - a user binding wins over the platform, an unbound platform chord does not', () => {
+    /** `fireEvent` answers false when a listener prevented the default. */
+    const press = (init: Record<string, unknown>): boolean => {
+        let notPrevented = true;
+        act(() => {
+            notPrevented = fireEvent.keyDown(window, init);
+        });
+        return notPrevented;
+    };
+
+    it('leaves ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and ⌘Q untouched while nothing claims them', async () => {
+        const h = setup();
+        const before = h.commandNames().length;
+        expect(press({ code: 'KeyH', key: 'h', metaKey: true })).toBe(true);
+        expect(press({ code: 'KeyH', key: 'h', metaKey: true, altKey: true })).toBe(true);
+        expect(press({ code: 'KeyF', key: 'f', metaKey: true, ctrlKey: true })).toBe(true);
+        expect(press({ code: 'KeyM', key: 'm', metaKey: true })).toBe(true);
+        expect(press({ code: 'KeyQ', key: 'q', metaKey: true })).toBe(true);
+        await act(async () => {
+            await Promise.resolve();
+        });
+        // Nothing left for the daemon either: the app declined all five outright.
+        expect(h.commandNames().slice(before)).toEqual([]);
+    });
+
+    it('consumes ⌘M once the user binds it, so the split happens and Minimize does not', async () => {
+        const h = setup({}, ['super+m=split_right']);
+        expect(press({ code: 'KeyM', key: 'm', metaKey: true })).toBe(false);
+        await waitFor(() => {
+            expect(h.commandNames()).toContain('pane-split');
+        });
+    });
+
+    it('and ⌘F stays Kelpi own `toggle_search`, which is why ⌃⌘F is the fullscreen chord', async () => {
+        const h = setup();
+        expect(press({ code: 'KeyF', key: 'f', metaKey: true })).toBe(false);
+        await waitFor(() => {
+            expect(h.commandNames()).toContain('terminal-search');
         });
     });
 });

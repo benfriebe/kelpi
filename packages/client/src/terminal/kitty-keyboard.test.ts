@@ -378,6 +378,65 @@ describe('encodeKittyKey: the system-editing chords Kelpi keeps (#80)', () => {
     });
 });
 
+describe('encodeKittyKey: the chords the platform owns (#95)', () => {
+    /**
+     * The defect this suite pins: ⌘H hid Kelpi from a web pane and did nothing from a terminal,
+     * because the encoder produced `CSI 104;9u` and the interceptor prevented the event, and a
+     * prevented key never reaches the native `{ role: 'hide' }` accelerator. As with #80 above,
+     * every assertion is `null`, and `null` is the product behaviour.
+     *
+     * The events carry a real `code` because that is what the app matches on
+     * (`@kelpi/core/config` ▸ `platformChordForEvent`); the `key`-only fallback has its own
+     * cases in `platform-chords.test.ts`.
+     */
+    it('hands ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and ⌘Q back at every flag set', () => {
+        const chords: readonly [string, string, Mods][] = [
+            ['KeyH', 'h', { meta: true }],
+            ['KeyH', 'h', { meta: true, alt: true }],
+            ['KeyF', 'f', { meta: true, ctrl: true }],
+            ['KeyM', 'm', { meta: true }],
+            ['KeyQ', 'q', { meta: true }]
+        ];
+        for (const flags of [DISAMBIGUATE, WITH_EVENTS, EVERYTHING]) {
+            for (const [code, key, mods] of chords) {
+                expect(press(key, flags, { ...mods, code })).toBeNull();
+                expect(release(key, flags, { ...mods, code })).toBeNull();
+            }
+        }
+    });
+
+    it('exempts NOTHING else: the near misses still encode', () => {
+        // ⇧⌘M is no role's accelerator, so a TUI still gets it.
+        expect(press('m', EVERYTHING, { code: 'KeyM', meta: true, shift: true })).toBe('\x1b[109;10u');
+        // ⌃⌘H and ⌥⌘M are not Hide Others: the modifiers are exact.
+        expect(press('h', DISAMBIGUATE, { code: 'KeyH', meta: true, ctrl: true })).toBe('\x1b[104;13u');
+        expect(press('m', DISAMBIGUATE, { code: 'KeyM', meta: true, alt: true })).toBe('\x1b[109;11u');
+        // ⌘F is Kelpi's `toggle_search` and never reaches here; ⌥⌘F is nobody's.
+        expect(press('f', DISAMBIGUATE, { code: 'KeyF', meta: true })).toBe('\x1b[102;9u');
+        // Without ⌘ at all these are ordinary ctrl/alt chords.
+        expect(press('h', DISAMBIGUATE, { code: 'KeyH', ctrl: true })).toBe('\x1b[104;5u');
+        expect(press('q', DISAMBIGUATE, { code: 'KeyQ', alt: true })).toBe('\x1b[113;3u');
+    });
+
+    it('leaves the Meta key ITSELF reportable: the exemption is about the letter', () => {
+        expect(press('Meta', EVERYTHING, { code: 'MetaLeft', meta: true, location: 1 })).toBe(
+            '\x1b[57444;9u'
+        );
+    });
+
+    it('the stateful encoder declines them too, so the pane never calls preventDefault', () => {
+        const written: string[] = [];
+        const keyboard = createKittyKeyboard({
+            flags: () => EVERYTHING,
+            write: (bytes) => written.push(decoder.decode(bytes))
+        });
+        expect(keyboard.key(event('keydown', 'h', { code: 'KeyH', meta: true }))).toBe(false);
+        expect(keyboard.key(event('keydown', 'm', { code: 'KeyM', meta: true }))).toBe(false);
+        expect(keyboard.key(event('keyup', 'h', { code: 'KeyH', meta: true }))).toBe(false);
+        expect(written).toEqual([]);
+    });
+});
+
 describe('createKittyKeyboard', () => {
     it('writes the encoded bytes and reports whether the engine still owns the key', () => {
         const written: string[] = [];

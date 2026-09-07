@@ -1017,7 +1017,10 @@ the kitty keyboard protocol (section 10.2). The observable contract:
 1. **keydown** arrives at the pane host. The app's own key dispatcher is a window-level
    capture listener that has already run and consumed anything that is a Kelpi binding, so a
    bound ⌘ chord never reaches the terminal. Modifier handling such as `option-as-alt`
-   follows the ghostty config the engine was given.
+   follows the ghostty config the engine was given. The pane's own capture-phase listener then
+   takes two families away from the engine before step 2: what the kitty encoder consumes
+   (section 10.2) and the five chords the platform owns (section 10.2.2), the latter without
+   preventing their default, which is the only reason ⌘H can still reach the menu.
 2. The engine's `keydown` listener takes it (the vendored engine,
    `vendor/ghostty-web-patched/source/lib/input-handler.ts:260-283`, registers `keydown`,
    `paste`, `beforeinput` and the three composition events, and no `keyup`). A keystroke the
@@ -1133,11 +1136,66 @@ not get these five. **Ghostty makes the same trade on macOS** - `super+v` and `s
 (`src/config/Config.zig`, the `Keybinds.init` darwin block), and a Ghostty binding is consumed
 before its key encoder ever runs.
 
-Every other ⌘ chord still encodes (`⌘B` is `CSI 98;9u`). Chords Kelpi has a *binding* for never
-reach this layer at all: the app's dispatcher is a window-level capture listener and has
-already consumed them (`packages/client/src/chrome/keys.ts`, `installKeyDispatcher`). ⌘Backspace
-is deliberately NOT in this table: section 10.3 maps it in the binding layer instead, so `unbind`
-restores its fixterm encoding, which is Ghostty's own rule for its natural-text-editing defaults.
+Every other ⌘ chord still encodes (`⌘B` is `CSI 98;9u`), except the five in section 10.2.2.
+Chords Kelpi has a *binding* for never reach this layer at all: the app's dispatcher is a
+window-level capture listener and has already consumed them
+(`packages/client/src/chrome/keys.ts`, `installKeyDispatcher`). ⌘Backspace is deliberately NOT
+in this table: section 10.3 maps it in the binding layer instead, so `unbind` restores its
+fixterm encoding, which is Ghostty's own rule for its natural-text-editing defaults.
+
+#### 10.2.2 The chords the platform owns (#95)
+
+Five more ⌘ chords are never encoded and, unlike section 10.2.1's, are also kept from the
+ENGINE, because their fallback is not in the page at all:
+
+| chord | who gets it instead | Electron accelerator |
+|---|---|---|
+| ⌘H | `{ role: 'hide' }`, Kelpi ▸ Hide Kelpi | `Command+H` |
+| ⌥⌘H | `{ role: 'hideOthers' }`, Kelpi ▸ Hide Others | `Command+Alt+H` |
+| ⌃⌘F | `{ role: 'togglefullscreen' }`, View ▸ Toggle Full Screen | `Control+Command+F` |
+| ⌘M | `{ role: 'minimize' }`, Window ▸ Minimize | `CommandOrControl+M` |
+| ⌘Q | `{ role: 'quit' }`, Kelpi ▸ Quit Kelpi | `CommandOrControl+Q` |
+
+`isPlatformChord` (`packages/core/src/config/platform-chords.ts`) is the test, and the SET lives
+there rather than in this package, because the shell's application menu builds its Hide / Hide
+Others / Quit rows from the same list (`packages/shell/src/menu.ts` ▸ `platformRoleRows`). The
+match is on `event.code` (the physical key, as every Kelpi binding is), ⌘ is required, ⌥ and ⌃
+must match the chord's own exactly, and ⇧ is never tolerated: ⇧⌘M is no role's accelerator and a
+terminal keeps encoding it. That is the deliberate difference from `isSystemEditingChord`, which
+tolerates shift and refuses ctrl and alt outright.
+
+**Why it takes two layers.** A native accelerator on a role row fires only for a key the PAGE
+did not consume: Chromium reports an unhandled keydown back to the browser process, and
+Electron's macOS handler is `[[NSApp mainMenu] performKeyEquivalent:]` on that event. A terminal
+pane consumed the chord twice over. With the protocol on, the pane's interceptor encoded ⌘H as
+`CSI 104;9u` and called `preventDefault()`. With it off, the engine mapped `KeyH` and called
+`preventDefault()` itself (`vendor/ghostty-web-patched/source/lib/input-handler.ts`, the
+"mapKeyCode succeeded → we own this key" branch). So:
+
+- **the encoder** returns `null` for these, exactly as it does for section 10.2.1's five;
+- **the pane's interceptor** then calls `stopImmediatePropagation()` **without**
+  `preventDefault()`, the opposite pairing to the branch that consumes a key, so the engine
+  never sees the event and nothing marks it handled (`TerminalPane.tsx`). Keydown only: the
+  engine registers no `keyup` listener, so a release has nothing below it to be protected from.
+
+**Precedence: a user binding wins**, by ordering rather than by a check. The app's dispatcher is
+a window-level capture listener and consumes a bound chord before the pane's listener runs, so
+`keybind = super+m=split_right` splits and does not minimise. See config-keybindings.md section
+7.4 for the full rule and for the chords deliberately left out of this table (the Edit roles,
+Reload / DevTools, ⌘, and ⌘?, ⌘W).
+
+**Ghostty is the reference**: with a terminal focused, ⌘H hides the app. Its macOS defaults bind
+`super+ctrl+f` to `toggle_fullscreen`, and a Ghostty binding is consumed before its key encoder
+runs, which is the same trade in the same direction.
+
+**What this cannot be tested with, measured.** A CDP-injected key event carries no backing
+`NSEvent`, so the `performKeyEquivalent:` hop never runs for one, and neither
+`harness.press('Cmd+H')` (a macOS-native role row's work is in Cocoa, not in its JavaScript
+click) nor a driver key press can make the window actually hide.
+`scripts/scenarios/terminal-leaves-platform-chords.mjs` therefore asserts the two ends it can
+reach: the live menu carries the five role rows with these accelerators, and the chord reaches
+the end of dispatch with `defaultPrevented === false` and nothing on the PTY. Its header records
+the measurement.
 
 ### 10.3 The macOS line-editing chords (#82)
 

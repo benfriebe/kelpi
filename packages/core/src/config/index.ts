@@ -32,6 +32,18 @@ export {
 export type { KeyModifier, KeyTrigger } from './keys.js';
 export { MENU_BAR_ACTIONS, KELPI_ACTIONS, UNBIND_ACTION, isKelpiAction } from './actions.js';
 export type { KelpiAction, UnbindAction } from './actions.js';
+// #95: the chords macOS owns, read by the shell's menu and by the client's terminal layers.
+export {
+    PLATFORM_CHORDS,
+    isPlatformChord,
+    platformChordForEvent,
+    platformChordsForRoles
+} from './platform-chords.js';
+export type {
+    PlatformChord,
+    PlatformChordEventLike,
+    PlatformChordRole
+} from './platform-chords.js';
 export {
     DEFAULT_KEYBINDINGS,
     DEFAULT_KEYBIND_LINES,

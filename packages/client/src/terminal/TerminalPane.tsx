@@ -27,6 +27,8 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
+import { isPlatformChord } from '@kelpi/core/config';
+
 import {
     PANE_SURFACE_ATTR,
     armCaretClaim,
@@ -938,6 +940,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // Nothing is intercepted while no application has negotiated the protocol: `keyboard.key()`
     // returns false for every event when the flags are zero, and for every key whose legacy
     // encoding is already correct even when they are not.
+    //
+    // The ONE thing this listener does with the protocol off is #95's, below.
     useEffect(() => {
         const host = hostRef.current;
         if (host === null) return;
@@ -948,24 +952,53 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             composingRef.current || event.isComposing || event.keyCode === 229;
 
         const handle = (event: KeyboardEvent, type: 'keydown' | 'keyup'): void => {
-            if (!keyboard.active) return;
             if (composing(event)) return;
-            const consumed = keyboard.key({
-                type,
-                key: event.key,
-                code: event.code,
-                location: event.location,
-                repeat: event.repeat,
-                shiftKey: event.shiftKey,
-                altKey: event.altKey,
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey
-            });
-            if (!consumed) return;
-            event.preventDefault();
-            // Not `stopPropagation`: the engine may attach more than one listener to the same
-            // node, and only the immediate form guarantees none of them runs.
-            event.stopImmediatePropagation();
+            if (keyboard.active) {
+                const consumed = keyboard.key({
+                    type,
+                    key: event.key,
+                    code: event.code,
+                    location: event.location,
+                    repeat: event.repeat,
+                    shiftKey: event.shiftKey,
+                    altKey: event.altKey,
+                    ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey
+                });
+                if (consumed) {
+                    event.preventDefault();
+                    // Not `stopPropagation`: the engine may attach more than one listener to the
+                    // same node, and only the immediate form guarantees none of them runs.
+                    event.stopImmediatePropagation();
+                    return;
+                }
+            }
+
+            /*
+             * #95: the chords the platform owns (⌘H, ⌥⌘H, ⌃⌘F, ⌘M, ⌘Q), at BOTH layers.
+             *
+             * macOS answers these from `role` rows in the application menu, and a native
+             * accelerator on a role row fires only for a key the page did not consume
+             * (`shell/src/menu.ts`, the ordering that whole file relies on). A terminal pane
+             * consumed all five, so ⌘H hid Kelpi from a web pane and did nothing from a shell.
+             *
+             * Two layers had to be answered and the encoder can only reach one of them. Above:
+             * `encodeKittyKey` returns null for these (`@kelpi/core/config` ▸ `isPlatformChord`),
+             * which is what makes `consumed` false here even with the protocol negotiated.
+             * Below: the vendored engine maps `event.code` and then calls `preventDefault()` on
+             * anything it mapped, and a prevented key is never redispatched to the menu. So the
+             * pane takes the event AWAY from the engine and deliberately does not prevent its
+             * default: `stopImmediatePropagation()` without `preventDefault()`, the exact
+             * opposite pairing to the branch above.
+             *
+             * Keydown only. The engine registers no `keyup` listener at all, so a release has
+             * nothing below to protect it from, and the encoder has already declined it.
+             *
+             * A user binding still wins, by ordering rather than by a check here: the app's
+             * dispatcher consumed a bound chord at window capture long before this runs. See
+             * `@kelpi/core/config` ▸ `platform-chords.ts` for the whole rule.
+             */
+            if (type === 'keydown' && isPlatformChord(event)) event.stopImmediatePropagation();
         };
 
         const onKeyDown = (event: KeyboardEvent): void => handle(event, 'keydown');

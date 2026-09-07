@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_KEYBIND_LINES, MENU_BAR_ACTIONS } from '@kelpi/core/config';
+import { DEFAULT_KEYBIND_LINES, MENU_BAR_ACTIONS, PLATFORM_CHORDS } from '@kelpi/core/config';
 
 import {
     CHECK_FOR_UPDATES_LABEL,
@@ -966,5 +966,53 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
         expect(menuAcceleratorsLogLine(menuAccelerators(['super+n=unbind', 'shift+super+m=open_file']))).toBe(
             'menu: accelerators from the binding map: new_workspace=(none), open_file=Shift+CommandOrControl+M'
         );
+    });
+});
+
+describe('#95 - the chords the platform owns, and the rows that answer them', () => {
+    /**
+     * The client hands ⌘H, ⌥⌘H, ⌃⌘F, ⌘M and ⌘Q back to the platform because
+     * `@kelpi/core/config` ▸ `PLATFORM_CHORDS` says the platform owns them. If a row ever
+     * stopped existing, the client would be handing those keys to nobody, and the failure would
+     * look like "⌘H does nothing" all over again. So the list and the menu are asserted against
+     * each other rather than each being asserted against a literal.
+     */
+    const appRoles = (): (string | undefined)[] =>
+        appMenuTemplate({ checkForUpdates: () => undefined, canCheckForUpdates: true }).map(
+            (item) => item.role
+        );
+
+    it('builds Hide, Hide Others and Quit FROM the list, in the menu order a mac user expects', () => {
+        expect(appRoles()).toEqual([
+            'about',
+            undefined,
+            undefined,
+            'hide',
+            'hideOthers',
+            'unhide',
+            undefined,
+            'quit'
+        ]);
+    });
+
+    it('accounts for every entry in the list: three here, two in Electron own groups', () => {
+        const inAppMenu = new Set(appRoles());
+        const inViewMenu = new Set(viewMenuTemplate({ sendMenuRequest: () => true }).map((i) => i.role));
+        for (const chord of PLATFORM_CHORDS) {
+            const answered =
+                inAppMenu.has(chord.role) ||
+                inViewMenu.has(chord.role) ||
+                // Minimize is Electron own `{ role: 'windowMenu' }` group, built in `main.ts`
+                // and therefore not visible to this module. The LIVE menu is asserted by
+                // `scripts/scenarios/terminal-leaves-platform-chords.mjs`, accelerators included.
+                chord.role === 'minimize';
+            expect([chord.role, answered]).toEqual([chord.role, true]);
+        }
+    });
+
+    it('does not claim a chord no role row answers', () => {
+        // `unhide` (Show All) carries no accelerator, so nothing can swallow it and nothing has
+        // to hand it back. It is deliberately absent from the list.
+        expect(PLATFORM_CHORDS.some((chord) => (chord.role as string) === 'unhide')).toBe(false);
     });
 });

@@ -1474,6 +1474,14 @@ describe('KeyBar: the OSC 52 Copy pill', () => {
         expect(h.query('data-terminal-copy-pill')).toBeNull();
     });
 
+    it('stays up long enough for a thumb to find it (owner device round 4)', () => {
+        // The number itself, pinned: round 4 missed the pill on the first try at C4's 6 s, and
+        // the countdown has to cover noticing it as well as reaching it. The tests below drive
+        // the constant, so without this one it could go back to 6 s and stay green.
+        expect(COPY_PILL_TIMEOUT_MS).toBeGreaterThanOrEqual(12_000);
+        expect(COPY_PILL_TIMEOUT_MS).toBeLessThanOrEqual(20_000);
+    });
+
     it('takes itself away after a few seconds', () => {
         vi.useFakeTimers();
         const handler = createClipboardWriteHandler({ shellWindowID: null, writeText: null, log: () => undefined });

@@ -156,8 +156,19 @@ export const KEY_ATTR = 'data-terminal-key';
 export const COPY_PILL_ATTR = 'data-terminal-copy-pill';
 export const PASTE_FIELD_ATTR = 'data-terminal-paste-field';
 
-/** How long the Copy pill stays up before it takes itself away (C4). */
-export const COPY_PILL_TIMEOUT_MS = 6_000;
+/**
+ * How long the Copy pill stays up before it takes itself away (C4).
+ *
+ * 15 s, raised from C4's 6 s by the owner's device round 4 (2026-09-07): the pill was missed on
+ * the first try on a real phone. 6 s is a reasonable toast, and this is not a toast - it is the
+ * only way to get the text a program sent with OSC 52 into the phone's clipboard, because a
+ * browser will not write a clipboard without a gesture and the pane's own output is not one. So
+ * the countdown is not "long enough to read", it is "long enough to notice, look down at the
+ * bottom of the screen, and land a thumb on a 44 px target", and that is a different number:
+ * around 5 s of it goes on noticing that anything appeared at all. The upper bound is that the
+ * pill sits above the key bar and covers a row of terminal, so it cannot simply stay.
+ */
+export const COPY_PILL_TIMEOUT_MS = 15_000;
 
 /**
  * Put `text` into the terminal the way the ENGINE's own paste does (C4).

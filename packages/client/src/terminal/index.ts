@@ -34,6 +34,23 @@ export {
     type TerminalPtyApi
 } from './TerminalPane';
 
+// C1 (docs/MOBILE-PLAN.md §4): the phone key bar. Mounted by `TerminalPane` and by nothing else;
+// exported so the sibling phone lanes can lay out against `KEY_BAR_HEIGHT_PX` without guessing it.
+export {
+    KEY_ATTR,
+    KEY_BAR_ATTR,
+    KEY_BAR_HEIGHT_PX,
+    KEY_BAR_KEYS,
+    KEY_BAR_KEY_SIZE_PX,
+    KeyBar,
+    PASTE_PENDING_TITLE,
+    withSticky,
+    type KeyBarKey,
+    type KeyBarProps,
+    type StickyModifier,
+    type StickyModifiers
+} from './KeyBar';
+
 export {
     KEYBOARD_INSET_ATTRIBUTE,
     PHONE_KEYBOARD_SETTLE_MS,
@@ -165,6 +182,7 @@ export {
     configuredTerminalEngine,
     createRendererFromLoader,
     createTerminalRenderer,
+    engineKeyTarget,
     engineLoader,
     estimateCellSize,
     isEngineColor,
@@ -183,6 +201,7 @@ export {
     type EngineLoader,
     type ResolvedRendererOptions,
     type TerminalEngine,
+    type TerminalKeyInit,
     type TerminalMatchLocation,
     type TerminalRenderer,
     type TerminalRendererFactory,

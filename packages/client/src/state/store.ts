@@ -245,6 +245,20 @@ export interface UiSlice {
      * user is looking at, and the 600 ms status-clear cares about the latter.
      */
     readonly appActive: boolean;
+    /**
+     * §APP-046b: whether the shell window around this page is maximised.
+     *
+     * Only the maximise button the client draws on Windows and Linux reads it, and only to pick
+     * its glyph. It is store state rather than component state because the fact arrives on the
+     * socket (`window-frame-state`, shell → daemon → here) like every other relayed shell fact,
+     * and because the state changes from OUTSIDE the app — a WM shortcut, a tiling rule, a
+     * double-click on the strip — as often as from the button itself.
+     *
+     * Defaults to false — a window that has said nothing is not maximised, which is what a
+     * freshly created one is. A RELOADED page does not have to rely on that default: the daemon
+     * remembers the last report per window and replays it on `hello`.
+     */
+    readonly windowMaximized: boolean;
     readonly palette: { readonly open: boolean; readonly query: string };
     readonly sidebarFilter: string;
     readonly toasts: readonly Toast[];
@@ -287,6 +301,7 @@ export interface KelpiActions {
     setDocumentVisible(visible: boolean): void;
     /** §AGNT-056: a relayed `shell-activation` for this window. */
     setAppActive(active: boolean): void;
+    setWindowMaximized(maximized: boolean): void;
 
     setPaletteOpen(open: boolean): void;
     togglePalette(): void;
@@ -625,6 +640,7 @@ function initialUiSlice(): UiSlice {
         focusEcho: null,
         documentVisible: true,
         appActive: true,
+        windowMaximized: false,
         palette: { open: false, query: '' },
         sidebarFilter: '',
         toasts: []
@@ -799,6 +815,12 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
             const ui = get().ui;
             if (ui.appActive === active) return;
             set({ ui: { ...ui, appActive: active } });
+        },
+
+        setWindowMaximized(maximized) {
+            const ui = get().ui;
+            if (ui.windowMaximized === maximized) return;
+            set({ ui: { ...ui, windowMaximized: maximized } });
         },
 
         setPaletteOpen(open) {

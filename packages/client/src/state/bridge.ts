@@ -20,7 +20,12 @@ import type { WsRejectedMessage } from '@kelpi/protocol';
 import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, KelpiConnection, PtyClient, type KelpiConnectionOptions } from '../connection';
 import { readShellWindowID } from '../webpane/shell-window';
-import { activationAppliesHere, parseShellActivation } from './activation';
+import {
+    activationAppliesHere,
+    frameStateAppliesHere,
+    parseShellActivation,
+    parseWindowFrameState
+} from './activation';
 import { createClipboardWriteHandler, type ClipboardWriteHandlerOptions } from './clipboard';
 import { createNotificationManager, type NotificationManager } from './notifications';
 import { useKelpiStore, type KelpiStoreApi } from './store';
@@ -146,6 +151,18 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             const report = parseShellActivation(message);
             if (report === null || !activationAppliesHere(report, shellWindowID)) return;
             store.getState().setAppActive(report.active);
+        })
+    );
+
+    offs.push(
+        // §APP-046b: `window-frame-state` — this shell window was maximised or restored. Only the
+        // window-control cluster the client draws on Windows and Linux reads it, and only to pick
+        // the middle button's glyph; it is subscribed here rather than in the component because
+        // it arrives on the socket and is scoped by window id exactly as activation is.
+        connection.on('message', (message) => {
+            const report = parseWindowFrameState(message);
+            if (report === null || !frameStateAppliesHere(report, shellWindowID)) return;
+            store.getState().setWindowMaximized(report.maximized);
         })
     );
 

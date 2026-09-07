@@ -45,33 +45,101 @@ export const TRAFFIC_LIGHT_GUTTER = 80;
 export const TRAFFIC_LIGHT_INSET_PARAM = 'trafficLightInset';
 
 export interface TitleBarStyleDecision {
-    /** Passed straight into `new BrowserWindow({...})`; absent on platforms without the style. */
-    readonly titleBarStyle?: 'hiddenInset' | undefined;
+    /** Passed straight into `new BrowserWindow({...})`; absent on platforms without a style. */
+    readonly titleBarStyle?: 'hiddenInset' | 'hidden' | undefined;
     readonly trafficLightPosition?: { readonly x: number; readonly y: number } | undefined;
     /** The gutter to advertise to the page — 0 where there are no traffic lights to clear. */
     readonly gutter: number;
+    /**
+     * Whether the PAGE must draw the minimise / maximise / close cluster itself.
+     *
+     * True on Windows and Linux, and only there. macOS keeps native traffic lights (`hiddenInset`
+     * positions them, and `gutter` is how the page gets out of their way); a browser tab has a
+     * frame it does not own. This is the one bit those two cases cannot infer for themselves.
+     */
+    readonly windowControls: boolean;
+    /**
+     * Whether to fold the application menu bar away (Alt reveals it, accelerators keep working).
+     *
+     * Electron draws `Menu.setApplicationMenu`'s menu as an in-window strip on Windows and Linux.
+     * On a KDE session it is usually exported to the desktop's global menu over DBus and no strip
+     * appears — which is exactly the trap: the platform where it is INVISIBLE is the one a
+     * developer is likely to test on. Windows has no such escape hatch, so an unhidden menu bar
+     * there would put a strip above the drawn one and rebuild the two-stacked-strips defect this
+     * whole item exists to remove.
+     *
+     * macOS has no in-window menu bar to hide (the menu lives in the system bar), so the flag is
+     * false there and Electron ignores it either way.
+     */
+    readonly autoHideMenuBar: boolean;
 }
 
 /**
  * What frame this platform gets.
  *
- * Only macOS has `hiddenInset` and only macOS has traffic lights, so Windows and Linux keep the
- * ordinary frame they already had AND are told to reserve nothing: a Linux build that reserved 80
- * px of empty leading space would be a regression invented by a macOS feature.
+ * All three desktop platforms now hide the native strip, so the client's own 32 px bar IS the
+ * title bar everywhere — but they get there by two different routes, because only macOS can hand
+ * the window's buttons to the page's care:
+ *
+ *   - **macOS** — `hiddenInset`. The three traffic lights are still drawn and still operated by
+ *     AppKit; the shell only positions them (`trafficLightPosition`) and tells the page how much
+ *     leading room to keep clear (`gutter`).
+ *   - **Windows and Linux** — `hidden`. There is no equivalent of a positioned native cluster:
+ *     Electron's `titleBarOverlay` (the Window Controls Overlay) is documented for both, but on a
+ *     KDE/Wayland session Chromium reports `navigator.windowControlsOverlay.visible === true`,
+ *     returns a titlebar-area rect spanning the FULL window width, and then draws no buttons at
+ *     all. A frame whose controls exist only on some desktops is worse than none, so the page
+ *     draws its own on both (`windowControls`) and nothing is reserved for a native cluster.
+ *
+ * `hidden` keeps the resize border on both: Windows through `thickFrame` (Electron's default, so
+ * edge-drag, Aero Snap and the drop shadow survive), Linux through the window manager, which goes
+ * on servicing edge drags for an undecorated window — verified on KDE/Wayland.
+ *
+ * What Windows gives up with a drawn cluster is the Snap Layouts flyout, which Windows shows only
+ * for a real (or overlay-drawn) maximise button. Its keyboard equivalent, Win+Z, is untouched.
+ *
+ * Anything that is not one of the three keeps the ordinary frame it already had: an unknown
+ * platform is exactly where inventing a frameless window with app-drawn controls could leave a
+ * user with no way to close it.
  */
 export function titleBarStyleFor(platform: string): TitleBarStyleDecision {
-    if (platform !== 'darwin') return { gutter: 0 };
-    return {
-        titleBarStyle: 'hiddenInset',
-        trafficLightPosition: { x: TRAFFIC_LIGHT_X, y: TRAFFIC_LIGHT_Y },
-        gutter: TRAFFIC_LIGHT_GUTTER
-    };
+    if (platform === 'darwin') {
+        return {
+            titleBarStyle: 'hiddenInset',
+            trafficLightPosition: { x: TRAFFIC_LIGHT_X, y: TRAFFIC_LIGHT_Y },
+            gutter: TRAFFIC_LIGHT_GUTTER,
+            windowControls: false,
+            autoHideMenuBar: false
+        };
+    }
+    if (platform === 'win32' || platform === 'linux') {
+        // No `gutter`: the page draws the buttons, so it already knows how wide they are. The
+        // one thing it cannot know is THAT it has to draw them, which is `windowControls`.
+        return { titleBarStyle: 'hidden', gutter: 0, windowControls: true, autoHideMenuBar: true };
+    }
+    return { gutter: 0, windowControls: false, autoHideMenuBar: false };
 }
 
 /** `&trafficLightInset=80`, or nothing at all when there is no gutter to declare. */
 export function trafficLightQuery(decision: TitleBarStyleDecision): string {
     if (decision.gutter <= 0) return '';
     return `&${TRAFFIC_LIGHT_INSET_PARAM}=${String(decision.gutter)}`;
+}
+
+/** The query parameter that asks the page to draw the window's own buttons. */
+export const WINDOW_CONTROLS_PARAM = 'windowControls';
+
+/**
+ * `&windowControls=1`, or nothing at all.
+ *
+ * The third parameter of the same family as `?windowTransparent=` and `?trafficLightInset=`, and
+ * for the same reason all three exist: the page cannot see the frame around it. Absent means
+ * "something else draws the window's buttons, or there are none to draw" — which is right for
+ * macOS (AppKit draws them), for a browser tab (the browser does), and for an unknown platform
+ * (the ordinary frame does).
+ */
+export function windowControlsQuery(decision: TitleBarStyleDecision): string {
+    return decision.windowControls ? `&${WINDOW_CONTROLS_PARAM}=1` : '';
 }
 
 /**
@@ -95,6 +163,8 @@ export function titleBarLogLine(options: {
             : `${String(decision.trafficLightPosition.x)},${String(decision.trafficLightPosition.y)}`;
     return (
         `titlebar: style=${style} trafficLights=${lights} gutter=${String(decision.gutter)} ` +
+        `windowControls=${decision.windowControls ? 'client' : 'native'} ` +
+        `menuBar=${decision.autoHideMenuBar ? 'autohide' : 'default'} ` +
         `frameHeight=${String(frameHeight)} contentHeight=${String(contentHeight)} ` +
         `chromeHeight=${String(frameHeight - contentHeight)}`
     );

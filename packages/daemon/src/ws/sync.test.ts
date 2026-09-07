@@ -1131,6 +1131,152 @@ describe('workspace-selection relay', () => {
 });
 
 /**
+ * §APP-046b: `window-control` and `window-frame-state`, relayed.
+ *
+ * The window's minimise / maximise / close buttons are drawn by the PAGE on Windows and Linux,
+ * where the frame has none of its own, and only the shell's main process can act on them — so a
+ * click takes the same route the sidebar's selection count takes, and the resulting maximised
+ * state comes back the way activation does. The daemon owns no windows and has no opinion about
+ * either: fan-out, a window id left exactly as it arrived, and nothing remembered.
+ */
+describe('window-control / window-frame-state relay', () => {
+    it('fans a button click out to the shell with its verb and window id intact', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        for (const action of ['minimize', 'maximize', 'close']) {
+            window.session.handleMessage(JSON.stringify({ type: 'window-control', action, windowID: 'WIN-1' }));
+        }
+        expect(shell.transport.ofType('window-control')).toEqual([
+            { type: 'window-control', action: 'minimize', windowID: 'WIN-1' },
+            { type: 'window-control', action: 'maximize', windowID: 'WIN-1' },
+            { type: 'window-control', action: 'close', windowID: 'WIN-1' }
+        ]);
+    });
+
+    it('relays an unscoped request without inventing a window id', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'window-control', action: 'minimize' }));
+        expect(shell.transport.ofType('window-control')[0]).toEqual({
+            type: 'window-control',
+            action: 'minimize'
+        });
+    });
+
+    it('drops a verb it does not know rather than forwarding the guess', () => {
+        // The shell would refuse it anyway, and the tempting default is the destructive one:
+        // nothing the daemon does not understand may reach a window as `close`.
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        for (const action of ['destroy', 'quit', 'CLOSE', '', 7, null]) {
+            window.session.handleMessage(JSON.stringify({ type: 'window-control', action, windowID: 'WIN-1' }));
+        }
+        window.session.handleMessage(JSON.stringify({ type: 'window-control', windowID: 'WIN-1' }));
+        expect(shell.transport.ofType('window-control')).toHaveLength(0);
+    });
+
+    it('relays the maximised state back, and refuses a non-boolean', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        window.session.handleMessage(hello());
+
+        shell.session.handleMessage(
+            JSON.stringify({ type: 'window-frame-state', maximized: true, windowID: 'WIN-1' })
+        );
+        expect(window.transport.ofType('window-frame-state')[0]).toEqual({
+            type: 'window-frame-state',
+            maximized: true,
+            windowID: 'WIN-1'
+        });
+
+        shell.session.handleMessage(JSON.stringify({ type: 'window-frame-state', maximized: 'yes' }));
+        shell.session.handleMessage(JSON.stringify({ type: 'window-frame-state' }));
+        expect(window.transport.ofType('window-frame-state')).toHaveLength(1);
+    });
+
+    it('never replays a window COMMAND to a party that attaches afterwards', () => {
+        // A command describes a window that may already be gone, and a replayed close would be a
+        // disaster: someone's window shutting minutes after they clicked a button that did
+        // nothing. This is the one of the pair that must never be remembered.
+        const f = fixture();
+        const window = f.connect();
+        window.session.handleMessage(hello());
+        window.session.handleMessage(
+            JSON.stringify({ type: 'window-control', action: 'close', windowID: 'WIN-1' })
+        );
+
+        const late = f.connect();
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        expect(late.transport.ofType('window-control')).toHaveLength(0);
+    });
+
+    it('DOES replay the frame state, so a reloaded page draws the right glyph', () => {
+        // The other half of the pair, and the opposite answer, because the facts differ: a
+        // maximised window stays maximised while nobody is looking. The connection that reloads
+        // is the page, so without this a client reloaded on a maximised window says "Maximise"
+        // on a button that restores — to a screen reader as well as on screen.
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        shell.session.handleMessage(
+            JSON.stringify({ type: 'window-frame-state', maximized: true, windowID: 'WIN-1' })
+        );
+
+        const reloaded = f.connect();
+        reloaded.session.handleMessage(hello());
+        expect(reloaded.transport.ofType('window-frame-state')).toEqual([
+            { type: 'window-frame-state', maximized: true, windowID: 'WIN-1' }
+        ]);
+    });
+
+    it('replays the LATEST state per window, and keeps two windows apart', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        for (const [windowID, maximized] of [
+            ['WIN-1', true],
+            ['WIN-2', true],
+            ['WIN-1', false]
+        ] as const) {
+            shell.session.handleMessage(JSON.stringify({ type: 'window-frame-state', maximized, windowID }));
+        }
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        const replayed = late.transport.ofType('window-frame-state');
+        expect(replayed).toHaveLength(2);
+        // A superseded report must not outlive the one that replaced it.
+        expect(replayed).toContainEqual({ type: 'window-frame-state', maximized: false, windowID: 'WIN-1' });
+        expect(replayed).toContainEqual({ type: 'window-frame-state', maximized: true, windowID: 'WIN-2' });
+    });
+
+    it('never remembers a malformed report', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
+        shell.session.handleMessage(JSON.stringify({ type: 'window-frame-state', maximized: 'yes', windowID: 'W' }));
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        expect(late.transport.ofType('window-frame-state')).toHaveLength(0);
+    });
+});
+
+/**
  * §WS-156 / §APP-067 — the GUI's own workspace delete.
  *
  * The clause it exists for is the shipped app's asymmetry: `kelpi workspace delete` refuses at one

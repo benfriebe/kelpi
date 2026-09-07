@@ -43,6 +43,11 @@ export type ChromeIconName =
     | 'bolt'
     | 'ellipsis'
     | 'gear'
+    // §APP-046b — the window's own buttons, drawn by the page on Windows and Linux.
+    | 'window-minimize'
+    | 'window-maximize'
+    | 'window-restore'
+    | 'window-close'
     // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
     // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
     // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
@@ -98,6 +103,25 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M6 2.2v7.6M6 6h4.4" />
         </>
     ),
+    /*
+     * §APP-046b — minimise, maximise, restore, close.
+     *
+     * Deliberately NOT imitations of Breeze, Adwaita or the Windows segoe glyphs: this bar draws
+     * its own controls in its own hand (12×12 grid, 1px stroke, `currentColor`) exactly as the
+     * sidebar and layout glyphs beside them do, and a near-miss copy of whichever system theme
+     * the user happens to run reads worse than a deliberate house style. `restore` is the
+     * two-square stack every desktop uses for "un-maximise", so the ONE glyph whose meaning has
+     * to be read rather than learned is the familiar one.
+     */
+    'window-minimize': <path d="M2.6 6h6.8" />,
+    'window-maximize': <rect x="2.6" y="2.6" width="6.8" height="6.8" rx="1" />,
+    'window-restore': (
+        <>
+            <path d="M4.2 4.2V3.2a.6.6 0 0 1 .6-.6h4.6a.6.6 0 0 1 .6.6v4.6a.6.6 0 0 1-.6.6h-1" />
+            <rect x="2.2" y="4.2" width="5.6" height="5.2" rx="0.8" />
+        </>
+    ),
+    'window-close': <path d="M3.2 3.2 8.8 8.8M8.8 3.2 3.2 8.8" />,
     broadcast: (
         <>
             <circle cx="6" cy="6" r="1.3" />

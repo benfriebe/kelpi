@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     isForwardableOpenPath,
     parseShellAction,
+    parseWindowControl,
     parseWorkspaceSelection,
     shellActionAppliesHere
 } from './shell-actions.js';
@@ -161,5 +162,36 @@ describe('isForwardableOpenPath (CONT-124)', () => {
         expect(isForwardableOpenPath('/a/README')).toBe(false);
         expect(isForwardableOpenPath('/a/.md')).toBe(false);
         expect(isForwardableOpenPath('')).toBe(false);
+    });
+});
+
+describe('the window-control request (§APP-046b)', () => {
+    it('reads the three verbs the page can send', () => {
+        for (const action of ['minimize', 'maximize', 'close'] as const) {
+            expect(parseWindowControl({ type: 'window-control', action })).toEqual({
+                action,
+                windowID: null
+            });
+        }
+    });
+
+    it('carries the window id, so one window’s × cannot close another', () => {
+        expect(parseWindowControl({ type: 'window-control', action: 'close', windowID: 'w-1' })).toEqual({
+            action: 'close',
+            windowID: 'w-1'
+        });
+    });
+
+    it('refuses a frame that is not a window-control at all', () => {
+        expect(parseWindowControl({ type: 'shell-activation', active: true })).toBeNull();
+        expect(parseWindowControl({ action: 'close' })).toBeNull();
+    });
+
+    it('refuses an unknown verb rather than falling through to close', () => {
+        // The tempting default is the destructive one: a frame nobody understood must never
+        // close the user's window.
+        for (const action of ['destroy', 'quit', 'CLOSE', '', 42, null, undefined]) {
+            expect(parseWindowControl({ type: 'window-control', action })).toBeNull();
+        }
     });
 });

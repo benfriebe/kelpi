@@ -147,9 +147,11 @@ export {
 export {
     SHELL_WINDOW_PARAM,
     TRAFFIC_LIGHT_INSET_PARAM,
+    WINDOW_CONTROLS_PARAM,
     WINDOW_TRANSPARENT_PARAM,
     readShellWindowID,
     readTrafficLightInset,
+    readWindowControls,
     readWindowTransparent
 } from './shell-window';
 

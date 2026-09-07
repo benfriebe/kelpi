@@ -288,6 +288,62 @@ pane's page would blink out and back on every host reconnect. Confirming moves n
 common case, because a re-stated placement is an identical `pane-geometry` that the host applies
 as a no-op.
 
+### 3.5.4 A recovery park, and why THIS one is park-and-wait (issue #96)
+
+§3.5.3 ends by refusing to park and wait. There is exactly one gesture that must do it anyway,
+and stating the difference is the point of this section.
+
+A UI can be left unusable by things that have not crashed: a pointer gesture the app never saw
+the end of, or a renderer that is alive and not returning to its event loop, with native views
+layered over a window whose chrome then swallows every click. The shell offers **View ▸ Recover
+Interface (⌃⌥⌘R)** and an unresponsive watchdog for it (#79, `docs/shell-ui.md`), and both take
+every embedded view off screen.
+
+The first version took them off screen with the FORGETTING release, and that is the bug this
+section exists for. It is §3.5.2's dead state by a third route, reported verbatim as: *"pressing
+the recover interface button caused the web pane to go blank, and was only recovered by going in
+and out of the workspace"*. The placement went with the view, the client's reporter dedupes an
+identical re-render so it had nothing to say, and nothing on either side ever contradicted it.
+
+> **The rule: a recovery parks with the placement KEPT and HELD, asks every client to re-state,
+> and drops what nobody re-states. A held park is undone by the pane's own client and by nothing
+> else, the host's own reconciler included.**
+
+```jsonc
+// host → daemon, at the moment of the park                // daemon → every client
+{"type":"web-geometry-resync-request"}                     {"type":"web-geometry-resync","windowID":"…"}
+```
+
+Same message as §3.5.2's, sent past the five-second rate limit: it is the only thing that will
+put those views back, so a person pressing the chord twice must not have the second press
+swallowed.
+
+Three consequences, and each is a decision a second implementation would have to take too.
+
+- **The host's restore path must leave a held placement alone.** §3.5.2's reconciler re-places
+  what the host parked as soon as the window is usable, and a recovery's window always is: it
+  would fire a tick later and put everything back out of the host's own books. That includes the
+  leaked placement, which is the one the chord exists to shed, so the recovery would recover
+  nothing. In the shell that is `embed.ts` ▸ `refresh()` skipping held placements and
+  `webhost/index.ts` ▸ `restoreParkedViews` discounting them.
+- **What no client names is dropped.** After a short grace (the shell allows two seconds, the
+  same round trip §3.5.3 allows) a held placement nobody re-stated is released for real. Its view
+  is already in the holder and stays there. That is the whole product behaviour: **every view a
+  client still claims comes back, and a view no client claims stays parked.**
+- **A view already parked for a hide is not part of it.** The host still owes that placement a
+  restore when the window comes back (§3.5.2), and a recovery pressed while the window is away
+  has nothing on screen to take off it.
+
+Why the ordinary restore is not enough, given the host has the boxes right there: it would put
+back every placement, leaked ones included. Re-deriving from the clients is slower by one round
+trip and is the only version that can tell a live claim from a stale one.
+
+The watchdog's park has one extra beat. A renderer that is not returning to its event loop cannot
+process the resync either, so the ask is repeated when the renderer answers again. The queued
+message normally arrives on its own once the loop comes back; the repeat covers the case where
+the client's socket dropped during the wedge, and it is sent only after a park this watchdog
+performed.
+
 ### 3.6 Poster: the still frame a parked pane wears (issue #12)
 
 A web pane's page is a native view composited **above** the client's document, so a menu drawn

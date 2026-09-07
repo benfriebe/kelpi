@@ -360,15 +360,18 @@ function applySecurityPolicy(window: BrowserWindow): void {
      * heavy work, two inside a minute is not) and this is only its wiring: on the second strike
      * every native web-pane view goes back to the off-screen holder, so its rect stops
      * swallowing the clicks a person is trying to land on the chrome underneath.
+     *
+     * #96: `recoverViews`, not `releaseViews`. The forgetting release left every web pane blank
+     * until a workspace switch, because the placement went with the view and the client's
+     * reporter had nothing to say about a hole that never moved. `recoverViews` keeps each
+     * placement and asks the clients to re-state, so the panes they still draw come back on
+     * their own and the ones nobody draws stay in the holder (`webhost/index.ts` ▸ #96).
      */
     const watchdog = createUnresponsiveWatchdog({
         now: () => Date.now(),
         log: (message) => warn(message),
-        park: (reason) => {
-            const parked = webHost?.embeddedPaneIDs.length ?? 0;
-            webHost?.releaseViews(reason);
-            return parked;
-        }
+        park: (reason) => webHost?.recoverViews(reason) ?? 0,
+        restate: (reason) => webHost?.requestPlacementRestate(reason)
     });
     contents.on('unresponsive', () => watchdog.unresponsive());
     contents.on('responsive', () => watchdog.responsive());
@@ -1214,10 +1217,17 @@ function buildMenu(): void {
                 ...relay,
                 // Issue #79: Recover Interface's main-process half. The client half rides the
                 // relay like every other row; this is the part a wedged renderer cannot do.
-                releaseWebViews: (reason) => {
-                    const parked = webHost?.embeddedPaneIDs.length ?? 0;
-                    webHost?.releaseViews(reason);
-                    log(`menu: Recover Interface parked ${String(parked)} web pane view(s) (${reason})`);
+                //
+                // #96: the park KEEPS each placement and asks every client to re-state it. With
+                // `releaseViews` the row blanked every web pane until a workspace switch, which
+                // is the opposite of recovery; with `restoreViews` the leaked view the chord
+                // exists to shed would come straight back too. See `webhost/index.ts` ▸ #96.
+                recoverWebViews: (reason) => {
+                    const parked = webHost?.recoverViews(reason) ?? 0;
+                    log(
+                        `menu: Recover Interface parked ${String(parked)} web pane view(s) (${reason}) ` +
+                            'and asked every client to re-state its placements'
+                    );
                 }
             })
         },

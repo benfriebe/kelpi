@@ -1421,7 +1421,7 @@ resize on every mouse move.
 first hang and does nothing else: a workspace switch that starts eight terminal engines against
 multi-MB replays blocks the main thread past Chromium's hang monitor as a matter of course. A
 SECOND hang inside 60 s parks every native web-pane view back in the off-screen holder
-(`webHost.releaseViews('renderer-unresponsive')`), so those rects stop swallowing clicks meant
+(`webHost.recoverViews('renderer-unresponsive')`), so those rects stop swallowing clicks meant
 for the chrome underneath. It never reloads, never quits and never shows a dialog. `responsive`
 logs how long the renderer was gone; the strike is still counting inside the window.
 
@@ -1433,9 +1433,44 @@ row is safe to hit at any moment including one where the daemon is the thing tha
 is in the shipped menu rather than behind the dev-only Debug section, since the state it
 recovers from only occurs in a real session.
 
-A view parked by either route is re-placed the next time the client states its geometry for that
-pane (`packages/client/src/webpane/geometry.ts`, issue #34's re-statement); the shell's own
-`window` `show` restore is issue #75's.
+#### What puts the web panes back (issue #96)
+
+The park either route performs is `webHost.recoverViews`, and the end state it aims at is:
+
+> every view a client still claims, back on screen; every view no client claims, parked.
+
+So it parks with the placement **kept and held** (`webhost/embed.ts` ▸ `parkAllHeld`) and asks
+the daemon to broadcast `web-geometry-resync` (`HOST_PROTOCOL.md` §3.5.4), which makes every
+client re-state what it is drawing. A pane a client still draws is back in its own box within a
+frame or two; a placement nobody re-states within two seconds is dropped and its view stays in
+the holder, which is the leaked view a person pressing the chord is trying to shed. The watchdog
+asks a second time when the renderer answers again, because a wedged renderer cannot process the
+first ask.
+
+Two shapes this deliberately is **not**:
+
+- `releaseViews`, the forgetting release, which is what #79 shipped and what #96 fixed. It
+  deleted the placement, so every web pane went blank and stayed blank: the client believes the
+  pane is still placed, its geometry reporter drops an identical re-render (Rule 1,
+  `packages/client/src/webpane/geometry.ts`), and only a workspace switch produced a fresh
+  report. The user's words: "pressing the recover interface button caused the web pane to go
+  blank, and was only recovered by going in and out of the workspace."
+- `restoreViews`, #75's window restore, which would put every placement back out of the shell's
+  own books, including the leaked one. It is the smaller change and it recovers nothing.
+
+A held park is therefore the one park the shell's own reconciler leaves alone (`refresh()` skips
+it, `restoreParkedViews` discounts it) until the re-statement lands. A view parked for a hide or
+a minimise is untouched by the chord and still comes back the way #75 makes it.
+
+The shell's log tells the whole story of one press:
+
+```
+menu: Recover Interface parked 2 web pane view(s) (recover-interface) and asked every client to re-state its placements
+web pane <id> view owner=holder bounds=- (recover-interface)
+web host asking clients to re-state 2 parked placement(s) (recover-interface)
+web pane <id> view owner=main bounds=753,88 525×706 (attached)
+web host dropped 1 placement(s) no client re-stated after the recover-interface; those views stay parked
+```
 
 ---
 

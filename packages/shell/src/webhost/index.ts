@@ -106,6 +106,29 @@ export interface WebPaneHost {
      */
     restoreViews(reason?: string): void;
     /**
+     * View ▸ Recover Interface, and the unresponsive watchdog's second strike (#96).
+     *
+     * Park every view that is on screen, keep and HOLD its placement, and ask every client to
+     * re-state what it is drawing. A pane a client still claims comes back within a frame or two
+     * of the ask; a placement nobody claims is dropped after a short grace and its view stays in
+     * the off-screen holder, which is the outcome the chord exists for.
+     *
+     * NOT `releaseViews` (what #79 shipped, and the bug): that deletes the placement, and the
+     * client's reporter dedupes an identical re-render, so nothing on either side would ever put
+     * the page back. NOT `parkViews` either: that refuses to park a window that is visible, which
+     * a recovery's window always is.
+     *
+     * Returns how many views went to the holder.
+     */
+    recoverViews(reason?: string): number;
+    /**
+     * Ask every client to re-state its placements, now (#96).
+     *
+     * The watchdog's second half: a renderer that is not returning to its event loop cannot
+     * process the ask `recoverViews` already sent, so the watchdog asks again on `responsive`.
+     */
+    requestPlacementRestate(reason?: string): void;
+    /**
      * Test-only (issue #76): kill the renderer behind a pane's ACTIVE tab, the way macOS does
      * under memory pressure. Returns the tab it killed, or null when the pane has no view.
      *
@@ -603,9 +626,18 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         return window !== null && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
     };
 
-    const askClientsToRestate = (reason: string): void => {
+    /**
+     * Ask every client to say again what it is drawing (§3.5.1's broadcast, asked for by this
+     * host through §3.5.2's `web-geometry-resync-request`).
+     *
+     * `force` skips the rate limit, and only #96's recovery passes it. The limit exists because a
+     * placement the reconciler cannot honour must not become a message per tick; a person
+     * pressing ⌃⌥⌘R twice inside five seconds is the opposite case, and swallowing the second ask
+     * would leave every view they just parked in the holder with nothing left to put it back.
+     */
+    const askClientsToRestate = (reason: string, force = false): void => {
         const now = Date.now();
-        if (now - lastResyncAsk < RESYNC_MIN_INTERVAL_MS) return;
+        if (!force && now - lastResyncAsk < RESYNC_MIN_INTERVAL_MS) return;
         lastResyncAsk = now;
         log(
             `web host asking clients to re-state ${String(embed.parkedPaneIDs.length)} parked placement(s) (${reason})`
@@ -618,17 +650,38 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
      * does nothing, and on a window that is still away it leaves the books exactly as they are.
      */
     const restoreParkedViews = (reason: string): void => {
-        const waiting = embed.parkedPaneIDs.length;
-        if (waiting === 0) return;
+        /*
+         * #96 — the one park this function is not allowed to undo, stated where the reconciler
+         * would otherwise undo it.
+         *
+         * Recover Interface (and the watchdog's second strike) park every view HELD and ask the
+         * clients to re-state. Between the ask and the answers the window is perfectly usable, so
+         * without this the reconciler would fire 150 ms later and put everything back out of the
+         * shell's own books - including the leaked placement the chord exists to shed, which is
+         * the only one that would NOT be re-stated. The rule, and it is written down in
+         * HOST_PROTOCOL.md §3.5.4 too:
+         *
+         *     a held park is undone by the pane's own client re-stating its geometry, by nothing
+         *     else, and what is still held when the grace expires is dropped.
+         *
+         * `embed.refresh()` skips held placements as well, which is what covers the other callers
+         * (a tab switch landing inside the grace). Discounting them HERE is what stops the
+         * reconciler waking on a set it is not allowed to move, and what keeps its log line
+         * honest about the ones it can.
+         */
+        const held = embed.heldPaneIDs.length;
+        const waiting = embed.parkedPaneIDs.length - held;
+        if (waiting <= 0) return;
         if (!windowUsable()) {
             watchWindowState();
             return;
         }
         embed.refresh();
-        const stillParked = embed.parkedPaneIDs.length;
+        const stillParked = embed.parkedPaneIDs.length - embed.heldPaneIDs.length;
         log(
             `web host restoring ${String(waiting)} parked view(s) (${reason}): ` +
-                `${String(waiting - stillParked)} placed, ${String(stillParked)} still parked`
+                `${String(waiting - stillParked)} placed, ${String(stillParked)} still parked` +
+                (held === 0 ? '' : `, ${String(held)} held for a client re-statement`)
         );
         if (stillParked > 0) askClientsToRestate(reason);
         watchWindowState();
@@ -654,6 +707,67 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         }
         log(`web host parking ${String(embed.embeddedPaneIDs.length)} view(s) (${reason})`);
         embed.parkAll(reason);
+    };
+
+    /*
+     * ── #96: Recover Interface, and what the shell owes afterwards ──────────────────
+     *
+     * View ▸ Recover Interface (⌃⌥⌘R) and the unresponsive watchdog's second strike both take
+     * every native view off screen, because a `WebContentsView` sitting over a window whose
+     * renderer is not answering swallows every click aimed at the chrome underneath, and there
+     * is no other way back (#79). What #79 shipped was `releaseViews`, the FORGETTING release,
+     * and that is the bug this replaces: the placements went with the views, the client still
+     * believed every pane was placed so its reporter (Rule 1) had nothing to say, and every web
+     * pane stayed an empty hole until a workspace switch produced a fresh report. The user's
+     * words: "pressing the recover interface button caused the web pane to go blank, and was
+     * only recovered by going in and out of the workspace."
+     *
+     * The end state a recovery should reach is not "everything back where the shell remembers
+     * it" - that is a hide's end state (#75), and a recovery is a request to stop trusting the
+     * shell's memory. It is:
+     *
+     *     every view a client still claims, back on screen; every view no client claims, parked.
+     *
+     * So: park with the placements KEPT and HELD (`parkAllHeld`, which the reconciler and
+     * `refresh()` both leave alone), ask every client to re-state through §3.5.1's broadcast,
+     * and drop whatever is still held when the grace expires. A claimed pane is re-placed by its
+     * own client's report within a frame or two of the ask; a leaked one - a placement this shell
+     * is holding for a pane nobody draws any more, which is exactly the state a person reaching
+     * for "recover" is trying to shed - is never re-stated and stays in the holder.
+     *
+     * `restoreViews` (the other end #75 offers) would be the smaller change and the wrong one:
+     * it re-places out of these books, so the leaked view comes back with the rest and the chord
+     * recovers nothing.
+     *
+     * Two seconds, the same grace the reconnect sweep allows itself, and for the same reason: it
+     * is a round trip through the daemon and back, not a human interval.
+     */
+    const RECOVERY_GRACE_MS = 2_000;
+    let recoveryTimer: NodeJS.Timeout | null = null;
+
+    const recoverPlacedViews = (reason: string): number => {
+        const held = embed.parkAllHeld(reason);
+        log(
+            `web host recovery parked ${String(held.length)} view(s) (${reason}); ` +
+                `asking every client to re-state, ${String(RECOVERY_GRACE_MS)} ms of grace`
+        );
+        // Forced past the rate limit: this ask is the only thing that will put those views back,
+        // so a second press inside five seconds must not be swallowed.
+        askClientsToRestate(reason, true);
+        if (recoveryTimer !== null) clearTimeout(recoveryTimer);
+        recoveryTimer = setTimeout(() => {
+            recoveryTimer = null;
+            const dropped = embed.releaseHeld(`unclaimed-after-${reason}`);
+            log(
+                dropped.length === 0
+                    ? `web host: every view the ${reason} parked was re-stated by its client`
+                    : `web host dropped ${String(dropped.length)} placement(s) no client re-stated ` +
+                      `after the ${reason}; those views stay parked`
+            );
+        }, RECOVERY_GRACE_MS);
+        recoveryTimer.unref?.();
+        watchWindowState();
+        return held.length;
     };
 
     /*
@@ -869,6 +983,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 clearTimeout(claimTimer);
                 claimTimer = null;
             }
+            if (recoveryTimer !== null) {
+                clearTimeout(recoveryTimer);
+                recoveryTimer = null;
+            }
             embed.releaseAll('host-stopped');
             for (const paneID of registry.paneIDs()) sessions.forget(paneID);
             registry.dispose();
@@ -902,6 +1020,12 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         restoreViews(reason = 'window-shown'): void {
             restoreParkedViews(reason);
+        },
+        recoverViews(reason = 'recover-interface'): number {
+            return recoverPlacedViews(reason);
+        },
+        requestPlacementRestate(reason = 'restate'): void {
+            askClientsToRestate(reason, true);
         },
         crashPaneRenderer(paneID: string): { paneID: string; tabID: string } | null {
             const tabID = registry.activeTabID(paneID);

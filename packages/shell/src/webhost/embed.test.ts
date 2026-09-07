@@ -552,3 +552,125 @@ describe('reapply after a view was destroyed', () => {
         expect(h.controller.reapply(PANE)).toBe(false);
     });
 });
+
+/**
+ * Issue #96: the recovery park, and the one thing that may undo it.
+ *
+ * View ▸ Recover Interface exists to shed a view nobody claims any more. That only works if the
+ * shell stops trusting its own books for the length of one round trip: park with the placement
+ * KEPT, ask the clients to re-state, and drop whatever nobody names. A `refresh()` in the middle
+ * (the reconciler's, 150 ms after the park, on a window that is perfectly visible) would put
+ * every view back including the leaked one, which is the whole failure this guards.
+ */
+describe('the recovery park, held until a client re-states it (issue #96)', () => {
+    it('parks with the placement kept, and marks it held', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        expect(h.controller.parkAllHeld('recover-interface')).toEqual([PANE]);
+
+        expect(h.detaches).toEqual([{ id: 'T1' }]);
+        // Kept, unlike `releaseAll`: the box is still remembered, which is what a re-statement
+        // lands on top of and what `placementOf` must nonetheless withhold.
+        expect(h.controller.parkedPaneIDs).toEqual([PANE]);
+        expect(h.controller.heldPaneIDs).toEqual([PANE]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.controller.placementOf(PANE)).toBeNull();
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'released', reason: 'recover-interface' });
+    });
+
+    it('refresh does NOT put a held view back: only its own client may', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAllHeld('recover-interface');
+
+        // The reconciler, on a window that is visible and not minimised. Before this rule it
+        // re-attached every parked placement here, one tick after the chord.
+        h.controller.refresh();
+        expect(h.attaches).toHaveLength(1);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.controller.heldPaneIDs).toEqual([PANE]);
+    });
+
+    it('the client re-stating its geometry lifts the hold and puts the view back', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAllHeld('recover-interface');
+
+        // What `reassert()` sends: the same report, verbatim, since the hole never moved.
+        expect(h.controller.apply(geometry())).toBe('placed');
+        expect(h.attaches).toHaveLength(2);
+        expect(h.attaches[1]?.bounds).toEqual({ x: 10, y: 20, width: 400, height: 300 });
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.controller.heldPaneIDs).toEqual([]);
+        // `attached`, not `moved`: a held placement is a memory, so the view has to be
+        // re-parented rather than merely repositioned inside the holder.
+        expect(h.events.at(-1)).toMatchObject({ outcome: 'placed', reason: 'attached' });
+    });
+
+    it('drops a placement no client re-stated, and the view stays in the holder', () => {
+        const h = harness({ views: { T1: { id: 'T1' }, T9: { id: 'T9' } } });
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ paneID: OTHER, tabID: 'T9' }));
+        expect(h.controller.parkAllHeld('recover-interface')).toEqual([PANE, OTHER]);
+
+        // One client speaks up; the other pane is the leak the chord exists for.
+        h.controller.apply(geometry());
+        expect(h.controller.releaseHeld('unclaimed-after-recover-interface')).toEqual([OTHER]);
+
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        expect(h.controller.heldPaneIDs).toEqual([]);
+        // Detached once, when it was parked. Dropping the claim must not touch the view again.
+        expect(h.detaches.filter((view) => view.id === 'T9')).toHaveLength(1);
+        expect(h.events.at(-1)).toMatchObject({
+            paneID: OTHER,
+            outcome: 'released',
+            reason: 'unclaimed-after-recover-interface'
+        });
+    });
+
+    it('leaves a view already parked by a HIDE alone, hold and all', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAll('window-hidden');
+
+        // The window is away and the shell still owes this placement a restore (#75). A recovery
+        // pressed in that state has no view on screen to take off it, so it claims nothing.
+        expect(h.controller.parkAllHeld('recover-interface')).toEqual([]);
+        expect(h.controller.heldPaneIDs).toEqual([]);
+        expect(h.controller.parkedPaneIDs).toEqual([PANE]);
+        // …and #75's restore still works, which it would not if the recovery had held it.
+        h.controller.refresh();
+        expect(h.controller.embeddedPaneIDs).toEqual([PANE]);
+    });
+
+    it('a client hide during the hold forgets the placement rather than restoring it', () => {
+        const h = harness();
+        h.controller.apply(geometry());
+        h.controller.parkAllHeld('recover-interface');
+
+        // The re-statement that arrives says the pane is not being drawn (the user switched
+        // workspace between the chord and the answer). That is #34's one park a restore may
+        // never undo, so it must forget, not place.
+        expect(h.controller.apply(geometry({ visible: false }))).toBe('released');
+        expect(h.controller.heldPaneIDs).toEqual([]);
+        expect(h.controller.parkedPaneIDs).toEqual([]);
+        expect(h.controller.embeddedPaneIDs).toEqual([]);
+        expect(h.attaches).toHaveLength(1);
+        // The sweep then has nothing left to drop.
+        expect(h.controller.releaseHeld()).toEqual([]);
+    });
+
+    it('a pane closed or a view destroyed under a hold leaves nothing behind', () => {
+        const views: Record<string, FakeView | null> = { T1: { id: 'T1' }, T9: { id: 'T9' } };
+        const h = harness({ views });
+        h.controller.apply(geometry());
+        h.controller.apply(geometry({ paneID: OTHER, tabID: 'T9' }));
+        h.controller.parkAllHeld('renderer-unresponsive');
+
+        expect(h.controller.forget(views['T1'] as FakeView)).toBe(true);
+        h.controller.forgetPane(OTHER, 'pane-closed');
+        expect(h.controller.heldPaneIDs).toEqual([]);
+        expect(h.controller.releaseHeld()).toEqual([]);
+    });
+});

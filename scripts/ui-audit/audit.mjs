@@ -29862,6 +29862,12 @@ function buildFlows(ctx) {
                                     const box = host === null ? null : host.getBoundingClientRect();
                                     const style = host === null ? null : getComputedStyle(host);
                                     const pill = document.querySelector('${body} [data-terminal-copy-pill] button');
+                                    // The engine's canvas, for the round-7 gap: it is sized to
+                                    // whole cells, so where its right edge sits inside the host IS
+                                    // the strip of dead space beside the scrollbar.
+                                    const canvas = host === null ? null : host.querySelector('canvas');
+                                    const canvasBox = canvas === null ? null : canvas.getBoundingClientRect();
+                                    const round = (value) => Math.round(value * 100) / 100;
                                     return {
                                         scroll: pane === null ? null : pane.getAttribute('data-terminal-scroll'),
                                         selection: pane === null ? null : pane.getAttribute('data-terminal-selection'),
@@ -29873,9 +29879,17 @@ function buildFlows(ctx) {
                                             top: Math.round(box.top),
                                             bottom: Math.round(box.bottom),
                                             left: Math.round(box.left),
+                                            right: round(box.right),
                                             height: Math.round(box.height),
                                             width: Math.round(box.width)
                                         },
+                                        canvas: canvasBox === null ? null : {
+                                            left: round(canvasBox.left),
+                                            right: round(canvasBox.right),
+                                            width: round(canvasBox.width)
+                                        },
+                                        pane: pane === null ? null : round(pane.getBoundingClientRect().right),
+                                        panePadding: pane === null ? null : getComputedStyle(pane).paddingRight,
                                         pills: document.querySelectorAll('[data-terminal-copy-pill]').length,
                                         pillLabel: pill === null ? null : pill.textContent
                                     };
@@ -29949,6 +29963,41 @@ function buildFlows(ctx) {
                     if (box === null || !(cellHeight > 0) || !(cellWidth > 0)) {
                         throw new Error(`phone-touch-scroll: no host box or cell to measure with (${JSON.stringify(start)})`);
                     }
+
+                    /*
+                     * ── THE SCROLLBAR'S GAP (owner device round 7) ─────────────────────
+                     *
+                     * The engine sizes its canvas to whole cells and paints its 8 px scrollbar
+                     * 4 px in from THAT canvas's right edge, so every pixel between the canvas
+                     * and the host is dead space beside the thumb. On a phone the remainder
+                     * moves to the left (`styles.css`), which is a computed box and therefore
+                     * exactly the kind of claim only a real layout engine can settle.
+                     */
+                    const px = (value) => String(Math.round(value * 100) / 100);
+                    /** The floor to whole columns, in pixels: what has to go somewhere. */
+                    const remainder = start.canvas === null ? Number.NaN : start.box.width - start.canvas.width;
+                    /** Dead space beside the scrollbar: the canvas's right edge to the host's. */
+                    const canvasGap = start.canvas === null ? Number.NaN : start.box.right - start.canvas.right;
+                    /** Where the remainder went instead. */
+                    const leftGap = start.canvas === null ? Number.NaN : start.canvas.left - start.box.left;
+                    /** The engine paints its 8 px scrollbar 4 px in from the canvas's right edge. */
+                    const thumbToPaneEdge = start.canvas === null ? Number.NaN : Number(start.pane) - start.canvas.right + 4;
+                    recorder.note(
+                        `the canvas inside the host: ${JSON.stringify(start.canvas)} in a host ${px(start.box.width)} px wide ending at ` +
+                            `${px(start.box.right)}, pane ending at ${String(start.pane)} (padding-right ${String(start.panePadding)}), ` +
+                            `cell ${String(cellWidth)} px wide, so ${px(remainder)} px of column remainder to place`
+                    );
+                    recorder.check(
+                        'the canvas\'s right edge IS the host\'s right edge: the whole column remainder sits on the LEFT, not beside the scrollbar',
+                        Number.isFinite(canvasGap) &&
+                            canvasGap <= 0.5 &&
+                            canvasGap < cellWidth / 3 &&
+                            Math.abs(leftGap - remainder) <= 0.5,
+                        `${px(canvasGap)} px beside the scrollbar and ${px(leftGap)} px of the ${px(remainder)} px remainder on the left ` +
+                            `(round 7 asked for under a third of a ${String(cellWidth)} px cell, ${px(cellWidth / 3)} px); the thumb now ends ` +
+                            `${px(thumbToPaneEdge)} px from the pane's own right edge - the engine's own 4 px inset plus this gap plus the ` +
+                            `pane's ${String(start.panePadding)} of padding`
+                    );
                     // 200 px of travel inside the host, well clear of both edges: the same distance
                     // for the slow drag and for the flick, so the only difference is the speed.
                     const TRAVEL = 200;
@@ -30109,9 +30158,17 @@ function buildFlows(ctx) {
                                     const pane = document.querySelector('${body} [data-pane-id]');
                                     const host = document.querySelector('${hostSelector}');
                                     const style = host === null ? null : getComputedStyle(host);
+                                    const canvas = host === null ? null : host.querySelector('canvas');
+                                    const hostBox = host === null ? null : host.getBoundingClientRect();
+                                    const canvasBox = canvas === null ? null : canvas.getBoundingClientRect();
                                     return {
                                         scroll: pane === null ? null : pane.getAttribute('data-terminal-scroll'),
                                         touchAction: style === null ? '(none)' : style.touchAction,
+                                        marginLeft: canvas === null ? '(none)' : getComputedStyle(canvas).marginLeft,
+                                        // The desktop's own arithmetic: the canvas starts at the
+                                        // host's left edge and the remainder is on the right, which
+                                        // is where it has always been.
+                                        leftGap: hostBox === null || canvasBox === null ? null : Math.round((canvasBox.left - hostBox.left) * 100) / 100,
                                         bars: document.querySelectorAll('[data-terminal-key-bar]').length,
                                         formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
                                     };
@@ -30124,6 +30181,11 @@ function buildFlows(ctx) {
                         afterClear.scroll === null && afterClear.touchAction === 'auto' && afterClear.bars === 0 && afterClear.formFactor === 'desktop',
                         `data-terminal-scroll=${String(afterClear.scroll)}, touch-action=${String(afterClear.touchAction)}, ` +
                             `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
+                    );
+                    recorder.check(
+                        'and its canvas is where it has always been: at the host\'s left edge, remainder on the right',
+                        afterClear.marginLeft === '0px' && afterClear.leftGap === 0,
+                        `canvas margin-left=${String(afterClear.marginLeft)}, ${String(afterClear.leftGap)} px from the host's left edge`
                     );
                     // …and the window itself, which is what the step after this one inherits.
                     await checkPhoneHandback(view, recorder, handedIn);

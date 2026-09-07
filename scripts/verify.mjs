@@ -209,7 +209,7 @@ const SURFACES = [
         // No audit step yet: A1's manifest builder is covered by its own unit tests, and the
         // daemon serves the files it emits, so `smoke:web` is its live gate. Add the PWA steps
         // here (phone-pwa-shell, A2) when they land.
-        smokes: ['smoke:web']
+        smokes: ['smoke:web', 'smoke:pwa']
     },
     {
         prefix: 'packages/daemon/src/term/',

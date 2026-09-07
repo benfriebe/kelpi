@@ -29297,11 +29297,19 @@ function buildFlows(ctx) {
          * that failed on the phone while every key on the bar was byte-exact, so they are the
          * half of this step that the unit suite cannot reach and a desktop keyboard cannot
          * reproduce; see the block at the end of the run.
+         *
+         * Round 6 (2026-09-07) added the keyboard key's FACE to the step (C8). The label is read
+         * off C7's `data-keyboard-viewport` now rather than off the caret, and that attribute is
+         * published from the live `VisualViewport` - so a keyboard faked at the same seam
+         * `phone-keyboard-inset` uses drives the label here for real, through the binder, the
+         * attribute and the bar's own observer. What it is not is the fix itself: no desktop
+         * Chromium raises a keyboard, so the owner's device is still the only place the label can
+         * be seen next to an actual one.
          */
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard key is a TOGGLE and the bar works with the keyboard down: tapping it drops the caret off the engine and the key reads Show, Esc and an arrow tapped in that state still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard key names the KEYBOARD and not the caret: it opens on Show with the caret on the engine textarea and nothing taking viewport space, turns into Hide the moment a keyboard faked at the visual viewport does take space, stays Hide across the tap that drops the caret (a tap is a request; the label is what is on screen) and reads Show again when that keyboard goes, including when it goes with the caret STILL in the textarea, which is Android\'s back gesture. The bar works with the keyboard down throughout: Esc and an arrow tapped with the caret off the engine still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -29311,6 +29319,62 @@ function buildFlows(ctx) {
                 const paneID = shell.id;
                 const body = `[data-testid="pane-body-${paneID}"]`;
                 const bar = `${body} [data-terminal-key-bar]`;
+                const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+                /** The keyboard this step fakes, in CSS px, as `phone-keyboard-inset` fakes it. */
+                const FAKE_KEYBOARD_PX = 300;
+
+                /** The toggle's whole state in one read: its face, the caret, and C7's mode. */
+                const readToggle = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
+                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
+                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
+                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false,
+                                    mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                })`
+                            )
+                        )
+                    );
+
+                /**
+                 * C8 - raise or drop a software keyboard, at the one seam a desktop Chromium has.
+                 *
+                 * The same shadow `phone-keyboard-inset` uses and for the same reason: nothing in
+                 * a desktop Chromium has a keyboard to raise, and `readSoftKeyboardInset` plus
+                 * C7's mode detector both read the live `VisualViewport`, so an own `height`
+                 * accessor over the prototype getter IS a keyboard as far as every line of client
+                 * code is concerned. Dropping it deletes the own property, which puts the real
+                 * getter back (`height` is a prototype accessor on VisualViewport, unlike
+                 * `window.innerHeight` - see the note in that step).
+                 *
+                 * One event, not an animation: this step is about what the LABEL says, and the
+                 * label is published off the attribute, which the binder writes once per
+                 * transition. The animation is that step's business.
+                 */
+                const fakeKeyboard = async (up) =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    if (${String(up)}) {
+                                        Object.defineProperty(vv, 'height', {
+                                            configurable: true,
+                                            get() { return window.innerHeight - ${String(FAKE_KEYBOARD_PX)}; }
+                                        });
+                                    } else if (Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                        delete vv.height;
+                                    }
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ ok: true, innerHeight: window.innerHeight, viewport: Math.round(vv.height) });
+                                })()`
+                            )
+                        )
+                    );
 
                 // Focus and tidy at DESKTOP size: the pane has to be the focused one for the bar
                 // to mount at all, and a clear screen makes the capture below readable.
@@ -29325,6 +29389,25 @@ function buildFlows(ctx) {
                         timeoutMs: 20_000,
                         label: 'the key bar to mount under the phone viewport'
                     });
+
+                    /*
+                     * ── THE KEY'S OPENING FACE (owner device round 6, 2026-09-07) ──────────
+                     *
+                     * "The hide/show button always starts with Hide, which requires pressing
+                     * twice to show." The pane claims the caret the moment it mounts
+                     * (`app/pane-focus.ts` `armCaretClaim`) and Android puts no keyboard up for a
+                     * programmatic focus, so a label derived from the caret opened on Hide with
+                     * nothing to hide. This is that exact state: the bar has just mounted, the
+                     * caret IS the engine's textarea, and no keyboard is taking viewport space.
+                     */
+                    const atMount = await readToggle();
+                    recorder.note(`the keyboard key as the bar mounts: ${JSON.stringify(atMount)}`);
+                    recorder.check(
+                        'the keyboard key opens on Show, with the caret on the engine and no keyboard taking viewport space (round 6)',
+                        atMount.label === 'Show' && atMount.pressed === 'false' && atMount.mode === 'none' && atMount.inHost === true,
+                        `label=${atMount.label} aria-pressed=${atMount.pressed} data-keyboard-viewport=${atMount.mode} ` +
+                            `activeElement=${atMount.caret} inside the host=${String(atMount.inHost)}`
+                    );
 
                     /*
                      * IN FLOW, NOT OVER (MOBILE-PLAN.md §7, "Keyboard inset ownership"). The bar
@@ -29581,14 +29664,38 @@ function buildFlows(ctx) {
                      * reaching the PTY.
                      *
                      * CDP cannot show or hide an Android software keyboard, and this is a Mac
-                     * running Electron in any case, so FOCUS IS THE PROXY: `document.activeElement`
-                     * being the engine's textarea is exactly the condition that makes a phone put
-                     * the keyboard up, and it is what the toggle acts on. The assertions below say
-                     * so where they are read.
+                     * running Electron in any case, so there are TWO proxies, one per half:
+                     *
+                     *   - the CARET is the proxy for the toggle's ACTION. `document.activeElement`
+                     *     being the engine's textarea is exactly the condition that makes a phone
+                     *     put the keyboard up, and moving it is what the key does.
+                     *   - the VIEWPORT is the proxy for the toggle's LABEL, since round 6 (C8):
+                     *     the face is read off C7's `data-keyboard-viewport`, so a keyboard faked
+                     *     at the visual viewport is a keyboard as far as the label is concerned.
+                     *     Which is why one is raised HERE, before the key is tapped: with no
+                     *     keyboard taking space the key correctly reads Show, and a Show key is
+                     *     not the dismiss this section is about to drive.
+                     *
+                     * The assertions below say which proxy they are reading where they read it.
                      */
-                    const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
                     // A reader that echoes control bytes, started while the caret is still there.
                     await runInTerminal(view, 'cat', { settleMs: 700 });
+                    const raised = await fakeKeyboard(true);
+                    await sleep(250);
+                    const withKeyboard = await readToggle();
+                    recorder.note(`with a ${String(FAKE_KEYBOARD_PX)} px keyboard faked at the visual viewport: ${JSON.stringify({ raised, withKeyboard })}`);
+                    recorder.check(
+                        'shadowing `height` on the live VisualViewport is a usable seam for the label too',
+                        raised.ok === true && raised.innerHeight - raised.viewport === FAKE_KEYBOARD_PX,
+                        raised.ok === true
+                            ? `innerHeight ${String(raised.innerHeight)} - viewport ${String(raised.viewport)} = ${String(raised.innerHeight - raised.viewport)} px of keyboard`
+                            : String(raised.why)
+                    );
+                    recorder.check(
+                        'a keyboard that takes viewport space turns the key into Hide (round 6: the label names the KEYBOARD)',
+                        withKeyboard.label === 'Hide' && withKeyboard.pressed === 'true' && withKeyboard.mode === 'resizes-visual',
+                        `label=${withKeyboard.label} aria-pressed=${withKeyboard.pressed} data-keyboard-viewport=${withKeyboard.mode}`
+                    );
                     await view.eval(
                         `(() => {
                             const key = document.querySelector('${keyboardKey}');
@@ -29599,28 +29706,32 @@ function buildFlows(ctx) {
                     await sleep(120);
                     await view.tap(keyboardKey);
                     await sleep(250);
-                    const hidden = JSON.parse(
-                        String(
-                            await view.eval(
-                                `JSON.stringify({
-                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
-                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
-                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
-                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
-                                })`
-                            )
-                        )
-                    );
+                    const hidden = await readToggle();
                     recorder.note(`after tapping the keyboard key: ${JSON.stringify(hidden)}`);
                     recorder.check(
-                        'the keyboard key drops the caret off the engine (the proxy for the keyboard going down; CDP cannot show an Android keyboard)',
+                        'the keyboard key drops the caret off the engine (the proxy for the keyboard going down; CDP cannot dismiss an Android keyboard)',
                         hidden.inHost === false,
                         `activeElement=${hidden.caret} inside the terminal host=${String(hidden.inHost)}`
                     );
+                    /*
+                     * …and the label is still Hide, because the fake keyboard is still shadowing
+                     * the viewport: a tap is a REQUEST, and the key names what is on screen
+                     * rather than what was asked for. On the device the two are a keyboard
+                     * animation apart. Dropping the fake is the platform answering.
+                     */
                     recorder.check(
-                        'and it turns into Show, because the same key is the way back',
-                        hidden.label === 'Show' && hidden.pressed === 'false',
-                        `label=${hidden.label} aria-pressed=${hidden.pressed}`
+                        'the key still reads Hide while the keyboard is still taking viewport space, because the label is the keyboard and not the tap',
+                        hidden.label === 'Hide' && hidden.mode === 'resizes-visual',
+                        `label=${hidden.label} data-keyboard-viewport=${hidden.mode}`
+                    );
+                    await fakeKeyboard(false);
+                    await sleep(250);
+                    const lowered = await readToggle();
+                    recorder.note(`with the fake keyboard dropped: ${JSON.stringify(lowered)}`);
+                    recorder.check(
+                        'and it turns into Show once the keyboard has actually left, because the same key is the way back',
+                        lowered.label === 'Show' && lowered.pressed === 'false' && lowered.mode === 'none',
+                        `label=${lowered.label} aria-pressed=${lowered.pressed} data-keyboard-viewport=${lowered.mode}`
                     );
 
                     // …and NOW the keys, with the caret nowhere near the terminal.
@@ -29678,23 +29789,59 @@ function buildFlows(ctx) {
                     await sleep(120);
                     await view.tap(keyboardKey);
                     await sleep(250);
-                    const shown = JSON.parse(
-                        String(
-                            await view.eval(
-                                `JSON.stringify({
-                                    label: document.querySelector('${keyboardKey}')?.textContent ?? '(none)',
-                                    pressed: document.querySelector('${keyboardKey}')?.getAttribute('aria-pressed') ?? '(none)',
-                                    caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
-                                    inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
-                                })`
-                            )
-                        )
-                    );
+                    const shown = await readToggle();
                     recorder.check(
                         'tapping Show puts the caret back on the engine (the proxy for the keyboard coming up)',
-                        shown.caret === 'textarea' && shown.inHost === true && shown.label === 'Hide',
+                        shown.caret === 'textarea' && shown.inHost === true,
                         `activeElement=${shown.caret} inside the host=${String(shown.inHost)} key=${shown.label}`
                     );
+                    /*
+                     * …and the key still says Show, which is the honest answer here and NOT the
+                     * bug round 6 reported. The tap asked for a keyboard; nothing in a desktop
+                     * Chromium can produce one, so no keyboard is taking viewport space and the
+                     * label says so. On the device this is the beat between the tap and the
+                     * keyboard arriving, and the block below drives the arrival itself.
+                     */
+                    recorder.check(
+                        'and it still reads Show, because no keyboard actually came up: nothing in a desktop Chromium can raise one',
+                        shown.label === 'Show' && shown.mode === 'none',
+                        `label=${shown.label} data-keyboard-viewport=${shown.mode}`
+                    );
+
+                    /*
+                     * ── ANDROID'S BACK GESTURE (owner device round 6) ──────────────────────
+                     *
+                     * The shape no focus listener can see: the keyboard goes away and the caret
+                     * stays exactly where it was. Round 3's label read that as a keyboard still
+                     * up and offered to hide it again, which is the second half of "pressing
+                     * twice". Here it is end to end - the caret is on the engine's textarea from
+                     * the tap above and NOTHING below touches it, so the only thing that moves
+                     * is the viewport.
+                     */
+                    await fakeKeyboard(true);
+                    await sleep(250);
+                    const backBefore = await readToggle();
+                    recorder.check(
+                        'with the caret on the engine and a keyboard up, the key reads Hide',
+                        backBefore.label === 'Hide' && backBefore.inHost === true && backBefore.mode === 'resizes-visual',
+                        `label=${backBefore.label} inside the host=${String(backBefore.inHost)} data-keyboard-viewport=${backBefore.mode}`
+                    );
+                    await fakeKeyboard(false);
+                    await sleep(250);
+                    const backAfter = await readToggle();
+                    recorder.note(`after the back-gesture shape (keyboard gone, caret untouched): ${JSON.stringify(backAfter)}`);
+                    recorder.check(
+                        'the keyboard leaving with the caret STILL in the textarea reads Show, which is what the focus-derived label could not see',
+                        backAfter.label === 'Show' &&
+                            backAfter.pressed === 'false' &&
+                            backAfter.caret === 'textarea' &&
+                            backAfter.inHost === true &&
+                            backAfter.mode === 'none',
+                        `label=${backAfter.label} aria-pressed=${backAfter.pressed} activeElement=${backAfter.caret} ` +
+                            `inside the host=${String(backAfter.inHost)} data-keyboard-viewport=${backAfter.mode}`
+                    );
+                    // The pane's rows come back with the viewport, before the PTY work below.
+                    await sleep(600);
 
                     // Leave the pane at a prompt: Ctrl from the bar, `c` from the keyboard, which
                     // also re-proves the latch survives the toggle.
@@ -29718,6 +29865,21 @@ function buildFlows(ctx) {
                         afterToggle.includes('KB-64') ? 'the shell evaluated $((8*8))' : 'no KB-64 - cat is probably still running'
                     );
                 } finally {
+                    // Belt and braces (C8): an assertion that threw between raising and dropping
+                    // the fake keyboard must not hand the next step a visual viewport that lies
+                    // about its own height. `phone-keyboard-inset` carries the same clause.
+                    await view
+                        .eval(
+                            `(() => {
+                                const vv = window.visualViewport;
+                                if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                    delete vv.height;
+                                    vv.dispatchEvent(new Event('resize'));
+                                }
+                                return true;
+                            })()`
+                        )
+                        .catch(() => {});
                     await clearPhoneEmulation(view);
 
                     // AND NOT ON DESKTOP: the same pane, the same window, no bar.

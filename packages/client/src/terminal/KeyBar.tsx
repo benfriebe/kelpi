@@ -111,10 +111,13 @@
  *   - `touch-action: manipulation` on each key, so a fast second tap is a second key and never a
  *     double-tap zoom.
  *
- * The keyboard key is therefore a TOGGLE rather than a one-way dismiss: it hides when the engine
- * holds the caret and shows when it does not, and which one it is comes from `focusin`/`focusout`
- * on the pane root rather than from a flag this file keeps. Tapping the terminal itself still
- * raises the keyboard through the engine's own `touchend` handler
+ * The keyboard key is therefore a TOGGLE rather than a one-way dismiss: it hides when a software
+ * keyboard is on screen and shows when none is. Which one it is comes from C7's
+ * `data-keyboard-viewport` on `<html>` - the keyboard as MEASURED, not as inferred from the caret
+ * - with the caret kept as the fallback where nothing publishes that attribute. Device round 6 is
+ * what moved it off the caret alone; the rule, both shapes that forced it and the two limits it
+ * carries are at the state itself, below. Tapping the terminal still raises the keyboard through
+ * the engine's own `touchend` handler
  * (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`), which nothing here touches.
  *
  * C4's two transient surfaces keep their own rules: the fallback paste field focuses ITSELF when
@@ -124,6 +127,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
+import { readKeyboardViewportMode, watchKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import { tokens } from '../chrome/tokens';
 import { onClipboardOffer } from '../state/clipboard';
 import type { TerminalKeyInit } from './renderer';
@@ -254,12 +258,12 @@ export interface KeyBarKey {
 }
 
 /**
- * The keyboard key's two faces (device round 3 - see the header).
+ * The keyboard key's two faces (device rounds 3 and 6 - see the header).
  *
- * It is one button in one place, and what it does depends on where the caret is: with the engine
- * holding it, tapping hides the software keyboard; with the caret anywhere else, tapping brings it
- * back. The id stays `hide-keyboard` because the audit step and the sibling lanes select on it and
- * a rename would break them for no gain in truth.
+ * It is one button in one place, and what it does depends on whether a software keyboard is on
+ * screen: with one up, tapping hides it; with none, tapping brings one back. The id stays
+ * `hide-keyboard` because the audit step and the sibling lanes select on it and a rename would
+ * break them for no gain in truth.
  */
 export const KEYBOARD_TOGGLE_HIDE = {
     label: 'Hide',
@@ -807,14 +811,45 @@ export function KeyBar({
         void write?.(text).catch(() => undefined);
     }, [offer, writeClipboard]);
 
-    // ── the keyboard toggle's state (device round 3) ────────────────────────────────
+    // ── the keyboard toggle's state (device rounds 3 and 6) ─────────────────────────
     //
-    // OBSERVED, never assumed. The software keyboard is up when the engine's input holds the
-    // caret, and that is a fact about the DOM, not a flag this file can keep: the engine's own
-    // `touchend` raises the keyboard when the terminal is tapped (`terminal.ts:490-493`), the
-    // pane's focus effects move the caret for reasons of their own, and a platform can take it
-    // away without telling anyone. So the state is read off `document.activeElement` whenever
-    // focus moves anywhere inside the pane.
+    // OBSERVED, never assumed - and what is observed is THE KEYBOARD, not the caret.
+    //
+    // ROUND 6 (2026-09-07, Android, Chrome, installed PWA): "the hide/show button always starts
+    // with Hide, which requires pressing twice to show". Round 3 derived the label from
+    // `focusin`/`focusout` on the pane root, i.e. from "does the engine's textarea hold the
+    // caret". A focused pane claims the caret the moment it mounts (`app/pane-focus.ts`
+    // `armCaretClaim`, which calls the engine's own `focus()`), and a programmatic focus with no
+    // gesture behind it does not summon Android's keyboard. So the app opened with the caret on
+    // the textarea and no keyboard on screen: the label read Hide, and the first tap spent
+    // itself releasing a caret whose keyboard was not there.
+    //
+    // THE RULE, in order:
+    //
+    //   1. C7's `data-keyboard-viewport` on `<html>` (`chrome/keyboard-viewport.ts`), wherever it
+    //      is published. `none` means no keyboard is taking space from either viewport;
+    //      `resizes-content` / `resizes-visual` mean one is. That is a MEASUREMENT of the
+    //      keyboard - the layout viewport's resting height against what is visible of it - and it
+    //      is the thing the label names. It is also the only signal that can see the other shape
+    //      the owner's phone produces: Android's back gesture dismisses the keyboard and LEAVES
+    //      THE CARET in the textarea, which a focus-derived label reads as a keyboard still up
+    //      and the viewport reads as the empty screen it is. The same primacy answers the
+    //      converse - a bar tap that Android answers by moving focus to the button takes the
+    //      caret off the textarea without taking the keyboard off the screen, and the label has
+    //      to stay Hide through it.
+    //   2. the caret on the engine's textarea, where that attribute is absent: jsdom, SSR, a
+    //      desktop (where the binder deliberately writes nothing and this bar does not mount
+    //      anyway) and the tick before `main.tsx` binds it. Round 3's signal, kept as the
+    //      fallback rather than as the answer.
+    //
+    // Two limits, recorded rather than papered over. A keyboard that OVERLAYS the content
+    // (`interactive-widget=overlays-content`) takes no viewport space, so nothing can measure it
+    // and the label would read Show with a keyboard up; no engine this ships to does that -
+    // `index.html` asks for `resizes-content`, Chrome's default is `resizes-visual`, and iOS is
+    // `resizes-visual` whatever it is asked for. And a phone browser's URL bar sliding back in
+    // shortens the layout viewport with no keyboard anywhere, which C7 names `resizes-content` on
+    // purpose (see its header) and this would therefore read as Hide while the bar is in; the
+    // owner runs an installed PWA, which has no URL bar to slide.
     //
     // "The engine's input" is a `<textarea>` inside the pane that is not C4's paste field: the
     // engine opens exactly one (`renderer.ts` `engineKeyTarget` resolves the same node), and the
@@ -829,38 +864,75 @@ export function KeyBar({
         return active.tagName === 'TEXTAREA' && root.contains(active);
     }, [captureRoot]);
 
+    /** The rule above, in the order it is written in. */
+    const isKeyboardUp = useCallback((): boolean => {
+        if (typeof document === 'undefined') return false;
+        const mode = readKeyboardViewportMode(document);
+        if (mode !== null) return mode !== 'none';
+        return isEngineCaret();
+    }, [isEngineCaret]);
+
     const [keyboardShown, setKeyboardShown] = useState(false);
     const keyboardShownRef = useRef(false);
     useEffect(() => {
         const root = captureRoot.current;
         if (root === null) return;
         const sync = (): void => {
-            const shown = isEngineCaret();
+            const shown = isKeyboardUp();
             keyboardShownRef.current = shown;
             setKeyboardShown(shown);
         };
+        // AT MOUNT, before anything has moved: round 3 read this off the caret and defaulted to
+        // "the engine has it", which is the Hide the owner opened the app to. It is the same
+        // call as every later one now, so there is no initial state to get wrong.
         sync();
-        // Capture phase, and both events: `focusout` is what says the caret LEFT (its
+        // The attribute is the primary signal, so its mutations are the primary subscription: one
+        // callback per keyboard transition, and the only way to see a keyboard that goes away
+        // without touching the caret (the back gesture).
+        const stopWatchingViewport = typeof document === 'undefined' ? () => undefined : watchKeyboardViewportMode(document, sync);
+        // …and the focus traffic, which keeps the FALLBACK current where nothing publishes the
+        // attribute. Capture phase, and both events: `focusout` is what says the caret LEFT (its
         // `document.activeElement` is the body mid-dispatch, which is the answer we want), and
         // `focusin` corrects it the moment something else takes the caret. Both bubble, so the
-        // pane root sees every move inside the pane, including the engine's own.
+        // pane root sees every move inside the pane, including the engine's own. Where the
+        // attribute IS published these cost one attribute read and change nothing.
         root.addEventListener('focusin', sync, true);
         root.addEventListener('focusout', sync, true);
         return () => {
+            stopWatchingViewport();
             root.removeEventListener('focusin', sync, true);
             root.removeEventListener('focusout', sync, true);
         };
-    }, [captureRoot, isEngineCaret]);
+    }, [captureRoot, isKeyboardUp]);
 
     const press = useCallback(
         (key: KeyBarKey): void => {
             // THE ONE FOCUS THE BAR IS ALLOWED, and only in one direction: the person tapped a
-            // key that says "Show", which is them asking for the keyboard. With the caret on the
-            // engine the same key is a dismiss, exactly as before.
+            // key that says "Show", which is them asking for the keyboard. With a keyboard on
+            // screen the same key is a dismiss, exactly as before.
             if (key.action === 'toggleKeyboard') {
                 setLatch(NO_STICKY);
-                if (keyboardShownRef.current) hideKeyboard();
-                else showKeyboard();
+                if (keyboardShownRef.current) {
+                    hideKeyboard();
+                    return;
+                }
+                /*
+                 * …and the release below is the FIRST HALF of that one focus, not a dismiss of
+                 * its own (device round 6).
+                 *
+                 * `showKeyboard` is `engineKeyTarget(host).focus()`, and a `focus()` on the
+                 * element that already holds the caret is not a focus change at all: no event is
+                 * raised and no software keyboard is summoned. That is exactly the state the
+                 * label is now honest about - the pane claimed the caret at mount and Android
+                 * put no keyboard up for it, or the back gesture took the keyboard and left the
+                 * caret - so without this the corrected label would name a key that could not
+                 * work. It is also why the owner's broken version needed TWO presses and then
+                 * worked: the first press was this blur, and the second was the focus that had
+                 * somewhere to move from. Both halves now happen inside the one tap that asked
+                 * for the keyboard.
+                 */
+                if (isEngineCaret()) hideKeyboard();
+                showKeyboard();
                 return;
             }
             if (key.modifier !== undefined) {
@@ -877,7 +949,7 @@ export function KeyBar({
             setLatch(NO_STICKY);
             sendKeyRef.current(withSticky(key.init, latch));
         },
-        [hideKeyboard, requestPaste, setLatch, showKeyboard]
+        [hideKeyboard, isEngineCaret, requestPaste, setLatch, showKeyboard]
     );
 
     return (
@@ -1008,8 +1080,9 @@ export function KeyBar({
             >
                 {KEY_BAR_KEYS.map((key) => {
                     // The keyboard key is one button with two faces, and which one it wears comes
-                    // from where the caret actually is (device round 3). Its `aria-pressed` means
-                    // "the software keyboard is up", which is the state the label describes.
+                    // from whether a keyboard is measurably on screen (device round 6, the state
+                    // above). Its `aria-pressed` means "the software keyboard is up", which is
+                    // the state the label describes.
                     const toggle = key.action === 'toggleKeyboard';
                     const face = !toggle ? key : keyboardShown ? KEYBOARD_TOGGLE_HIDE : KEYBOARD_TOGGLE_SHOW;
                     const pressed = toggle ? keyboardShown : key.modifier === undefined ? undefined : sticky[key.modifier];

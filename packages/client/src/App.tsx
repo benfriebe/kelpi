@@ -132,7 +132,7 @@ import {
 import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
-import { focusPaneSurface, handCaretToPaneWhenReady, releaseFocusedPaneCaret } from './app/pane-focus';
+import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { useRemoteDaemons } from './app/remote-daemons';
 import { RemoteDaemonSections, type RemoteSelection } from './app/RemoteDaemonSections';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
@@ -1102,11 +1102,21 @@ function Shell(props: AppProps): ReactElement {
      * them. Here the chrome text field holding the caret is the overlay that is closing, which is
      * exactly what the handoff exists to take it back from: `focusPaneSurface` claims it for
      * every other pane type without asking, and a web pane must not be the one that declines.
+     *
+     * C5 - EXCEPT ON A PHONE, where "hand the caret back" is not a focus change at all: it is a
+     * software keyboard over half the screen, raised by an overlay closing rather than by the
+     * person asking for it. Measured on the owner's phone (device round 4, 2026-09-07, Android
+     * Chrome) and reproduced live by the audit's `phone-caret-owner` step: closing the Settings
+     * sheet put the caret straight back on the engine's textarea and the keyboard with it.
+     * `mayClaimPaneCaret` (`app/pane-focus.ts`) is the one place that rule is written down; the
+     * desktop answer is unconditionally yes, so nothing above changes for a Mac window. The web
+     * half below is deliberately outside the guard: it is a native view's keyboard in another
+     * process, not this document's caret, and a web pane has no software keyboard to summon.
      */
     const handBackPaneCaret = useCallback(
         (paneID: string | null): void => {
             if (paneID === null) return;
-            focusPaneSurface(paneID);
+            if (mayClaimPaneCaret()) focusPaneSurface(paneID);
             const state = store.getState();
             if (selectPane(state, paneID)?.type !== 'web') return;
             const web = selectActiveWorkspace(state)?.webPanes[paneID];

@@ -32,6 +32,7 @@ import { isPlatformChord } from '@kelpi/core/config';
 import {
     PANE_SURFACE_ATTR,
     armCaretClaim,
+    mayClaimPaneCaret,
     openEngineFocusWindow,
     releasePaneCaret,
     shouldGrabFocus,
@@ -386,6 +387,31 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     useLayoutEffect(() => {
         latest.current = props;
     });
+
+    /**
+     * C5 - THE PANE'S ONE CLAIM ON THE CARET, and the only place it decides it may make one.
+     *
+     * Every path that used to call `renderer.focus()` because the pane is entitled to the caret
+     * calls this instead: the mount's post-`open` claim, the window/visibility resync (N15) and
+     * the focus effect's armed claim (issue #35). What they had in common was already "the pane
+     * is focused, so take the caret"; what they were missing is that on a phone taking the caret
+     * is not a focus change but a software keyboard over half the screen.
+     *
+     * `mayClaimPaneCaret` (`app/pane-focus.ts`) holds the rule and the measurement behind it; it
+     * answers yes for every desktop window, so each of the three sites is byte for byte what it
+     * was. On a phone the keyboard has exactly two ways up, and neither is a claim: a direct tap
+     * on the terminal, which the engine's own `touchend` answers, and the key bar's key when it
+     * reads Show (`showKeyboard` below). **Owner-directed divergence from the shipped Swift app**,
+     * like every phone rule - `chrome/form-factor.ts` says that once for the whole program.
+     *
+     * The window comes off `latest` rather than being closed over, for the same reason
+     * `rendererRef` is read at call time: a claim can be made from a closure that outlived the
+     * render that created it.
+     */
+    const claimCaret = useCallback((): void => {
+        if (!mayClaimPaneCaret(latest.current.formFactorWindow)) return;
+        rendererRef.current?.focus();
+    }, []);
 
     const hostRef = useRef<HTMLDivElement | null>(null);
     /**
@@ -806,7 +832,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     // The engine's real metrics exist only now; a disagreement with the
                     // estimate is corrected here, before anything else can measure.
                     syncGeometry(true);
-                    if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
+                    // C5: `claimCaret` is the same claim with the phone rule in front of it. The
+                    // BRANCH is unchanged on a phone even though the claim is a no-op there: the
+                    // `else` undoes the engine's own grab, and an entitled pane whose claim the
+                    // phone rule declines has nothing to undo - the engine put the caret in its
+                    // own textarea, which is where a tap on the terminal would have put it.
+                    if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) claimCaret();
                     else undoSurfaceAutoFocus(host);
                     // …and the engine's own delayed backup, and anything else it does while it
                     // finishes coming up. Bounded: after this the pane is live and every claim
@@ -1193,9 +1224,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              *
              * `shouldGrabFocus` is the same politeness the mount path uses: a sidebar rename,
              * the palette or any other chrome field that holds the caret keeps it.
+             *
+             * C5: and `claimCaret` is what actually makes it, so a phone coming back from
+             * another app does not come back with the software keyboard up.
              */
             if (latest.current.focused === true && shouldGrabFocus(hostRef.current)) {
-                rendererRef.current?.focus();
+                claimCaret();
             }
         };
         document.addEventListener('visibilitychange', resync);
@@ -1204,7 +1238,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             document.removeEventListener('visibilitychange', resync);
             window.removeEventListener('focus', resync);
         };
-    }, [syncGeometry]);
+    }, [syncGeometry, claimCaret]);
 
     // ── focus ───────────────────────────────────────────────────────────────────────
     useEffect(() => {
@@ -1227,10 +1261,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * when it moves. The cleanup disarms, so an armed claim never outlives the ring that
              * justified it, and `rendererRef` is read at claim time rather than closed over
              * because a restart builds a fresh engine.
+             *
+             * C5 - and the claim itself is `claimCaret`, which is a no-op on a phone. The arming
+             * is deliberately left in place there rather than skipped: what it costs is two
+             * capture listeners that decide nothing, and what it buys is that the desktop path
+             * through this effect is not a second shape somebody has to keep in step with the
+             * first. The claim was the whole of the keyboard, and the claim is where the rule is.
              */
-            return armCaretClaim(hostRef.current, () => {
-                rendererRef.current?.focus();
-            });
+            return armCaretClaim(hostRef.current, claimCaret);
         }
         if (!focused) {
             renderer.blur();

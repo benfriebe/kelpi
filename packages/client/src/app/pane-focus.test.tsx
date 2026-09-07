@@ -22,6 +22,7 @@ import { MarkdownPane } from '../content/MarkdownPane';
 import { PlainTextEditor } from '../content/PlainTextEditor';
 import { ScratchpadPane } from '../content/ScratchpadPane';
 import { contentState, createFakeContentApi } from '../content/testing';
+import { createFakePhoneWindow } from '../phone/testing';
 import {
     PANE_SURFACE_ATTR,
     armCaretClaim,
@@ -29,6 +30,7 @@ import {
     focusPaneSurface,
     handCaretToPaneWhenReady,
     isPaneSurfaceCaret,
+    mayClaimPaneCaret,
     openEngineFocusWindow,
     releaseFocusedPaneCaret,
     releasePaneCaret,
@@ -598,6 +600,49 @@ describe('handCaretToPaneWhenReady (issue #74)', () => {
         const cancel = handCaretToPaneWhenReady('no-such-pane');
         await new Promise((resolve) => setTimeout(resolve, 60));
         expect(document.activeElement).toBe(row);
+        cancel();
+    });
+});
+
+/**
+ * C5 - who may summon the software keyboard (docs/MOBILE-PLAN.md §4, owner device round 4).
+ *
+ * **Owner-directed divergence from the shipped Swift app**, like every phone rule; there is no
+ * Swift phone UI to be faithful to. On a phone, moving the caret onto a pane surface is not a
+ * focus change, it is a software keyboard over half the screen - so the two hand-offs above,
+ * both of which are right on a desktop, must not run there.
+ */
+describe('mayClaimPaneCaret (C5)', () => {
+    const LATE = 'DDDDDDDD-0000-4000-8000-000000000035';
+
+    it('says yes for a desktop window, which is what keeps every path above unchanged', () => {
+        expect(mayClaimPaneCaret(createFakePhoneWindow({ coarse: false }))).toBe(true);
+    });
+
+    it('says no for a phone, where the caret IS the keyboard', () => {
+        expect(mayClaimPaneCaret(createFakePhoneWindow())).toBe(false);
+    });
+
+    it('does not hand the caret to a pane that mounts on a phone (issue #74’s handoff, C5’s rule)', async () => {
+        const row = mountSidebarRow();
+        row.focus();
+        const cancel = handCaretToPaneWhenReady(LATE, createFakePhoneWindow());
+        const arriving = mountFakeTerminal(LATE);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        // The pane came up and the caret stayed where it was: on a phone the person taps the
+        // terminal (or the key bar's Show) when they want the keyboard.
+        expect(document.activeElement).toBe(row);
+        expect(document.activeElement).not.toBe(arriving.area);
+        cancel();
+    });
+
+    it('and NOT on desktop: the same handoff, with a fine pointer, still lands', async () => {
+        const row = mountSidebarRow();
+        row.focus();
+        const cancel = handCaretToPaneWhenReady(LATE, createFakePhoneWindow({ coarse: false }));
+        const arriving = mountFakeTerminal(LATE);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(document.activeElement).toBe(arriving.area);
         cancel();
     });
 });

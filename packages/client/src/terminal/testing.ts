@@ -165,6 +165,10 @@ export class FakeRenderer implements TerminalRenderer {
     write(data: Uint8Array | string): void {
         if (this.failed) return;
         this.writes.push(asText(data));
+        // C3: output snaps the viewport back to the live bottom, which is what both engines do
+        // and the constraint the plan names (§7's spike: a scrolled-back phone view is lost on
+        // the next chunk of output).
+        this.setOffset(0);
     }
 
     reset(): void {
@@ -214,6 +218,71 @@ export class FakeRenderer implements TerminalRenderer {
     clearSelection(): void {
         if (this.selected === '') return;
         this.emitSelection('');
+    }
+
+    /**
+     * C3 - every long-press, in order, in client coordinates.
+     *
+     * The fake has no cells, so what it selects is whatever a test put in `wordAtPoint`; empty
+     * (the default) is the real "the finger landed on blank space" answer, which is the case the
+     * pane must not show a Copy pill for.
+     */
+    readonly wordPresses: { clientX: number; clientY: number }[] = [];
+    wordAtPoint = '';
+
+    selectWordAt(clientX: number, clientY: number): boolean {
+        if (this.disposed) return false;
+        this.wordPresses.push({ clientX, clientY });
+        this.emitSelection(this.wordAtPoint);
+        return true;
+    }
+
+    // ── C3: the scroll ──────────────────────────────────────────────────────────────
+    //
+    // Modelled rather than merely recorded: `offset` is clamped at 0 (the live bottom) and grows
+    // as the viewport goes back, exactly as both engines behave, so a test can assert where a
+    // gesture LEFT the viewport instead of replaying the deltas that got it there. The top is
+    // `scrollbackLines`, which a test sets to model a pane with a short history.
+
+    /** Every `scrollLines` delta, in order - the gesture's own arithmetic, unrounded by clamping. */
+    readonly scrolls: number[] = [];
+    scrollToBottoms = 0;
+    /** How far back the fake will let a caller scroll; the engines clamp to their scrollback. */
+    scrollbackLines = 1_000;
+    private offset = 0;
+    private readonly scrollListeners = new Set<(offset: number) => void>();
+
+    scrollLines(delta: number): void {
+        if (this.disposed) return;
+        this.scrolls.push(delta);
+        this.setOffset(this.offset - delta);
+    }
+
+    scrollToBottom(): void {
+        if (this.disposed) return;
+        this.scrollToBottoms += 1;
+        this.setOffset(0);
+    }
+
+    scrollOffset(): number {
+        return this.offset;
+    }
+
+    onScrollChange(listener: (offset: number) => void): () => void {
+        this.scrollListeners.add(listener);
+        return () => this.scrollListeners.delete(listener);
+    }
+
+    /**
+     * The engines' own rule, modelled: a PTY byte snaps the viewport to the bottom
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:685-688`). A test drives it with
+     * `write()` like everything else, and the listener fires exactly as the engine's would.
+     */
+    private setOffset(next: number): void {
+        const clamped = Math.max(0, Math.min(this.scrollbackLines, Math.round(next)));
+        if (clamped === this.offset) return;
+        this.offset = clamped;
+        for (const listener of [...this.scrollListeners]) listener(clamped);
     }
 
     resize(cols: number, rows: number): void {
@@ -299,6 +368,7 @@ export class FakeRenderer implements TerminalRenderer {
         this.bellListeners.clear();
         this.titleListeners.clear();
         this.selectionListeners.clear();
+        this.scrollListeners.clear();
         this.failureListeners.clear();
     }
 

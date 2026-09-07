@@ -132,6 +132,7 @@ describe('the preview’s copy menu', () => {
 
         window.dispatchEvent(
             new MessageEvent('message', {
+                source: window,
                 data: { source: CONTENT_HOST_SOURCE, kind: 'copy-menu', enabled: true }
             })
         );

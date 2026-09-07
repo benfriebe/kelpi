@@ -27,6 +27,7 @@ import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 
 import { Hono } from 'hono';
 
@@ -124,9 +125,9 @@ interface ResolvedFile {
     readonly mtimeMs: number;
 }
 
-function statFile(candidate: string): ResolvedFile | undefined {
+async function statFile(candidate: string): Promise<ResolvedFile | undefined> {
     try {
-        const stats = fs.statSync(candidate);
+        const stats = await fs.promises.stat(candidate);
         if (!stats.isFile()) return undefined;
         return { path: candidate, size: stats.size, mtimeMs: stats.mtimeMs };
     } catch {
@@ -152,23 +153,46 @@ export function resolveStaticPath(distDir: string, requestPath: string): string 
     return resolved;
 }
 
-function fileResponse(
+/** Documents served as pane assets must never acquire the app's storage or scripting rights. */
+export const PANE_ASSET_HEADERS: Readonly<Record<string, string>> = {
+    'content-security-policy': "sandbox; default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'",
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer'
+};
+
+async function fileResponse(
     file: ResolvedFile,
+    request: Request,
     options: { immutable: boolean; extraHeaders?: Readonly<Record<string, string>> | undefined }
-): Response {
-    const body = fs.readFileSync(file.path);
-    return new Response(body, {
-        status: 200,
-        headers: {
-            'content-type': contentTypeFor(file.path),
-            'content-length': String(file.size),
-            'cache-control': options.immutable
-                ? 'public, max-age=31536000, immutable'
-                : 'no-cache',
-            etag: `W/"${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}"`,
-            ...(options.extraHeaders ?? {})
-        }
+): Promise<Response> {
+    const etag = `W/"${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}"`;
+    const headers = new Headers({
+        'content-type': contentTypeFor(file.path),
+        'content-length': String(file.size),
+        'cache-control': options.immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+        etag,
+        'last-modified': new Date(file.mtimeMs).toUTCString(),
+        ...(options.extraHeaders ?? {})
     });
+    const noneMatch = request.headers.get('if-none-match');
+    const modifiedSince = request.headers.get('if-modified-since');
+    const unchanged = noneMatch !== null
+        ? noneMatch.split(',').some(tag => tag.trim() === '*' || tag.trim().replace(/^W\//, '') === etag.replace(/^W\//, ''))
+        : modifiedSince !== null && Math.floor(file.mtimeMs / 1000) * 1000 <= Date.parse(modifiedSince);
+    if (unchanged) {
+        headers.delete('content-length');
+        return new Response(null, { status: 304, headers });
+    }
+    if (request.method === 'HEAD') return new Response(null, { headers });
+
+    // Open asynchronously before committing headers so permission/open failures remain HTTP
+    // errors. The stream owns the handle and closes it on EOF, errors or request cancellation.
+    const handle = await fs.promises.open(file.path, 'r');
+    const body = Readable.toWeb(handle.createReadStream(), {
+        // The adapter otherwise counts chunks, allowing thousands of 64 KiB reads to queue.
+        strategy: { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength }
+    }) as ReadableStream<Uint8Array>;
+    return new Response(body, { headers });
 }
 
 /** Hashed bundle output lives under /assets/ — safe to cache forever. */
@@ -283,7 +307,7 @@ export function createPaneAssetsRoute(
 ): (app: Hono) => void {
     const gate = options.validateCredential;
     return (app) => {
-        app.on(['GET', 'HEAD'], `${PANE_ASSETS_PREFIX}/*`, (c) => {
+        app.on(['GET', 'HEAD'], `${PANE_ASSETS_PREFIX}/*`, async (c) => {
             const pathname = new URL(c.req.url).pathname;
             let request: PaneAssetRequest | null;
             if (gate !== undefined) {
@@ -296,9 +320,9 @@ export function createPaneAssetsRoute(
             if (request === null) return c.text('not found\n', 404);
             const resolved = resolve(request.paneID, request.relativePath);
             if (resolved === null) return c.text('not found\n', 404);
-            const file = statFile(resolved);
+            const file = await statFile(resolved);
             if (file === undefined) return c.text('not found\n', 404);
-            return fileResponse(file, { immutable: false });
+            return fileResponse(file, c.req.raw, { immutable: false, extraHeaders: PANE_ASSET_HEADERS });
         });
     };
 }
@@ -325,7 +349,7 @@ export function createHttpApp(options: HttpAppOptions): Hono {
     // plain GET of it is a client that forgot to upgrade.
     app.get(WS_PATH, (c) => c.text('expected a websocket upgrade\n', 426));
 
-    app.on(['GET', 'HEAD'], '*', (c) => {
+    app.on(['GET', 'HEAD'], '*', async (c) => {
         if (distDir === undefined) return notBuiltResponse();
 
         const requestPath = new URL(c.req.url).pathname;
@@ -333,7 +357,7 @@ export function createHttpApp(options: HttpAppOptions): Hono {
         if (resolved === undefined) return c.text('not found\n', 404);
 
         try {
-            const direct = statFile(resolved) ?? statFile(path.join(resolved, 'index.html'));
+            const direct = await statFile(resolved) ?? await statFile(path.join(resolved, 'index.html'));
             if (direct !== undefined) {
                 const immutable = isImmutableAsset(requestPath) && !direct.path.endsWith('index.html');
                 // A special case in the static handler rather than a route before the catch-all
@@ -341,16 +365,16 @@ export function createHttpApp(options: HttpAppOptions): Hono {
                 // wants every other thing this handler does - the path safety check, the stat,
                 // the etag, the "client not built" answer when there is no build. Only two
                 // headers differ, so only two headers are added.
-                return fileResponse(direct, {
+                return await fileResponse(direct, c.req.raw, {
                     immutable,
                     ...(requestPath === SERVICE_WORKER_PATH ? { extraHeaders: SERVICE_WORKER_HEADERS } : {})
                 });
             }
 
             // SPA deep link: anything that isn't a file falls back to the shell document.
-            const index = statFile(path.join(distDir, 'index.html'));
+            const index = await statFile(path.join(distDir, 'index.html'));
             if (index === undefined) return notBuiltResponse();
-            return fileResponse(index, { immutable: false });
+            return await fileResponse(index, c.req.raw, { immutable: false });
         } catch (error) {
             options.onError?.(error instanceof Error ? error : new Error(String(error)), 'static');
             return c.text('internal error\n', 500);

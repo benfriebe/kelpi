@@ -41,15 +41,16 @@
  * writes the text with `navigator.clipboard.writeText`. The button's own 1.5 s `copied` window
  * and `aria-label` swap stay inside the frame, exactly as §3.10 specifies.
  *
- * One trap for later: a `srcdoc` document inherits the EMBEDDER's Content-Security-Policy. The
- * daemon serves the client without one today, so the injected inline script runs; if a CSP is
- * ever added it has to keep inline script legal for these frames (a nonce cannot be shared with
- * an opaque origin), or the copy button and scroll tracking go quiet with no other symptom.
+ * The document has its own CSP permitting only the hash of our injected bridge script.
+ * Raw HTML may render, but its scripts, event handlers, nested frames and network APIs cannot
+ * run. The iframe's opaque origin alone would not protect the privileged message bridge.
+ * Any future CSP on the embedder must also permit this trusted script: srcdoc inherits it.
  */
 
 import type { KelpiAction, KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
 
 import { CODE_TO_KEY_CODE } from '../chrome/keys';
+import { sha256 } from './asset-credential';
 
 /** Marks a message as coming from a pane document (host → frame uses the other marker). */
 export const CONTENT_BRIDGE_SOURCE = 'kelpi-content';
@@ -490,11 +491,23 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
         else document = style + document;
     }
 
-    const script = `<script>\n${contentBridgeScript(options.paneID, options.findPalette, options.claimedChords)}\n</script>\n`;
-    // `lastIndexOf`: a note may legitimately contain the literal text `</body>` inside a code
-    // block, and the real end tag is the last one.
-    const bodyEnd = document.lastIndexOf('</body>');
-    return bodyEnd >= 0 ? document.slice(0, bodyEnd) + script + document.slice(bodyEnd) : document + script;
+    // Parse inertly, then put the policy before ALL document content. String insertion at
+    // a guessed <head> could put the policy after an attacker-provided executable element.
+    const parsed = new DOMParser().parseFromString(document, 'text/html');
+    for (const meta of parsed.querySelectorAll('meta[http-equiv]')) meta.remove();
+    const source = `\n${contentBridgeScript(options.paneID, options.findPalette, options.claimedChords)}\n`;
+    const digest = sha256(new TextEncoder().encode(source));
+    const hash = btoa(String.fromCharCode(...digest));
+    const policy = parsed.createElement('meta');
+    policy.httpEquiv = 'Content-Security-Policy';
+    policy.content = `default-src 'none'; script-src 'sha256-${hash}'; style-src 'unsafe-inline'; ` +
+        "img-src http: https: data: blob:; font-src http: https: data:; media-src http: https: data:; " +
+        "connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri http: https:";
+    parsed.head.prepend(policy);
+    const script = parsed.createElement('script');
+    script.textContent = source;
+    parsed.body.append(script);
+    return '<!DOCTYPE html>\n' + parsed.documentElement.outerHTML;
 }
 
 /**
@@ -513,7 +526,7 @@ export function contentBridgeScript(
     findPalette?: Partial<FindPalette> | undefined,
     seedChords?: readonly string[] | undefined
 ): string {
-    const id = JSON.stringify(paneID);
+    const id = JSON.stringify(paneID).replace(/</g, '\\u003c');
     const find = resolveFindPalette(findPalette);
     const seed = JSON.stringify(chordSeedObject(seedChords ?? []));
     return `(function () {
@@ -792,6 +805,7 @@ export function contentBridgeScript(
   }, { passive: true });
 
   window.addEventListener('message', function (event) {
+    if (event.source !== parent) return;
     var data = event.data;
     if (!data || data.source !== ${JSON.stringify(CONTENT_HOST_SOURCE)}) return;
     if (data.kind === 'find') {

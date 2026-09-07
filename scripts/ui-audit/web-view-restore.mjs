@@ -411,6 +411,7 @@ async function main() {
 
         const beforeChord = ownerOf(paneID);
         const chordMark = sinceIndex();
+        const chordShellMark = shell.lines.length;
         const clicked = await harness.menuClick({ path: ['View', 'Recover Interface'] });
         const chordAt = Date.now();
 
@@ -469,11 +470,19 @@ async function main() {
                 ? `still ${String(ownerOf(leakedID)?.owner)} (${String(ownerOf(leakedID)?.reason)})`
                 : `put back on screen: ${JSON.stringify(wronglyBack)}`
         );
+        const gagDropped = await page.eval('window.__kelpiGagDropped ?? -1');
         check(
             '…and the host dropped the claim it could not confirm',
             shell.lines.some((line) => /no client re-stated after the recover-interface/.test(line)),
-            (shell.lines.filter((line) => /web host (recovery|dropped|asking)/.test(line)).at(-1) ?? '').trim()
+            `${String(gagDropped)} report(s) gagged`
         );
+        // The whole sequence, because a failure here is a statement about an ORDER and is
+        // unreadable from one "still in the holder".
+        for (const line of shell.lines.slice(chordShellMark)) {
+            if (/web pane .* view owner=|web host (park|restor|recovery|asking|dropped|:)|menu: Recover/.test(line)) {
+                log(`      ${line.trim()}`);
+            }
+        }
 
         const tickedAfterChord = await cli.run(['web', 'text', '#t', '--target', paneID], { timeoutMs: 30_000 });
         check(

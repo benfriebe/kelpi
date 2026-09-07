@@ -120,17 +120,18 @@ const SURFACES = [
             'terminal-drop-and-paste', 'cmd-click-path',
             // C2's software-keyboard layout lives in `terminal/keyboard-inset.ts` and reaches the
             // daemon through the pane's own resize path, so a change here can move the rows a PTY
-            // is told about on a phone. C1's key bar and C4's Paste live in this directory too and
-            // mount inside `TerminalPane`, so a change here can move them; their steps are the only
-            // place a real touch on a real 44px key reaches a real PTY, and the only place the
-            // bar's Paste is measured against the engine's own bracketed-paste envelope
-            // (docs/MOBILE-PLAN.md §4). All three are the phone lane's; the desktop terminal steps
-            // above are what pin that none of them moved anything anywhere else. C5's
-            // `phone-caret-owner` is here for the same reason and one step further on: the pane's
-            // ONE claim on the caret lives in `TerminalPane.tsx` (`claimCaret`), and on a phone
-            // that claim IS the software keyboard, so a change in this directory can summon a
-            // keyboard nobody asked for.
-            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-caret-owner'
+            // is told about on a phone. C1's key bar, C4's Paste and C3's touch gestures live in
+            // this directory too and mount inside `TerminalPane`, so a change here can move them;
+            // their steps are the only place a real touch on a real 44px key reaches a real PTY,
+            // the only place the bar's Paste is measured against the engine's own bracketed-paste
+            // envelope, and the only place a real drag on a real canvas moves a viewport
+            // (docs/MOBILE-PLAN.md §4). C5's `phone-caret-owner` is here for the same reason and
+            // one step further on: the pane's ONE claim on the caret lives in `TerminalPane.tsx`
+            // (`claimCaret`), and on a phone that claim IS the software keyboard, so a change in
+            // this directory can summon a keyboard nobody asked for. All five are the phone
+            // lane's; the desktop terminal steps above are what pin that none of them moved
+            // anything anywhere else.
+            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-touch-scroll', 'phone-caret-owner'
         ],
         smokes: ['smoke:terminal']
     },

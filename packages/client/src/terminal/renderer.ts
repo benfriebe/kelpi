@@ -192,6 +192,71 @@ export interface TerminalRenderer {
      * a TUI that is now handling the same drag itself.
      */
     clearSelection(): void;
+    /**
+     * Select the WORD under a client-space point (C3, the phone long-press - MOBILE-PLAN.md §4).
+     *
+     * **Owner-directed divergence from the shipped Swift app.** There is no Swift phone UI, so a
+     * long-press has no parity reference; `chrome/form-factor.ts` carries that note for the whole
+     * phone program and `dispatchKey` above is the terminal layer's other instance of it.
+     *
+     * Client coordinates rather than a cell, because the mapping from a pixel to a cell is the
+     * ENGINE'S: ghostty-web's `pixelToCell` and `getWordAtCell` are both private, and its public
+     * `select(col, row, len)` cannot be used from outside for this at all - it converts a viewport
+     * row to an absolute one as `viewportY + row` while its own renderer converts back as
+     * `absoluteRow - scrollbackLength + viewportY`, so the two agree only at
+     * `viewportY = scrollbackLength / 2`. Measured on the vendored engine (40x8, 100 lines of
+     * output, `scrollbackLength` 93): at `viewportY` 5 the visible first row is `line89` and
+     * `select(0, 0, 7)` selects `line6`; at the bottom, `select(0, 2, 7)` selects `line3` where
+     * row 2 shows `line96`.
+     *
+     * What DOES work is the engine's own double-click path, which uses its own conversion and is
+     * therefore right at every scroll position (same measurement: `line89`, correct). So the
+     * ghostty loader raises a `dblclick` at the point, exactly as `dispatchKey` raises a `keydown`
+     * - the event travels the engine's own listener, the engine picks the word, paints the
+     * highlight and fires the change that `onSelectionChange` is already wired to.
+     *
+     * Optional, like `setTextInputAttributes`: `@xterm/xterm` selects a word on a `mousedown` with
+     * `detail === 2` rather than on a `dblclick`, and a fake has no canvas at all, so neither
+     * implements this and a caller must treat `undefined` as "this engine cannot".
+     *
+     * Returns whether there was an engine surface to raise the event on - never what the engine
+     * decided. A press on blank space selects nothing, and `selection()` is what says so.
+     */
+    selectWordAt?(clientX: number, clientY: number): boolean;
+    /**
+     * Scroll the viewport by whole lines (C3 - MOBILE-PLAN.md §4 and §7's spike).
+     *
+     * **Positive is toward the BOTTOM** (newer output), negative is back into history: the sign
+     * both engines already use (`ghostty-web`'s `scrollLines(amount)` computes
+     * `viewportY - amount`, and xterm.js's takes "positive = down"). A caller mapping a gesture
+     * to it flips the sign itself, because a finger dragging DOWN reveals older lines.
+     *
+     * The port had no scroll of its own before this: the phone has no wheel, and the vendored
+     * engine paints its own scrollbar into the canvas and offers no scroll container to fling
+     * (§7's spike, 2026-09-03). Clamping is the engine's - past either end this is a no-op.
+     */
+    scrollLines(delta: number): void;
+    /** Back to the live bottom, where the next byte of output would put it anyway. */
+    scrollToBottom(): void;
+    /**
+     * How far the viewport sits ABOVE the live bottom, in lines. `0` is "at the bottom".
+     *
+     * Lines-from-the-bottom rather than an absolute row for the same reason
+     * `TerminalMatchLocation` is: the two engines number their buffers differently and only the
+     * bottom means the same thing in both.
+     */
+    scrollOffset(): number;
+    /**
+     * Fires on every change of {@link scrollOffset}. Returns an unsubscribe.
+     *
+     * Needed, and not a convenience: **any PTY byte snaps the viewport back to the bottom**
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:685-688`), so a scrolled-back pane
+     * loses its position on the next chunk of output with nothing here involved. That is the
+     * desktop's behaviour today and C3 does not change it; what a listener buys is that anything
+     * mirroring the offset (the pane's `data-terminal-scroll`) tells the truth after it happens
+     * instead of reporting the last scroll a finger asked for.
+     */
+    onScrollChange(listener: (offset: number) => void): () => void;
     resize(cols: number, rows: number): void;
     focus(): void;
     blur(): void;
@@ -378,6 +443,18 @@ export interface EngineHandle {
      * bottom), and their `select()` row is absolute vs viewport-relative respectively.
      */
     revealMatch?(match: TerminalMatchLocation): void;
+    /**
+     * C3's scroll, engine-specific for the same reason `revealMatch` is: the two engines count
+     * their viewports from opposite ends. `offset` is normalized here to "lines above the live
+     * bottom" so the adapter above can be engine-agnostic; `scroll` takes the engines' shared
+     * sign (positive = toward the bottom).
+     */
+    scroll?(delta: number): void;
+    scrollToBottom?(): void;
+    scrollOffset?(): number;
+    onScroll?(listener: (offset: number) => void): EngineDisposable;
+    /** C3's long-press word selection. See `TerminalRenderer.selectWordAt`. */
+    selectWordAt?(clientX: number, clientY: number): boolean;
     /** Extra teardown beyond `terminal.dispose()`. */
     dispose?(): void;
 }
@@ -809,6 +886,8 @@ class AdapterRenderer implements TerminalRenderer {
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
     private readonly selectionListeners = new Set<(selection: string) => void>();
+    /** C3 - every listener on the viewport's distance from the live bottom. */
+    private readonly scrollListeners = new Set<(offset: number) => void>();
     private readonly failureListeners = new Set<(error: unknown) => void>();
     private readonly engineDisposables: EngineDisposable[] = [];
 
@@ -1063,6 +1142,51 @@ class AdapterRenderer implements TerminalRenderer {
         this.swallow(() => this.handle?.terminal.clearSelection?.());
     }
 
+    /** C3 - the long-press word selection; `false` for an engine that has none. */
+    selectWordAt(clientX: number, clientY: number): boolean {
+        if (this.disposed || this.poisoned) return false;
+        const select = this.handle?.selectWordAt;
+        if (select === undefined) return false;
+        let selected = false;
+        // Swallowed for the reason `selection()` is: a word that did not take is cosmetic, and a
+        // pane whose PTY is fine must not be poisoned by a gesture.
+        this.swallow(() => {
+            selected = select(clientX, clientY);
+        });
+        return selected;
+    }
+
+    // ── C3: the scroll (MOBILE-PLAN.md §4) ──────────────────────────────────────────
+    //
+    // Cosmetic by the same rule as `revealMatch` right below: a scroll that did not take leaves
+    // the viewport where it was, and no pane is worth poisoning for it.
+
+    scrollLines(delta: number): void {
+        if (this.disposed || this.poisoned) return;
+        if (!Number.isFinite(delta) || delta === 0) return;
+        this.swallow(() => this.handle?.scroll?.(delta));
+    }
+
+    scrollToBottom(): void {
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.scrollToBottom?.());
+    }
+
+    /** `0` for an engine that is gone, not open, or has no scroll: all of them are "at the bottom". */
+    scrollOffset(): number {
+        if (this.disposed || this.poisoned) return 0;
+        let offset = 0;
+        this.swallow(() => {
+            offset = this.handle?.scrollOffset?.() ?? 0;
+        });
+        return Number.isFinite(offset) ? Math.max(0, offset) : 0;
+    }
+
+    onScrollChange(listener: (offset: number) => void): () => void {
+        this.scrollListeners.add(listener);
+        return () => this.scrollListeners.delete(listener);
+    }
+
     resize(cols: number, rows: number): void {
         if (this.disposed) return;
         // Zero-size guard (terminal-surface.md §15.4): a transient 0×0 layout pass must never
@@ -1239,6 +1363,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.bellListeners.clear();
         this.titleListeners.clear();
         this.selectionListeners.clear();
+        this.scrollListeners.clear();
         this.failureListeners.clear();
     }
 
@@ -1592,6 +1717,13 @@ class AdapterRenderer implements TerminalRenderer {
                 for (const listener of [...this.selectionListeners]) listener(value);
             });
             if (selection !== undefined) this.engineDisposables.push(selection);
+            // C3: the viewport moved. The engine fires this for a scroll the app asked for AND
+            // for the snap back to the bottom that any PTY byte causes, which is the half a
+            // caller cannot see coming.
+            const scroll = handle.onScroll?.((offset: number): void => {
+                for (const listener of [...this.scrollListeners]) listener(offset);
+            });
+            if (scroll !== undefined) this.engineDisposables.push(scroll);
 
             // Metrics first, then geometry, then the bytes. A replay written before the resize
             // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
@@ -1757,6 +1889,52 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             // itself and clamps to `rows - 1`), so the row has to be derived after the scroll.
             const row = rows + viewportY - match.linesFromBottom;
             if (row >= 0 && row < rows) terminal.select(match.col, row, match.length);
+        },
+        // C3. `viewportY` IS "lines above the live bottom" here (see `revealMatch` above), so
+        // the adapter's normalization is the identity for this engine.
+        scroll: (delta): void => {
+            terminal.scrollLines(delta);
+        },
+        scrollToBottom: (): void => {
+            terminal.scrollToBottom();
+        },
+        scrollOffset: (): number => Math.max(0, Math.floor(terminal.getViewportY())),
+        onScroll: (listener): EngineDisposable =>
+            terminal.onScroll((offset: number) => {
+                listener(Math.max(0, Math.floor(offset)));
+            }),
+        /*
+         * C3's long-press: a `dblclick` at the point, on the engine's own canvas.
+         *
+         * The engine's public `select()` cannot express this (see `TerminalRenderer.selectWordAt`
+         * for the measurement), and its word lookup and pixel→cell mapping are both private. Its
+         * `dblclick` listener is the one path that uses them, and it uses the CORRECT row
+         * conversion, so raising the event the engine already listens for is both the smallest
+         * change and the only one that is right when the pane is scrolled back. Nothing about the
+         * event is engine-internal: it is a `MouseEvent` on a canvas, and the engine never reads
+         * `isTrusted` (zero hits in `dist/` and `source/` - MOBILE-PLAN.md §7).
+         *
+         * `offsetX`/`offsetY` are what the engine reads, and they are not settable: Chromium
+         * computes them at dispatch from the client point and the target's box, which is why the
+         * client point is what this method takes. The side effect the engine adds is a copy to the
+         * clipboard, which on a phone is a write with no transient activation behind it and will
+         * usually be refused; the pane offers a Copy pill for exactly that reason (C4).
+         */
+        selectWordAt: (clientX, clientY): boolean => {
+            const canvas = terminal.renderer?.getCanvas();
+            if (canvas === undefined || canvas === null) return false;
+            const view = canvas.ownerDocument.defaultView;
+            if (view === null) return false;
+            canvas.dispatchEvent(
+                new view.MouseEvent('dblclick', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX,
+                    clientY,
+                    detail: 2
+                })
+            );
+            return true;
         }
     };
 };
@@ -1823,7 +2001,29 @@ export const loadXtermEngine: EngineLoader = async (options) => {
             const top = clamp(absolute - Math.floor(terminal.rows / 2), 0, Math.max(0, total - terminal.rows));
             terminal.scrollToLine(top);
             terminal.select(match.col, absolute, match.length);
-        }
+        },
+        // C3, and the mirror image again: xterm.js counts its viewport from the TOP of the
+        // buffer (`buffer.viewportY` is the first visible line; `baseY` is that line when the
+        // view is at the bottom), so "lines above the live bottom" is the difference. The SIGN of
+        // `scrollLines` is the same in both engines, which is why the adapter can pass it through.
+        scroll: (delta): void => {
+            terminal.scrollLines(delta);
+        },
+        scrollToBottom: (): void => {
+            terminal.scrollToBottom();
+        },
+        scrollOffset: (): number => {
+            const buffer = terminal.buffer.active;
+            return Math.max(0, buffer.baseY - buffer.viewportY);
+        },
+        onScroll: (listener): EngineDisposable =>
+            terminal.onScroll((viewportY: number) => {
+                listener(Math.max(0, terminal.buffer.active.baseY - viewportY));
+            })
+        // No `selectWordAt`: xterm.js selects a word on a `mousedown` with `detail === 2`, not on
+        // a `dblclick`, and its own `SelectionService` is private. The fallback engine therefore
+        // has no long-press selection, which `TerminalRenderer.selectWordAt` documents as the
+        // reason the method is optional.
     };
 };
 

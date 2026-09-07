@@ -29968,6 +29968,17 @@ function buildFlows(ctx) {
                      * a step that types into a pane focuses the pane first.
                      */
                     await focusPaneBody(view, paneID).catch(() => {});
+                    /*
+                     * THE INTERRUPT FIRST (2026-09-07, found by `phone-touch-scroll`).
+                     *
+                     * This step's `cat -v` is what echoes the paste, and it was still running when
+                     * the cleanup below ran: both commands were echoed by it rather than executed,
+                     * so the pane went to the next step with a reader on it AND with DEC 2004 still
+                     * set. Nothing noticed until a later step tried to type a command into the same
+                     * pane and had every line echoed back at it.
+                     */
+                    await view.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(300);
                     await runInTerminal(view, `printf '\\033[?2004l'`, { settleMs: 400 });
                     await runInTerminal(view, 'clear', { settleMs: 400 });
                     const restored = JSON.parse(
@@ -29987,6 +29998,332 @@ function buildFlows(ctx) {
                         `${String(restored.bars)} bars, ${String(restored.fields)} fields, data-form-factor=${restored.formFactor}`
                     );
                     // …and the last thing the step does, so it covers the cleanup above too.
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
+            }
+        },
+
+        /**
+         * C3 - the scrollback under a thumb (docs/MOBILE-PLAN.md §4).
+         *
+         * The owner's device round of 2026-09-07, in one sentence: "you can't scrollback history by
+         * trying to mobile scroll". This is the step that would have caught it, and it is a LIVE
+         * step because every part of the claim is one jsdom cannot hold:
+         *
+         *   - **The CSS.** `touch-action: none` and `user-select: none` are computed values on the
+         *     host under a phone form factor. jsdom parses the stylesheet and computes nothing.
+         *   - **The gesture recognizer.** `Input.dispatchTouchEvent` goes through Chromium's own
+         *     recognizer, so the slop, the timing and the compat-event suppression are the real
+         *     ones. A `new TouchEvent(...)` in page script is untrusted and proves nothing.
+         *   - **The momentum.** The tail is measured in wall-clock frames against a real
+         *     `requestAnimationFrame`, and the thing being asserted is a COMPARISON - the same
+         *     200 px dragged slowly and flicked, and the flick has to land deeper.
+         *   - **The rule the spike wrote.** "A touch never reaches the PTY unless the application
+         *     asked for the mouse" is a statement about bytes on a real pty, and `kelpi pane
+         *     capture` is where bytes are read.
+         *
+         * `pane capture` deliberately CANNOT see the viewport: it reads the daemon's own headless
+         * buffer, which does not move when a client scrolls its scrollback. So the viewport is read
+         * off `data-terminal-scroll`, the attribute the pane publishes for exactly this (phone only
+         * - `terminal/touch-scroll.ts`), and the capture is used for the half it can see: that
+         * nothing arrived at the prompt.
+         *
+         * Phone-lane clean (lib/shards.mjs): it borrows the widest shell pane already on screen,
+         * provisions nothing, moves no workspace, pane or setting, leaves the pane at a prompt with
+         * its viewport at the bottom and no selection, and clears the emulation in a `finally`. It
+         * leaves 300 lines of scrollback behind in a pane `mac-chrome` deletes anyway, which is the
+         * same thing `phone-key-bar` leaves. It taps the Copy pill, which writes this machine's
+         * clipboard - `phone-paste` and `terminal-drop-and-paste` already do.
+         */
+        {
+            id: 'phone-touch-scroll',
+            expect:
+                'Under a 390x844 phone viewport a one-finger drag on the terminal scrolls its SCROLLBACK: the pane publishes how far above the live bottom it is (`data-terminal-scroll`), a drag down goes back through history by about one line per cell of travel, and a flick of the same distance lands deeper than a slow drag of it because the tail keeps going after the finger is up. Dragging the other way returns the viewport to the bottom. The host computes `touch-action: none` and `user-select: none`, so the page never pans and no platform selection UI appears over the canvas. Nothing any of it does reaches the PTY: with mouse reporting off the capture shows no report bytes and the shell is still at a prompt. A long press selects the word under the finger and offers it on the Copy pill; tapping the pill takes the offer, and a tap on the terminal drops the highlight. With the emulation cleared the pane carries no scroll attribute at all and the host is back to its default `touch-action`.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-touch-scroll: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const hostSelector = `${body} [data-terminal-host]`;
+
+                /** The pane's own account of itself, plus the two computed styles C3 turns on. */
+                const readPane = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify((() => {
+                                    const pane = document.querySelector('${body} [data-pane-id]');
+                                    const host = document.querySelector('${hostSelector}');
+                                    const box = host === null ? null : host.getBoundingClientRect();
+                                    const style = host === null ? null : getComputedStyle(host);
+                                    const pill = document.querySelector('${body} [data-terminal-copy-pill] button');
+                                    return {
+                                        scroll: pane === null ? null : pane.getAttribute('data-terminal-scroll'),
+                                        selection: pane === null ? null : pane.getAttribute('data-terminal-selection'),
+                                        mouse: pane === null ? null : pane.getAttribute('data-terminal-mouse'),
+                                        cell: pane === null ? null : pane.getAttribute('data-terminal-cell'),
+                                        touchAction: style === null ? '(none)' : style.touchAction,
+                                        userSelect: style === null ? '(none)' : (style.userSelect ?? style.webkitUserSelect),
+                                        box: box === null ? null : {
+                                            top: Math.round(box.top),
+                                            bottom: Math.round(box.bottom),
+                                            left: Math.round(box.left),
+                                            height: Math.round(box.height),
+                                            width: Math.round(box.width)
+                                        },
+                                        pills: document.querySelectorAll('[data-terminal-copy-pill]').length,
+                                        pillLabel: pill === null ? null : pill.textContent
+                                    };
+                                })())`
+                            )
+                        )
+                    );
+                const offsetOf = (state) => Number.parseInt(String(state.scroll ?? 'NaN'), 10);
+
+                // Three hundred lines of history to scroll back through, written while the window
+                // is still a desktop: this step drives a finger, it does not type under a phone.
+                //
+                // The interrupt first, and it is not decoration: a step that TYPES must establish
+                // the prompt it types into rather than inherit one. Measured on the first full-lane
+                // run of this step (2026-09-07): `phone-paste` had left `cat -v` running, so
+                // `clear` and `seq 1 300` were echoed by it instead of executed, the pane had no
+                // scrollback at all, and three of this step's checks went red against a feature
+                // that works. The prompt is then PROVEN with a marker, so a shell that is still not
+                // listening fails here - where the reason is obvious - instead of five checks later.
+                await focusPaneBody(view, paneID);
+                await view.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(300);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                await runInTerminal(view, `printf 'TS-READY-%s\\n' $((5*5))`, { settleMs: 700 });
+                const ready = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.check(
+                    'the pane this step borrows is a shell at a prompt (everything below types into it)',
+                    ready.includes('TS-READY-25'),
+                    ready.includes('TS-READY-25') ? 'the shell evaluated $((5*5))' : 'no TS-READY-25 - something is still reading the pty'
+                );
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                await runInTerminal(view, 'seq 1 300', { settleMs: 1200 });
+                // The window this step is handed, read before it changes anything.
+                const handedIn = await readPhoneFrame(view);
+
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('${body} [data-terminal-key-bar]') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    // The resize the emulation causes ends in a settled replay, which snaps the
+                    // viewport to the bottom; let it land before anything is measured.
+                    await sleep(500);
+
+                    const start = await readPane();
+                    recorder.note(`the pane before the first drag: ${JSON.stringify(start)}`);
+                    recorder.check(
+                        'the host takes every gesture itself: touch-action none, and no platform selection over the canvas',
+                        start.touchAction === 'none' && start.userSelect === 'none',
+                        `touch-action=${String(start.touchAction)} user-select=${String(start.userSelect)}`
+                    );
+                    recorder.check(
+                        'the pane publishes its viewport, and it starts at the live bottom',
+                        start.scroll === '0',
+                        `data-terminal-scroll=${String(start.scroll)}`
+                    );
+                    recorder.check(
+                        'and NOTHING has asked for the mouse, which is the mode this whole step is about',
+                        start.mouse === 'none',
+                        `data-terminal-mouse=${String(start.mouse)}`
+                    );
+
+                    // `data-terminal-cell` is `WxH` at 2 dp - the same `cellSize()` the pane
+                    // measures its grid with, which is what makes "one line per cell of travel"
+                    // an arithmetic claim rather than an approximate one.
+                    const [cellWidth, cellHeight] = String(start.cell ?? '0x0')
+                        .split('x')
+                        .map((part) => Number.parseFloat(part));
+                    const box = start.box;
+                    if (box === null || !(cellHeight > 0) || !(cellWidth > 0)) {
+                        throw new Error(`phone-touch-scroll: no host box or cell to measure with (${JSON.stringify(start)})`);
+                    }
+                    // 200 px of travel inside the host, well clear of both edges: the same distance
+                    // for the slow drag and for the flick, so the only difference is the speed.
+                    const TRAVEL = 200;
+                    const x = Math.round(box.left + box.width / 2);
+                    const top = Math.round(box.top + box.height * 0.2);
+                    const bottom = top + TRAVEL;
+                    const expectedLines = Math.round(TRAVEL / cellHeight);
+
+                    // ── the drag ────────────────────────────────────────────────────────
+                    // Down the glass, slowly: the content follows the finger, so the viewport goes
+                    // BACK through history. 12 steps over 1200 ms is a deliberate read, not a flick.
+                    await view.swipe({ x, y: top }, { x, y: bottom }, { steps: 12, durationMs: 1200 });
+                    await sleep(700);
+                    const dragged = await readPane();
+                    const draggedLines = offsetOf(dragged);
+                    recorder.note(
+                        `a ${String(TRAVEL)} px drag at a ${String(cellHeight)} px cell: data-terminal-scroll=${String(dragged.scroll)} (about ${String(expectedLines)} lines of travel)`
+                    );
+                    recorder.check(
+                        'a one-finger drag scrolls the viewport back into the scrollback',
+                        Number.isFinite(draggedLines) && draggedLines >= expectedLines,
+                        `${String(draggedLines)} lines back, from ${String(TRAVEL)} px of travel over a ${String(cellHeight)} px cell`
+                    );
+                    await recorder.shot(view, 'scrolled-back');
+
+                    // ── back to the bottom ──────────────────────────────────────────────
+                    // The other way, hard, twice: the viewport has to come home, and this is also
+                    // the reset for the flick that follows.
+                    for (let attempt = 0; attempt < 3; attempt += 1) {
+                        const state = await readPane();
+                        if (offsetOf(state) === 0) break;
+                        await view.swipe({ x, y: bottom }, { x, y: top }, { steps: 12, durationMs: 150 });
+                        await sleep(700);
+                    }
+                    const home = await readPane();
+                    recorder.check(
+                        'and dragging the other way brings it back to the live bottom',
+                        home.scroll === '0',
+                        `data-terminal-scroll=${String(home.scroll)}`
+                    );
+
+                    // ── the flick ───────────────────────────────────────────────────────
+                    // The SAME 200 px, in 150 ms. The finger travels exactly as far, so anything
+                    // beyond the drag's own line count is the inertial tail.
+                    await view.swipe({ x, y: top }, { x, y: bottom }, { steps: 12, durationMs: 150 });
+                    await sleep(1200);
+                    const flicked = await readPane();
+                    const flickedLines = offsetOf(flicked);
+                    recorder.note(
+                        `the same ${String(TRAVEL)} px flicked: data-terminal-scroll=${String(flicked.scroll)} against ${String(draggedLines)} for the slow drag`
+                    );
+                    recorder.check(
+                        'a FLICK carries further than the drag: the momentum keeps scrolling after the finger is up',
+                        Number.isFinite(flickedLines) && flickedLines > draggedLines,
+                        `${String(flickedLines)} lines against ${String(draggedLines)}`
+                    );
+                    // …and it STOPS. A tail that ran forever would still be moving a second later.
+                    await sleep(1000);
+                    const settled = await readPane();
+                    recorder.check(
+                        'and the tail stops on its own rather than running until something interrupts it',
+                        settled.scroll === flicked.scroll,
+                        `data-terminal-scroll=${String(flicked.scroll)} then ${String(settled.scroll)} a second later`
+                    );
+
+                    // ── NOT ONE BYTE (the spike's rule) ─────────────────────────────────
+                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after three gestures)', capture.slice(-400));
+                    const reports = capture.includes('[<') || capture.includes('[M');
+                    recorder.check(
+                        'not one of those gestures reached the PTY: no mouse reports in the buffer',
+                        !reports,
+                        reports ? 'the capture contains mouse-report bytes' : 'no SGR or X10 report bytes in the capture'
+                    );
+
+                    // ── the long press ──────────────────────────────────────────────────
+                    // On a numbered line in the middle of the visible rows, two cells in from the
+                    // left edge - `seq` prints one number per line, so whatever is under the finger
+                    // is a word with an unambiguous length.
+                    const pressX = Math.round(box.left + 1.5 * cellWidth);
+                    const pressY = Math.round(box.top + box.height / 2);
+                    // A plain tap first, and it is load-bearing rather than tidy: this pane can
+                    // arrive carrying a selection an earlier step made (`phone-paste` hands one
+                    // over), and "the press selected something" would then be true before the press
+                    // happened. A tap drops it, which is the rule the press half depends on.
+                    await view.tap({ x: pressX, y: pressY });
+                    await sleep(300);
+                    const beforePress = await readPane();
+                    recorder.check(
+                        'a tap drops whatever selection the pane was carrying, so the press below starts from nothing',
+                        beforePress.selection === '0',
+                        `data-terminal-selection=${String(beforePress.selection)} before the press`
+                    );
+                    await view.longPress({ x: pressX, y: pressY });
+                    await sleep(500);
+                    const pressed = await readPane();
+                    recorder.note(`after the long press: ${JSON.stringify(pressed)}`);
+                    const selected = Number.parseInt(String(pressed.selection ?? 'NaN'), 10);
+                    recorder.check(
+                        'a long press selects the word under the finger',
+                        Number.isFinite(selected) && selected > 0,
+                        `data-terminal-selection=${String(pressed.selection)} (the LENGTH; a pane's contents never go in an attribute)`
+                    );
+                    recorder.check(
+                        'and offers it on the Copy pill, which is the only tap that can reach a phone clipboard',
+                        pressed.pills === 1 && String(pressed.pillLabel ?? '').startsWith('Copy '),
+                        `${String(pressed.pills)} pills, label ${JSON.stringify(pressed.pillLabel)}`
+                    );
+                    await recorder.shot(view, 'long-press-copy-pill');
+                    recorder.eyes(
+                        'is the pane showing scrollback rather than the prompt, with one word highlighted and a Copy pill above the key bar?'
+                    );
+
+                    // Take the offer, which is what a person does, and what gets the pill off the
+                    // screen before the hand-back.
+                    await view.tap(`${body} [data-terminal-copy-pill] button`);
+                    await view
+                        .waitFor(`document.querySelector('[data-terminal-copy-pill]') === null`, {
+                            timeoutMs: 16_000,
+                            label: 'the Copy pill to be taken'
+                        })
+                        .catch(() => {});
+                    // A tap on the terminal drops the highlight: the engine's own `clearSelection`
+                    // fires no change event (#81), so this is the pane's mirror being right.
+                    await view.tap({ x: pressX, y: pressY });
+                    await sleep(300);
+                    const cleared = await readPane();
+                    recorder.check(
+                        'taking the offer clears the pill, and the next tap drops the highlight',
+                        cleared.pills === 0 && cleared.selection === '0',
+                        `${String(cleared.pills)} pills, data-terminal-selection=${String(cleared.selection)}`
+                    );
+
+                    // The shell is still a shell: only a prompt evaluates the arithmetic, and its
+                    // output is also what snaps the viewport back to the live bottom.
+                    await runInTerminal(view, `printf 'TS-%s\\n' $((6*7))`, { settleMs: 900 });
+                    const afterAll = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the gestures and the press)', afterAll.slice(-300));
+                    recorder.check(
+                        'and the shell is still at a prompt with a clean input line',
+                        afterAll.includes('TS-42'),
+                        afterAll.includes('TS-42') ? 'the shell evaluated $((6*7))' : 'no TS-42 - something reached the input line'
+                    );
+                    const home2 = await readPane();
+                    recorder.check(
+                        'output puts the viewport back at the live bottom, which is what the plan says it must',
+                        home2.scroll === '0',
+                        `data-terminal-scroll=${String(home2.scroll)}`
+                    );
+                } finally {
+                    await clearPhoneEmulation(view);
+
+                    // AND NOT ON DESKTOP: the same pane, the same window, no phone state at all.
+                    const afterClear = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify((() => {
+                                    const pane = document.querySelector('${body} [data-pane-id]');
+                                    const host = document.querySelector('${hostSelector}');
+                                    const style = host === null ? null : getComputedStyle(host);
+                                    return {
+                                        scroll: pane === null ? null : pane.getAttribute('data-terminal-scroll'),
+                                        touchAction: style === null ? '(none)' : style.touchAction,
+                                        bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                        formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                    };
+                                })())`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'the desktop pane carries no scroll attribute and takes the browser default touch-action back',
+                        afterClear.scroll === null && afterClear.touchAction === 'auto' && afterClear.bars === 0 && afterClear.formFactor === 'desktop',
+                        `data-terminal-scroll=${String(afterClear.scroll)}, touch-action=${String(afterClear.touchAction)}, ` +
+                            `${String(afterClear.bars)} bars, data-form-factor=${afterClear.formFactor}`
+                    );
+                    // …and the window itself, which is what the step after this one inherits.
                     await checkPhoneHandback(view, recorder, handedIn);
                 }
             }

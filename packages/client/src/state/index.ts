@@ -23,7 +23,10 @@ export {
 export {
     CLIPBOARD_WRITE_MESSAGE,
     createClipboardWriteHandler,
+    onClipboardOffer,
     parseClipboardWrite,
+    resetClipboardOffersForTests,
+    type ClipboardOffer,
     type ClipboardWriteHandlerOptions,
     type ClipboardWriteOutcome,
     type ClipboardWriteRequest

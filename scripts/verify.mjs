@@ -17,6 +17,14 @@
  *
  * `self-upgrade.mjs` runs `--full` as its precondition: a promote cannot skip the battery.
  *
+ * THE BATTERY RUNS TO THE END AND RETRIES ONCE (#109). Every component runs, whatever the one
+ * before it did, and the run finishes with a table of what each component cost and how it ended.
+ * A red vitest component re-runs only the FILES it failed on, a red scenario lane re-runs only
+ * the SCENARIOS it failed, and the packaged smoke re-runs itself, each exactly once and each on
+ * its own, off the load the rest of the battery was making; green on that retry passes the
+ * component, and the summary says which ones needed it. Red on the retry fails the battery and
+ * names the check. The rules and the four promotes that bought them are in `ui-audit/lib/battery.mjs`.
+ *
  * THE MAP IS MAINTAINED, NOT INFERRED. When a new audit step lands, add it to the surface
  * that owns it; when a new source dir appears, map it or it escalates by default (unmapped
  * source = full battery, so forgetting the map costs time, never coverage).
@@ -35,6 +43,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+    failedScenariosFromResults,
+    failedTestFilesFromVitestJson,
+    formatBatterySummary,
+    runBattery
+} from './ui-audit/lib/battery.mjs';
 import { buildAll } from './ui-audit/lib/stack.mjs';
 import { SCENARIO_PREFIX, planScenarios } from './ui-audit/lib/verify-plan.mjs';
 
@@ -416,8 +430,13 @@ if (has('--plan')) process.exit(0);
 
 // ── run ─────────────────────────────────────────────────────────────────────────────
 
-const run = (label, command, options = {}) => {
-    log(`▶ ${label}`);
+/**
+ * Spawn one command and hand back its status. It does NOT exit: what a nonzero status means is
+ * the battery runner's decision now (`ui-audit/lib/battery.mjs` has the two rules and the four
+ * dead promotes that bought them), because a check that is red under the battery's own load and
+ * green on its own must not end the run.
+ */
+const spawn = (command, options = {}) => {
     const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
     // A battery launched from inside a Kelpi pane inherits that pane's injected route to the
     // LIVE daemon (KELPI_SOCKET, and NEX_SOCKET under the old name). No battery child may
@@ -431,15 +450,34 @@ const run = (label, command, options = {}) => {
         stdio: 'inherit',
         env
     });
-    if (result.status !== 0) {
-        log(`✗ ${label} FAILED`);
-        // Before exiting, so the report on disk describes the run that actually happened. Without
-        // this the last file written would be a previous run's "passed", which is worse than no
-        // file at all: it is evidence that says the opposite of the truth.
-        writeReport({ outcome: 'failed', failedStep: label });
-        process.exit(result.status ?? 1);
+    return result.status ?? 1;
+};
+
+/** Single-quote a path for `sh -c`: a worktree can live under a directory with a space in it. */
+const q = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
+const rel = (file) => path.relative(repoRoot, file) || file;
+const readJson = (file) => {
+    try {
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+        // A missing or half-written report is not a crash: the caller reads "nothing to retry"
+        // out of it, which is the honest answer when the reporter never got to write.
+        return null;
     }
 };
+
+/**
+ * Where the battery's own machine-readable evidence goes: the vitest JSON reports it parses the
+ * failed files out of, and the scenario lane's `results.json`. Under `docs/audit/`, which is
+ * gitignored, beside the verify report that cites it.
+ */
+const batteryDir = path.join(reportDir, 'battery');
+// Emptied first, every run. A stale report here would be worse than none: if this run's vitest
+// died before its reporter wrote, the retry would read the PREVIOUS run's failed files and
+// re-run somebody else's flake instead of failing honestly.
+fs.rmSync(batteryDir, { recursive: true, force: true });
+fs.mkdirSync(batteryDir, { recursive: true });
+const artifact = (name) => path.join(batteryDir, `${name.replace(/[^a-z0-9-]+/gi, '-')}.json`);
 
 /**
  * For every battery component that drives a daemon (the audit and the smokes): any `kelpi`
@@ -469,58 +507,225 @@ const SCENARIO_LANE = '--no-build --window hidden';
  * not moved, so paying it here costs a warm run nothing and saves a cold one from driving a stale
  * or absent client.
  */
-let built = false;
-const buildBundles = async () => {
-    if (built) return;
-    log('▶ build bundles (content-hashed; a no-op when the tree has not moved)');
-    try {
-        await buildAll(repoRoot, { log: (line) => log(`  ${line}`) });
-    } catch (error) {
-        log(`✗ build bundles FAILED: ${String(error?.message ?? error)}`);
-        writeReport({ outcome: 'failed', failedStep: 'build bundles' });
-        process.exit(1);
+const buildBundlesComponent = {
+    label: 'build bundles',
+    // Not a check: the three components after it DRIVE what it produces, so a red build makes
+    // their verdicts meaningless rather than merely unknown. `battery.mjs` marks the rest "not run".
+    precondition: true,
+    run: async () => {
+        log('  (content-hashed; a no-op when the tree has not moved)');
+        try {
+            await buildAll(repoRoot, { log: (line) => log(`  ${line}`) });
+            return { ok: true };
+        } catch (error) {
+            return { ok: false, detail: String(error?.message ?? error) };
+        }
     }
-    built = true;
 };
 
-const started = Date.now();
-run('typecheck', 'pnpm typecheck');
+/**
+ * The battery's vitest worker cap, and the one reason it exists.
+ *
+ * WHERE THE LOAD COMES FROM, which is not what it looks like. Unset, vitest sizes its pool at
+ * the core count (16 here), but the run queue the root suite makes is far bigger than 16: every
+ * daemon a test boots builds an editor resolver (`boot/compose.ts` ▸ `content/external-editor.ts`,
+ * CONT-082/084), and that resolver asks the user's LOGIN SHELL, so each boot forks a full
+ * `zsh -l -i -c`. Sampled once a second, an uncapped root suite has up to 59 of those alive at
+ * once and puts 84 to 92 processes on a 16-core run queue. That is the weather the four dead
+ * promotes failed in: `App.filemenu.test.tsx` went red at load 37 and two daemon tests at load
+ * 90, all green in isolation seconds later. A battery that makes its own flakes is not measuring
+ * the tree.
+ *
+ * Measured on this 16-core machine, root suite (6338 tests), two passes per cap, machine idle
+ * before each pass (run queue 2 to 8, 1-minute load 12 to 14):
+ *
+ *   cap        wall           peak run queue   peak 1-min load   peak login-shell probes
+ *   default    27.6, 27.6 s   84, 92           23.6, 28.6        59, 32
+ *   8          29.5, 29.1 s   43, 37           22.2, 18.0        35, 35
+ *   4          48.0, 47.5 s   57, 185*         16.8, 15.9        32, 24
+ *   (* a neighbouring agent's battery landed inside that pass; its sibling read 57.)
+ *
+ * Eight is the knee: it halves the run queue for 1.7 s, which is 6% of the suite and 0.14% of a
+ * 20-minute battery, while four costs a further 18 s (a 73% longer suite) to buy a reduction the
+ * battery does not need. The cap lives on the battery's own commands rather than in
+ * `vitest.config.ts` because a person running `npx vitest run` by hand wants every core: it is
+ * the BATTERY's concurrency that is the hazard, since it is what runs beside a scenario lane, an
+ * Electron audit and a packaged smoke.
+ */
+const VITEST_MAX_WORKERS = 8;
+
+/**
+ * A vitest component: run the suite, and if it goes red, re-run ONLY the files it failed on.
+ *
+ * The failed files come from vitest's own `--reporter=json` report (parsed, never scraped from
+ * the terminal), and the default reporter still prints beside it so a watching human sees the
+ * run they always saw. `filters` is what the first run is scoped to (nothing for the full tier,
+ * the plan's dirs for the scoped one); the retry is scoped to the failed files instead.
+ */
+const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
+    label,
+    run: () => {
+        const report = artifact(label);
+        const flags = `--maxWorkers=${String(VITEST_MAX_WORKERS)} --reporter=default --reporter=json --outputFile.json=${q(report)}`;
+        const status = spawn([command, ...filters, flags].join(' '), { cwd });
+        if (status === 0) return { ok: true };
+
+        const failedFiles = failedTestFilesFromVitestJson(readJson(report));
+        if (failedFiles.length === 0) {
+            // A nonzero status with no failed file named is a crash, a config error or a killed
+            // worker. There is nothing an isolated re-run could tell us, so it is not retried and
+            // it is not excused.
+            return { ok: false, detail: `exit ${String(status)} with no failed test file named in ${rel(report)} (a crash, a config error or a killed worker)` };
+        }
+        return {
+            ok: false,
+            retryOf: failedFiles.map(rel),
+            retry: () => {
+                const retryReport = artifact(`${label}-retry`);
+                const retryFlags = `--maxWorkers=${String(VITEST_MAX_WORKERS)} --reporter=default --reporter=json --outputFile.json=${q(retryReport)}`;
+                const retryStatus = spawn([command, ...failedFiles.map(q), retryFlags].join(' '), { cwd });
+                if (retryStatus === 0) return { ok: true };
+                const stillRed = failedTestFilesFromVitestJson(readJson(retryReport)).map(rel);
+                return { ok: false, detail: `red alone as well: ${stillRed.join(', ') || failedFiles.map(rel).join(', ')}` };
+            }
+        };
+    }
+});
+
+/**
+ * The scenario lane: run it, and if it goes red, re-run ONLY the failed scenarios, one process
+ * each, off the load the rest of the battery was making.
+ *
+ * The lane is given an explicit `--out` so the failed names can be read out of its own
+ * `results.json` instead of parsed from its stdout, and each retry gets its own directory so the
+ * first run's evidence (screenshots, notes, per-check results) survives the second.
+ */
+const scenarioComponent = (label, names) => ({
+    label,
+    run: () => {
+        const out = path.join(batteryDir, 'scenarios');
+        const status = spawn(`node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(out)} ${names.join(' ')}`.trim(), {
+            env: SANDBOX_GUARD
+        });
+        if (status === 0) return { ok: true };
+
+        const failedScenarios = failedScenariosFromResults(readJson(path.join(out, 'results.json')));
+        if (failedScenarios.length === 0) {
+            return { ok: false, detail: `exit ${String(status)} with no failed scenario named in ${rel(path.join(out, 'results.json'))} (the lane itself did not come up)` };
+        }
+        return {
+            ok: false,
+            retryOf: failedScenarios,
+            retry: () => {
+                const stillRed = [];
+                for (const name of failedScenarios) {
+                    const retryOut = path.join(batteryDir, `scenario-retry-${name}`);
+                    // One process per scenario, so each gets its own sandbox and its own screen
+                    // conditions. That is precisely the isolation a person performs by hand after
+                    // a red lane, and it is what #109's three wobbles came back green under.
+                    const retryStatus = spawn(`node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${name}`, {
+                        env: SANDBOX_GUARD
+                    });
+                    if (retryStatus !== 0) stillRed.push(name);
+                }
+                return stillRed.length === 0 ? { ok: true } : { ok: false, detail: `red alone as well: ${stillRed.join(', ')}` };
+            }
+        };
+    }
+});
+
+/** A whole-command component with no way to isolate a part of it: run it, retry it once, done. */
+const retryWholeComponent = (label, command, options = {}) => ({
+    label,
+    run: () => {
+        if (spawn(command, options) === 0) return { ok: true };
+        return {
+            ok: false,
+            retryOf: ['the whole component (it has no per-check rerun)'],
+            retry: () => (spawn(command, options) === 0 ? { ok: true } : { ok: false, detail: 'red both times' })
+        };
+    }
+});
+
+/** A component that is run once and judged once: no isolation is possible or wanted. */
+const plainComponent = (label, command, options = {}) => ({
+    label,
+    run: () => ({ ok: spawn(command, options) === 0 })
+});
+
+const shellPackage = path.join(repoRoot, 'packages', 'shell');
+const components = [plainComponent('typecheck', 'pnpm typecheck')];
 
 if (full) {
-    run('root tests', 'npx vitest run');
-    run('shell tests', 'pnpm --filter @kelpi/shell test');
-    // Every scenario, before the audit and without the screen. The promote gate is the one place
-    // that must not select: `self-upgrade.mjs` runs `--full`, so this is what stops #47/#53/#55
-    // from recurring on a tree where nobody's diff happened to touch the scenario that guards them.
-    await buildBundles();
-    run(`scenarios (all, ${SCENARIO_LANE})`, `node scripts/scenario.mjs ${SCENARIO_LANE}`, { env: SANDBOX_GUARD });
-    run('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest', { env: SANDBOX_GUARD });
-    run('packaged smoke (repackages + 61 checks)', 'pnpm run smoke:packaged', {
-        cwd: path.join(repoRoot, 'packages', 'shell'),
-        env: SANDBOX_GUARD
-    });
+    components.push(
+        vitestComponent('root tests', 'npx vitest run'),
+        vitestComponent('shell tests', 'pnpm --filter @kelpi/shell test'),
+        // Every scenario, before the audit and without the screen. The promote gate is the one place
+        // that must not select: `self-upgrade.mjs` runs `--full`, so this is what stops #47/#53/#55
+        // from recurring on a tree where nobody's diff happened to touch the scenario that guards them.
+        buildBundlesComponent,
+        scenarioComponent(`scenarios (all, ${SCENARIO_LANE})`, []),
+        // No retry, on purpose: the audit's exit status is not its verdict. It exits 0 with failed
+        // assertions and 1 only when the harness itself broke, because the REPORT is the gate and
+        // it is read with `compare-runs` against the previous one. Re-running it would cost 15
+        // minutes to learn nothing the report has not already written down.
+        plainComponent('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest', { env: SANDBOX_GUARD }),
+        retryWholeComponent('packaged smoke (repackages + 61 checks)', 'pnpm run smoke:packaged', {
+            cwd: shellPackage,
+            env: SANDBOX_GUARD
+        })
+    );
 } else {
-    if (plan.tests.size > 0) run('scoped tests', `npx vitest run ${[...plan.tests].join(' ')}`);
+    if (plan.tests.size > 0) components.push(vitestComponent('scoped tests', 'npx vitest run', { filters: [...plan.tests] }));
     // Before the audit, mirroring the full tier's order: a scenario run is seconds and a scoped
     // audit is minutes, so the cheap check that was written FOR this change reports first.
     if (rule.run.length > 0) {
-        await buildBundles();
-        run(`scenarios: ${rule.run.join(', ')}`, `node scripts/scenario.mjs ${SCENARIO_LANE} ${rule.run.join(' ')}`, {
-            env: SANDBOX_GUARD
-        });
+        components.push(buildBundlesComponent, scenarioComponent(`scenarios: ${rule.run.join(', ')}`, rule.run));
     }
     if (plan.steps.size > 0) {
         // No `buildBundles()` here: the audit runs its own (identical, content-hashed) `buildAll`
         // unless told `--no-build`, and it is not told that.
-        run('scoped audit', `node scripts/ui-audit/audit.mjs --only ${[...plan.steps].join(',')} --out docs/audit/verify-latest`, { env: SANDBOX_GUARD });
+        components.push(
+            plainComponent('scoped audit', `node scripts/ui-audit/audit.mjs --only ${[...plan.steps].join(',')} --out docs/audit/verify-latest`, {
+                env: SANDBOX_GUARD
+            })
+        );
     }
     for (const smoke of plan.smokes) {
-        run(smoke, `pnpm run ${smoke}`, { cwd: path.join(repoRoot, 'packages', 'shell'), env: SANDBOX_GUARD });
+        components.push(retryWholeComponent(smoke, `pnpm run ${smoke}`, { cwd: shellPackage, env: SANDBOX_GUARD }));
     }
 }
 
-writeReport({ outcome: 'passed', minutes: Number(((Date.now() - started) / 60000).toFixed(2)) });
-log(`✓ verification passed in ${((Date.now() - started) / 60000).toFixed(1)} min (${full ? 'full' : 'scoped'})`);
+const started = Date.now();
+const battery = await runBattery({ components, log });
+
+// The table is the point of running everything: one red battery now says which checks failed,
+// which wobbled and came back green alone, and what each cost.
+log('── battery summary ──────────────────────────────────────────────────────');
+for (const line of formatBatterySummary(battery.records)) log(`  ${line}`);
+
+const minutes = Number(((Date.now() - started) / 60000).toFixed(2));
+if (!battery.ok) {
+    writeReport({
+        outcome: 'failed',
+        minutes,
+        // Kept under its old key so anything reading a previous report still finds the first red.
+        failedStep: battery.failed[0].label,
+        failedComponents: battery.failed.map((record) => record.label),
+        components: battery.records
+    });
+    log(`✗ verification FAILED in ${minutes.toFixed(1)} min: ${battery.failed.map((record) => `${record.label} (${record.state})`).join(', ')}`);
+    process.exit(1);
+}
+
+writeReport({ outcome: 'passed', minutes, components: battery.records });
+const retried = battery.records.filter((record) => record.retried);
+log(`✓ verification passed in ${minutes.toFixed(1)} min (${full ? 'full' : 'scoped'})`);
+if (retried.length > 0) {
+    // Never a quiet pass: a component that needed its retry is a check worth looking at, even
+    // though it did not stop the run.
+    log(`  ⚠ ${String(retried.length)} component(s) were red under the battery and green alone: ${retried.map((record) => `${record.label} [${(record.retryOf ?? []).join(', ')}]`).join('; ')}`);
+}
 if (rule.optOut !== null && rule.uiFiles.length > 0) {
     // Last line of the run, not just the first: the opt-out has to survive a long scrollback.
     log(`  ⚠ shipped with --no-scenario: ${rule.optOut.reason}`);

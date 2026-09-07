@@ -64,6 +64,14 @@ export const PANE_SURFACE_ATTR = 'data-pane-surface';
  * (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`), and the key bar's key when it
  * reads Show (`terminal/TerminalPane.tsx` ▸ `showKeyboard`).
  *
+ * C9's round 9 added a third site and NOT a third way up: with a keyboard already on screen and
+ * the caret on another pane's surface, a tap on a terminal hands the caret straight across inside
+ * the gesture's first event (`TerminalPane.tsx`, "the caret is handed OVER"), because the browser's
+ * own focus move for that tap parks the caret on nothing for the length of the gesture and Android
+ * answers by animating the keyboard down and back up. It is the SAME gesture this comment already
+ * names, made synchronous, and it is gated on a keyboard being measurably up - so a tap can still
+ * never summon a keyboard the person has put away.
+ *
  * Deliberately about EVERY pane surface and not only a terminal's: an editor pane's textarea
  * raises the same keyboard, and a person who has put it away has not asked for it back there
  * either. The caret is not moved AWAY from anything by this rule - `releasePaneCaret`,

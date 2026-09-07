@@ -32,6 +32,7 @@ import { isPlatformChord } from '@kelpi/core/config';
 import {
     PANE_SURFACE_ATTR,
     armCaretClaim,
+    isPaneSurfaceCaret,
     mayClaimPaneCaret,
     openEngineFocusWindow,
     releasePaneCaret,
@@ -39,6 +40,7 @@ import {
     undoSurfaceAutoFocus
 } from '../app/pane-focus';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
+import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
@@ -1225,6 +1227,116 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // `status` is in the deps for the reason C2's textarea effect has it: a restart builds a
         // FRESH engine, and the scroll subscription belongs to the engine, not to the pane.
     }, [phone, paneID, status]);
+
+    // ── C9 round 9: the caret is handed OVER, never handed back ─────────────────────
+    //
+    // **Owner-directed divergence from the shipped Swift app**, like every phone rule in this
+    // program (`chrome/form-factor.ts` carries the note for all of it).
+    //
+    // The owner, on a real Android phone with three panes split (device round 9, 2026-09-08):
+    // *"clicking between panes causes the keyboard to briefly hide and show."*
+    //
+    // THE MECHANISM, and it is two events with a gap between them. With the keyboard up, pane A's
+    // engine textarea holds the caret. A tap on pane B's canvas starts by moving the caret to
+    // NOTHING: the canvas is not focusable, so the browser's own focus move for the tap blurs A's
+    // textarea, and Android begins dismissing the IME the moment the caret leaves an editable.
+    // B's engine then takes the caret in its own `touchend` handler
+    // (`vendor/ghostty-web-patched/source/lib/terminal.ts:490-493`), which summons the IME back.
+    // The gap between the two is the length of the tap, which is exactly long enough for the
+    // keyboard to animate down and up. Nothing in C3 closes it: the gesture machine deliberately
+    // does NOT consume a plain tap's `touchstart` (`touch-scroll.ts` `start`, "a press that turns
+    // out to be a tap belongs to the engine"), which is what lets a tap raise the keyboard at all.
+    //
+    // THE RULE. On a phone, while a keyboard is measurably up and the caret sits on ANOTHER pane's
+    // surface, a touch that lands on this pane's terminal takes the caret STRAIGHT from that pane's
+    // engine to this one, inside the gesture's first event, and cancels the browser's own focus
+    // move for that gesture. The IME never sees the caret leave an editable, so it never animates.
+    //
+    // It is not a new way to raise a keyboard, which is what C5's rule protects
+    // (`app/pane-focus.ts` `mayClaimPaneCaret`): it moves a caret that is ALREADY on a terminal,
+    // between terminals, on the one gesture C5 names - a direct tap on a terminal surface. Both
+    // gates are what keep it that narrow:
+    //
+    //   - the caret must be on a pane SURFACE outside this pane (`isPaneSurfaceCaret`). A caret on
+    //     the body, on a key bar button, or in a chrome field is not a hand-over and is left alone;
+    //   - a keyboard must be MEASURABLY up (C7's `data-keyboard-viewport`, the same signal C8's
+    //     label reads). With no keyboard on screen there is nothing to flicker, so the tap keeps
+    //     the path it has today and the engine's own `touchend` raises the keyboard - the person
+    //     asked for it. That also answers Android's back gesture, which leaves the caret in the
+    //     textarea with the keyboard gone (C8's shape): the mode reads `none`, so nothing here
+    //     fires and a tap cannot summon a keyboard the person put away.
+    //
+    // WHEN IN THE GESTURE, and why it is the start rather than the end: the defect IS the browser's
+    // focus move, and that happens at the start. Waiting for a tap to be a tap would leave the
+    // caret on nothing for the length of the gesture, which is the gap this exists to remove. The
+    // cost is that a DRAG that begins on this pane also brings the caret here - which is the same
+    // answer the pane FOCUS already gives (`onTouchStartCapture` reports focus at the gesture's
+    // start), so the caret and the ring now agree instead of disagreeing for the length of a drag.
+    // C3's gesture machine is untouched: it still sees every touch event, a drag still scrolls this
+    // pane, and a long press still selects.
+    //
+    // The one side effect of cancelling the event is that the compatibility mouse events (and the
+    // synthesized click) are suppressed for that gesture. Nothing on a phone needs them: the pane
+    // reports focus from `onTouchStartCapture`, C3 answers touch directly, and the mouse reporter's
+    // phone path is the touch branch above.
+    useEffect(() => {
+        if (!phone) return;
+        const root = rootRef.current;
+        const host = hostRef.current;
+        if (root === null || host === null || typeof document === 'undefined') return;
+        /*
+         * One gesture, both of its opening events. Chrome raises `pointerdown` and then
+         * `touchstart` for the same finger, and which of the two suppresses the compatibility mouse
+         * events (the ones that carry the browser's focus move for a touch) is engine-specific -
+         * so the answer is to cancel both. The flag is what makes the second one cancel without
+         * re-deciding: by then this pane holds the caret, so the condition below would (correctly)
+         * say there is nothing to hand over.
+         */
+        let handedOver = false;
+        const takeCaret = (event: Event): void => {
+            if (handedOver) {
+                event.preventDefault();
+                return;
+            }
+            const target = event.target;
+            if (!(target instanceof Node) || !host.contains(target)) return;
+            const active = document.activeElement;
+            // FROM another pane's surface, and from nothing else.
+            if (active === null || host.contains(active) || !isPaneSurfaceCaret(active)) return;
+            // …and only with a keyboard measurably on screen. A client that publishes no mode at
+            // all (SSR, a tick before `main.tsx` binds it) has not measured one, so it does not
+            // take this path.
+            const mode = readKeyboardViewportMode(document);
+            if (mode === null || mode === 'none') return;
+            const input = engineKeyTarget(host);
+            if (input === null) return;
+            handedOver = true;
+            // Cancel the browser's own focus move for this gesture, THEN make the move ourselves.
+            // `preventScroll` because C7's whole rule is that nothing scrolls the app inside its
+            // own window for a keyboard, and a focus is one of the things that can.
+            event.preventDefault();
+            input.focus({ preventScroll: true });
+        };
+        const endGesture = (): void => {
+            handedOver = false;
+        };
+        root.addEventListener('pointerdown', takeCaret, { capture: true, passive: false });
+        root.addEventListener('touchstart', takeCaret, { capture: true, passive: false });
+        root.addEventListener('touchend', endGesture, true);
+        root.addEventListener('touchcancel', endGesture, true);
+        root.addEventListener('pointerup', endGesture, true);
+        root.addEventListener('pointercancel', endGesture, true);
+        return () => {
+            root.removeEventListener('pointerdown', takeCaret, { capture: true });
+            root.removeEventListener('touchstart', takeCaret, { capture: true });
+            root.removeEventListener('touchend', endGesture, true);
+            root.removeEventListener('touchcancel', endGesture, true);
+            root.removeEventListener('pointerup', endGesture, true);
+            root.removeEventListener('pointercancel', endGesture, true);
+        };
+        // `status` for the reason the effects around it have it: a restart builds a FRESH engine
+        // with a fresh textarea, and `engineKeyTarget` has to resolve the new one.
+    }, [phone, status]);
 
     // ── kitty keyboard: capture-phase interception (§TERM-030) ──────────────────────
     //

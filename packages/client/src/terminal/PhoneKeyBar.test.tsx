@@ -28,7 +28,7 @@ import {
     PHONE_KEY_BAR_SLOT_ATTR,
     PhoneKeyBar
 } from './PhoneKeyBar';
-import { TerminalPane } from './TerminalPane';
+import { ENGINE_AUTOFOCUS_WINDOW_MS, TerminalPane } from './TerminalPane';
 import { PHONE_KEYBOARD_SETTLE_MS } from './keyboard-inset';
 import {
     createFakePhoneWindow,
@@ -339,6 +339,155 @@ describe('the bar acts on the pane that holds the caret', () => {
         tap(h.key('hide-keyboard'));
 
         expect(h.host('right').contains(document.activeElement)).toBe(true);
+    });
+});
+
+/**
+ * C9 round 9 (owner device, 2026-09-08): "clicking between panes causes the keyboard to briefly
+ * hide and show."
+ *
+ * The mechanism is two focus events with a gesture-length gap between them: the browser's own
+ * focus move for a tap parks the caret on nothing (a canvas is not focusable), and the engine's
+ * `touchend` puts it back. jsdom moves no focus for a pointer event of its own, so what is pinned
+ * here is the half that IS this component's: that the caret is on the tapped pane's engine input
+ * SYNCHRONOUSLY, inside the gesture's first event, and that the event is cancelled - which is what
+ * takes the browser's own move (and the flicker) away. The ordering a real browser produces is
+ * `phone-key-bar-split`'s, where the focus trail is recorded around a real touch.
+ */
+describe('a tap hands the caret between terminals without letting it touch the body (C9 round 9)', () => {
+    /** C7's mode, as `main.tsx` binds it on a phone: the signal the hand-over is gated on. */
+    function keyboard(mode: 'none' | 'resizes-visual'): void {
+        document.documentElement.dataset['keyboardViewport'] = mode;
+    }
+
+    afterEach(() => {
+        delete document.documentElement.dataset['keyboardViewport'];
+    });
+
+    /** Two panes, each with a stand-in for the engine's hidden input inside its host. */
+    async function twoPanes(): Promise<{ h: Harness; left: HTMLTextAreaElement; right: HTMLTextAreaElement }> {
+        const h = await mount([{ id: 'left', focused: true }, { id: 'right' }]);
+        // Past §N35's engine-autofocus window (`ENGINE_AUTOFOCUS_WINDOW_MS`), which for its own
+        // bounded 250 ms answers ANY focus landing in an unfocused pane's host by handing it back -
+        // the engine's own `touchend` grab has exactly the same exposure, and neither is what this
+        // block is about.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(ENGINE_AUTOFOCUS_WINDOW_MS * 2);
+        });
+        const inputs = ['left', 'right'].map((id) => {
+            const area = document.createElement('textarea');
+            h.host(id).appendChild(area);
+            return area;
+        });
+        return { h, left: inputs[0] as HTMLTextAreaElement, right: inputs[1] as HTMLTextAreaElement };
+    }
+
+    it('moves the caret from the other pane\'s engine in the same task, and cancels the tap', async () => {
+        const { h, left, right } = await twoPanes();
+        keyboard('resizes-visual');
+        left.focus();
+        const trail: string[] = [];
+        const record = (event: FocusEvent): void => {
+            const target = event.target as HTMLElement | null;
+            const pane = target?.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? 'body';
+            trail.push(`${event.type}:${target === document.body ? 'body' : pane}`);
+        };
+        document.addEventListener('focusin', record as EventListener, true);
+        document.addEventListener('focusout', record as EventListener, true);
+
+        const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('right').dispatchEvent(event);
+        });
+
+        document.removeEventListener('focusin', record as EventListener, true);
+        document.removeEventListener('focusout', record as EventListener, true);
+        // Synchronously, in the task the gesture opened: no settle, no touchend, no frame.
+        expect(document.activeElement).toBe(right);
+        // …and the browser's own focus move for this gesture is cancelled, which is the half that
+        // stops the caret passing through nothing on a real phone.
+        expect(event.defaultPrevented).toBe(true);
+        // The caret left one engine for the other, and touched nothing in between.
+        expect(trail).toEqual(['focusout:left', 'focusin:right']);
+    });
+
+    it('cancels the touchstart of the same gesture too, whichever event the engine acts on', async () => {
+        const { h, left, right } = await twoPanes();
+        keyboard('resizes-visual');
+        left.focus();
+
+        const pointer = new Event('pointerdown', { bubbles: true, cancelable: true });
+        const touch = new Event('touchstart', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('right').dispatchEvent(pointer);
+            h.host('right').dispatchEvent(touch);
+        });
+
+        expect(document.activeElement).toBe(right);
+        expect(pointer.defaultPrevented).toBe(true);
+        expect(touch.defaultPrevented).toBe(true);
+    });
+
+    it('leaves a tap alone when the keyboard is DOWN, so the engine still raises it (C5)', async () => {
+        const { h, left, right } = await twoPanes();
+        keyboard('none');
+        left.focus();
+
+        const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('right').dispatchEvent(event);
+        });
+
+        // Nothing was taken and nothing was cancelled: the tap keeps the path it has today, where
+        // the engine's own `touchend` focuses its textarea and the person gets the keyboard back.
+        expect(document.activeElement).toBe(left);
+        expect(event.defaultPrevented).toBe(false);
+    });
+
+    it('leaves a tap alone when the caret is on nothing: this is a hand-OVER, not a claim', async () => {
+        const { h, right } = await twoPanes();
+        keyboard('resizes-visual');
+        (document.activeElement as HTMLElement | null)?.blur();
+        expect(document.activeElement).toBe(document.body);
+
+        const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('right').dispatchEvent(event);
+        });
+
+        expect(document.activeElement).toBe(document.body);
+        expect(event.defaultPrevented).toBe(false);
+        expect(right.ownerDocument.activeElement).not.toBe(right);
+    });
+
+    it('leaves a tap on the pane that ALREADY holds the caret alone', async () => {
+        const { h, left } = await twoPanes();
+        keyboard('resizes-visual');
+        left.focus();
+
+        const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('left').dispatchEvent(event);
+        });
+
+        expect(document.activeElement).toBe(left);
+        expect(event.defaultPrevented).toBe(false);
+    });
+
+    it('AND NOT ON DESKTOP: the same gesture on the same panes moves nothing', async () => {
+        const h = await mount([{ id: 'left', focused: true }, { id: 'right' }], { coarse: false });
+        const left = document.createElement('textarea');
+        h.host('left').appendChild(left);
+        keyboard('resizes-visual');
+        left.focus();
+
+        const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+        act(() => {
+            h.host('right').dispatchEvent(event);
+        });
+
+        expect(document.activeElement).toBe(left);
+        expect(event.defaultPrevented).toBe(false);
     });
 });
 

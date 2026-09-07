@@ -31204,7 +31204,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-key-bar-split',
             expect:
-                'Under a 390x844 phone viewport with the terminal split in two, the window has exactly ONE key bar: it is inside neither pane, it spans the content area at its bottom edge, and both panes end above it. Tapping its Ctrl and typing c interrupts the `sleep 30` in the FOCUSED pane and leaves the other pane\'s running (both read back through `kelpi pane capture`); tapping the other pane re-aims the whole bar, latch and all, so the same two keys interrupt that one instead. A 300 px software keyboard faked at the visual viewport comes off the content area once, both panes get shorter with it, each costs the daemon exactly one resize, and the bar rides the keyboard rather than staying behind it. The split pane is closed, the roster is handed back byte-identical, and the desktop window has no bar and no phone state.',
+                'Under a 390x844 phone viewport with the terminal split in two, the window has exactly ONE key bar: it is inside neither pane, it spans the content area at its bottom edge, and both panes end above it. Tapping its Ctrl and typing c interrupts the `sleep 30` in the FOCUSED pane and leaves the other pane\'s running (both read back through `kelpi pane capture`); tapping the other pane re-aims the whole bar, latch and all, so the same two keys interrupt that one instead. A 300 px software keyboard faked at the visual viewport comes off the content area once, both panes get shorter with it, each costs the daemon exactly one resize, and the bar rides the keyboard rather than staying behind it. With that keyboard up, tapping from one pane to the other hands the caret STRAIGHT across (round 9): the recorded focus trail has no body in it, no focusout that hands the caret to nothing, and the arrival comes before the touchend the engine used to answer. The split pane is closed, the roster is handed back byte-identical, and the desktop window has no bar and no phone state.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -31279,6 +31279,34 @@ function buildFlows(ctx) {
                     await view.type('c');
                     await sleep(700);
                 };
+
+                /**
+                 * Raise or drop a software keyboard at the one seam a desktop Chromium has: an own
+                 * `height` accessor over `VisualViewport`'s prototype getter, which is what
+                 * `readSoftKeyboardInset` and C7's mode detector both read. The same shadow
+                 * `phone-keyboard-inset` and `phone-key-bar` use.
+                 */
+                const fakeKeyboard = async (up) =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    if (${String(up)}) {
+                                        Object.defineProperty(vv, 'height', {
+                                            configurable: true,
+                                            get() { return window.innerHeight - ${String(FAKE_KEYBOARD_PX)}; }
+                                        });
+                                    } else if (Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                        delete vv.height;
+                                    }
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ ok: true, innerHeight: window.innerHeight, viewport: Math.round(vv.height) });
+                                })()`
+                            )
+                        )
+                    );
 
                 // Focus and tidy at DESKTOP size, exactly as `phone-key-bar` does.
                 await focusPaneBody(view, leftID);
@@ -31426,22 +31454,7 @@ function buildFlows(ctx) {
 
                     // ── 4. THE KEYBOARD ─────────────────────────────────────────────────
                     const beforeKeyboard = await readFrame();
-                    const raised = JSON.parse(
-                        String(
-                            await view.eval(
-                                `(() => {
-                                    const vv = window.visualViewport;
-                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
-                                    Object.defineProperty(vv, 'height', {
-                                        configurable: true,
-                                        get() { return window.innerHeight - ${String(FAKE_KEYBOARD_PX)}; }
-                                    });
-                                    vv.dispatchEvent(new Event('resize'));
-                                    return JSON.stringify({ ok: true, innerHeight: window.innerHeight, viewport: Math.round(vv.height) });
-                                })()`
-                            )
-                        )
-                    );
+                    const raised = await fakeKeyboard(true);
                     // The settle window plus each pane's own measure/resize/repaint.
                     await sleep(700);
                     const withKeyboard = await readFrame();
@@ -31493,16 +31506,7 @@ function buildFlows(ctx) {
                     await recorder.shot(view, 'split-keyboard');
 
                     // …and down again: the shadow off, one more message each, back where they were.
-                    await view.eval(
-                        `(() => {
-                            const vv = window.visualViewport;
-                            if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
-                                delete vv.height;
-                                vv.dispatchEvent(new Event('resize'));
-                            }
-                            return true;
-                        })()`
-                    );
+                    await fakeKeyboard(false);
                     await sleep(700);
                     const lowered = await readFrame();
                     const restored = (beforeKeyboard.panes ?? [])
@@ -31521,6 +31525,127 @@ function buildFlows(ctx) {
                             ),
                         restored.map((pair) => `${String(pair.before.id)}: ${String(pair.after.rows)} rows (was ${String(pair.before.rows)})`).join('; ')
                     );
+
+                    /*
+                     * ── 5. THE CARET HAND-OVER (owner device round 9, 2026-09-08) ──────────
+                     *
+                     * "Clicking between panes causes the keyboard to briefly hide and show."
+                     *
+                     * The mechanism is an ORDER, which is why this is measured as one. A tap on
+                     * another pane's canvas used to move the caret twice: the browser's own focus
+                     * move for the tap parked it on nothing (a canvas is not focusable) and the
+                     * pane's engine took it back in its own `touchend`. Android dismisses the IME
+                     * the moment the caret leaves an editable and summons it again when one takes
+                     * it, so a tap's length is a keyboard animating down and up.
+                     *
+                     * So the trail is recorded rather than the endpoint: every `focusin`,
+                     * `focusout` and touch event in order, around one real tap, with the keyboard
+                     * faked up. The claim is that the caret goes STRAIGHT from one engine's
+                     * textarea to the other's, inside the gesture's first event - no `body` in the
+                     * trail, no `focusout` that hands the caret to nothing, and the arrival BEFORE
+                     * the `touchend`. On the previous tip that order is exactly reversed.
+                     *
+                     * CDP's own touch is the honest driver here: `Input.dispatchTouchEvent` makes
+                     * Chromium run its real focus algorithm for the tap, which is the thing under
+                     * test. What no desktop Chromium has is the IME itself, so the animation the
+                     * owner saw is the device's to confirm; the ORDER that causes it is here.
+                     */
+                    await fakeKeyboard(true);
+                    await sleep(400);
+                    const beforeTap = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const active = document.activeElement;
+                                    const pane = active === null ? null : active.closest('[data-pane-id]');
+                                    return JSON.stringify({
+                                        caret: (active?.tagName ?? '(none)').toLowerCase(),
+                                        pane: pane === null ? '(none)' : pane.getAttribute('data-pane-id'),
+                                        mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`before the tap: ${JSON.stringify(beforeTap)}`);
+                    recorder.check(
+                        'the caret is on one pane engine with a keyboard up, which is the state the report is about',
+                        beforeTap.caret === 'textarea' && beforeTap.pane === leftID && beforeTap.mode === 'resizes-visual',
+                        `activeElement=${beforeTap.caret} in ${String(beforeTap.pane)}, data-keyboard-viewport=${beforeTap.mode}`
+                    );
+                    await view.eval(
+                        `(() => {
+                            window.__kelpiTrail = [];
+                            const name = (node) => {
+                                if (node === null || node === undefined) return 'null';
+                                if (node === document.body) return 'body';
+                                const pane = node.closest === undefined ? null : node.closest('[data-pane-id]');
+                                const tag = (node.tagName ?? '?').toLowerCase();
+                                return (pane === null ? 'outside' : pane.getAttribute('data-pane-id')) + ':' + tag;
+                            };
+                            window.__kelpiTrailListener = (event) => {
+                                window.__kelpiTrail.push({
+                                    type: event.type,
+                                    target: name(event.target),
+                                    related: event.relatedTarget === undefined ? null : name(event.relatedTarget)
+                                });
+                            };
+                            for (const type of ['focusin', 'focusout', 'touchstart', 'touchend']) {
+                                document.addEventListener(type, window.__kelpiTrailListener, true);
+                            }
+                            return true;
+                        })()`
+                    );
+                    await view.tap(`[data-testid="pane-body-${rightID}"]`);
+                    await sleep(500);
+                    const trail = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    for (const type of ['focusin', 'focusout', 'touchstart', 'touchend']) {
+                                        document.removeEventListener(type, window.__kelpiTrailListener, true);
+                                    }
+                                    const trail = window.__kelpiTrail ?? [];
+                                    delete window.__kelpiTrail;
+                                    delete window.__kelpiTrailListener;
+                                    const active = document.activeElement;
+                                    const pane = active === null ? null : active.closest('[data-pane-id]');
+                                    return JSON.stringify({
+                                        trail,
+                                        caret: (active?.tagName ?? '(none)').toLowerCase(),
+                                        pane: pane === null ? '(none)' : pane.getAttribute('data-pane-id'),
+                                        mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`focus trail across the tap: ${JSON.stringify(trail)}`);
+                    const entries = trail.trail ?? [];
+                    const arrived = entries.findIndex((entry) => entry.type === 'focusin' && entry.target === `${rightID}:textarea`);
+                    const ended = entries.findIndex((entry) => entry.type === 'touchend');
+                    const throughNothing = entries.filter(
+                        (entry) => entry.target === 'body' || (entry.type === 'focusout' && (entry.related === 'null' || entry.related === 'body'))
+                    );
+                    recorder.check(
+                        'the caret went STRAIGHT from one engine to the other: nothing in the trail is the body, and no focusout handed it to nothing',
+                        arrived >= 0 && throughNothing.length === 0,
+                        arrived < 0
+                            ? `the caret never arrived on ${rightID}: ${JSON.stringify(entries)}`
+                            : `through nothing: ${JSON.stringify(throughNothing)}`
+                    );
+                    recorder.check(
+                        'and it arrived inside the gesture, BEFORE the touchend the engine used to answer',
+                        arrived >= 0 && ended >= 0 && arrived < ended,
+                        `focusin at ${String(arrived)}, touchend at ${String(ended)} in ${JSON.stringify(entries.map((entry) => entry.type + ' ' + entry.target))}`
+                    );
+                    recorder.check(
+                        'the tapped pane holds the caret, and the keyboard the client can measure never changed',
+                        trail.pane === rightID && trail.caret === 'textarea' && trail.mode === beforeTap.mode,
+                        `activeElement=${trail.caret} in ${String(trail.pane)}, data-keyboard-viewport=${trail.mode} (was ${beforeTap.mode})`
+                    );
+                    await fakeKeyboard(false);
+                    await sleep(500);
                 } finally {
                     /*
                      * Belt and braces, in the order that keeps the next step honest: the viewport

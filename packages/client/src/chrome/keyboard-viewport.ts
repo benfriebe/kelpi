@@ -298,3 +298,51 @@ export function bindKeyboardViewport(
         publish(null);
     };
 }
+
+// ── reading what was published (C8) ─────────────────────────────────────────────────
+//
+// `bindKeyboardViewport` above is the only WRITER. These two are for the surfaces that have to
+// read it - C8's key bar is the first - and they live here rather than at the reader because the
+// attribute's name and its three values belong to this module: a second `dataset` lookup and a
+// second string comparison somewhere else is a second place to get them wrong when a fourth mode
+// is ever added.
+//
+// Neither of them measures anything. The mode is decided once, by the binder, from the window it
+// was given; a reader that measured for itself could disagree with `<html>` about which mode the
+// page is in, and then two surfaces would answer the same question differently.
+
+/**
+ * The mode `<html>` currently carries, or `null` where nothing publishes one.
+ *
+ * `null` is a real answer rather than an error: the binder writes nothing at all on a desktop
+ * (MOBILE-PLAN.md section 3, principle 1), and it has not run at all in a unit test, under SSR,
+ * or in the tick before `main.tsx` calls it. Every caller therefore needs a second signal for
+ * that case, and the `null` is what tells it to use one. An unrecognised value reads as `null`
+ * for the same reason: a reader that guessed would be worse than one that fell back.
+ */
+export function readKeyboardViewportMode(doc: FormFactorDocument = document): KeyboardViewportMode | null {
+    const value = doc.documentElement.dataset['keyboardViewport'];
+    if (value === 'none' || value === 'resizes-content' || value === 'resizes-visual') return value;
+    return null;
+}
+
+/**
+ * Call `onChange` whenever the published mode changes. Returns an unsubscribe.
+ *
+ * A `MutationObserver` with an attribute filter, because the binder's own signals (a resize, a
+ * viewport scroll) are not this reader's to bind twice: the binder already reduces them to the
+ * transitions that change the mode - `publish` returns early on a same-value write, which is
+ * what makes an attribute mutation exactly one callback per transition where re-reading the
+ * window would be one per frame of the keyboard animation.
+ *
+ * A document with no `MutationObserver` - a bare Node import, an SSR stand-in - gets a no-op
+ * unsubscribe rather than a throw. The reader is then left on whatever it uses when nothing is
+ * published, which is the same state it would be in with the observer bound and silent.
+ */
+export function watchKeyboardViewportMode(doc: Document, onChange: () => void): () => void {
+    const Observer = doc.defaultView?.MutationObserver;
+    if (Observer === undefined) return () => undefined;
+    const observer = new Observer(onChange);
+    observer.observe(doc.documentElement, { attributes: true, attributeFilter: [KEYBOARD_VIEWPORT_ATTRIBUTE] });
+    return () => observer.disconnect();
+}

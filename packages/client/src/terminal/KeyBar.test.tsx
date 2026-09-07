@@ -18,6 +18,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { bindKeyboardViewport } from '../chrome/keyboard-viewport';
 import { CLIPBOARD_WRITE_MESSAGE, createClipboardWriteHandler, resetClipboardOffersForTests } from '../state/clipboard';
 import {
     COPY_PILL_TIMEOUT_MS,
@@ -33,7 +34,7 @@ import {
 import { KITTY_DISAMBIGUATE, KITTY_REPORT_ALL_KEYS } from './kitty-keyboard';
 import { TerminalPane } from './TerminalPane';
 import { createTerminalRenderer } from './renderer';
-import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from './testing';
+import { createFakePhoneWindow, createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver, type FakePhoneWindow } from './testing';
 
 // ── the stub canvas ─────────────────────────────────────────────────────────────────
 //
@@ -1162,14 +1163,240 @@ describe('KeyBar in a terminal pane', () => {
     /**
      * The state is READ, not remembered: the engine's own `touchend` focus and the pane's focus
      * effects move the caret without asking the bar, and the key has to say the truth afterwards.
+     *
+     * This is the FALLBACK lane, and it is what the two tests above are as well: nothing here
+     * publishes `data-keyboard-viewport`, which is the state of a desktop, of jsdom and of the
+     * tick before `main.tsx` binds C7. The block below owns the case where something does.
      */
-    it('follows the caret when something else moves it', async () => {
+    it('follows the caret when something else moves it, where no keyboard viewport is published', async () => {
         const h = await mountPane();
         const key = h.key('hide-keyboard');
         act(() => h.area.blur());
         expect(key.textContent).toBe('Show');
         act(() => h.area.focus());
         expect(key.textContent).toBe('Hide');
+    });
+
+    /**
+     * ── THE LABEL NAMES THE KEYBOARD, NOT THE CARET (owner device round 6, 2026-09-07) ─────
+     *
+     * "The hide/show button always starts with Hide, which requires pressing twice to show."
+     * Android, Chrome, the installed PWA. The cause is in the two tests above: a focused pane
+     * claims the caret the moment it mounts (`app/pane-focus.ts` `armCaretClaim` calls the
+     * engine's own `focus()`), and a programmatic focus with no gesture behind it does not
+     * summon Android's keyboard - so the app opened with the caret on the textarea, no keyboard
+     * on screen, and a key that said Hide.
+     *
+     * So the state now comes from C7's `data-keyboard-viewport` where it is published, and only
+     * from the caret where it is not. These drive it through C7's OWN publisher rather than by
+     * writing the attribute here: `bindKeyboardViewport` over `testing.ts`'s fake phone window
+     * and this document, so what the bar reads is what `main.tsx` would have written for the
+     * same window. The bar hears it through a `MutationObserver` on `<html>`, whose callback is
+     * a microtask, which is what every `settle()` below is waiting for.
+     */
+    describe('the keyboard toggle reads the viewport, not the caret (device round 6)', () => {
+        let phone: FakePhoneWindow;
+        let unbind: () => void;
+
+        beforeEach(() => {
+            phone = createFakePhoneWindow();
+            unbind = bindKeyboardViewport(document, phone);
+        });
+
+        afterEach(() => {
+            // Puts `<html>` back the way the binder's own unsubscribe does, so no later test in
+            // any file inherits a keyboard.
+            unbind();
+        });
+
+        /** What `<html>` says, which is the input the whole block turns on. */
+        const mode = (): string => document.documentElement.dataset['keyboardViewport'] ?? '(unset)';
+
+        /**
+         * THE OWNER'S REPORT. The pane holds the caret at mount and no keyboard is up, so the
+         * key is the way IN to the keyboard and has to say so on the first look.
+         */
+        it('starts on Show when the pane holds the caret with no keyboard on screen', async () => {
+            const h = await mountPane();
+            expect(document.activeElement).toBe(h.area);
+            expect(mode()).toBe('none');
+            const key = h.key('hide-keyboard');
+            expect(key.textContent).toBe('Show');
+            expect(key.getAttribute('aria-label')).toBe('Show keyboard');
+            expect(key.getAttribute('aria-pressed')).toBe('false');
+        });
+
+        /** …and with the caret away as well: neither answer comes from the caret any more. */
+        it('starts on Show with the caret away too', async () => {
+            const h = await mountPane();
+            act(() => h.area.blur());
+            expect(h.key('hide-keyboard').textContent).toBe('Show');
+        });
+
+        /**
+         * A keyboard that takes space from the LAYOUT viewport is the owner's Chrome under
+         * `interactive-widget=resizes-content`, and one that takes it from the visual viewport
+         * alone is iOS and every engine that ignores the key. Both are a keyboard.
+         */
+        it('reads Hide once a keyboard takes space, in either mode', async () => {
+            const h = await mountPane();
+            const key = h.key('hide-keyboard');
+
+            await act(async () => {
+                phone.raiseKeyboardResizingContent(300);
+                await Promise.resolve();
+            });
+            expect(mode()).toBe('resizes-content');
+            expect(key.textContent).toBe('Hide');
+            expect(key.getAttribute('aria-label')).toBe('Hide keyboard');
+            expect(key.getAttribute('aria-pressed')).toBe('true');
+
+            await act(async () => {
+                phone.lowerKeyboard();
+                phone.shrinkWindow(0);
+                await Promise.resolve();
+            });
+            expect(key.textContent).toBe('Show');
+
+            await act(async () => {
+                phone.raiseKeyboard(300);
+                await Promise.resolve();
+            });
+            expect(mode()).toBe('resizes-visual');
+            expect(key.textContent).toBe('Hide');
+        });
+
+        /**
+         * ANDROID'S BACK GESTURE, which is the shape no focus listener can see: the keyboard
+         * goes away and the caret stays exactly where it was. Round 3's rule read that as a
+         * keyboard still up and offered to hide it again.
+         */
+        it('reads Show after a back-gesture dismissal, with the caret still in the textarea', async () => {
+            const h = await mountPane();
+            const key = h.key('hide-keyboard');
+            await act(async () => {
+                phone.raiseKeyboard(300);
+                await Promise.resolve();
+            });
+            expect(key.textContent).toBe('Hide');
+
+            // The gesture: the viewport comes back and nothing touches the caret.
+            await act(async () => {
+                phone.lowerKeyboard();
+                await Promise.resolve();
+            });
+            expect(document.activeElement).toBe(h.area);
+            expect(key.textContent).toBe('Show');
+        });
+
+        /**
+         * …and the converse, which is the same primacy seen from the other side: Android may
+         * answer a tap on a 44 px button by moving focus to it, and the keyboard does NOT go
+         * down for that. The label must not offer to show what is already there.
+         */
+        it('stays on Hide when a tap moves the caret off the textarea with the keyboard still up', async () => {
+            const h = await mountPane();
+            await act(async () => {
+                phone.raiseKeyboard(300);
+                await Promise.resolve();
+            });
+            const key = h.key('hide-keyboard');
+            expect(key.textContent).toBe('Hide');
+
+            // What the touch recognizer does when `preventDefault` on the pointer-down does not
+            // hold: the caret lands on the button, and no viewport moves.
+            act(() => {
+                fireEvent.pointerDown(h.key('esc'));
+                h.key('esc').focus();
+                fireEvent.click(h.key('esc'));
+            });
+            expect(document.activeElement).not.toBe(h.area);
+            expect(key.textContent).toBe('Hide');
+            expect(h.renderers.last().keys.map((init) => init.key)).toEqual(['Escape']);
+        });
+
+        /**
+         * TAPPING HIDE, end to end: the caret goes at the tap and the LABEL follows the
+         * keyboard, which on a real phone leaves a beat between the two. The bar says Hide until
+         * the keyboard is actually gone, because that is when it is gone.
+         */
+        it('hides on a tap, and turns into Show when the keyboard has actually left', async () => {
+            const h = await mountPane();
+            await act(async () => {
+                phone.raiseKeyboard(300);
+                await Promise.resolve();
+            });
+            const key = h.key('hide-keyboard');
+            tap(key);
+            expect(document.activeElement).not.toBe(h.area);
+            expect(key.textContent).toBe('Hide');
+
+            await act(async () => {
+                phone.lowerKeyboard();
+                await Promise.resolve();
+            });
+            expect(key.textContent).toBe('Show');
+        });
+
+        /**
+         * TAPPING SHOW FROM THE STATE THE OWNER OPENS THE APP IN, which is the half a corrected
+         * label alone would not have fixed.
+         *
+         * `showKeyboard` is `focus()` on the engine's textarea, and a `focus()` on the element
+         * that already holds the caret raises no event and summons no keyboard. The pane claimed
+         * the caret at mount, so the one tap has to MOVE it: release, then take it back, inside
+         * the same tap. That is what the owner's two presses were doing by accident.
+         */
+        it('makes the Show tap a caret MOVE when the pane is already holding it', async () => {
+            const h = await mountPane();
+            expect(document.activeElement).toBe(h.area);
+            const order: string[] = [];
+            const blur = vi.spyOn(h.area, 'blur').mockImplementation(function (this: HTMLTextAreaElement) {
+                order.push('blur');
+                HTMLElement.prototype.blur.call(this);
+            });
+            const focus = vi.spyOn(h.area, 'focus').mockImplementation(function (this: HTMLTextAreaElement) {
+                order.push('focus');
+                HTMLElement.prototype.focus.call(this);
+            });
+
+            tap(h.key('hide-keyboard'));
+            expect(order).toEqual(['blur', 'focus']);
+            expect(blur).toHaveBeenCalledTimes(1);
+            expect(focus).toHaveBeenCalledTimes(1);
+            expect(document.activeElement).toBe(h.area);
+        });
+
+        /** …and from the caret being elsewhere it is the plain focus it always was. */
+        it('does not blur anything when the caret is not on the engine', async () => {
+            const h = await mountPane();
+            act(() => h.area.blur());
+            const blur = vi.spyOn(h.area, 'blur');
+            const focus = vi.spyOn(h.area, 'focus');
+            tap(h.key('hide-keyboard'));
+            expect(blur).not.toHaveBeenCalled();
+            expect(focus).toHaveBeenCalledTimes(1);
+            expect(document.activeElement).toBe(h.area);
+        });
+
+        /**
+         * The bar goes with the pane's focus and comes back with it, and the keyboard does not
+         * wait for either: a bar that mounts into a keyboard that is already up has to say Hide
+         * on its first render, which is the same "no initial state to get wrong" as the mount
+         * case at the top of this block.
+         */
+        it('reads the keyboard that arrived while it was unmounted', async () => {
+            const h = await mountPane();
+            await h.rerender({ focused: false });
+            expect(h.bar).toBeNull();
+            await act(async () => {
+                phone.raiseKeyboard(300);
+                await Promise.resolve();
+            });
+            expect(mode()).toBe('resizes-visual');
+            await h.rerender({ focused: true });
+            expect(h.key('hide-keyboard').textContent).toBe('Hide');
+        });
     });
 
     /** THE BAR NEVER FOCUSES ANYTHING, except that one key. */

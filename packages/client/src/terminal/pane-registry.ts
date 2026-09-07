@@ -32,7 +32,32 @@
  * markdown pane, a diff pane or a web pane, and it keeps declining for a terminal pane whose
  * engine has not finished opening. Declining is the dispatcher's fall-through (`chrome/keys.ts`
  * step 7), which is what leaves the Edit menu's own Copy in charge everywhere else.
+ *
+ * ## C9: it is also how the WINDOW's one key bar finds its terminal
+ *
+ * The phone key bar used to be a piece of one pane's box (C1 mounted it inside `TerminalPane`), so
+ * with the panes split it was drawn inside the active pane instead of across the bottom of the
+ * window - the owner's report of 2026-09-08. It is now mounted once, at the bottom of the content
+ * area (`terminal/PhoneKeyBar.tsx`), and it has to reach the pane that holds the caret from there.
+ *
+ * That is the same question this module already answers - "the live terminal for pane X" - so it
+ * is answered here rather than in a second registry: the handle grew the four things the bar does
+ * to a terminal ({@link TerminalPaneHandle.dispatchKey}, {@link TerminalPaneHandle.pasteText},
+ * {@link TerminalPaneHandle.showKeyboard}, {@link TerminalPaneHandle.hideKeyboard}), the node its
+ * sticky-modifier interceptor binds to ({@link TerminalPaneHandle.root}), the cell height the
+ * keyboard inset is floored at ({@link TerminalPaneHandle.cellHeight}), and the one predicate that
+ * used to be the bar's mount condition ({@link TerminalPaneHandle.focusedOnScreen}).
+ *
+ * The bar also has to RE-READ, which a pull registry alone cannot make it do: a pane registers
+ * inside its mount effect, i.e. after the commit that rendered the bar's host, so a host that only
+ * pulled would render before the first handle existed and never look again. Hence
+ * {@link subscribeTerminalPanes} and {@link terminalPanesVersion} - one counter, bumped on every
+ * register, release and {@link notifyTerminalPanes}, which is a `useSyncExternalStore` away from a
+ * component that re-reads. Nothing subscribes on a desktop (the host does not subscribe unless the
+ * form factor is phone), so a desktop window pays for none of it.
  */
+
+import type { TerminalKeyInit } from './renderer';
 
 export interface TerminalPaneHandle {
     /**
@@ -54,9 +79,60 @@ export interface TerminalPaneHandle {
      * has already consumed the chord and a rejected promise in a key handler helps nobody.
      */
     write(data: string): void;
+    /**
+     * C9 - the pane's ROOT node, which is where the key bar binds its sticky-modifier
+     * interceptor (`KeyBar.tsx`'s header: above the host, so a capture listener there runs
+     * before the kitty interceptor and the engine's own).
+     *
+     * A getter rather than the node itself, for the reason `selection` is one: the handle
+     * outlives nothing, but it is created once per engine start and read whenever the bar
+     * re-targets, and a getter cannot go stale.
+     */
+    root(): HTMLElement | null;
+    /**
+     * C9 - a key, raised at this pane's engine the way a physical one arrives (C1's routing
+     * decision: a synthesized `keydown`, never bytes). False when there was nowhere to send it.
+     */
+    dispatchKey(init: TerminalKeyInit): boolean;
+    /**
+     * C9/C4 - text into this pane through the ENGINE's own paste listener, which is where the
+     * bracketed-paste envelope is decided (`KeyBar.tsx` `dispatchPaste`).
+     */
+    pasteText(text: string): boolean;
+    /**
+     * C9 - put the caret on this pane's engine input, which is what RAISES a software keyboard.
+     * The one focus the key bar is allowed, and only from the key that reads Show.
+     */
+    showKeyboard(): void;
+    /** C9 - let the caret go, which is what dismisses a software keyboard. */
+    hideKeyboard(): void;
+    /** C9 - the engine's cell height in CSS px, the floor the keyboard inset is clamped at. */
+    cellHeight(): number;
+    /**
+     * C9 - this pane is the focused one AND on screen: exactly the condition C1's bar mounted
+     * itself under (`focused && visible`), now asked once for the window.
+     *
+     * Read at call time and announced by {@link notifyTerminalPanes} when the answer changes,
+     * because it is the only thing on this handle that moves without the engine moving.
+     */
+    focusedOnScreen(): boolean;
 }
 
 const handles = new Map<string, TerminalPaneHandle>();
+const listeners = new Set<() => void>();
+/**
+ * Bumped by every register, release and {@link notifyTerminalPanes}.
+ *
+ * A number rather than the map itself, because `useSyncExternalStore` requires a snapshot that
+ * does not change identity between reads and a `Map` handed out directly would fail that on the
+ * first `getSnapshot` after a render.
+ */
+let version = 0;
+
+function announce(): void {
+    version += 1;
+    for (const listener of [...listeners]) listener();
+}
 
 /**
  * Publish a pane's handle for as long as its renderer is live. Returns the release.
@@ -67,9 +143,36 @@ const handles = new Map<string, TerminalPaneHandle>();
  */
 export function registerTerminalPane(paneID: string, handle: TerminalPaneHandle): () => void {
     handles.set(paneID, handle);
+    announce();
     return () => {
-        if (handles.get(paneID) === handle) handles.delete(paneID);
+        if (handles.get(paneID) !== handle) return;
+        handles.delete(paneID);
+        announce();
     };
+}
+
+/**
+ * Say that something a handle ANSWERS has changed, without the handle itself changing (C9).
+ *
+ * The one such thing is {@link TerminalPaneHandle.focusedOnScreen}: a pane takes and loses the
+ * ring, and is zoomed away, without its engine going anywhere, and the window's key bar has to
+ * appear and disappear with that. Everything else on a handle is read at the instant it is used.
+ */
+export function notifyTerminalPanes(): void {
+    announce();
+}
+
+/** Subscribe to registrations, releases and {@link notifyTerminalPanes}. Returns the release. */
+export function subscribeTerminalPanes(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
+
+/** The counter a `useSyncExternalStore` snapshot is taken from. See the module header. */
+export function terminalPanesVersion(): number {
+    return version;
 }
 
 /** The live handle for a pane, or `null` when that pane has no mounted terminal renderer. */

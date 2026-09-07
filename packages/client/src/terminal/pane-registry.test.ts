@@ -8,7 +8,14 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { paneHandle, registerTerminalPane, registeredPaneCount } from './pane-registry';
+import {
+    notifyTerminalPanes,
+    paneHandle,
+    registerTerminalPane,
+    registeredPaneCount,
+    subscribeTerminalPanes,
+    terminalPanesVersion
+} from './pane-registry';
 
 const releases: (() => void)[] = [];
 /** Everything any registered pane was asked to write, in order (#82). */
@@ -17,7 +24,16 @@ const written: string[] = [];
 function register(paneID: string, selection: () => string): () => void {
     const release = registerTerminalPane(paneID, {
         selection,
-        write: (data) => written.push(`${paneID}:${data}`)
+        write: (data) => written.push(`${paneID}:${data}`),
+        // C9's half of the handle. Stubbed flat here: what this file is about is the map, and
+        // `PhoneKeyBar.test.tsx` is where the bar drives these against a real pane.
+        root: () => null,
+        dispatchKey: () => false,
+        pasteText: () => false,
+        showKeyboard: () => undefined,
+        hideKeyboard: () => undefined,
+        cellHeight: () => 0,
+        focusedOnScreen: () => false
     });
     releases.push(release);
     return release;
@@ -73,5 +89,43 @@ describe('the terminal pane registry', () => {
         register('pane-4', () => '');
         register('pane-5', () => '');
         expect(registeredPaneCount()).toBe(before + 2);
+    });
+
+    /*
+     * C9: the window's key bar renders BEFORE any pane's mount effect has run, so a host that
+     * only pulled would decide "no terminal" once and never look again. These three are what
+     * make it look again.
+     */
+    describe('the change signal the window key bar re-reads on (C9)', () => {
+        it('bumps the version on a registration and on a release', () => {
+            const before = terminalPanesVersion();
+            const release = register('pane-v1', () => '');
+            expect(terminalPanesVersion()).toBe(before + 1);
+            release();
+            expect(terminalPanesVersion()).toBe(before + 2);
+        });
+
+        it('says nothing for a release that is already spent', () => {
+            const release = register('pane-v2', () => '');
+            release();
+            const after = terminalPanesVersion();
+            release();
+            expect(terminalPanesVersion()).toBe(after);
+        });
+
+        it('tells its listeners, and stops when they unsubscribe', () => {
+            let heard = 0;
+            const stop = subscribeTerminalPanes(() => {
+                heard += 1;
+            });
+            register('pane-v3', () => '');
+            expect(heard).toBe(1);
+            // The answer a handle GIVES has changed (the pane took the ring), not the handle.
+            notifyTerminalPanes();
+            expect(heard).toBe(2);
+            stop();
+            register('pane-v4', () => '');
+            expect(heard).toBe(2);
+        });
     });
 });

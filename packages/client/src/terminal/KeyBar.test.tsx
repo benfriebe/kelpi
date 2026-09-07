@@ -13,9 +13,15 @@
  *
  * The second half is the component: what renders, when, and what a tap does to the caret. That
  * runs on the fake renderer like every other pane test.
+ *
+ * C9 moved WHERE the bar is mounted and nothing else: it is the window's now, hung off the content
+ * row by `PhoneKeyBar`, so the second half's harness renders that composition (a row, a pane, the
+ * bar) instead of a pane alone. Every assertion below is the one it was. Where the bar SITS and
+ * which pane it acts on are `PhoneKeyBar.test.tsx`'s.
  */
 
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { useRef } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bindKeyboardViewport } from '../chrome/keyboard-viewport';
@@ -32,6 +38,7 @@ import {
     type KeyBarProps
 } from './KeyBar';
 import { KITTY_DISAMBIGUATE, KITTY_REPORT_ALL_KEYS } from './kitty-keyboard';
+import { PHONE_CONTENT_AREA_ATTR, PHONE_KEYBOARD_INSET_ATTR, PHONE_KEY_BAR_SLOT_ATTR, PhoneKeyBar } from './PhoneKeyBar';
 import { TerminalPane } from './TerminalPane';
 import { createTerminalRenderer } from './renderer';
 import { createFakePhoneWindow, createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver, type FakePhoneWindow } from './testing';
@@ -593,6 +600,10 @@ function setFormFactor(value: 'phone' | 'desktop' | null): void {
 interface Harness {
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
+    /** The content row, which is the content area once C9's bar is on it. */
+    row: HTMLElement | null;
+    /** …and the same row once it carries C9's marker, i.e. only under the phone form factor. */
+    contentArea: HTMLElement | null;
     root: HTMLElement;
     host: HTMLElement;
     /** Stands in for the engine's hidden input; the fake renderer has no DOM of its own. */
@@ -603,18 +614,43 @@ interface Harness {
     setKittyFlags(flags: number): void;
 }
 
+/**
+ * A pane under the window's key bar host (C9).
+ *
+ * The bar is mounted once per WINDOW now, by `PhoneKeyBar`, and acts on the focused terminal
+ * through the pane registry - so a test of "the bar in a terminal pane" mounts both, which is the
+ * composition the app renders. Everything below the harness is unchanged: the same taps, the same
+ * engine, the same assertions about what reaches the PTY and what happens to the caret.
+ */
+function PaneUnderTheBar(props: {
+    focused: boolean;
+    visible: boolean;
+    pty: ReturnType<typeof createFakePtyApi>;
+    renderers: ReturnType<typeof createFakeRendererFactory>;
+}): React.ReactElement {
+    // The app's shape: the content row, with the pane grid inside it and the window's one key bar
+    // hanging off its bottom edge (`App.tsx`).
+    const row = useRef<HTMLDivElement | null>(null);
+    return (
+        <div ref={row} className="relative flex min-h-0 flex-1">
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={props.pty}
+                focused={props.focused}
+                visible={props.visible}
+                createRenderer={props.renderers.factory}
+                measure={box(390, 600)}
+            />
+            <PhoneKeyBar paneID="pane-1" contentRow={row} />
+        </div>
+    );
+}
+
 async function mountPane({ focused = true, visible = true } = {}): Promise<Harness> {
     const pty = createFakePtyApi();
     const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
     const element = (props: { focused: boolean; visible: boolean }): React.ReactElement => (
-        <TerminalPane
-            paneID="pane-1"
-            ptyApi={pty}
-            focused={props.focused}
-            visible={props.visible}
-            createRenderer={renderers.factory}
-            measure={box(390, 600)}
-        />
+        <PaneUnderTheBar focused={props.focused} visible={props.visible} pty={pty} renderers={renderers} />
     );
     const view = render(element({ focused, visible }));
     await settle();
@@ -629,11 +665,17 @@ async function mountPane({ focused = true, visible = true } = {}): Promise<Harne
         root,
         host,
         area,
+        get row(): HTMLElement | null {
+            return view.container.querySelector('.relative.flex.min-h-0');
+        },
+        get contentArea(): HTMLElement | null {
+            return view.container.querySelector(`[${PHONE_CONTENT_AREA_ATTR}]`);
+        },
         get bar(): HTMLElement | null {
-            return root.querySelector('[data-terminal-key-bar]');
+            return view.container.querySelector('[data-terminal-key-bar]');
         },
         key(id: string): HTMLButtonElement {
-            const button = root.querySelector(`[data-terminal-key="${id}"]`);
+            const button = view.container.querySelector(`[data-terminal-key="${id}"]`);
             if (button === null) throw new Error(`no key bar button for ${id}`);
             return button as HTMLButtonElement;
         },
@@ -725,24 +767,43 @@ describe('KeyBar in a terminal pane', () => {
     });
 
     /**
-     * IN-FLOW, not fixed (MOBILE-PLAN.md §7, "Keyboard inset ownership"). The host becomes a flex
-     * child that may shrink, so the bar's 45 px come off the terminal through the resize path the
-     * pane already has - and C2's software-keyboard inset composes with it without either lane
-     * knowing about the other.
+     * IN-FLOW, not fixed, at the bottom of the CONTENT AREA (MOBILE-PLAN.md §7, "Keyboard inset
+     * ownership", as C9 re-homed it).
+     *
+     * The area is the column: the pane grid is its growing child and the bar is its fixed one, so
+     * the bar's 45 px come off every pane in the grid through the resize path each pane already
+     * has, and the software keyboard's inset is applied to the same box by the same component.
+     * `PhoneKeyBar.test.tsx` measures the box; this pins the tree it is made of.
      */
-    it('shrinks the terminal host instead of floating over it', async () => {
+    it('sits at the bottom of the content area, with the area padded by its height', async () => {
         const h = await mountPane();
-        expect(h.root.className).toContain('flex-col');
-        expect(h.host.className).toContain('flex-1');
-        expect(h.host.className).toContain('min-h-0');
-        expect(h.bar?.style.position).toBe('');
+        const area = h.contentArea;
+        expect(area).not.toBeNull();
+        // The room the bar takes is the row's padding: 45 px of it, and no keyboard.
+        expect(area?.style.paddingBottom).toBe(`${String(KEY_BAR_HEIGHT_PX)}px`);
+        expect(area?.getAttribute(PHONE_KEYBOARD_INSET_ATTR)).toBe('0');
+        // The bar is the LAST child of the row, spanning its bottom edge.
+        const slot = area?.lastElementChild as HTMLElement;
+        expect(slot.hasAttribute(PHONE_KEY_BAR_SLOT_ATTR)).toBe(true);
+        expect(slot.contains(h.bar)).toBe(true);
+        expect(slot.className).toContain('absolute');
+        expect(slot.className).toContain('bottom-0');
         expect(h.bar?.className).toContain('shrink-0');
+        // …and the pane inside the grid is untouched by any of it: no flex column, no shrinking
+        // host, which is the whole of C9 (the bar is not a piece of one pane's box any more).
+        expect(h.root.className).toBe('relative h-full w-full overflow-hidden ');
+        expect(h.host.className).toBe('h-full w-full');
     });
 
-    it('AND NOT ON DESKTOP: the same pane renders exactly what it renders today', async () => {
+    it('AND NOT ON DESKTOP: no bar, nothing written on the row, and the pane renders what it always has', async () => {
         setFormFactor('desktop');
         const h = await mountPane();
         expect(h.bar).toBeNull();
+        // C9: on a desktop the component renders nothing and writes nothing - the row carries no
+        // padding, no attribute, and no element of the bar's.
+        expect(h.contentArea).toBeNull();
+        expect(h.row?.style.paddingBottom).toBe('');
+        expect(h.row?.querySelector(`[${PHONE_KEY_BAR_SLOT_ATTR}]`)).toBeNull();
         expect(h.root.className).toBe('relative h-full w-full overflow-hidden ');
         expect(h.host.className).toBe('h-full w-full');
     });

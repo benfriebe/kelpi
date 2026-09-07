@@ -34,8 +34,18 @@ export {
     type TerminalPtyApi
 } from './TerminalPane';
 
-// C1 (docs/MOBILE-PLAN.md §4): the phone key bar. Mounted by `TerminalPane` and by nothing else;
-// exported so the sibling phone lanes can lay out against `KEY_BAR_HEIGHT_PX` without guessing it.
+// C9 (docs/MOBILE-PLAN.md §4, §7): the window's ONE key bar, and the content area it and the pane
+// grid share. Mounted by `App.tsx` around the content row and by nothing else.
+export {
+    PHONE_CONTENT_AREA_ATTR,
+    PHONE_KEYBOARD_INSET_ATTR,
+    PhoneKeyBar,
+    type PhoneKeyBarProps
+} from './PhoneKeyBar';
+
+// C1 (docs/MOBILE-PLAN.md §4): the phone key bar itself. Mounted by `PhoneKeyBar` and by nothing
+// else; exported so the sibling phone lanes can lay out against `KEY_BAR_HEIGHT_PX` without
+// guessing it.
 export {
     COPY_PILL_ATTR,
     COPY_PILL_TIMEOUT_MS,
@@ -145,9 +155,12 @@ export {
 } from './kitty-keyboard';
 
 export {
+    notifyTerminalPanes,
     paneHandle,
     registerTerminalPane,
     registeredPaneCount,
+    subscribeTerminalPanes,
+    terminalPanesVersion,
     type TerminalPaneHandle
 } from './pane-registry';
 

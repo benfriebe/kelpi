@@ -128,10 +128,15 @@ const SURFACES = [
             // (docs/MOBILE-PLAN.md §4). C5's `phone-caret-owner` is here for the same reason and
             // one step further on: the pane's ONE claim on the caret lives in `TerminalPane.tsx`
             // (`claimCaret`), and on a phone that claim IS the software keyboard, so a change in
-            // this directory can summon a keyboard nobody asked for. All five are the phone
-            // lane's; the desktop terminal steps above are what pin that none of them moved
-            // anything anywhere else.
-            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-touch-scroll', 'phone-caret-owner'
+            // this directory can summon a keyboard nobody asked for. C9's `phone-key-bar-split`
+            // joins them: the bar is one per WINDOW now (`terminal/PhoneKeyBar.tsx`, which also
+            // owns the software keyboard's inset for the whole content area), it finds its
+            // terminal through `terminal/pane-registry.ts`, and a split grid is the only place
+            // "one bar across the bottom" can be told apart from "a bar inside the active pane".
+            // All six are the phone lane's; the desktop terminal steps above are what pin that
+            // none of them moved anything anywhere else.
+            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-touch-scroll', 'phone-caret-owner',
+            'phone-key-bar-split'
         ],
         smokes: ['smoke:terminal']
     },
@@ -158,7 +163,10 @@ const SURFACES = [
             'phone-keyboard-inset',
             // B5's phone sheet lives in `chrome/CommandPalette.tsx` beside the desktop card, and
             // where a field sits relative to a software keyboard is a layout-engine fact.
-            'phone-palette-sheet'
+            'phone-palette-sheet',
+            // C9: `chrome/form-factor.ts` is what decides whether the window has a key bar at all,
+            // and the split step is where the bar's own box is measured against the content row.
+            'phone-key-bar-split'
         ]
     },
     {

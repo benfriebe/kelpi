@@ -8,9 +8,10 @@
  * ## The rule
  *
  * On a phone the app never scrolls for the keyboard. The title bar stays at the top of the
- * screen, the focused pane's bottom edge (its key bar) stays directly above whatever the app
- * draws above the keyboard, and the status footer keeps its place between the two. Nothing the
- * browser does to reveal a focused field may move the app inside its own window.
+ * screen, the window's key bar (C9: one bar, at the bottom of the content area) stays directly
+ * above whatever the app draws above the keyboard, and the status footer keeps its place between
+ * the two. Nothing the browser does to reveal a focused field may move the app inside its own
+ * window.
  *
  * ## What the owner's device did instead (Android, Chrome, installed PWA, round 5, 2026-09-07)
  *

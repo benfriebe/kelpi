@@ -6,6 +6,15 @@
  * one. `chrome/form-factor.ts` says that once for the whole phone program; this is the terminal
  * layer's instance of it.
  *
+ * ## ONE bar for the window (C9)
+ *
+ * This component is mounted once, by `terminal/PhoneKeyBar.tsx`, at the bottom of the content area
+ * - and by nothing else. It used to be mounted by `TerminalPane`, inside the pane, which made it a
+ * piece of one pane's box: the owner's phone drew it inside the active pane of a split rather than
+ * across the bottom of the window (2026-09-08). Nothing in the file below changed for that. What
+ * the host supplies is the pane the bar acts on: `sendKey`, `pasteText`, `showKeyboard`,
+ * `hideKeyboard` and `captureRoot` all name the FOCUSED pane, re-aimed when the caret moves.
+ *
  * ## Keys, not bytes
  *
  * Every key here is delivered as a synthesized `keydown` through `TerminalRenderer.dispatchKey`,
@@ -21,7 +30,7 @@
  *
  * Ctrl and Alt latch, and the key they apply to is usually not one of ours - "Ctrl then C" means
  * tapping Ctrl here and then C on the phone's own keyboard. So while a modifier is armed the bar
- * intercepts the next `keydown` on the pane ROOT, cancels it, and re-raises it through
+ * intercepts the next `keydown` on the FOCUSED pane's ROOT, cancels it, and re-raises it through
  * `dispatchKey` with the modifier applied.
  *
  * The pane root is the binding point, not the terminal host, and that is load-bearing. The pane's
@@ -29,7 +38,8 @@
  * engine's own listener is on the host too; the root is the host's parent, so a capture listener
  * there runs before both, whatever order the effects mounted in. The re-raised event then travels
  * the full path from the textarea up - kitty first, engine second - exactly as a physical Ctrl+C
- * does.
+ * does. Since C9 the root is the FOCUSED pane's rather than this bar's own pane's, and the two
+ * effects below rebind when it changes: the bar is one per window and the caret is what it follows.
  *
  * Two bounded limits, recorded rather than papered over:
  *
@@ -142,11 +152,11 @@ export const KEY_BAR_KEY_SIZE_PX = 44;
  * The bar's total height in CSS px: {@link KEY_BAR_KEY_SIZE_PX} of key plus the 1 px hairline
  * that separates it from the terminal.
  *
- * Exported because it is the number the terminal SHRINKS by. The bar is in-flow at the bottom of
- * the pane (MOBILE-PLAN.md §7, "Keyboard inset ownership"), so the host loses this many pixels
- * through the pane's existing ResizeObserver path and the PTY is told about it once, like any
- * other resize. C2 owns the software-keyboard inset and applies it to the same box; the two
- * compose without either knowing about the other.
+ * Exported because it is the number the pane GRID shrinks by. The bar is in flow at the bottom of
+ * the content area (MOBILE-PLAN.md §7, "Keyboard inset ownership", as C9 re-homed it), so the row
+ * above it loses this many pixels, every pane in it loses its share through the ResizeObserver each
+ * pane already has, and each PTY is told about it once, like any other resize. The software
+ * keyboard's inset is applied to the same box, by the same component; the two compose there.
  */
 export const KEY_BAR_HEIGHT_PX = KEY_BAR_KEY_SIZE_PX + 1;
 
@@ -317,6 +327,10 @@ export const KEY_BAR_KEYS: readonly KeyBarKey[] = [
 ];
 
 export interface KeyBarProps {
+    /**
+     * The pane the bar is acting on: the focused terminal (C9). It scopes the Copy pill's offers
+     * (`state/clipboard.ts`) and every `data-testid` below.
+     */
     readonly paneID: string;
     /**
      * Raise a key at the engine the way a physical one arrives. Returns false when there was
@@ -325,8 +339,12 @@ export interface KeyBarProps {
      */
     readonly sendKey: (init: TerminalKeyInit) => boolean;
     /**
-     * Where the sticky-modifier interceptor binds: the pane ROOT, which is above the host that
-     * carries the kitty interceptor and the engine's own listener. See the header.
+     * Where the sticky-modifier interceptor binds: the FOCUSED pane's ROOT, which is above the
+     * host that carries the kitty interceptor and the engine's own listener. See the header.
+     *
+     * A ref rather than the node, and its IDENTITY is the signal: the host hands over a new object
+     * when the bar re-aims at another pane, which is what makes the two capture-phase effects below
+     * unbind from the old root and bind to the new one.
      */
     readonly captureRoot: RefObject<HTMLElement | null>;
     /** Drop the caret inside the pane, which is what dismisses the software keyboard. */
@@ -550,11 +568,13 @@ export function KeyBar({
 
     // ── the keydown interceptor: latched modifiers, and named keys with no `code` ────
     //
-    // Bound for the life of the bar, which is the phone form factor and nothing else: the pane
-    // only renders a bar when `formFactor === 'phone'` (TerminalPane's `showKeyBar`), so a
-    // desktop window, an Electron shell and a tablet never reach this listener at all. It used to
-    // be bound only while a modifier was armed; the soft keyboard's Enter (device round 2) is not
-    // a latch problem and arrives with nothing latched, so the binding follows the bar.
+    // Bound for the life of the bar AT ONE ROOT, which is the phone form factor and one focused
+    // terminal and nothing else: the window renders a bar only when `formFactor === 'phone'`
+    // (`PhoneKeyBar`), so a desktop window, an Electron shell and a tablet never reach this
+    // listener at all, and `captureRoot` changes identity when the caret moves to another pane, so
+    // the listener follows it there. It used to be bound only while a modifier was armed; the soft
+    // keyboard's Enter (device round 2) is not a latch problem and arrives with nothing latched, so
+    // the binding follows the bar.
     //
     // What it does NOT touch is as load-bearing as what it does: an event that carries a real
     // `code` and finds nothing latched returns on the first branch, so a PHYSICAL keyboard on the
@@ -956,9 +976,10 @@ export function KeyBar({
         <>
             {/*
              * The two transient surfaces sit ABOVE the bar and OVER the terminal, absolutely
-             * positioned against the pane root's own `relative`. Deliberately not in flow: the
-             * bar's 45 px is a contract C2 and C3 lay out against, and a pill that changed the
-             * terminal's height would resize the PTY for four seconds and then resize it back.
+             * positioned against the content area's own `relative` (the pane root's, until C9 put
+             * one bar at the window's bottom). Deliberately not in flow: the bar's 45 px is a
+             * contract C2 and C3 lay out against, and a pill that changed the grid's height would
+             * resize every PTY for fifteen seconds and then resize them back.
              */}
             {offer !== null ? (
                 <div

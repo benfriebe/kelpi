@@ -9,11 +9,22 @@
  * several forced syncs of the same geometry (the engine's `open()`, the visibility effect's
  * `setTimeout(0)`, the fonts-ready hook), which is what it was before C2 and is not this task's
  * to change; what C2 owns is how many messages ONE keyboard transition costs on top of that.
+ *
+ * **C9 moved the BOX one level up, and the harness with it.** The pane is mounted inside
+ * `PhoneKeyBar`, which is the composition the app renders and the component that now takes the
+ * keyboard's inset: it pads the content AREA (the box the pane grid and the window's one key bar
+ * share) rather than each pane root, so the padding assertions below read the area and the pane's
+ * own inline style is asserted to stay clean on both form factors. What did not move is
+ * everything else in this file - the settle rule, the one message per transition, the rows the
+ * daemon is told - because those are still the pane's, measured off whatever box it is given.
  */
 
 import { act, cleanup, render } from '@testing-library/react';
+import { useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { KEY_BAR_HEIGHT_PX } from './KeyBar';
+import { PHONE_CONTENT_AREA_ATTR, PHONE_KEY_BAR_SLOT_ATTR, PhoneKeyBar } from './PhoneKeyBar';
 import { DEFAULT_RESIZE_DEBOUNCE_MS, TerminalPane } from './TerminalPane';
 import {
     KEYBOARD_INSET_ATTRIBUTE,
@@ -33,9 +44,17 @@ import {
 const PANE = { width: 390, height: 844 };
 const CELL = { width: 10, height: 20 };
 const COLS = 39;
-/** 844 / 20 with the keyboard down; (844 - 300) / 20 with it up. */
-const ROWS_KEYBOARD_DOWN = 42;
-const ROWS_KEYBOARD_UP = 27;
+/**
+ * (844 - 45) / 20 with the keyboard down; (844 - 45 - 300) / 20 with it up.
+ *
+ * The 45 is the window's key bar (C9): the content row makes room for it, so a pane on a phone is
+ * that much shorter than the window whether or not a keyboard is up. It was not in these numbers
+ * before C9 only because the bar was inside the pane and this file mounted the pane alone.
+ */
+const ROWS_KEYBOARD_DOWN = 39;
+const ROWS_KEYBOARD_UP = 24;
+/** …and 844 / 20 on a DESKTOP, where there is no bar and the row makes room for nothing. */
+const ROWS_DESKTOP = 42;
 const KEYBOARD_HEIGHT = 300;
 
 let observers: ReturnType<typeof installFakeResizeObserver>;
@@ -61,21 +80,57 @@ async function settle(): Promise<void> {
 /**
  * The host's box, modelled.
  *
- * jsdom has no layout, so the seam has to do the one piece of CSS this feature turns on: the pane
- * root's bottom padding (C6) comes off the host, because the host is either the flex child beside
- * the key bar or a `height: 100%` child of the root's content box. `innerHeight` is in it too, so
+ * jsdom has no layout, so the seam has to do the one piece of CSS this feature turns on: the
+ * CONTENT AREA's bottom padding (C6's rule, at C9's box) comes off every pane in the grid, because
+ * the grid is the area's growing child and the pane fills the grid. `innerHeight` is in it too, so
  * a test can shrink the LAYOUT viewport the way Android does and watch the box follow.
  */
 function measureFor(win: FakePhoneWindow) {
     return (element: HTMLElement): { width: number; height: number } => {
-        const root = element.closest('[data-pane-id]');
-        const padding =
-            root === null ? 0 : Number.parseFloat((root as HTMLElement).style.paddingBottom || '0');
-        return {
-            width: PANE.width,
-            height: win.innerHeight - (Number.isFinite(padding) ? padding : 0)
-        };
+        const area = element.closest(`[${PHONE_CONTENT_AREA_ATTR}]`);
+        return { width: PANE.width, height: win.innerHeight - rowPadding(area as HTMLElement | null) };
     };
+}
+
+/** …and the row's own box, which is the window minus whatever it has already taken. */
+function measureAreaFor(win: FakePhoneWindow) {
+    return (element: HTMLElement): { width: number; height: number } => {
+        return { width: PANE.width, height: win.innerHeight - rowPadding(element) };
+    };
+}
+
+/** The row's bottom padding: the bar's 45 px plus the keyboard, or nothing on a desktop. */
+function rowPadding(row: HTMLElement | null): number {
+    const padding = row === null ? 0 : Number.parseFloat(row.style.paddingBottom || '0');
+    return Number.isFinite(padding) ? padding : 0;
+}
+
+/** The keyboard's own half of that padding, which is what these tests are about. */
+function keyboardPadding(row: HTMLElement | null): string {
+    if (row === null) return '';
+    const inset = rowPadding(row) - (row.querySelector(`[${PHONE_KEY_BAR_SLOT_ATTR}]`) === null ? 0 : KEY_BAR_HEIGHT_PX);
+    return inset === 0 ? '' : `${String(inset)}px`;
+}
+
+/**
+ * The app's shape around a pane: the content row, with C9's key bar hanging off its bottom edge.
+ *
+ * The row is what takes the keyboard's inset now, so it is what a test has to render to see a pane
+ * get shorter for a keyboard at all.
+ */
+function ContentRow(props: { win: FakePhoneWindow; pane: React.ReactNode }): React.ReactElement {
+    const row = useRef<HTMLDivElement | null>(null);
+    return (
+        <div ref={row} className="relative flex min-h-0 flex-1">
+            {props.pane}
+            <PhoneKeyBar
+                paneID="pane-kb"
+                contentRow={row}
+                formFactorWindow={props.win}
+                measure={measureAreaFor(props.win)}
+            />
+        </div>
+    );
 }
 
 interface Harness {
@@ -83,6 +138,10 @@ interface Harness {
     readonly renderers: ReturnType<typeof createFakeRendererFactory>;
     readonly pty: ReturnType<typeof createFakePtyApi>;
     root(): HTMLElement;
+    /** The content row the pane grid sits in. */
+    row(): HTMLElement;
+    /** …the same row once C9 has marked it, i.e. null on a desktop, which has no bar. */
+    area(): HTMLElement | null;
     /** `resize` messages on the pane's stream so far. */
     sent(): number;
 }
@@ -97,14 +156,19 @@ function mount(options: {
     });
     const pty = createFakePtyApi();
     const view = render(
-        <TerminalPane
-            paneID="pane-kb"
-            ptyApi={pty}
-            focused
-            visible
-            createRenderer={renderers.factory}
-            measure={measureFor(options.win)}
-            formFactorWindow={options.win}
+        <ContentRow
+            win={options.win}
+            pane={
+                <TerminalPane
+                    paneID="pane-kb"
+                    ptyApi={pty}
+                    focused
+                    visible
+                    createRenderer={renderers.factory}
+                    measure={measureFor(options.win)}
+                    formFactorWindow={options.win}
+                />
+            }
         />
     );
     return {
@@ -115,6 +179,14 @@ function mount(options: {
             const node = view.container.querySelector('[data-pane-id="pane-kb"]');
             if (node === null) throw new Error('the pane did not render');
             return node as HTMLElement;
+        },
+        row(): HTMLElement {
+            const node = view.container.firstElementChild;
+            if (node === null) throw new Error('the content row did not render');
+            return node as HTMLElement;
+        },
+        area(): HTMLElement | null {
+            return view.container.querySelector(`[${PHONE_CONTENT_AREA_ATTR}]`);
         },
         sent(): number {
             return pty.last().resizes.length;
@@ -251,8 +323,9 @@ describe('TerminalPane: the software keyboard (C2)', () => {
     it('moves its box on every frame of the animation, and the daemon hears none of them', async () => {
         const harness = await mountPane({ coarse: true });
         const root = harness.root();
+        const area = harness.area() as HTMLElement;
         const before = harness.sent();
-        expect(root.style.paddingBottom).toBe('');
+        expect(keyboardPadding(area)).toBe('');
 
         // 15 frames at ~16 ms, one `visualViewport` resize each, exactly as iOS animates. Read
         // back inside the same synchronous turn as the event: what is asserted is that the box
@@ -262,7 +335,10 @@ describe('TerminalPane: the software keyboard (C2)', () => {
             act(() => {
                 harness.win.raiseKeyboard(inset, 1);
             });
-            expect(root.style.paddingBottom).toBe(`${String(inset)}px`);
+            // The WINDOW moved the box (C9) and the PANE published what it measured, both in
+            // the task the event arrived in, so the two can never be a frame apart.
+            expect(keyboardPadding(area)).toBe(`${String(inset)}px`);
+            expect(root.style.paddingBottom).toBe('');
             expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(String(inset));
             expect(harness.sent()).toBe(before);
         }
@@ -273,13 +349,13 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         });
         expect(harness.sent() - before).toBe(1);
         expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
-        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(area)).toBe(`${String(KEYBOARD_HEIGHT)}px`);
     });
 
     it('gives the box back frame by frame on the way down too', async () => {
         const harness = await mountPane({ coarse: true });
         await raiseKeyboard(harness.win);
-        const root = harness.root();
+        const area = harness.area() as HTMLElement;
         const before = harness.sent();
 
         for (let frame = 14; frame >= 0; frame -= 1) {
@@ -287,7 +363,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
             act(() => {
                 harness.win.raiseKeyboard(inset, 1);
             });
-            expect(root.style.paddingBottom).toBe(inset === 0 ? '' : `${String(inset)}px`);
+            expect(keyboardPadding(area)).toBe(inset === 0 ? '' : `${String(inset)}px`);
             expect(harness.sent()).toBe(before);
         }
         await act(async () => {
@@ -311,7 +387,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
             win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
         });
         const root = harness.root();
-        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(harness.area())).toBe(`${String(KEYBOARD_HEIGHT)}px`);
         expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(String(KEYBOARD_HEIGHT));
 
         // ...and once everything has run, the pane is on the keyboard's rows, not the window's.
@@ -333,13 +409,13 @@ describe('TerminalPane: the software keyboard (C2)', () => {
      */
     it('survives the layout viewport catching up at the end, in exactly one message', async () => {
         const harness = await mountPane({ coarse: true });
-        const root = harness.root();
+        const area = harness.area() as HTMLElement;
         const before = harness.sent();
 
         await act(async () => {
             harness.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
         });
-        expect(root.style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(area)).toBe(`${String(KEYBOARD_HEIGHT)}px`);
 
         await act(async () => {
             // Chrome resizes the window: `innerHeight` 844 -> 544 with the viewport already at
@@ -349,7 +425,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         });
         // The padding came off in that same frame, so the host is 544 px either way round and
         // nothing jumped.
-        expect(root.style.paddingBottom).toBe('');
+        expect(keyboardPadding(area)).toBe('');
         expect(harness.sent()).toBe(before);
 
         await act(async () => {
@@ -401,7 +477,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         // Nothing further to say: the window took the 300 px the padding was holding, so the host
         // is the same 544 px it already was.
         expect(harness.sent() - before).toBe(1);
-        expect(harness.root().style.paddingBottom).toBe('');
+        expect(keyboardPadding(harness.area())).toBe('');
         expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
         expect(harness.pty.last().resizes.map((size) => size.rows)).not.toContain(12);
     });
@@ -428,6 +504,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
     it('takes no padding when the layout viewport shrinks WITH the keyboard, in one message (C7)', async () => {
         const harness = await mountPane({ coarse: true });
         const root = harness.root();
+        const area = harness.area() as HTMLElement;
         const before = harness.sent();
         const FRAMES = 15;
 
@@ -437,7 +514,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
                 observers.trigger();
                 await vi.advanceTimersByTimeAsync(16);
             });
-            expect(root.style.paddingBottom).toBe('');
+            expect(keyboardPadding(area)).toBe('');
             expect(root.getAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe('0');
             expect(harness.sent()).toBe(before);
         }
@@ -447,7 +524,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         });
         expect(harness.sent() - before).toBe(1);
         expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_UP });
-        expect(root.style.paddingBottom).toBe('');
+        expect(keyboardPadding(area)).toBe('');
     });
 
     /*
@@ -459,7 +536,7 @@ describe('TerminalPane: the software keyboard (C2)', () => {
     it('pads by what is LEFT of the keyboard when the browser scrolls the app (C7)', async () => {
         const harness = await mountPane({ coarse: true });
         await raiseKeyboard(harness.win);
-        expect(harness.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(harness.area())).toBe(`${String(KEYBOARD_HEIGHT)}px`);
         const before = harness.sent();
 
         await act(async () => {
@@ -470,10 +547,10 @@ describe('TerminalPane: the software keyboard (C2)', () => {
         // 300 px of keyboard with 120 px of the app already scrolled past the bottom of the
         // layout viewport leaves 180 px of it still hidden, and the padding is that. The prompt
         // stays inside the band the person can see whether or not the guard gets the scroll back.
-        expect(harness.root().style.paddingBottom).toBe('180px');
+        expect(keyboardPadding(harness.area())).toBe('180px');
         expect(harness.sent() - before).toBe(1);
-        // 664 px of host at a 20 px cell.
-        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: 33 });
+        // 844 - 45 of bar - 180 of keyboard = 619 px of host at a 20 px cell.
+        expect(harness.pty.last().resizes.at(-1)).toEqual({ cols: COLS, rows: 30 });
     });
 
     it('sets the software-keyboard attributes on the engine textarea', async () => {
@@ -525,18 +602,21 @@ describe('TerminalPane: and NOT on a desktop', () => {
         expect(harness.win.viewportEvents()).toBe(30);
         expect(harness.sent()).toBe(before);
         expect(harness.pty.last().resizes.at(-1)).toEqual(last);
-        expect(last).toEqual({ cols: COLS, rows: ROWS_KEYBOARD_DOWN });
+        expect(last).toEqual({ cols: COLS, rows: ROWS_DESKTOP });
     });
 
     it('builds no keyboard subscription at all, and publishes no phone attributes', async () => {
         const phone = await mountPane({ coarse: true });
         const desktop = await mountPane({ coarse: false });
 
-        // Both panes watch the window for a form-factor change (they must, to notice a phone);
-        // the extra three on the phone are the keyboard watcher's own: the visual viewport's
-        // resize and scroll, and (C7) the WINDOW's resize, which is how a keyboard arrives when
-        // the browser gives it the layout viewport's pixels rather than the visual viewport's.
-        expect(phone.win.listenerCount() - desktop.win.listenerCount()).toBe(3);
+        // Both windows watch for a form-factor change (they must, to notice a phone); the extra
+        // six on the phone are TWO keyboard watchers of three listeners each - the visual
+        // viewport's resize and scroll, and (C7) the WINDOW's resize, which is how a keyboard
+        // arrives when the browser gives it the layout viewport's pixels rather than the visual
+        // viewport's. Two, because C9 split the clocks between components: the window's watcher
+        // moves the BOX (`PhoneKeyBar`) and the pane's decides when the DAEMON hears about it.
+        // They answer the same events in the same task, so they cannot disagree about a frame.
+        expect(phone.win.listenerCount() - desktop.win.listenerCount()).toBe(6);
         expect(desktop.root().hasAttribute(KEYBOARD_INSET_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_ROWS_ATTRIBUTE)).toBe(false);
         expect(desktop.root().hasAttribute(TERMINAL_RESIZES_ATTRIBUTE)).toBe(false);
@@ -551,30 +631,40 @@ describe('TerminalPane: and NOT on a desktop', () => {
             await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS * 2);
         });
 
-        // The property is never written at all on a desktop, not written and then cleared: the
-        // inline style is the same three declarations the pane has had since long before C2.
+        // The property is never written at all on a desktop, not on the pane and not on the row
+        // it sits in: the inline style is the same three declarations the pane has had since long
+        // before C2, and the row has none.
         expect(desktop.root().style.paddingBottom).toBe('');
         expect(desktop.root().getAttribute('style')).not.toContain('padding-bottom');
-        // ...and the phone twin, on the same shaped window, does grow one.
+        expect(desktop.row().style.paddingBottom).toBe('');
+        expect(desktop.area()).toBeNull();
+        // ...and the phone twin, on the same shaped window, does grow one - on the ROW, which is
+        // C9's whole change: the pane's own inline style stays clean on both form factors.
         await act(async () => {
             phone.win.raiseKeyboard(KEYBOARD_HEIGHT, 15);
             await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS * 2);
         });
-        expect(phone.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(phone.area())).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(phone.root().style.paddingBottom).toBe('');
     });
 
-    it('takes the padding back off a pane that stops being a phone', async () => {
+    it('takes the padding and the markers back off when the window stops being a phone', async () => {
         const harness = await mountPane({ coarse: true });
         await raiseKeyboard(harness.win);
-        expect(harness.root().style.paddingBottom).toBe(`${String(KEYBOARD_HEIGHT)}px`);
+        expect(keyboardPadding(harness.area())).toBe(`${String(KEYBOARD_HEIGHT)}px`);
 
         // An iPad that gains a Bluetooth mouse: `(pointer: coarse)` flips with no remount.
         await act(async () => {
             harness.win.setPointer(false);
             await vi.advanceTimersByTimeAsync(PHONE_KEYBOARD_SETTLE_MS);
         });
+        // The bar goes, and everything it wrote on the row goes with it: no padding, no markers.
+        // The pane itself never had a padding to lose (C9), and it did not remount to find out -
+        // which is why the bar hangs off the row instead of wrapping it.
+        expect(harness.area()).toBeNull();
+        expect(harness.row().style.paddingBottom).toBe('');
+        expect(harness.row().getAttribute('style')).not.toContain('padding-bottom');
         expect(harness.root().style.paddingBottom).toBe('');
-        expect(harness.root().getAttribute('style')).not.toContain('padding-bottom');
     });
 
     it('never touches the engine textarea', async () => {

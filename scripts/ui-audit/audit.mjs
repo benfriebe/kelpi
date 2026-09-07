@@ -28795,7 +28795,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-keyboard-inset',
             expect:
-                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` shrinks every terminal pane by about 300 / cellHeight rows and costs the daemon exactly ONE resize message however many viewport events the animation fires; the pane box follows every frame of that animation in the frame it arrives, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more. The app never scrolls for any of it: the served page asks for `interactive-widget=resizes-content`, the pane root starts where it started on every frame, the document has no overflow for a browser to scroll, and the client names the mode it is in (`resizes-visual` for the visual-viewport fake, `resizes-content` when the window shrinks with it, and the pane then takes no padding of its own).',
+                'Under a 390x844 phone viewport, faking a 300 px software keyboard through the live `visualViewport` takes 300 px off the CONTENT AREA - the box the pane grid and the window\'s one key bar share (C9) - so every terminal pane gets shorter, the rows each one tells the daemon are the rows its own box can paint, and each costs the daemon exactly ONE resize message however many viewport events the animation fires; the area\'s box follows every frame of that animation in the frame it arrives, the panes ride it, and the daemon hears nothing until it stops; removing the fake restores the rows in exactly one more. At rest the area is padded by the key bar and by nothing else. The app never scrolls for any of it: the served page asks for `interactive-widget=resizes-content`, the pane root starts where it started on every frame, the document has no overflow for a browser to scroll, and the client names the mode it is in (`resizes-visual` for the visual-viewport fake, `resizes-content` when the window shrinks with it, and neither the area nor a pane then takes a padding of its own).',
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
                 const view = runtime.page ?? page;
@@ -28815,8 +28815,42 @@ function buildFlows(ctx) {
                                     inset: el.getAttribute('data-terminal-keyboard-inset'),
                                     resizes: el.getAttribute('data-terminal-resizes'),
                                     cell: el.getAttribute('data-terminal-cell'),
+                                    // C9: the box the rows are computed from. The window applies
+                                    // the keyboard's inset to the content area now, so a pane's
+                                    // share of it depends on the split, and "the rows the daemon
+                                    // was told are the rows this box can paint" is the honest
+                                    // per-pane claim in every layout.
+                                    host: (() => { const h = el.querySelector('[data-terminal-host]'); return h === null ? null : Math.round(h.getBoundingClientRect().height); })(),
                                     canvas: (() => { const c = el.querySelector('canvas'); return c === null ? null : Math.round(c.getBoundingClientRect().height); })()
                                 })))`
+                            )
+                        )
+                    );
+
+                /**
+                 * The content area: the row that holds the pane grid, with the window's one key
+                 * bar at its bottom edge (C9). This is the box the software keyboard is taken out
+                 * of - `content` is what the grid is left with, `padding` is the bar plus the
+                 * keyboard, and `inset` is what the client says it applied.
+                 */
+                const readArea = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const area = document.querySelector('[data-phone-content-area]');
+                                    if (area === null) return JSON.stringify(null);
+                                    const box = area.getBoundingClientRect();
+                                    const padding = Number.parseFloat(getComputedStyle(area).paddingBottom || '0');
+                                    const bar = document.querySelector('[data-terminal-key-bar]');
+                                    return JSON.stringify({
+                                        height: Math.round(box.height),
+                                        padding: Math.round(padding),
+                                        content: Math.round(box.height - padding),
+                                        inset: Number(area.getAttribute('data-phone-keyboard-inset') ?? '-1'),
+                                        bar: bar === null ? 0 : Math.round(bar.getBoundingClientRect().height)
+                                    });
+                                })()`
                             )
                         )
                     );
@@ -28859,7 +28893,21 @@ function buildFlows(ctx) {
                         viewportMeta
                     );
                     const before = await readPanes();
+                    const areaBefore = await readArea();
                     recorder.note(`under the phone viewport, before the keyboard: ${JSON.stringify(before)}`);
+                    recorder.note(`the content area the keyboard will come out of: ${JSON.stringify(areaBefore)}`);
+                    /*
+                     * C9 - the box the bar and the grid share, before anything moves. Its padding
+                     * is the bar's own height and nothing else, which is what "the terminal ends
+                     * where the bar begins" means as a number.
+                     */
+                    recorder.check(
+                        'the content area is padded by the key bar and by nothing else, with no keyboard up',
+                        areaBefore !== null && areaBefore.inset === 0 && areaBefore.bar > 0 && Math.abs(areaBefore.padding - areaBefore.bar) <= 1,
+                        areaBefore === null
+                            ? 'no [data-phone-content-area] on the page'
+                            : `${String(areaBefore.padding)} px of padding for a ${String(areaBefore.bar)} px bar, inset ${String(areaBefore.inset)}`
+                    );
                     recorder.check(
                         'a live terminal pane publishes its phone state (rows, inset, resize count)',
                         before.length > 0 && before.every((pane) => pane.rows !== null && pane.inset === '0'),
@@ -28905,6 +28953,19 @@ function buildFlows(ctx) {
                                             top: Math.round(el.getBoundingClientRect().top)
                                         };
                                     });
+                                    // C9: and the box the keyboard is taken out of, which is the
+                                    // window's now rather than each pane's.
+                                    const area = () => {
+                                        const el = document.querySelector('[data-phone-content-area]');
+                                        if (el === null) return null;
+                                        const box = el.getBoundingClientRect();
+                                        const padding = Number.parseFloat(getComputedStyle(el).paddingBottom || '0');
+                                        return {
+                                            padding: Math.round(padding),
+                                            content: Math.round(box.height - padding),
+                                            inset: Number(el.getAttribute('data-phone-keyboard-inset') ?? '-1')
+                                        };
+                                    };
                                     // C7: everything a browser can move the app by without resizing it.
                                     const scroll = () => ({
                                         offsetTop: Math.round(vv.offsetTop),
@@ -28914,6 +28975,7 @@ function buildFlows(ctx) {
                                         mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
                                     });
                                     const rest = sample();
+                                    const restArea = area();
                                     const restScroll = scroll();
                                     const frames = [];
                                     let events = 0;
@@ -28922,10 +28984,20 @@ function buildFlows(ctx) {
                                         window.__kelpiFakeKeyboard = px;
                                         vv.dispatchEvent(new Event('resize'));
                                         events += 1;
-                                        frames.push({ px, panes: sample(), scroll: scroll() });
+                                        const sampled = { px, panes: sample(), area: area(), scroll: scroll() };
                                         await new Promise((resolve) => setTimeout(resolve, 16));
+                                        // …and again once this frame rendering steps have run.
+                                        // The window moves its own box in the task the event
+                                        // arrived in; the pane RECTS are pixel values the grid
+                                        // rewrites from its own ResizeObserver, which fires after
+                                        // layout and re-renders inside the same frame through
+                                        // flushSync (grid/PaneGrid.tsx, section N31) - so a read
+                                        // taken in the event own task is one rendering step early
+                                        // and this one is what the browser actually painted.
+                                        sampled.settled = sample();
+                                        frames.push(sampled);
                                     }
-                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight, rest, restScroll, frames });
+                                    return JSON.stringify({ ok: true, ownPropertyBefore: shadowed, events, height: vv.height, innerHeight: window.innerHeight, rest, restArea, restScroll, frames });
                                 })()`
                             )
                         )
@@ -28945,40 +29017,77 @@ function buildFlows(ctx) {
 
                     /*
                      * C6 - the layout follows the animation (owner device round 4: "the pane
-                     * shifts after the keyboard has finished moving").
+                     * shifts after the keyboard has finished moving") - at C9's box.
                      *
-                     * Two facts about the same fifteen samples. The first is that the pane's own
-                     * BOX tracked every frame: the published inset is the frame's keyboard and the
-                     * host is that many pixels shorter than it was at rest, in the task the event
-                     * arrived in. The second is that the daemon heard none of it: the resize
-                     * counter is frozen for the whole animation, which is what makes "one message
-                     * per transition" a statement about the animation rather than about its end.
+                     * THREE facts about the same fifteen samples.
+                     *
+                     * The first is that the CONTENT AREA's box tracked every frame: the padding it
+                     * takes is the bar's height plus the frame's keyboard, so the box the pane grid
+                     * is left with is exactly that many pixels shorter than it was at rest, in the
+                     * task the event arrived in. That box is where the keyboard is taken now (C9:
+                     * one bar for the window, so one inset for the window), and taking it there is
+                     * also what stops two stacked panes each giving up the whole keyboard's height
+                     * for one keyboard.
+                     *
+                     * The second is that every pane rode it: each one publishes the frame's inset,
+                     * and by the time the frame is painted each one is SHORTER by exactly what the
+                     * area gave up (its share of it depends on the split, which is a layout fact
+                     * and therefore `phone-key-bar-split`'s). "By the time the frame is painted" is
+                     * load-bearing and it is not a weakening: a pane's rect is a pixel value the
+                     * grid rewrites from its own `ResizeObserver` (`grid/PaneGrid.tsx` §N31), which
+                     * runs after layout and re-renders through `flushSync` inside the same frame,
+                     * so it is never painted stale and it is one rendering step behind a read taken
+                     * in the event's own task. Both samples are here; the first is the area's, the
+                     * second is the panes'.
+                     *
+                     * The third is that the daemon heard none of it: the resize counter is frozen
+                     * for the whole animation, which is what makes "one message per transition" a
+                     * statement about the animation rather than about its end.
                      */
+                    const restArea = raised.restArea ?? null;
+                    const areaOff = (raised.frames ?? []).filter(
+                        (frame) =>
+                            frame.area === null ||
+                            restArea === null ||
+                            frame.area.inset !== frame.px ||
+                            Math.abs(frame.area.padding - (restArea.padding + frame.px)) > 1 ||
+                            Math.abs(restArea.content - frame.area.content - frame.px) > 1
+                    );
+                    recorder.check(
+                        `the content area's box followed all ${String(FRAMES)} frames of the animation, in the frame each one arrived`,
+                        (raised.frames ?? []).length === FRAMES && restArea !== null && areaOff.length === 0,
+                        areaOff.length === 0
+                            ? `${String(FRAMES)} frames: ${String(restArea?.content)} px of grid at rest under a ${String(restArea?.padding)} px padding, ` +
+                              `${String((raised.frames ?? []).at(-1)?.area?.content)} px under ${String((raised.frames ?? []).at(-1)?.area?.padding)} px at ${String(FAKE_KEYBOARD_PX)} px of keyboard`
+                            : `off by: ${JSON.stringify(areaOff.slice(0, 3).map((frame) => ({ frame: frame.px, area: frame.area })))}`
+                    );
                     const restHeights = new Map((raised.rest ?? []).map((pane) => [pane.id, pane.host]));
                     const framesOff = (raised.frames ?? []).flatMap((frame) =>
-                        frame.panes
-                            .map((pane) => ({
+                        (frame.settled ?? []).map((pane) => ({
                                 frame: frame.px,
                                 id: pane.id,
                                 inset: pane.inset,
                                 shrank: (restHeights.get(pane.id) ?? 0) - pane.host,
                                 resizes: pane.resizes
                             }))
-                            // A pane the keyboard is taller than keeps its last cell, so the box
-                            // is allowed to stop short of the frame; it may never lag it.
-                            .filter((pane) => pane.inset !== pane.frame || Math.abs(pane.shrank - pane.frame) > 1)
+                            // The pane publishes the frame's keyboard, and its box has given up
+                            // what the content area gave up - which for a pane the grid gives the
+                            // full height to is the whole of it, and never more than it.
+                            .filter((pane) => pane.inset !== pane.frame || pane.shrank <= 0 || pane.shrank > pane.frame + 1)
                     );
                     recorder.check(
-                        `the pane's box followed all ${String(FRAMES)} frames of the animation, in the frame each one arrived`,
+                        `every pane rode all ${String(FRAMES)} frames with it, and none gave up more than the keyboard`,
                         (raised.frames ?? []).length === FRAMES && restHeights.size > 0 && framesOff.length === 0,
                         framesOff.length === 0
                             ? `${String(FRAMES)} frames, ${String(restHeights.size)} pane(s): host ${JSON.stringify([...restHeights.values()])} px at rest, ` +
-                              `${JSON.stringify((raised.frames ?? []).at(-1)?.panes.map((pane) => pane.host) ?? [])} px at ${String(FAKE_KEYBOARD_PX)} px of keyboard`
+                              `${JSON.stringify((raised.frames ?? []).at(-1)?.settled?.map((pane) => pane.host) ?? [])} px at ${String(FAKE_KEYBOARD_PX)} px of keyboard`
                             : `off by: ${JSON.stringify(framesOff.slice(0, 4))}`
                     );
                     const restResizes = new Map((raised.rest ?? []).map((pane) => [pane.id, pane.resizes]));
                     const spokeEarly = (raised.frames ?? []).flatMap((frame) =>
-                        frame.panes.filter((pane) => pane.resizes !== restResizes.get(pane.id)).map((pane) => ({ frame: frame.px, id: pane.id, resizes: pane.resizes }))
+                        [...frame.panes, ...(frame.settled ?? [])]
+                            .filter((pane) => pane.resizes !== restResizes.get(pane.id))
+                            .map((pane) => ({ frame: frame.px, id: pane.id, resizes: pane.resizes }))
                     );
                     recorder.check(
                         'and the daemon heard nothing at all while the keyboard was still moving',
@@ -29040,15 +29149,35 @@ function buildFlows(ctx) {
                     const up = await readPanes();
                     recorder.note(`with the keyboard up: ${JSON.stringify(up)}`);
 
+                    const areaUp = await readArea();
+                    recorder.note(`content area with the keyboard up: ${JSON.stringify(areaUp)} (was ${JSON.stringify(areaBefore)})`);
+                    recorder.check(
+                        'the keyboard came off the CONTENT AREA once, whole: 300 px of grid, taken where the keyboard is',
+                        areaBefore !== null &&
+                            areaUp !== null &&
+                            areaUp.inset === FAKE_KEYBOARD_PX &&
+                            Math.abs(areaBefore.content - areaUp.content - FAKE_KEYBOARD_PX) <= 1,
+                        `${String(areaBefore?.content)} px of grid -> ${String(areaUp?.content)} px, ` +
+                            `padding ${String(areaBefore?.padding)} -> ${String(areaUp?.padding)} (bar ${String(areaUp?.bar)} px)`
+                    );
+
                     const pairs = before
                         .map((pane) => ({ before: pane, after: up.find((other) => other.id === pane.id) }))
                         .filter((pair) => pair.after !== undefined);
+                    /*
+                     * C9: the rows a pane is told are the rows ITS OWN box can paint, and how much
+                     * of the keyboard reaches that box is the split's business - a pane at the
+                     * bottom of the grid loses the whole 300, a pane above a divider loses its
+                     * share. So the check is against the box each pane actually ended up with,
+                     * plus "it lost rows and the height it lost was the keyboard's at most".
+                     */
                     const drops = pairs.map((pair) => {
                         const cellHeight = Number(String(pair.before.cell ?? '0x0').split('x')[1]);
                         return {
                             id: pair.before.id,
                             cellHeight,
-                            expected: Math.floor((Number(pair.before.rows) * cellHeight - FAKE_KEYBOARD_PX) / cellHeight),
+                            expected: Math.floor(Number(pair.after.host) / cellHeight),
+                            lost: Number(pair.before.host) - Number(pair.after.host),
                             rows: Number(pair.after.rows),
                             wasRows: Number(pair.before.rows),
                             resizes: Number(pair.after.resizes) - Number(pair.before.resizes)
@@ -29056,10 +29185,21 @@ function buildFlows(ctx) {
                     });
                     recorder.note(`row drops: ${JSON.stringify(drops)}`);
                     recorder.check(
-                        'the keyboard took about 300 / cellHeight rows off every terminal',
-                        drops.length > 0 && drops.every((drop) => Math.abs(drop.rows - drop.expected) <= 1 && drop.rows < drop.wasRows),
+                        'every terminal lost rows for the keyboard, and the rows the daemon was told are the rows the box can paint',
+                        drops.length > 0 &&
+                            drops.every(
+                                (drop) =>
+                                    Math.abs(drop.rows - drop.expected) <= 1 &&
+                                    drop.rows < drop.wasRows &&
+                                    drop.lost > 0 &&
+                                    drop.lost <= FAKE_KEYBOARD_PX + 1
+                            ),
                         drops
-                            .map((drop) => `${String(drop.wasRows)} -> ${String(drop.rows)} rows (expected ~${String(drop.expected)} at ${String(drop.cellHeight)}px cells)`)
+                            .map(
+                                (drop) =>
+                                    `${String(drop.wasRows)} -> ${String(drop.rows)} rows for ${String(drop.lost)} px lost ` +
+                                    `(a ${String(drop.expected)}-row box at ${String(drop.cellHeight)}px cells)`
+                            )
                             .join('; ')
                     );
                     recorder.check(
@@ -29174,6 +29314,12 @@ function buildFlows(ctx) {
                                         id: el.getAttribute('data-pane-id'),
                                         inset: Number(el.getAttribute('data-terminal-keyboard-inset'))
                                     }));
+                                    // C9: the window's own applied inset, which is the one that
+                                    // would double-subtract if this mode were got wrong.
+                                    const areaInset = () => {
+                                        const el = document.querySelector('[data-phone-content-area]');
+                                        return el === null ? -1 : Number(el.getAttribute('data-phone-keyboard-inset') ?? '-1');
+                                    };
                                     const frames = [];
                                     for (let frame = 1; frame <= 5; frame += 1) {
                                         window.__kelpiFakeLayout = Math.round((${String(FAKE_KEYBOARD_PX)} * frame) / 5);
@@ -29184,6 +29330,7 @@ function buildFlows(ctx) {
                                             innerHeight: window.innerHeight,
                                             viewport: vv.height,
                                             mode: document.documentElement.dataset.keyboardViewport ?? '(unset)',
+                                            area: areaInset(),
                                             panes: read()
                                         });
                                         await new Promise((resolve) => setTimeout(resolve, 16));
@@ -29216,10 +29363,14 @@ function buildFlows(ctx) {
                             : String(asContent.why)
                     );
                     recorder.check(
-                        'with the window shrinking WITH the keyboard the pane takes no padding of its own, so the keyboard is never subtracted twice',
+                        'with the window shrinking WITH the keyboard neither the content area nor a pane takes a padding, so the keyboard is never subtracted twice',
                         (asContent.frames ?? []).length > 0 &&
-                            (asContent.frames ?? []).every((frame) => frame.panes.length > 0 && frame.panes.every((pane) => pane.inset === 0)),
-                        JSON.stringify((asContent.frames ?? []).map((frame) => ({ px: frame.px, insets: frame.panes.map((pane) => pane.inset) })))
+                            (asContent.frames ?? []).every(
+                                (frame) => frame.area === 0 && frame.panes.length > 0 && frame.panes.every((pane) => pane.inset === 0)
+                            ),
+                        JSON.stringify(
+                            (asContent.frames ?? []).map((frame) => ({ px: frame.px, area: frame.area, insets: frame.panes.map((pane) => pane.inset) }))
+                        )
                     );
                     recorder.check(
                         "and the client names THAT mode 'resizes-content', from the same two measurements",
@@ -29309,7 +29460,7 @@ function buildFlows(ctx) {
         {
             id: 'phone-key-bar',
             expect:
-                'Under a 390x844 phone viewport the focused terminal pane grows a key bar below its host: 15 keys, each at least 44x44 CSS px, in flow rather than floating, so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard-viewport detector is probed before anything is tapped (none, resizes-visual under a fake keyboard, none again), so a label failure below can never be confused with a baseline inherited from the step before. The keyboard key names the KEYBOARD and not the caret: it opens on Show with the caret on the engine textarea and nothing taking viewport space, turns into Hide the moment a keyboard faked at the visual viewport does take space, stays Hide across the tap that drops the caret (a tap is a request; the label is what is on screen) and reads Show again when that keyboard goes, including when it goes with the caret STILL in the textarea, which is Android\'s back gesture. The bar works with the keyboard down throughout: Esc and an arrow tapped with the caret off the engine still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
+                'Under a 390x844 phone viewport the window grows exactly ONE key bar, at the bottom of the content area rather than inside a pane (C9): 15 keys, each at least 44x44 CSS px, spanning the area, with the area padded by the bar\'s height so the terminal SHRINKS by the bar instead of being covered by it. Tapping Ctrl latches it (aria-pressed) without taking the caret off the engine textarea, and the next key typed reaches the PTY as an interrupt - a running `cat` dies and the shell is back at a prompt. The two shapes an Android soft keyboard actually sends work too: a keydown with `key` Enter and an EMPTY `code` runs the command in front of it, and a letter delivered by `Input.insertText` after a keyCode 229 placeholder keydown spends a latched Ctrl and arrives as the interrupt rather than as a letter. The keyboard-viewport detector is probed before anything is tapped (none, resizes-visual under a fake keyboard, none again), so a label failure below can never be confused with a baseline inherited from the step before. The keyboard key names the KEYBOARD and not the caret: it opens on Show with the caret on the engine textarea and nothing taking viewport space, turns into Hide the moment a keyboard faked at the visual viewport does take space, stays Hide across the tap that drops the caret (a tap is a request; the label is what is on screen) and reads Show again when that keyboard goes, including when it goes with the caret STILL in the textarea, which is Android\'s back gesture. The bar works with the keyboard down throughout: Esc and an arrow tapped with the caret off the engine still reach the PTY without the caret coming back, and tapping Show returns it. With the emulation cleared the bar is gone and the desktop pane is exactly what it was.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
@@ -29318,8 +29469,8 @@ function buildFlows(ctx) {
                 if (shell === null) throw new Error('phone-key-bar: no shell pane on screen to drive');
                 const paneID = shell.id;
                 const body = `[data-testid="pane-body-${paneID}"]`;
-                const bar = `${body} [data-terminal-key-bar]`;
-                const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+                const bar = `[data-terminal-key-bar]`;
+                const keyboardKey = `[data-terminal-key="hide-keyboard"]`;
                 /** The keyboard this step fakes, in CSS px, as `phone-keyboard-inset` fakes it. */
                 const FAKE_KEYBOARD_PX = 300;
 
@@ -29446,18 +29597,22 @@ function buildFlows(ctx) {
                     await sleep(400);
 
                     /*
-                     * IN FLOW, NOT OVER (MOBILE-PLAN.md §7, "Keyboard inset ownership"). The bar
-                     * sits below the terminal host inside the same pane, so the host loses the
-                     * bar's height through the pane's existing ResizeObserver and the PTY hears
-                     * one resize. Measured as geometry rather than asserted as a class name: the
-                     * host's bottom edge must be at or above the bar's top edge.
+                     * UNDER THE GRID, NOT OVER IT (MOBILE-PLAN.md §7, "Keyboard inset ownership",
+                     * as C9 re-homed it). The bar is one per WINDOW now, at the bottom of the
+                     * content area rather than inside a pane, and the area is padded by exactly
+                     * the bar's height - so the grid ends where the bar begins, every pane in it
+                     * loses that height through the ResizeObserver it already has, and each PTY
+                     * hears one resize. Measured as geometry rather than asserted as a class
+                     * name: the host's bottom edge must be at or above the bar's top edge, and
+                     * the bar must span the content area rather than the pane it acts on.
                      */
                     const layout = JSON.parse(
                         String(
                             await view.eval(
                                 `(() => {
                                     const pane = document.querySelector('${body}');
-                                    const bar = pane === null ? null : pane.querySelector('[data-terminal-key-bar]');
+                                    const area = document.querySelector('[data-phone-content-area]');
+                                    const bar = document.querySelector('[data-terminal-key-bar]');
                                     const host = pane === null ? null : pane.querySelector('[data-terminal-host]');
                                     if (bar === null || host === null) return JSON.stringify(null);
                                     const b = bar.getBoundingClientRect();
@@ -29466,10 +29621,14 @@ function buildFlows(ctx) {
                                         const r = el.getBoundingClientRect();
                                         return { id: el.getAttribute('data-terminal-key'), w: Math.round(r.width), h: Math.round(r.height) };
                                     });
+                                    const a = area === null ? null : area.getBoundingClientRect();
                                     return JSON.stringify({
                                         pane: { w: Math.round(pane.getBoundingClientRect().width) },
-                                        bar: { top: Math.round(b.top), h: Math.round(b.height), position: getComputedStyle(bar).position },
+                                        bar: { top: Math.round(b.top), left: Math.round(b.left), w: Math.round(b.width), h: Math.round(b.height) },
+                                        area: a === null ? null : { left: Math.round(a.left), w: Math.round(a.width), bottom: Math.round(a.bottom), padding: Math.round(Number.parseFloat(getComputedStyle(area).paddingBottom || '0')) },
                                         host: { bottom: Math.round(h.bottom), h: Math.round(h.height) },
+                                        bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                        inPane: pane.querySelector('[data-terminal-key-bar]') !== null,
                                         keys
                                     });
                                 })()`
@@ -29485,9 +29644,30 @@ function buildFlows(ctx) {
                         small.length === 0 ? `${String(layout.keys.length)} keys, smallest ${String(Math.min(...layout.keys.map((k) => k.w)))}x${String(Math.min(...layout.keys.map((k) => k.h)))}` : `under: ${small.map((k) => `${k.id} ${String(k.w)}x${String(k.h)}`).join(', ')}`
                     );
                     recorder.check(
-                        'the bar is in flow, not positioned over the terminal',
-                        layout.bar.position === 'static' && layout.host.bottom <= layout.bar.top + 1,
-                        `position=${layout.bar.position} host bottom ${String(layout.host.bottom)} vs bar top ${String(layout.bar.top)}`
+                        'the terminal ends where the bar begins: the content area is padded by the bar, not covered by it',
+                        layout.host.bottom <= layout.bar.top + 1 &&
+                            layout.area !== null &&
+                            layout.area.padding >= layout.bar.h &&
+                            layout.area.bottom - layout.bar.h <= layout.bar.top + 1,
+                        `host bottom ${String(layout.host.bottom)} vs bar top ${String(layout.bar.top)}; ` +
+                            `content area padded ${String(layout.area?.padding)}px for a ${String(layout.bar.h)}px bar`
+                    );
+                    /*
+                     * C9, the owner's 2026-09-08 report: ONE bar, spanning the content area rather
+                     * than the pane it acts on. This step drives a single-pane window most of the
+                     * time, where the two are the same box; `phone-key-bar-split` is the one that
+                     * splits the grid and can tell them apart, and this is the cheap invariant that
+                     * rides along here.
+                     */
+                    recorder.check(
+                        'there is exactly ONE key bar, it is not inside the pane, and it spans the content area',
+                        layout.bars === 1 &&
+                            layout.inPane === false &&
+                            layout.area !== null &&
+                            Math.abs(layout.bar.left - layout.area.left) <= 1 &&
+                            Math.abs(layout.bar.w - layout.area.w) <= 1,
+                        `${String(layout.bars)} bar(s), inside the pane=${String(layout.inPane)}, ` +
+                            `bar ${String(layout.bar.w)}px at x ${String(layout.bar.left)} vs area ${String(layout.area?.w)}px at x ${String(layout.area?.left)}`
                     );
 
                     // Start something the interrupt has to kill, and put a word in front of it.
@@ -29503,13 +29683,13 @@ function buildFlows(ctx) {
                      */
                     await view.eval(
                         `(() => {
-                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            const key = document.querySelector('[data-terminal-key="ctrl"]');
                             if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
                             return true;
                         })()`
                     );
                     await sleep(120);
-                    const ctrlBox = await view.box(`${body} [data-terminal-key="ctrl"]`);
+                    const ctrlBox = await view.box(`[data-terminal-key="ctrl"]`);
                     const hit = String(
                         await view.eval(
                             `(() => {
@@ -29523,13 +29703,13 @@ function buildFlows(ctx) {
                     const caretBefore = String(
                         await view.eval(`(document.activeElement?.tagName ?? '(none)').toLowerCase()`)
                     );
-                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await view.tap(`[data-terminal-key="ctrl"]`);
                     await sleep(200);
                     const afterTap = JSON.parse(
                         String(
                             await view.eval(
                                 `JSON.stringify({
-                                    pressed: document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)',
+                                    pressed: document.querySelector('[data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)',
                                     caret: (document.activeElement?.tagName ?? '(none)').toLowerCase(),
                                     inHost: document.querySelector('${body} [data-terminal-host]')?.contains(document.activeElement) ?? false
                                 })`
@@ -29637,16 +29817,16 @@ function buildFlows(ctx) {
                     await sleep(200);
                     await view.eval(
                         `(() => {
-                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            const key = document.querySelector('[data-terminal-key="ctrl"]');
                             if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
                             return true;
                         })()`
                     );
                     await sleep(120);
-                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await view.tap(`[data-terminal-key="ctrl"]`);
                     await sleep(200);
                     const imeLatched = String(
-                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                        await view.eval(`document.querySelector('[data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
                     );
                     recorder.check('Ctrl is latched again for the IME half', imeLatched === 'true', `aria-pressed=${imeLatched}`);
                     await view.send('Input.dispatchKeyEvent', {
@@ -29668,7 +29848,7 @@ function buildFlows(ctx) {
                     });
                     await sleep(800);
                     const releasedAfterIme = String(
-                        await view.eval(`document.querySelector('${body} [data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
+                        await view.eval(`document.querySelector('[data-terminal-key="ctrl"]')?.getAttribute('aria-pressed') ?? '(none)'`)
                     );
                     recorder.check(
                         'the latch is spent by the letter, not by the placeholder keydown',
@@ -29774,13 +29954,13 @@ function buildFlows(ctx) {
                     for (const id of ['esc', 'up']) {
                         await view.eval(
                             `(() => {
-                                const key = document.querySelector('${body} [data-terminal-key="${id}"]');
+                                const key = document.querySelector('[data-terminal-key="${id}"]');
                                 if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
                                 return true;
                             })()`
                         );
                         await sleep(120);
-                        await view.tap(`${body} [data-terminal-key="${id}"]`);
+                        await view.tap(`[data-terminal-key="${id}"]`);
                         await sleep(200);
                     }
                     await sleep(400);
@@ -29883,13 +30063,13 @@ function buildFlows(ctx) {
                     // also re-proves the latch survives the toggle.
                     await view.eval(
                         `(() => {
-                            const key = document.querySelector('${body} [data-terminal-key="ctrl"]');
+                            const key = document.querySelector('[data-terminal-key="ctrl"]');
                             if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
                             return true;
                         })()`
                     );
                     await sleep(120);
-                    await view.tap(`${body} [data-terminal-key="ctrl"]`);
+                    await view.tap(`[data-terminal-key="ctrl"]`);
                     await sleep(200);
                     await view.type('c');
                     await sleep(700);
@@ -29999,15 +30179,15 @@ function buildFlows(ctx) {
                     await seedClipboard();
                     await view.eval(
                         `(() => {
-                            const key = document.querySelector('${body} [data-terminal-key="paste"]');
+                            const key = document.querySelector('[data-terminal-key="paste"]');
                             if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
                             return true;
                         })()`
                     );
                     await sleep(150);
-                    await view.tap(`${body} [data-terminal-key="paste"]`);
+                    await view.tap(`[data-terminal-key="paste"]`);
                     await sleep(400);
-                    const field = await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') !== null`);
+                    const field = await view.eval(`document.querySelector('[data-terminal-paste-field]') !== null`);
                     if (field !== true) return 'the clipboard read inside the tap';
                     if (shotLabel !== null) await recorder.shot(view, shotLabel);
                     // The fallback: the field is up and focused, so the platform's own paste is
@@ -30043,13 +30223,13 @@ function buildFlows(ctx) {
                 let took = '(not reached)';
                 try {
                     await emulatePhone(view);
-                    await view.waitFor(`document.querySelector('${body} [data-terminal-key="paste"]') !== null`, {
+                    await view.waitFor(`document.querySelector('[data-terminal-key="paste"]') !== null`, {
                         timeoutMs: 20_000,
                         label: 'the key bar to mount under the phone viewport'
                     });
                     recorder.check(
                         'the Paste key is live now that C4 has landed',
-                        (await view.eval(`document.querySelector('${body} [data-terminal-key="paste"]').disabled === false`)) === true,
+                        (await view.eval(`document.querySelector('[data-terminal-key="paste"]').disabled === false`)) === true,
                         'not disabled'
                     );
 
@@ -30129,7 +30309,7 @@ function buildFlows(ctx) {
                         );
                         recorder.check(
                             'and the field closes itself once it has pasted',
-                            (await view.eval(`document.querySelector('${body} [data-terminal-paste-field]') === null`)) === true,
+                            (await view.eval(`document.querySelector('[data-terminal-paste-field]') === null`)) === true,
                             'no field left on screen'
                         );
                     } finally {
@@ -30257,7 +30437,7 @@ function buildFlows(ctx) {
                                     const host = document.querySelector('${hostSelector}');
                                     const box = host === null ? null : host.getBoundingClientRect();
                                     const style = host === null ? null : getComputedStyle(host);
-                                    const pill = document.querySelector('${body} [data-terminal-copy-pill] button');
+                                    const pill = document.querySelector('[data-terminal-copy-pill] button');
                                     // The engine's canvas, for the round-7 gap: it is sized to
                                     // whole cells, so where its right edge sits inside the host IS
                                     // the strip of dead space beside the scrollbar.
@@ -30323,7 +30503,7 @@ function buildFlows(ctx) {
 
                 try {
                     await emulatePhone(view);
-                    await view.waitFor(`document.querySelector('${body} [data-terminal-key-bar]') !== null`, {
+                    await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
                         timeoutMs: 20_000,
                         label: 'the key bar to mount under the phone viewport'
                     });
@@ -30509,7 +30689,7 @@ function buildFlows(ctx) {
 
                     // Take the offer, which is what a person does, and what gets the pill off the
                     // screen before the hand-back.
-                    await view.tap(`${body} [data-terminal-copy-pill] button`);
+                    await view.tap(`[data-terminal-copy-pill] button`);
                     await view
                         .waitFor(`document.querySelector('[data-terminal-copy-pill]') === null`, {
                             timeoutMs: 16_000,
@@ -30634,8 +30814,8 @@ function buildFlows(ctx) {
                 if (shell === null) throw new Error('phone-caret-owner: no shell pane on screen to drive');
                 const paneID = shell.id;
                 const body = `[data-testid="pane-body-${paneID}"]`;
-                const bar = `${body} [data-terminal-key-bar]`;
-                const keyboardKey = `${body} [data-terminal-key="hide-keyboard"]`;
+                const bar = `[data-terminal-key-bar]`;
+                const keyboardKey = `[data-terminal-key="hide-keyboard"]`;
 
                 // Focus and tidy at DESKTOP size, exactly as `phone-key-bar` does: the pane has to
                 // be the focused one for the bar to mount at all.
@@ -30807,7 +30987,7 @@ function buildFlows(ctx) {
                      * it arms is spent on itself rather than on the next step's first keystroke.
                      */
                     for (const id of ['esc', 'home', 'end', 'left', 'ctrl', 'ctrl']) {
-                        const key = `${body} [data-terminal-key="${id}"]`;
+                        const key = `[data-terminal-key="${id}"]`;
                         await scrollTo(key);
                         await view.tap(key);
                         await sleep(120);
@@ -30976,6 +31156,545 @@ function buildFlows(ctx) {
                     desktopCaret.inPane === true && desktopCaret.bars === 0,
                     `activeElement=${desktopCaret.caret} inside the focused pane’s surface=${String(desktopCaret.inPane)}, ${String(desktopCaret.bars)} key bars`
                 );
+            }
+        },
+
+        /*
+         * C9 - ONE key bar for the WINDOW, with the panes split (docs/MOBILE-PLAN.md §4, §7).
+         *
+         * THE REPORT. The owner, on a real Android phone, 2026-09-08: *"the phone button bar
+         * renders only inside a single pane; when the panes are split the bar renders only in the
+         * active pane, instead of across the bottom."* C1 mounted `<KeyBar>` inside `TerminalPane`,
+         * so the bar was a piece of one pane's box: with one pane on screen that pane IS the
+         * window and the bar looked right, and the moment the grid held two the bar was half a
+         * screen wide, in a column, under one of them.
+         *
+         * WHY A STEP OF ITS OWN, BESIDE `phone-key-bar`. That step drives every key, the latch,
+         * the Android event shapes and C8's label, and it does it against whatever single pane the
+         * run hands it - where "the bar spans the window" and "the bar spans its pane" are the same
+         * measurement and neither can be wrong. Splitting is what tells them apart, and it is a
+         * layout fact: only a real browser with a real grid can say whether one element's rect
+         * spans a row that two panes are sitting in. jsdom pins the tree and the arithmetic
+         * (`PhoneKeyBar.test.tsx`); this pins the pixels, and the routing that goes with them.
+         *
+         * FOUR facts, and all four need the split:
+         *
+         *   1. THE BOX. Exactly one `[data-terminal-key-bar]` in the document, inside neither
+         *      pane, spanning the content area's full width at its bottom edge, with both panes
+         *      ending above it. On the base commit this is two failures at once - the bar's rect is
+         *      one pane's, and the bar is inside that pane's subtree.
+         *   2. THE AIM. `Ctrl` from the bar plus `c` from the keyboard interrupts the `sleep 30`
+         *      in the FOCUSED pane and leaves the other one's alone, read back through
+         *      `kelpi pane capture` on both. That is the routing C9 replaced: the bar reaches its
+         *      terminal through the pane registry now, rather than by being inside it.
+         *   3. THE RE-AIM. Tapping the other pane moves the caret, and the same two keys then
+         *      interrupt THAT pane - including the sticky-modifier interceptor, which is a capture
+         *      listener bound to a pane ROOT and has to rebind when the caret moves.
+         *   4. THE KEYBOARD. A faked 300 px keyboard comes out of the CONTENT AREA once, both
+         *      panes get shorter with it, and each tells the daemon exactly once (the settle rule
+         *      is still each pane's). The base commit has no content area at all: every pane pads
+         *      itself there, which is also why two STACKED panes gave up 600 px of terminal for one
+         *      300 px keyboard.
+         *
+         * A phone-lane step (lib/shards.mjs), and the one in the lane that provisions: it splits a
+         * pane and closes it again in the `finally`, reads the roster either side and asserts it is
+         * byte-identical, leaves both shells at a prompt, moves no workspace and writes no setting,
+         * and clears the emulation and the viewport shadow in the same `finally`.
+         */
+        {
+            id: 'phone-key-bar-split',
+            expect:
+                'Under a 390x844 phone viewport with the terminal split in two, the window has exactly ONE key bar: it is inside neither pane, it spans the content area at its bottom edge, and both panes end above it. Tapping its Ctrl and typing c interrupts the `sleep 30` in the FOCUSED pane and leaves the other pane\'s running (both read back through `kelpi pane capture`); tapping the other pane re-aims the whole bar, latch and all, so the same two keys interrupt that one instead. A 300 px software keyboard faked at the visual viewport comes off the content area once, both panes get shorter with it, each costs the daemon exactly one resize, and the bar rides the keyboard rather than staying behind it. With that keyboard up, tapping from one pane to the other hands the caret STRAIGHT across (round 9): the recorded focus trail has no body in it, no focusout that hands the caret to nothing, and the arrival comes before the touchend the engine used to answer. The split pane is closed, the roster is handed back byte-identical, and the desktop window has no bar and no phone state.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-key-bar-split: no shell pane on screen to split');
+                const leftID = shell.id;
+                /** The keyboard this step fakes, in CSS px, as `phone-keyboard-inset` fakes it. */
+                const FAKE_KEYBOARD_PX = 300;
+
+                /** What the spine reads, either side of this step. */
+                const readRoster = async () => JSON.parse(String(await view.eval(`JSON.stringify(${paneIDsExpr})`)));
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+
+                /** Every live pane's box and published phone state, plus the bar's and the area's. */
+                const readFrame = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const area = document.querySelector('[data-phone-content-area]');
+                                    const bars = Array.from(document.querySelectorAll('[data-terminal-key-bar]'));
+                                    const bar = bars[0] ?? null;
+                                    const box = (el) => {
+                                        if (el === null || el === undefined) return null;
+                                        const r = el.getBoundingClientRect();
+                                        return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), bottom: Math.round(r.bottom) };
+                                    };
+                                    return JSON.stringify({
+                                        bars: bars.length,
+                                        bar: box(bar),
+                                        area: area === null ? null : {
+                                            ...box(area),
+                                            padding: Math.round(Number.parseFloat(getComputedStyle(area).paddingBottom || '0')),
+                                            inset: Number(area.getAttribute('data-phone-keyboard-inset') ?? '-1')
+                                        },
+                                        panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status="live"]')).map((el) => ({
+                                            id: el.getAttribute('data-pane-id'),
+                                            // The ring is the GRID wrapper, one level up from the
+                                            // terminal pane element itself (grid/PaneGrid.tsx).
+                                            focused: el.closest('[data-focused]')?.getAttribute('data-focused') === 'true',
+                                            rows: Number(el.getAttribute('data-terminal-rows')),
+                                            inset: Number(el.getAttribute('data-terminal-keyboard-inset')),
+                                            resizes: Number(el.getAttribute('data-terminal-resizes')),
+                                            barInside: el.querySelector('[data-terminal-key-bar]') !== null,
+                                            ...box(el.querySelector('[data-terminal-host]'))
+                                        }))
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                /** Tap a key on the bar, scrolling it into the bar's own clip first. */
+                const tapKey = async (id) => {
+                    await view.eval(
+                        `(() => {
+                            const key = document.querySelector('[data-terminal-key="${id}"]');
+                            if (key !== null) key.scrollIntoView({ inline: 'start', block: 'nearest' });
+                            return true;
+                        })()`
+                    );
+                    await sleep(120);
+                    await view.tap(`[data-terminal-key="${id}"]`);
+                    await sleep(200);
+                };
+
+                /** The interrupt a person makes on a phone: Ctrl from the bar, `c` from the keyboard. */
+                const interrupt = async () => {
+                    await tapKey('ctrl');
+                    await view.type('c');
+                    await sleep(700);
+                };
+
+                /**
+                 * Raise or drop a software keyboard at the one seam a desktop Chromium has: an own
+                 * `height` accessor over `VisualViewport`'s prototype getter, which is what
+                 * `readSoftKeyboardInset` and C7's mode detector both read. The same shadow
+                 * `phone-keyboard-inset` and `phone-key-bar` use.
+                 */
+                const fakeKeyboard = async (up) =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const vv = window.visualViewport;
+                                    if (vv === null || vv === undefined) return JSON.stringify({ ok: false, why: 'no visualViewport' });
+                                    if (${String(up)}) {
+                                        Object.defineProperty(vv, 'height', {
+                                            configurable: true,
+                                            get() { return window.innerHeight - ${String(FAKE_KEYBOARD_PX)}; }
+                                        });
+                                    } else if (Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                        delete vv.height;
+                                    }
+                                    vv.dispatchEvent(new Event('resize'));
+                                    return JSON.stringify({ ok: true, innerHeight: window.innerHeight, viewport: Math.round(vv.height) });
+                                })()`
+                            )
+                        )
+                    );
+
+                // Focus and tidy at DESKTOP size, exactly as `phone-key-bar` does.
+                await focusPaneBody(view, leftID);
+                await runInTerminal(view, 'clear', { settleMs: 400 });
+                // The window this step is handed, for the hand-back in the `finally`.
+                const handedIn = await readPhoneFrame(view);
+                let rightID = '';
+
+                try {
+                    /*
+                     * The split itself is not what this step is about, so it is made at desktop
+                     * size where the grid, the engine and the PTY settle fastest, and the phone
+                     * viewport is put on afterwards - which is also the order a person meets it in:
+                     * the split is already there when they pick the phone up.
+                     */
+                    const split = await cli.json(['pane', 'split', '--direction', 'horizontal', '--target', leftID, '--json']);
+                    rightID = String(split.pane_id ?? '');
+                    recorder.check('a second pane was provisioned beside the first', rightID.length > 0, JSON.stringify(split));
+                    if (rightID.length === 0) return;
+                    await settleShellPane(view, cli, rightID, { ceilingMs: 6000 });
+                    await view.click(`[data-testid="pane-body-${rightID}"]`).catch(() => {});
+                    await runInTerminal(view, 'clear', { settleMs: 400 });
+
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    await sleep(400);
+
+                    // ── 1. THE BOX ──────────────────────────────────────────────────────
+                    const layout = await readFrame();
+                    recorder.note(`split layout: ${JSON.stringify(layout)}`);
+                    const panes = (layout.panes ?? []).filter((pane) => pane.id === leftID || pane.id === rightID);
+                    const area = layout.area;
+                    const bar = layout.bar;
+                    recorder.check(
+                        'both panes are live and side by side under the phone viewport',
+                        panes.length === 2 && panes.every((pane) => pane.w > 0),
+                        panes.map((pane) => `${String(pane.id)} ${String(pane.w)}x${String(pane.h)} at x ${String(pane.x)}`).join('; ')
+                    );
+                    if (panes.length !== 2) return;
+                    /*
+                     * THE OWNER'S REPORT, as three measurements. One bar; it belongs to neither
+                     * pane's subtree; its rect is the content area's rather than a pane's - which
+                     * in a side-by-side split is the same thing as being WIDER than either pane.
+                     *
+                     * Measured on the base commit (2026-09-08): one bar, `barInside` true, its
+                     * rect 76x45 at x 310 - the focused pane's column - with no content area on
+                     * the page at all, and the two panes 715 px and 760 px tall, because the bar
+                     * came out of the focused one's box alone.
+                     */
+                    recorder.check(
+                        'there is exactly ONE key bar and it is inside neither pane',
+                        layout.bars === 1 && panes.every((pane) => pane.barInside === false),
+                        `${String(layout.bars)} bar(s); inside the panes: ${JSON.stringify(panes.map((pane) => pane.barInside))}`
+                    );
+                    recorder.check(
+                        'the bar spans the content area, not the pane it acts on',
+                        bar !== null &&
+                            area !== null &&
+                            Math.abs(bar.x - area.x) <= 1 &&
+                            Math.abs(bar.w - area.w) <= 1 &&
+                            panes.every((pane) => bar.w > pane.w + 1),
+                        area === null
+                            ? `no content area on the page; bar ${String(bar?.w)}px at x ${String(bar?.x)} over panes ${JSON.stringify(panes.map((pane) => pane.w))}px`
+                            : `bar ${String(bar?.w)}px at x ${String(bar?.x)}; area ${String(area.w)}px at x ${String(area.x)}; ` +
+                              `panes ${JSON.stringify(panes.map((pane) => pane.w))}px`
+                    );
+                    recorder.check(
+                        'it sits at the bottom of the content area, with BOTH panes ending above it',
+                        bar !== null &&
+                            area !== null &&
+                            Math.abs(area.bottom - bar.bottom) <= 1 &&
+                            panes.every((pane) => pane.bottom <= bar.y + 1),
+                        `bar bottom ${String(bar?.bottom)} vs area bottom ${String(area?.bottom ?? '(no area)')}; ` +
+                            `pane bottoms ${JSON.stringify(panes.map((pane) => pane.bottom))} vs bar top ${String(bar?.y)}`
+                    );
+                    /*
+                     * …and the pane heights are the same claim from the other side: with the bar
+                     * inside one pane, that pane is 45 px shorter than its sibling and the sibling
+                     * runs under the bar. One bar for the window means both panes end together.
+                     */
+                    recorder.check(
+                        'both panes are the same height, because neither is paying for the bar on its own',
+                        Math.abs(panes[0].h - panes[1].h) <= 1,
+                        `heights ${JSON.stringify(panes.map((pane) => pane.h))} px`
+                    );
+                    await recorder.shot(view, 'split-bar');
+                    recorder.eyes('does ONE row of keys run across the bottom of the window, under BOTH panes rather than inside one of them?');
+
+                    // ── 2. THE AIM ──────────────────────────────────────────────────────
+                    //
+                    // A long-running foreground job in each pane, so an interrupt that lands in
+                    // the wrong one is visible in that pane's own capture rather than inferred.
+                    await view.tap(`[data-testid="pane-body-${leftID}"]`);
+                    await view.waitFor(paneFocusedExpr(leftID), { timeoutMs: 8000, label: 'the left pane to take focus' }).catch(() => {});
+                    await runInTerminal(view, 'sleep 30', { settleMs: 500 });
+                    await view.tap(`[data-testid="pane-body-${rightID}"]`);
+                    await view.waitFor(paneFocusedExpr(rightID), { timeoutMs: 8000, label: 'the right pane to take focus' }).catch(() => {});
+                    await runInTerminal(view, 'sleep 30', { settleMs: 500 });
+
+                    await interrupt();
+                    await runInTerminal(view, `printf 'SPLIT-%s\\n' $((6*7))`, { settleMs: 900 });
+                    const rightAfter = await cli.ok(['pane', 'capture', '--target', rightID]);
+                    const leftDuring = await cli.ok(['pane', 'capture', '--target', leftID]);
+                    recorder.block('kelpi pane capture (the focused pane)', rightAfter.slice(-400));
+                    recorder.block('kelpi pane capture (the other pane)', leftDuring.slice(-400));
+                    recorder.check(
+                        'Ctrl from the bar plus c killed the sleep in the FOCUSED pane',
+                        rightAfter.includes('SPLIT-42'),
+                        rightAfter.includes('SPLIT-42') ? 'the shell evaluated $((6*7))' : 'no SPLIT-42 - the sleep is probably still running'
+                    );
+                    recorder.check(
+                        'and the other pane never saw it: its sleep is still running and nothing was typed into it',
+                        !leftDuring.includes('SPLIT-42') && !leftDuring.includes('^C'),
+                        leftDuring.includes('^C') ? 'the other pane took the interrupt' : 'no ^C and no SPLIT-42 in the other pane'
+                    );
+
+                    // ── 3. THE RE-AIM ───────────────────────────────────────────────────
+                    await view.tap(`[data-testid="pane-body-${leftID}"]`);
+                    await view.waitFor(paneFocusedExpr(leftID), { timeoutMs: 8000, label: 'the left pane to take focus back' }).catch(() => {});
+                    await sleep(300);
+                    const aimed = await readFrame();
+                    recorder.check(
+                        'tapping the other pane moves the focus the bar follows',
+                        (aimed.panes ?? []).find((pane) => pane.id === leftID)?.focused === true && aimed.bars === 1,
+                        `focused: ${JSON.stringify((aimed.panes ?? []).filter((pane) => pane.focused).map((pane) => pane.id))}, ${String(aimed.bars)} bar(s)`
+                    );
+                    await interrupt();
+                    await runInTerminal(view, `printf 'SPLIT-%s\\n' $((8*8))`, { settleMs: 900 });
+                    const leftAfter = await cli.ok(['pane', 'capture', '--target', leftID]);
+                    const rightIdle = await cli.ok(['pane', 'capture', '--target', rightID]);
+                    recorder.block('kelpi pane capture (the pane the bar re-aimed at)', leftAfter.slice(-400));
+                    recorder.check(
+                        'the SAME bar now interrupts the newly focused pane, latch and all',
+                        leftAfter.includes('SPLIT-64'),
+                        leftAfter.includes('SPLIT-64') ? 'the shell evaluated $((8*8))' : 'no SPLIT-64 - the bar is still aimed at the pane it was built for'
+                    );
+                    recorder.check(
+                        'and the pane it left is untouched by any of it',
+                        !rightIdle.includes('SPLIT-64'),
+                        rightIdle.includes('SPLIT-64') ? 'the keys reached both panes' : 'nothing of the second interrupt reached the first pane'
+                    );
+
+                    // ── 4. THE KEYBOARD ─────────────────────────────────────────────────
+                    const beforeKeyboard = await readFrame();
+                    const raised = await fakeKeyboard(true);
+                    // The settle window plus each pane's own measure/resize/repaint.
+                    await sleep(700);
+                    const withKeyboard = await readFrame();
+                    recorder.note(`with a ${String(FAKE_KEYBOARD_PX)} px keyboard: ${JSON.stringify({ raised, area: withKeyboard.area, panes: withKeyboard.panes })}`);
+                    /*
+                     * The two panes this step made, not every pane in the window: the run's grid
+                     * carries whatever the spine accumulated, and how much of a keyboard reaches a
+                     * pane depends on where in the layout it sits. What is exact here is the
+                     * CONTENT AREA (checked next) and the resize COUNT; what is asserted per pane
+                     * is that it shrank, and by no more than the keyboard took.
+                     */
+                    const pairs = (beforeKeyboard.panes ?? [])
+                        .filter((pane) => pane.id === leftID || pane.id === rightID)
+                        .map((pane) => ({ before: pane, after: (withKeyboard.panes ?? []).find((other) => other.id === pane.id) }))
+                        .filter((pair) => pair.after !== undefined);
+                    recorder.check(
+                        'the keyboard came out of the CONTENT AREA, once, and the bar rode it up',
+                        raised.ok === true &&
+                            withKeyboard.area !== null &&
+                            beforeKeyboard.area !== null &&
+                            withKeyboard.area.inset === FAKE_KEYBOARD_PX &&
+                            Math.abs(withKeyboard.area.padding - (beforeKeyboard.area.padding + FAKE_KEYBOARD_PX)) <= 1 &&
+                            withKeyboard.bar !== null &&
+                            beforeKeyboard.bar !== null &&
+                            Math.abs(beforeKeyboard.bar.bottom - withKeyboard.bar.bottom - FAKE_KEYBOARD_PX) <= 1,
+                        `area padding ${String(beforeKeyboard.area?.padding)} -> ${String(withKeyboard.area?.padding)}, ` +
+                            `bar bottom ${String(beforeKeyboard.bar?.bottom)} -> ${String(withKeyboard.bar?.bottom)}`
+                    );
+                    recorder.check(
+                        'BOTH panes shrank for it, neither by more than the keyboard, and each told the daemon exactly ONCE',
+                        pairs.length === 2 &&
+                            pairs.every(
+                                (pair) =>
+                                    pair.after.h < pair.before.h &&
+                                    pair.before.h - pair.after.h <= FAKE_KEYBOARD_PX + 1 &&
+                                    pair.after.rows < pair.before.rows &&
+                                    pair.after.resizes - pair.before.resizes === 1 &&
+                                    pair.after.inset === FAKE_KEYBOARD_PX
+                            ),
+                        pairs
+                            .map(
+                                (pair) =>
+                                    `${String(pair.before.id)}: ${String(pair.before.h)} -> ${String(pair.after.h)} px, ` +
+                                    `${String(pair.before.rows)} -> ${String(pair.after.rows)} rows, ` +
+                                    `+${String(pair.after.resizes - pair.before.resizes)} resize(s)`
+                            )
+                            .join('; ')
+                    );
+                    await recorder.shot(view, 'split-keyboard');
+
+                    // …and down again: the shadow off, one more message each, back where they were.
+                    await fakeKeyboard(false);
+                    await sleep(700);
+                    const lowered = await readFrame();
+                    const restored = (beforeKeyboard.panes ?? [])
+                        .filter((pane) => pane.id === leftID || pane.id === rightID)
+                        .map((pane) => ({ before: pane, after: (lowered.panes ?? []).find((other) => other.id === pane.id) }))
+                        .filter((pair) => pair.after !== undefined);
+                    recorder.check(
+                        'dropping the keyboard gives both panes their rows back, in one more message each',
+                        restored.length === 2 &&
+                            restored.every(
+                                (pair) =>
+                                    pair.after.rows === pair.before.rows &&
+                                    pair.after.resizes -
+                                        ((withKeyboard.panes ?? []).find((pane) => pane.id === pair.before.id)?.resizes ?? 0) ===
+                                        1
+                            ),
+                        restored.map((pair) => `${String(pair.before.id)}: ${String(pair.after.rows)} rows (was ${String(pair.before.rows)})`).join('; ')
+                    );
+
+                    /*
+                     * ── 5. THE CARET HAND-OVER (owner device round 9, 2026-09-08) ──────────
+                     *
+                     * "Clicking between panes causes the keyboard to briefly hide and show."
+                     *
+                     * The mechanism is an ORDER, which is why this is measured as one. A tap on
+                     * another pane's canvas used to move the caret twice: the browser's own focus
+                     * move for the tap parked it on nothing (a canvas is not focusable) and the
+                     * pane's engine took it back in its own `touchend`. Android dismisses the IME
+                     * the moment the caret leaves an editable and summons it again when one takes
+                     * it, so a tap's length is a keyboard animating down and up.
+                     *
+                     * So the trail is recorded rather than the endpoint: every `focusin`,
+                     * `focusout` and touch event in order, around one real tap, with the keyboard
+                     * faked up. The claim is that the caret goes STRAIGHT from one engine's
+                     * textarea to the other's, inside the gesture's first event - no `body` in the
+                     * trail, no `focusout` that hands the caret to nothing, and the arrival BEFORE
+                     * the `touchend`. On the previous tip that order is exactly reversed.
+                     *
+                     * CDP's own touch is the honest driver here: `Input.dispatchTouchEvent` makes
+                     * Chromium run its real focus algorithm for the tap, which is the thing under
+                     * test. What no desktop Chromium has is the IME itself, so the animation the
+                     * owner saw is the device's to confirm; the ORDER that causes it is here.
+                     */
+                    await fakeKeyboard(true);
+                    await sleep(400);
+                    const beforeTap = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const active = document.activeElement;
+                                    const pane = active === null ? null : active.closest('[data-pane-id]');
+                                    return JSON.stringify({
+                                        caret: (active?.tagName ?? '(none)').toLowerCase(),
+                                        pane: pane === null ? '(none)' : pane.getAttribute('data-pane-id'),
+                                        mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`before the tap: ${JSON.stringify(beforeTap)}`);
+                    recorder.check(
+                        'the caret is on one pane engine with a keyboard up, which is the state the report is about',
+                        beforeTap.caret === 'textarea' && beforeTap.pane === leftID && beforeTap.mode === 'resizes-visual',
+                        `activeElement=${beforeTap.caret} in ${String(beforeTap.pane)}, data-keyboard-viewport=${beforeTap.mode}`
+                    );
+                    await view.eval(
+                        `(() => {
+                            window.__kelpiTrail = [];
+                            const name = (node) => {
+                                if (node === null || node === undefined) return 'null';
+                                if (node === document.body) return 'body';
+                                const pane = node.closest === undefined ? null : node.closest('[data-pane-id]');
+                                const tag = (node.tagName ?? '?').toLowerCase();
+                                return (pane === null ? 'outside' : pane.getAttribute('data-pane-id')) + ':' + tag;
+                            };
+                            window.__kelpiTrailListener = (event) => {
+                                window.__kelpiTrail.push({
+                                    type: event.type,
+                                    target: name(event.target),
+                                    related: event.relatedTarget === undefined ? null : name(event.relatedTarget)
+                                });
+                            };
+                            for (const type of ['focusin', 'focusout', 'touchstart', 'touchend']) {
+                                document.addEventListener(type, window.__kelpiTrailListener, true);
+                            }
+                            return true;
+                        })()`
+                    );
+                    await view.tap(`[data-testid="pane-body-${rightID}"]`);
+                    await sleep(500);
+                    const trail = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    for (const type of ['focusin', 'focusout', 'touchstart', 'touchend']) {
+                                        document.removeEventListener(type, window.__kelpiTrailListener, true);
+                                    }
+                                    const trail = window.__kelpiTrail ?? [];
+                                    delete window.__kelpiTrail;
+                                    delete window.__kelpiTrailListener;
+                                    const active = document.activeElement;
+                                    const pane = active === null ? null : active.closest('[data-pane-id]');
+                                    return JSON.stringify({
+                                        trail,
+                                        caret: (active?.tagName ?? '(none)').toLowerCase(),
+                                        pane: pane === null ? '(none)' : pane.getAttribute('data-pane-id'),
+                                        mode: document.documentElement.dataset.keyboardViewport ?? '(unset)'
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`focus trail across the tap: ${JSON.stringify(trail)}`);
+                    const entries = trail.trail ?? [];
+                    const arrived = entries.findIndex((entry) => entry.type === 'focusin' && entry.target === `${rightID}:textarea`);
+                    const ended = entries.findIndex((entry) => entry.type === 'touchend');
+                    const throughNothing = entries.filter(
+                        (entry) => entry.target === 'body' || (entry.type === 'focusout' && (entry.related === 'null' || entry.related === 'body'))
+                    );
+                    recorder.check(
+                        'the caret went STRAIGHT from one engine to the other: nothing in the trail is the body, and no focusout handed it to nothing',
+                        arrived >= 0 && throughNothing.length === 0,
+                        arrived < 0
+                            ? `the caret never arrived on ${rightID}: ${JSON.stringify(entries)}`
+                            : `through nothing: ${JSON.stringify(throughNothing)}`
+                    );
+                    recorder.check(
+                        'and it arrived inside the gesture, BEFORE the touchend the engine used to answer',
+                        arrived >= 0 && ended >= 0 && arrived < ended,
+                        `focusin at ${String(arrived)}, touchend at ${String(ended)} in ${JSON.stringify(entries.map((entry) => entry.type + ' ' + entry.target))}`
+                    );
+                    recorder.check(
+                        'the tapped pane holds the caret, and the keyboard the client can measure never changed',
+                        trail.pane === rightID && trail.caret === 'textarea' && trail.mode === beforeTap.mode,
+                        `activeElement=${trail.caret} in ${String(trail.pane)}, data-keyboard-viewport=${trail.mode} (was ${beforeTap.mode})`
+                    );
+                    await fakeKeyboard(false);
+                    await sleep(500);
+                } finally {
+                    /*
+                     * Belt and braces, in the order that keeps the next step honest: the viewport
+                     * shadow first (a window that lies about its own height poisons every later
+                     * measurement), then the pane this step made, then the emulation.
+                     */
+                    await view
+                        .eval(
+                            `(() => {
+                                const vv = window.visualViewport;
+                                if (vv !== null && vv !== undefined && Object.getOwnPropertyDescriptor(vv, 'height') !== undefined) {
+                                    delete vv.height;
+                                    vv.dispatchEvent(new Event('resize'));
+                                }
+                                return true;
+                            })()`
+                        )
+                        .catch(() => {});
+                    if (rightID !== '') {
+                        await cli.run(['pane', 'close', '--target', rightID]).catch(() => {});
+                        await view.waitFor(paneGoneExpr(rightID), { timeoutMs: 8000, label: 'the split pane to close' }).catch(() => {});
+                    }
+                    await clearPhoneEmulation(view);
+
+                    // AND NOT ON DESKTOP: no bar, and no phone state on either pane.
+                    const afterClear = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    bars: document.querySelectorAll('[data-terminal-key-bar]').length,
+                                    areas: document.querySelectorAll('[data-phone-content-area]').length,
+                                    formFactor: document.documentElement.dataset.formFactor ?? '(unset)'
+                                })`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'the bar and the content area both go the moment the window is a desktop again',
+                        afterClear.bars === 0 && afterClear.areas === 0 && afterClear.formFactor === 'desktop',
+                        `${String(afterClear.bars)} bars, ${String(afterClear.areas)} content areas, data-form-factor=${afterClear.formFactor}`
+                    );
+                    const rosterAfter = await readRoster();
+                    recorder.check(
+                        'the phone lane’s clause: the roster the spine reads is handed back as it was',
+                        JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                        `${JSON.stringify(rosterBefore)} -> ${JSON.stringify(rosterAfter)}`
+                    );
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
             }
         },
 

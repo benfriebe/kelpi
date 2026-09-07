@@ -175,7 +175,6 @@ describe('createEditorResolver (CONT-086/087)', () => {
                 }),
             fromEnv: () => null
         });
-        resolver.warmUp();
         expect(resolver.current()).toBeNull();
         expect(resolver.buildCommand('/a.md')).toBeNull();
         gate.release?.(fixedResolution('vi'));
@@ -217,7 +216,9 @@ describe('createEditorResolver (CONT-086/087)', () => {
         expect(resolver.buildCommand('/a.md')).toBe("vi '/a.md'");
     });
 
-    it('warmUp is idempotent', async () => {
+    // CONT-087 / #115: building the resolver must not fork anything, because every daemon a
+    // test boots builds one. Only an ask arms the shell, and simultaneous asks share it.
+    it('forks nothing until someone asks, then shares the one in-flight probe', async () => {
         let probes = 0;
         const resolver = createEditorResolver({
             probe: async () => {
@@ -226,10 +227,27 @@ describe('createEditorResolver (CONT-086/087)', () => {
             },
             fromEnv: () => null
         });
-        resolver.warmUp();
-        resolver.warmUp();
-        resolver.warmUp();
-        await resolver.resolve();
+        // Construction alone, and a tick of the event loop for anything it might have queued.
+        await Promise.resolve();
+        expect(probes).toBe(0);
+
+        const asks = await Promise.all([resolver.resolve(), resolver.resolve(), resolver.resolve()]);
+        expect(asks).toEqual([fixedResolution('nvim'), fixedResolution('nvim'), fixedResolution('nvim')]);
+        expect(probes).toBe(1);
+    });
+
+    it('current() arms the probe in the background without waiting for it', async () => {
+        let probes = 0;
+        const resolver = createEditorResolver({
+            probe: async () => {
+                probes += 1;
+                return fixedResolution('vi');
+            },
+            fromEnv: () => null
+        });
+        expect(resolver.current()).toBeNull();
+        expect(probes).toBe(1);
+        expect(await resolver.resolve()).toEqual(fixedResolution('vi'));
         expect(probes).toBe(1);
     });
 });

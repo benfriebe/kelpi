@@ -1279,8 +1279,6 @@ interface EditorResolver {
                                                   //   source: "shell" | "process-env" };
                                                   // null if unresolved / still resolving
   buildCommand(filePath: string): string | null;  // full shell command or null
-  warmUp(): void;                                 // kick off async resolution; called
-                                                  // once at daemon boot
   resolve(): Promise<EditorResolution | null>;    // await the in-flight (or a fresh)
                                                   // probe
 }
@@ -1290,9 +1288,19 @@ interface EditorResolver {
 or within the 30 s failure TTL (a stale failure re-arms the probe in the background and
 still answers null for that call). `resolve()` awaits the in-flight or a fresh probe and
 is what the user-initiated "Open in $EDITOR" command uses, so an explicit open may wait
-up to the 2 s watchdog; `warmUp()` at daemon boot makes that rare. With no editor
-resolvable the open command fails ("no $VISUAL or $EDITOR is set"); ⌘E does not consult
-the resolver at all (§4.1).
+up to the 2 s watchdog. With no editor resolvable the open command fails ("no $VISUAL or
+$EDITOR is set"); ⌘E does not consult the resolver at all (§4.1).
+
+**Resolution is lazy** (#115). The login shell is forked by the first caller that needs
+the answer, which in the daemon is only `markdown-external-editor {action:"open"}`
+(`ws/desktop.ts`); daemon boot does not touch the resolver and there is no "warm it up"
+entry point. There used to be one, called at the end of `start()`, and it cost an
+interactive login shell per daemon: harmless for the one daemon a person runs, and a
+load spike for a test suite that boots hundreds (the root suite peaked at 40 concurrent
+`zsh -l -i -c`, and two promote batteries died on tests that pass alone). What it bought
+was a head start on the first open, bounded by the 2 s watchdog and paid once per daemon.
+A test that drives the verb passes its own resolver as `createDaemon({ editor })`
+(`boot/compose.ts`), so a suite never forks a login shell.
 
 ### 6.2 Resolution algorithm
 
@@ -1315,7 +1323,8 @@ the resolver at all (§4.1).
    `$PATH`) — mostly relevant for CLI/test launches.
 7. Caching: a success is cached for the process lifetime. A **failure is cached for
    30 s**, after which the next query retries in the background (so one slow/hung
-   shell doesn't permanently disable external editing).
+   shell doesn't permanently disable external editing). Steps 1-6 do not run until
+   somebody asks (§6.1); concurrent askers share the one in-flight probe.
 
 ### 6.3 Command construction
 

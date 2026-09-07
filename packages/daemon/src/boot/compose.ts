@@ -91,7 +91,7 @@ import {
     withSpawnGate,
     type KelpiPtyManager
 } from '../pty/index.js';
-import { createEditorResolver } from '../content/external-editor.js';
+import { createEditorResolver, type EditorResolver } from '../content/external-editor.js';
 import type { ControlDispatcher, PersistenceHealth, TerminalInput } from '../seams.js';
 import {
     applyLoadReset,
@@ -252,6 +252,18 @@ export interface DaemonOptions {
      * fresh-install workspace so both palette picks come from the one injected stream (#56).
      */
     readonly random?: (() => number) | undefined;
+    /**
+     * `$VISUAL` / `$EDITOR` resolution (CONT-081…088). Absent, the daemon builds the real one,
+     * which asks the user's LOGIN shell: `zsh -l -i -c`, sourcing `.zprofile` and `.zshrc`.
+     *
+     * A test that drives `markdown-external-editor` passes its own resolver here (#115). Boot
+     * itself never touches the resolver, so an ordinary test daemon forks nothing either way;
+     * this is the seam that keeps it that way once a test does exercise the verb. It is an
+     * injected service rather than an env var for the same reason `now` / `uuid` / `random` are:
+     * a vitest worker runs many daemons in one process, and a per-daemon argument cannot leak
+     * into the one beside it.
+     */
+    readonly editor?: EditorResolver | undefined;
     /** Install SIGTERM/SIGINT handlers. `kelpid start` sets it; tests do not. */
     readonly installSignalHandlers?: boolean | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -775,13 +787,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     /**
      * `$VISUAL` / `$EDITOR` resolution for the external-editor pane mode (CONT-081…088).
      *
-     * Warmed at the end of `start()` (CONT-087) so the first "Open in $EDITOR" is instant, and
-     * cached for the daemon's lifetime — the login-shell probe costs 1–2 seconds of rc-file
-     * loading and must never sit on a request path.
+     * Constructing it forks nothing. The login-shell probe is armed by the first request that
+     * needs the answer, which is `markdown-external-editor {action:"open"}` in `ws/desktop.ts`
+     * and nothing else, and the answer is then cached for the daemon's lifetime (CONT-086/087,
+     * #115). `options.editor` is the seam a test uses to make even that impossible.
      */
-    const editorResolver = createEditorResolver({
-        onLog: (message) => log(message)
-    });
+    const editorResolver =
+        options.editor ??
+        createEditorResolver({
+            onLog: (message) => log(message)
+        });
 
     /**
      * APP-054 / AGNT-006 "Restart Socket Server": close and re-bind the control listeners.
@@ -1567,10 +1582,6 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         } catch (error) {
             report(error, 'label preset migration');
         }
-        // CONT-087: resolve the user's `$EDITOR` in the background now, so the first
-        // "Open in $EDITOR" does not pay for a login-shell init. Failures are cached with a
-        // TTL and simply mean the built-in editor keeps the pane.
-        editorResolver.warmUp();
         // A crashed sync leaks a throw-away index into the temp dir (port note 18); only
         // day-old files are swept, so a concurrent daemon's in-flight sync is never robbed.
         try {

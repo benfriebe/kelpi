@@ -20,8 +20,17 @@
  *    for free — `stdout`/`stderr` `data` listeners are attached before the process can fill a
  *    64 KB pipe buffer — plus a 2 s watchdog that kills a shell hung for any other reason.
  *  - **Resolution is cached** (CONT-086): a success for the daemon's lifetime, a failure for
- *    `FAILURE_RETRY_MS` so one slow cold-cache init does not disable the feature forever. It runs
- *    off the request path (`warmUp()` at boot, CONT-087) and never blocks a reply.
+ *    `FAILURE_RETRY_MS` so one slow cold-cache init does not disable the feature forever.
+ *
+ * **Resolution is lazy** (CONT-087, #115). The probe is armed by the first caller that needs its
+ * answer (`resolve()` from an "Open in $EDITOR", or `current()`) and never at boot. It used to be
+ * warmed at the end of `start()`, which cost one interactive login shell per daemon. That is free
+ * for the one daemon a person runs and ruinous for a suite: the root suite (6338 tests, 16 cores)
+ * boots hundreds of daemons and had up to 40 `zsh -l -i -c` alive at once, each of them sourcing
+ * `.zprofile` and `.zshrc` (direnv, nvm, banners). Two promote batteries died on root-suite tests
+ * that pass alone. Nothing at boot reads the answer, and `ws/desktop.ts`'s
+ * `markdown-external-editor open` is the only consumer in the daemon, so nothing is lost but the
+ * head start on the first open, which is bounded by the 2 s watchdog and paid once per daemon.
  *
  * `$VISUAL` wins over `$EDITOR` (CONT-083, POSIX). With neither set, resolution answers `null`
  * and the caller falls back to the built-in editor — exactly what ⌘E does today.
@@ -231,14 +240,17 @@ export interface EditorResolverOptions {
 
 export interface EditorResolver {
     /**
-     * The cached answer, or null when resolution has not finished (or recently failed).
-     * **Never blocks** — CONT-086's contract, and the reason a first ⌘E before warm-up
-     * completes falls back to the built-in editor rather than stalling the reply.
+     * The cached answer, or null when resolution has not finished (or recently failed). Arms the
+     * probe in the background if it has never run. **Never blocks**, which is CONT-086's contract
+     * and the reason a first ⌘E before resolution completes falls back to the built-in editor
+     * rather than stalling the reply.
      */
     current(): EditorResolution | null;
-    /** Kick resolution off; idempotent. Called at boot (CONT-087). */
-    warmUp(): void;
-    /** Await the in-flight (or a fresh) resolution — what a user-initiated request wants. */
+    /**
+     * Await the in-flight (or a fresh) resolution: what a user-initiated request wants, and the
+     * call that arms the login shell for the first time (CONT-087, #115: there is deliberately no
+     * "warm it at boot" entry point, because every daemon a test boots would use it).
+     */
     resolve(): Promise<EditorResolution | null>;
     /** `formatEditorCommand` against the current answer; null when unresolvable. */
     buildCommand(filePath: string): string | null;
@@ -247,6 +259,9 @@ export interface EditorResolver {
 /**
  * The cache (CONT-086). A success is kept for the process lifetime; a failure is kept only for
  * `failureRetryMs`, after which the next `resolve()` tries the shell again.
+ *
+ * Building the resolver costs nothing: no shell is forked until a caller asks for the answer
+ * (CONT-087, #115). Concurrent askers share the one in-flight probe.
  */
 export function createEditorResolver(options: EditorResolverOptions = {}): EditorResolver {
     const probe =
@@ -292,10 +307,6 @@ export function createEditorResolver(options: EditorResolverOptions = {}): Edito
             if (failedAt !== null && now() - failedAt < retryMs) return null;
             void start();
             return null;
-        },
-        warmUp(): void {
-            if (resolved !== null || inFlight !== null) return;
-            void start();
         },
         async resolve(): Promise<EditorResolution | null> {
             if (resolved !== null) return resolved;

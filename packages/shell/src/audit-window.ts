@@ -120,6 +120,14 @@
  *     `dock-bounce-stop-only`, and that scenario now says so in its own words rather than reading
  *     as "a stop does not bounce the dock".
  *
+ * ## And none of the three is ever the key window (#109)
+ *
+ * Measured after all of the above and fixed here: a lane window was still shown with `show()`,
+ * which is `makeKeyAndOrderFront:` on macOS, so an invisible zero-opacity frame was holding the
+ * machine's keyboard and the owner's own typing was landing in the run's terminal. Every lane
+ * placement is `focusable: false` now. `auditWindowFocusable` has the rule, the measurement and
+ * what the lane does instead.
+ *
  * There is no Electron in here — the policy and the geometry are plain data, so both are unit
  * tested without a GUI.
  */
@@ -271,6 +279,56 @@ export function resolveWindowPolicy(env: Readonly<Record<string, string | undefi
 }
 
 /**
+ * Whether a placed window may become the OS KEY window. `false` for every lane placement.
+ *
+ * ## The rule
+ *
+ * A lane window (`hidden`, `offscreen`, `onscreen`) never becomes the key window on its own, and
+ * the machine's real keyboard never reaches it. Every keystroke a lane delivers goes through CDP
+ * (`Input.dispatchKeyEvent` and friends), which is answered by the render widget directly and
+ * needs no key status at all. So the window has nothing to gain from being key and one very
+ * expensive thing to lose by it.
+ *
+ * ## The reason, measured (#109, and the "Not in this PR" note on PR #113)
+ *
+ * `hidden` paints the window at zero opacity and makes it click-through, and it was still shown
+ * with `show()`, which on macOS is `makeKeyAndOrderFront:` plus an app activation. Measured on
+ * this Electron, on the base tree, at `--window hidden`:
+ *
+ *   - right after boot the frontmost application was `Electron` and `harness.window()` reported
+ *     `focused: true`. The run had taken the machine's keyboard, invisibly;
+ *   - a `harness.focus()` took it back off the app the person had moved to;
+ *   - a CGEvent keystroke posted the way a physical one arrives landed in the lane's terminal
+ *     pane: `kelpi pane capture` came back `sh-3.2$ echo urecaret-ok` where the scenario had
+ *     typed `echo caret-ok` through CDP and `ure` was typed on the machine.
+ *
+ * That is exactly the shape PR #113 recorded and could not attribute (`sh-3.2$ ortecho caret-ok`,
+ * `stctureecho caret-ok`), and the shape the phone program recorded as "`terminal-ls` can mangle
+ * its own typed fixture on a first run" (`cd <path>` arriving as ` to bcd <path>`). It is not a
+ * flake in a scenario: it is the machine's owner typing into an invisible test terminal while
+ * their own keystrokes vanish from wherever they thought they were typing.
+ *
+ * `focusable: false` is what closes it. On macOS it makes the frame refuse key status, so AppKit
+ * has nowhere to route a key event even when the app is frontmost, and `Page.bringToFront`,
+ * `show()` and `focus()` all stop being able to steal it. Nothing the lane needs goes through
+ * that path: CDP input, `Runtime.evaluate`, `Page.captureScreenshot`, the harness channel and the
+ * CLI are all indifferent to key status.
+ *
+ * What it costs is `document.hasFocus()` inside the page, which is a real signal the client reads
+ * (`client/src/terminal/TerminalPane.tsx` seeds `windowFocused` from it,
+ * `client/src/chrome/attention.ts` gates on it). The lane pays that back through CDP focus
+ * emulation rather than through the OS: `scripts/ui-audit/lib/driver.mjs` ▸ `boot` turns
+ * `Emulation.setFocusEmulationEnabled` on, and `harness.focus()` / `harness.blur()` in the lane
+ * mean "make the page believe it is focused / unfocused" rather than "make the OS window key".
+ *
+ * `default` keeps `true`, so the on-screen full audit and every user launch are untouched: a
+ * visible window that could not be typed into would be a worse lie than the one this fixes.
+ */
+export function auditWindowFocusable(placement: AuditWindowPlacement): boolean {
+    return placement === 'default';
+}
+
+/**
  * How the window is made invisible, for the placements that do it that way.
  *
  * `opacity: 0` rather than `hide()`/`minimize()`: this app acts on both of those events
@@ -349,6 +407,10 @@ export function auditWindowLogLine(policy: AuditWindowPolicy, requested: AuditRe
         `placement=${policy.placement} backgroundThrottling=${String(policy.backgroundThrottling)} ` +
         `opacity=${visibility.opacity === null ? 'default' : String(visibility.opacity)} ` +
         `clickThrough=${String(visibility.ignoreMouseEvents)} ` +
+        // The key-window rule, stated in the run's own log: a lane window is `focusable=false`,
+        // so "did the policy take?" is answerable from outside the process rather than by
+        // reading this file. See `auditWindowFocusable`.
+        `focusable=${String(auditWindowFocusable(policy.placement))} ` +
         `requested=${rect(requested)} actual=${rect(actual)}`
     );
 }

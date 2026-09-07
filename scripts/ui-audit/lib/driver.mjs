@@ -216,6 +216,49 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
     };
 }
 
+/**
+ * The lane's page-level focus: make the PAGE believe it is focused, without the OS window ever
+ * being the key one.
+ *
+ * ## The rule (#109)
+ *
+ * A lane window (`--window hidden | offscreen | onscreen`) never becomes the key window on its
+ * own, and the machine's real keyboard never reaches it. `packages/shell/src/audit-window.ts` ▸
+ * `auditWindowFocusable` builds every lane placement `focusable: false` and has the measurement:
+ * on the base tree, at `--window hidden`, the frontmost application right after boot was
+ * `Electron`, `harness.focus()` took the key window back off the app the person had moved to,
+ * and a CGEvent keystroke posted the way a physical one arrives landed in the run's terminal
+ * pane: `echo caret-ok` typed through CDP came back from `kelpi pane capture` as
+ * `echo urecaret-ok`, with `ure` typed on the machine. That is the shape PR #113 recorded and
+ * could not attribute.
+ *
+ * ## What the lane does instead
+ *
+ * Every keystroke a lane delivers already goes through CDP (`Input.dispatchKeyEvent` and
+ * friends), which the render widget answers directly and which needs no key status. The one
+ * thing key status was still buying was the page's own belief that it is focused, which the
+ * client genuinely reads: `client/src/terminal/TerminalPane.tsx` seeds `windowFocused` from
+ * `document.hasFocus()`, `client/src/chrome/attention.ts` gates on it, and CDP key events are
+ * only routed to the focused element of a focused page. `Emulation.setFocusEmulationEnabled`
+ * supplies exactly that and nothing else: it does not touch `document.visibilityState`, so
+ * `dock-bounce-stop-only`'s `harness.hide()` still drives the app inactive the way #113 made it.
+ *
+ * So, in the lane: `harness.focus()` means "make the page believe it is focused" and
+ * `harness.blur()` the reverse, rather than "make the OS window key". See `boot`, which wraps
+ * the two ops, and `packages/shell/src/harness.ts`, which holds up the main-process half.
+ *
+ * Best effort: an Electron without the domain must not take a run down over a signal the lane
+ * only ever improves.
+ */
+export async function setPageFocusEmulation(page, enabled) {
+    try {
+        await page.send('Emulation.setFocusEmulationEnabled', { enabled });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** Walk a harness `menu()` tree; returns the first node whose label matches `needle` (string or RegExp). */
 export function findMenuItem(items, needle) {
     const test = needle instanceof RegExp ? (label) => needle.test(label) : (label) => label.toLowerCase() === String(needle).toLowerCase();
@@ -514,6 +557,11 @@ export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(
  * `visibilityState: 'visible'` everywhere unless something is in front of it. A scenario that
  * needs an inactive app drives it with `harness.hide()` and restores afterwards
  * (`scripts/scenarios/dock-bounce-stop-only.mjs` is the worked example).
+ *
+ * And no placement is ever the KEY window (#109). All three are built `focusable: false`, so the
+ * machine's keyboard cannot reach a run and a run cannot take the machine's keyboard; the page's
+ * own sense of being focused comes from CDP focus emulation instead. `setPageFocusEmulation`
+ * above has the rule, the reason and the measurement.
  */
 export const WINDOW_PLACEMENTS = ['hidden', 'offscreen', 'onscreen'];
 /** What `windowPlacement` reports when no placement was asked for: the shell's own choice. */
@@ -542,7 +590,12 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  *
  * The placement is verified rather than assumed: the shell logs `harness-window: placement=…` at
  * window creation, and the boot waits for that line, so a lane that silently did not open fails
- * here instead of hundreds of assertions later.
+ * here instead of hundreds of assertions later. That line also carries `focusable=false`, which
+ * is #109's key-window rule: a lane window never becomes the key window, so the machine's real
+ * keyboard never reaches the run and the run never takes it from the person at the machine. The
+ * page is told it is focused over CDP instead, and `harness.focus()` / `harness.blur()` in the
+ * lane mean "make the page believe it is focused / unfocused" rather than "make the OS window
+ * key". `setPageFocusEmulation` above has the measurement.
  */
 export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window } = {}) {
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
@@ -572,7 +625,39 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
     }
     const page = await connectClient(sandbox.debugPort, { repoRoot, timeoutMs });
-    const harness = harnessClient(harnessSocket);
+    /*
+     * #109: the lane's window is never the key window (see `setPageFocusEmulation`), so the page
+     * would report `document.hasFocus() === false` for the whole run and CDP keys would have no
+     * focused page to route to. Emulation is turned on here, before a scenario runs a line, so
+     * the page starts in the same state it used to reach by stealing the machine's keyboard.
+     * Unset `window` is the shipped window: it can be key, so nothing is emulated.
+     */
+    const laneFocus = window !== undefined;
+    if (laneFocus) await setPageFocusEmulation(page, true);
+    const rawHarness = harnessClient(harnessSocket);
+    /*
+     * In the lane, `focus` and `blur` mean "make the page believe it is focused / unfocused".
+     * The main-process call still happens (`harness.focus()` orders the frame front and hands
+     * the keyboard to the web contents; `blur()` is a no-op on a window that was never key), and
+     * the page-level half is added here because this is the side holding the CDP session. The
+     * ORDER matters for `blur`: emulation goes off first, so a scenario that reads
+     * `document.hasFocus()` straight after the await never sees the stale `true`.
+     */
+    const harness = laneFocus
+        ? {
+              ...rawHarness,
+              focus: async () => {
+                  const answer = await rawHarness.focus();
+                  await setPageFocusEmulation(page, true);
+                  return answer;
+              },
+              blur: async () => {
+                  await setPageFocusEmulation(page, false);
+                  return await rawHarness.blur();
+              },
+              close: () => rawHarness.close()
+          }
+        : rawHarness;
     await settle(async () => {
         try {
             await harness.ping();

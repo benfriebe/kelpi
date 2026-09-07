@@ -65,7 +65,13 @@ import {
     transparencyNeedsRelaunch,
     windowTransparency
 } from './appearance.js';
-import { auditWindowBounds, auditWindowLogLine, auditWindowVisibility, resolveWindowPolicy } from './audit-window.js';
+import {
+    auditWindowBounds,
+    auditWindowFocusable,
+    auditWindowLogLine,
+    auditWindowVisibility,
+    resolveWindowPolicy
+} from './audit-window.js';
 import { sendControlCommand } from './control.js';
 import {
     DaemonUnavailableError,
@@ -469,8 +475,20 @@ function createWindow(): BrowserWindow {
     const placedBounds = lane.active
         ? auditWindowBounds(lane.placement, bounds, screen.getPrimaryDisplay().workArea)
         : bounds;
+    /*
+     * #109: a lane window never becomes the KEY window, so the machine's real keyboard never
+     * reaches it. `./audit-window.ts` ▸ `auditWindowFocusable` has the rule, the measurement
+     * (a CGEvent keystroke posted the way a physical one arrives landed in the hidden lane's
+     * terminal pane: `echo caret-ok` came back as `echo urecaret-ok`) and what the lane does
+     * for page-level focus instead. False only under a lane; every user launch is `true`.
+     */
+    const laneIsKeyless = lane.active && !auditWindowFocusable(lane.placement);
     const window = new BrowserWindow({
         ...placedBounds,
+        // Set at construction, not after: `show()` is `makeKeyAndOrderFront:` and the window is
+        // shown from `ready-to-show`, so a later `setFocusable(false)` would already have lost
+        // the race that matters.
+        ...(laneIsKeyless ? { focusable: false } : {}),
         minWidth: MIN_WINDOW_WIDTH,
         minHeight: MIN_WINDOW_HEIGHT,
         show: false,
@@ -584,8 +602,19 @@ function createWindow(): BrowserWindow {
     }
     applySecurityPolicy(window);
 
+    /*
+     * Show the window without asking AppKit to make it key, for a lane that must never be key.
+     * `showInactive()` is `orderFrontRegardless`; `show()` is `makeKeyAndOrderFront:` plus an app
+     * activation, which is what took the machine's keyboard in the measurement above. Outside a
+     * lane this is `window.show()` and nothing about a user's launch changes.
+     */
+    const showWindow = (): void => {
+        if (laneIsKeyless) window.showInactive();
+        else window.show();
+    };
+
     window.once('ready-to-show', () => {
-        window.show();
+        showWindow();
         // N15: a window built by `presentWindow` was focused before it had anything to focus —
         // the widget only exists once the page is ready to be shown. Re-asserting it here is
         // what makes a REOPENED window typable without a click; a window that is not the active
@@ -675,7 +704,7 @@ function createWindow(): BrowserWindow {
     window.webContents.on('did-finish-load', () => {
         loadRetries = 0;
         log(`did-finish-load ${window.webContents.getURL()}`);
-        if (!window.isVisible()) window.show();
+        if (!window.isVisible()) showWindow();
     });
     window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         if (!isMainFrame || code === -3 /* ERR_ABORTED: a navigation we replaced */) return;

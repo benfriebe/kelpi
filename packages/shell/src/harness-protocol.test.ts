@@ -924,6 +924,27 @@ describe('respond', () => {
         expect(respond(request('blur'), surface)).toEqual({ id: 1, ok: true, result: { focused: null } });
     });
 
+    it('reports focus honestly when the window is not allowed to be the key one (#109)', () => {
+        /*
+         * A lane window (`--window hidden | offscreen | onscreen`) is built `focusable: false`
+         * so the machine's real keyboard can never reach a run: `./harness.ts` ▸ `focus` then
+         * does `showInactive()` + `webContents.focus()` and `isFocused()` stays false. The op
+         * must pass that through unembellished rather than answer a flattering `true`, because
+         * the two scenarios that read this field assert `focused === false` and a lie here would
+         * make a keyless window indistinguishable from a key one.
+         */
+        const { surface, state } = fakeSurface();
+        const keyless: HarnessSurface<FakeItem> = {
+            ...surface,
+            focus: () => {
+                if (state.window === null) return null;
+                return false;
+            }
+        };
+        expect(respond(request('focus'), keyless)).toEqual({ id: 1, ok: true, result: { focused: false } });
+        expect(respond(request('blur'), keyless)).toEqual({ id: 1, ok: true, result: { focused: false } });
+    });
+
     it('hide, minimize and restore report the window state they left behind (#75)', () => {
         const { surface } = fakeSurface();
         expect(respond(request('hide'), surface)).toEqual({

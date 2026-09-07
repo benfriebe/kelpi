@@ -4,6 +4,7 @@ import {
     OFFSCREEN_MARGIN,
     SHIPPED_WINDOW_POLICY,
     auditWindowBounds,
+    auditWindowFocusable,
     auditWindowLogLine,
     auditWindowPolicy,
     auditWindowVisibility,
@@ -204,6 +205,45 @@ describe('how the window is made invisible', () => {
         // An invisible rectangle that swallows clicks is worse than a visible window, because
         // there is nothing to see. CDP delivers the audit's own input below AppKit's hit-testing.
         expect(auditWindowVisibility('hidden').ignoreMouseEvents).toBe(true);
+    });
+});
+
+describe('no lane window is ever the key window (#109)', () => {
+    const laneEnv = (placement: string) => ({
+        KELPI_HARNESS_SOCKET: '/tmp/kelpi-harness.sock',
+        KELPI_HARNESS_WINDOW: placement
+    });
+
+    it('refuses key status at every placement a lane can ask for', () => {
+        // The rule: a lane window never becomes the key window on its own, so the machine's real
+        // keyboard never reaches it. Measured on the base tree at `--window hidden`: the
+        // frontmost application right after boot was `Electron`, `harness.focus()` took the key
+        // window off the app the person had moved to, and a CGEvent keystroke posted the way a
+        // physical one arrives landed in the run's terminal: `echo caret-ok` typed over CDP
+        // came back from `kelpi pane capture` as `echo urecaret-ok`.
+        for (const placement of ['hidden', 'offscreen', 'onscreen'] as const) {
+            expect(auditWindowFocusable(placement)).toBe(false);
+        }
+    });
+
+    it('leaves a user’s window, and the on-screen full audit, focusable', () => {
+        // `default` is what every user launch and the default audit run get. A visible window
+        // that could not be typed into would be a worse lie than the one this fixes.
+        expect(auditWindowFocusable('default')).toBe(true);
+        expect(auditWindowFocusable(SHIPPED_WINDOW_POLICY.placement)).toBe(true);
+    });
+
+    it('covers both gates: whichever lane opened, the placement decides', () => {
+        expect(auditWindowFocusable(harnessWindowPolicy(laneEnv('hidden')).placement)).toBe(false);
+        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'onscreen' }).placement)).toBe(
+            false
+        );
+        expect(auditWindowFocusable(auditWindowPolicy({ KELPI_AUDIT: '1' }).placement)).toBe(true);
+    });
+
+    it('states the rule in the log line, so the policy is checkable from outside the process', () => {
+        expect(auditWindowLogLine(harnessWindowPolicy(laneEnv('hidden')), BOUNDS, BOUNDS)).toContain('focusable=false');
+        expect(auditWindowLogLine(auditWindowPolicy({ KELPI_AUDIT: '1' }), BOUNDS, BOUNDS)).toContain('focusable=true');
     });
 });
 

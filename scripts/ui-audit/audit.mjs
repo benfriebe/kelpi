@@ -1901,6 +1901,28 @@ async function main() {
          * without the resign/become-key churn that blurs an inline rename mid-typing.
          */
         await page.send('Page.bringToFront').catch(() => {});
+        /*
+         * #109: a LANE window (`--window hidden | offscreen | onscreen`) is built
+         * `focusable: false`, so it never becomes the OS key window: the machine's real
+         * keyboard cannot reach a run, and `Page.bringToFront` above cannot take the keyboard
+         * off the person at the machine. Measured on the base tree at `--window hidden`: the
+         * frontmost application right after boot was `Electron`, and a CGEvent keystroke posted
+         * the way a physical one arrives landed in the run's terminal pane
+         * (`echo caret-ok` came back from `kelpi pane capture` as `echo urecaret-ok`).
+         *
+         * What key status was still buying is the page's own belief that it is focused, which
+         * `document.hasFocus()`, `client/src/terminal/TerminalPane.tsx` and CDP key routing all
+         * read. Focus emulation supplies that and nothing else: it does not touch
+         * `visibilityState`. `lib/driver.mjs` ▸ `setPageFocusEmulation` states the rule in full;
+         * the two lines are inlined here for the same reason `WINDOW_PLACEMENTS` is (line 91):
+         * this file deliberately does not import the scenario driver.
+         *
+         * `default` is the audit's own default and the on-screen full run: that window can be
+         * key exactly as before, so nothing is emulated for it.
+         */
+        if (options.window !== 'default') {
+            await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+        }
         await page.waitFor(`document.querySelector('${PAGE.app}') !== null`, {
             timeoutMs: 60_000,
             label: 'the app to mount'
@@ -28503,6 +28525,13 @@ function buildFlows(ctx) {
                 await nextPage.send('Runtime.enable');
                 await nextPage.send('DOM.enable');
                 await nextPage.watchFrames();
+                // #109: focus emulation is per TARGET, and this is a new one. The relaunched
+                // shell inherits `KELPI_AUDIT_WINDOW` from the sandbox env, so its window is
+                // keyless in a lane exactly as the first one was, and its page needs the same
+                // page-level focus the bootstrap gave the first (see the bootstrap's comment).
+                if (runOptions.window !== 'default') {
+                    await nextPage.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+                }
                 await nextPage.waitFor(`document.querySelector('${PAGE.app}') !== null`, { timeoutMs: 60_000, label: 'the relaunched app' });
                 await sleep(4000);
                 await recorder.shot(nextPage);

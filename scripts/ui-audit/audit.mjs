@@ -31313,16 +31313,23 @@ function buildFlows(ctx) {
                     const layout = await readFrame();
                     recorder.note(`split layout: ${JSON.stringify(layout)}`);
                     const panes = (layout.panes ?? []).filter((pane) => pane.id === leftID || pane.id === rightID);
+                    const area = layout.area;
+                    const bar = layout.bar;
                     recorder.check(
                         'both panes are live and side by side under the phone viewport',
-                        panes.length === 2 && panes.every((pane) => pane.w > 0) && layout.area !== null,
+                        panes.length === 2 && panes.every((pane) => pane.w > 0),
                         panes.map((pane) => `${String(pane.id)} ${String(pane.w)}x${String(pane.h)} at x ${String(pane.x)}`).join('; ')
                     );
-                    if (panes.length !== 2 || layout.area === null) return;
+                    if (panes.length !== 2) return;
                     /*
-                     * THE OWNER'S REPORT, as a measurement. One bar; it belongs to neither pane's
-                     * subtree; its rect is the content area's, not a pane's - which is the same
-                     * thing as saying it is WIDER than either pane in a side-by-side split.
+                     * THE OWNER'S REPORT, as three measurements. One bar; it belongs to neither
+                     * pane's subtree; its rect is the content area's rather than a pane's - which
+                     * in a side-by-side split is the same thing as being WIDER than either pane.
+                     *
+                     * Measured on the base commit (2026-09-08): one bar, `barInside` true, its
+                     * rect 76x45 at x 310 - the focused pane's column - with no content area on
+                     * the page at all, and the two panes 715 px and 760 px tall, because the bar
+                     * came out of the focused one's box alone.
                      */
                     recorder.check(
                         'there is exactly ONE key bar and it is inside neither pane',
@@ -31331,20 +31338,34 @@ function buildFlows(ctx) {
                     );
                     recorder.check(
                         'the bar spans the content area, not the pane it acts on',
-                        layout.bar !== null &&
-                            Math.abs(layout.bar.x - layout.area.x) <= 1 &&
-                            Math.abs(layout.bar.w - layout.area.w) <= 1 &&
-                            panes.every((pane) => layout.bar.w > pane.w + 1),
-                        `bar ${String(layout.bar?.w)}px at x ${String(layout.bar?.x)}; area ${String(layout.area.w)}px at x ${String(layout.area.x)}; ` +
-                            `panes ${JSON.stringify(panes.map((pane) => pane.w))}px`
+                        bar !== null &&
+                            area !== null &&
+                            Math.abs(bar.x - area.x) <= 1 &&
+                            Math.abs(bar.w - area.w) <= 1 &&
+                            panes.every((pane) => bar.w > pane.w + 1),
+                        area === null
+                            ? `no content area on the page; bar ${String(bar?.w)}px at x ${String(bar?.x)} over panes ${JSON.stringify(panes.map((pane) => pane.w))}px`
+                            : `bar ${String(bar?.w)}px at x ${String(bar?.x)}; area ${String(area.w)}px at x ${String(area.x)}; ` +
+                              `panes ${JSON.stringify(panes.map((pane) => pane.w))}px`
                     );
                     recorder.check(
                         'it sits at the bottom of the content area, with BOTH panes ending above it',
-                        layout.bar !== null &&
-                            Math.abs(layout.area.bottom - layout.bar.bottom) <= 1 &&
-                            panes.every((pane) => pane.bottom <= layout.bar.y + 1),
-                        `bar bottom ${String(layout.bar?.bottom)} vs area bottom ${String(layout.area.bottom)}; ` +
-                            `pane bottoms ${JSON.stringify(panes.map((pane) => pane.bottom))} vs bar top ${String(layout.bar?.y)}`
+                        bar !== null &&
+                            area !== null &&
+                            Math.abs(area.bottom - bar.bottom) <= 1 &&
+                            panes.every((pane) => pane.bottom <= bar.y + 1),
+                        `bar bottom ${String(bar?.bottom)} vs area bottom ${String(area?.bottom ?? '(no area)')}; ` +
+                            `pane bottoms ${JSON.stringify(panes.map((pane) => pane.bottom))} vs bar top ${String(bar?.y)}`
+                    );
+                    /*
+                     * …and the pane heights are the same claim from the other side: with the bar
+                     * inside one pane, that pane is 45 px shorter than its sibling and the sibling
+                     * runs under the bar. One bar for the window means both panes end together.
+                     */
+                    recorder.check(
+                        'both panes are the same height, because neither is paying for the bar on its own',
+                        Math.abs(panes[0].h - panes[1].h) <= 1,
+                        `heights ${JSON.stringify(panes.map((pane) => pane.h))} px`
                     );
                     await recorder.shot(view, 'split-bar');
                     recorder.eyes('does ONE row of keys run across the bottom of the window, under BOTH panes rather than inside one of them?');
@@ -31440,9 +31461,11 @@ function buildFlows(ctx) {
                         'the keyboard came out of the CONTENT AREA, once, and the bar rode it up',
                         raised.ok === true &&
                             withKeyboard.area !== null &&
+                            beforeKeyboard.area !== null &&
                             withKeyboard.area.inset === FAKE_KEYBOARD_PX &&
                             Math.abs(withKeyboard.area.padding - (beforeKeyboard.area.padding + FAKE_KEYBOARD_PX)) <= 1 &&
                             withKeyboard.bar !== null &&
+                            beforeKeyboard.bar !== null &&
                             Math.abs(beforeKeyboard.bar.bottom - withKeyboard.bar.bottom - FAKE_KEYBOARD_PX) <= 1,
                         `area padding ${String(beforeKeyboard.area?.padding)} -> ${String(withKeyboard.area?.padding)}, ` +
                             `bar bottom ${String(beforeKeyboard.bar?.bottom)} -> ${String(withKeyboard.bar?.bottom)}`

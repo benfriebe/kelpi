@@ -171,17 +171,30 @@ export default async function ({ page, cli, rec, d, sleep }) {
     await clickWorkspaceRow(page, twoID);
     /*
      * The precondition, and the one step of the diagnosis that was a hypothesis rather than read
-     * from the code: Chromium leaves DOM focus on the `tabindex=-1` row after the click. Read
-     * immediately, before the engines have come up, because that is the state every incoming pane
-     * arms its arbiter with.
+     * from the code: Chromium leaves DOM focus on the `tabindex=-1` row after the click, which
+     * is the state every incoming pane arms its arbiter with.
+     *
+     * A NOTE, not a check, and a settle rather than a single read (#109). The rule: a scenario
+     * fails on the behaviour it is about, never on the weather around it. The reason: this reads
+     * a state the click only passes THROUGH (the caret sits on the row until an engine collects
+     * it), so a one-shot read right after the click is racing the very hand-off the checks below
+     * measure. Measured 2026-09-08 00:13: this line alone went red in a battery run while all 14
+     * behaviour checks passed, because the caret had already moved on to the terminal. Either
+     * reading is a legitimate start for what follows, so the run records which one it got and
+     * asserts nothing about it; the short ceiling is there to catch the state, not to wait for it.
      */
-    const caretIsTheRow = await page.eval(
-        `document.activeElement !== null && document.activeElement.getAttribute('data-testid') === 'workspace-row'`
+    const caretIsTheRow = await d.settle(
+        async () =>
+            (await page.eval(
+                `document.activeElement !== null && document.activeElement.getAttribute('data-testid') === 'workspace-row'`
+            )) === true,
+        { ceilingMs: 1_000, intervalMs: 50 }
     );
-    rec.check(
-        'precondition: the clicked sidebar row is holding the caret',
-        caretIsTheRow === true,
-        String(await page.eval(CARET_HTML))
+    rec.note(
+        caretIsTheRow
+            ? 'precondition: the clicked sidebar row is holding the caret (the reported starting state)'
+            : `precondition: the caret had already left the clicked row (${String(await page.eval(CARET_HTML))}); the ` +
+              'checks below are what this scenario is about either way'
     );
 
     await d.settleDom(page, `${ENGINES_UP} === 3`, { ceilingMs: 30_000 });

@@ -33,7 +33,7 @@ export const covers = [
 const TAG = Math.random().toString(36).slice(2, 7).toUpperCase();
 const PAYLOAD = `KELPI-KITTY-PASTE-${TAG}`;
 
-export default async function ({ page, cli, rec, d, sleep }) {
+export default async function ({ page, harness, cli, rec, d, sleep }) {
     // The first workspace's pane is painted a beat after the app root is up, and a run that
     // asked for it too early would fail as "no pane" rather than as the thing under test.
     await d.settle(async () => (await d.domPaneIDs(page)).length > 0, { ceilingMs: 15_000, intervalMs: 200 });
@@ -89,13 +89,20 @@ export default async function ({ page, cli, rec, d, sleep }) {
     if (!encoded.includes('^[[98;9u')) return;
 
     // ── the fix: ⌘V is handed to the layers below, and a real paste happens ─────────
-    const seeded = String(
-        await page.eval(
-            `navigator.clipboard.writeText(${JSON.stringify(PAYLOAD)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
-        )
-    );
-    rec.check('the clipboard holds the payload', seeded === 'ok', seeded);
-    if (seeded !== 'ok') {
+    /*
+     * The seed goes through the SHELL, not through the page (#109).
+     *
+     * `navigator.clipboard.writeText` needs the document focused, and throws `NotAllowedError:
+     * Document is not focused` the instant it is not. Measured 2026-09-08 00:13: this line
+     * failed exactly that way in a hidden-lane battery whose earlier scenario had blurred the
+     * window, and passed alone every time. The window's focus is not this scenario's subject
+     * (⌘V with the kitty protocol on is), so the seed must not depend on it: `clipboardWrite`
+     * is Electron's `clipboard` in the main process, the same NSPasteboard with no focus rule,
+     * and it answers with what it reads back so this is proof rather than an "it did not throw".
+     */
+    const seeded = await harness.clipboardWrite(PAYLOAD);
+    rec.check('the clipboard holds the payload', seeded.text === PAYLOAD, JSON.stringify(seeded));
+    if (seeded.text !== PAYLOAD) {
         rec.note('the clipboard could not be seeded in this lane; the paste assertion below cannot run');
         return;
     }

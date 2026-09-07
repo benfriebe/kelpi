@@ -36,7 +36,7 @@ const MARK = `KELPI-COPY-${TAG}`;
 const LINE = `${MARK}-0123456789ABCDEF`;
 const POISON = `KELPI-POISON-${TAG}`;
 
-export default async function ({ page, cli, rec, d, sleep }) {
+export default async function ({ page, harness, cli, rec, d, sleep }) {
     /*
      * A workspace of this scenario's own, for the reason `workspace-switch-keeps-the-caret.mjs`
      * says out loud: "Default holds when this starts is whatever the scenarios before it left
@@ -80,18 +80,20 @@ export default async function ({ page, cli, rec, d, sleep }) {
             })()`
         );
     const selectionLength = async (paneID) => (await readGrid(paneID))?.selection ?? 0;
-    const readClipboard = async () =>
-        String(
-            await page.eval(
-                `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
-            )
-        );
-    const writeClipboard = async (text) =>
-        String(
-            await page.eval(
-                `navigator.clipboard.writeText(${JSON.stringify(text)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
-            )
-        );
+    /*
+     * The clipboard is reached through the SHELL, not through the page (#109).
+     *
+     * `navigator.clipboard.readText` / `writeText` throw `NotAllowedError: Document is not
+     * focused` the instant the window is not focused, and this file runs in a battery whose
+     * earlier scenarios blur and hide the window on purpose (`dock-bounce-stop-only`), on a
+     * machine whose owner is clicking other things. What is under test is which text ends up on
+     * the pasteboard, not whether the renderer was allowed to look; the harness ops are
+     * Electron's `clipboard` in the main process, the SAME NSPasteboard with no focus rule on
+     * it, so every assertion below reads exactly what it read before.
+     */
+    const readClipboard = async () => String((await harness.clipboardRead()).text);
+    /** Seeds the pasteboard and answers with it read back, so the write is proven, not assumed. */
+    const writeClipboard = async (text) => String((await harness.clipboardWrite(text)).text);
     const capture = async (paneID) => await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
     const captureUntil = async (paneID, predicate, ceilingMs = 2_500) => {
         const deadline = Date.now() + ceilingMs;
@@ -155,8 +157,8 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     // ── the poison, then ⌘C ────────────────────────────────────────────────────────
     const poisoned = await writeClipboard(POISON);
-    rec.check('the clipboard was overwritten with the sentinel after the drag', poisoned === 'ok', poisoned);
-    if (poisoned !== 'ok') {
+    rec.check('the clipboard was overwritten with the sentinel after the drag', poisoned === POISON, poisoned);
+    if (poisoned !== POISON) {
         rec.note('the clipboard could not be written in this lane; the copy assertions cannot run');
         return;
     }
@@ -169,7 +171,7 @@ export default async function ({ page, cli, rec, d, sleep }) {
     rec.check(
         '⌘C put the terminal selection on the clipboard (#81)',
         copied.includes(MARK),
-        copied.startsWith('ERR:') ? copied : `holds ${JSON.stringify(copied.slice(0, 60))}`
+        `holds ${JSON.stringify(copied.slice(0, 60))}`
     );
     rec.check(
         'and the sentinel is gone, so nothing overwrote the copy afterwards (no Edit menu double-fire)',

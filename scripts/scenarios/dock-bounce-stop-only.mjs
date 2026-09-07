@@ -16,12 +16,25 @@
  *      clients' reported `document.visibilityState` and nothing else, so the bounce needs the
  *      renderer to go hidden, which happens when AppKit stops counting the window as visible.
  *
- * `BrowserWindow.blur()` is `orderBack:` on macOS, so (2) follows from (1) only when something
- * is then in front of the window: true at the shipped placement (the frame sits where other
- * windows are) and true at `--window hidden` (a zero-opacity frame is not visible to AppKit's
- * occlusion at all), false at `--window onscreen` and `--window offscreen`, where nothing ever
- * covers the frame. Without the check below that reads as "a stop does not bounce the dock",
- * which is a diagnosis of the product for a property of the placement.
+ * HOW (2) IS REACHED, and why it is no longer left to the screen (#109).
+ *
+ * `BrowserWindow.blur()` is `orderBack:` on macOS, so (2) used to follow from (1) only when
+ * something was then in FRONT of the window, which is a property of what else is on the screen
+ * and not of this app. Measured: this scenario failed 5/7 in every hidden-lane and on-screen run
+ * from 2026-09-07 afternoon on, on main too, and passed inside the two daytime promotes of
+ * 2026-09-07 only because the machine owner's own Kelpi window happened to cover the harness
+ * frame. A zero-opacity frame at `--window hidden` is NOT enough on its own: AppKit still counts
+ * it as visible, so the renderer stayed "visible" there as well.
+ *
+ * So the app is HIDDEN through the harness channel instead (`hide`, which is `app.hide()` on
+ * macOS: what ⌘H does). That is the one gesture that makes AppKit stop counting the window,
+ * it needs nothing to be in front of anything, and it is what a user doing the reported thing
+ * (switching away from Kelpi while an agent works) actually does. The blur assertion stays as
+ * it is: it is the SHELL's half of the gate and `hide` is not a substitute for it.
+ *
+ * The app stays hidden through the notification and the stop, because that is the whole window
+ * in which the daemon has to believe the app inactive; `restore` and `focus` are the last two
+ * lines, so the scenario leaves the window as it found it for whatever runs next.
  */
 
 /**
@@ -48,19 +61,28 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
     const win = await harness.window();
     rec.check('the window is unfocused, so the SHELL would allow a bounce', win.focused === false, JSON.stringify(win));
 
-    // The other half, and the one that actually decides whether a bounce is ever requested.
+    /*
+     * The other half, and the one that actually decides whether a bounce is ever requested.
+     *
+     * Driven, not waited for: `hide` is `app.hide()` on macOS, the same call ⌘H makes, and it
+     * takes the window out of AppKit's visible set with nothing needing to cover it. Every
+     * placement reaches this state the same way, which is what makes the check below a reading
+     * of the product rather than of the screen.
+     */
+    const hidden = await harness.hide();
+    rec.note(`hide: ${JSON.stringify(hidden)}`);
     const wentHidden = await d.settle(async () => (await page.eval(`document.visibilityState === 'hidden'`)) === true, {
-        ceilingMs: 4_000,
+        ceilingMs: 8_000,
         intervalMs: 100
     });
     rec.check(
         'the page reports itself hidden, so the DAEMON will call the app inactive',
         wentHidden,
         wentHidden
-            ? undefined
-            : 'the blurred window is still visible to AppKit, so document.visibilityState stayed "visible" and the ' +
-              'daemon suppresses attention-request. Expected at --window onscreen and --window offscreen, where ' +
-              'nothing ever covers the frame; run this scenario at --window hidden or with no --window at all.'
+            ? JSON.stringify(hidden)
+            : `the app was hidden through the harness (${JSON.stringify(hidden)}) and document.visibilityState still ` +
+              'reads "visible" 8 s later, so the renderer is not reporting the hide: the daemon will suppress ' +
+              'attention-request and no stop can bounce the dock.'
     );
 
     const start = await harness.counters();
@@ -83,6 +105,14 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
     rec.check('a stop bounces the dock exactly once', bounced && afterStop.dockBounces === afterNotification.dockBounces + 1, `${String(afterNotification.dockBounces)} -> ${String(afterStop.dockBounces)}`);
     rec.note(`counters after: ${JSON.stringify(afterStop)}`);
 
+    // Put it back: the battery runs every scenario in ONE sandbox, and a run that left the app
+    // hidden would hand the next scenario a window it cannot click. `restore` before `focus`
+    // because `focus` is `show()` + `focus()` on the WINDOW, which does not undo `app.hide()`.
+    await harness.restore();
     await harness.focus();
+    await d.settle(async () => (await page.eval(`document.visibilityState === 'visible'`)) === true, {
+        ceilingMs: 5_000,
+        intervalMs: 100
+    });
     await rec.shot(page, 'after-stop');
 }

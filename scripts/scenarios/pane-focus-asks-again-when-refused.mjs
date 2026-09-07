@@ -81,11 +81,11 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     await page.click('[data-testid="sidebar-filter"]');
     await page.type('Def');
-    rec.check(
-        'the sidebar filter has the caret',
-        (await page.eval(CARET_IN_FILTER)) === true,
-        String(await page.eval(CARET_HTML))
-    );
+    // The precondition for everything below, so it polls: the click's focus lands through
+    // React, not in the same tick the CDP call returns in. Same ceiling rule as the two checks
+    // further down; a field that never takes the caret still fails.
+    const caretInFilter = await d.settle(async () => (await page.eval(CARET_IN_FILTER)) === true, { ceilingMs: 3_000, intervalMs: 50 });
+    rec.check('the sidebar filter has the caret', caretInFilter, String(await page.eval(CARET_HTML)));
 
     // ── focus moves to the surviving pane, from outside the window ──────────────────
 
@@ -98,8 +98,16 @@ export default async function ({ page, cli, rec, d, sleep }) {
     const survivor = (await panesOf(cli, 'Default')).find((pane) => pane.is_focused)?.id;
     rec.check('the daemon moved focus to a surviving pane', typeof survivor === 'string', String(survivor));
     if (typeof survivor !== 'string') return;
+    /*
+     * A settle, not a single read (#109). The rule: an assertion that something HAS happened
+     * polls to a ceiling; only an assertion that something has NOT happened dwells and reads
+     * once. The ring is painted from a daemon broadcast that has crossed two processes, and the
+     * 600 ms sleep above is a guess at how long that takes on an idle machine. Exactly as
+     * strong: a ring that never moves still fails, at the ceiling.
+     */
+    const ringMoved = await d.settle(async () => (await page.eval(RINGED_PANE)) === survivor, { ceilingMs: 5_000, intervalMs: 100 });
     const ringed = await page.eval(RINGED_PANE);
-    rec.check('the ring moved to the surviving pane', ringed === survivor, `ring on ${String(ringed)}, want ${survivor}`);
+    rec.check('the ring moved to the surviving pane', ringMoved && ringed === survivor, `ring on ${String(ringed)}, want ${survivor}`);
     /*
      * The half that was always right, and must stay right: a caret in use is not taken. This is
      * the guard `shouldGrabFocus` exists for, and a fix that made the pane simply grab the caret
@@ -115,11 +123,14 @@ export default async function ({ page, cli, rec, d, sleep }) {
     // ── the field lets go, and the pane collects the caret with no click ────────────
 
     await page.key('Escape');
-    await sleep(600);
+    // Settled rather than slept for, for the same reason the ring is above: the hand-off is the
+    // armed claim firing on the field's blur, and 600 ms was a guess at an idle machine's timing.
+    // A caret that never arrives still fails, at the ceiling.
+    const handedOver = await d.settle(async () => (await page.eval(CARET_PANE)) === survivor, { ceilingMs: 5_000, intervalMs: 100 });
     const caretPane = await page.eval(CARET_PANE);
     rec.check(
         'dismissing the filter hands the caret to the pane wearing the ring',
-        caretPane === survivor,
+        handedOver && caretPane === survivor,
         `caret in pane ${String(caretPane) || '<none>'}, want ${survivor}; activeElement ${String(await page.eval(CARET_HTML))}`
     );
 

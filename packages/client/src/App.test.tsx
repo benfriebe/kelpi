@@ -156,7 +156,7 @@ describe('connection states', () => {
                 code: 'unauthorized',
                 reason: 'bad-token',
                 message: "invalid or missing daemon token - open the client via 'kelpid url'",
-                protocolVersion: 1
+                protocolVersion: 2
             });
             h.socket().serverClose(4003, 'bad-token');
         });

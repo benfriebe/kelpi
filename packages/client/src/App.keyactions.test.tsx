@@ -112,7 +112,7 @@ function setup(
         socket.open();
         socket.emit({
             type: 'welcome',
-            protocolVersion: 1,
+            protocolVersion: 2,
             clientID: 'client-1',
             daemon: { version: '0.1.0', build: 'test', pid: 4242 },
             settings: settingsPayload(keybindLines)

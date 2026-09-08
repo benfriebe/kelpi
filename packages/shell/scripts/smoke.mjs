@@ -46,7 +46,7 @@ const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 
 const argv = new Set(process.argv.slice(2));
 const options = {

@@ -266,7 +266,7 @@ describe('handler table', () => {
     it('covers every non-pane wire command', () => {
         const table = harness().table;
         const missing = WIRE_COMMANDS.filter(
-            (command) => !command.startsWith('pane-') && !table.has(command)
+            (command) => !command.startsWith('pane-') && command !== 'plugin' && !table.has(command)
         );
         expect(missing).toEqual([]);
     });

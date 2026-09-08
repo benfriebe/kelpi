@@ -276,7 +276,7 @@ Whether a command gets a reply is determined **solely by its wire command name**
 this fixed set (not by any request field):
 
 ```
-workspace-list, group-list,
+plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-move-adjacent,
 pane-sync, pane-sync-exclude,
@@ -471,6 +471,7 @@ carry `"command"`.
 | `graft-stop` | R/R | — | `workspace`, `repo`, `pane_id` |
 | `graft-status` | R/R | — | — |
 | `ping` | R/R | — | — |
+| `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
 | `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | — |
 | `web-url` | R/R | pane-target* | — |

@@ -126,7 +126,7 @@ const options = {
 
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const encoder = new TextEncoder();
 
 const uuidToBytes = (uuid) => {

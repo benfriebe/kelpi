@@ -17,7 +17,7 @@ import path from 'node:path';
 
 import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** The user's own dev stack. The audit must never bind or connect to these. */
 export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400]);

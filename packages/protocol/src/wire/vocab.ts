@@ -87,7 +87,7 @@ export function unknownNamedKeyError(raw: string): string {
     return `unknown key '${raw.toLowerCase()}' (valid: ${NAMED_KEYS.join(', ')})`;
 }
 
-export const PANE_TYPES = ['shell', 'markdown', 'scratchpad', 'diff', 'web'] as const;
+export const PANE_TYPES = ['shell', 'markdown', 'scratchpad', 'diff', 'web', 'plugin'] as const;
 export type PaneType = (typeof PANE_TYPES)[number];
 
 export const PANE_STATUSES = ['idle', 'running', 'waitingForInput'] as const;

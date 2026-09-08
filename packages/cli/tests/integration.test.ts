@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -967,8 +968,8 @@ describe('doctor', () => {
         fs.mkdirSync(runDir, { recursive: true });
         // A record naming a process that certainly exists: this test runner.
         fs.writeFileSync(
-            path.join(runDir, 'daemon-v1.pid'),
-            JSON.stringify({ pid: process.pid, protocol: 1, started_at: '', version: '0.1.0' })
+            path.join(runDir, `daemon-v${PROTOCOL_VERSION}.pid`),
+            JSON.stringify({ pid: process.pid, protocol: PROTOCOL_VERSION, started_at: '', version: '0.1.0' })
         );
         // Unix transport so the check runs at all; the socket check FAILs, which is fine —
         // we are asserting the process check alone.

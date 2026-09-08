@@ -11,8 +11,8 @@ import type { JsonObject, JsonValue } from '../json.js';
 import type { AgentKind, PaneStatus } from '../wire/vocab.js';
 import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
 
-/** Bumped only on a breaking change; the daemon serves `daemon-v<version>` run files. */
-export const WS_PROTOCOL_VERSION = 1;
+/** Generation 2 adds plugin pane records that generation 1 clients cannot safely render. */
+export const WS_PROTOCOL_VERSION = 2;
 
 export const WS_CLIENT_KINDS = ['electron', 'browser', 'cli'] as const;
 export type WsClientKind = (typeof WS_CLIENT_KINDS)[number];

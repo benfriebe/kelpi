@@ -11,6 +11,7 @@
  * `session-end`, where the id IS the payload).
  */
 
+import type { PluginWireMessage } from '../plugins.js';
 import type { AgentKind, DropZone, MoveDirection, SplitDirection, WorkspaceColor } from './vocab.js';
 
 /** The shared pane-target triple (§5.7). */
@@ -529,6 +530,7 @@ export interface WebExecMessage extends PaneTargetScope {
 // ── Union ───────────────────────────────────────────────────────────────────────────
 
 export type WireMessage =
+    | PluginWireMessage
     | AgentStartMessage
     | AgentStopMessage
     | AgentErrorMessage
@@ -608,6 +610,7 @@ export type WireCommandName = WireMessage['command'];
  * `pane_id` guard, which is why they work from a plain shell with no `KELPI_PANE_ID`.
  */
 export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
+    'plugin',
     'workspace-create',
     'workspace-list',
     'workspace-move',

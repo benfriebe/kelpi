@@ -55,13 +55,13 @@ describe('KelpiConnection handshake', () => {
 
         socket.open();
         const hello = socket.messages()[0];
-        expect(hello).toMatchObject({ type: 'hello', protocolVersion: 1, token: 'secret' });
+        expect(hello).toMatchObject({ type: 'hello', protocolVersion: 2, token: 'secret' });
         expect((hello?.['client'] as Record<string, unknown>)['kind']).toBe('browser');
         expect(connection.status).toBe('connecting');
 
         socket.emit({
             type: 'welcome',
-            protocolVersion: 1,
+            protocolVersion: 2,
             clientID: 'client-9',
             daemon: { version: '0.1.0', build: 'dev', pid: 77 }
         });
@@ -180,7 +180,7 @@ describe('KelpiConnection reconnection', () => {
 
         connection.connect();
         harness.last().open();
-        harness.last().emit({ type: 'rejected', code: 'unauthorized', message: 'token rejected', protocolVersion: 1 });
+        harness.last().emit({ type: 'rejected', code: 'unauthorized', message: 'token rejected', protocolVersion: 2 });
         harness.last().serverClose(4003, 'unauthorized');
 
         expect(rejections).toEqual(['unauthorized']);
@@ -203,7 +203,7 @@ describe('KelpiConnection reconnection', () => {
             code: 'unauthorized',
             reason: 'bad-token',
             message: "invalid or missing daemon token - open the client via 'kelpid url'",
-            protocolVersion: 1
+            protocolVersion: 2
         });
         // A coded close in the app range, NOT the 1006 an aborted upgrade produced.
         harness.last().serverClose(4003, 'bad-token');

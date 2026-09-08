@@ -784,7 +784,7 @@ async function main() {
 async function measureReplays(sandbox, paneIDs, { cols, rows }) {
     const FRAME = { input: 0x02, ack: 0x03, replay: 0x05 };
     const HEADER_BYTES = 17;
-    const PROTOCOL_VERSION = 1;
+    const PROTOCOL_VERSION = 2;
     const token = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${String(PROTOCOL_VERSION)}.token`), 'utf8').trim();
     const uuidFromBytes = (bytes, offset = 0) => {
         const HEX = '0123456789ABCDEF';

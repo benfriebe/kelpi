@@ -67,7 +67,7 @@ const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.ht
 const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 const shellBundle = path.join(shellRoot, 'dist', 'main.js');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 /** Forge writes `out/<productName>-<platform>-<arch>/<productName>.app`. */
 const appDir = path.join(shellRoot, 'out', `Kelpi-${process.platform}-${process.arch}`);
 const appPath = path.join(appDir, 'Kelpi.app');

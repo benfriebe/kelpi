@@ -1,3 +1,4 @@
+import type { PluginChannel } from '../plugins/service.js';
 /**
  * `createWsServer` — the daemon's HTTP + WebSocket listener (WP2.7).
  *
@@ -59,6 +60,7 @@ export interface WsServerAddress {
 }
 
 export interface WsServerOptions {
+    readonly plugins?: PluginChannel | undefined;
     readonly store: KelpiDomainStore;
     /** Client `command` messages go here — the same dispatcher the control socket uses. */
     readonly dispatcher: ControlDispatcher;
@@ -228,6 +230,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
             pid: options.daemonInfo?.pid
         },
         protocolVersion: options.version.protocol,
+        plugins: options.plugins,
         content: options.content,
         webPanes: options.webPanes,
         settings: options.settings,

@@ -169,7 +169,13 @@ export function dispatchWireLine(line: string, deps: WireLineDispatch): void {
         return;
     }
 
-    for (const item of dispatchSequence(decoded)) {
+    const sequence = dispatchSequence(decoded);
+    if (deps.dispatcher.dispatchBatch) {
+        try { deps.dispatcher.dispatchBatch(sequence.map(item => ({ message: item.kind === 'message' ? item.message : dualFireMessage(item.event), reply: item.reply ? deps.allocateReply() : null }))); }
+        catch (error) { deps.onError?.(toError(error), 'dispatch batch'); }
+        return;
+    }
+    for (const item of sequence) {
         const message = item.kind === 'message' ? item.message : dualFireMessage(item.event);
         const reply = item.reply ? deps.allocateReply() : null;
         try {

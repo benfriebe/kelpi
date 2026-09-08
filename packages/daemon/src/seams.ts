@@ -24,7 +24,14 @@ export interface ReplyHandle {
 }
 
 /** Dispatch decoded wire messages. reply is null for fire-and-forget commands. */
-export type ControlDispatcher = (msg: WireMessage, reply: ReplyHandle | null) => void;
+export interface ControlDispatchItem {
+  readonly message: WireMessage;
+  readonly reply: ReplyHandle | null;
+}
+export type ControlDispatcher = ((msg: WireMessage, reply: ReplyHandle | null) => void) & {
+  /** One decoded input, including its ordered synthetic session event. */
+  dispatchBatch?(items: readonly ControlDispatchItem[]): void;
+};
 
 // ---------------------------------------------------------------------------
 // PTY layer (terminal-surface.md)

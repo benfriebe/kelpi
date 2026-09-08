@@ -18,15 +18,17 @@
  * one that already owns it; a duplicate is reported through `onError` and dropped.
  */
 
-import type { WireMessage } from '@kelpi/protocol';
+import type { JsonObject, WireMessage } from '@kelpi/protocol';
+import type { PluginOperationChannel } from '../plugins/operations.js';
 
-import type { CommandHandler, ControlDispatcher, HandlerTable, ReplyHandle } from '../seams.js';
+import type { CommandHandler, ControlDispatchItem, ControlDispatcher, HandlerTable, ReplyHandle } from '../seams.js';
 
 export interface DispatcherOptions<Ctx> {
     readonly ctx: Ctx;
     /** Merged first-wins. */
     readonly tables: readonly HandlerTable<Ctx>[];
     readonly onError?: ((error: Error, context: string) => void) | undefined;
+    readonly operations?: PluginOperationChannel;
 }
 
 export function unknownCommandError(command: string): string {
@@ -66,7 +68,7 @@ export function createDispatcher<Ctx>(options: DispatcherOptions<Ctx>): ControlD
         options.onError?.(new Error(`duplicate handler for '${command}'`), 'dispatcher');
     });
 
-    return (msg: WireMessage, reply: ReplyHandle | null): void => {
+    const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {
         const handler = table.get(msg.command);
         if (handler === undefined) {
             failClosed(reply, unknownCommandError(msg.command));
@@ -80,4 +82,49 @@ export function createDispatcher<Ctx>(options: DispatcherOptions<Ctx>): ControlD
             failClosed(reply, `internal error: ${failure.message}`);
         }
     };
+    const dispatchBatch = (items: readonly ControlDispatchItem[]): void => {
+        const first = items[0]; if (!first) return;
+        const { message: msg, reply } = first;
+        const run = (firstReply = reply): void => {
+            for (let index = 0; index < items.length; index++) {
+                const item = items[index]!;
+                dispatch(item.message, index === 0 ? firstReply : item.reply);
+            }
+        };
+        const operations = options.operations;
+        if (!operations?.hasOperationHooks(msg.command)) { run(); return; }
+        const payload = msg as unknown as JsonObject;
+        let invoked = false;
+        void operations.interceptOperation(payload, {
+            ...(typeof payload['workspace_id'] === 'string' ? { workspaceID: payload['workspace_id'] } : {}),
+            ...(typeof payload['pane_id'] === 'string' ? { paneID: payload['pane_id'] } : {})
+        }, 'cli', () => new Promise<JsonObject>(resolve => {
+            invoked = true;
+            if (reply === null) {
+                // The legacy wire deliberately has no completion reply for these verbs.
+                run(null); resolve({ ok: true, completion: 'dispatched' }); return;
+            }
+            if (reply.closed) { resolve({ ok: false, error: 'command caller disconnected' }); return; }
+            let observed = false;
+            const complete = (value: JsonObject): void => { if (!observed) { observed = true; clearTimeout(timer); resolve(value); } };
+            const timer = setTimeout(() => complete({ ok: false, error: 'operation completion was not observed within 60 seconds' }), 60_000);
+            timer.unref?.();
+            reply.onDisconnect(() => complete({ ok: false, error: 'command caller disconnected' }));
+            const tracked: ReplyHandle = {
+                get closed() { return reply.closed; },
+                send(value) { reply.send(value); complete(value as JsonObject); },
+                close() { reply.close(); complete({ ok: false, error: 'daemon produced no reply' }); },
+                onDisconnect(callback) { reply.onDisconnect(callback); }
+            };
+            run(tracked);
+        })).then(result => {
+            if (!invoked && reply !== null && !reply.closed) { reply.send(result); reply.close(); }
+        }, error => {
+            options.onError?.(toError(error), `plugin hooks ${msg.command}`);
+            failClosed(reply, toError(error).message);
+        });
+    };
+    const dispatcher: ControlDispatcher = (message, reply) => dispatchBatch([{ message, reply }]);
+    dispatcher.dispatchBatch = dispatchBatch;
+    return dispatcher;
 }

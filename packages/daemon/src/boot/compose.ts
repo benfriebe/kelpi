@@ -1,3 +1,6 @@
+import { pluginAssetsRoute } from '../plugins/http.js';
+import { PluginService } from '../plugins/service.js';
+import { pluginObject } from '@kelpi/protocol';
 /**
  * Composition root: every seam in `../seams.ts` gets its concrete implementation here, and
  * nothing else in the daemon knows how the pieces are wired.
@@ -1195,9 +1198,28 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(options.random !== undefined ? { random: options.random } : {})
     });
 
+    const plugins = new PluginService({
+        store, pty, term,
+        applicationSettings: () => pluginObject(settings.snapshot),
+        cliEnvironment: () => ({
+            KELPI_SOCKET: paneRouteValue() ?? '',
+            KELPID_RUN_DIR: paths.dir,
+            ...(helpersDir ? { PATH: `${helpersDir}:${env['PATH'] ?? process.env['PATH'] ?? ''}` } : {})
+        }),
+        ...(dbPath === ':memory:' ? {} : { directory: `${dbPath}.plugins` }),
+        command: (payload, context, signal) => {
+            if (!ws) return Promise.reject(new Error('daemon services are starting'));
+            return ws.sync.executeCommand(payload, context, signal);
+        },
+        broadcast: event => ws?.broadcast(event),
+        onError: error => report(error, 'plugins')
+    });
     const dispatcher = createDispatcher<PaneHandlerContext>({
         ctx,
-        tables: [paneHandlers, appHandlers],
+        operations: plugins,
+        tables: [paneHandlers, appHandlers, new Map([['plugin', (msg, _ctx, reply) => {
+            if (msg.command === 'plugin' && reply) plugins.run(msg.action, pluginObject(JSON.parse(msg.text)), reply);
+        }]])],
         ...(onError !== undefined ? { onError } : {})
     });
 
@@ -1296,6 +1318,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             statsGateTimer = null;
             offStats();
             stats.dispose();
+            await plugins.dispose();
             settings.dispose();
             content.dispose();
             // Releases the host slot (the shell sees `host-revoked`) and ends every console
@@ -1391,6 +1414,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // change, so pair/revoke apply on the next hello with no daemon involvement.
                 validateDeviceToken: createDeviceValidator(resolveDevicesPath(env)),
                 daemonInfo: { pid: process.pid },
+                plugins,
                 content,
                 webPanes,
                 settings,
@@ -1431,10 +1455,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // `<img src>` resolves (content-panes.md port note 4). Gated by the derived
                 // asset credential (owner or live paired device), because `--tailnet` makes
                 // this HTTP surface tailnet-reachable and `devices revoke` must cover it.
-                routes: createPaneAssetsRoute(
+                routes: app => {
+                    pluginAssetsRoute(plugins)(app);
+                    createPaneAssetsRoute(
                     (paneID, relativePath) => content.assetPath(paneID, relativePath),
                     { validateCredential: createAssetCredentialGate(resolveDevicesPath(env), token) }
-                ),
+                )(app);
+                },
                 // Remember what each pane is actually rendered at, so the next spawn of it
                 // (a restart, the next daemon boot) starts there (`pty/geometry.ts`) — and, for
                 // a pane whose first spawn is still being held, this IS the number it was
@@ -1645,6 +1672,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             `kelpid listening: control ${compatDegraded === null ? info.socketPath : `${paths.socket} (compat ${info.socketPath} degraded)`}, ` +
                 `pane route ${paneRouteValue() ?? 'none'}, http ${info.url}`
         );
+        plugins.start();
         return info;
     };
 

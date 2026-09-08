@@ -31344,6 +31344,15 @@ function buildFlows(ctx) {
                 const handedIn = await readPhoneFrame(view);
                 let rightID = '';
 
+                /*
+                 * B1: under the phone form factor the assembly renders the phone shell, whose
+                 * default is ONE pane (`phone/view.ts`). This step is about a split GRID, so it
+                 * asks for the layout mode through the shell's own remembered choice - read on
+                 * the desktop-to-phone edge - and puts the choice back in the `finally`.
+                 */
+                const viewModeBefore = String(await view.eval(`localStorage.getItem('kelpi.phone.view-mode') ?? ''`));
+                await view.eval(`localStorage.setItem('kelpi.phone.view-mode', 'layout')`);
+
                 try {
                     /*
                      * The split itself is not what this step is about, so it is made at desktop
@@ -31676,6 +31685,13 @@ function buildFlows(ctx) {
                     await fakeKeyboard(false);
                     await sleep(500);
                 } finally {
+                    // B1: the view mode is put back before anything else, so the next phone step
+                    // opens the shell in the mode this window had.
+                    await view
+                        .eval(
+                            `(() => { const v = ${JSON.stringify(viewModeBefore)}; if (v === '') localStorage.removeItem('kelpi.phone.view-mode'); else localStorage.setItem('kelpi.phone.view-mode', v); })()`
+                        )
+                        .catch(() => {});
                     /*
                      * Belt and braces, in the order that keeps the next step honest: the viewport
                      * shadow first (a window that lies about its own height poisons every later
@@ -32125,6 +32141,15 @@ function buildFlows(ctx) {
                 const rosterBefore = await readRoster();
                 recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
 
+                /*
+                 * The binding is read at DESKTOP size. `liveShortcut` opens Help through the
+                 * title bar's ••• menu, and under the phone form factor the title bar is not on
+                 * screen (B1: the phone shell replaces it), so the read has to come before the
+                 * emulation. The pointer park below still comes after it, for the reason that
+                 * comment gives.
+                 */
+                const bound = await liveShortcut(view, 'command_palette');
+
                 try {
                     await emulatePhone(view);
                     const formFactor = String(
@@ -32169,7 +32194,6 @@ function buildFlows(ctx) {
                      * states the rule rather than the outcome anyway, so a pointer that lands
                      * somewhere unexpected is reported instead of turning the step red.
                      */
-                    const bound = await liveShortcut(view, 'command_palette');
                     await view
                         .mouse('mouseMoved', Math.round(PHONE_VIEWPORT.width / 2), PHONE_VIEWPORT.height - 34, {
                             button: 'none',
@@ -32562,6 +32586,296 @@ function buildFlows(ctx) {
             }
         },
 
+        /*
+         * B1/B2/B3 (docs/MOBILE-PLAN.md) plus the owner's layout toggle: the phone SHELL. Under
+         * the phone form factor the assembly renders `phone/PhoneShell.tsx` instead of the
+         * desktop's title bar, sidebar, grid, inspector and footer, and this is the live proof.
+         *
+         * A phone-lane step, so it owes the lane's clause: it borrows the widest shell pane and
+         * focuses it at desktop size (the shell shows the FOCUSED pane, so the borrowed pane is
+         * the one on screen), moves focus to a sibling through the pane sheet and moves it BACK
+         * through the same sheet, so the roster, the focused pane and the active workspace read
+         * either side are byte-identical. Nothing is provisioned, no setting is written, and the
+         * view mode is toggled to the layout and back so the remembered choice is what it was.
+         * The emulation is cleared in a `finally`.
+         */
+        {
+            id: 'phone-shell',
+            expect:
+                'Under a 390x844 phone viewport the desktop chrome (title bar, sidebar, pane grid, status footer) is gone and the phone shell is on screen: a 44 px header whose controls are all at least 44 px tall, naming the active workspace and the focused pane, and exactly ONE pane body - the focused pane\'s - filling the content box. The view toggle switches to the full layout (the workspace\'s own pane grid with every pane body) and back to one pane, remembering the choice. The workspace drawer opens by button (never by an edge swipe, which is the phone\'s own back gesture), lists the origin daemon with the active workspace row marked active, and closes on its scrim. The pane sheet lists every pane of the workspace with the shown one marked; tapping a sibling row focuses it (the sibling\'s body replaces the shown one, the header renames) and the daemon zooms nothing. With the emulation cleared the desktop tree is back and the roster, the focused pane and the active workspace are exactly what they were.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-shell: no shell pane on screen to drive');
+                const paneID = shell.id;
+
+                /** What the spine reads, either side of this step. */
+                const readRoster = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    panes: ${paneIDsExpr},
+                                    focused: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',
+                                    workspace: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''
+                                })`
+                            )
+                        )
+                    );
+
+                /** The shell's whole state in one read. */
+                const readShell = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const shell = document.querySelector('[data-testid="phone-shell"]');
+                                    const header = document.querySelector('[data-testid="phone-header"]');
+                                    const bodies = Array.from(document.querySelectorAll('[data-testid^="pane-body-"]')).map((el) => el.getAttribute('data-testid').slice('pane-body-'.length));
+                                    const controls = header === null ? [] : Array.from(header.querySelectorAll('button')).map((el) => ({ id: el.getAttribute('data-testid'), h: Math.round(el.getBoundingClientRect().height), w: Math.round(el.getBoundingClientRect().width) }));
+                                    return JSON.stringify({
+                                        shell: shell !== null,
+                                        mode: shell?.getAttribute('data-phone-mode') ?? '(none)',
+                                        host: shell?.getAttribute('data-phone-host') ?? '(none)',
+                                        topBar: document.querySelector('[data-testid="top-bar"]') !== null,
+                                        sidebar: document.querySelector('[data-testid="sidebar"]') !== null,
+                                        footer: document.querySelector('[data-testid="status-footer"]') !== null,
+                                        grid: document.querySelector('[data-testid="pane-grid"]') !== null,
+                                        headerHeight: header === null ? 0 : Math.round(header.getBoundingClientRect().height),
+                                        controls,
+                                        bodies,
+                                        title: (document.querySelector('[data-testid="phone-title-workspace"]')?.textContent ?? '').trim(),
+                                        paneTitle: (document.querySelector('[data-testid="phone-title"] [data-testid^="pane-header-"]')?.textContent ?? '').trim(),
+                                        headerPane: document.querySelector('[data-testid="phone-title"] [data-testid^="pane-header-"]')?.getAttribute('data-testid')?.slice('pane-header-'.length) ?? '',
+                                        drawer: document.querySelector('[data-testid="phone-workspace-drawer"]') !== null,
+                                        paneSheet: document.querySelector('[data-testid="phone-pane-sheet"]') !== null,
+                                        contentBox: (() => { const el = document.querySelector('[data-testid="phone-content"]'); if (el === null) return null; const b = el.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })()
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                // Focus at DESKTOP size: the shell shows the focused pane, so this is what puts
+                // the borrowed pane on screen once the viewport shrinks.
+                await focusPaneBody(view, paneID);
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+                const workspacePanes = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                const sibling = rosterBefore.panes.find((id) => id !== paneID) ?? null;
+
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('[data-testid="phone-shell"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the phone shell'
+                    });
+                    await view.waitFor(`document.querySelector('[data-testid="pane-body-${paneID}"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the borrowed pane in the phone shell'
+                    });
+                    const opened = await readShell();
+                    recorder.note(`the shell in pane mode: ${JSON.stringify(opened)}`);
+                    await recorder.shot(view, 'phone-shell-pane');
+
+                    recorder.check(
+                        'the desktop chrome is gone: no title bar, sidebar, pane grid or status footer',
+                        opened.shell === true && !opened.topBar && !opened.sidebar && !opened.grid && !opened.footer,
+                        `shell=${String(opened.shell)} topBar=${String(opened.topBar)} sidebar=${String(opened.sidebar)} grid=${String(opened.grid)} footer=${String(opened.footer)}`
+                    );
+                    recorder.check(
+                        'pane mode shows exactly one pane body, the focused pane, on the origin host',
+                        opened.mode === 'pane' && opened.host === 'origin' && opened.bodies.length === 1 && opened.bodies[0] === paneID,
+                        `mode=${String(opened.mode)} host=${String(opened.host)} bodies=${opened.bodies.join(',')}`
+                    );
+                    recorder.check(
+                        'the header names the active workspace and the shown pane',
+                        opened.title === rosterBefore.workspaceName || (opened.title.length > 0 && opened.headerPane === paneID),
+                        `title=${JSON.stringify(opened.title)} headerPane=${String(opened.headerPane)} paneTitle=${JSON.stringify(opened.paneTitle)}`
+                    );
+                    recorder.check(
+                        'every header control is at least 44x44 CSS px',
+                        opened.controls.length >= 5 && opened.controls.every((control) => control.h >= 44 && control.w >= 44),
+                        opened.controls.map((control) => `${String(control.id)}:${String(control.w)}x${String(control.h)}`).join(' ')
+                    );
+                    recorder.check(
+                        'the content box spans the phone width below the header',
+                        opened.contentBox !== null && opened.contentBox.x === 0 && opened.contentBox.w === PHONE_VIEWPORT.width && opened.contentBox.y >= 44 && opened.contentBox.h > 300,
+                        JSON.stringify(opened.contentBox)
+                    );
+
+                    // ── the layout toggle ──────────────────────────────────────────────
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the full layout'
+                    });
+                    const layout = await readShell();
+                    recorder.note(`the shell in layout mode: ${JSON.stringify(layout)}`);
+                    await recorder.shot(view, 'phone-shell-layout');
+                    recorder.check(
+                        'the toggle shows the full layout: the workspace grid with every pane body',
+                        layout.mode === 'layout' && layout.grid === true && [...layout.bodies].sort().join(',') === [...workspacePanes].sort().join(','),
+                        `mode=${String(layout.mode)} bodies=${layout.bodies.join(',')} workspace=${workspacePanes.join(',')}`
+                    );
+                    const remembered = String(await view.eval(`localStorage.getItem('kelpi.phone.view-mode') ?? '(none)'`));
+                    recorder.check('the choice is remembered on the phone', remembered === 'layout', `stored: ${remembered}`);
+
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'one pane again'
+                    });
+                    const back = await readShell();
+                    recorder.check(
+                        'and back to one pane, the same one',
+                        back.mode === 'pane' && back.bodies.length === 1 && back.bodies[0] === paneID,
+                        `mode=${String(back.mode)} bodies=${back.bodies.join(',')}`
+                    );
+
+                    // ── the workspace drawer, by button ────────────────────────────────
+                    await view.tap('[data-testid="phone-open-workspaces"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the workspace drawer'
+                    });
+                    const drawer = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const panel = document.querySelector('[data-testid="phone-workspace-drawer-panel"]');
+                                    const box = panel.getBoundingClientRect();
+                                    const origin = document.querySelector('[data-testid="phone-host-origin"]');
+                                    const active = origin?.querySelector('[data-testid="workspace-row"][data-active="true"]');
+                                    return JSON.stringify({
+                                        panel: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+                                        origin: origin !== null,
+                                        activeWorkspace: active?.getAttribute('data-workspace-id') ?? '',
+                                        rows: origin === null ? 0 : origin.querySelectorAll('[data-testid="workspace-row"]').length,
+                                        addHost: document.querySelector('[data-testid="phone-add-host"]') !== null,
+                                        modal: document.activeElement === panel
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`the drawer: ${JSON.stringify(drawer)}`);
+                    await recorder.shot(view, 'phone-shell-drawer');
+                    recorder.check(
+                        'the drawer sits at the leading edge, full height, and lists the origin daemon with the active workspace marked',
+                        drawer.panel.x === 0 && drawer.panel.h === PHONE_VIEWPORT.height && drawer.origin === true && drawer.activeWorkspace === rosterBefore.workspace && drawer.rows >= 1 && drawer.addHost === true,
+                        JSON.stringify(drawer)
+                    );
+                    recorder.check('the drawer took focus, so Escape and the keyboard are its own', drawer.modal === true, `activeElement is the panel: ${String(drawer.modal)}`);
+                    await view.tap('[data-testid="phone-workspace-drawer-scrim"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-workspace-drawer"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'the drawer to close on its scrim'
+                    });
+
+                    // No edge swipe: on the owner's phone the edge is the system's back gesture
+                    // (device round, 2026-09-08), so the button is the drawer's only opener and a
+                    // swipe from the edge is left to the OS.
+                    // ── the pane sheet, and a switch to a sibling ──────────────────────
+                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-sheet"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the pane sheet'
+                    });
+                    const sheet = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    rows: Array.from(document.querySelectorAll('[data-testid^="phone-pane-row-"]')).map((el) => ({ id: el.getAttribute('data-testid').slice('phone-pane-row-'.length), shown: el.getAttribute('data-shown') })),
+                                    heights: Array.from(document.querySelectorAll('[data-testid^="phone-pane-show-"]')).map((el) => Math.round(el.getBoundingClientRect().height))
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`the pane sheet: ${JSON.stringify(sheet)}`);
+                    await recorder.shot(view, 'phone-shell-pane-sheet');
+                    recorder.check(
+                        'the pane sheet lists every pane of the workspace, the shown one marked, every row at least 44 px',
+                        [...sheet.rows.map((row) => row.id)].sort().join(',') === [...workspacePanes].sort().join(',') &&
+                            sheet.rows.filter((row) => row.shown === 'true').map((row) => row.id).join(',') === paneID &&
+                            sheet.heights.every((height) => height >= 44),
+                        `rows=${sheet.rows.map((row) => `${row.id}:${String(row.shown)}`).join(' ')} heights=${sheet.heights.join(',')}`
+                    );
+
+                    if (sibling === null) {
+                        recorder.note('no sibling pane on screen to switch to; the switch is covered by the jsdom suite');
+                        await view.tap('[data-testid="phone-pane-sheet-header-close"]');
+                    } else {
+                        await view.tap(`[data-testid="phone-pane-show-${sibling}"]`);
+                        await view.waitFor(`document.querySelector('[data-testid="pane-body-${sibling}"]') !== null && document.querySelector('[data-testid="pane-body-${paneID}"]') === null`, {
+                            timeoutMs: 8000,
+                            label: 'the sibling to replace the shown pane'
+                        });
+                        /*
+                         * The switch must attach the new terminal ONCE, at the grid it will keep.
+                         * Owner device round (2026-09-08): "garbage symbols flash into a pane when
+                         * swapping". Measured on the dev instance: the new pane attached at 53
+                         * rows and was resized to 50 about 200 ms later, because the key bar's
+                         * 45 px left the content box between the old engine's unregister and the
+                         * new one's register, so the first replay was reflowed. `PhoneKeyBar`'s
+                         * `reserve` holds the room; this samples the new pane's rows through the
+                         * settle and asserts one value, with no paint hold that ended on a timeout.
+                         */
+                        const rowSamples = [];
+                        for (let sample = 0; sample < 24; sample++) {
+                            rowSamples.push(
+                                String(
+                                    await view.eval(
+                                        `(() => { const el = document.querySelector('[data-pane-id="${sibling}"][data-terminal-status]'); return el === null ? '(none)' : (el.getAttribute('data-terminal-rows') ?? '(unset)') + '/' + (el.getAttribute('data-terminal-status') ?? '') + '/' + (el.getAttribute('data-terminal-paint-hold-timeouts') ?? '0'); })()`
+                                    )
+                                )
+                            );
+                            await sleep(30);
+                        }
+                        const liveRows = new Set(rowSamples.filter((entry) => entry.includes('/live/')).map((entry) => entry.split('/')[0]));
+                        const holdTimeouts = new Set(rowSamples.map((entry) => entry.split('/')[2]));
+                        recorder.check(
+                            'the new pane attaches at one grid and stays there: its rows never change across the switch, and no paint hold timed out',
+                            liveRows.size === 1 && !liveRows.has('(unset)') && [...holdTimeouts].every((count) => count === '0' || count === undefined),
+                            `rows seen while live: ${[...liveRows].join(',') || '(none)'}; samples: ${rowSamples.join(' ')}`
+                        );
+                        const switched = await readShell();
+                        const zoomed = (await cli.json(['pane', 'list', '--json'])).filter((pane) => pane.is_zoomed === true).length;
+                        recorder.check(
+                            'tapping a sibling row focuses it: its body replaces the shown one, the header follows, nothing is zoomed',
+                            switched.bodies.length === 1 && switched.bodies[0] === sibling && switched.headerPane === sibling && switched.paneSheet === false && zoomed === 0,
+                            `bodies=${switched.bodies.join(',')} headerPane=${String(switched.headerPane)} sheet=${String(switched.paneSheet)} zoomed=${String(zoomed)}`
+                        );
+                        // …and back, through the same sheet, so the roster reads as it did.
+                        await view.tap('[data-testid="phone-open-panes"]');
+                        await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${paneID}"]') !== null`, {
+                            timeoutMs: 8000,
+                            label: 'the pane sheet again'
+                        });
+                        await view.tap(`[data-testid="phone-pane-show-${paneID}"]`);
+                        await view.waitFor(`document.querySelector('[data-testid="pane-body-${paneID}"]') !== null`, {
+                            timeoutMs: 8000,
+                            label: 'the borrowed pane back on screen'
+                        });
+                    }
+                } finally {
+                    await clearPhoneEmulation(view).catch(() => {});
+                }
+
+                await view.waitFor(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null`, {
+                    timeoutMs: 10_000,
+                    label: 'the desktop tree to come back'
+                });
+                const rosterAfter = await readRoster();
+                recorder.note(`roster after: ${JSON.stringify(rosterAfter)}`);
+                recorder.check(
+                    'with the emulation cleared the desktop is back and the roster, the focused pane and the active workspace are what they were',
+                    JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                    `before=${JSON.stringify(rosterBefore)} after=${JSON.stringify(rosterAfter)}`
+                );
+            }
+        },
         /**
          * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
          * "a web app in a window" and "a Mac app".

@@ -1,0 +1,520 @@
+/**
+ * The phone shell at the assembly (docs/MOBILE-PLAN.md B1 to B4, B6; the owner's layout toggle
+ * and multi-host requests of 2026-09-08).
+ *
+ * Every phone behaviour here is driven through `formFactorWindow`, the seam `App` takes for a
+ * jsdom test; the first block pins that a desktop window renders the tree it always has.
+ */
+
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { App } from './App';
+import type { StorageLike } from './app/config';
+import type { RemoteDaemonEntry } from './app/remote-daemons';
+import { modalPresenceCount } from './chrome/modal-presence';
+import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
+import { PHONE_HOSTS_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
+import { createFakePhoneWindow } from './phone/testing';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
+import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
+
+const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
+const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
+const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const REMOTE_WS = 'AAAAAAAA-0000-4000-8000-000000000099';
+const REMOTE_PANE = 'DDDDDDDD-0000-4000-8000-000000000099';
+const NOW = 1_755_500_000_000;
+const PAIRING_URL = 'https://studio.tail.ts.net/?token=kd_secret';
+
+function snapshotState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    // `paneID` is the NEW pane; `sourcePaneID` is the one being split.
+    store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PANE_B, sourcePaneID: PANE_A, direction: 'horizontal', now: NOW });
+    // The split focuses the new pane; the fixture starts on A so the tests read left to right.
+    store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_A });
+    return store.getState() as unknown as JsonObject;
+}
+
+function memoryStorage(initial: Record<string, string> = {}): StorageLike & { readonly map: Map<string, string> } {
+    const map = new Map(Object.entries(initial));
+    return {
+        map,
+        getItem: (key) => map.get(key) ?? null,
+        setItem: (key, value) => {
+            map.set(key, value);
+        },
+        removeItem: (key) => {
+            map.delete(key);
+        }
+    };
+}
+
+/** A remote host's runtime: its own mirror, a fake PTY, stubbed commands, no socket. */
+function fakeRemoteRuntime(): { runtime: KelpiRuntime; calls: string[] } {
+    const store = createKelpiStore();
+    store.getState().applySnapshot(0, {
+        workspaces: [
+            {
+                id: REMOTE_WS,
+                name: 'remote-ws',
+                slug: 'remote-ws',
+                color: 'green',
+                icon: null,
+                labels: [],
+                profileName: null,
+                repoAssociations: [],
+                recentlyClosedCount: 0,
+                webPanes: {},
+                focusedPaneID: REMOTE_PANE,
+                zoomedPaneID: null,
+                isSyncInputActive: false,
+                syncExcludedPaneIDs: [],
+                parkedPaneIDs: [],
+                panes: [
+                    {
+                        id: REMOTE_PANE,
+                        type: 'shell',
+                        label: null,
+                        title: 'remote shell',
+                        workingDirectory: '/home/remote',
+                        gitBranch: null,
+                        status: 'idle',
+                        agentSessionID: null,
+                        agentKind: null,
+                        agentProfileName: null,
+                        agentStartedAt: null,
+                        backgroundTaskCount: 0
+                    }
+                ],
+                layout: { kind: 'leaf', paneID: REMOTE_PANE }
+            }
+        ],
+        groups: [],
+        topLevelOrder: [{ kind: 'workspace', id: REMOTE_WS }],
+        lastActiveWorkspaceID: REMOTE_WS,
+        repos: [],
+        labelPresets: []
+    });
+    store.getState().setConnectionStatus('connected');
+    const calls: string[] = [];
+    const runtime = {
+        store,
+        pty: createFakePtyApi(),
+        commands: {
+            createPane: vi.fn((input: { workspace: string }) => {
+                calls.push(`create:${input.workspace}`);
+                return Promise.resolve({ ok: true });
+            }),
+            closePane: vi.fn((input: { paneID: string }) => {
+                calls.push(`close:${input.paneID}`);
+                return Promise.resolve({ ok: true });
+            }),
+            renamePane: vi.fn((input: { paneID: string; name: string }) => {
+                calls.push(`rename:${input.paneID}:${input.name}`);
+                return Promise.resolve({ ok: true });
+            }),
+            setGroupCollapsed: vi.fn(() => Promise.resolve({ ok: true }))
+        },
+        connect: vi.fn(() => {
+            calls.push('connect');
+        }),
+        dispose: vi.fn(() => {
+            calls.push('dispose');
+        }),
+        activateWorkspace: vi.fn((workspaceID: string, visible?: readonly string[]) => {
+            calls.push(`activate:${workspaceID}:${(visible ?? []).join('+')}`);
+        }),
+        focusPane: vi.fn((workspaceID: string, paneID: string | null) => {
+            store.getState().setFocusEcho(workspaceID, paneID);
+            calls.push(`focus:${workspaceID}:${String(paneID)}`);
+        }),
+        reportVisiblePanes: vi.fn(),
+        setDocumentVisible: vi.fn()
+    };
+    return { runtime: runtime as unknown as KelpiRuntime, calls };
+}
+
+interface Harness {
+    readonly runtime: KelpiRuntime;
+    readonly renderers: FakeRendererFactory;
+    readonly hostStorage: ReturnType<typeof memoryStorage>;
+    readonly remotes: Map<string, { entry: RemoteDaemonEntry; runtime: KelpiRuntime; calls: string[] }>;
+    socket(): FakeWebSocket;
+    sent(): Record<string, unknown>[];
+    commands(): Record<string, unknown>[];
+    lastOfType(type: string): Record<string, unknown> | undefined;
+}
+
+function setup(options: { phone?: boolean; snapshot?: boolean; storage?: Record<string, string> } = {}): Harness {
+    const sockets = createFakeSocketFactory();
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
+        url: 'ws://daemon.test/ws',
+        token: 'tok',
+        socketFactory: sockets.factory,
+        store,
+        notifications: null,
+        tokenStorage: null,
+        heartbeatIntervalMs: 0,
+        backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
+    });
+    const renderers = createFakeRendererFactory();
+    const hostStorage = memoryStorage(options.storage ?? {});
+    const remotes = new Map<string, { entry: RemoteDaemonEntry; runtime: KelpiRuntime; calls: string[] }>();
+    const factory = (entry: RemoteDaemonEntry): KelpiRuntime => {
+        const fake = fakeRemoteRuntime();
+        remotes.set(entry.url, { entry, ...fake });
+        return fake.runtime;
+    };
+
+    render(
+        <App
+            runtime={runtime}
+            createRenderer={renderers.factory}
+            formFactorWindow={options.phone === false ? undefined : createFakePhoneWindow()}
+            phoneHostStorage={hostStorage}
+            phoneRuntimeFactory={factory}
+        />
+    );
+
+    if (options.snapshot !== false) {
+        act(() => {
+            completeHandshake(sockets.last(), { state: snapshotState() });
+        });
+    }
+
+    const sent = (): Record<string, unknown>[] => sockets.last().messages();
+    return {
+        runtime,
+        renderers,
+        hostStorage,
+        remotes,
+        socket: () => sockets.last(),
+        sent,
+        commands: () =>
+            sent()
+                .filter((message) => message['type'] === 'command')
+                .map((message) => message['payload'] as Record<string, unknown>),
+        lastOfType: (type) => [...sent()].reverse().find((message) => message['type'] === type)
+    };
+}
+
+function tap(testID: string): void {
+    fireEvent.click(screen.getByTestId(testID));
+}
+
+afterEach(() => {
+    cleanup();
+    window.localStorage.removeItem(PHONE_VIEW_MODE_KEY);
+});
+
+describe('the root split', () => {
+    it('renders the desktop tree, and no phone shell, for a desktop window', () => {
+        setup({ phone: false });
+        expect(screen.queryByTestId('phone-shell')).toBeNull();
+        expect(screen.getByTestId('top-bar')).toBeTruthy();
+        expect(screen.getByTestId('sidebar')).toBeTruthy();
+        expect(screen.getByTestId('status-footer')).toBeTruthy();
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+    });
+
+    it('renders the phone shell instead of the title bar, sidebar, grid and footer for a phone', () => {
+        setup();
+        const shell = screen.getByTestId('phone-shell');
+        expect(shell.getAttribute('data-phone-mode')).toBe('pane');
+        expect(shell.getAttribute('data-phone-host')).toBe('origin');
+        expect(screen.queryByTestId('top-bar')).toBeNull();
+        expect(screen.queryByTestId('sidebar')).toBeNull();
+        expect(screen.queryByTestId('status-footer')).toBeNull();
+        expect(screen.queryByTestId('pane-grid')).toBeNull();
+        // The shared overlays and the app root are still the same elements.
+        expect(screen.getByTestId('kelpi-app')).toBeTruthy();
+    });
+
+    it('covers the content with the connection splash until the first snapshot lands', () => {
+        setup({ snapshot: false });
+        expect(screen.getByTestId('phone-shell')).toBeTruthy();
+        expect(screen.getByTestId('connection-splash')).toBeTruthy();
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('Kelpi');
+    });
+});
+
+describe('one pane at a time', () => {
+    it('shows the focused pane alone, named in the header, and reports only it as visible', async () => {
+        const h = setup();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-body-${PANE_B}`)).toBeNull();
+        expect(screen.getByTestId(`pane-header-${PANE_A}`).getAttribute('data-focused')).toBe('true');
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('dev');
+        expect(screen.getByTestId('phone-pane-count').textContent).toBe('2');
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_A] });
+        });
+    });
+
+    it('switches panes by FOCUSING from the pane sheet, and never touches zoom', async () => {
+        const h = setup();
+        tap('phone-open-panes');
+        const sheet = screen.getByTestId('phone-pane-sheet');
+        expect(within(sheet).getByTestId(`phone-pane-row-${PANE_A}`).getAttribute('data-shown')).toBe('true');
+        expect(within(sheet).getByTestId(`phone-pane-row-${PANE_B}`).getAttribute('data-shown')).toBe('false');
+        expect(modalPresenceCount()).toBeGreaterThan(0);
+
+        tap(`phone-pane-show-${PANE_B}`);
+        expect(screen.queryByTestId('phone-pane-sheet')).toBeNull();
+        expect(screen.getByTestId(`pane-body-${PANE_B}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+        await waitFor(() => {
+            expect(h.lastOfType('focus-report')).toMatchObject({ workspaceID: W1, paneID: PANE_B });
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_B] });
+        });
+        expect(h.commands().some((command) => String(command['command']).includes('zoom'))).toBe(false);
+        expect(h.runtime.store.getState().daemon.state.workspaces[0]?.zoomedPaneID ?? null).toBeNull();
+    });
+
+    it('follows a focus the daemon moves (a split, the CLI, a notification)', () => {
+        const h = setup();
+        act(() => {
+            const seq = h.runtime.store.getState().daemon.seq + 1;
+            expect(h.runtime.store.getState().applyDelta(seq, [{ kind: 'focus-changed', workspaceID: W1, focusedPaneID: PANE_B, focusHistory: [PANE_B, PANE_A] }])).toBe(true);
+        });
+        expect(screen.getByTestId(`pane-body-${PANE_B}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+    });
+});
+
+describe('the full layout', () => {
+    it('toggles to the workspace grid, remembers the choice, and reports the layout’s visible set', async () => {
+        const h = setup();
+        tap('phone-view-toggle');
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-mode')).toBe('layout');
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${PANE_B}`)).toBeTruthy();
+        expect(window.localStorage.getItem(PHONE_VIEW_MODE_KEY)).toBe('layout');
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_A, PANE_B] });
+        });
+        tap('phone-view-toggle');
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-mode')).toBe('pane');
+        expect(screen.queryByTestId('pane-grid')).toBeNull();
+        expect(window.localStorage.getItem(PHONE_VIEW_MODE_KEY)).toBe('pane');
+    });
+
+    it('opens in the remembered mode', () => {
+        window.localStorage.setItem(PHONE_VIEW_MODE_KEY, 'layout');
+        setup();
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-mode')).toBe('layout');
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+    });
+});
+
+describe('the workspace drawer', () => {
+    it('opens by button with the origin’s rows, closes on the scrim, Escape and a row', () => {
+        setup();
+        tap('phone-open-workspaces');
+        const drawer = screen.getByTestId('phone-workspace-drawer');
+        expect(modalPresenceCount()).toBeGreaterThan(0);
+        const origin = within(drawer).getByTestId('phone-host-origin');
+        expect(origin.getAttribute('data-host-kind')).toBe('origin');
+        const row = within(origin).getByTestId('workspace-row');
+        expect(row.getAttribute('data-active')).toBe('true');
+        expect(within(drawer).queryByTestId('phone-host-remove-origin')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('phone-workspace-drawer-scrim'));
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        expect(modalPresenceCount()).toBe(0);
+
+        tap('phone-open-workspaces');
+        fireEvent.keyDown(screen.getByTestId('phone-workspace-drawer-panel'), { key: 'Escape' });
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+
+        tap('phone-open-workspaces');
+        fireEvent.click(within(screen.getByTestId('phone-host-origin')).getByTestId('workspace-row'));
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+    });
+
+    it('does NOT open on an edge swipe (the edge is the phone\'s back gesture), and the back gesture closes an open sheet', () => {
+        setup();
+        const content = screen.getByTestId('phone-content');
+        fireEvent.touchStart(content, { touches: [{ clientX: 8, clientY: 300 }] });
+        fireEvent.touchMove(content, { touches: [{ clientX: 120, clientY: 305 }] });
+        fireEvent.touchEnd(content, { touches: [] });
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+
+        const depth = window.history.length;
+        tap('phone-open-workspaces');
+        expect(screen.getByTestId('phone-workspace-drawer')).toBeTruthy();
+        expect(window.history.length).toBe(depth + 1);
+        expect(window.history.state).toEqual({ [PHONE_SHEET_HISTORY_STATE]: true });
+        // The system's back: the browser pops the entry and fires popstate.
+        act(() => {
+            window.dispatchEvent(new PopStateEvent('popstate'));
+        });
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+    });
+
+    it('offers New workspace through a one-field prompt', () => {
+        const h = setup();
+        tap('phone-open-workspaces');
+        tap('phone-new-workspace');
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        fireEvent.change(screen.getByTestId('phone-prompt-field'), { target: { value: 'api' } });
+        fireEvent.submit(screen.getByTestId('phone-prompt-submit').closest('form') as HTMLFormElement);
+        expect(screen.queryByTestId('phone-prompt')).toBeNull();
+        expect(h.commands().some((command) => command['command'] === 'workspace-create' && command['name'] === 'api')).toBe(true);
+    });
+});
+
+describe('the overflow menu', () => {
+    it('lists the phone’s verbs and routes each to the same daemon command', () => {
+        const h = setup();
+        tap('phone-more');
+        const menu = screen.getByTestId('phone-menu');
+        const labels = within(menu)
+            .getAllByRole('button')
+            .map((button) => button.getAttribute('data-testid'))
+            .filter((id) => id !== null && id.startsWith('phone-menu-') && id !== 'phone-menu-header-close');
+        expect(labels).toEqual([
+            'phone-menu-new-pane',
+            'phone-menu-rename-pane',
+            'phone-menu-sync-input',
+            'phone-menu-palette',
+            'phone-menu-settings',
+            'phone-menu-close-pane'
+        ]);
+        tap('phone-menu-new-pane');
+        expect(screen.queryByTestId('phone-menu')).toBeNull();
+        expect(h.commands().some((command) => command['command'] === 'pane-create')).toBe(true);
+
+        tap('phone-more');
+        tap('phone-menu-close-pane');
+        expect(h.commands().some((command) => command['command'] === 'pane-close' && command['pane_id'] === PANE_A)).toBe(true);
+    });
+
+    it('renames through a prompt that shows the current name', () => {
+        const h = setup();
+        tap('phone-more');
+        tap('phone-menu-rename-pane');
+        const field = screen.getByTestId('phone-prompt-field') as HTMLInputElement;
+        fireEvent.change(field, { target: { value: 'build' } });
+        fireEvent.submit(screen.getByTestId('phone-prompt-submit').closest('form') as HTMLFormElement);
+        expect(screen.queryByTestId('phone-prompt')).toBeNull();
+        expect(h.commands().some((command) => command['command'] === 'pane-name' && command['name'] === 'build')).toBe(true);
+    });
+
+    it('opens Settings as the phone sheet and the palette as the phone sheet', () => {
+        setup();
+        tap('phone-more');
+        tap('phone-menu-settings');
+        expect(screen.getByTestId('settings-window').getAttribute('data-phone-sheet')).toBe('true');
+        tap('settings-close');
+        tap('phone-more');
+        tap('phone-menu-palette');
+        expect(screen.getByTestId('command-palette')).toBeTruthy();
+    });
+});
+
+describe('hosts', () => {
+    function addStudio(h: Harness): void {
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        fireEvent.change(screen.getByTestId('phone-host-url'), { target: { value: PAIRING_URL } });
+        fireEvent.submit(screen.getByTestId('phone-host-form'));
+        expect(h.remotes.has(PAIRING_URL)).toBe(true);
+    }
+
+    it('refuses a line that is not a URL, in place', () => {
+        setup();
+        tap('phone-open-workspaces');
+        tap('phone-add-host');
+        fireEvent.change(screen.getByTestId('phone-host-url'), { target: { value: 'studio' } });
+        fireEvent.submit(screen.getByTestId('phone-host-form'));
+        expect(screen.getByTestId('phone-host-error').textContent).toBe('that is not a URL');
+        expect(screen.getByTestId('phone-host-sheet')).toBeTruthy();
+    });
+
+    it('adds a host from a pasted pairing URL, dials it, names it after the machine, and remembers it', () => {
+        const h = setup();
+        addStudio(h);
+        // Back on the drawer with the new section.
+        const section = screen.getByTestId(/^phone-host-phone:/);
+        expect(section.getAttribute('data-host-kind')).toBe('phone');
+        expect(within(section).getByText('studio')).toBeTruthy();
+        expect(within(section).getByTestId(/^phone-host-status-/).getAttribute('data-status')).toBe('connected');
+        const remote = h.remotes.get(PAIRING_URL);
+        expect(remote?.calls).toContain('connect');
+        const stored = JSON.parse(h.hostStorage.map.get(PHONE_HOSTS_KEY) ?? '[]') as { name: string; url: string }[];
+        expect(stored).toHaveLength(1);
+        expect(stored[0]).toMatchObject({ name: 'studio', url: PAIRING_URL });
+    });
+
+    it('shows a remote workspace’s focused pane over that host’s own PTY, and reports it there', async () => {
+        const h = setup();
+        addStudio(h);
+        const section = screen.getByTestId(/^phone-host-phone:/);
+        fireEvent.click(within(section).getByTestId('workspace-row'));
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+
+        const shell = screen.getByTestId('phone-shell');
+        expect(shell.getAttribute('data-phone-host')).toMatch(/^phone:/);
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('studio · remote-ws');
+        expect(screen.getByTestId(`pane-body-${REMOTE_PANE}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+        const remote = h.remotes.get(PAIRING_URL);
+        expect(remote?.calls).toContain(`activate:${REMOTE_WS}:${REMOTE_PANE}`);
+        // The origin is told this client shows none of ITS panes.
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [] });
+        });
+
+        // The pane sheet and the menu act on the remote host's commands.
+        tap('phone-more');
+        tap('phone-menu-new-pane');
+        expect(remote?.calls).toContain(`create:${REMOTE_WS}`);
+        expect(h.commands().some((command) => command['command'] === 'pane-create')).toBe(false);
+
+        // Layout mode draws the remote grid.
+        tap('phone-view-toggle');
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${REMOTE_PANE}`)).toBeTruthy();
+        tap('phone-view-toggle');
+
+        // Back to the origin from the drawer.
+        tap('phone-open-workspaces');
+        fireEvent.click(within(screen.getByTestId('phone-host-origin')).getByTestId('workspace-row'));
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('origin');
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+    });
+
+    it('removes a host, disposing its runtime and falling back to the origin if it was on screen', () => {
+        const h = setup();
+        addStudio(h);
+        const section = screen.getByTestId(/^phone-host-phone:/);
+        fireEvent.click(within(section).getByTestId('workspace-row'));
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toMatch(/^phone:/);
+
+        tap('phone-open-workspaces');
+        fireEvent.click(screen.getByTestId(/^phone-host-remove-phone:/));
+        expect(screen.queryByTestId(/^phone-host-phone:/)).toBeNull();
+        expect(h.remotes.get(PAIRING_URL)?.calls).toContain('dispose');
+        expect(h.hostStorage.map.has(PHONE_HOSTS_KEY)).toBe(false);
+        fireEvent.click(screen.getByTestId('phone-workspace-drawer-scrim'));
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('origin');
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+    });
+
+    it('dials the remembered hosts on load', () => {
+        const h = setup({
+            storage: { [PHONE_HOSTS_KEY]: JSON.stringify([{ id: 'h1', name: 'studio', url: PAIRING_URL }]) }
+        });
+        expect(h.remotes.get(PAIRING_URL)?.calls).toContain('connect');
+        tap('phone-open-workspaces');
+        expect(screen.getByTestId('phone-host-phone:h1')).toBeTruthy();
+    });
+});

@@ -96,13 +96,13 @@ describe('the Settings window', () => {
         expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
         expect(screen.getByTestId('settings-tab-general')).toBeDefined();
-        // …and ArrowUp from the FIRST tab wraps to the last, which is the port-only Remote.
+        // …and ArrowUp from the FIRST tab wraps to the last, which is the port-only Plugins.
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
-        expect(screen.getByTestId('settings-tab-remote')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-plugins')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'Home' });
         expect(screen.getByTestId('settings-tab-general')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'End' });
-        expect(screen.getByTestId('settings-tab-remote')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-plugins')).toBeDefined();
     });
 
     it('keeps a roving tabindex so Tab lands on the selected tab only', () => {

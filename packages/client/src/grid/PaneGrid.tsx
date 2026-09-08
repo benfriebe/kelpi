@@ -93,6 +93,8 @@ export interface DropTarget {
 }
 
 export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
+    /** A retained workbench tab can hide the whole native grid without detaching its panes. */
+    readonly visible?: boolean | undefined;
     /** The workspace's live layout tree (already `leaf(zoomed)` when the daemon zoomed it). */
     readonly layout: PaneLayout;
     /** Every pane in the workspace — including ones the layout currently hides. */
@@ -242,7 +244,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const measuring = fixedSize === undefined;
     useEffect(() => {
-        if (!measuring) return;
+        if (!measuring || props.visible === false) return;
         const element = containerRef.current;
         if (element === null) return;
         const read = (): void => {
@@ -324,7 +326,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         });
         observer.observe(element);
         return () => observer.disconnect();
-    }, [measuring]);
+    }, [measuring, props.visible]);
 
     const markResizing = useCallback((): void => {
         setResizing(true);
@@ -586,6 +588,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     }, [endPaneDrag, endDividerDrag]);
 
     useEffect(() => registerGestureReset(resetGestures), [resetGestures]);
+    useEffect(() => {
+        if (props.visible !== false) return;
+        resetGestures();
+        const active = containerRef.current?.ownerDocument.activeElement;
+        if (active instanceof HTMLElement && containerRef.current?.contains(active)) active.blur();
+    }, [props.visible, resetGestures]);
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 
@@ -601,7 +609,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         // §AGNT-056: the gate. `enabled` is a dependency of the timer's effect, so a
         // deactivate tears the pending clear down and the next activate schedules a fresh
         // 600 ms — the Swift's "same clear, scheduled again on didBecomeActive".
-        enabled: dwellEnabled,
+        enabled: dwellEnabled && props.visible !== false,
         ...(dwellMs === undefined ? {} : { delayMs: dwellMs })
     });
 
@@ -614,7 +622,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const onPaneEnter = useCallback(
         (paneID: string): void => {
             const current = latest.current;
-            if (current.focusFollowsMouse !== true) return;
+            if (current.focusFollowsMouse !== true || current.visible === false) return;
             if (current.focusedPaneID === paneID) return;
             cancelHover();
             const delay = current.focusFollowsMouseDelayMs ?? 0;
@@ -624,6 +632,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             }
             hoverTimerRef.current = setTimeout(() => {
                 hoverTimerRef.current = null;
+                if (latest.current.visible === false) return;
                 latest.current.onFocusPane?.(paneID);
             }, delay);
         },
@@ -684,9 +693,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
             {orderedPanes.map((pane) => {
                 const frame = frames.get(pane.id);
-                const visible = frame !== undefined;
+                const visible = frame !== undefined && props.visible !== false;
                 const rect = frame ?? lastFramesRef.current.get(pane.id) ?? bounds;
-                const focused = pane.id === focusedPaneID;
+                const focused = visible && pane.id === focusedPaneID;
                 return (
                     <div
                         key={pane.id}
@@ -739,6 +748,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     >
                         <PaneHeader
                             pane={pane}
+                            headerCommands={props.headerCommands}
                             focused={focused}
                             // `PaneHeaderView.swift:279` — `.onTapGesture { onFocus() }` on the
                             // header itself, which every control inside it shadows.

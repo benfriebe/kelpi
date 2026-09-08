@@ -102,6 +102,8 @@ export function routeRequest(
     const pathname = url.pathname;
     if (pathname === WS_PATH || pathname.startsWith(`${WS_PATH}/`)) return 'bypass';
     if (pathname === PANE_ASSETS_PREFIX || pathname.startsWith(`${PANE_ASSETS_PREFIX}/`)) return 'bypass';
+    // Plugin view leases are credentials, including when someone navigates to an asset URL.
+    if (pathname === '/plugin-assets' || pathname.startsWith('/plugin-assets/')) return 'bypass';
 
     if (facts.mode === 'navigate') return 'shell';
     if (pathname.startsWith(ASSET_PREFIX)) return 'asset';

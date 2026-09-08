@@ -14,6 +14,22 @@ import type { PaneModel } from './types';
 
 const NOW = 1_000_000;
 
+describe('contributed pane header commands', () => {
+    it('runs with the clicked pane identity and remains available after folding into overflow', () => {
+        const run = vi.fn();
+        const commands = [{ id: 'sample.board.inspect', title: 'Inspect with Board', run }];
+        const view = render(<PaneHeader pane={testPane('target')} focused={false} paneWidth={600} headerCommands={commands} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Inspect with Board' }));
+        expect(run).toHaveBeenCalledWith('target');
+        view.rerender(<PaneHeader pane={testPane('target')} focused={false} paneWidth={80} headerCommands={commands} />);
+        expect(screen.queryByRole('button', { name: 'Inspect with Board' })).toBeNull();
+        fireEvent.click(screen.getByTestId('pane-overflow-target'));
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Inspect with Board' }));
+        expect(run).toHaveBeenCalledTimes(2);
+        expect(screen.getByTestId('pane-close-target')).toBeDefined();
+    });
+});
+
 afterEach(() => {
     cleanup();
     vi.useRealTimers();

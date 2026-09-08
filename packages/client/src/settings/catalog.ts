@@ -191,7 +191,8 @@ export const SETTINGS_TABS = [
     // there is no Swift tab to copy one from.
     { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' },
     // Port-only too: the `kelpid pair`/`devices`/`url --tailnet` flow, in-app (`RemoteTab`).
-    { id: 'remote', label: 'Remote', icon: 'antenna.radiowaves' }
+    { id: 'remote', label: 'Remote', icon: 'antenna.radiowaves' },
+    { id: 'plugins', label: 'Plugins', icon: 'square.grid.2x2' }
 ] as const;
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]['id'];

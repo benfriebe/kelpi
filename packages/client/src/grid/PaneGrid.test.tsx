@@ -228,6 +228,28 @@ describe('PaneGrid zoom', () => {
         expect(states.get('b')).toEqual({ visible: false, zoomed: false, dragging: false });
     });
 
+    it('idles an entire retained workbench tab without losing pane nodes or keeping keyboard focus', () => {
+        const states = new Map<string, { focused: boolean; visible: boolean }>();
+        const view = renderGrid({
+            focusedPaneID: 'a',
+            renderPane: (id, _frame, focused, state) => {
+                states.set(id, { focused, visible: state.visible });
+                return <input data-testid={`retained-${id}`} />;
+            }
+        });
+        const input = screen.getByTestId('retained-a');
+        input.focus();
+        expect(document.activeElement).toBe(input);
+        view.update({ visible: false });
+        expect(screen.getByTestId('retained-a')).toBe(input);
+        expect(states.get('a')).toEqual({ focused: false, visible: false });
+        expect(states.get('b')).toEqual({ focused: false, visible: false });
+        expect(document.activeElement).not.toBe(input);
+        view.update({ visible: true });
+        expect(states.get('a')).toEqual({ focused: true, visible: true });
+        expect(screen.getByTestId('retained-a')).toBe(input);
+    });
+
     it('ignores a zoomedPaneID that is not one of this workspace’s panes', () => {
         renderGrid({ zoomedPaneID: 'ghost' });
         expect(styleBox(screen.getByTestId('pane-a'))).toEqual(

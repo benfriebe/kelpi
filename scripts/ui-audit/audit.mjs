@@ -23386,6 +23386,9 @@ function buildFlows(ctx) {
                      * (its "No workspaces" placeholder took the member's place). The y measured
                      * before the drag started resolves to a top-level band by now — which is how
                      * the first version of this check failed while the product was correct.
+                     * A full run can also put this header inside the sidebar's 40 px auto-scroll
+                     * edge. Center it before aiming: otherwise scrolling carries the group away
+                     * during the dwell and the assertion samples a target of "none".
                      */
                     const headerNow = JSON.parse(
                         String(
@@ -23394,6 +23397,7 @@ function buildFlows(ctx) {
                                     const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
                                         .find(node => (node.innerText ?? '').includes('Springboard'));
                                     if (el === undefined) return JSON.stringify({ found: false });
+                                    el.scrollIntoView({ block: 'center', behavior: 'instant' });
                                     const r = el.getBoundingClientRect();
                                     return JSON.stringify({ found: true, x: r.x + r.width / 2, y: r.y + r.height * 0.75 });
                                 })()`
@@ -32399,7 +32403,7 @@ function buildFlows(ctx) {
                     recorder.check(
                         'the list is the desktop rail’s catalog, in the same order, with the same labels',
                         list.labels.join('|') ===
-                            'General|Appearance|Repositories|Labels|Profiles|Keybindings|Web|Workspaces|Remote',
+                            'General|Appearance|Repositories|Labels|Profiles|Keybindings|Web|Workspaces|Remote|Plugins',
                         list.labels.join(', ')
                     );
                     recorder.check(

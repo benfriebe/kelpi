@@ -91,6 +91,7 @@ import {
 import { SettingsButton, hoverBackground, useHover } from './ui';
 
 export interface SettingsOverlayProps {
+    readonly pluginContent?: import('react').ReactNode;
     readonly open: boolean;
     readonly settings: WsSettingsSnapshot;
     readonly domain: SettingsDomainState;
@@ -305,6 +306,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
      */
     const tabContent = (
         <>
+            {tab === 'plugins' ? <div data-testid="settings-tab-plugins">{props.pluginContent ?? <p>Plugin management is unavailable.</p>}</div> : null}
             {tab === 'general' ? (
                 <GeneralTab
                     settings={props.settings}

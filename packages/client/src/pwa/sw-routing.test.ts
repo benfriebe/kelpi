@@ -47,6 +47,10 @@ function navigate(url: string): ServiceWorkerRoute {
 }
 
 describe('what the service worker never touches', () => {
+    it('does not cache plugin assets or the view lease embedded in their URL', () => {
+        expect(route({ url: `${ORIGIN}/plugin-assets/lease/ui/app.js` })).toBe('bypass');
+        expect(navigate(`${ORIGIN}/plugin-assets/lease/ui/index.html`)).toBe('bypass');
+    });
     /**
      * Guardrail 3 of the phone program: the token stays out of the caches. Each of these is a
      * separate rule in `routeRequest` and each is pinned separately, because a single blanket

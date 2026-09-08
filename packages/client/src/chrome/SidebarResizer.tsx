@@ -56,6 +56,7 @@ export function storeSidebarWidth(width: number, storage?: Storage | null | unde
 }
 
 export interface SidebarResizerProps {
+    readonly side?: 'left' | 'right';
     /** The width at the moment a drag starts; every move is measured against this snapshot. */
     readonly width: number;
     readonly onResize: (width: number) => void;
@@ -85,7 +86,7 @@ export interface SidebarResizerProps {
 }
 
 export function SidebarResizer(props: SidebarResizerProps): ReactElement {
-    const drag = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
+    const drag = useRef<{ startX: number; startWidth: number; latest: number; direction: 1 | -1 } | null>(null);
     /** The exact `removeEventListener` calls for the listeners that are actually installed. */
     const detach = useRef<(() => void) | null>(null);
     /*
@@ -102,7 +103,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     const move = useCallback((event: PointerEvent): void => {
         const state = drag.current;
         if (state === null) return;
-        const next = clampSidebarWidth(state.startWidth + (event.clientX - state.startX));
+        const next = clampSidebarWidth(state.startWidth + state.direction * (event.clientX - state.startX));
         state.latest = next;
         latest.current.onResize(next);
     }, []);
@@ -151,13 +152,13 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
             /* Zero-width in layout, 6 px of hit area straddling the edge — the shipped app's
                `contentShape(Rectangle().inset(by: -3))`, which is why the negative margin. */
             className="relative z-10 w-0 shrink-0 cursor-col-resize"
-            style={{ marginLeft: -3, marginRight: -3, width: 6, background: 'transparent' }}
+            style={{ order: props.side === 'right' ? -1 : undefined, marginLeft: -3, marginRight: -3, width: 6, background: 'transparent' }}
             onPointerDown={(event) => {
                 // Secondary buttons only: `> 0` rather than `!== 0` so a synthesized event
                 // without a `button` field (jsdom, some remote-input paths) still drags.
                 if (event.button > 0) return;
                 event.preventDefault();
-                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width };
+                drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, direction: props.side === 'right' ? -1 : 1 };
                 // Before any move: tell assembly a gesture owns the width now, so §WS-001's
                 // slide transition comes off the slot for the length of it.
                 props.onResizeStart?.();

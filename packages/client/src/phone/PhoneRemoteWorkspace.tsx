@@ -1,3 +1,4 @@
+import { PluginView } from '../plugins/PluginView';
 /**
  * A REMOTE host's workspace on the phone.
  *
@@ -91,7 +92,7 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
             className="flex h-full w-full flex-col overflow-hidden"
         >
             <div data-testid={`pane-body-${pane.id}`} className="relative min-h-0 flex-1">
-                {pane.type !== 'shell' ? (
+                {pane.type === 'plugin' && pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} paneID={pane.id} workspaceID={workspaceID} visible /> : pane.type !== 'shell' ? (
                     <div
                         className="flex h-full items-center justify-center px-4 text-center text-[13px]"
                         data-testid={`remote-pane-placeholder-${pane.id}`}

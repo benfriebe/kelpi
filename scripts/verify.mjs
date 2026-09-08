@@ -149,7 +149,13 @@ const SURFACES = [
             // "one bar across the bottom" can be told apart from "a bar inside the active pane".
             // All six are the phone lane's; the desktop terminal steps above are what pin that
             // none of them moved anything anywhere else.
-            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-touch-scroll', 'phone-caret-owner',
+            // `phone-touch-mouse-reporting` is `phone-touch-scroll`'s other mode (#123): the
+            // gesture machine and the mouse reporter both live in this directory, and which of
+            // the two owns a contact is decided in `TerminalPane.tsx`. Only a live step can put
+            // a real finger on a real canvas over an application that really asked for the
+            // mouse, and the bytes it reads are the ones a TUI turns into a click.
+            'phone-keyboard-inset', 'phone-key-bar', 'phone-paste', 'phone-touch-scroll',
+            'phone-touch-mouse-reporting', 'phone-caret-owner',
             'phone-key-bar-split'
         ],
         smokes: ['smoke:terminal']

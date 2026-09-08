@@ -24,9 +24,46 @@
  * ## What a touch may NOT do
  *
  * **A touch never reaches the PTY unless an application asked for the mouse.** That is the spike's
- * rule and it is enforced by the caller (`TerminalPane`), which runs this machine only while
- * `data-terminal-mouse` is `none` and hands the touch to the mouse reporter otherwise. Nothing in
- * this file writes a byte anywhere; the only thing it can do is move a viewport.
+ * rule, and it is still the rule. What changed with #123 is WHERE the other half is decided: this
+ * machine now recognises the gesture in both modes and tells the caller which bytes it earned
+ * (`reportWheel` / `reportClick`), instead of the caller handing every raw touch event to the
+ * mouse reporter the moment an application asks. Nothing in this file writes a byte itself.
+ *
+ * ## What a gesture becomes when an application DOES report the mouse (#123)
+ *
+ * The owner, on a real Android phone, on the R2/R3 shell: *"when on a Claude Code tab and
+ * scrolling down it can scroll into the lower part of the TUI and open the menus"*, clarified as
+ * *"which opens up agents/monitors"* - Claude Code's task line, which lists background agents and
+ * monitors when it is clicked.
+ *
+ * MEASURED, on the base, by `phone-touch-mouse-reporting` (a drag down 200 px ending on the
+ * bottom row of a 50-row grid, over `?1049h ?1000h ?1002h ?1006h`):
+ *
+ *     ^[[<0;24;16M  ^[[<32;24;18M … ^[[<32;24;50M  ^[[<0;24;50m
+ *     └ press        └ 12 motion reports            └ release, on the LAST ROW
+ *
+ * A press and a release IS a click, and on a phone a drag ends wherever the thumb ran out of
+ * glass - the bottom rows, which is where that task line is drawn. Not one wheel report was in
+ * the trail, so the "the TUI read our wheel as navigation" theory was wrong: the client had
+ * simply been forwarding the touch to the mouse reporter as a button-0 press, drag and release.
+ *
+ * THE RULE, which is this file's half of the fix. Over an application that reports the mouse:
+ *
+ *   - a drag is WHEEL reports (SGR button 64 / 65) at the finger, one per line of travel, and
+ *     never a press or a release. A drag is how a person reads, and reading is what a wheel is
+ *     for; a phone has no other way to send one, because a one-finger drag produces no `wheel`
+ *     event (see above);
+ *   - the momentum tail reports only while it is moving, and nothing when it comes to rest;
+ *   - a TAP - a press that never passed the slop - is the ONE gesture reported as a click,
+ *     because an application that turned mouse reporting on asked to be told about clicks;
+ *   - a LONG PRESS does not run C3's word selection and Copy pill here. The application asked for
+ *     the press, and it gets it (as the same click); C3's selection is what a long press means
+ *     only where nothing asked.
+ *
+ * WHICH MODE A GESTURE IS IN IS LATCHED AT ITS START, and held for the whole of it, momentum
+ * included. An application that turns reporting off mid-flick must not have the tail it is
+ * already receiving turn into a scrollback scroll under it, and the reverse is worse: a tail that
+ * started as a viewport scroll must not start writing bytes to a PTY halfway through.
  *
  * ## The numbers, and where they come from
  *
@@ -113,8 +150,36 @@ export interface TouchScrollHost {
     scrollOffset(): number;
     /** The cell's height in CSS px - the pixels-to-lines divisor. Zero suspends the gesture. */
     cellHeight(): number;
-    /** A contact that stayed inside the slop for {@link LONG_PRESS_MS}. */
+    /**
+     * A contact that stayed inside the slop for {@link LONG_PRESS_MS}.
+     *
+     * Never called while {@link reportsMouse} says an application is reporting: there, the press
+     * belongs to the application (#123).
+     */
     onLongPress?(point: TouchPointLike): void;
+    /**
+     * Is an application reporting the mouse right now? Read ONCE, at the start of each gesture,
+     * and held for the whole of it including its momentum tail - see the header.
+     *
+     * Absent (the desktop's fake, a host that has no reporter) reads as `false`, which is C3's
+     * original behaviour to the byte.
+     */
+    reportsMouse?(): boolean;
+    /**
+     * One wheel report per line, at the finger. `lines` is in the ENGINE's sign, the same sign
+     * {@link scrollLines} takes, so a caller can pass it straight through: negative is back
+     * through history, which is SGR button 64 (wheel up).
+     */
+    reportWheel?(lines: number, point: TouchPointLike): void;
+    /**
+     * A press and a release at one point: the one gesture an application is told is a click.
+     *
+     * The point is the contact's ORIGIN rather than wherever it lifted. A tap is by definition a
+     * contact that never passed {@link TOUCH_SLOP_PX}, so it is one point; reporting the press
+     * and the release at the same cell is what makes it a click the application cannot read as a
+     * one-cell drag.
+     */
+    reportClick?(point: TouchPointLike): void;
 }
 
 export interface TouchScrollOptions {
@@ -175,8 +240,14 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
 
     let gesture: TouchGesture = 'none';
     let pressed = false;
+    /**
+     * #123: is THIS gesture the application's? Latched in `start`, cleared in `abandon`, and read
+     * by everything downstream - including the momentum tail, which outlives the contact.
+     */
+    let reporting = false;
     let originX = 0;
     let originY = 0;
+    let lastX = 0;
     let lastY = 0;
     /** Pixels dragged but not yet worth a whole line. Fractional on purpose: see `consume`. */
     let residual = 0;
@@ -203,6 +274,7 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
         stopMomentum();
         gesture = 'none';
         pressed = false;
+        reporting = false;
         residual = 0;
         samples = [];
     };
@@ -217,6 +289,13 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
      * The three answers are what the tail reads: `idle` is "not a whole line yet", `moved` is a
      * viewport that went somewhere, and `clamped` is a viewport that was ASKED to and could not -
      * the end of the scrollback, which is where a fling has to stop.
+     *
+     * #123 put a second destination behind the same accumulator. When the gesture is the
+     * application's, the whole lines become WHEEL REPORTS at the finger instead of a viewport
+     * move - one per line, which is what makes a drag over a TUI scroll it by the same amount a
+     * drag over a shell scrolls the scrollback. An application has no end for a fling to run
+     * past, so that branch never answers `clamped`: the tail there ends on its own decay, which
+     * is the only thing that can end it.
      */
     const consume = (): 'idle' | 'moved' | 'clamped' => {
         const cell = host.cellHeight();
@@ -224,8 +303,12 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
         const lines = Math.trunc(residual / cell);
         if (lines === 0) return 'idle';
         residual -= lines * cell;
-        const before = host.scrollOffset();
         // The sign flip, and the only place it happens: down the glass is back through history.
+        if (reporting) {
+            host.reportWheel?.(-lines, { clientX: lastX, clientY: lastY });
+            return 'moved';
+        }
+        const before = host.scrollOffset();
         host.scrollLines(-lines);
         return host.scrollOffset() === before ? 'clamped' : 'moved';
     };
@@ -265,6 +348,9 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
         // engine that has already clamped.
         if (Math.abs(velocity) < MOMENTUM_MIN_VELOCITY || spent === 'clamped') {
             gesture = 'none';
+            // #123: the tail is over, so the mode it was latched in is spent too. Nothing is sent
+            // at rest - the last report a reporting application gets is the last one that MOVED.
+            reporting = false;
             stopMomentum();
             return;
         }
@@ -288,16 +374,31 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
             residual = 0;
             samples = [];
             pressed = false;
+            // #123: latched HERE, before anything else can read it, and held until `abandon`.
+            reporting = host.reportsMouse?.() === true;
             if (point === null) {
                 gesture = 'none';
-                return false;
+                // A second finger is not a gesture, in either mode - but while an application is
+                // reporting, the event is still CONSUMED, because reporting is on and the engine
+                // must not turn the contact into a selection either way (the same rule
+                // `mouse.ts`'s `down` follows for a press the mode declined to encode).
+                //
+                // The latch is dropped again before returning: this contact has no origin (the
+                // fields still hold the LAST gesture's), and a `touchend` that arrived with no
+                // move in between would otherwise report a click at a point nobody touched.
+                const consumed = reporting;
+                reporting = false;
+                return consumed;
             }
             gesture = 'press';
             originX = point.clientX;
             originY = point.clientY;
+            lastX = point.clientX;
             lastY = point.clientY;
             sample(now(), point.clientY);
-            if (host.onLongPress !== undefined) {
+            // No long press while the application is reporting: the press is the application's
+            // (#123), and C3's word selection would be a second meaning for the same contact.
+            if (host.onLongPress !== undefined && !reporting) {
                 cancelPress = timer(() => {
                     cancelPress = null;
                     // Still a press, still under the slop: this is the gesture the platform would
@@ -307,16 +408,26 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
                     host.onLongPress?.({ clientX: originX, clientY: originY });
                 }, LONG_PRESS_MS);
             }
-            // NOT consumed. A press that turns out to be a tap belongs to the engine, whose own
-            // `touchend` focuses the hidden textarea - which is how a phone raises its keyboard.
-            return false;
+            // NOT consumed, unless the application is reporting. A press that turns out to be a
+            // tap belongs to the engine, whose own `touchend` focuses the hidden textarea - which
+            // is how a phone raises its keyboard.
+            //
+            // While an application IS reporting, the contact is consumed from its first event, as
+            // it was before #123: `preventDefault` on `touchstart` is what suppresses the
+            // browser's compatibility mouse events, and those would otherwise reach the pane's own
+            // capture-phase `mousedown`/`mouseup` handlers and be reported as the very press and
+            // release this change exists to stop sending.
+            return reporting;
         },
         move(event): boolean {
             const point = only(event.touches);
             if (point === null) {
-                // A second finger arriving mid-drag ends the drag, without momentum.
+                // A second finger arriving mid-drag ends the drag, without momentum - and with
+                // nothing sent, which is the point: the application is told the wheel stopped
+                // turning, never that a button came up somewhere.
+                const wasReporting = reporting;
                 abandon();
-                return false;
+                return wasReporting;
             }
             if (gesture !== 'press' && gesture !== 'scroll') return false;
             const time = now();
@@ -326,15 +437,19 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
                 // Total distance, not the vertical alone: a diagonal drag past the slop is a drag,
                 // and only its vertical component then means anything to a terminal.
                 if (Math.hypot(dx, dy) <= TOUCH_SLOP_PX) {
+                    lastX = point.clientX;
                     lastY = point.clientY;
                     sample(time, point.clientY);
-                    return false;
+                    // Inside the slop this is still a press, and still nobody's news - but while
+                    // an application is reporting, the contact is already consumed (see `start`).
+                    return reporting;
                 }
                 gesture = 'scroll';
                 clearPressTimer();
                 pressed = false;
             }
             residual += point.clientY - lastY;
+            lastX = point.clientX;
             lastY = point.clientY;
             sample(time, point.clientY);
             consume();
@@ -345,10 +460,24 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
         end(event): boolean {
             clearPressTimer();
             const wasScrolling = gesture === 'scroll';
+            // A contact this machine actually recognised. `gesture` is `none` for an end with no
+            // start of its own (a multi-touch that was refused, an event after a `cancel`), and
+            // such an end has no origin to report a click at.
+            const wasPress = gesture === 'press';
             const wasPressed = pressed;
             if (!wasScrolling) {
                 gesture = 'none';
                 pressed = false;
+                if (reporting && wasPress) {
+                    // #123: THE ONE GESTURE AN APPLICATION IS TOLD IS A CLICK. A contact that
+                    // never passed the slop is a tap (or a long press, which over a reporting
+                    // application is the same thing held longer), and an application that turned
+                    // mouse reporting on asked to be told about clicks. A drag - the other branch
+                    // - is told nothing here, which is the whole fix.
+                    reporting = false;
+                    host.reportClick?.({ clientX: originX, clientY: originY });
+                    return true;
+                }
                 // A plain tap is the ENGINE's (it focuses the textarea, which raises the
                 // keyboard); a long press is ours, because the word it selected must not be
                 // cleared by the tap that made it.
@@ -356,11 +485,18 @@ export function createTouchScroll(host: TouchScrollHost, options: TouchScrollOpt
             }
             const last = only(event.changedTouches);
             const time = now();
-            if (last !== null) sample(time, last.clientY);
+            if (last !== null) {
+                sample(time, last.clientY);
+                // The tail reports at the finger's LAST position (the finger is gone, so there is
+                // no other), which is the release point rather than the last `touchmove`.
+                lastX = last.clientX;
+                lastY = last.clientY;
+            }
             velocity = measureVelocity(time);
             pressed = false;
             if (velocity === 0) {
                 gesture = 'none';
+                reporting = false;
                 stopMomentum();
                 return true;
             }

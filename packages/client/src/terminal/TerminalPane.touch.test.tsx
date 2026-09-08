@@ -263,31 +263,122 @@ describe('a phone pane selects a word on a long press', () => {
     });
 });
 
-describe('a phone pane under an application that asked for the mouse', () => {
-    it('reports the touch as button 0 and scrolls NOTHING', async () => {
-        const h = await mountPane();
+/**
+ * #123 - the same pane, over an application that reports the mouse.
+ *
+ * This describe block used to pin the defect. It asserted that a touchstart, a touchmove and a
+ * touchend became a press, a motion report and a release of button 0 - which is a CLICK, and on
+ * the owner's phone it was a click on Claude Code's task line at the bottom of the pane. The
+ * measurement is in `touch-scroll.ts`'s header and in `phone-touch-mouse-reporting`; what is left
+ * here is the WIRING, which is this file's subject: that the gesture machine now owns the contact
+ * in both modes, and that the bytes it earns are the ones the mouse reporter already encodes.
+ */
+describe('a phone pane under an application that asked for the mouse (#123)', () => {
+    /** Turn on what Claude Code turns on: 1002 (motion while a button is down) in SGR. */
+    const asksForTheMouse = (h: Harness): void => {
         act(() => {
             h.pty.last().modes({ mouseTracking: 'drag', mouseFormat: 'sgr' });
         });
+    };
+
+    it('a DRAG is wheel reports at the finger, and never a press or a release', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
 
         touch(h.engine, 'touchstart', [finger(61, 45)]);
         touch(h.engine, 'touchmove', [finger(81, 85)]);
         touch(h.engine, 'touchend', [finger(81, 85)]);
 
-        // The same bytes the mouse path produces for the same pixels (`TerminalPane.test.tsx`):
-        // press, motion, release of button 0, on the UN-mirrored frame.
-        expect(h.pty.last().directInput).toEqual(['[<0;5;4M', '[<32;9;5M', '[<0;9;5m']);
+        // 20 px down a 20 px cell: ONE line back through history, which is one SGR button-64
+        // (wheel up) report at the cell under the finger. Not a press, not a motion report, and
+        // above all not a release - the release is what a TUI reads as the click.
+        expect(h.pty.last().directInput).toEqual(['\x1b[<64;9;5M']);
         expect(h.pty.last().input).toEqual([]);
-        // The gesture machine never saw the contact: the application owns it.
+        // The pane scrolled no scrollback of its own: the application is painting that screen.
         expect(h.renderer().scrolls).toEqual([]);
         expect(h.renderer().scrollOffset()).toBe(0);
+        // …and every event of the gesture was taken off the engine, exactly as before: the
+        // `touchstart` too, because `preventDefault` there is what suppresses the browser's
+        // compatibility mouse events, which the pane's own `mousedown`/`mouseup` listeners would
+        // otherwise report as the press and release this change exists to stop sending.
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    it('dragging the other way is the other wheel button', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
+        touch(h.engine, 'touchstart', [finger(81, 45)]);
+        touch(h.engine, 'touchmove', [finger(61, 85)]);
+        touch(h.engine, 'touchend', [finger(61, 85)]);
+        expect(h.pty.last().directInput).toEqual(['\x1b[<65;9;4M']);
+    });
+
+    it('THE OWNER S GESTURE: a drag that ends on the bottom rows sends no click there', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
+
+        // Down the whole pane, the way a thumb runs out of glass on a 844 px phone.
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchmove', [finger(400, 45)]);
+        touch(h.engine, 'touchmove', [finger(800, 45)]);
+        touch(h.engine, 'touchend', [finger(800, 45)]);
+
+        const trail = h.pty.last().directInput;
+        expect(trail.length).toBeGreaterThan(0);
+        // Every byte on the wire is a wheel report. On the base this trail ended
+        // `\x1b[<0;5;40m` - a release of button 0 on the pane's bottom row.
+        expect(trail.every((report) => /^\x1b\[<6[4-7];\d+;\d+M$/.test(report))).toBe(true);
+        expect(trail.some((report) => report.endsWith('m'))).toBe(false);
+    });
+
+    it('a TAP is the one gesture reported as a click', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchend', [finger(61, 45)]);
+        // A press and a release at the same cell: what an application that turned mouse reporting
+        // on asked to be told about.
+        expect(h.pty.last().directInput).toEqual(['\x1b[<0;5;4M', '\x1b[<0;5;4m']);
+        expect(h.renderer().scrolls).toEqual([]);
+    });
+
+    it('a LONG PRESS is the application s press: no word selection, no Copy pill', async () => {
+        const h = await mountPane();
+        h.renderer().wordAtPoint = 'ripgrep';
+        const offers: ClipboardOffer[] = [];
+        const off = onClipboardOffer((offer) => offers.push(offer));
+        asksForTheMouse(h);
+
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(600);
+        });
+        // C3's timer was never armed: an application that reports the mouse asked for the press,
+        // and a contact cannot mean two things at once.
+        expect(h.renderer().wordPresses).toEqual([]);
+        expect(offers).toEqual([]);
+        expect(h.row.querySelector('[data-terminal-copy-pill]')).toBeNull();
+
+        touch(h.engine, 'touchend', [finger(61, 45)]);
+        // It reaches the application as the same click a shorter tap does.
+        expect(h.pty.last().directInput).toEqual(['\x1b[<0;5;4M', '\x1b[<0;5;4m']);
+        off();
+    });
+
+    it('a touchcancel mid-drag strands nothing on the wire', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        touch(h.engine, 'touchmove', [finger(81, 45)]);
+        const during = h.pty.last().directInput.length;
+        touch(h.engine, 'touchcancel', [finger(81, 45)]);
+        // No release for a press that was never sent - and none invented for the cancel either.
+        expect(h.pty.last().directInput).toHaveLength(during);
     });
 
     it('and goes back to scrolling the moment the application stops asking', async () => {
         const h = await mountPane();
-        act(() => {
-            h.pty.last().modes({ mouseTracking: 'drag', mouseFormat: 'sgr' });
-        });
+        asksForTheMouse(h);
         touch(h.engine, 'touchstart', [finger(400)]);
         touch(h.engine, 'touchmove', [finger(460)]);
         touch(h.engine, 'touchend', [finger(460)]);
@@ -302,6 +393,33 @@ describe('a phone pane under an application that asked for the mouse', () => {
         touch(h.engine, 'touchend', [finger(460)]);
         expect(h.renderer().scrolls).toEqual([-3]);
         expect(h.pty.last().directInput).toHaveLength(before);
+    });
+
+    it('the mode is latched at the gesture s start: a mid-gesture change does not split it', async () => {
+        const h = await mountPane();
+        asksForTheMouse(h);
+        touch(h.engine, 'touchstart', [finger(61, 45)]);
+        // The application drops reporting with the finger still down. The rest of THIS gesture is
+        // still its own - a contact must not be half a wheel and half a viewport scroll, and a
+        // drag that started over a TUI must not suddenly start moving the scrollback the TUI is
+        // painting over.
+        act(() => {
+            h.pty.last().modes({ mouseTracking: 'none', mouseFormat: 'sgr' });
+        });
+        touch(h.engine, 'touchmove', [finger(81, 85)]);
+        touch(h.engine, 'touchend', [finger(81, 85)]);
+        expect(h.renderer().scrolls).toEqual([]);
+        expect(h.renderer().scrollOffset()).toBe(0);
+        // The wheel still goes to the reporter, and the reporter is the authority on the wire: it
+        // declines to encode for a mode nothing is asking for any more, which is the same answer
+        // a real mouse gets when a TUI turns reporting off under its drag.
+        expect(h.pty.last().directInput).toEqual([]);
+
+        // The NEXT gesture is in the mode that is live when it starts, and scrolls again.
+        touch(h.engine, 'touchstart', [finger(400)]);
+        touch(h.engine, 'touchmove', [finger(460)]);
+        touch(h.engine, 'touchend', [finger(460)]);
+        expect(h.renderer().scrolls).toEqual([-3]);
     });
 });
 

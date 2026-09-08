@@ -39,6 +39,10 @@ interface Harness {
     /** Every `scrollLines` delta, in the ENGINE's sign. */
     readonly deltas: number[];
     readonly presses: TouchPointLike[];
+    /** #123 - every `reportWheel`, in order: the lines and where the finger was. */
+    readonly wheels: { lines: number; point: TouchPointLike }[];
+    /** #123 - every `reportClick`, in order. */
+    readonly clicks: TouchPointLike[];
     offset(): number;
     /** Advance the clock; run the pending frame if one is due. */
     tick(ms: number): void;
@@ -47,16 +51,21 @@ interface Harness {
     /** Fire the long-press timer if it is armed and due. */
     hold(ms: number): void;
     frames(): number;
+    /** Turn mouse reporting on or off between (or during) gestures - the latch's subject. */
+    report(on: boolean): void;
 }
 
-function harness({ cell = CELL, cap = 1_000, offset = 0 } = {}): Harness {
+function harness({ cell = CELL, cap = 1_000, offset = 0, reporting = false } = {}): Harness {
     let time = 0;
     let viewport = offset;
+    let reports = reporting;
     let pendingFrame: ((now: number) => void) | null = null;
     let pendingTimer: { at: number; callback: () => void } | null = null;
     let frameCount = 0;
     const deltas: number[] = [];
     const presses: TouchPointLike[] = [];
+    const wheels: { lines: number; point: TouchPointLike }[] = [];
+    const clicks: TouchPointLike[] = [];
 
     const scroller = createTouchScroll(
         {
@@ -67,7 +76,10 @@ function harness({ cell = CELL, cap = 1_000, offset = 0 } = {}): Harness {
             },
             scrollOffset: () => viewport,
             cellHeight: () => cell,
-            onLongPress: (point) => presses.push(point)
+            onLongPress: (point) => presses.push(point),
+            reportsMouse: () => reports,
+            reportWheel: (lines, point) => wheels.push({ lines, point }),
+            reportClick: (point) => clicks.push(point)
         },
         {
             now: () => time,
@@ -90,8 +102,13 @@ function harness({ cell = CELL, cap = 1_000, offset = 0 } = {}): Harness {
         scroller,
         deltas,
         presses,
+        wheels,
+        clicks,
         offset: () => viewport,
         frames: () => frameCount,
+        report(on: boolean): void {
+            reports = on;
+        },
         wait(ms: number): void {
             time += ms;
         },
@@ -295,5 +312,212 @@ describe('the touch gesture: the long press', () => {
         h.hold(LONG_PRESS_MS);
         expect(h.presses).toEqual([]);
         expect(h.scroller.gesture).toBe('none');
+    });
+});
+
+/**
+ * #123 - the same machine over an application that reports the mouse.
+ *
+ * The owner's report is one sentence: on a Claude Code tab, "scrolling down ... can scroll into
+ * the lower part of the TUI and open the menus", which is its task line being clicked. Measured on
+ * the base by `phone-touch-mouse-reporting`, a 200 px drag ending on the bottom row of a 50-row
+ * grid put this on the wire:
+ *
+ *     ^[[<0;24;16M  ^[[<32;24;18M ... ^[[<32;24;50M  ^[[<0;24;50m
+ *     |- press       |- 12 motion reports             |- release, on the LAST ROW
+ *
+ * A press with a release is a click. Everything below is the rule that replaced it, in the sign
+ * and the units this machine speaks; the bytes those turn into are `mouse.ts`'s subject and the
+ * wiring between them is `TerminalPane.touch.test.tsx`'s.
+ */
+describe('the touch gesture over an application that reports the mouse (#123)', () => {
+    it('a drag DOWN the glass is wheel reports at the finger, and never a press or a release', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        h.scroller.move(one(at(460, 120)));
+        expect(h.scroller.end(one(at(460, 120), { down: false }))).toBe(true);
+
+        // 60 px over a 20 px cell: three lines back through history, which is three wheel-UP
+        // detents (the engine's negative sign, the same one `scrollLines` takes).
+        expect(h.wheels).toEqual([{ lines: -3, point: { clientX: 120, clientY: 460 } }]);
+        expect(h.clicks).toEqual([]);
+        // …and NOT the pane's own viewport: the application is painting that screen.
+        expect(h.deltas).toEqual([]);
+        expect(h.offset()).toBe(0);
+    });
+
+    it('a drag UP the glass is the other direction, still with no click', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(460)));
+        h.scroller.move(one(at(400)));
+        h.scroller.end(one(at(400), { down: false }));
+        expect(h.wheels).toEqual([{ lines: 3, point: { clientX: 100, clientY: 400 } }]);
+        expect(h.clicks).toEqual([]);
+    });
+
+    it('THE OWNER-S GESTURE: a drag that ends deep down the glass reports nothing at its end', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(100)));
+        // Down to the bottom rows in four moves, the way a thumb runs out of glass.
+        for (const y of [200, 400, 600, 800]) h.scroller.move(one(at(y)));
+        h.scroller.end(one(at(800), { down: false }));
+
+        expect(h.wheels.map((wheel) => wheel.lines)).toEqual([-5, -10, -10, -10]);
+        // The whole fix, in one assertion: the end of a drag is not a click on the bottom row.
+        expect(h.clicks).toEqual([]);
+    });
+
+    it('a TAP is the one gesture reported as a click, at the point it started', () => {
+        const h = harness({ reporting: true });
+        // Consumed from the first event: `preventDefault` on `touchstart` is what suppresses the
+        // browser's compatibility mouse events, which would otherwise be reported as a SECOND
+        // press and release by the pane's own mouse listeners.
+        expect(h.scroller.start(one(at(400)))).toBe(true);
+        h.wait(60);
+        expect(h.scroller.end(one(at(400), { down: false }))).toBe(true);
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+        expect(h.wheels).toEqual([]);
+    });
+
+    it('a wobble inside the slop is still a tap, and the click is at the ORIGIN', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400, 100)));
+        // Inside the slop, but across a cell boundary: a click whose press and release named
+        // different cells would read as a one-cell drag rather than a click.
+        h.scroller.move(one(at(400 + TOUCH_SLOP_PX, 100)));
+        h.scroller.end(one(at(400 + TOUCH_SLOP_PX, 100), { down: false }));
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+    });
+
+    it('a LONG PRESS is the application-s press, not C3-s word selection', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        h.hold(LONG_PRESS_MS);
+        // No timer was ever armed: the application asked for the press, so there is no second
+        // meaning for the same contact and no Copy pill to raise.
+        expect(h.presses).toEqual([]);
+        expect(h.scroller.pressed).toBe(false);
+        h.scroller.end(one(at(400), { down: false }));
+        // It reaches the application as the same click a shorter tap does.
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+    });
+
+    it('the momentum tail reports while it moves and reports NOTHING at rest', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(200)));
+        h.tick(16);
+        h.scroller.move(one(at(300)));
+        h.tick(16);
+        h.scroller.move(one(at(400)));
+        h.scroller.end(one(at(400), { down: false }));
+        expect(h.scroller.gesture).toBe('momentum');
+
+        const duringDrag = h.wheels.length;
+        for (let frame = 0; frame < 200 && h.scroller.gesture === 'momentum'; frame += 1) h.tick(16);
+        expect(h.scroller.gesture).toBe('none');
+        expect(h.wheels.length).toBeGreaterThan(duringDrag);
+        // Every report is a wheel; a tail that ended in a release would be the defect again.
+        expect(h.clicks).toEqual([]);
+
+        // AT REST: more frames, and nothing more on the wire.
+        const settled = h.wheels.length;
+        for (let frame = 0; frame < 60; frame += 1) h.tick(16);
+        expect(h.wheels.length).toBe(settled);
+    });
+
+    it('the tail is not clamped by a scrollback it is not scrolling', () => {
+        // An application has no end for a fling to run past, so the reporting tail may only end on
+        // its own decay. A host whose viewport CANNOT move (cap 0) would stop C3's tail on its
+        // first frame; this one has to keep reporting.
+        const h = harness({ reporting: true, cap: 0 });
+        h.scroller.start(one(at(200)));
+        h.tick(16);
+        h.scroller.move(one(at(300)));
+        h.tick(16);
+        h.scroller.move(one(at(400)));
+        h.scroller.end(one(at(400), { down: false }));
+        for (let frame = 0; frame < 200 && h.scroller.gesture === 'momentum'; frame += 1) h.tick(16);
+        expect(h.wheels.length).toBeGreaterThan(2);
+    });
+
+    it('the mode is LATCHED at the gesture-s start, tail included', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(200)));
+        h.tick(16);
+        h.scroller.move(one(at(300)));
+        h.tick(16);
+        h.scroller.move(one(at(400)));
+        h.scroller.end(one(at(400), { down: false }));
+        // The application drops mouse reporting mid-flick. The tail it is already receiving must
+        // not turn into a scroll of the pane's own viewport underneath it.
+        h.report(false);
+        for (let frame = 0; frame < 200 && h.scroller.gesture === 'momentum'; frame += 1) h.tick(16);
+        expect(h.deltas).toEqual([]);
+        expect(h.offset()).toBe(0);
+
+        // …and the NEXT gesture is in the mode that is live when it starts.
+        h.scroller.start(one(at(400)));
+        h.scroller.move(one(at(460)));
+        h.scroller.end(one(at(460), { down: false }));
+        expect(h.deltas).toEqual([-3]);
+    });
+
+    it('the reverse latch: a gesture that began with nothing asking stays C3-s', () => {
+        const h = harness();
+        h.scroller.start(one(at(400)));
+        h.report(true);
+        h.scroller.move(one(at(460)));
+        h.scroller.end(one(at(460), { down: false }));
+        // A tail that started as a viewport scroll must not start writing bytes halfway through.
+        expect(h.wheels).toEqual([]);
+        expect(h.clicks).toEqual([]);
+        expect(h.deltas).toEqual([-3]);
+    });
+
+    it('a cancel mid-drag strands nothing: no click, no release, no bytes at all', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        h.scroller.move(one(at(460)));
+        const beforeCancel = h.wheels.length;
+        h.scroller.cancel();
+        expect(h.clicks).toEqual([]);
+        expect(h.wheels).toHaveLength(beforeCancel);
+        expect(h.scroller.gesture).toBe('none');
+    });
+
+    it('a second finger ends the gesture without a click, and is still taken off the engine', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        h.scroller.move(one(at(460)));
+        // Consumed, because reporting is on and the engine must not turn the contact into a
+        // selection either way - but nothing is sent for it.
+        expect(h.scroller.move(two(at(460), at(300)))).toBe(true);
+        expect(h.clicks).toEqual([]);
+        expect(h.scroller.gesture).toBe('none');
+    });
+});
+
+describe('#123 - a contact this machine never recognised reports nothing', () => {
+    it('a two-finger start followed straight by an end reports no click at a stale origin', () => {
+        const h = harness({ reporting: true });
+        // A real gesture first, so `originX`/`originY` hold a point from it.
+        h.scroller.start(one(at(400)));
+        h.scroller.end(one(at(400), { down: false }));
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+
+        // …then a two-finger contact, which is not a gesture this terminal has. It is still
+        // consumed (reporting is on, so the engine must not select either way) and it reports
+        // NOTHING - a click at the previous gesture's point would be a click nobody made.
+        expect(h.scroller.start(two(at(600), at(700)))).toBe(true);
+        expect(h.scroller.end(one(at(600), { down: false }))).toBe(false);
+        expect(h.clicks).toEqual([{ clientX: 100, clientY: 400 }]);
+    });
+
+    it('an end after a cancel reports nothing either', () => {
+        const h = harness({ reporting: true });
+        h.scroller.start(one(at(400)));
+        h.scroller.cancel();
+        expect(h.scroller.end(one(at(400), { down: false }))).toBe(false);
+        expect(h.clicks).toEqual([]);
     });
 });

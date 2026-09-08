@@ -1108,9 +1108,23 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //
     // THE RULE THE SPIKE WROTE, enforced here and nowhere else: **a touch reaches the PTY only
     // while an application has asked for the mouse**. With tracking `none` the gesture machine
-    // owns the contact and the only thing it can do is move a viewport; with tracking on, the
-    // same touch goes to the mouse reporter as button 0 at the cell under the finger, and the
-    // gesture machine never sees it. `PointerLike` is structural, so a `Touch` is one.
+    // owns the contact and the only thing it can do is move a viewport.
+    //
+    // #123 CHANGED THE OTHER HALF OF THAT SENTENCE. It used to read "with tracking on, the same
+    // touch goes to the mouse reporter as button 0 at the cell under the finger, and the gesture
+    // machine never sees it" - so a DRAG arrived at the application as a press, a run of motion
+    // reports and a release, and a press with a release is a click. The owner's phone found it on
+    // a Claude Code tab: a scroll down ended on the bottom rows and clicked the task line, which
+    // opens its agents-and-monitors list. Measured on the base by `phone-touch-mouse-reporting`:
+    //
+    //     ^[[<0;24;16M  ^[[<32;24;18M … ^[[<32;24;50M  ^[[<0;24;50m
+    //     └ press        └ 12 motion reports            └ release, on the LAST ROW of 50
+    //
+    // Now the gesture machine sees EVERY contact in both modes, recognises the gesture first, and
+    // reports only what the gesture earned: a drag is wheel reports at the finger, a tap (and a
+    // long press, which is a tap held) is the one click, and a drag's end is nothing at all. The
+    // rule, the reason and the rest of the measurement are in `touch-scroll.ts`'s header;
+    // `PointerLike` is structural, so a `Touch` is one and the reporter needs no new entry point.
     //
     // Capture on the host, exactly as the mouse and the kitty interceptors are, so a consumed
     // event never reaches the engine's canvas listeners BELOW it - which is what stops a scroll
@@ -1131,6 +1145,44 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             scrollLines: (delta) => rendererRef.current?.scrollLines(delta),
             scrollOffset: () => rendererRef.current?.scrollOffset() ?? 0,
             cellHeight: () => rendererRef.current?.cellSize().height ?? 0,
+            // Read once per gesture by the machine, which latches it (#123). `active` is the live
+            // mode the daemon streams, so an application that turns reporting on between two
+            // gestures gets the second one and not half of the first.
+            reportsMouse: () => reporter?.active === true,
+            /*
+             * A drag, one wheel detent per line, at the finger.
+             *
+             * `deltaMode: 1` is DOM_DELTA_LINE, and it is exact rather than convenient: the
+             * reporter's discrete-tick path multiplies a line delta by ITS OWN cell height before
+             * spending the accumulator against that same height, so `lines` in is exactly `lines`
+             * button-64/65 reports out - no rounding, and no drift between the cell the gesture
+             * machine divides by and the cell the reporter's metrics report. Going through
+             * `wheel()` also keeps the encoder, the modifier bits and the
+             * `MAX_WHEEL_REPORTS_PER_EVENT` guard that a real mouse already has.
+             */
+            reportWheel: (lines, point) => {
+                reporter?.wheel({
+                    clientX: point.clientX,
+                    clientY: point.clientY,
+                    deltaX: 0,
+                    deltaY: lines,
+                    deltaMode: 1
+                });
+            },
+            /*
+             * A tap: the press and the release the application asked for, at one point.
+             *
+             * `down` then `up` rather than two hand-rolled reports, so the click carries the
+             * reporter's own state - the `held` set, the motion dedupe, the "release for a press
+             * this pane never saw" rule - and a phone's click is byte-identical to a mouse's at
+             * the same cell. A `TouchPointLike` has no `button`, which `DOM_BUTTONS[… ?? 0]`
+             * reads as button 0, exactly as the old touch branch did.
+             */
+            reportClick: (point) => {
+                const at = { clientX: point.clientX, clientY: point.clientY };
+                reporter?.down(at);
+                reporter?.up(at);
+            },
             onLongPress: (point) => {
                 const renderer = rendererRef.current;
                 if (renderer === null) return;
@@ -1155,45 +1207,39 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             event.preventDefault();
             event.stopPropagation();
         };
-        /** The contact this event is about; `touchend`'s `touches` list is already empty. */
-        const changed = (event: TouchEvent): Touch | null => event.changedTouches[0] ?? null;
-
+        /*
+         * ONE PATH, BOTH MODES (#123).
+         *
+         * There used to be a branch here that handed the raw touch events to the mouse reporter
+         * whenever an application was reporting - a `down` on `touchstart` and an `up` on
+         * `touchend`, which is the press and the release the owner's phone turned into a click on
+         * Claude Code's task line. The branch was the bug: it decided what to send BEFORE it knew
+         * what the gesture was, and a `touchstart` cannot know.
+         *
+         * Now every contact goes to the gesture machine, which recognises it first and calls back
+         * with the bytes it earned (`reportWheel` / `reportClick` above). The machine's return
+         * value is unchanged in meaning - "the engine must not also see this" - and it says yes
+         * for every event of a reported gesture, which is what the old branch did too.
+         */
         const onStart = (event: TouchEvent): void => {
-            if (reporter?.active === true) {
-                scroller.cancel();
-                const touch = changed(event);
-                if (touch === null || !reporter.down(touch)) return;
-                consume(event);
-                // Ghostty's rule, the same one the mouse path follows (`Surface.zig:3850-3852`):
-                // once the application is being sent the gesture, a stale selection must go.
-                rendererRef.current?.clearSelection();
-                setSelectionLength(0);
-                return;
-            }
             // A new contact clears the word the last long press left highlighted, and the mirror
             // is written by hand BOTH ways. The engine's `clearSelection()` fires no change event
             // (#81), so a clear nobody announced leaves `data-terminal-selection` reporting a
             // highlight that is not on the screen - measured on this pane in the audit, which
             // found a stale `1` from an earlier step surviving three gestures. After this line
             // there is no selection, whoever cleared it, so the mirror says so.
+            //
+            // It runs in both modes for the same reason ghostty clears one (`Surface.zig:3850`):
+            // once the application is being sent the gesture, a selection from before it asked
+            // must not sit highlighted over a TUI that is handling the same contact.
             if (rendererRef.current?.selection() !== '') rendererRef.current?.clearSelection();
             setSelectionLength(0);
             if (scroller.start(event)) consume(event);
         };
         const onMove = (event: TouchEvent): void => {
-            if (reporter?.active === true) {
-                const touch = changed(event);
-                if (touch !== null && reporter.move(touch)) consume(event);
-                return;
-            }
             if (scroller.move(event)) consume(event);
         };
         const onEnd = (event: TouchEvent): void => {
-            if (reporter?.active === true) {
-                const touch = changed(event);
-                if (touch !== null && reporter.up(touch)) consume(event);
-                return;
-            }
             if (scroller.end(event)) consume(event);
         };
         const onCancel = (): void => {

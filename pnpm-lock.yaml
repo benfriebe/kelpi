@@ -131,6 +131,8 @@ importers:
 
   packages/protocol: {}
 
+  packages/plugin-sdk: {}
+
   packages/shell:
     dependencies:
       '@kelpi/core':

@@ -30925,6 +30925,407 @@ function buildFlows(ctx) {
         },
 
         /*
+         * #123 - A DRAG OVER AN APPLICATION THAT REPORTS THE MOUSE (docs/MOBILE-PLAN.md §4, §7).
+         *
+         * **Owner-directed divergence from the shipped Swift app**, like every phone rule in this
+         * program: there is no Swift phone UI, so a touch gesture has no parity reference
+         * (`chrome/form-factor.ts` carries the note for all of it).
+         *
+         * The owner, on a real Android phone, on the R2/R3 shell: *"when on a Claude Code tab and
+         * scrolling down it can scroll into the lower part of the TUI and open the menus"*,
+         * clarified as *"which opens up agents/monitors"* - Claude Code's task line, which lists
+         * background agents and monitors when it is clicked.
+         *
+         * WHY `phone-touch-scroll` COULD NOT CATCH IT. That step's whole subject is the mode where
+         * NOTHING has asked for the mouse: it asserts `data-terminal-mouse=none` before it drags,
+         * and its byte check is that the capture contains no report bytes at all. The defect lives
+         * in the other mode, and there was no live step in it - the touch-to-report path had unit
+         * tests (`TerminalPane.touch.test.tsx`) and no gesture.
+         *
+         * WHAT IS MEASURED, and it is bytes rather than pixels. `fixtures/mouse-report-probe.mjs`
+         * asks for exactly what Claude Code asks for - the alternate screen, `?1000h` + `?1002h` +
+         * `?1006h` - and appends every byte it is sent to a log file, `cat -v` escaped, with the
+         * millisecond it arrived. The step drives real CDP touch under the same 390x844 emulation
+         * `phone-touch-scroll` uses and reads the trail back. A screenshot cannot tell a wheel
+         * report from a click; a byte can.
+         *
+         * THE RULE THIS PINS. Over an application that reports the mouse:
+         *
+         *   - a drag is WHEEL reports (SGR button 64 up / 65 down) at the finger, one per line of
+         *     travel, and never a press or a release. A press at the start and a release at the
+         *     end IS a click, and on a phone a drag ends wherever the thumb ran out of glass -
+         *     which is the bottom rows, which is where Claude Code's task line lives;
+         *   - the momentum tail reports only while it is moving, and nothing when it comes to rest;
+         *   - a TAP is the one gesture reported as a click, because an application that turned
+         *     mouse reporting on asked to be told about clicks;
+         *   - a LONG PRESS does not run C3's word selection and Copy pill here - the application
+         *     gets the press it asked for. C3's behaviour is unchanged wherever nothing asked.
+         *
+         * The control is the same fixture with `--modes ''`: the same alternate screen, no mouse
+         * reporting, so "no bytes" can be told apart from "no fixture".
+         *
+         * Phone-lane clean (lib/shards.mjs): it borrows the widest shell pane already on screen,
+         * provisions nothing, moves no workspace, pane or setting, starts and stops its own
+         * fixture through `pane send` / `pane send-key` (never through the caret, which under mouse
+         * reporting is not reachable by a click), and clears the emulation in a `finally`. The
+         * fixture runs on the ALTERNATE screen, so the scrollback it leaves behind is the pane's
+         * own - nothing is added to it at all.
+         */
+        {
+            id: 'phone-touch-mouse-reporting',
+            expect:
+                'Under a 390x844 phone viewport, over an application that has asked for the mouse (`?1049h ?1000h ?1002h ?1006h`, which is what Claude Code asks for), a one-finger drag reaches the application as WHEEL reports at the finger - SGR button 64 dragging down the glass, 65 dragging up, one per line of travel - and as no press and no release, so a drag that ends over the bottom rows does not arrive there as a click on whatever the TUI draws at the bottom. A flick reports while its momentum is moving and stops reporting when it comes to rest. A TAP is the one gesture reported as a click: a press and a release at the point, no wheel. A long press is reported the same way and raises no Copy pill, because the application asked for the press. The pane scrolls no scrollback of its own in any of it (`data-terminal-scroll` stays 0). With the same fixture asking for NO modes, the same gestures put not one byte on the wire, which is the spike’s rule and C3’s behaviour unchanged. With the fixture gone the pane reports `data-terminal-mouse=none` again and is back at a prompt.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-touch-mouse-reporting: no shell pane on screen to drive');
+                const paneID = shell.id;
+                const body = `[data-testid="pane-body-${paneID}"]`;
+                const hostSelector = `${body} [data-terminal-host]`;
+                const probePath = path.join(repoRoot, 'scripts', 'ui-audit', 'fixtures', 'mouse-report-probe.mjs');
+
+                /**
+                 * The trail, and the mark that makes it per-gesture.
+                 *
+                 * The fixture APPENDS, so a gesture's bytes are whatever the file grew by. Reading
+                 * a file rather than the pane is deliberate: the fixture is on the alternate
+                 * screen, and `pane capture` reads the daemon's buffer, which cannot show one
+                 * gesture's worth of anything.
+                 */
+                let logFile = '';
+                let mark = 0;
+                const trailText = () => {
+                    try {
+                        return fs.readFileSync(logFile, 'utf8');
+                    } catch {
+                        return '';
+                    }
+                };
+                const since = () => {
+                    const text = trailText();
+                    const next = text.slice(mark);
+                    mark = text.length;
+                    return next;
+                };
+                /** Just the escaped bytes of a slice, joined - the second field of each line. */
+                const bytesOf = (slice) =>
+                    slice
+                        .split('\n')
+                        .filter((line) => line !== '' && !line.startsWith('#'))
+                        .map((line) => line.split('\t')[1] ?? '')
+                        .filter((text) => text !== 'PROBE-READY')
+                        .join('');
+
+                /**
+                 * One escaped byte trail -> what an application would make of it.
+                 *
+                 * SGR (`?1006h`) is `ESC [ < code ; col ; row M` for a press and `... m` for a
+                 * release, so every report in a trail is one match and the code says which kind:
+                 * 0-2 are the real buttons, +32 is the motion bit, 64-67 are the wheel.
+                 */
+                const summarize = (slice) => {
+                    const bytes = bytesOf(slice);
+                    const reports = [...bytes.matchAll(/\^\[\[<(\d+);(\d+);(\d+)([Mm])/g)].map((match) => ({
+                        code: Number(match[1]),
+                        col: Number(match[2]),
+                        row: Number(match[3]),
+                        release: match[4] === 'm'
+                    }));
+                    const button = reports.filter((report) => report.code < 32);
+                    return {
+                        bytes,
+                        reports,
+                        total: reports.length,
+                        wheelUp: reports.filter((report) => report.code === 64).length,
+                        wheelDown: reports.filter((report) => report.code === 65).length,
+                        wheel: reports.filter((report) => report.code >= 64 && report.code <= 67).length,
+                        press: button.filter((report) => !report.release).length,
+                        release: button.filter((report) => report.release).length,
+                        motion: reports.filter((report) => report.code >= 32 && report.code < 64).length,
+                        // The alternate-scroll shape (`?1007h`), recorded so the trail says what
+                        // arrived rather than only what did not.
+                        arrows: (bytes.match(/\^\[\[[AB]/g) ?? []).length
+                    };
+                };
+
+                const readPane = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify((() => {
+                                    const pane = document.querySelector('${body} [data-pane-id]');
+                                    const host = document.querySelector('${hostSelector}');
+                                    const box = host === null ? null : host.getBoundingClientRect();
+                                    const round = (value) => Math.round(value * 100) / 100;
+                                    return {
+                                        mouse: pane === null ? null : pane.getAttribute('data-terminal-mouse'),
+                                        scroll: pane === null ? null : pane.getAttribute('data-terminal-scroll'),
+                                        selection: pane === null ? null : pane.getAttribute('data-terminal-selection'),
+                                        cell: pane === null ? null : pane.getAttribute('data-terminal-cell'),
+                                        pills: document.querySelectorAll('[data-terminal-copy-pill]').length,
+                                        box: box === null ? null : {
+                                            top: Math.round(box.top),
+                                            bottom: Math.round(box.bottom),
+                                            left: Math.round(box.left),
+                                            height: Math.round(box.height),
+                                            width: round(box.width)
+                                        }
+                                    };
+                                })())`
+                            )
+                        )
+                    );
+
+                /**
+                 * Start the fixture, and start it through the CLI rather than the keyboard.
+                 *
+                 * A step that types has to focus the pane first, and focusing a pane is a CLICK -
+                 * which under mouse reporting is intercepted by the pane and sent to the
+                 * application instead of moving the caret. `pane send` writes the PTY directly and
+                 * is the only door into this pane that the feature under test does not own.
+                 */
+                const startProbe = async (label, args) => {
+                    logFile = path.join(sandbox.root, `mouse-report-${label}.log`);
+                    fs.rmSync(logFile, { force: true });
+                    mark = 0;
+                    await cli.ok([
+                        'pane',
+                        'send',
+                        '--target',
+                        paneID,
+                        `${process.execPath} ${probePath} --log ${logFile}${args === '' ? '' : ` ${args}`}`
+                    ]);
+                    // The fixture writes its readiness into the LOG, so the wait is on the file:
+                    // its screen is the alternate one and nothing in the DOM can be waited on.
+                    for (let attempt = 0; attempt < 60 && !trailText().includes('PROBE-READY'); attempt += 1) {
+                        await sleep(200);
+                    }
+                    mark = trailText().length;
+                    return trailText().includes('PROBE-READY');
+                };
+                const stopProbe = async () => {
+                    await cli.ok(['pane', 'send-key', '--target', paneID, 'ctrl-c']).catch(() => {});
+                    await sleep(500);
+                };
+
+                const handedIn = await readPhoneFrame(view);
+
+                try {
+                    // ── the application asks for the mouse ───────────────────────────────
+                    const ready = await startProbe('reporting', '');
+                    recorder.check(
+                        'the fixture is running and asking for the mouse the way Claude Code does',
+                        ready,
+                        ready ? 'PROBE-READY in the trail' : 'no PROBE-READY - the fixture never started'
+                    );
+
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
+                        timeoutMs: 20_000,
+                        label: 'the key bar to mount under the phone viewport'
+                    });
+                    await sleep(600);
+
+                    const start = await readPane();
+                    recorder.note(`the pane with the fixture running: ${JSON.stringify(start)}`);
+                    recorder.check(
+                        'and the pane knows it: the mode the whole step is about is published on the pane',
+                        start.mouse === 'drag',
+                        `data-terminal-mouse=${String(start.mouse)} (1002 = motion while a button is down, which is what 1000+1002 folds to)`
+                    );
+                    const [, cellHeight] = String(start.cell ?? '0x0')
+                        .split('x')
+                        .map((part) => Number.parseFloat(part));
+                    const box = start.box;
+                    if (box === null || !(cellHeight > 0)) {
+                        throw new Error(
+                            `phone-touch-mouse-reporting: no host box or cell to measure with (${JSON.stringify(start)})`
+                        );
+                    }
+                    const x = Math.round(box.left + box.width / 2);
+                    const top = Math.round(box.top + box.height * 0.25);
+                    const TRAVEL = 200;
+                    const expectedLines = Math.round(TRAVEL / cellHeight);
+                    // Discard anything the emulation's own resize produced (a SIGWINCH repaint
+                    // writes no input, but the mark is what makes that a fact rather than a hope).
+                    since();
+
+                    // ── a drag DOWN the glass ───────────────────────────────────────────
+                    await view.swipe({ x, y: top }, { x, y: top + TRAVEL }, { steps: 12, durationMs: 1200 });
+                    await sleep(800);
+                    const down = summarize(since());
+                    recorder.block('a 200 px drag DOWN, over a mouse-reporting application', down.bytes || '(nothing)');
+                    recorder.note(
+                        `drag down: ${JSON.stringify({ total: down.total, wheelUp: down.wheelUp, wheelDown: down.wheelDown, press: down.press, release: down.release, motion: down.motion })} against about ${String(expectedLines)} lines of travel`
+                    );
+                    recorder.check(
+                        'a drag down the glass reaches the application as WHEEL reports and nothing else - no press, no release, no motion',
+                        down.wheelUp > 0 && down.press === 0 && down.release === 0 && down.motion === 0,
+                        `${String(down.wheelUp)} button-64 (wheel up) reports, ${String(down.press)} presses, ${String(down.release)} releases, ${String(down.motion)} motion reports`
+                    );
+                    recorder.check(
+                        'and it is one report per LINE of travel, not one per pixel and not one per gesture',
+                        down.wheelUp >= expectedLines - 2 && down.wheelUp <= expectedLines + 2,
+                        `${String(down.wheelUp)} reports for ${String(TRAVEL)} px over a ${String(cellHeight)} px cell (about ${String(expectedLines)})`
+                    );
+
+                    // ── a drag UP the glass ─────────────────────────────────────────────
+                    await view.swipe({ x, y: top + TRAVEL }, { x, y: top }, { steps: 12, durationMs: 1200 });
+                    await sleep(800);
+                    const up = summarize(since());
+                    recorder.block('a 200 px drag UP, over the same application', up.bytes || '(nothing)');
+                    recorder.check(
+                        'dragging the other way is the other wheel button, and still no press or release',
+                        up.wheelDown > 0 && up.wheelUp === 0 && up.press === 0 && up.release === 0,
+                        `${String(up.wheelDown)} button-65 (wheel down) reports, ${String(up.wheelUp)} button-64, ${String(up.press)} presses, ${String(up.release)} releases`
+                    );
+
+                    // ── THE OWNER'S GESTURE: a drag that ENDS over the bottom rows ───────
+                    // This is the whole report. The finger runs out of glass at the bottom of the
+                    // pane, which on a Claude Code tab is its task line.
+                    const bottom = Math.round(box.bottom - 3);
+                    await view.swipe({ x, y: Math.round(box.top + box.height * 0.3) }, { x, y: bottom }, { steps: 12, durationMs: 900 });
+                    await sleep(900);
+                    const toBottom = summarize(since());
+                    recorder.block('a drag that ENDS on the bottom rows (the owner\'s gesture)', toBottom.bytes || '(nothing)');
+                    const clicksAtEnd = toBottom.reports.filter((report) => report.code < 32);
+                    recorder.note(
+                        `the drag ended at y=${String(bottom)} in a host ${String(box.height)} px tall; button reports in the trail: ${JSON.stringify(clicksAtEnd)}`
+                    );
+                    recorder.check(
+                        'a drag that ends over the bottom rows sends NO press and NO release there: the application is never told the finger clicked its bottom line',
+                        toBottom.press === 0 && toBottom.release === 0 && toBottom.wheel > 0,
+                        `${String(toBottom.press)} presses and ${String(toBottom.release)} releases at the end of the drag, with ${String(toBottom.wheel)} wheel reports through it`
+                    );
+                    await recorder.shot(view, 'drag-to-bottom-rows');
+
+                    // ── the flick, and its tail ─────────────────────────────────────────
+                    await view.swipe({ x, y: top }, { x, y: top + TRAVEL }, { steps: 12, durationMs: 150 });
+                    await sleep(1400);
+                    const flick = summarize(since());
+                    recorder.note(
+                        `a flick of the same 200 px: ${String(flick.wheel)} wheel reports against ${String(down.wheelUp)} for the slow drag, ${String(flick.press)} presses, ${String(flick.release)} releases`
+                    );
+                    recorder.check(
+                        'a FLICK carries further than the drag - the momentum reports while it is moving - and still never a press or a release',
+                        flick.wheel > down.wheelUp && flick.press === 0 && flick.release === 0,
+                        `${String(flick.wheel)} wheel reports against ${String(down.wheelUp)}, ${String(flick.press)} presses, ${String(flick.release)} releases`
+                    );
+                    // …and it comes to REST. A tail that reported at rest would keep arriving.
+                    since();
+                    await sleep(1500);
+                    const atRest = summarize(since());
+                    recorder.check(
+                        'and when the tail comes to rest it stops reporting: not one byte in the second and a half after it settled',
+                        atRest.total === 0 && atRest.bytes === '',
+                        atRest.bytes === '' ? 'nothing at all' : `still arriving: ${atRest.bytes}`
+                    );
+
+                    // ── a TAP: the one gesture that IS a click ──────────────────────────
+                    const tapY = Math.round(box.top + box.height / 2);
+                    await view.tap({ x, y: tapY });
+                    await sleep(700);
+                    const tap = summarize(since());
+                    recorder.block('a tap, over the same application', tap.bytes || '(nothing)');
+                    const tapPress = tap.reports.filter((report) => report.code < 32 && !report.release);
+                    const tapRelease = tap.reports.filter((report) => report.release);
+                    recorder.check(
+                        'a TAP is reported as a click - one press and one release at the point - because an application that asked for the mouse asked for this',
+                        tap.press === 1 && tap.release === 1 && tap.wheel === 0,
+                        `${String(tap.press)} presses, ${String(tap.release)} releases, ${String(tap.wheel)} wheel reports; ${JSON.stringify([...tapPress, ...tapRelease])}`
+                    );
+                    recorder.check(
+                        'and the press and the release name the SAME cell: a click, not a drag of zero length',
+                        tapPress.length === 1 &&
+                            tapRelease.length === 1 &&
+                            tapPress[0].col === tapRelease[0].col &&
+                            tapPress[0].row === tapRelease[0].row,
+                        `press at ${JSON.stringify(tapPress[0] ?? null)}, release at ${JSON.stringify(tapRelease[0] ?? null)}`
+                    );
+
+                    // ── a LONG PRESS: the application's, not C3's ───────────────────────
+                    await view.longPress({ x, y: tapY });
+                    await sleep(700);
+                    const held = summarize(since());
+                    const afterPress = await readPane();
+                    recorder.block('a long press, over the same application', held.bytes || '(nothing)');
+                    recorder.check(
+                        'a long press over a mouse-reporting application is the application’s press, not C3’s word selection: no Copy pill and no highlight',
+                        afterPress.pills === 0 && afterPress.selection === '0',
+                        `${String(afterPress.pills)} pills, data-terminal-selection=${String(afterPress.selection)}`
+                    );
+                    recorder.check(
+                        'and it reaches the application as the click it asked for',
+                        held.press === 1 && held.release === 1 && held.wheel === 0,
+                        `${String(held.press)} presses, ${String(held.release)} releases, ${String(held.wheel)} wheel reports`
+                    );
+
+                    // ── the pane scrolled NOTHING of its own through any of it ───────────
+                    const after = await readPane();
+                    recorder.check(
+                        'and the pane never scrolled its own scrollback under the application: the viewport is where it started',
+                        after.scroll === '0',
+                        `data-terminal-scroll=${String(after.scroll)} (C3 must not move a viewport an application is painting)`
+                    );
+
+                    // ── THE CONTROL: the same fixture asking for NOTHING ────────────────
+                    // Same alternate screen, same gestures, no mouse reporting. This is what
+                    // makes every "no bytes" above a measurement rather than a dead fixture.
+                    await clearPhoneEmulation(view);
+                    await stopProbe();
+                    const controlReady = await startProbe('control', "--modes ''");
+                    await emulatePhone(view);
+                    await sleep(600);
+                    const control = await readPane();
+                    recorder.check(
+                        'the control fixture runs on the same alternate screen and asks for NO mouse',
+                        controlReady && control.mouse === 'none',
+                        `PROBE-READY=${String(controlReady)}, data-terminal-mouse=${String(control.mouse)}`
+                    );
+                    since();
+                    await view.swipe({ x, y: top }, { x, y: Math.round(box.bottom - 3) }, { steps: 12, durationMs: 900 });
+                    await sleep(900);
+                    await view.tap({ x, y: tapY });
+                    await sleep(500);
+                    const off = summarize(since());
+                    recorder.block('the same drag and tap with mouse reporting OFF', off.bytes || '(nothing)');
+                    recorder.check(
+                        'with nothing asking for the mouse, not one byte of any of it reaches the application - the spike’s rule, unchanged',
+                        off.total === 0 && off.bytes === '',
+                        off.bytes === '' ? 'nothing on the wire' : `bytes arrived: ${off.bytes}`
+                    );
+                    // What C3 does instead, recorded rather than asserted: the alternate screen has
+                    // no scrollback of its own, so a drag there has nowhere to go. `?1007h`
+                    // (alternate-scroll, a wheel as arrow keys) is the mode that would give it one
+                    // and nothing publishes it yet - see the PR for #123.
+                    const offPane = await readPane();
+                    recorder.note(
+                        `with reporting off on the ALTERNATE screen a drag left data-terminal-scroll=${String(offPane.scroll)} and put ${String(off.arrows)} arrow keys on the wire (?1007h is not published to the client today)`
+                    );
+                } finally {
+                    await stopProbe();
+                    await clearPhoneEmulation(view);
+                    // The fixture restores `?1049l` and every mode it set on its way out, so the
+                    // pane owes the next step a prompt with no mouse mode and no alternate screen.
+                    await focusPaneBody(view, paneID).catch(() => {});
+                    await runInTerminal(view, `printf 'MR-%s\\n' $((7*8))`, { settleMs: 900 });
+                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture (after the fixture exited)', capture.slice(-300));
+                    const restored = await readPane();
+                    recorder.check(
+                        'the fixture left no mode behind: the pane is a shell at a prompt with nothing asking for the mouse',
+                        capture.includes('MR-56') && restored.mouse === 'none',
+                        `${capture.includes('MR-56') ? 'the shell evaluated $((7*8))' : 'no MR-56 - something is still reading the pty'}, data-terminal-mouse=${String(restored.mouse)}`
+                    );
+                    await checkPhoneHandback(view, recorder, handedIn);
+                }
+            }
+        },
+
+
+        /*
          * C5 - WHO MAY SUMMON THE SOFTWARE KEYBOARD (docs/MOBILE-PLAN.md §4).
          *
          * **Owner-directed divergence from the shipped Swift app**, like every phone rule: the

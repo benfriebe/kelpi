@@ -9,7 +9,7 @@ export type PaneStatus = 'idle' | 'running' | 'waitingForInput';
 export type AgentKind = 'claude' | 'codex';
 
 /** Status is a shell-pane-only concept; the manual override guards on this. */
-export type PaneKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web';
+export type PaneKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
 
 export interface PaneAgentState {
     readonly status: PaneStatus;

@@ -18,6 +18,7 @@
  * `load() === null` (without deleting the file).
  */
 
+import { decodePluginPane } from '@kelpi/protocol';
 import {
     decodeChildOrderJSON,
     decodeLabelsJSON,
@@ -89,6 +90,8 @@ export interface WorkspaceRow {
 }
 
 export interface PaneRow {
+    readonly pluginJSON: string | null;
+    readonly pluginParked: number;
     readonly id: string;
     readonly workspaceID: string;
     readonly label: string | null;
@@ -218,7 +221,7 @@ export function decodeGroupColor(raw: string | null): WorkspaceColor | null {
 
 /** Unknown / missing → shell (§2.2). */
 export function decodePaneType(raw: string | null): PaneType {
-    return PANE_TYPES.find((value) => value === raw) ?? 'shell';
+    return PANE_TYPES.find((value) => value === raw) ?? (raw === null || raw === '' ? 'shell' : 'plugin');
 }
 
 /** Unknown / missing → idle (§2.2). */
@@ -357,10 +360,12 @@ export function encodePaneRow(pane: PersistedPane, workspaceID: string): PaneRow
     const tabs = isWeb && !isPrivate ? (pane.webTabs ?? []) : [];
     const active = activeWebTab(tabs, pane.webActiveTabID);
     return {
+        pluginJSON: pane.unavailable?.pluginJSON ?? (pane.plugin ? JSON.stringify(pane.plugin) : null),
+        pluginParked: pane.type === 'plugin' && pane.parked ? 1 : 0,
         id: normalizeUUIDLoose(pane.id),
         workspaceID: normalizeUUIDLoose(workspaceID),
         label: pane.label,
-        type: pane.type,
+        type: pane.unavailable?.type ?? pane.type,
         workingDirectory: pane.workingDirectory,
         createdAt: toEpochSecondsColumn(pane.createdAt),
         lastActivityAt: toEpochSecondsColumn(pane.lastActivityAt),
@@ -593,11 +598,16 @@ export function decodePaneRow(row: SqlRow, options: DecodePaneOptions = {}): Dec
     if (workspaceID === null) return null;
 
     const type = decodePaneType(textColumn(row, 'type'));
+    let plugin = null;
+    try { plugin = decodePluginPane(JSON.parse(textColumn(row, 'pluginJSON') ?? 'null')); } catch { /* unavailable pane */ }
     const web = decodeWebColumns(row, type, options.newTabID ?? (() => newUUID()));
 
     return {
         workspaceID,
         pane: {
+            ...(type === 'plugin' && boolColumn(row, 'pluginParked') ? { parked: true as const } : {}),
+            ...(plugin === null ? {} : { plugin }),
+            ...(type === 'plugin' && (!plugin || textColumn(row, 'type') !== 'plugin') ? { unavailable: { type: textColumn(row, 'type') ?? 'plugin', pluginJSON: textColumn(row, 'pluginJSON') } } : {}),
             id,
             label: optionalText(row, 'label'),
             type,

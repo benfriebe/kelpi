@@ -191,7 +191,11 @@ export const MIGRATIONS: readonly Migration[] = [
         // launched under, so a resume can rebuild the same environment.
         identifier: 'v19_pane_agent_profile',
         apply: (db) => addColumn(db, 'pane', 'agentProfileName', 'TEXT')
-    }
+    },
+    { identifier: 'v20_plugin_panes', apply: db => {
+        addColumn(db, 'pane', 'pluginJSON', 'TEXT');
+        addColumn(db, 'pane', 'pluginParked', 'BOOLEAN NOT NULL DEFAULT 0');
+    } }
 ];
 
 /** The ledger identifiers this daemon owns, in registration order (`v1_initial` … `v19_…`). */
@@ -202,7 +206,7 @@ export const MIGRATION_IDENTIFIERS: readonly string[] = MIGRATIONS.map((m) => m.
  * parity, so a legacy `nex.db` ledger can never contain them. The legacy importer excludes
  * them when judging whether a source database "predates" this importer.
  */
-export const DAEMON_ONLY_MIGRATIONS: readonly string[] = ['v19_pane_agent_profile'];
+export const DAEMON_ONLY_MIGRATIONS: readonly string[] = ['v19_pane_agent_profile', 'v20_plugin_panes'];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {
     db.exec(`CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (identifier TEXT NOT NULL PRIMARY KEY)`);

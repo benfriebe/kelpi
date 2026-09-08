@@ -38,6 +38,10 @@ import type {
 export const PERSISTED_SNAPSHOT_VERSION = 1;
 
 export interface PersistedPane {
+    /** Plugin panes retain their state when a layout parks them. */
+    readonly parked?: true;
+    readonly unavailable?: { readonly type: string; readonly pluginJSON: string | null };
+    readonly plugin?: import('@kelpi/protocol').PluginPaneDescriptor;
     readonly id: string;
     readonly label: string | null;
     readonly type: PaneType;
@@ -75,7 +79,7 @@ export interface PersistedWorkspace {
     /** Epoch seconds. */
     readonly lastAccessedAt: number;
     readonly labels: readonly string[];
-    /** Visible panes only — parked panes are transient. */
+    /** Visible panes plus parked plugin panes; parked terminals remain transient. */
     readonly panes: readonly PersistedPane[];
     readonly repoAssociations: readonly RepoAssociation[];
 }
@@ -117,6 +121,8 @@ function persistPane(pane: Pane, sidecar: WebPaneState | undefined): PersistedPa
     // pane comes back blank but still private.
     const webTabs = isWeb && sidecar !== undefined && !isPrivate ? sidecar.tabs : null;
     return {
+        ...(pane.plugin === undefined ? {} : { plugin: pane.plugin }),
+        ...(pane.unavailable === undefined ? {} : { unavailable: pane.unavailable }),
         id: pane.id,
         label: pane.label,
         type: pane.type,
@@ -148,7 +154,10 @@ function persistWorkspace(workspace: WorkspaceState): PersistedWorkspace {
         createdAt: workspace.createdAt,
         lastAccessedAt: workspace.lastAccessedAt,
         labels: [...workspace.labels],
-        panes: workspace.panes.map((pane) => persistPane(pane, workspace.webPanes[pane.id])),
+        panes: [
+            ...workspace.panes.map((pane) => persistPane(pane, workspace.webPanes[pane.id])),
+            ...workspace.parkedPanes.filter(pane => pane.type === 'plugin').map(pane => ({ ...persistPane(pane, undefined), parked: true as const }))
+        ],
         repoAssociations: workspace.repoAssociations.map((assoc) => ({ ...assoc }))
     };
 }
@@ -177,6 +186,8 @@ export function toSnapshot(state: DaemonState): PersistedSnapshot {
 
 function restorePane(record: PersistedPane): Pane {
     return {
+        ...(record.plugin === undefined ? {} : { plugin: record.plugin }),
+        ...(record.unavailable === undefined ? {} : { unavailable: record.unavailable }),
         id: record.id,
         label: record.label,
         type: record.type,
@@ -230,7 +241,7 @@ export function fromSnapshot(
     options: FromSnapshotOptions
 ): DaemonState {
     const workspaces: WorkspaceState[] = (snapshot.workspaces ?? []).map((record) => {
-        const panes = (record.panes ?? []).map(restorePane);
+        const panes = (record.panes ?? []).filter(pane => !pane.parked).map(restorePane);
         return {
             id: record.id,
             name: record.name,
@@ -239,7 +250,7 @@ export function fromSnapshot(
             icon: record.icon,
             profileName: record.profileName,
             panes,
-            parkedPanes: [],
+            parkedPanes: (record.panes ?? []).filter(pane => pane.parked).map(restorePane),
             layout: record.layout,
             focusedPaneID: record.focusedPaneID,
             focusHistory: [],

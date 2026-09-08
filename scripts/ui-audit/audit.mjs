@@ -1334,6 +1334,66 @@ async function seedPhoneHosts(page, hosts) {
     );
 }
 
+/**
+ * Put a phone target under the thumb before tapping it, and prove the point really hits it.
+ *
+ * `page.tap` takes the element's CENTRE with no viewport check (`lib/cdp.mjs` `touchPoint`), so a
+ * row scrolled past the fold is dispatched off-screen, lands on nothing, and the step then waits
+ * out its timeout on a tap that was never delivered. Measured in the full audit of 2026-09-08
+ * (run `verify-latest`, steps 127 and 129, a roster of 14 workspaces and 6 groups left by 120
+ * earlier steps): the drawer's second host section and the landing tree's target workspace row
+ * were both below a 844 px panel, and both steps died on a `waitFor` rather than on a miss. The
+ * phone lane, which runs against one workspace, never sees it - which is exactly why the check
+ * belongs in the step rather than in the reviewer's head.
+ *
+ * `elementFromPoint` afterwards is what turns a future miss into "the row is at y=N and the point
+ * hits X" instead of a timeout, the same way `phone-palette-sheet` records its own row. It is not
+ * a product rule: a person scrolls a long list too, and the desktop sidebar scrolls the same way.
+ */
+async function reachPhoneTarget(page, selector) {
+    return JSON.parse(
+        String(
+            await page.eval(
+                `(() => {
+                    const sel = ${JSON.stringify(selector)};
+                    const el = document.querySelector(sel);
+                    if (el === null) return JSON.stringify({ found: false });
+                    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    const box = el.getBoundingClientRect();
+                    const x = Math.round(box.x + box.width / 2);
+                    const y = Math.round(box.y + box.height / 2);
+                    const hit = document.elementFromPoint(x, y);
+                    return JSON.stringify({
+                        found: true,
+                        x, y,
+                        top: Math.round(box.top),
+                        onScreen: x > 0 && x < window.innerWidth && y > 0 && y < window.innerHeight,
+                        hitsTarget: hit !== null && hit.closest(sel) !== null,
+                        hit: hit === null ? null : (hit.closest('[data-testid]')?.getAttribute('data-testid') ?? hit.tagName)
+                    });
+                })()`
+            )
+        )
+    );
+}
+
+/** Scroll a phone target under the thumb, record what a finger there would hit, and tap it. */
+async function tapPhoneTarget(page, recorder, selector, label) {
+    const reach = await reachPhoneTarget(page, selector);
+    recorder.note(`${label} before the tap: ${JSON.stringify(reach)}`);
+    recorder.check(
+        `${label} is under the thumb before it is tapped`,
+        reach.found === true && reach.onScreen === true && reach.hitsTarget === true,
+        `found=${String(reach.found)} at (${String(reach.x)}, ${String(reach.y)}) onScreen=${String(reach.onScreen)} hits ${String(reach.hit)}`
+    );
+    if (reach.found !== true || reach.onScreen !== true || reach.hitsTarget !== true) return false;
+    // The scroll is instant, but the tree re-renders under it; let the box settle before the box
+    // `page.tap` reads is the one the finger is aimed at.
+    await sleep(150);
+    await page.tap(selector);
+    return true;
+}
+
 async function seedPhonePlace(page, place) {
     await page.eval(
         `(() => {
@@ -32728,7 +32788,26 @@ function buildFlows(ctx) {
                 await focusPaneBody(view, paneID);
                 const rosterBefore = await readRoster();
                 recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
-                const workspacePanes = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                /*
+                 * The panes of the workspace ON SCREEN, which is what the phone's grid draws and
+                 * what its pane sheet lists - not the daemon's whole roster.
+                 *
+                 * `pane list --json` is every pane the daemon holds. In the lane, with one
+                 * workspace, that is the same list; in a full run it is not. Measured 2026-09-08
+                 * (`verify-latest` step 127): the workspace on screen had ONE pane and the global
+                 * list had 30-odd belonging to thirteen other workspaces, so "the workspace grid
+                 * with every pane body" compared a one-pane grid against all of them and failed on
+                 * a true statement. `--workspace` is the scope the assertion always meant; the DOM
+                 * roster is the fallback when no sidebar row is marked active, and it is the same
+                 * question asked of the client instead of the daemon.
+                 */
+                const workspacePanes =
+                    rosterBefore.workspace.length === 0
+                        ? rosterBefore.panes.map((id) => String(id))
+                        : (await cli.json(['pane', 'list', '--workspace', rosterBefore.workspace, '--json'])).map((pane) => String(pane.id));
+                recorder.note(
+                    `the workspace on screen: ${rosterBefore.workspace || '(none marked active)'} with ${String(workspacePanes.length)} pane(s)`
+                );
                 const sibling = rosterBefore.panes.find((id) => id !== paneID) ?? null;
 
                 try {
@@ -32885,12 +32964,26 @@ function buildFlows(ctx) {
                             drawer.allHostsRow === false,
                         JSON.stringify({ origin: drawer.origin, second: drawer.second, allHostsRow: drawer.allHostsRow })
                     );
-                    // One tap on a shut host's header opens it, and the phone remembers that.
-                    await view.tap('[data-testid="phone-host-toggle-phone:audit-2"]');
-                    await view.waitFor(`document.querySelector('[data-testid="phone-host-phone:audit-2"]')?.getAttribute('data-expanded') === 'true'`, {
-                        timeoutMs: 8000,
-                        label: 'the second host to open'
-                    });
+                    /*
+                     * One tap on a shut host's header opens it, and the phone remembers that.
+                     *
+                     * Scrolled under the thumb first: the origin's section is open above it, and
+                     * with 14 workspaces and 6 groups in that section (measured in the full audit
+                     * of 2026-09-08) the second host's header sits past the bottom of a 844 px
+                     * panel, where a tap at its centre is dispatched off-screen and hits nothing.
+                     */
+                    const tapped = await tapPhoneTarget(
+                        view,
+                        recorder,
+                        '[data-testid="phone-host-toggle-phone:audit-2"]',
+                        "the second host's header"
+                    );
+                    if (tapped) {
+                        await view.waitFor(`document.querySelector('[data-testid="phone-host-phone:audit-2"]')?.getAttribute('data-expanded') === 'true'`, {
+                            timeoutMs: 8000,
+                            label: 'the second host to open'
+                        });
+                    }
                     const opened2 = await readDrawer();
                     recorder.note(`after opening the second host: ${JSON.stringify(opened2)}`);
                     recorder.check(
@@ -32938,7 +33031,9 @@ function buildFlows(ctx) {
                         recorder.note('no sibling pane on screen to switch to; the switch is covered by the jsdom suite');
                         await view.tap('[data-testid="phone-pane-sheet-header-close"]');
                     } else {
-                        await view.tap(`[data-testid="phone-pane-show-${sibling}"]`);
+                        // Under the thumb first: the sheet is a scrolling list, and a workspace
+                        // with more panes than fit its 75vh puts a row past the fold.
+                        await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${sibling}"]`, "the sibling pane's row");
                         await view.waitFor(`document.querySelector('[data-testid="pane-body-${sibling}"]') !== null && document.querySelector('[data-testid="pane-body-${paneID}"]') === null`, {
                             timeoutMs: 8000,
                             label: 'the sibling to replace the shown pane'
@@ -32984,7 +33079,7 @@ function buildFlows(ctx) {
                             timeoutMs: 8000,
                             label: 'the pane sheet again'
                         });
-                        await view.tap(`[data-testid="phone-pane-show-${paneID}"]`);
+                        await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${paneID}"]`, "the borrowed pane's row");
                         await view.waitFor(`document.querySelector('[data-testid="pane-body-${paneID}"]') !== null`, {
                             timeoutMs: 8000,
                             label: 'the borrowed pane back on screen'
@@ -33302,14 +33397,38 @@ function buildFlows(ctx) {
                         )
                     );
 
+                /*
+                 * The workspace this step works IN, read before it provisions anything: the one on
+                 * screen, which is where `kelpi md` and `kelpi web open` put their panes and which
+                 * the landing page will be asked to open.
+                 *
+                 * Every roster read below is scoped to it. `pane list --json` is the daemon's whole
+                 * roster, which in the lane (one workspace) is the same list and in a full run is
+                 * not: measured 2026-09-08 (`verify-latest`), by step 129 the daemon held 14
+                 * workspaces, so "the sheet lists every pane of the workspace" and "the full layout
+                 * draws every pane type at once" would have been compared against thirteen other
+                 * workspaces' panes. The DOM's own pane ids are the fallback when no sidebar row is
+                 * marked active.
+                 */
+                const workspaceID = String(
+                    await view.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                const listPanes = async () =>
+                    workspaceID.length === 0
+                        ? (await domPaneIDs(view)).map((id) => ({ id: String(id), type: '(dom)' }))
+                        : await cli.json(['pane', 'list', '--workspace', workspaceID, '--json']);
+                recorder.note(`the workspace on screen: ${workspaceID || '(none marked active)'}`);
+
                 // The two panes this step is about, created here so the phone lane does not depend
                 // on `markdown-pane` or `web-pane` having run.
-                const before = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                const before = (await listPanes()).map((pane) => String(pane.id));
                 await cli.ok(['md', path.join(work, 'AUDIT.md')]);
                 await sleep(1800);
                 await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
                 await sleep(3000);
-                const roster = await cli.json(['pane', 'list', '--json']);
+                const roster = await listPanes();
                 const mdPane = roster.find((pane) => pane.type === 'markdown' && !before.includes(String(pane.id)));
                 const webPane = roster.find((pane) => pane.type === 'web' && !before.includes(String(pane.id)));
                 recorder.note(
@@ -33322,14 +33441,11 @@ function buildFlows(ctx) {
                 );
                 if (mdPane === undefined || webPane === undefined) return;
 
-                // The pane the shell will show first, and the workspace the place will name.
+                // The pane the shell will show first: the shell shows the daemon's FOCUSED pane, so
+                // focusing the terminal here is what decides which of the three is on screen when
+                // the landing page hands the workspace over.
                 await focusPaneBody(view, terminalPane);
-                const workspaceID = String(
-                    await view.eval(
-                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
-                    )
-                );
-                const workspacePanes = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                const workspacePanes = (await listPanes()).map((pane) => String(pane.id));
 
                 try {
                     // ── the first open: nothing remembered, so the host list ────────────
@@ -33393,12 +33509,36 @@ function buildFlows(ctx) {
                         JSON.stringify({ origin: originOnLanding, addHost: addHostOnLanding })
                     );
 
-                    // ── pick the workspace, straight off the page ───────────────────────
-                    await view.tap(`[data-testid="phone-landing"] [data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`);
-                    await view.waitFor(`document.querySelector('[data-testid="pane-body-${terminalPane}"]') !== null`, {
-                        timeoutMs: 10_000,
-                        label: 'the workspace, showing the focused pane'
-                    });
+                    /*
+                     * ── pick the workspace, straight off the page ───────────────────────
+                     *
+                     * Scrolled under the thumb first: the landing tree lists every workspace on the
+                     * host, and this one sat below the fold of a 844 px screen in the full audit of
+                     * 2026-09-08 (14 workspaces, the target inside the last group), where a tap at
+                     * its centre goes off-screen and hits nothing.
+                     *
+                     * The wait is deliberately pane-type-agnostic: what the tap causes is the
+                     * landing page giving way to a workspace, and what the workspace then shows is
+                     * whatever the daemon has focused - a `pane-body-…` for a terminal or a content
+                     * pane, and `phone-web-card-…` for a web pane, which draws no body at all
+                     * (MOBILE-PLAN.md §9). Waiting on the terminal's body specifically turned "the
+                     * focused pane is not the one this step focused" into an 8 s timeout instead of
+                     * the failed assertion below, which says so.
+                     */
+                    await tapPhoneTarget(
+                        view,
+                        recorder,
+                        `[data-testid="phone-landing"] [data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`,
+                        "the target workspace's row"
+                    );
+                    await view.waitFor(
+                        `document.querySelector('[data-testid="phone-landing"]') === null &&
+                         (document.querySelector('[data-testid^="pane-body-"]') !== null || document.querySelector('[data-testid^="phone-web-card-"]') !== null)`,
+                        {
+                            timeoutMs: 10_000,
+                            label: 'the workspace, showing whatever pane the daemon has focused'
+                        }
+                    );
                     const opened = await readShell();
                     recorder.note(`after picking a workspace: ${JSON.stringify(opened)}`);
                     recorder.check(
@@ -33440,7 +33580,9 @@ function buildFlows(ctx) {
                     );
 
                     // ── the content pane: the desktop's own component ───────────────────
-                    await view.tap(`[data-testid="phone-pane-show-${String(mdPane.id)}"]`);
+                    // Under the thumb first, here and at the two sheet taps below: the sheet is a
+                    // scrolling list and a busy workspace puts a row past its 75vh fold.
+                    await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${String(mdPane.id)}"]`, "the markdown pane's row");
                     await view.waitFor(`document.querySelector('[data-testid="pane-body-${String(mdPane.id)}"]') !== null`, {
                         timeoutMs: 10_000,
                         label: 'the markdown pane in the shell'
@@ -33466,7 +33608,7 @@ function buildFlows(ctx) {
                         timeoutMs: 8000,
                         label: 'the pane sheet again'
                     });
-                    await view.tap(`[data-testid="phone-pane-show-${String(webPane.id)}"]`);
+                    await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${String(webPane.id)}"]`, "the web pane's row");
                     await view.waitFor(`document.querySelector('[data-testid="phone-web-card-${String(webPane.id)}"]') !== null`, {
                         timeoutMs: 10_000,
                         label: "the web pane's phone card"
@@ -33533,7 +33675,7 @@ function buildFlows(ctx) {
                         timeoutMs: 8000,
                         label: 'the pane sheet a third time'
                     });
-                    await view.tap(`[data-testid="phone-pane-show-${terminalPane}"]`);
+                    await tapPhoneTarget(view, recorder, `[data-testid="phone-pane-show-${terminalPane}"]`, "the terminal's row");
                     await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
                         timeoutMs: 10_000,
                         label: 'the key bar back on the terminal'
@@ -33611,7 +33753,10 @@ function buildFlows(ctx) {
                     timeoutMs: 10_000,
                     label: 'the desktop tree to come back'
                 });
-                const after = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                // Scoped to the same workspace `before` was read from, so the two lists answer the
+                // same question: a pane another workspace gained while this step ran is not this
+                // step's to account for.
+                const after = (await listPanes()).map((pane) => String(pane.id));
                 recorder.check(
                     'the desktop is back and the step left the roster it found',
                     [...after].sort().join(',') === [...before].sort().join(','),

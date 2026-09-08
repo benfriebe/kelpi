@@ -223,7 +223,7 @@ const SURFACES = [
          * wider than "the phone directory's own tests".
          */
         tests: ['packages/client/src/phone', 'packages/client/src/settings', 'packages/client/src/chrome'],
-        steps: ['phone-form-factor', 'phone-settings-sheet', 'phone-palette-sheet', 'phone-shell']
+        steps: ['phone-form-factor', 'phone-settings-sheet', 'phone-palette-sheet', 'phone-shell', 'phone-landing']
     },
     {
         prefix: 'packages/client/src/pwa/',

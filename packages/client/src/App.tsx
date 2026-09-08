@@ -901,10 +901,19 @@ function Shell(props: AppProps): ReactElement {
      */
     const formFactor = useFormFactor(props.formFactorWindow ?? defaultFormFactorWindow());
     const phoneActive = formFactor === 'phone';
-    const phoneView = usePhoneView({ enabled: phoneActive, focusedPaneID, paneOrder });
+    const phoneView = usePhoneView({
+        enabled: phoneActive,
+        focusedPaneID,
+        paneOrder,
+        // B7: the remembered place names the workspace the phone was on, and it lives in the
+        // phone's own store beside the host list it names a host from (`phone/place.ts`).
+        originWorkspaceID: workspace?.id ?? null,
+        placeStorage: props.phoneHostStorage
+    });
     const phoneMode = phoneView.mode;
     const phoneShownPaneID = phoneView.shownPaneID;
     const phoneRemoteSelected = phoneView.remote !== null;
+    const phoneAtLanding = phoneView.atLanding;
     const visible = useMemo(() => {
         const layoutVisible = visiblePaneIDs({
             paneOrder,
@@ -916,9 +925,10 @@ function Shell(props: AppProps): ReactElement {
             mode: phoneMode,
             shownPaneID: phoneShownPaneID,
             layoutVisible,
-            remoteSelected: phoneRemoteSelected
+            remoteSelected: phoneRemoteSelected,
+            landing: phoneAtLanding
         });
-    }, [paneOrder, workspace, phoneActive, phoneMode, phoneShownPaneID, phoneRemoteSelected]);
+    }, [paneOrder, workspace, phoneActive, phoneMode, phoneShownPaneID, phoneRemoteSelected, phoneAtLanding]);
     const currentLayout = useMemo<PredefinedLayoutKind | null>(() => {
         const index = workspace?.currentLayoutIndex ?? null;
         return index === null ? null : (PREDEFINED_LAYOUT_ORDER[index] ?? null);
@@ -4366,6 +4376,10 @@ function Shell(props: AppProps): ReactElement {
                     }}
                     palette={palette}
                     createRenderer={createRenderer}
+                    // The shell mounts the key bar on its own content box (the desktop row is not
+                    // on screen), so the bar takes this window too; undefined on a device, where
+                    // it reads the page's own exactly as the desktop mount does.
+                    formFactorWindow={props.formFactorWindow}
                     hostStorage={props.phoneHostStorage}
                     remoteRuntimeFactory={props.phoneRuntimeFactory}
                 />

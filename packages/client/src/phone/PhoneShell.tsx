@@ -1,6 +1,7 @@
 /**
- * The phone shell (B1/B2/B3/B4/B6 of docs/MOBILE-PLAN.md, plus the owner's two requests of
- * 2026-09-08: a switch between one pane and the full layout, and more than one host).
+ * The phone shell (B1/B2/B3/B4/B6/B7 of docs/MOBILE-PLAN.md, plus the owner's requests of
+ * 2026-09-08: a switch between one pane and the full layout, more than one host, a landing page
+ * to pick a host, and every pane type on screen).
  *
  * **Every phone rule in this program is an owner-directed divergence from the shipped Swift app**
  * (there is no Swift phone UI; `chrome/form-factor.ts` says so once for all of it).
@@ -11,20 +12,38 @@
  * reaches into App's internals: everything arrives as props, collected into one object at the
  * one place App builds it. The desktop branch is untouched and byte-identical.
  *
- * What is on screen:
+ * ## Three top-level states, one value (`phone/view.ts` `screen`)
  *
- *   header   workspaces button · "host · workspace ▸ pane" title · agent dot · view toggle ·
- *            panes button · overflow
- *   content  `pane` mode: the focused pane filling the box (`phone/view.ts` says why "focused"),
- *            `layout` mode: the workspace's `PaneGrid`, at phone size
+ *   `landing`  the host list, and one host's workspaces inside it (`PhoneLanding`). Where the
+ *              phone starts when nothing is remembered, and where the header's Hosts button and
+ *              the drawer's top row go back to. Not a sheet, so it registers no modal presence.
+ *   `pane`     one pane filling the content box (`phone/view.ts` says why the focused one)
+ *   `layout`   the workspace's `PaneGrid`, at phone size
+ *
+ * What is on screen in the last two:
+ *
+ *   header   hosts button · workspaces button · "host · workspace ▸ pane" title · agent dot ·
+ *            view toggle · panes button · overflow
  *   sheets   the workspace drawer (hosts and their workspaces), the pane sheet, the overflow
  *            menu, the add-host form, the rename prompt
  *
  * Hosts: the origin (this page's daemon), the origin's configured `remote-daemon` peers (already
  * dialled by assembly, §1.7), and the phone's own list (`phone/hosts.ts`), each with its own
- * runtime. A remote host's workspace renders through `PhoneRemoteWorkspace`; the origin's through
- * assembly's `renderPane`, so a content pane, a web-pane card and an external-editor terminal on
- * the origin all draw exactly as they do on the Mac.
+ * runtime. A remote host's workspace renders through `PhoneRemoteWorkspace`.
+ *
+ * ## Every pane type passes through (B7)
+ *
+ * The origin's panes are drawn by assembly's own `renderPane`, in BOTH modes, so a markdown
+ * preview, a diff, a scratchpad and a markdown pane hosting `$EDITOR` are the very components the
+ * Mac draws, unchanged - the shell filters nothing by type on the way in. Exactly one type is
+ * answered here instead: a `web` pane becomes `PhoneWebCard` (MOBILE-PLAN.md §9, "web panes stay
+ * a card on the phone"), because the page is a native view the Electron shell composites over the
+ * document and there is no such shell behind a phone browser; that file carries the full reason.
+ * The wrapper is what the grid gets too, so the two modes agree.
+ *
+ * The key bar (C9) is a TERMINAL's bar and belongs to the content box: `terminal/pane-registry.ts`
+ * is the pane-type test (a handle exists only for a live terminal renderer), so a web card or a
+ * content pane on screen leaves the bar off and gives its 45 px back to the pane.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
@@ -35,6 +54,7 @@ import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
 import type { DaemonTarget, StorageLike } from '../app/config';
 import { ConnectionSplash } from '../app/ConnectionScreen';
 import { useRemoteDaemons, type RemoteDaemonRuntime, type RemoteRuntimeFactory } from '../app/remote-daemons';
+import { type FormFactorWindow } from '../chrome/form-factor';
 import { ChromeIcon } from '../chrome/icons';
 import { agentCounts } from '../chrome/Sidebar';
 import type { ChromeBucket } from '../chrome/theme';
@@ -47,10 +67,12 @@ import { usePhoneHosts } from './hosts';
 import { originHostName } from './hosts';
 import { ORIGIN_HOST_KEY, type PhoneHostModel, type PhoneWorkspaceSelection } from './model';
 import { PhoneHostSheet } from './PhoneHostSheet';
+import { PhoneLanding } from './PhoneLanding';
 import { PhoneMenuSheet, type PhoneMenuItem } from './PhoneMenuSheet';
 import { PhonePaneSheet } from './PhonePaneSheet';
 import { PhonePromptSheet } from './PhonePromptSheet';
 import { PhoneRemoteWorkspace, remoteShownPane } from './PhoneRemoteWorkspace';
+import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
 import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
 import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
 import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
@@ -96,6 +118,13 @@ export interface PhoneShellProps {
     /** The command palette element, rendered by assembly with its own props. */
     readonly palette: ReactNode;
     readonly createRenderer?: TerminalRendererFactory | undefined;
+    /**
+     * The window the KEY BAR reads its form factor and its software keyboard from. Undefined on a
+     * device, where the bar reads the page's own window exactly as the desktop's mount does; a
+     * jsdom test hands in the fake phone window it drives everything else through, which is what
+     * lets an assembly test see the bar go when a web pane takes the screen.
+     */
+    readonly formFactorWindow?: FormFactorWindow | undefined;
     /** Test seams: where the host list is remembered, how a host runtime is built, the page's host. */
     readonly hostStorage?: StorageLike | null | undefined;
     readonly remoteRuntimeFactory?: RemoteRuntimeFactory | undefined;
@@ -171,13 +200,42 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         return [origin, ...configured, ...own];
     }, [props.location, props.runtime, props.configuredDaemons, phoneHosts.hosts, phoneRuntimes]);
 
+    /** Forget one of the phone's OWN hosts; the origin and the configured peers are not the phone's to drop. */
+    const removeHost = useCallback(
+        (hostKey: string): void => {
+            const entry = phoneHosts.hosts.find((candidate) => `phone:${candidate.id}` === hostKey);
+            if (entry !== undefined) phoneHosts.remove(entry.id);
+        },
+        [phoneHosts]
+    );
+
     const remoteHost = view.remote === null ? null : (hosts.find((host) => host.key === view.remote?.host) ?? null);
 
+    /*
+     * The host keys this phone KNOWS about, read straight from the lists rather than from the
+     * dialled runtimes.
+     *
+     * B7: a remembered place (`phone/place.ts`) can name a remote host, and `useRemoteDaemons`
+     * builds its runtimes in an effect, so on the first commit after a reopen the runtime map is
+     * empty and `remoteHost` is null for a host that is perfectly real. Dropping the selection on
+     * that reading would throw the restore away one frame after making it. The names are known
+     * synchronously - the phone's list comes out of `localStorage` and the configured peers out of
+     * assembly - so the "this host is gone" test asks the LISTS, and the runtime's absence is just
+     * "not dialled yet".
+     */
+    const knownHostKeys = useMemo(() => {
+        const keys = new Set<string>([ORIGIN_HOST_KEY]);
+        for (const held of props.configuredDaemons) keys.add(`configured:${held.name}`);
+        for (const entry of phoneHosts.hosts) keys.add(`phone:${entry.id}`);
+        return keys;
+    }, [props.configuredDaemons, phoneHosts.hosts]);
+
     // A host that is gone (removed from the phone, dropped from the origin's config) takes its
-    // selection with it: the shell falls back to the origin's active workspace.
+    // selection with it: the shell falls back to the origin's active workspace, which is the one
+    // host that cannot go away.
     useEffect(() => {
-        if (view.remote !== null && remoteHost === null) view.selectRemote(null);
-    }, [view, remoteHost]);
+        if (view.remote !== null && !knownHostKeys.has(view.remote.host)) view.selectRemote(null);
+    }, [view, knownHostKeys]);
 
     // ── the workspace on screen ─────────────────────────────────────────────────────
 
@@ -239,6 +297,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
     const onSelectWorkspace = useCallback(
         (next: PhoneWorkspaceSelection): void => {
+            // B7: picking a workspace is what leaves the landing page, and it is the only thing
+            // that does. The place is remembered from the selection this leaves behind
+            // (`phone/view.ts`), so there is nothing to write here.
+            view.openWorkspace();
             if (next.host === ORIGIN_HOST_KEY) {
                 view.selectRemote(null);
                 actions.activateWorkspace(next.workspaceID);
@@ -251,9 +313,13 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
     // ── the overflow menu ───────────────────────────────────────────────────────────
 
+    const atLanding = view.atLanding;
+
     const menuItems = useMemo<readonly PhoneMenuItem[]>(() => {
         const items: PhoneMenuItem[] = [];
-        if (workspace !== null) {
+        // The landing page has no workspace and no pane, so it offers only what the whole app
+        // has: the palette and Settings.
+        if (workspace !== null && !atLanding) {
             items.push({ id: 'new-pane', label: 'New pane', onSelect: verbs.createPane });
             if (shownPane !== null) {
                 items.push({ id: 'rename-pane', label: 'Rename pane', onSelect: () => setSheet('rename') });
@@ -265,24 +331,81 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         }
         items.push({ id: 'palette', label: 'Command palette', onSelect: actions.openPalette });
         items.push({ id: 'settings', label: 'Settings', onSelect: actions.openSettings });
-        if (shownPane !== null) {
+        if (shownPane !== null && !atLanding) {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 
-    /** The pane the key bar aims at: the shown pane, or the grid's focused one on the origin. */
-    const keyBarPaneID = view.mode === 'pane' || remoteHost !== null ? shownPaneID : props.focusedPaneID;
+    /**
+     * B7 - the origin's panes, with the ONE type this client cannot draw answered here.
+     *
+     * Everything else goes to assembly's `renderPane` untouched, which is how a markdown preview,
+     * a diff, a scratchpad and a markdown pane hosting `$EDITOR` reach the phone as the very
+     * components the Mac draws. A `web` pane becomes `PhoneWebCard` instead: `PhoneWebCard.tsx`
+     * carries the reason (the page is a native view the Electron shell composites over this
+     * document, and there is no such shell behind a phone browser), and MOBILE-PLAN.md §9 is the
+     * rule. Wrapping rather than branching at the two call sites is what keeps `pane` mode and the
+     * grid in `layout` mode agreeing about what a web pane looks like.
+     */
+    const originWorkspace = props.workspace;
+    const originPaneTypes = useMemo(() => {
+        const types = new Map<string, string>();
+        for (const pane of originWorkspace?.panes ?? []) types.set(pane.id, pane.type);
+        return types;
+    }, [originWorkspace]);
+    const appRenderPane = props.renderPane;
+    const renderPane = useCallback<RenderPane>(
+        (paneID, frame, focused, renderState) => {
+            if (originPaneTypes.get(paneID) !== 'web') return appRenderPane(paneID, frame, focused, renderState);
+            return <PhoneWebCard paneID={paneID} tab={phoneWebCardTab(originWorkspace, paneID)} />;
+        },
+        [appRenderPane, originPaneTypes, originWorkspace]
+    );
+
+    /**
+     * The pane the key bar aims at: the shown pane, or the grid's focused one on the origin, and
+     * NOTHING on the landing page, where no pane is on screen at all.
+     */
+    const keyBarPaneID = atLanding ? null : view.mode === 'pane' || remoteHost !== null ? shownPaneID : props.focusedPaneID;
     const keyBarPane = keyBarPaneID === null ? null : (panes.find((pane) => pane.id === keyBarPaneID) ?? null);
+    /*
+     * C9's `reserve` holds the bar's 45 px across a pane switch so the incoming terminal attaches
+     * at the grid it will keep (owner device round 9: "garbage symbols flash into a pane when
+     * swapping"; measured 53 rows then 50). It is asked of a pane with a TERMINAL, which is
+     * `shell` OR a content pane hosting `$EDITOR` (CONT-081: `externalEditorCommand`, not the pane
+     * type, decides whether there is a surface to draw) - the same test `App.tsx`'s
+     * `terminalCandidates` uses to decide what to mount. A web card or a preview reserves nothing,
+     * and the bar is off for them anyway because the registry has no handle.
+     */
+    const keyBarReserve = keyBarPane !== null && (keyBarPane.type === 'shell' || keyBarPane.externalEditorCommand !== null);
 
     const paneTitle = shownPane === null ? null : paneDisplayTitle(shownPane, props.homeDirectory);
     const hostLabel = remoteHost === null ? null : remoteHost.name;
     const workspaceLabel = workspace?.name ?? (props.ready ? 'No workspace' : 'Kelpi');
 
     let content: ReactNode;
-    if (remoteHost !== null && remoteWorkspaceID !== null) {
+    if (atLanding) {
+        content = (
+            <PhoneLanding
+                hosts={hosts}
+                selection={selection}
+                bucket={props.bucket}
+                onSelect={onSelectWorkspace}
+                onAddHost={() => setSheet('host')}
+                onRemoveHost={removeHost}
+            />
+        );
+    } else if (view.remote !== null && remoteHost === null) {
+        // The remembered host is real but its runtime is one effect away (see `knownHostKeys`).
+        content = (
+            <div className="flex h-full items-center justify-center text-[13px]" data-testid="phone-host-dialling" style={{ color: tokens.textTertiary }}>
+                Connecting…
+            </div>
+        );
+    } else if (remoteHost !== null && remoteWorkspaceID !== null) {
         content = (
             <PhoneRemoteWorkspace
                 hostName={remoteHost.name}
@@ -315,7 +438,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 syncActive={props.workspace.isSyncInputActive}
                 syncExcludedPaneIDs={props.workspace.syncInputExcluded ?? EMPTY_IDS}
                 homeDirectory={props.homeDirectory}
-                renderPane={props.renderPane}
+                renderPane={renderPane}
             />
         );
     } else if (shownPane === null) {
@@ -337,7 +460,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 className="flex h-full w-full flex-col overflow-hidden"
             >
                 <div data-testid={`pane-body-${shownPane.id}`} className="relative min-h-0 flex-1">
-                    {props.renderPane(shownPane.id, ZERO_RECT, true, { visible: true, zoomed: false, dragging: false })}
+                    {renderPane(shownPane.id, ZERO_RECT, true, { visible: true, zoomed: false, dragging: false })}
                 </div>
             </div>
         );
@@ -347,6 +470,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         <div
             data-testid="phone-shell"
             data-phone-mode={view.mode}
+            // B7's third top-level state, read as one value by the audit: `landing`, `pane` or
+            // `layout`. `data-phone-mode` keeps meaning the VIEW mode, which survives a trip to
+            // the landing page, so the two attributes answer different questions.
+            data-phone-screen={view.screen}
             data-phone-host={remoteHost?.key ?? ORIGIN_HOST_KEY}
             className="flex min-h-0 flex-1 flex-col"
             style={{ paddingLeft: PHONE_SAFE_AREA.left, paddingRight: PHONE_SAFE_AREA.right, paddingBottom: PHONE_SAFE_AREA.bottom }}
@@ -361,21 +488,33 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     paddingTop: PHONE_SAFE_AREA.top
                 }}
             >
-                <PhoneButton testID="phone-open-workspaces" ariaLabel="Workspaces" ariaExpanded={sheet === 'workspaces'} onClick={() => setSheet('workspaces')}>
-                    <ChromeIcon name="sidebar" size={16} />
-                </PhoneButton>
+                {/* B7 - the way back to the landing page, one tap from anywhere. The drawer's top
+                    row is the other one; the owner asked for either, so the shell has both. On the
+                    landing page itself it is not drawn: there is nowhere to go back to. */}
+                {atLanding ? null : (
+                    <PhoneButton testID="phone-open-landing" ariaLabel="Hosts" onClick={view.showLanding}>
+                        <ChromeIcon name="network" size={16} />
+                    </PhoneButton>
+                )}
+                {atLanding ? null : (
+                    <PhoneButton testID="phone-open-workspaces" ariaLabel="Workspaces" ariaExpanded={sheet === 'workspaces'} onClick={() => setSheet('workspaces')}>
+                        <ChromeIcon name="sidebar" size={16} />
+                    </PhoneButton>
+                )}
                 <button
                     type="button"
                     data-testid="phone-title"
                     className="flex min-w-0 flex-1 items-center gap-2 px-1 text-left"
                     style={{ minHeight: `${String(PHONE_ROW_MIN_PX)}px`, color: tokens.textPrimary }}
-                    onClick={() => setSheet('panes')}
+                    onClick={() => {
+                        if (!atLanding) setSheet('panes');
+                    }}
                 >
                     <span className="flex min-w-0 flex-col">
                         <span className="truncate text-[12px]" style={{ color: tokens.textTertiary }} data-testid="phone-title-workspace">
-                            {hostLabel === null ? workspaceLabel : `${hostLabel} · ${workspaceLabel}`}
+                            {atLanding ? 'Hosts' : hostLabel === null ? workspaceLabel : `${hostLabel} · ${workspaceLabel}`}
                         </span>
-                        {shownPane === null ? null : (
+                        {atLanding || shownPane === null ? null : (
                             <span
                                 className="truncate text-[14px] font-semibold"
                                 data-testid={`pane-header-${shownPane.id}`}
@@ -385,7 +524,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                             </span>
                         )}
                     </span>
-                    {agentDot === null ? null : (
+                    {atLanding || agentDot === null ? null : (
                         <span
                             aria-label={`${String(counts.waiting)} waiting, ${String(counts.running)} running`}
                             data-testid="phone-agent-dot"
@@ -395,7 +534,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                             style={{ background: agentDot }}
                         />
                     )}
-                    {shownPane === null ? null : statusDotColor(shownPane.status) === null ? null : (
+                    {atLanding || shownPane === null ? null : statusDotColor(shownPane.status) === null ? null : (
                         <span
                             aria-hidden
                             data-testid="phone-pane-status"
@@ -405,20 +544,30 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                         />
                     )}
                 </button>
-                <PhoneButton
-                    testID="phone-view-toggle"
-                    ariaLabel={view.mode === 'pane' ? 'Show full layout' : 'Show one pane'}
-                    onClick={view.toggleMode}
-                    className={view.mode === 'layout' ? 'opacity-100' : 'opacity-70'}
-                >
-                    <ChromeIcon name="layout" size={16} filled={view.mode === 'layout'} />
-                </PhoneButton>
-                <PhoneButton testID="phone-open-panes" ariaLabel="Panes" ariaExpanded={sheet === 'panes'} onClick={() => setSheet('panes')}>
-                    <ChromeIcon name="stack" size={16} />
-                    <span className="text-[12px]" data-testid="phone-pane-count">
-                        {panes.length}
-                    </span>
-                </PhoneButton>
+                {/* The landing page has no workspace on screen, so it has neither a view to
+                    toggle nor panes to list; Add host takes their place. */}
+                {atLanding ? (
+                    <PhoneButton testID="phone-landing-add-host-header" ariaLabel="Add host" onClick={() => setSheet('host')}>
+                        <ChromeIcon name="plus" size={16} />
+                    </PhoneButton>
+                ) : (
+                    <>
+                        <PhoneButton
+                            testID="phone-view-toggle"
+                            ariaLabel={view.mode === 'pane' ? 'Show full layout' : 'Show one pane'}
+                            onClick={view.toggleMode}
+                            className={view.mode === 'layout' ? 'opacity-100' : 'opacity-70'}
+                        >
+                            <ChromeIcon name="layout" size={16} filled={view.mode === 'layout'} />
+                        </PhoneButton>
+                        <PhoneButton testID="phone-open-panes" ariaLabel="Panes" ariaExpanded={sheet === 'panes'} onClick={() => setSheet('panes')}>
+                            <ChromeIcon name="stack" size={16} />
+                            <span className="text-[12px]" data-testid="phone-pane-count">
+                                {panes.length}
+                            </span>
+                        </PhoneButton>
+                    </>
+                )}
                 <PhoneButton testID="phone-more" ariaLabel="More" ariaExpanded={sheet === 'menu'} onClick={() => setSheet('menu')}>
                     <ChromeIcon name="ellipsis" size={16} />
                 </PhoneButton>
@@ -431,7 +580,12 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 {/* Last in the box, so it paints over the pane and under the palette's scrim. The
                     bar aims at the pane that holds the caret's claim: the shown pane in `pane`
                     mode, the focused one in the grid, on whichever host is on screen. */}
-                <PhoneKeyBar paneID={keyBarPaneID} contentRow={contentRef} reserve={keyBarPane !== null && keyBarPane.type === 'shell'} />
+                <PhoneKeyBar
+                    paneID={keyBarPaneID}
+                    contentRow={contentRef}
+                    reserve={keyBarReserve}
+                    formFactorWindow={props.formFactorWindow}
+                />
             </div>
 
             <PhoneWorkspaceDrawer
@@ -442,10 +596,8 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 onSelect={onSelectWorkspace}
                 onNewWorkspace={() => setSheet('new-workspace')}
                 onAddHost={() => setSheet('host')}
-                onRemoveHost={(hostKey) => {
-                    const entry = phoneHosts.hosts.find((candidate) => `phone:${candidate.id}` === hostKey);
-                    if (entry !== undefined) phoneHosts.remove(entry.id);
-                }}
+                onRemoveHost={removeHost}
+                onShowLanding={view.showLanding}
                 onClose={closeSheet}
             />
             <PhonePaneSheet
@@ -466,7 +618,12 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 onAdd={(name, url) => {
                     phoneHosts.add(name, url);
                 }}
-                onClose={() => setSheet('workspaces')}
+                // Back where it was opened from: the drawer, or the landing page (which is a
+                // screen, so closing the sheet is all there is to do).
+                onClose={() => {
+                    if (atLanding) closeSheet();
+                    else setSheet('workspaces');
+                }}
             />
             <PhonePromptSheet
                 open={sheet === 'new-workspace'}

@@ -27,6 +27,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory } from './connection';
+import { PHONE_PLACE_KEY } from './phone';
 import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
@@ -75,6 +76,10 @@ async function mountWithTheKeyboardDown(): Promise<Mounted> {
     Element.prototype.scrollIntoView = function (): void {
         /* jsdom has no layout; the sheet's own tests own that clause */
     };
+    // B7: a phone with nothing remembered opens on the landing page, where there is no pane and
+    // so no caret to move. This test is about the caret, so it says where the phone was put down,
+    // which is what a phone in use always has (`phone/place.ts`).
+    window.localStorage.setItem(PHONE_PLACE_KEY, JSON.stringify({ host: 'origin', workspaceID: W1 }));
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({

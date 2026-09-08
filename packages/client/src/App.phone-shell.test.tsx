@@ -16,7 +16,7 @@ import type { StorageLike } from './app/config';
 import type { RemoteDaemonEntry } from './app/remote-daemons';
 import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { PHONE_HOSTS_KEY, PHONE_PLACE_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
+import { ORIGIN_HOST_KEY, PHONE_HOSTS_KEY, PHONE_PLACE_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
@@ -333,6 +333,112 @@ describe('the full layout', () => {
         setup();
         expect(screen.getByTestId('phone-shell').getAttribute('data-phone-mode')).toBe('layout');
         expect(screen.getByTestId('pane-grid')).toBeTruthy();
+    });
+
+    /*
+     * B8 (issue #120) - the toggle MOVES the shown pane's terminal between the two views; it does
+     * not build another one.
+     *
+     * Owner, real Android phone, device round 10: "there is still garbage landing into the console
+     * when swapping between single and multi pane view." Measured in the harness on the base
+     * commit, with a split workspace: `data-terminal-resizes` read 3 in `pane` mode, 0 with
+     * `data-terminal-status="loading"` and no canvas 75 ms later, and 2 in `layout` mode - a count
+     * that can only fall by remounting. Each toggle cost a `detach-pane`, an `attach-pane` at the
+     * other view's grid, a fresh WASM terminal and a fresh server-side replay, and left the PTY
+     * with nothing attached for ~75 ms.
+     *
+     * These pin the two halves of the fix at the protocol and at the instance:
+     * `phone/PhoneShell.tsx` mounts the body ONCE into a DOM node it moves between the views.
+     */
+    it('moves the shown pane’s terminal between the views instead of rebuilding it', () => {
+        const h = setup();
+        const alive = (): FakeRendererFactory['instances'] => h.renderers.instances.filter((instance) => !instance.disposed);
+        const engine = alive()[0];
+        expect(engine).toBeTruthy();
+        const from = h.sent().length;
+        /** The attach protocol for one pane (`connection/pty.ts`), in order, since the mark. */
+        const attaches = (paneID: string): string[] =>
+            h
+                .sent()
+                .slice(from)
+                .filter((message) => message['paneID'] === paneID && (message['type'] === 'attach-pane' || message['type'] === 'detach-pane'))
+                .map((message) => String(message['type']));
+
+        tap('phone-view-toggle');
+        tap('phone-view-toggle');
+
+        // The engine the pane started with is the engine it ends with, and it was never disposed.
+        expect(alive()).toEqual([engine]);
+        // …and the daemon was never told to let the pane's stream go, so it never re-snapshotted
+        // and never replayed. On the base commit this read `detach-pane,attach-pane` twice over.
+        expect(attaches(PANE_A)).toEqual([]);
+        // The SIBLING is what comes and goes with the layout, which is the point of the toggle.
+        expect(attaches(PANE_B)).toEqual(['attach-pane', 'detach-pane']);
+    });
+
+    it('keeps the shown pane’s terminal node across the toggle, in the grid’s cell and back', () => {
+        setup();
+        const node = (): Element | null => document.querySelector(`[data-pane-id="${PANE_A}"][data-terminal-status]`);
+        const first = node();
+        expect(first).not.toBeNull();
+        // `pane` mode draws its own box; the grid draws a cell. Both hand the same node the body.
+        expect(first?.closest('[data-testid="pane-grid"]')).toBeNull();
+
+        tap('phone-view-toggle');
+        expect(node()).toBe(first);
+        expect(first?.closest(`[data-testid="pane-body-${PANE_A}"]`)).not.toBeNull();
+        expect(first?.closest('[data-testid="pane-grid"]')).not.toBeNull();
+
+        tap('phone-view-toggle');
+        expect(node()).toBe(first);
+        expect(first?.closest(`[data-testid="pane-body-${PANE_A}"]`)).not.toBeNull();
+        expect(first?.closest('[data-testid="pane-grid"]')).toBeNull();
+    });
+
+    it('leaves the slot where it is when focus moves INSIDE the layout: the grid has a cell for every pane', () => {
+        const h = setup();
+        tap('phone-view-toggle');
+        const alive = (): FakeRendererFactory['instances'] => h.renderers.instances.filter((instance) => !instance.disposed);
+        const engines = alive();
+        expect(engines).toHaveLength(2);
+        const from = h.sent().length;
+
+        act(() => {
+            const seq = h.runtime.store.getState().daemon.seq + 1;
+            expect(
+                h.runtime.store
+                    .getState()
+                    .applyDelta(seq, [{ kind: 'focus-changed', workspaceID: W1, focusedPaneID: PANE_B, focusHistory: [PANE_B, PANE_A] }])
+            ).toBe(true);
+        });
+
+        // Both panes are on screen in their own cells, so nothing has to move: a slot that chased
+        // the focus would rebuild TWO engines to spare the toggle one.
+        expect(alive()).toEqual(engines);
+        expect(
+            h
+                .sent()
+                .slice(from)
+                .filter((message) => message['type'] === 'attach-pane' || message['type'] === 'detach-pane')
+        ).toEqual([]);
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${PANE_B}`)).toBeTruthy();
+    });
+
+    it('unmounts the body when the shell leaves the origin’s workspace, and mounts one again on the way back', () => {
+        const h = setup();
+        const engine = h.renderers.last();
+        // The landing page shows no pane at all (`phone/view.ts`), so there is nothing for the
+        // slot to hold: the body unmounts exactly as it did before B8.
+        tap('phone-open-landing');
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+        expect(engine.disposed).toBe(true);
+
+        fireEvent.click(screen.getByTestId(`phone-landing-open-${ORIGIN_HOST_KEY}`));
+        fireEvent.click(screen.getByTestId('workspace-row'));
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(h.renderers.last()).not.toBe(engine);
+        expect(h.renderers.last().disposed).toBe(false);
     });
 });
 

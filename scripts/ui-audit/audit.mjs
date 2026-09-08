@@ -32910,6 +32910,248 @@ function buildFlows(ctx) {
                 );
             }
         },
+        /*
+         * B8 - the VIEW toggle keeps the pane's terminal (issue #120).
+         *
+         * Owner, real Android phone, device round 10: "there is still garbage landing into the
+         * console when swapping between single and multi pane view." Round 9's fix (C9's key bar
+         * `reserve`) was about swapping between PANES; this is the `pane` <-> `layout` toggle, and
+         * it was a different mechanism, measured here rather than argued:
+         *
+         *     base   pane 50 rows / resizes 3 / live -> +75 ms 0 rows / resizes 0 / LOADING, no
+         *            canvas -> layout 48 rows / resizes 2 / live, and the same again coming back
+         *     fix    pane 50 rows / resizes 3 / live -> layout 48 rows / resizes 4 -> pane 50 rows
+         *            / resizes 5, live and drawn in every sample
+         *
+         * `data-terminal-resizes` counts resizes since the pane MOUNTED, so a count that falls is
+         * a pane that unmounted: the toggle used to destroy the engine and build another, which
+         * costs a `detach-pane`, an `attach-pane` at the other view's grid, a fresh WASM terminal,
+         * a fresh server-side snapshot and a fresh replay, twice per round trip - and leaves the
+         * PTY with nothing attached for ~75 ms, so an application's query in that window is
+         * answered by nobody. `phone/PhoneShell.tsx` carries the fix and the reason.
+         *
+         * This step borrows the widest shell pane already on screen, provisions nothing, writes no
+         * setting (the view mode it toggles is toggled back, so the remembered choice is what it
+         * was), creates and destroys no pane or workspace, restores the pane's line discipline and
+         * leaves it at a prompt, and clears the emulation in a `finally`.
+         */
+        {
+            id: 'phone-view-toggle',
+            expect:
+                'Tapping the phone\'s view toggle moves the pane between the full box and its cell in the layout WITHOUT rebuilding its terminal: through the whole round trip the pane stays live with its canvas drawn, exactly one terminal is mounted for it, and its resize count only ever grows - one settled resize each way, which is the same message a desktop divider drag sends. A raw reader running in the pane sees the toggle type nothing at all into the PTY, so no terminal response lands at the prompt. When the layout puts the pane back at the columns it started with, the screen after the round trip is byte-identical to the screen before it.',
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-view-toggle: no shell pane on screen to drive');
+                const paneID = shell.id;
+
+                /**
+                 * Everything the mechanism needs, in one round trip: how many terminals this pane
+                 * has, whether the one on screen is live and drawn, the grid it last told the
+                 * daemon, and the box it is measuring.
+                 */
+                const readPane = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => { const all = Array.from(document.querySelectorAll('[data-pane-id="${paneID}"][data-terminal-status]')); const el = all[0] ?? null; const body = document.querySelector('[data-testid="pane-body-${paneID}"]'); const box = body === null ? null : body.getBoundingClientRect(); return JSON.stringify({ terminals: all.length, status: el === null ? '(none)' : (el.getAttribute('data-terminal-status') ?? ''), rows: el === null ? -1 : Number(el.getAttribute('data-terminal-rows') ?? -1), resizes: el === null ? -1 : Number(el.getAttribute('data-terminal-resizes') ?? -1), canvases: document.querySelectorAll('[data-pane-id="${paneID}"] canvas').length, cell: el === null ? '' : (el.getAttribute('data-terminal-cell') ?? ''), width: box === null ? 0 : Math.round(box.width) }); })()`
+                            )
+                        )
+                    );
+
+                /** What the spine reads, either side of this step. */
+                const readRoster = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify({
+                                    panes: ${paneIDsExpr},
+                                    focused: document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',
+                                    workspace: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''
+                                })`
+                            )
+                        )
+                    );
+
+                // Focus at DESKTOP size: the shell shows the focused pane, so this is what puts
+                // the borrowed pane on screen once the viewport shrinks.
+                await focusPaneBody(view, paneID);
+                const rosterBefore = await readRoster();
+                recorder.note(`roster before: ${JSON.stringify(rosterBefore)}`);
+
+                /** Toggle one way and sample the pane the whole time it is settling. */
+                const toggleAndSample = async (label, until) => {
+                    const samples = [];
+                    const sampler = (async () => {
+                        for (let index = 0; index < 60; index += 1) {
+                            samples.push(await readPane());
+                            await sleep(25);
+                        }
+                    })();
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(until, { timeoutMs: 8000, label });
+                    await sampler;
+                    return samples;
+                };
+
+                try {
+                    await emulatePhone(view);
+                    await view.waitFor(`document.querySelector('[data-testid="phone-shell"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the phone shell'
+                    });
+                    await view.waitFor(`document.querySelector('[data-testid="pane-body-${paneID}"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the borrowed pane in the phone shell'
+                    });
+                    await sleep(600);
+
+                    // A ruler wide enough to be cut by a narrower grid, so a screen that came back
+                    // reflowed is visible in the capture rather than inferred from a row count.
+                    await cli.ok([
+                        'pane',
+                        'send',
+                        '--target',
+                        paneID,
+                        'clear; for i in 1 2 3 4 5 6; do printf "R%s-123456789-123456789-123456789-END\\n" "$i"; done'
+                    ]);
+                    await sleep(1200);
+                    const before = await readPane();
+                    const captureBefore = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture, before the toggle', captureBefore);
+                    recorder.note(`pane before: ${JSON.stringify(before)}`);
+                    await recorder.shot(view, 'pane');
+
+                    const out = await toggleAndSample(
+                        'the full layout',
+                        `document.querySelector('[data-testid="pane-grid"]') !== null`
+                    );
+                    const inLayout = await readPane();
+                    recorder.note(`pane in the layout: ${JSON.stringify(inLayout)}`);
+                    recorder.block('kelpi pane capture, in the layout', await cli.ok(['pane', 'capture', '--target', paneID]));
+                    await recorder.shot(view, 'layout');
+
+                    const back = await toggleAndSample(
+                        'one pane again',
+                        `document.querySelector('[data-testid="pane-grid"]') === null`
+                    );
+                    await sleep(600);
+                    const after = await readPane();
+                    recorder.note(`pane after: ${JSON.stringify(after)}`);
+                    const samples = [...out, ...back];
+                    recorder.artifact('view-toggle-samples.jsonl', samples.map((sample) => JSON.stringify(sample)).join('\n'));
+
+                    // 1. ONE terminal, alive and drawn, the whole way. On the base commit the
+                    //    engine is destroyed and rebuilt, so the middle of each toggle reads
+                    //    `loading` with no canvas and a resize count that has restarted at 0.
+                    const rebuilt = samples.filter(
+                        (sample) => sample.terminals !== 1 || sample.status !== 'live' || sample.canvases !== 1
+                    );
+                    recorder.check(
+                        'the pane keeps ONE live terminal across both toggles: never two, never rebuilding, never without a canvas',
+                        rebuilt.length === 0,
+                        rebuilt.length === 0
+                            ? `${String(samples.length)} samples, all {terminals:1, status:live, canvases:1}`
+                            : `${String(rebuilt.length)} of ${String(samples.length)} samples were not: ${JSON.stringify(rebuilt.slice(0, 4))}`
+                    );
+
+                    // 2. The resize count only ever GROWS. It counts resizes since the pane
+                    //    mounted, so a fall is a remount - the base commit's signature.
+                    const counts = samples.map((sample) => sample.resizes);
+                    const fell = counts.some((count, index) => index > 0 && count < counts[index - 1]);
+                    recorder.check(
+                        'the resize count never falls: `data-terminal-resizes` counts resizes since the pane MOUNTED, so a fall would be a remount',
+                        !fell && before.resizes >= 0 && after.resizes >= before.resizes,
+                        `before=${String(before.resizes)} layout=${String(inLayout.resizes)} after=${String(after.resizes)}; series ${counts.join(',')}`
+                    );
+
+                    // 3. …and it moved by the amount the geometry move needs and no more: one
+                    //    settled resize each way, the same message a desktop divider drag sends.
+                    const moved = after.resizes - before.resizes;
+                    recorder.check(
+                        'the round trip cost at most one settled resize each way',
+                        moved >= 1 && moved <= 2,
+                        `resizes moved by ${String(moved)} (${String(before.resizes)} → ${String(inLayout.resizes)} → ${String(after.resizes)}); rows ${String(before.rows)} → ${String(inLayout.rows)} → ${String(after.rows)}`
+                    );
+
+                    // 4. The screen. A round trip that puts the pane back at the columns it
+                    //    started with must put the SCREEN back byte for byte. When the layout
+                    //    genuinely narrows the pane the daemon's own no-reflow rule cuts every
+                    //    line to the narrow grid and growing back does not restore it
+                    //    (`daemon/src/term/service.ts` `applyGrid` / `trimStrandedCells`), which
+                    //    is what a desktop divider drag does too - so that case is recorded
+                    //    rather than asserted, and the captures above show it.
+                    const captureAfter = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('kelpi pane capture, after the round trip', captureAfter);
+                    const cellWidth = Number((before.cell.split('x')[0] ?? '0'));
+                    const colsOf = (sample) => (cellWidth > 0 ? Math.floor(sample.width / cellWidth) : 0);
+                    const narrowed = colsOf(inLayout) < colsOf(before);
+                    recorder.note(
+                        `columns: before ${String(colsOf(before))}, in the layout ${String(colsOf(inLayout))}, after ${String(colsOf(after))}` +
+                            (narrowed
+                                ? ' - the layout narrowed the pane, so the daemon\'s no-reflow column trim applies and the screen is not asserted'
+                                : '')
+                    );
+                    if (narrowed) {
+                        recorder.check(
+                            'the pane came back to the columns it started at',
+                            colsOf(after) === colsOf(before),
+                            `before ${String(colsOf(before))}, after ${String(colsOf(after))}`
+                        );
+                    } else {
+                        recorder.check(
+                            'a round trip that keeps the pane\'s columns leaves the screen byte-identical',
+                            captureAfter === captureBefore,
+                            captureAfter === captureBefore ? 'identical' : `before ${JSON.stringify(captureBefore)} after ${JSON.stringify(captureAfter)}`
+                        );
+                    }
+
+                    // 5. …and the toggle types NOTHING into the PTY. A freshly attached engine
+                    //    answers an application's queries (DA, DSR, kitty flags, DECRQM) through
+                    //    `renderer.onData`, and a reply that lands at a prompt echoes as
+                    //    `^[[?62;c`-style text - the second mechanism issue #120 named. A raw
+                    //    reader with echo off shows every byte the PTY is handed, so an empty
+                    //    screen after a round trip is the whole proof.
+                    await cli.ok(['pane', 'send', '--target', paneID, 'clear; stty -icanon -echo min 1; cat -v']);
+                    await sleep(1500);
+                    const rawBefore = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') !== null`, { timeoutMs: 8000, label: 'the full layout, with the raw reader up' });
+                    await sleep(1200);
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') === null`, { timeoutMs: 8000, label: 'one pane again, with the raw reader up' });
+                    await sleep(1200);
+                    const rawAfter = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    recorder.block('`stty -icanon -echo min 1; cat -v` across a round trip', `before:\n${rawBefore}\nafter:\n${rawAfter}`);
+                    recorder.check(
+                        'the toggle types nothing into the PTY: a raw reader sees no terminal response across a round trip',
+                        rawAfter.trim() === rawBefore.trim() && !/\^\[/.test(rawAfter),
+                        `before ${JSON.stringify(rawBefore.trim())} after ${JSON.stringify(rawAfter.trim())}`
+                    );
+                } finally {
+                    // Out of `cat -v`, line discipline back, screen clear: the pane is handed back
+                    // at a prompt exactly as it was borrowed.
+                    await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']).catch(() => {});
+                    await sleep(300);
+                    await cli.run(['pane', 'send', '--target', paneID, 'stty sane; clear']).catch(() => {});
+                    await sleep(300);
+                    await clearPhoneEmulation(view).catch(() => {});
+                }
+
+                await view.waitFor(
+                    `document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null`,
+                    { timeoutMs: 10_000, label: 'the desktop tree to come back' }
+                );
+                const rosterAfter = await readRoster();
+                recorder.note(`roster after: ${JSON.stringify(rosterAfter)}`);
+                recorder.check(
+                    'with the emulation cleared the desktop is back and the roster, the focused pane and the active workspace are what they were',
+                    JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
+                    `before=${JSON.stringify(rosterBefore)} after=${JSON.stringify(rosterAfter)}`
+                );
+            }
+        },
         /**
          * B7 - the phone's landing page, and every pane type through the shell.
          *

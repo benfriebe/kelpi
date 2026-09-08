@@ -20,6 +20,11 @@
  *   `pane`     one pane filling the content box (`phone/view.ts` says why the focused one)
  *   `layout`   the workspace's `PaneGrid`, at phone size
  *
+ * The last two draw the SAME pane, so B8 (issue #120) gives it one mounted body between them: the
+ * shown pane's terminal is rendered into a DOM node the shell moves from the full box to the
+ * grid's cell and back, rather than being destroyed and rebuilt on every tap of the toggle. The
+ * `slot` block below carries the measurement and the reason.
+ *
  * What is on screen in the last two:
  *
  *   header   hosts button · workspaces button · "host · workspace ▸ pane" title · agent dot ·
@@ -47,6 +52,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from 'zustand';
 
 import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
@@ -357,12 +363,116 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
         return types;
     }, [originWorkspace]);
     const appRenderPane = props.renderPane;
-    const renderPane = useCallback<RenderPane>(
+    const paneBody = useCallback<RenderPane>(
         (paneID, frame, focused, renderState) => {
             if (originPaneTypes.get(paneID) !== 'web') return appRenderPane(paneID, frame, focused, renderState);
             return <PhoneWebCard paneID={paneID} tab={phoneWebCardTab(originWorkspace, paneID)} />;
         },
         [appRenderPane, originPaneTypes, originWorkspace]
+    );
+
+    /**
+     * B8 - the shown pane's body is mounted ONCE and MOVED between the two views (issue #120).
+     *
+     * Owner, real Android phone, device round 10: "there is still garbage landing into the console
+     * when swapping between single and multi pane view." Measured in the harness on the base
+     * commit, with a split workspace and a ruler on screen
+     * (`docs/audit/b8/`, step `phone-view-toggle`):
+     *
+     *     pane mode    box 390x754   data-terminal-rows 50   data-terminal-resizes 3   live
+     *     +75 ms       box     -     data-terminal-rows  0   data-terminal-resizes 0   LOADING, 0 canvases
+     *     layout mode  box 194x730   data-terminal-rows 48   data-terminal-resizes 2   live
+     *
+     * The resize count going DOWN is the whole story: it counts resizes since the pane MOUNTED, so
+     * it can only fall if the pane unmounted. `pane` mode renders the shown pane's body in a box of
+     * the shell's own and `layout` mode renders it in a `PaneGrid` cell, which are different
+     * positions in the React tree, so one tap of the toggle destroyed the pane's engine and built
+     * another: `detach-pane`, then `attach-pane` at the other view's grid, then a fresh WASM
+     * terminal, a fresh server-side snapshot and a fresh replay - twice per round trip. In between
+     * the pane is blank for ~75 ms and NOTHING is attached to the PTY, so a query the application
+     * asks in that window (DA, DSR, a kitty flags read - the things a prompt asks every time it
+     * repaints, and SIGWINCH is what makes it repaint) is answered by nobody and its reply never
+     * arrives.
+     *
+     * `grid/PaneGrid.tsx` already holds exactly the invariant this broke - "Pane identity is
+     * sacred ... React never unmounts, remounts, or even reorders the node, and the terminal canvas
+     * inside it keeps its scrollback and its PTY" - and the phone's second view was the one place
+     * in the app that did not. So the fix is to give the shown pane ONE position for both views.
+     *
+     * It cannot be a React position: `pane` mode's box and the grid's cell have different
+     * ancestors, and React reconciles by position, so no arrangement of components keeps the
+     * subtree alive across the swap. What CAN stay the same is a DOM node. `slot` below is created
+     * once per shell, the body is rendered into it through a portal that never changes container,
+     * and the two views each render an empty host that the node is appended into. Moving a DOM node
+     * is not an unmount: React knows nothing about `slot`'s parent, the engine's canvas keeps its
+     * bitmap and its listeners, the registry keeps its handle (so C9's key bar keeps its target),
+     * and the PTY stream is never detached. The toggle becomes what it always should have been -
+     * one debounced `resize-pane` on a live stream, the same message a desktop divider drag sends.
+     *
+     * **This is an owner-directed divergence from the shipped Swift app** like every phone rule
+     * here: there is no Swift phone UI and no second view to move a surface between.
+     */
+    const [slot] = useState<HTMLDivElement | null>(() => {
+        if (typeof document === 'undefined') return null;
+        const node = document.createElement('div');
+        // The host it lands in is `absolute inset-0` (`pane` mode) or the grid's `relative` body,
+        // so filling the host is all this has to do. `TerminalPane`'s root is `h-full w-full`.
+        node.className = 'absolute inset-0';
+        return node;
+    });
+    /**
+     * The empty host each view renders where the body goes; the ref moves `slot` into it.
+     *
+     * A ref callback rather than an effect, because React detaches the outgoing host's ref and
+     * attaches the incoming one's inside the SAME commit's layout phase - before the browser lays
+     * anything out and long before it paints. `slot` is out of the document for that instant and
+     * for nothing else. Nothing is removed on the null call: the outgoing host has already been
+     * taken out of the document by the mutation phase, and removing `slot` from it would only cost
+     * a second detach.
+     */
+    const mountPaneSlot = useCallback(
+        (node: HTMLDivElement | null): void => {
+            if (node === null || slot === null) return;
+            if (slot.parentNode !== node) node.appendChild(slot);
+        },
+        [slot]
+    );
+
+    /**
+     * The pane whose body rides the slot, and it changes hands as SELDOM as possible.
+     *
+     * Null on the landing page and on a remote host, where the origin has nothing on screen -
+     * exactly the cases whose branches below draw no pane of the origin's at all, so the portal
+     * renders nothing and the body unmounts as it does today.
+     *
+     * Otherwise `pane` mode has one answer and only one: the pane it shows, because that is the
+     * only pane on screen. `layout` mode has a cell for EVERY pane, so the slot keeps the pane it
+     * already holds - and it has to, or a focus move in the layout would take that pane out of the
+     * slot and put another one in, remounting TWO engines to spare the toggle one. (Measured: with
+     * the slot following focus, `phone-key-bar-split`'s round-9 caret hand-off went through a
+     * rebuilt engine and its focus trail grew a `focusout` that handed the caret to nothing.) It
+     * falls back to the shown pane when the pane it holds has been closed.
+     *
+     * The ref is read and written during render on purpose: this is "which pane does the slot hold
+     * now", derived from the props of this very render, and a state update would apply it one
+     * commit late - which is one commit with the wrong pane in the slot. It is idempotent, so a
+     * double render (StrictMode) or a discarded one leaves the same answer.
+     */
+    const slotRef = useRef<string | null>(null);
+    const slotEligible = remoteHost === null && !atLanding && props.workspace !== null;
+    const heldStillOpen = slotRef.current !== null && panes.some((pane) => pane.id === slotRef.current);
+    const slotPaneID = !slotEligible ? null : view.mode === 'layout' && heldStillOpen ? slotRef.current : (shownPane?.id ?? null);
+    slotRef.current = slotPaneID;
+    const paneSlot = <div ref={mountPaneSlot} className="absolute inset-0" data-testid={`phone-pane-slot-${slotPaneID ?? ''}`} />;
+
+    /** What the grid draws for a pane: the slot's empty host for the shown one, the body for the rest. */
+    const renderPane = useCallback<RenderPane>(
+        (paneID, frame, focused, renderState) =>
+            paneID === slotPaneID ? paneSlot : paneBody(paneID, frame, focused, renderState),
+        // `paneSlot` is one element with a stable ref callback; it is rebuilt on every render like
+        // the rest of the tree and carries no state of its own.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [paneBody, slotPaneID, mountPaneSlot]
     );
 
     /**
@@ -460,7 +570,9 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 className="flex h-full w-full flex-col overflow-hidden"
             >
                 <div data-testid={`pane-body-${shownPane.id}`} className="relative min-h-0 flex-1">
-                    {renderPane(shownPane.id, ZERO_RECT, true, { visible: true, zoomed: false, dragging: false })}
+                    {/* B8 (#120) - the empty host the ONE mounted body is moved into. The body
+                        itself is rendered by the portal below, in both views. */}
+                    {paneSlot}
                 </div>
             </div>
         );
@@ -575,6 +687,29 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
             <div ref={contentRef} data-testid="phone-content" className="relative min-h-0 flex-1">
                 {content}
+                {/*
+                 * B8 (#120) - the shown pane's body, mounted ONCE for both views.
+                 *
+                 * Its React position is this one line in every mode, and its DOM container is the
+                 * `slot` node above, which never changes identity - so the toggle moves the node
+                 * and unmounts nothing.
+                 *
+                 * The render state is the one the view it is standing in would have passed: in
+                 * `pane` mode this pane is the only thing on screen, so it is focused and visible
+                 * by construction; in `layout` mode it is one cell among many, so it holds the
+                 * ring only when it is the focused pane and it is hidden when the daemon has
+                 * zoomed a sibling - which is exactly what `PaneGrid` tells the panes it draws.
+                 */}
+                {slot === null || slotPaneID === null
+                    ? null
+                    : createPortal(
+                          paneBody(slotPaneID, ZERO_RECT, view.mode === 'pane' || props.focusedPaneID === slotPaneID, {
+                              visible: view.mode === 'pane' || (props.workspace?.zoomedPaneID ?? null) === null || props.workspace?.zoomedPaneID === slotPaneID,
+                              zoomed: view.mode === 'layout' && props.workspace?.zoomedPaneID === slotPaneID,
+                              dragging: false
+                          }),
+                          slot
+                      )}
                 {props.ready ? null : <ConnectionSplash runtime={props.runtime} state={props.state} target={props.target} />}
                 {props.palette}
                 {/* Last in the box, so it paints over the pane and under the palette's scrim. The

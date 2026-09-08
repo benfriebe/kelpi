@@ -24,13 +24,25 @@ import {
 const P0 = testID('D', 100);
 const NEW = testID('E', 900);
 
-function editorResolver(editor: string | null): EditorResolver {
+/**
+ * `calls` records every ask, because WHICH verb asks is now load-bearing: the resolver is lazy
+ * and the ask is what forks the user's login shell (CONT-087, #115).
+ */
+function editorResolver(editor: string | null, calls: string[] = []): EditorResolver {
     const resolution = editor === null ? null : { editor, path: '/usr/bin:/bin', source: 'shell' as const };
     return {
-        current: () => resolution,
-        warmUp: () => undefined,
-        resolve: async () => resolution,
-        buildCommand: () => null
+        current: () => {
+            calls.push('current');
+            return resolution;
+        },
+        resolve: async () => {
+            calls.push('resolve');
+            return resolution;
+        },
+        buildCommand: () => {
+            calls.push('buildCommand');
+            return null;
+        }
     };
 }
 
@@ -38,6 +50,8 @@ interface Fixture {
     readonly h: Harness;
     readonly channel: ReturnType<typeof createDesktopChannel>;
     readonly restarts: number[];
+    /** Every call the channel made on the editor resolver, in order (#115). */
+    readonly editorCalls: string[];
 }
 
 function fixture(
@@ -65,9 +79,10 @@ function fixture(
     if (options.hyperlink !== undefined) {
         term.hyperlinkAtAsync = async () => options.hyperlink ?? null;
     }
+    const editorCalls: string[] = [];
     const channel = createDesktopChannel({
         ctx: h.ctx,
-        editor: editorResolver(options.editor === undefined ? 'nvim' : options.editor),
+        editor: editorResolver(options.editor === undefined ? 'nvim' : options.editor, editorCalls),
         fileExists: () => options.exists !== false,
         ...(options.restart === false
             ? {}
@@ -78,7 +93,7 @@ function fixture(
                   }
               })
     });
-    return { h, channel, restarts };
+    return { h, channel, restarts, editorCalls };
 }
 
 describe('isDesktopCommand', () => {
@@ -485,6 +500,25 @@ describe('markdown-external-editor (CONT-081…090)', () => {
         expect(
             await f.channel.run('markdown-external-editor', { pane_id: MD, action: 'sideways' })
         ).toMatchObject({ ok: false });
+    });
+
+    /**
+     * CONT-087 / #115: the resolver is lazy, so the ask IS the login-shell fork. `open` is the
+     * one verb entitled to make it, and only after the pane and its file have checked out: a
+     * refused open must not fork a shell to tell the user the pane was wrong.
+     */
+    it('asks the resolver on open, and on nothing else', async () => {
+        const f = withMarkdownPane();
+        expect(f.editorCalls).toEqual([]);
+
+        await f.channel.run('markdown-external-editor', { pane_id: 'nope' });
+        await f.channel.run('markdown-external-editor', { pane_id: P0 });
+        await f.channel.run('markdown-external-editor', { pane_id: MD, action: 'sideways' });
+        await f.channel.run('markdown-external-editor', { pane_id: MD, action: 'close' });
+        expect(f.editorCalls).toEqual([]);
+
+        await f.channel.run('markdown-external-editor', { pane_id: MD });
+        expect(f.editorCalls).toEqual(['resolve']);
     });
 });
 

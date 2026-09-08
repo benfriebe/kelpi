@@ -453,6 +453,41 @@ describe('createDaemon', () => {
         expect(daemon.pty.pid(paneID)).toEqual(expect.any(Number));
     }, 20_000);
 
+    /**
+     * CONT-087 / #115. Boot used to warm the `$VISUAL`/`$EDITOR` resolver, and the real resolver
+     * asks the user's LOGIN shell: `zsh -l -i -c`, sourcing `.zprofile` and `.zshrc`. One per
+     * daemon is nothing; the root suite boots hundreds and had 40 of them alive at once, which
+     * is a load spike with no relation to the code under test and which killed two promotes.
+     *
+     * So a full `start()` (restore, listeners, migrations, watchers, the lot) must not ask the
+     * resolver anything. The only caller is `markdown-external-editor {action:"open"}` in
+     * `ws/desktop.ts`, and `desktop.test.ts` covers that it does ask.
+     */
+    it('never asks the editor resolver at boot, so no daemon forks a login shell (#115)', async () => {
+        const asked: string[] = [];
+        const daemon = daemonFor(scratch(), {
+            editor: {
+                current: () => {
+                    asked.push('current');
+                    return null;
+                },
+                resolve: async () => {
+                    asked.push('resolve');
+                    return null;
+                },
+                buildCommand: () => {
+                    asked.push('buildCommand');
+                    return null;
+                }
+            }
+        });
+        await daemon.start();
+        await daemon.restored;
+        // A tick, in case boot queued the ask rather than making it inline.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(asked).toEqual([]);
+    });
+
     it('cuts a LIVE paired-device session when the registry revokes it (the watcher path)', async () => {
         const paths = scratch();
         const devicesFile = path.join(paths.root, 'devices.json');

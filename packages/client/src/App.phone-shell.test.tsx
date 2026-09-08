@@ -16,7 +16,7 @@ import type { StorageLike } from './app/config';
 import type { RemoteDaemonEntry } from './app/remote-daemons';
 import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { PHONE_HOSTS_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
+import { PHONE_HOSTS_KEY, PHONE_PLACE_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
@@ -24,6 +24,9 @@ import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory }
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const PANE_MD = 'DDDDDDDD-0000-4000-8000-000000000003';
+const PANE_WEB = 'DDDDDDDD-0000-4000-8000-000000000004';
+const WEB_TAB = 'CCCCCCCC-0000-4000-8000-000000000001';
 const REMOTE_WS = 'AAAAAAAA-0000-4000-8000-000000000099';
 const REMOTE_PANE = 'DDDDDDDD-0000-4000-8000-000000000099';
 const NOW = 1_755_500_000_000;
@@ -35,6 +38,16 @@ function snapshotState(): JsonObject {
     // `paneID` is the NEW pane; `sourcePaneID` is the one being split.
     store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: PANE_B, sourcePaneID: PANE_A, direction: 'horizontal', now: NOW });
     // The split focuses the new pane; the fixture starts on A so the tests read left to right.
+    store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_A });
+    return store.getState() as unknown as JsonObject;
+}
+
+/** B7's fixture: one workspace holding a terminal, a content pane and a web pane. */
+function everyPaneTypeState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    store.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID: PANE_MD, filePath: '/Users/test/notes.md', now: NOW });
+    store.dispatch({ type: 'open-web-pane', workspaceID: W1, paneID: PANE_WEB, tabID: WEB_TAB, url: 'https://example.test/docs', now: NOW });
     store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_A });
     return store.getState() as unknown as JsonObject;
 }
@@ -149,7 +162,14 @@ interface Harness {
     lastOfType(type: string): Record<string, unknown> | undefined;
 }
 
-function setup(options: { phone?: boolean; snapshot?: boolean; storage?: Record<string, string> } = {}): Harness {
+/**
+ * B7: the phone opens on the LANDING page when nothing is remembered, so a test about the
+ * workspace screen has to say where the phone was put down, the same way the audit's
+ * `emulatePhone` seeds it. `landing: true` is the first-open case, which the B7 block drives.
+ */
+function setup(
+    options: { phone?: boolean; snapshot?: boolean; storage?: Record<string, string>; landing?: boolean; everyPaneType?: boolean } = {}
+): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({
@@ -163,7 +183,10 @@ function setup(options: { phone?: boolean; snapshot?: boolean; storage?: Record<
         backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
     });
     const renderers = createFakeRendererFactory();
-    const hostStorage = memoryStorage(options.storage ?? {});
+    const hostStorage = memoryStorage({
+        ...(options.landing === true ? {} : { [PHONE_PLACE_KEY]: JSON.stringify({ host: 'origin', workspaceID: W1 }) }),
+        ...(options.storage ?? {})
+    });
     const remotes = new Map<string, { entry: RemoteDaemonEntry; runtime: KelpiRuntime; calls: string[] }>();
     const factory = (entry: RemoteDaemonEntry): KelpiRuntime => {
         const fake = fakeRemoteRuntime();
@@ -183,7 +206,7 @@ function setup(options: { phone?: boolean; snapshot?: boolean; storage?: Record<
 
     if (options.snapshot !== false) {
         act(() => {
-            completeHandshake(sockets.last(), { state: snapshotState() });
+            completeHandshake(sockets.last(), { state: options.everyPaneType === true ? everyPaneTypeState() : snapshotState() });
         });
     }
 
@@ -516,5 +539,211 @@ describe('hosts', () => {
         expect(h.remotes.get(PAIRING_URL)?.calls).toContain('connect');
         tap('phone-open-workspaces');
         expect(screen.getByTestId('phone-host-phone:h1')).toBeTruthy();
+    });
+});
+
+/**
+ * B7 - the landing page (owner request 2026-09-08, after driving the B1 shell on a real Android
+ * phone). The shell's third top-level state: where the phone starts, what it remembers, and the
+ * two ways back to it.
+ */
+describe('the landing page', () => {
+    it('is the first screen when nothing is remembered, with a card per host and nothing streaming', async () => {
+        const h = setup({ landing: true });
+        const shell = screen.getByTestId('phone-shell');
+        expect(shell.getAttribute('data-phone-screen')).toBe('landing');
+        // Still a `pane` VIEW mode underneath: the landing page is a screen, not a mode.
+        expect(shell.getAttribute('data-phone-mode')).toBe('pane');
+        expect(screen.getByTestId('phone-landing')).toBeTruthy();
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+
+        const card = screen.getByTestId('phone-landing-host-origin');
+        expect(card.getAttribute('data-host-kind')).toBe('origin');
+        expect(within(card).getByTestId('phone-landing-status-origin').getAttribute('data-status')).toBe('connected');
+        expect(within(card).getByTestId('phone-landing-summary-origin').textContent).toBe('1 workspace');
+        expect(screen.getByTestId('phone-landing-add-host')).toBeTruthy();
+
+        // Not an overlay: it registers no modal presence, so a live web pane is not parked by it.
+        expect(modalPresenceCount()).toBe(0);
+        // The daemon is told this client shows none of its panes.
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [] });
+        });
+    });
+
+    it('counts the agents on a host card, and says so instead of a zero before the snapshot lands', () => {
+        setup({ landing: true, snapshot: false });
+        expect(screen.getByTestId('phone-landing-summary-origin').textContent).toBe('connecting…');
+    });
+
+    it('opens a host’s workspaces, then a workspace, and remembers where that was', async () => {
+        const h = setup({ landing: true });
+        tap('phone-landing-open-origin');
+        const landing = screen.getByTestId('phone-landing');
+        expect(landing.getAttribute('data-phone-landing-host')).toBe('origin');
+        const row = within(landing).getByTestId('workspace-row');
+        expect(row.getAttribute('data-workspace-id')).toBe(W1);
+
+        fireEvent.click(row);
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-screen')).toBe('pane');
+        expect(screen.queryByTestId('phone-landing')).toBeNull();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(JSON.parse(h.hostStorage.map.get(PHONE_PLACE_KEY) ?? 'null')).toEqual({ host: 'origin', workspaceID: W1 });
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_A] });
+        });
+    });
+
+    it('goes back from the header button and from the drawer’s top row, forgetting the place', () => {
+        const h = setup();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+
+        tap('phone-open-landing');
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-screen')).toBe('landing');
+        expect(h.hostStorage.map.has(PHONE_PLACE_KEY)).toBe(false);
+        // Nothing pane-shaped in the header while the host list is up.
+        expect(screen.queryByTestId('phone-view-toggle')).toBeNull();
+        expect(screen.queryByTestId('phone-open-panes')).toBeNull();
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('Hosts');
+
+        // Back into the workspace, then out again through the drawer's own row.
+        tap('phone-landing-open-origin');
+        fireEvent.click(within(screen.getByTestId('phone-landing')).getByTestId('workspace-row'));
+        tap('phone-open-workspaces');
+        tap('phone-drawer-landing');
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-screen')).toBe('landing');
+    });
+
+    it('reopens where the person was, on the origin', () => {
+        setup({ storage: { [PHONE_PLACE_KEY]: JSON.stringify({ host: 'origin', workspaceID: W1 }) } });
+        expect(screen.queryByTestId('phone-landing')).toBeNull();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+    });
+
+    it('reopens where the person was, on a remote host, without dropping the selection while it dials', () => {
+        const h = setup({
+            storage: {
+                [PHONE_HOSTS_KEY]: JSON.stringify([{ id: 'h1', name: 'studio', url: PAIRING_URL }]),
+                [PHONE_PLACE_KEY]: JSON.stringify({ host: 'phone:h1', workspaceID: REMOTE_WS })
+            }
+        });
+        expect(h.remotes.get(PAIRING_URL)?.calls).toContain('connect');
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('phone:h1');
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('studio · remote-ws');
+        expect(screen.getByTestId(`pane-body-${REMOTE_PANE}`)).toBeTruthy();
+    });
+
+    it('falls back to the origin when the remembered host is gone from the phone’s list', () => {
+        setup({ storage: { [PHONE_PLACE_KEY]: JSON.stringify({ host: 'phone:gone', workspaceID: 'w' }) } });
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('origin');
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+    });
+
+    it('adds a host from the landing page and lands back on it', () => {
+        const h = setup({ landing: true });
+        tap('phone-landing-add-host');
+        fireEvent.change(screen.getByTestId('phone-host-url'), { target: { value: PAIRING_URL } });
+        fireEvent.submit(screen.getByTestId('phone-host-form'));
+        expect(h.remotes.has(PAIRING_URL)).toBe(true);
+        expect(screen.queryByTestId('phone-host-sheet')).toBeNull();
+        expect(screen.getByTestId('phone-landing')).toBeTruthy();
+        expect(screen.getByTestId(/^phone-landing-host-phone:/)).toBeTruthy();
+    });
+
+    it('touches none of the phone’s storage on a desktop window', () => {
+        const h = setup({ phone: false, landing: true });
+        expect(screen.queryByTestId('phone-landing')).toBeNull();
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+        expect(h.hostStorage.map.size).toBe(0);
+    });
+});
+
+/**
+ * B7 - every pane type through the shell. The origin's panes are drawn by assembly's own
+ * `renderPane`, so what is pinned here is that the shell filters NOTHING by type on the way in,
+ * and that the one type it answers itself (a web pane, MOBILE-PLAN.md §9) is a card in both modes.
+ */
+describe('every pane type', () => {
+    it('lists a terminal, a content pane and a web pane in the sheet, each with its own glyph', () => {
+        setup({ everyPaneType: true });
+        expect(screen.getByTestId('phone-pane-count').textContent).toBe('3');
+        tap('phone-open-panes');
+        const sheet = screen.getByTestId('phone-pane-sheet');
+        const glyph = (paneID: string): string | null =>
+            within(sheet).getByTestId(`phone-pane-show-${paneID}`).querySelector('svg[data-icon]')?.getAttribute('data-icon') ?? null;
+        expect(glyph(PANE_A)).toBe('terminal');
+        expect(glyph(PANE_MD)).toBe('document');
+        expect(glyph(PANE_WEB)).toBe('globe');
+    });
+
+    it('renders a content pane with the desktop’s own component, and reports it visible', async () => {
+        const h = setup({ everyPaneType: true });
+        tap('phone-open-panes');
+        tap(`phone-pane-show-${PANE_MD}`);
+        expect(screen.getByTestId(`pane-body-${PANE_MD}`)).toBeTruthy();
+        // `MarkdownPane`'s own body, unchanged from the desktop; no phone-shaped stand-in.
+        expect(screen.getByTestId(`content-status-${PANE_MD}`)).toBeTruthy();
+        expect(screen.queryByTestId(`phone-web-card-${PANE_MD}`)).toBeNull();
+        expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_MD] });
+        });
+    });
+
+    it('renders a web pane as a card that says so, never the desktop’s browser chrome', async () => {
+        const h = setup({ everyPaneType: true });
+        tap('phone-open-panes');
+        tap(`phone-pane-show-${PANE_WEB}`);
+        expect(screen.getByTestId(`pane-body-${PANE_WEB}`)).toBeTruthy();
+        const card = screen.getByTestId(`phone-web-card-${PANE_WEB}`);
+        expect(within(card).getByTestId(`phone-web-card-url-${PANE_WEB}`).textContent).toBe('https://example.test/docs');
+        expect(card.textContent).toContain('does not host a browser view on a phone');
+        expect(screen.getByTestId(`phone-web-card-open-${PANE_WEB}`).getAttribute('href')).toBe('https://example.test/docs');
+        // The desktop's WebPane is not mounted at all, so nothing reports geometry for a native
+        // view the phone has no shell to composite.
+        expect(screen.queryByTestId(`web-pane-${PANE_WEB}`)).toBeNull();
+        await waitFor(() => {
+            expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [PANE_WEB] });
+        });
+    });
+
+    it('shows all three in layout mode, the web pane still a card', () => {
+        setup({ everyPaneType: true });
+        tap('phone-view-toggle');
+        expect(screen.getByTestId('pane-grid')).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-body-${PANE_MD}`)).toBeTruthy();
+        expect(screen.getByTestId(`phone-web-card-${PANE_WEB}`)).toBeTruthy();
+        expect(screen.queryByTestId(`web-pane-${PANE_WEB}`)).toBeNull();
+    });
+
+    it('keeps the key bar for a terminal and takes it away for a web or content pane (C9)', async () => {
+        setup({ everyPaneType: true });
+        // The bar's mount condition is the pane REGISTRY's (`terminal/pane-registry.ts` is the
+        // pane-type test: a handle exists only for a live terminal renderer), and a renderer
+        // registers inside its own mount effect, one tick after the commit that rendered it.
+        const bar = (): Element | null => document.querySelector('[data-terminal-key-bar]');
+        await waitFor(() => {
+            expect(bar()).not.toBeNull();
+        });
+
+        tap('phone-open-panes');
+        tap(`phone-pane-show-${PANE_MD}`);
+        await waitFor(() => {
+            expect(bar()).toBeNull();
+        });
+
+        tap('phone-open-panes');
+        tap(`phone-pane-show-${PANE_WEB}`);
+        await waitFor(() => {
+            expect(bar()).toBeNull();
+        });
+
+        tap('phone-open-panes');
+        tap(`phone-pane-show-${PANE_A}`);
+        await waitFor(() => {
+            expect(bar()).not.toBeNull();
+        });
     });
 });

@@ -22,7 +22,7 @@ import type { ChromeLabelPreset, ChromeWorkspace } from '../chrome/types';
 import type { ConnectionStatus } from '../connection';
 import { selectSidebarEntries } from '../state';
 import type { PhoneHostModel, PhoneWorkspaceSelection } from './model';
-import { PHONE_ROW_MIN_PX, PhoneButton, PhoneSheet, PhoneSheetHeader } from './ui';
+import { PHONE_ROW_MIN_PX, PhoneButton, PhoneRow, PhoneSheet, PhoneSheetHeader } from './ui';
 
 export interface PhoneWorkspaceDrawerProps {
     readonly open: boolean;
@@ -33,6 +33,8 @@ export interface PhoneWorkspaceDrawerProps {
     readonly onNewWorkspace: () => void;
     readonly onAddHost: () => void;
     readonly onRemoveHost: (hostKey: string) => void;
+    /** B7: back to the landing page, the drawer's half of the two ways out (the header's is the other). */
+    readonly onShowLanding: () => void;
     readonly onClose: () => void;
 }
 
@@ -44,18 +46,25 @@ export function connectionDotColor(status: ConnectionStatus): string {
 
 const noop = (): void => {};
 
-function HostSection(props: {
+export interface PhoneHostWorkspaceListProps {
     readonly host: PhoneHostModel;
     readonly selection: PhoneWorkspaceSelection | null;
     readonly bucket: ChromeBucket;
     readonly onSelect: (selection: PhoneWorkspaceSelection) => void;
-    readonly onRemove: (() => void) | null;
-}): ReactElement {
+}
+
+/**
+ * One host's workspaces and groups, as the local sidebar's own rows.
+ *
+ * Extracted for B7's landing page, which lists the same rows under a host card: one
+ * implementation to drift from was the whole point of building the drawer out of `WorkspaceRow`
+ * and `GroupHeaderRow`, and a second copy on the landing page would have thrown that away.
+ */
+export function PhoneHostWorkspaceList(props: PhoneHostWorkspaceListProps): ReactElement {
     const { host } = props;
     const entries = useStore(host.runtime.store, selectSidebarEntries);
     const presets = useStore(host.runtime.store, (state) => state.daemon.state.labelPresets);
     const connection = useStore(host.runtime.store, (state) => state.ui.connection);
-    const [collapsed, setCollapsed] = useState(false);
 
     const activate = (workspaceID: string): void => {
         props.onSelect({ host: host.key, workspaceID });
@@ -101,6 +110,70 @@ function HostSection(props: {
     );
 
     return (
+        <div className="flex flex-col pb-1" data-testid={`phone-host-body-${host.key}`}>
+            {connection !== 'connected' && entries.length === 0 ? (
+                <span className="px-3 pb-2 pl-8 text-[12px]" style={{ color: tokens.textTertiary }}>
+                    {connection === 'rejected'
+                        ? 'connection refused - the pairing URL may have been revoked'
+                        : connection === 'closed'
+                          ? 'unreachable'
+                          : 'connecting…'}
+                </span>
+            ) : null}
+            {entries.map((entry) => {
+                if (entry.kind === 'workspace') return row(entry.workspace as ChromeWorkspace, { depth: 0 });
+                const group = entry.group;
+                const guide = groupGuideColor(group.color, props.bucket);
+                return (
+                    <div key={group.id} className="flex flex-col" data-testid={`phone-group-${host.key}-${group.id}`}>
+                        <GroupHeaderRow
+                            group={group}
+                            collapsed={group.isCollapsed}
+                            counts={agentCounts(entry.workspaces as readonly ChromeWorkspace[])}
+                            bucket={props.bucket}
+                            renaming={false}
+                            dropPreview={false}
+                            onToggle={(groupID) => {
+                                // The daemon's own persisted collapse state, over that
+                                // host's connection; the mirror echoes it back.
+                                void host.runtime.commands.setGroupCollapsed({ groupID, collapsed: !group.isCollapsed });
+                            }}
+                            onContextMenu={noop}
+                            onDragStart={noop}
+                            onCommitRename={noop}
+                            onCancelRename={noop}
+                            registerRow={noop}
+                        />
+                        {group.isCollapsed
+                            ? null
+                            : entry.workspaces.map((workspace, index) =>
+                                  row(workspace as ChromeWorkspace, {
+                                      depth: 1,
+                                      groupID: group.id,
+                                      guideColor: guide,
+                                      guideExtendUp: index > 0,
+                                      guideExtendDown: index < entry.workspaces.length - 1
+                                  })
+                              )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+function HostSection(props: {
+    readonly host: PhoneHostModel;
+    readonly selection: PhoneWorkspaceSelection | null;
+    readonly bucket: ChromeBucket;
+    readonly onSelect: (selection: PhoneWorkspaceSelection) => void;
+    readonly onRemove: (() => void) | null;
+}): ReactElement {
+    const { host } = props;
+    const connection = useStore(host.runtime.store, (state) => state.ui.connection);
+    const [collapsed, setCollapsed] = useState(false);
+
+    return (
         <div className="flex shrink-0 flex-col" data-testid={`phone-host-${host.key}`} data-host-kind={host.kind}>
             <div className="flex items-center" style={{ minHeight: `${String(PHONE_ROW_MIN_PX)}px` }}>
                 <button
@@ -132,55 +205,7 @@ function HostSection(props: {
                 )}
             </div>
             {collapsed ? null : (
-                <div className="flex flex-col pb-1" data-testid={`phone-host-body-${host.key}`}>
-                    {connection !== 'connected' && entries.length === 0 ? (
-                        <span className="px-3 pb-2 pl-8 text-[12px]" style={{ color: tokens.textTertiary }}>
-                            {connection === 'rejected'
-                                ? 'connection refused - the pairing URL may have been revoked'
-                                : connection === 'closed'
-                                  ? 'unreachable'
-                                  : 'connecting…'}
-                        </span>
-                    ) : null}
-                    {entries.map((entry) => {
-                        if (entry.kind === 'workspace') return row(entry.workspace as ChromeWorkspace, { depth: 0 });
-                        const group = entry.group;
-                        const guide = groupGuideColor(group.color, props.bucket);
-                        return (
-                            <div key={group.id} className="flex flex-col" data-testid={`phone-group-${host.key}-${group.id}`}>
-                                <GroupHeaderRow
-                                    group={group}
-                                    collapsed={group.isCollapsed}
-                                    counts={agentCounts(entry.workspaces as readonly ChromeWorkspace[])}
-                                    bucket={props.bucket}
-                                    renaming={false}
-                                    dropPreview={false}
-                                    onToggle={(groupID) => {
-                                        // The daemon's own persisted collapse state, over that
-                                        // host's connection; the mirror echoes it back.
-                                        void host.runtime.commands.setGroupCollapsed({ groupID, collapsed: !group.isCollapsed });
-                                    }}
-                                    onContextMenu={noop}
-                                    onDragStart={noop}
-                                    onCommitRename={noop}
-                                    onCancelRename={noop}
-                                    registerRow={noop}
-                                />
-                                {group.isCollapsed
-                                    ? null
-                                    : entry.workspaces.map((workspace, index) =>
-                                          row(workspace as ChromeWorkspace, {
-                                              depth: 1,
-                                              groupID: group.id,
-                                              guideColor: guide,
-                                              guideExtendUp: index > 0,
-                                              guideExtendDown: index < entry.workspaces.length - 1
-                                          })
-                                      )}
-                            </div>
-                        );
-                    })}
-                </div>
+                <PhoneHostWorkspaceList host={host} selection={props.selection} bucket={props.bucket} onSelect={props.onSelect} />
             )}
         </div>
     );
@@ -190,6 +215,20 @@ export function PhoneWorkspaceDrawer(props: PhoneWorkspaceDrawerProps): ReactEle
     return (
         <PhoneSheet open={props.open} side="left" label="Workspaces" testID="phone-workspace-drawer" onClose={props.onClose}>
             <PhoneSheetHeader title="Workspaces" testID="phone-workspace-drawer-header" onClose={props.onClose} />
+            {/* B7's second way back to the landing page, at the drawer's top where the owner said
+                it could live; the header's Hosts button is the first. Both close the drawer. */}
+            <PhoneRow
+                testID="phone-drawer-landing"
+                onClick={() => {
+                    props.onShowLanding();
+                    props.onClose();
+                }}
+            >
+                <span className="flex shrink-0 items-center" style={{ color: tokens.textSecondary }}>
+                    <ChromeIcon name="network" size={14} />
+                </span>
+                <span className="truncate">All hosts</span>
+            </PhoneRow>
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1" data-testid="phone-host-list">
                 {props.hosts.map((host) => (
                     <HostSection

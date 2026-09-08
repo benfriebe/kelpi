@@ -1287,7 +1287,38 @@ const PHONE_VIEWPORT = { width: 390, height: 844, deviceScaleFactor: 3 };
  * emulation is on. Both halves are needed: `chrome/form-factor.ts` requires a narrow viewport AND
  * a coarse pointer, deliberately, so that a narrow desktop window stays a desktop.
  */
-async function emulatePhone(page) {
+/**
+ * Where a phone step's shell OPENS (B7).
+ *
+ * The phone shell has three top-level states, and the first one is a LANDING page listing the
+ * hosts: a phone with nothing remembered has never been anywhere, so that is where it starts
+ * (`packages/client/src/phone/place.ts`). Every phone step but `phone-landing` is about a pane, so
+ * the seed here says "the person was on the origin", written BEFORE the viewport flips because the
+ * shell reads it on the desktop-to-phone edge. The workspace id is read out of the sidebar's own
+ * active row; an empty one still means "the origin", and the client fills the real id in as soon
+ * as it has a workspace. `phone-key-bar-split` already sets `kelpi.phone.view-mode` by hand for
+ * the same class of reason; this is the one every step needs, so it lives in the shared helper.
+ *
+ * `place: null` removes the key instead, which is a phone that has never been opened.
+ */
+const PHONE_PLACE_KEY = 'kelpi.phone.last-place';
+
+async function seedPhonePlace(page, place) {
+    await page.eval(
+        `(() => {
+            try {
+                if (${place === null ? 'true' : 'false'}) { localStorage.removeItem(${JSON.stringify(PHONE_PLACE_KEY)}); return 'cleared'; }
+                const row = document.querySelector('[data-testid="workspace-row"][data-active="true"]');
+                const id = row?.getAttribute('data-workspace-id') ?? '';
+                localStorage.setItem(${JSON.stringify(PHONE_PLACE_KEY)}, JSON.stringify({ host: 'origin', workspaceID: id }));
+                return id;
+            } catch (error) { return 'blocked: ' + String(error); }
+        })()`
+    );
+}
+
+async function emulatePhone(page, { place = 'origin' } = {}) {
+    await seedPhonePlace(page, place === null ? null : 'origin');
     await page.send('Emulation.setDeviceMetricsOverride', { ...PHONE_VIEWPORT, mobile: true });
     await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
     // The client answers on a resize event, and the layout, the engine and the PTY all move with
@@ -1299,6 +1330,9 @@ async function emulatePhone(page) {
 async function clearPhoneEmulation(page) {
     await page.send('Emulation.clearDeviceMetricsOverride');
     await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 });
+    // The seed above is phone state; a desktop step must not inherit it, and the next phone step
+    // writes its own.
+    await seedPhonePlace(page, null).catch(() => {});
     await sleep(400);
 }
 
@@ -32873,6 +32907,329 @@ function buildFlows(ctx) {
                     'with the emulation cleared the desktop is back and the roster, the focused pane and the active workspace are what they were',
                     JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
                     `before=${JSON.stringify(rosterBefore)} after=${JSON.stringify(rosterAfter)}`
+                );
+            }
+        },
+        /**
+         * B7 - the phone's landing page, and every pane type through the shell.
+         *
+         * Owner, 2026-09-08, after driving the B1 shell on a real Android phone: a landing page to
+         * pick a host, with local state, and all pane types (web panes included) passing through.
+         * Both halves only exist on screen, so both are driven here:
+         *
+         *   - the landing page is the shell's THIRD top-level state (`data-phone-screen`), where a
+         *     phone with nothing remembered opens. This step is the one that clears the remembered
+         *     place before it emulates, so it sees the first open every other phone step seeds past;
+         *   - the shell hands the origin's panes to the desktop's own `renderPane`, so the markdown
+         *     pane opened below is the very component the Mac draws. The one exception is a web
+         *     pane: MOBILE-PLAN.md §9 says it stays a card on the phone, and this step is where
+         *     that is measured against a REAL web pane with a live native view behind it on the
+         *     desktop - the card is what replaces it, and no `web-pane-<id>` chrome is mounted.
+         *
+         * It creates the two panes it needs and closes them again, so the roster it leaves is the
+         * roster it found; `mac-chrome` runs after it and deletes every workspace anyway, but the
+         * step has to be honest on its own.
+         */
+        {
+            id: 'phone-landing',
+            expect:
+                'A phone with nothing remembered opens on the LANDING page: no pane on screen, a card per host carrying the host name, a reachability dot and its workspace and agent counts, and Add host on it. Tapping the origin card lists that host\'s workspaces; tapping a workspace opens it, and the phone remembers host and workspace in localStorage so a reopen lands there. The pane sheet then lists EVERY pane of the workspace with its own type glyph, and switching to each works: a markdown pane renders the desktop\'s own preview, a web pane renders a card that says the phone cannot host the page (never the desktop browser chrome), and the key bar is on screen for the terminal and gone for both of the others. The full layout shows all three at once with the web pane still a card. The header\'s Hosts button returns to the landing page and forgets the place. With the emulation cleared the desktop tree is back and the roster is what it was.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the CDP session, and this step is after it.
+                const view = runtime.page ?? page;
+                const shell = await widestShellPane(view, cli);
+                if (shell === null) throw new Error('phone-landing: no shell pane on screen to drive');
+                const terminalPane = shell.id;
+
+                const readShell = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const shell = document.querySelector('[data-testid="phone-shell"]');
+                                    const bodies = Array.from(document.querySelectorAll('[data-testid^="pane-body-"]')).map((el) => el.getAttribute('data-testid').slice('pane-body-'.length));
+                                    return JSON.stringify({
+                                        screen: shell?.getAttribute('data-phone-screen') ?? '(none)',
+                                        mode: shell?.getAttribute('data-phone-mode') ?? '(none)',
+                                        host: shell?.getAttribute('data-phone-host') ?? '(none)',
+                                        landing: document.querySelector('[data-testid="phone-landing"]') !== null,
+                                        landingHost: document.querySelector('[data-testid="phone-landing"]')?.getAttribute('data-phone-landing-host') ?? '',
+                                        bodies,
+                                        keyBar: document.querySelector('[data-terminal-key-bar]') !== null,
+                                        place: localStorage.getItem('kelpi.phone.last-place') ?? '(none)'
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                // The two panes this step is about, created here so the phone lane does not depend
+                // on `markdown-pane` or `web-pane` having run.
+                const before = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                await cli.ok(['md', path.join(work, 'AUDIT.md')]);
+                await sleep(1800);
+                await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+                await sleep(3000);
+                const roster = await cli.json(['pane', 'list', '--json']);
+                const mdPane = roster.find((pane) => pane.type === 'markdown' && !before.includes(String(pane.id)));
+                const webPane = roster.find((pane) => pane.type === 'web' && !before.includes(String(pane.id)));
+                recorder.note(
+                    `panes: terminal=${terminalPane} markdown=${String(mdPane?.id ?? '(none)')} web=${String(webPane?.id ?? '(none)')}`
+                );
+                recorder.check(
+                    'a terminal, a markdown pane and a web pane are open on the origin',
+                    mdPane !== undefined && webPane !== undefined,
+                    roster.map((pane) => `${String(pane.id).slice(0, 8)}:${String(pane.type)}`).join(' ')
+                );
+                if (mdPane === undefined || webPane === undefined) return;
+
+                // The pane the shell will show first, and the workspace the place will name.
+                await focusPaneBody(view, terminalPane);
+                const workspaceID = String(
+                    await view.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                const workspacePanes = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+
+                try {
+                    // ── the first open: nothing remembered, so the host list ────────────
+                    await emulatePhone(view, { place: null });
+                    await view.waitFor(`document.querySelector('[data-testid="phone-landing"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the landing page'
+                    });
+                    const landing = await readShell();
+                    recorder.note(`the landing page: ${JSON.stringify(landing)}`);
+                    await recorder.shot(view, 'phone-landing');
+                    recorder.check(
+                        'a phone with nothing remembered opens on the landing page, with no pane on screen and no key bar',
+                        landing.screen === 'landing' && landing.landing === true && landing.bodies.length === 0 && landing.keyBar === false,
+                        `screen=${String(landing.screen)} bodies=${landing.bodies.join(',')} keyBar=${String(landing.keyBar)}`
+                    );
+                    const card = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="phone-landing-host-origin"]');
+                                    if (el === null) return JSON.stringify({ card: false });
+                                    const open = el.querySelector('[data-testid="phone-landing-open-origin"]');
+                                    const box = open.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        card: true,
+                                        kind: el.getAttribute('data-host-kind'),
+                                        status: el.querySelector('[data-testid="phone-landing-status-origin"]')?.getAttribute('data-status') ?? '',
+                                        summary: (el.querySelector('[data-testid="phone-landing-summary-origin"]')?.textContent ?? '').trim(),
+                                        h: Math.round(box.height),
+                                        addHost: document.querySelector('[data-testid="phone-landing-add-host"]') !== null,
+                                        remove: el.querySelector('[data-testid="phone-landing-remove-origin"]') !== null
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`the origin card: ${JSON.stringify(card)}`);
+                    recorder.check(
+                        'the origin is a card of its own: reachable, its workspace count on it, at the thumb floor, with Add host beside it and no Remove (it is the page)',
+                        card.card === true &&
+                            card.kind === 'origin' &&
+                            card.status === 'connected' &&
+                            /workspace/.test(String(card.summary)) &&
+                            card.h >= 44 &&
+                            card.addHost === true &&
+                            card.remove === false,
+                        JSON.stringify(card)
+                    );
+
+                    // ── pick the host, then the workspace ───────────────────────────────
+                    await view.tap('[data-testid="phone-landing-open-origin"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-landing"]')?.getAttribute('data-phone-landing-host') === 'origin'`, {
+                        timeoutMs: 8000,
+                        label: "the origin's workspaces on the landing page"
+                    });
+                    await recorder.shot(view, 'phone-landing-workspaces');
+                    await view.tap(`[data-testid="phone-landing"] [data-testid="workspace-row"][data-workspace-id="${workspaceID}"]`);
+                    await view.waitFor(`document.querySelector('[data-testid="pane-body-${terminalPane}"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the workspace, showing the focused pane'
+                    });
+                    const opened = await readShell();
+                    recorder.note(`after picking a workspace: ${JSON.stringify(opened)}`);
+                    recorder.check(
+                        'tapping a workspace leaves the landing page for that workspace, and the phone remembers host and workspace',
+                        opened.screen === 'pane' &&
+                            opened.landing === false &&
+                            opened.bodies.join(',') === terminalPane &&
+                            opened.place.includes('"host":"origin"') &&
+                            opened.place.includes(workspaceID),
+                        `screen=${String(opened.screen)} bodies=${opened.bodies.join(',')} place=${String(opened.place)}`
+                    );
+
+                    // ── every pane type in the sheet, with its own glyph ────────────────
+                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-sheet"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the pane sheet'
+                    });
+                    const sheet = JSON.parse(
+                        String(
+                            await view.eval(
+                                `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="phone-pane-row-"]')).map((el) => ({
+                                    id: el.getAttribute('data-testid').slice('phone-pane-row-'.length),
+                                    glyph: el.querySelector('svg[data-icon]')?.getAttribute('data-icon') ?? ''
+                                })))`
+                            )
+                        )
+                    );
+                    recorder.note(`the pane sheet: ${JSON.stringify(sheet)}`);
+                    await recorder.shot(view, 'phone-landing-pane-sheet');
+                    const glyphOf = (id) => sheet.find((row) => row.id === id)?.glyph ?? '(missing)';
+                    recorder.check(
+                        'the sheet lists every pane of the workspace, whatever its type, each with its own glyph',
+                        sheet.map((row) => row.id).sort().join(',') === [...workspacePanes].sort().join(',') &&
+                            glyphOf(terminalPane) === 'terminal' &&
+                            glyphOf(String(mdPane.id)) === 'document' &&
+                            glyphOf(String(webPane.id)) === 'globe',
+                        `rows=${sheet.map((row) => `${row.id.slice(0, 8)}:${row.glyph}`).join(' ')} workspace=${workspacePanes.map((id) => id.slice(0, 8)).join(' ')}`
+                    );
+
+                    // ── the content pane: the desktop's own component ───────────────────
+                    await view.tap(`[data-testid="phone-pane-show-${String(mdPane.id)}"]`);
+                    await view.waitFor(`document.querySelector('[data-testid="pane-body-${String(mdPane.id)}"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the markdown pane in the shell'
+                    });
+                    await sleep(1200);
+                    const md = await readShell();
+                    const preview = String(
+                        await view.eval(
+                            `document.querySelector('[data-testid="content-iframe-${String(mdPane.id)}"]') !== null ? 'iframe' : (document.querySelector('[data-testid="content-status-${String(mdPane.id)}"]') !== null ? 'status' : 'none')`
+                        )
+                    );
+                    recorder.note(`the markdown pane on the phone: ${JSON.stringify(md)} body=${preview}`);
+                    await recorder.shot(view, 'phone-landing-content-pane');
+                    recorder.check(
+                        "a content pane renders through the desktop's own component, alone on screen, with no key bar (it is not a terminal)",
+                        md.bodies.join(',') === String(mdPane.id) && preview === 'iframe' && md.keyBar === false,
+                        `bodies=${md.bodies.join(',')} body=${preview} keyBar=${String(md.keyBar)}`
+                    );
+
+                    // ── the web pane: a card, not the desktop's browser chrome ──────────
+                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${String(webPane.id)}"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the pane sheet again'
+                    });
+                    await view.tap(`[data-testid="phone-pane-show-${String(webPane.id)}"]`);
+                    await view.waitFor(`document.querySelector('[data-testid="phone-web-card-${String(webPane.id)}"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: "the web pane's phone card"
+                    });
+                    await sleep(600);
+                    const web = await readShell();
+                    const cardText = JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="phone-web-card-${String(webPane.id)}"]');
+                                    return JSON.stringify({
+                                        text: (el?.textContent ?? '').trim().slice(0, 240),
+                                        url: (el?.querySelector('[data-testid="phone-web-card-url-${String(webPane.id)}"]')?.textContent ?? '').trim(),
+                                        chrome: document.querySelector('[data-testid="web-pane-${String(webPane.id)}"]') !== null
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`the web card: ${JSON.stringify(cardText)}`);
+                    await recorder.shot(view, 'phone-landing-web-card');
+                    recorder.check(
+                        'a web pane is a card that says the phone cannot host the page, carrying its URL, with the desktop browser chrome not mounted at all and no key bar',
+                        web.bodies.join(',') === String(webPane.id) &&
+                            cardText.chrome === false &&
+                            /does not host a browser view on a phone/.test(String(cardText.text)) &&
+                            cardText.url.length > 0 &&
+                            web.keyBar === false,
+                        `bodies=${web.bodies.join(',')} chrome=${String(cardText.chrome)} url=${String(cardText.url)} keyBar=${String(web.keyBar)}`
+                    );
+
+                    // ── the full layout: all three at once, the web one still a card ────
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the full layout'
+                    });
+                    await sleep(800);
+                    const layout = await readShell();
+                    const layoutCard = String(
+                        await view.eval(
+                            `String(document.querySelector('[data-testid="phone-web-card-${String(webPane.id)}"]') !== null) + '/' + String(document.querySelector('[data-testid="web-pane-${String(webPane.id)}"]') !== null)`
+                        )
+                    );
+                    recorder.note(`the layout: ${JSON.stringify(layout)} webCard/webChrome=${layoutCard}`);
+                    await recorder.shot(view, 'phone-landing-layout');
+                    recorder.check(
+                        'the full layout draws every pane type at once, and the web pane is the same card there',
+                        layout.screen === 'layout' &&
+                            [...layout.bodies].sort().join(',') === [...workspacePanes].sort().join(',') &&
+                            layoutCard === 'true/false',
+                        `screen=${String(layout.screen)} bodies=${layout.bodies.join(',')} webCard/webChrome=${layoutCard}`
+                    );
+                    await view.tap('[data-testid="phone-view-toggle"]');
+                    await view.waitFor(`document.querySelector('[data-testid="pane-grid"]') === null`, {
+                        timeoutMs: 8000,
+                        label: 'one pane again'
+                    });
+
+                    // ── back to the terminal: the bar comes back ────────────────────────
+                    await view.tap('[data-testid="phone-open-panes"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-pane-show-${terminalPane}"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the pane sheet a third time'
+                    });
+                    await view.tap(`[data-testid="phone-pane-show-${terminalPane}"]`);
+                    await view.waitFor(`document.querySelector('[data-terminal-key-bar]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the key bar back on the terminal'
+                    });
+                    const back = await readShell();
+                    recorder.check(
+                        'switching back to the terminal brings the key bar with it',
+                        back.bodies.join(',') === terminalPane && back.keyBar === true,
+                        `bodies=${back.bodies.join(',')} keyBar=${String(back.keyBar)}`
+                    );
+
+                    // ── the way back to the host list, and the place it forgets ─────────
+                    await view.tap('[data-testid="phone-open-landing"]');
+                    await view.waitFor(`document.querySelector('[data-testid="phone-landing"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the landing page again'
+                    });
+                    const returned = await readShell();
+                    recorder.note(`back at the landing page: ${JSON.stringify(returned)}`);
+                    recorder.check(
+                        'the header returns to the host list, nothing is on screen, and the remembered place is forgotten (the landing page is a place too)',
+                        returned.screen === 'landing' && returned.bodies.length === 0 && returned.place === '(none)',
+                        `screen=${String(returned.screen)} bodies=${returned.bodies.join(',')} place=${String(returned.place)}`
+                    );
+                } finally {
+                    await clearPhoneEmulation(view).catch(() => {});
+                    // The roster this step found, restored: the panes it opened are its own.
+                    await cli.run(['pane', 'close', '--target', String(webPane.id)]).catch(() => {});
+                    await cli.run(['pane', 'close', '--target', String(mdPane.id)]).catch(() => {});
+                    await sleep(800);
+                }
+
+                await view.waitFor(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null`, {
+                    timeoutMs: 10_000,
+                    label: 'the desktop tree to come back'
+                });
+                const after = (await cli.json(['pane', 'list', '--json'])).map((pane) => String(pane.id));
+                recorder.check(
+                    'the desktop is back and the step left the roster it found',
+                    [...after].sort().join(',') === [...before].sort().join(','),
+                    `before=${before.map((id) => id.slice(0, 8)).join(' ')} after=${after.map((id) => id.slice(0, 8)).join(' ')}`
                 );
             }
         },

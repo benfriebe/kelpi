@@ -1,10 +1,10 @@
 /**
- * The phone shell's own view state (B1/B2/B7, docs/MOBILE-PLAN.md).
+ * The phone shell's own view state (B1/B2/B7/B9, docs/MOBILE-PLAN.md).
  *
  * **Every phone rule in this program is an owner-directed divergence from the shipped Swift app**
  * (there is no Swift phone UI; `chrome/form-factor.ts` says so once for all of it).
  *
- * Three things live here, all CLIENT-LOCAL (plan §3.2: "which pane is in view, which drawer is
+ * Four things live here, all CLIENT-LOCAL (plan §3.2: "which pane is in view, which drawer is
  * open ... all client-side, never daemon state"):
  *
  *   1. **The view mode.** `pane` shows ONE pane filling the screen; `layout` shows the
@@ -21,6 +21,10 @@
  *      over what it was showing, and it registers nothing with `chrome/modal-presence.ts` for the
  *      same reason. Nothing of the origin's is on screen while it is up, which
  *      {@link phoneVisiblePaneIDs} reports and the daemon acts on.
+ *   4. **Which HOST sections are open** in the one hierarchy the drawer and the landing page both
+ *      draw (B9, owner device round 11: *"It does look weird with one sidebar showing all hosts,
+ *      and one showing only workspaces from one host"*). Remembered per phone beside the view
+ *      mode; {@link usePhoneHostExpansion} carries the rules.
  *
  * Which pane `pane` mode shows is deliberately NOT state of its own: it is the daemon-focused
  * pane, echo-fast (`selectFocusedPaneID`), and the phone's pane switcher FOCUSES. The plan's B2
@@ -76,6 +80,92 @@ export function writeStoredViewMode(mode: PhoneViewMode, storage: StorageLike | 
     } catch {
         // Convenience only; the mode still holds for this page's life.
     }
+}
+
+/*
+ * ── which host sections are open (B9) ───────────────────────────────────────────────
+ *
+ * The phone shows ONE hierarchy - hosts, each with its workspaces - in two places
+ * (`phone/PhoneHostTree.tsx`), and which sections are open is CLIENT-LOCAL, exactly like the view
+ * mode above and for the same reason: it is a fact about this phone's screen, and no daemon has an
+ * opinion about it (plan §3.2, "which pane is in view, which drawer is open ... all client-side").
+ * The daemon-owned collapse next to it is a GROUP's, which the sidebar's own row toggle sends.
+ *
+ * Only the EXPLICIT taps are stored. The default is the presentation's (`landing` opens
+ * everything, the drawer opens the host you are in), so a phone with nothing stored behaves the
+ * way B9 describes, and a stored entry is only ever something a person did. An entry for a host
+ * that has since been removed costs one boolean and is left alone; a re-added host gets a fresh id
+ * (`phone/hosts.ts` mints one per entry), so it cannot inherit a stale one.
+ *
+ * It goes through the SAME storage seam as the host list and the remembered place, not the view
+ * mode's, for `phone/place.ts`'s reason word for word: the value NAMES hosts in that list, and two
+ * facts that reference each other belong in one store or a test that fakes one and not the other
+ * reads state whose hosts cannot exist.
+ */
+
+/** Where the per-host expansion is remembered, beside `kelpi.phone.view-mode`. */
+export const PHONE_HOST_EXPANSION_KEY = 'kelpi.phone.expanded-hosts';
+
+/** Host key to whether the person opened (true) or closed (false) that section by hand. */
+export type PhoneHostExpansionMap = Readonly<Record<string, boolean>>;
+
+const EMPTY_EXPANSION: PhoneHostExpansionMap = {};
+
+export function readStoredHostExpansion(storage: StorageLike | null = defaultStorage()): PhoneHostExpansionMap {
+    try {
+        const raw = storage?.getItem(PHONE_HOST_EXPANSION_KEY);
+        if (raw === null || raw === undefined || raw.length === 0) return EMPTY_EXPANSION;
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return EMPTY_EXPANSION;
+        const map: Record<string, boolean> = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof value === 'boolean') map[key] = value;
+        }
+        return map;
+    } catch {
+        return EMPTY_EXPANSION;
+    }
+}
+
+export function writeStoredHostExpansion(map: PhoneHostExpansionMap, storage: StorageLike | null = defaultStorage()): void {
+    try {
+        if (Object.keys(map).length === 0) storage?.removeItem(PHONE_HOST_EXPANSION_KEY);
+        else storage?.setItem(PHONE_HOST_EXPANSION_KEY, JSON.stringify(map));
+    } catch {
+        // Convenience only; the sections still hold for this page's life.
+    }
+}
+
+export interface PhoneHostExpansion {
+    /** Is this host's section open? `byDefault` is the presentation's answer when nobody has said. */
+    isExpanded(hostKey: string, byDefault: boolean): boolean;
+    /** Flip it, from whatever it is showing now, and remember that. */
+    toggle(hostKey: string, byDefault: boolean): void;
+}
+
+/**
+ * The expansion, live and remembered.
+ *
+ * Held by the shell rather than by either surface, so the drawer and the landing page are looking
+ * at ONE value: a host opened on the landing page is open in the drawer, which is the whole claim
+ * B9 makes. There is no `enabled` guard here because there is nothing to guard - the shell that
+ * calls this is only mounted under the phone form factor - and nothing is written until a tap.
+ */
+export function usePhoneHostExpansion(storage: StorageLike | null | undefined = undefined): PhoneHostExpansion {
+    const store = storage === undefined ? defaultStorage() : storage;
+    const [map, setMap] = useState<PhoneHostExpansionMap>(() => readStoredHostExpansion(store));
+
+    return useMemo(
+        () => ({
+            isExpanded: (hostKey: string, byDefault: boolean): boolean => map[hostKey] ?? byDefault,
+            toggle: (hostKey: string, byDefault: boolean): void => {
+                const next = { ...map, [hostKey]: !(map[hostKey] ?? byDefault) };
+                setMap(next);
+                writeStoredHostExpansion(next, store);
+            }
+        }),
+        [map, store]
+    );
 }
 
 /** A remote host's workspace on screen. `host` is the host's key in the phone's host list. */

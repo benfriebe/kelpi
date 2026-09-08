@@ -5,12 +5,16 @@ import type { StorageLike } from '../app/config';
 import { PHONE_PLACE_KEY } from './place';
 import {
     DEFAULT_PHONE_VIEW_MODE,
+    PHONE_HOST_EXPANSION_KEY,
     PHONE_VIEW_MODE_KEY,
     isPhoneViewMode,
     phoneVisiblePaneIDs,
+    readStoredHostExpansion,
     readStoredViewMode,
     resolveShownPane,
+    usePhoneHostExpansion,
     usePhoneView,
+    writeStoredHostExpansion,
     writeStoredViewMode
 } from './view';
 
@@ -63,6 +67,61 @@ describe('the remembered view mode', () => {
         expect(storage.map.get(PHONE_VIEW_MODE_KEY)).toBe('layout');
         expect(() => writeStoredViewMode('layout', blockedStorage())).not.toThrow();
         expect(readStoredViewMode(blockedStorage())).toBe('pane');
+    });
+});
+
+/**
+ * B9 - which host sections are open in the ONE hierarchy the drawer and the landing page draw.
+ * Only the explicit taps are stored; the presentation supplies the default.
+ */
+describe('the remembered host expansion', () => {
+    it('remembers nothing until somebody taps a header, and ignores anything that is not a flag', () => {
+        expect(readStoredHostExpansion(memoryStorage())).toEqual({});
+        expect(readStoredHostExpansion(null)).toEqual({});
+        expect(readStoredHostExpansion(memoryStorage({ [PHONE_HOST_EXPANSION_KEY]: '["origin"]' }))).toEqual({});
+        expect(readStoredHostExpansion(memoryStorage({ [PHONE_HOST_EXPANSION_KEY]: 'not json' }))).toEqual({});
+        expect(
+            readStoredHostExpansion(memoryStorage({ [PHONE_HOST_EXPANSION_KEY]: '{"origin":true,"phone:h1":"yes"}' }))
+        ).toEqual({ origin: true });
+    });
+
+    it('writes the flags, drops the key when there are none, and survives a blocked store', () => {
+        const storage = memoryStorage();
+        writeStoredHostExpansion({ 'phone:h1': true }, storage);
+        expect(storage.map.get(PHONE_HOST_EXPANSION_KEY)).toBe('{"phone:h1":true}');
+        writeStoredHostExpansion({}, storage);
+        expect(storage.map.has(PHONE_HOST_EXPANSION_KEY)).toBe(false);
+        expect(() => writeStoredHostExpansion({ origin: false }, blockedStorage())).not.toThrow();
+        expect(readStoredHostExpansion(blockedStorage())).toEqual({});
+    });
+
+    it('answers with the presentation’s default until a tap, then with the tap', () => {
+        const storage = memoryStorage();
+        const { result } = renderHook(() => usePhoneHostExpansion(storage));
+        // The drawer's default: the host you are in, alone. The landing page's: everything.
+        expect(result.current.isExpanded('origin', true)).toBe(true);
+        expect(result.current.isExpanded('phone:h1', false)).toBe(false);
+
+        act(() => {
+            result.current.toggle('phone:h1', false);
+        });
+        expect(result.current.isExpanded('phone:h1', false)).toBe(true);
+        // …and it outranks the OTHER presentation's default too: one value, both surfaces.
+        expect(result.current.isExpanded('phone:h1', true)).toBe(true);
+        expect(storage.map.get(PHONE_HOST_EXPANSION_KEY)).toBe('{"phone:h1":true}');
+
+        act(() => {
+            result.current.toggle('origin', true);
+        });
+        expect(result.current.isExpanded('origin', true)).toBe(false);
+        expect(JSON.parse(storage.map.get(PHONE_HOST_EXPANSION_KEY) ?? 'null')).toEqual({ 'phone:h1': true, origin: false });
+    });
+
+    it('reads what the last visit stored', () => {
+        const storage = memoryStorage({ [PHONE_HOST_EXPANSION_KEY]: JSON.stringify({ 'phone:h1': false }) });
+        const { result } = renderHook(() => usePhoneHostExpansion(storage));
+        expect(result.current.isExpanded('phone:h1', true)).toBe(false);
+        expect(result.current.isExpanded('origin', true)).toBe(true);
     });
 });
 

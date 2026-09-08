@@ -1,3 +1,4 @@
+import { handlePlugin } from './commands/plugin.js';
 /**
  * The top-level dispatcher (cli.md §3).
  *
@@ -51,6 +52,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
     }
 
     switch (subcommand) {
+        case 'plugin':
+            return handlePlugin(args);
         case 'event':
             return handleEvent(args);
         case 'pane':

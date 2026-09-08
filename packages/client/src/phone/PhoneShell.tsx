@@ -14,9 +14,9 @@
  *
  * ## Three top-level states, one value (`phone/view.ts` `screen`)
  *
- *   `landing`  the host list, and one host's workspaces inside it (`PhoneLanding`). Where the
- *              phone starts when nothing is remembered, and where the header's Hosts button and
- *              the drawer's top row go back to. Not a sheet, so it registers no modal presence.
+ *   `landing`  the host tree full-screen (`PhoneLanding`): every host with its workspaces under
+ *              it. Where the phone starts when nothing is remembered, and where the header's
+ *              Hosts button goes back to. Not a sheet, so it registers no modal presence.
  *   `pane`     one pane filling the content box (`phone/view.ts` says why the focused one)
  *   `layout`   the workspace's `PaneGrid`, at phone size
  *
@@ -76,7 +76,7 @@ import { PhoneWebCard, phoneWebCardTab } from './PhoneWebCard';
 import { PhoneWorkspaceDrawer } from './PhoneWorkspaceDrawer';
 import { useSheetHistory, type SheetHistoryLike } from './sheet-history';
 import { PHONE_ROW_MIN_PX, PHONE_SAFE_AREA, PhoneButton, statusDotColor } from './ui';
-import type { PhoneView } from './view';
+import { usePhoneHostExpansion, type PhoneView } from './view';
 
 /** The origin's verbs the shell needs, bound by assembly to its `act`. */
 export interface PhoneShellActions {
@@ -210,6 +210,14 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
     );
 
     const remoteHost = view.remote === null ? null : (hosts.find((host) => host.key === view.remote?.host) ?? null);
+    /*
+     * B9 - which host sections are open in the ONE hierarchy the drawer and the landing page both
+     * draw (`phone/PhoneHostTree.tsx`). Held here, above both surfaces, so they are looking at one
+     * value: a host opened on the landing page is open in the drawer, which is the claim B9 makes.
+     * It goes through the host list's storage seam because it names hosts in that list
+     * (`phone/place.ts`'s rule, word for word).
+     */
+    const hostExpansion = usePhoneHostExpansion(props.hostStorage);
 
     /*
      * The host keys this phone KNOWS about, read straight from the lists rather than from the
@@ -393,6 +401,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 hosts={hosts}
                 selection={selection}
                 bucket={props.bucket}
+                expansion={hostExpansion}
                 onSelect={onSelectWorkspace}
                 onAddHost={() => setSheet('host')}
                 onRemoveHost={removeHost}
@@ -488,9 +497,10 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                     paddingTop: PHONE_SAFE_AREA.top
                 }}
             >
-                {/* B7 - the way back to the landing page, one tap from anywhere. The drawer's top
-                    row is the other one; the owner asked for either, so the shell has both. On the
-                    landing page itself it is not drawn: there is nowhere to go back to. */}
+                {/* B7 - the way back to the landing page, one tap from anywhere. B9 took the
+                    drawer's `All hosts` row away, because the drawer IS all hosts now, so this is
+                    the one way; on the landing page itself it is not drawn, since there is nowhere
+                    to go back to. */}
                 {atLanding ? null : (
                     <PhoneButton testID="phone-open-landing" ariaLabel="Hosts" onClick={view.showLanding}>
                         <ChromeIcon name="network" size={16} />
@@ -593,11 +603,12 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 hosts={hosts}
                 selection={selection}
                 bucket={props.bucket}
+                currentHostKey={remoteHost?.key ?? ORIGIN_HOST_KEY}
+                expansion={hostExpansion}
                 onSelect={onSelectWorkspace}
                 onNewWorkspace={() => setSheet('new-workspace')}
                 onAddHost={() => setSheet('host')}
                 onRemoveHost={removeHost}
-                onShowLanding={view.showLanding}
                 onClose={closeSheet}
             />
             <PhonePaneSheet

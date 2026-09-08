@@ -16,7 +16,14 @@ import type { StorageLike } from './app/config';
 import type { RemoteDaemonEntry } from './app/remote-daemons';
 import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { PHONE_HOSTS_KEY, PHONE_PLACE_KEY, PHONE_SHEET_HISTORY_STATE, PHONE_VIEW_MODE_KEY } from './phone';
+import {
+    ORIGIN_HOST_KEY as ORIGIN_KEY,
+    PHONE_HOST_EXPANSION_KEY,
+    PHONE_HOSTS_KEY,
+    PHONE_PLACE_KEY,
+    PHONE_SHEET_HISTORY_STATE,
+    PHONE_VIEW_MODE_KEY
+} from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
@@ -481,6 +488,10 @@ describe('hosts', () => {
         const h = setup();
         addStudio(h);
         const section = screen.getByTestId(/^phone-host-phone:/);
+        // B9: the drawer is the whole tree, so a host you are not in arrives collapsed to its
+        // header; its rows are one tap away and the workspace tap is the move.
+        expect(section.getAttribute('data-expanded')).toBe('false');
+        fireEvent.click(within(section).getByTestId(/^phone-host-toggle-/));
         fireEvent.click(within(section).getByTestId('workspace-row'));
         expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
 
@@ -508,9 +519,12 @@ describe('hosts', () => {
         expect(screen.getByTestId(`pane-body-${REMOTE_PANE}`)).toBeTruthy();
         tap('phone-view-toggle');
 
-        // Back to the origin from the drawer.
+        // Back to the origin from the drawer: it is the collapsed one now, so it opens first.
         tap('phone-open-workspaces');
-        fireEvent.click(within(screen.getByTestId('phone-host-origin')).getByTestId('workspace-row'));
+        const originSection = screen.getByTestId('phone-host-origin');
+        expect(originSection.getAttribute('data-expanded')).toBe('false');
+        fireEvent.click(within(originSection).getByTestId('phone-host-toggle-origin'));
+        fireEvent.click(within(originSection).getByTestId('workspace-row'));
         expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('origin');
         expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
     });
@@ -519,6 +533,7 @@ describe('hosts', () => {
         const h = setup();
         addStudio(h);
         const section = screen.getByTestId(/^phone-host-phone:/);
+        fireEvent.click(within(section).getByTestId(/^phone-host-toggle-/));
         fireEvent.click(within(section).getByTestId('workspace-row'));
         expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toMatch(/^phone:/);
 
@@ -562,6 +577,10 @@ describe('the landing page', () => {
         expect(within(card).getByTestId('phone-landing-status-origin').getAttribute('data-status')).toBe('connected');
         expect(within(card).getByTestId('phone-landing-summary-origin').textContent).toBe('1 workspace');
         expect(screen.getByTestId('phone-landing-add-host')).toBeTruthy();
+        // B9: the card is a section HEADER now, and the landing page opens every section, so the
+        // host's workspaces are under it without a drill-in.
+        expect(card.getAttribute('data-expanded')).toBe('true');
+        expect(within(card).getByTestId('workspace-row').getAttribute('data-workspace-id')).toBe(W1);
 
         // Not an overlay: it registers no modal presence, so a live web pane is not parked by it.
         expect(modalPresenceCount()).toBe(0);
@@ -576,11 +595,9 @@ describe('the landing page', () => {
         expect(screen.getByTestId('phone-landing-summary-origin').textContent).toBe('connecting…');
     });
 
-    it('opens a host’s workspaces, then a workspace, and remembers where that was', async () => {
+    it('opens a workspace straight off the page, and remembers where that was', async () => {
         const h = setup({ landing: true });
-        tap('phone-landing-open-origin');
         const landing = screen.getByTestId('phone-landing');
-        expect(landing.getAttribute('data-phone-landing-host')).toBe('origin');
         const row = within(landing).getByTestId('workspace-row');
         expect(row.getAttribute('data-workspace-id')).toBe(W1);
 
@@ -594,7 +611,7 @@ describe('the landing page', () => {
         });
     });
 
-    it('goes back from the header button and from the drawer’s top row, forgetting the place', () => {
+    it('goes back from the header button, forgetting the place, and the drawer keeps no way of its own', () => {
         const h = setup();
         expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
 
@@ -606,12 +623,14 @@ describe('the landing page', () => {
         expect(screen.queryByTestId('phone-open-panes')).toBeNull();
         expect(screen.getByTestId('phone-title-workspace').textContent).toBe('Hosts');
 
-        // Back into the workspace, then out again through the drawer's own row.
-        tap('phone-landing-open-origin');
+        // Back into the workspace off the page's own row. B9 took the drawer's `All hosts` row
+        // away: the drawer IS all hosts, so the header button is the one way back.
         fireEvent.click(within(screen.getByTestId('phone-landing')).getByTestId('workspace-row'));
         tap('phone-open-workspaces');
-        tap('phone-drawer-landing');
-        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        expect(screen.queryByTestId('phone-drawer-landing')).toBeNull();
+        expect(screen.getByTestId('phone-host-origin')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('phone-workspace-drawer-scrim'));
+        tap('phone-open-landing');
         expect(screen.getByTestId('phone-shell').getAttribute('data-phone-screen')).toBe('landing');
     });
 
@@ -655,7 +674,115 @@ describe('the landing page', () => {
         const h = setup({ phone: false, landing: true });
         expect(screen.queryByTestId('phone-landing')).toBeNull();
         expect(screen.getByTestId('pane-grid')).toBeTruthy();
+        // Not the place, not the host list, and not B9's expansion: a desktop window is not a
+        // phone and writes none of a phone's memory.
         expect(h.hostStorage.map.size).toBe(0);
+        expect(h.hostStorage.map.has(PHONE_HOST_EXPANSION_KEY)).toBe(false);
+    });
+});
+
+/**
+ * B9 - ONE hierarchy, shown in two places (`phone/PhoneHostTree.tsx`).
+ *
+ * Owner, on a real Android phone, 2026-09-08 (device round 11): *"It does look weird with one
+ * sidebar showing all hosts, and one showing only workspaces from one host."* What is pinned here
+ * is that the drawer and the landing page render the SAME model - the same hosts, the same counts,
+ * the same rows under them - and differ only in which sections start open.
+ */
+describe('one host tree, in two places', () => {
+    const TWO_HOSTS = { [PHONE_HOSTS_KEY]: JSON.stringify([{ id: 'h1', name: 'studio', url: PAIRING_URL }]) };
+
+    /** Whatever tree is on screen, as a person reads it: every host, open or shut, and its rows. */
+    function readTree(): { key: string; kind: string; expanded: string; summary: string; rows: string[] }[] {
+        return Array.from(document.querySelectorAll('[data-testid][data-host-kind]')).map((section) => ({
+            key: (section.getAttribute('data-testid') ?? '').replace(/^phone-(?:landing-)?host-/, ''),
+            kind: section.getAttribute('data-host-kind') ?? '',
+            expanded: section.getAttribute('data-expanded') ?? '',
+            summary: (
+                section.querySelector('[data-testid^="phone-host-summary-"], [data-testid^="phone-landing-summary-"]')?.textContent ?? ''
+            ).trim(),
+            rows: Array.from(section.querySelectorAll('[data-testid="workspace-row"]')).map(
+                (row) => row.getAttribute('data-workspace-id') ?? ''
+            )
+        }));
+    }
+
+    it('draws the same hosts, counts and rows on the landing page and in the drawer', () => {
+        setup({ landing: true, storage: TWO_HOSTS });
+        const onLanding = readTree();
+        expect(onLanding.map((host) => host.key)).toEqual([ORIGIN_KEY, 'phone:h1']);
+        expect(onLanding.map((host) => host.expanded)).toEqual(['true', 'true']);
+        expect(onLanding.map((host) => host.summary)).toEqual(['1 workspace', '1 workspace']);
+        expect(onLanding.map((host) => host.rows.join(','))).toEqual([W1, REMOTE_WS]);
+        expect(screen.getByTestId('phone-landing-add-host')).toBeTruthy();
+
+        // Into a workspace, then the drawer: the same tree, once the drawer's own default (the
+        // host you are in, alone) is opened out. Add host is at the end of both.
+        fireEvent.click(within(screen.getByTestId('phone-landing-host-origin')).getByTestId('workspace-row'));
+        tap('phone-open-workspaces');
+        fireEvent.click(screen.getByTestId('phone-host-toggle-phone:h1'));
+        expect(readTree()).toEqual(onLanding);
+        expect(screen.getByTestId('phone-add-host')).toBeTruthy();
+    });
+
+    it('opens the host you are in, shuts the others, and puts their counts on them anyway', () => {
+        const h = setup({ storage: TWO_HOSTS });
+        tap('phone-open-workspaces');
+        const origin = screen.getByTestId('phone-host-origin');
+        const studio = screen.getByTestId('phone-host-phone:h1');
+        expect(origin.getAttribute('data-expanded')).toBe('true');
+        expect(within(origin).getAllByTestId('workspace-row')).toHaveLength(1);
+        expect(studio.getAttribute('data-expanded')).toBe('false');
+        expect(within(studio).queryByTestId('workspace-row')).toBeNull();
+        // A shut host still answers what a person picks a host BY: reachable, and how much is on it.
+        expect(within(studio).getByTestId('phone-host-status-phone:h1').getAttribute('data-status')).toBe('connected');
+        expect(within(studio).getByTestId('phone-host-summary-phone:h1').textContent).toBe('1 workspace');
+        // That is the DEFAULT, so nothing is remembered until somebody taps a header.
+        expect(h.hostStorage.map.has(PHONE_HOST_EXPANSION_KEY)).toBe(false);
+    });
+
+    it('remembers the sections a person opened or shut, and reads them back on the next open', () => {
+        const h = setup({ storage: TWO_HOSTS });
+        const stored = (): unknown => JSON.parse(h.hostStorage.map.get(PHONE_HOST_EXPANSION_KEY) ?? 'null');
+        tap('phone-open-workspaces');
+        fireEvent.click(screen.getByTestId('phone-host-toggle-phone:h1'));
+        expect(screen.getByTestId('phone-host-phone:h1').getAttribute('data-expanded')).toBe('true');
+        expect(stored()).toEqual({ 'phone:h1': true });
+        // Shutting the one that was open by default is remembered too: the tap outranks the rule.
+        fireEvent.click(screen.getByTestId('phone-host-toggle-origin'));
+        expect(screen.getByTestId('phone-host-origin').getAttribute('data-expanded')).toBe('false');
+        expect(stored()).toEqual({ 'phone:h1': true, origin: false });
+
+        cleanup();
+        setup({ landing: true, storage: { ...TWO_HOSTS, [PHONE_HOST_EXPANSION_KEY]: JSON.stringify({ 'phone:h1': false }) } });
+        // The landing page opens everything, but a remembered tap still rules it.
+        expect(screen.getByTestId('phone-landing-host-origin').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByTestId('phone-landing-host-phone:h1').getAttribute('data-expanded')).toBe('false');
+    });
+
+    it('switches host and workspace in ONE move from a host that was shut', () => {
+        const h = setup({ storage: TWO_HOSTS });
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe(ORIGIN_KEY);
+        tap('phone-open-workspaces');
+        fireEvent.click(screen.getByTestId('phone-host-toggle-phone:h1'));
+        // One tap on the row - there is no "switch host" step in front of it.
+        fireEvent.click(within(screen.getByTestId('phone-host-phone:h1')).getByTestId('workspace-row'));
+
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe('phone:h1');
+        expect(screen.getByTestId('phone-title-workspace').textContent).toBe('studio · remote-ws');
+        expect(screen.getByTestId(`pane-body-${REMOTE_PANE}`)).toBeTruthy();
+        expect(screen.queryByTestId('phone-workspace-drawer')).toBeNull();
+        expect(JSON.parse(h.hostStorage.map.get(PHONE_PLACE_KEY) ?? 'null')).toEqual({ host: 'phone:h1', workspaceID: REMOTE_WS });
+    });
+
+    it('takes the drawer’s All hosts row away, because the drawer IS all hosts', () => {
+        setup({ storage: TWO_HOSTS });
+        tap('phone-open-workspaces');
+        expect(screen.queryByTestId('phone-drawer-landing')).toBeNull();
+        expect(screen.getByTestId('phone-host-origin')).toBeTruthy();
+        expect(screen.getByTestId('phone-host-phone:h1')).toBeTruthy();
+        // The header's Hosts button is the way to the page, and it still is.
+        expect(screen.getByTestId('phone-open-landing')).toBeTruthy();
     });
 });
 

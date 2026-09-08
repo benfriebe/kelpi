@@ -8,8 +8,9 @@
  *   `hosts.ts`                 the phone's own host list, remembered on the phone
  *   `model.ts`                 one shape for every host the shell can show
  *   `PhoneShell.tsx`           the assembly's phone branch
- *   `PhoneLanding.tsx`         the landing page: host cards, then one host's workspaces
- *   `PhoneWorkspaceDrawer.tsx` hosts and their workspaces
+ *   `PhoneHostTree.tsx`        the ONE hierarchy - hosts, each with its workspaces - drawn twice
+ *   `PhoneLanding.tsx`         the landing page: that tree full-screen, every host open
+ *   `PhoneWorkspaceDrawer.tsx` the drawer: that tree in a sheet, the host you are in open
  *   `PhonePaneSheet.tsx`       the current workspace's panes
  *   `PhoneRemoteWorkspace.tsx` a remote host's workspace, one pane or the grid
  *   `PhoneWebCard.tsx`         a web pane on a phone (MOBILE-PLAN.md §9)
@@ -19,13 +20,19 @@
 
 export {
     DEFAULT_PHONE_VIEW_MODE,
+    PHONE_HOST_EXPANSION_KEY,
     PHONE_VIEW_MODE_KEY,
     isPhoneViewMode,
     phoneVisiblePaneIDs,
+    readStoredHostExpansion,
     readStoredViewMode,
     resolveShownPane,
+    usePhoneHostExpansion,
     usePhoneView,
+    writeStoredHostExpansion,
     writeStoredViewMode,
+    type PhoneHostExpansion,
+    type PhoneHostExpansionMap,
     type PhoneRemoteSelection,
     type PhoneScreen,
     type PhoneView,
@@ -73,16 +80,17 @@ export {
     type SheetHistoryLike
 } from './sheet-history';
 
-export { PhoneLanding, reachabilityLabel, type PhoneLandingProps } from './PhoneLanding';
+export {
+    PhoneHostTree,
+    connectionDotColor,
+    reachabilityLabel,
+    type PhoneHostTreePresentation,
+    type PhoneHostTreeProps
+} from './PhoneHostTree';
+export { PhoneLanding, type PhoneLandingProps } from './PhoneLanding';
 export { PhoneRemoteWorkspace, remoteShownPane, type PhoneRemoteWorkspaceProps } from './PhoneRemoteWorkspace';
 export { PhoneWebCard, phoneWebCardTab, type PhoneWebCardProps, type PhoneWebCardTab } from './PhoneWebCard';
-export {
-    PhoneHostWorkspaceList,
-    PhoneWorkspaceDrawer,
-    connectionDotColor,
-    type PhoneHostWorkspaceListProps,
-    type PhoneWorkspaceDrawerProps
-} from './PhoneWorkspaceDrawer';
+export { PhoneWorkspaceDrawer, type PhoneWorkspaceDrawerProps } from './PhoneWorkspaceDrawer';
 export { PhonePaneSheet, paneGlyph, type PhonePaneSheetProps } from './PhonePaneSheet';
 export { PhoneHostSheet, type PhoneHostSheetProps } from './PhoneHostSheet';
 export { PhoneMenuSheet, type PhoneMenuItem, type PhoneMenuSheetProps } from './PhoneMenuSheet';

@@ -18,7 +18,6 @@ import { modalPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import {
     ORIGIN_HOST_KEY,
-    ORIGIN_HOST_KEY as ORIGIN_KEY,
     PHONE_HOST_EXPANSION_KEY,
     PHONE_HOSTS_KEY,
     PHONE_PLACE_KEY,
@@ -442,8 +441,13 @@ describe('the full layout', () => {
         expect(screen.queryByTestId(`pane-body-${PANE_A}`)).toBeNull();
         expect(engine.disposed).toBe(true);
 
-        fireEvent.click(screen.getByTestId(`phone-landing-open-${ORIGIN_HOST_KEY}`));
-        fireEvent.click(screen.getByTestId('workspace-row'));
+        // Back in through the landing page's own row. B9 made that page the whole host tree with
+        // every section open, so the origin's workspace is ONE tap: there is no per-host drill-in
+        // to go through first, and the row is read out of the origin's section rather than off the
+        // page, so a second host's rows could never answer for it.
+        fireEvent.click(
+            within(screen.getByTestId(`phone-landing-host-${ORIGIN_HOST_KEY}`)).getByTestId('workspace-row')
+        );
         expect(screen.getByTestId(`pane-body-${PANE_A}`)).toBeTruthy();
         expect(h.renderers.last()).not.toBe(engine);
         expect(h.renderers.last().disposed).toBe(false);
@@ -817,7 +821,7 @@ describe('one host tree, in two places', () => {
     it('draws the same hosts, counts and rows on the landing page and in the drawer', () => {
         setup({ landing: true, storage: TWO_HOSTS });
         const onLanding = readTree();
-        expect(onLanding.map((host) => host.key)).toEqual([ORIGIN_KEY, 'phone:h1']);
+        expect(onLanding.map((host) => host.key)).toEqual([ORIGIN_HOST_KEY, 'phone:h1']);
         expect(onLanding.map((host) => host.expanded)).toEqual(['true', 'true']);
         expect(onLanding.map((host) => host.summary)).toEqual(['1 workspace', '1 workspace']);
         expect(onLanding.map((host) => host.rows.join(','))).toEqual([W1, REMOTE_WS]);
@@ -869,7 +873,7 @@ describe('one host tree, in two places', () => {
 
     it('switches host and workspace in ONE move from a host that was shut', () => {
         const h = setup({ storage: TWO_HOSTS });
-        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe(ORIGIN_KEY);
+        expect(screen.getByTestId('phone-shell').getAttribute('data-phone-host')).toBe(ORIGIN_HOST_KEY);
         tap('phone-open-workspaces');
         fireEvent.click(screen.getByTestId('phone-host-toggle-phone:h1'));
         // One tap on the row - there is no "switch host" step in front of it.

@@ -1,3 +1,7 @@
+import { createChromeFeatureSource } from './features/chrome-source';
+import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
+import { bindStatusbarFeature, statusbarModel, useStatusbarActions } from './features/statusbar';
+import { usePluginChrome } from './plugins/use-chrome';
 import { UIServiceHost, useUIServices } from './plugins/UIServiceHost';
 import { PluginContributionItems } from './plugins/contributions-ui';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
@@ -40,14 +44,13 @@ import { renderRegisteredView } from './plugins/renderers';
  */
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@kelpi/core/layout';
+import type { DropZone, SplitDirection } from '@kelpi/core/layout';
 import type { JsonObject } from '@kelpi/protocol';
 import {
     activeAgentCount,
     layoutPaneOrder,
     syncedPaneIDs,
     type Pane,
-    type PredefinedLayoutKind,
     type WorkspaceState
 } from '@kelpi/daemon/store';
 import {
@@ -85,9 +88,7 @@ import {
     INSPECTOR_WIDTH_PX,
     QuitGate,
     SidebarResizer,
-    StatusFooter,
     ThemeProvider,
-    TopBar,
     menuAnchorFromEvent,
     readStoredSidebarWidth,
     resetGestures,
@@ -117,15 +118,12 @@ import {
     useModalPresence,
     withAlpha,
     workspaceSwitchHandlers,
-    type AgentBucket,
     type ChromeAppearance,
     type FaviconController,
     type KeyActionRegistry,
     type MenuItemSpec,
     type PaletteItem,
     type SidebarPhase,
-    type StatusBarItem,
-    type SystemStatsView,
 } from './chrome';
 import {
     COMMAND_PALETTE_COMMAND,
@@ -841,11 +839,6 @@ function Shell(props: AppProps): ReactElement {
             landing: phoneAtLanding
         });
     }, [paneOrder, workspace, phoneActive, phoneMode, phoneShownPaneID, phoneRemoteSelected, phoneAtLanding]);
-    const currentLayout = useMemo<PredefinedLayoutKind | null>(() => {
-        const index = workspace?.currentLayoutIndex ?? null;
-        return index === null ? null : (PREDEFINED_LAYOUT_ORDER[index] ?? null);
-    }, [workspace]);
-
     // ── command plumbing ────────────────────────────────────────────────────────────
 
     const notifyFailure = useCallback(
@@ -1295,6 +1288,7 @@ function Shell(props: AppProps): ReactElement {
 
         return {
             ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
+            ...createToolbarActions({ commands, activeWorkspaceID, focusedPaneID: focused, run, setInspectorVisible }),
             ...createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle }),
             focusPane(paneID: string | null): boolean {
                 const id = activeWorkspaceID();
@@ -1420,24 +1414,6 @@ function Shell(props: AppProps): ReactElement {
                     'Resize pane',
                     commands.setSplitRatioAtPath({ workspaceID: id, splitPath, ratio })
                 );
-            },
-
-            cycleLayout(): boolean {
-                const paneID = focused();
-                if (paneID === null) return false;
-                return run('Cycle layout', commands.cycleLayout({ paneID }));
-            },
-
-            selectLayout(layout: PredefinedLayoutKind): boolean {
-                const paneID = focused();
-                if (paneID === null) return false;
-                return run('Select layout', commands.selectLayout({ paneID, layout }));
-            },
-
-            toggleSyncInput(): boolean {
-                const id = activeWorkspaceID();
-                if (id === null) return false;
-                return run('Synchronise input', commands.setSyncInput({ action: 'toggle', workspace: id }));
             },
 
             /**
@@ -1742,12 +1718,6 @@ function Shell(props: AppProps): ReactElement {
 
             togglePalette(): boolean {
                 store.getState().togglePalette();
-                return true;
-            },
-
-            /** §WS-137: the trailing inspector. Client-local, like the sidebar's visibility. */
-            toggleInspector(): boolean {
-                setInspectorVisible((visibleNow) => !visibleNow);
                 return true;
             },
 
@@ -2938,53 +2908,9 @@ function Shell(props: AppProps): ReactElement {
         [act, handBackPaneCaret, store]
     );
 
-    // ── status footer ───────────────────────────────────────────────────────────────
-
-    const bucketItems = useCallback(
-        (agentBucket: AgentBucket): readonly StatusBarItem[] => statusItems(daemon.state.workspaces, agentBucket),
-        [daemon.state.workspaces]
-    );
-
-    const onSelectStatusPane = useCallback(
-        (targetWorkspaceID: string, paneID: string): void => {
-            // §WS-100: the menu-bar popover is one of the paths the Swift names explicitly.
-            activateWorkspaceAndReveal(targetWorkspaceID);
-            runtime.focusPane(targetWorkspaceID, paneID);
-            // §APP-076: the popover row is a button that is about to unmount, so the caret has
-            // to be handed to the destination explicitly — the same handoff the palette and the
-            // Settings close path make, and without it typing after a jump goes nowhere until
-            // the user clicks. Twice on purpose: now for a jump inside this workspace (the host
-            // is already mounted), and again after the next frame for a jump that crosses
-            // workspaces, where the destination pane does not exist yet.
-            handBackPaneCaret(paneID);
-            const soon = globalThis.requestAnimationFrame;
-            const again = (): void => handBackPaneCaret(paneID);
-            if (typeof soon === 'function') soon(again);
-            else setTimeout(again, 0);
-        },
-        [activateWorkspaceAndReveal, handBackPaneCaret, runtime]
-    );
-
-    /**
-     * The footer's gauge row (APP-078…085): the daemon's latest `system-stats` broadcast joined
-     * to the settings that shape it. `null` until the sampler has actually spoken — the footer
-     * then renders no gauges at all, which is the honest thing to draw when nothing has told us
-     * what the machine is doing (a 0 % CPU would be a fabrication).
-     */
-    const statsView = useMemo<SystemStatsView | null>(() => {
-        if (!kelpi.systemStats.loaded) return null;
-        return {
-            stats: kelpi.systemStats.stats,
-            history: kelpi.systemStats.history,
-            intervalMs: kelpi.systemStats.intervalMs,
-            showSystemStats: settings.chrome.showSystemStats,
-            enabled: settings.chrome.enabledSystemStats,
-            showGraphs: settings.chrome.showSystemStatGraphs,
-            graphStyle: settings.chrome.sparklineStyle,
-            graphColor: settings.chrome.sparklineColor,
-            graphWidth: settings.chrome.sparklineWidth
-        };
-    }, [kelpi.systemStats, settings.chrome]);
+    const primarySelected = useCallback(() => remoteSelectionRef.current === null, []);
+    const statusActions = useStatusbarActions({ runtime, activateWorkspace: activateWorkspaceAndReveal, handBackCaret: handBackPaneCaret, isPrimarySelected: primarySelected });
+    const statusModel = useMemo(() => statusbarModel(kelpi, inspectorData.associations), [kelpi, inspectorData.associations]);
 
     // ── pane context menu (TERM-106…TERM-111) ───────────────────────────────────────
 
@@ -3162,53 +3088,6 @@ function Shell(props: AppProps): ReactElement {
         items.push(...pluginMenuItems(pluginCommands.menu('pane', paneID)));
         return items;
     }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace, pluginCommands.commands]);
-
-    /**
-     * The ••• title-bar menu (APP-052/APP-053/APP-054).
-     *
-     * `WindowTitleBar.swift:243-251` had three rows — Settings…, a Show/Hide Inspector item
-     * whose TITLE reflects the current state, a divider, then Restart Socket Server. All three
-     * are here, plus the two items that only mean something inside the desktop app (Install CLI,
-     * Check for Updates) and Help. The shell-only rows are omitted entirely in a browser rather
-     * than shown disabled: a row that can never do anything is worse than a shorter menu.
-     */
-    const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
-        const items: MenuItemSpec[] = [
-            ...pluginMenuItems(pluginCommands.menu('workspace')),
-            { id: 'plugins', label: 'Plugins…', onSelect: () => openSettings('plugins') },
-            { id: 'settings', label: 'Settings…', onSelect: () => openSettings() },
-            {
-                id: 'inspector',
-                label: inspectorVisible ? 'Hide Inspector' : 'Show Inspector',
-                onSelect: () => act.toggleInspector()
-            },
-            { id: 'help', label: 'Kelpi Help', onSelect: () => setHelpOpen(true) }
-        ];
-        if (shellWindowID !== null) {
-            items.push(
-                { id: 'sep-shell', label: '', kind: 'separator' },
-                { id: 'install-cli', label: 'Install CLI', onSelect: () => act.shellAction('install-cli') },
-                {
-                    id: 'check-updates',
-                    label: 'Check for Updates…',
-                    onSelect: () => act.shellAction('check-for-updates')
-                }
-            );
-        }
-        items.push(
-            { id: 'sep-socket', label: '', kind: 'separator' },
-            {
-                id: 'restart-socket',
-                label: 'Restart Socket Server',
-                onSelect: () => act.restartControlServer()
-            },
-            // The renderer is a view of the daemon's state and can be thrown away; the daemon
-            // replays every pane on reconnect. Beside the socket restart because both are "the
-            // thing in front of me is wedged" rows, and this one is the cheaper of the two.
-            { id: 'restart-ui', label: 'Restart UI', onSelect: () => restartUI() }
-        );
-        return items;
-    }, [act, inspectorVisible, openSettings, shellWindowID, pluginCommands.commands]);
 
     /**
      * The search overlay, drawn over the pane the DAEMON says is being searched.
@@ -3646,13 +3525,23 @@ function Shell(props: AppProps): ReactElement {
         if (slot === (swapped ? 'sidebar.secondary' : 'sidebar.primary')) setSidebarVisible(true);
         else setInspectorVisible(true);
     };
-    const sidebarToggleLabel = (slot: 'sidebar.primary' | 'sidebar.secondary'): string => {
-        const view = workbench.sidebars[slot];
-        return `Toggle ${view.id === 'kelpi.workspaces' ? 'sidebar' : view.id === 'kelpi.inspector' ? 'inspector' : view.title}`;
+    const chromeSource = createChromeFeatureSource({
+        runtime, sidebars: workbench.sidebars, sidebarVisible, inspectorVisible,
+        remoteWorkspaceSelected: () => remoteSelectionRef.current !== null, shellAvailable: shellWindowID !== null,
+        associations: { workspaceID: workspace?.id ?? null, values: inspectorData.associations }, plugins: pluginCommands,
+        toggleSidebar: act.toggleSidebar, toggleInspector: act.toggleInspector,
+        openSettings, openHelp: () => setHelpOpen(true), openPalette: () => store.getState().setPaletteOpen(true),
+        shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
+    });
+    const chromeModel = chromeSource.snapshot();
+    const pluginChrome = usePluginChrome(runtime, chromeSource);
+    const executeChrome = (id: string, target: { workspaceID?: string; paneID?: string } = workspace ? { workspaceID: workspace.id } : {}): void => {
+        const failed = (error: unknown): void => notifyFailure('Window chrome', error instanceof Error ? error.message : String(error));
+        try { void Promise.resolve(chromeSource.execute(id, target)).catch(failed); } catch (error) { failed(error); }
     };
 
     return (
-        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices}
+        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices} chrome={phoneActive ? null : pluginChrome}
             features={[
                 bindWorkspacesFeature({
                     model: workspacesModel, actions: act, lifecycle: workspacesLifecycle, store,
@@ -3663,7 +3552,11 @@ function Shell(props: AppProps): ReactElement {
                     reportFailure: notifyFailure
                 }),
                 bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
-                    profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket })
+                    profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket }),
+                bindToolbarFeature({ model: chromeModel, presentation: { panes, bucket, connectionError: ui.connectionError, dragRegion: shellWindowID !== null },
+                    contributions: contributionItems('workspace.header'), execute: executeChrome }),
+                bindStatusbarFeature({ model: statusModel, presentation: { bucket }, contributions: contributionItems('statusbar'),
+                    contributionsKey: JSON.stringify(pluginCommands.items('statusbar')), selectPane: (workspaceID, paneID) => executeChrome('kelpi.pane.focus', { workspaceID, paneID }) })
             ]}>
         <div
             data-testid="kelpi-app"
@@ -3760,45 +3653,7 @@ function Shell(props: AppProps): ReactElement {
                 />
             ) : (
             <>
-            <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset}>{context => <TopBar
-                contributions={contributionItems('workspace.header')}
-                workspaceName={workspace?.name ?? null}
-                workspaceColor={workspace?.color}
-                panes={panes}
-                bucket={bucket}
-                connection={ui.connection}
-                connectionError={ui.connectionError}
-                currentLayout={currentLayout}
-                onCycleLayout={act.cycleLayout}
-                onSelectLayout={act.selectLayout}
-                syncInputActive={workspace?.isSyncInputActive ?? false}
-                syncedPaneCount={synced.length}
-                onToggleSyncInput={act.toggleSyncInput}
-                // terminal-surface.md §5.1: the chip renders ONLY on a non-owner — a known owner that is not this
-                // client. The owner (and a client with no owner known) sees nothing.
-                sizeControlledElsewhere={
-                    kelpi.daemon.sizeControlOwnerID !== null &&
-                    kelpi.daemon.clientID !== null &&
-                    kelpi.daemon.sizeControlOwnerID !== kelpi.daemon.clientID
-                }
-                onTakeSizeControl={() => {
-                    commands.takeSizeControl();
-                }}
-                onToggleSidebar={sidebarsSwapped ? act.toggleInspector : act.toggleSidebar}
-                sidebarVisible={sidebarsSwapped ? inspectorVisible : sidebarVisible}
-                sidebarLabel={sidebarToggleLabel('sidebar.primary')}
-                sidebarTooltip={`${sidebarToggleLabel('sidebar.primary')}${workbench.sidebars['sidebar.primary'].id === 'kelpi.inspector' ? ' (⌘I)' : ''}`}
-                onToggleInspector={sidebarsSwapped ? act.toggleSidebar : act.toggleInspector}
-                inspectorVisible={sidebarsSwapped ? sidebarVisible : inspectorVisible}
-                inspectorLabel={sidebarToggleLabel('sidebar.secondary')}
-                inspectorTooltip={`${sidebarToggleLabel('sidebar.secondary')}${workbench.sidebars['sidebar.secondary'].id === 'kelpi.inspector' ? ' (⌘I)' : ''}`}
-                overflowItems={overflowMenuItems}
-                // §APP-046: this strip IS the title bar inside a shell window — the shell
-                // creates the window with a hidden one and draws the page up into the
-                // traffic-light row, so the bar clears the buttons and takes the drag.
-                trafficLightInset={context.trafficLightInset}
-                dragRegion={shellWindowID !== null}
-            />}</WorkbenchSlot>
+            <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset} />
 
             {/*
               * §APP-046 / shell-ui.md §1 — the middle row: sidebar | pane grid | inspector,
@@ -4070,21 +3925,7 @@ function Shell(props: AppProps): ReactElement {
               * dropping them from the tail.
               */}
             <WorkbenchSlot placement="panel.bottom" />
-            <WorkbenchSlot placement="statusbar"><StatusFooter
-                contributions={contributionItems('statusbar')}
-                contributionsKey={JSON.stringify(pluginCommands.items('statusbar'))}
-                summary={agentSummary}
-                focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
-                // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
-                // sits in. The same rows the inspector renders, matched by longest prefix.
-                associations={inspectorData.associations}
-                // §APP-069: the DAEMON's home, so a cwd under it renders as `~/…`.
-                {...(daemon.info?.home === undefined ? {} : { homeDirectory: daemon.info.home })}
-                bucket={bucket}
-                bucketItems={bucketItems}
-                onSelectPane={onSelectStatusPane}
-                {...(statsView === null ? {} : { systemStats: statsView })}
-            /></WorkbenchSlot>
+            <WorkbenchSlot placement="statusbar" />
             </>
             )}
 
@@ -4514,32 +4355,6 @@ function paletteCommand(
         run: action,
         ...(shortcut === undefined ? {} : { shortcut })
     };
-}
-
-/** agent-lifecycle.md §9.3 buckets, over every workspace's visible panes. */
-function statusItems(workspaces: readonly WorkspaceState[], bucket: AgentBucket): readonly StatusBarItem[] {
-    const items: StatusBarItem[] = [];
-    for (const workspace of workspaces) {
-        for (const pane of workspace.panes) {
-            const matches =
-                bucket === 'running'
-                    ? pane.status === 'running'
-                    : bucket === 'waiting'
-                      ? pane.status === 'waitingForInput'
-                      : pane.status === 'idle' && pane.agentSessionID !== null;
-            if (!matches) continue;
-            items.push({
-                paneID: pane.id,
-                workspaceID: workspace.id,
-                workspaceName: workspace.name,
-                workspaceColor: workspace.color,
-                paneTitle: pane.label ?? pane.title ?? pane.workingDirectory,
-                status: pane.status,
-                agentStartedAt: pane.agentStartedAt
-            });
-        }
-    }
-    return items;
 }
 
 /*

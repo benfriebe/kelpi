@@ -179,7 +179,8 @@ function WorkbenchContainer(props: { view: ViewContribution; path: string; ances
 export function WorkbenchSlot(props: { placement: WorkbenchSlotID; children?: ReactNode | ((context: ViewRenderContext) => ReactNode); className?: string; trafficLightInset?: number }): ReactElement {
     const host = useWorkbench();
     const selected = resolveSlot(host.views, props.placement, host.selections[props.placement]);
-    const native = (context: ViewRenderContext): ReactNode => typeof props.children === 'function' ? props.children(context) : props.children;
+    const native = (context: ViewRenderContext): ReactNode => typeof props.children === 'function' ? props.children(context)
+        : props.children ?? host.features.get(DEFAULT_SLOTS[props.placement] ?? '')?.render(context);
     if (!selected?.pluginID) return <>{native({ visible: true, trafficLightInset: props.trafficLightInset ?? 0 })}</>;
     const height = props.placement === 'topbar' ? 44 : props.placement === 'statusbar' ? 32 : props.placement === 'panel.bottom' ? 220 : undefined;
     return <div data-workbench-slot={props.placement} data-view-id={selected.id} className={props.className ?? 'flex h-full min-h-0 w-full'} style={height ? { height, flexShrink: 0 } : undefined}>

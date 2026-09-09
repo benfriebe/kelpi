@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, type PluginInfo } from '@kelpi/protocol';
 
 import type { KelpiRuntime } from '../state';
-import { PlacementSettings, WorkbenchProvider, WorkbenchSidebar, useWorkbenchLayout } from '../plugins/Workbench';
-import { INSPECTOR_FEATURE, WORKSPACES_FEATURE } from './definitions';
+import { PlacementSettings, WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout } from '../plugins/Workbench';
+import { INSPECTOR_FEATURE, WORKSPACES_FEATURE, TOOLBAR_FEATURE, STATUSBAR_FEATURE } from './definitions';
 import { featureBindings, type BundledFeatureBinding, type FeatureRenderContext } from './feature';
 
 let plugins: readonly PluginInfo[] = [];
@@ -34,7 +34,7 @@ const runtime = { connection: { target: 'ws://feature.test/ws' } } as KelpiRunti
 function NativeFeature(props: { id: string; context: FeatureRenderContext }): React.JSX.Element {
     const [clicks, setClicks] = useState(0);
     useEffect(() => track(props.id), [props.id]);
-    return <div data-testid={props.id} data-side={props.context.side} data-visible={String(props.context.visible)}>
+    return <div data-testid={props.id} data-side={props.context.side} data-inset={props.context.trafficLightInset} data-visible={String(props.context.visible)}>
         {props.id === 'kelpi.inspector' ? props.context.viewPicker : null}
         <button data-testid={`${props.id}.counter`} onClick={() => setClicks(value => value + 1)}>{clicks}</button>
     </div>;
@@ -169,5 +169,46 @@ describe('bundled feature registration in the workbench', () => {
         expect([...active.values()].every(value => value === 0)).toBe(true);
         expect(count(disposed, 'kelpi.workspaces')).toBe(2);
         expect(count(disposed, 'kelpi.inspector')).toBe(1);
+    });
+});
+
+
+describe('registered toolbar and status hosts', () => {
+    it('resolves root bindings, retains hidden native tabs, bounds ownership and restores missing providers', () => {
+        plugins = [{ manifest: decodePluginManifest({ id: 'sample.chrome', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.chrome.bar', title: 'Replacement bar', entry: 'ui/index.html', placements: ['topbar', 'statusbar', 'sample.chrome.custom'] }],
+            containers: [{ id: 'sample.chrome.tabs', title: 'Toolbar tabs', placements: ['topbar'], layout: 'tabs', slots: [
+                { id: 'sample.chrome.native', title: 'Native', defaultView: 'kelpi.topbar' },
+                { id: 'sample.chrome.custom', title: 'Custom', defaultView: 'sample.chrome.bar' },
+                { id: 'sample.chrome.duplicate', title: 'Duplicate', defaultView: 'kelpi.topbar' },
+                { id: 'sample.chrome.foreign', title: 'Foreign', defaultView: 'kelpi.statusbar' }
+            ] }]
+        } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' }];
+        function ChromeHarness() {
+            const layout = useWorkbenchLayout(runtime);
+            const features = [TOOLBAR_FEATURE, STATUSBAR_FEATURE].map(definition => ({ definition,
+                render: (context: FeatureRenderContext) => <NativeFeature id={definition.id} context={context} /> }));
+            return <WorkbenchProvider layout={layout} runtime={runtime} chords={[]} features={features}>
+                <PlacementSettings /><WorkbenchSlot placement="topbar" trafficLightInset={86} /><WorkbenchSlot placement="statusbar" />
+            </WorkbenchProvider>;
+        }
+        const h = render(<ChromeHarness />);
+        expect(screen.getByTestId('kelpi.topbar').dataset.inset).toBe('86');
+        expect(screen.getByTestId('kelpi.statusbar')).toBeDefined();
+        fireEvent.change(screen.getByLabelText('topbar'), { target: { value: 'sample.chrome.tabs' } });
+        expect(screen.getAllByTestId('kelpi.topbar')).toHaveLength(1);
+        expect(screen.getAllByTestId('kelpi.statusbar')).toHaveLength(1);
+        expect(screen.getByTestId('kelpi.topbar').dataset.inset).toBe('0');
+        fireEvent.click(screen.getByTestId('kelpi.topbar.counter')); const mounts = count(mounted, 'kelpi.topbar');
+        fireEvent.click(screen.getByRole('tab', { name: 'Custom' }));
+        expect(screen.getByTestId('kelpi.topbar').dataset.visible).toBe('false');
+        fireEvent.click(screen.getByRole('tab', { name: 'Native' }));
+        expect(screen.getByTestId('kelpi.topbar.counter').textContent).toBe('1');
+        expect(count(mounted, 'kelpi.topbar')).toBe(mounts);
+        fireEvent.change(screen.getByLabelText('statusbar'), { target: { value: 'sample.chrome.bar' } });
+        expect(screen.queryByTestId('kelpi.statusbar')).toBeNull();
+        plugins = plugins.map(plugin => ({ ...plugin, enabled: false })); h.rerender(<ChromeHarness />);
+        expect(screen.getAllByTestId('kelpi.topbar')).toHaveLength(1); expect(screen.getAllByTestId('kelpi.statusbar')).toHaveLength(1);
+        expect(screen.getByTestId('kelpi.topbar').dataset.inset).toBe('86');
     });
 });

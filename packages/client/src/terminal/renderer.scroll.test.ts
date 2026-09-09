@@ -39,6 +39,12 @@ import {
 let realGetContext: unknown;
 let realRaf: unknown;
 let realCaf: unknown;
+const animationFrames = new Set<ReturnType<typeof setTimeout>>();
+
+function cancelStubAnimationFrames(): void {
+    for (const handle of animationFrames) clearTimeout(handle);
+    animationFrames.clear();
+}
 
 function installStubCanvas(): void {
     const context = new Proxy({} as Record<string, unknown>, {
@@ -62,12 +68,19 @@ function installStubCanvas(): void {
     const global = globalThis as Record<string, unknown>;
     realRaf = global['requestAnimationFrame'];
     realCaf = global['cancelAnimationFrame'];
-    global['requestAnimationFrame'] = (callback: FrameRequestCallback): number =>
-        setTimeout(() => callback(0), 0) as unknown as number;
-    global['cancelAnimationFrame'] = (handle: number): void => clearTimeout(handle);
+    global['requestAnimationFrame'] = (callback: FrameRequestCallback): number => {
+        const handle = setTimeout(() => { animationFrames.delete(handle); callback(0); }, 0);
+        animationFrames.add(handle);
+        return handle as unknown as number;
+    };
+    global['cancelAnimationFrame'] = (handle: number): void => {
+        clearTimeout(handle);
+        animationFrames.delete(handle as unknown as ReturnType<typeof setTimeout>);
+    };
 }
 
 function restoreCanvas(): void {
+    cancelStubAnimationFrames();
     (HTMLCanvasElement.prototype as unknown as Record<string, unknown>)['getContext'] = realGetContext;
     const global = globalThis as Record<string, unknown>;
     global['requestAnimationFrame'] = realRaf;
@@ -100,6 +113,9 @@ describe('the scroll API against a real ghostty-web', () => {
 
     afterEach(() => {
         renderer.dispose();
+        // Scrollbar fades schedule their own frames beyond engine disposal. In a browser the
+        // window keeps rAF alive; this test must stop its timers before restoring the globals.
+        cancelStubAnimationFrames();
         element.remove();
     });
 

@@ -8,7 +8,7 @@
  * expected wire commands, and that the client tells the daemon what it is looking at.
  */
 
-import type { JsonObject } from '@kelpi/protocol';
+import { decodePluginManifest, type JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -324,6 +324,59 @@ describe('pane bodies', () => {
 });
 
 describe('content pane commands', () => {
+    it.each(['markdown', 'diff'] as const)('runs a plugin shortcut from the %s preview', async (type) => {
+        const h = setup({ [type]: true });
+        const paneID = type === 'markdown' ? PANE_B : PANE_C;
+        try {
+            const subscribe = h.sent().find((message) => {
+                const payload = message['payload'] as Record<string, unknown> | undefined;
+                return message['type'] === 'command' && payload?.['command'] === 'content-subscribe' &&
+                    payload['pane_id'] === paneID;
+            });
+            expect(subscribe).toBeDefined();
+            await act(async () => {
+                h.socket().emit({
+                    type: 'command-reply',
+                    id: subscribe?.['id'] as string,
+                    reply: { ok: true, pane_id: paneID, state: contentState({ paneID, type, html: '<h1>Preview</h1>' }) }
+                });
+                await Promise.resolve();
+            });
+
+            // Install after the preview is mounted: its relay must receive newly available bindings.
+            const manifest = decodePluginManifest({
+                id: 'sample.shortcuts', version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs',
+                contributes: { commands: [{ id: 'sample.shortcuts.run', title: 'Run sample', shortcut: 'ctrl+alt+b' }] }
+            });
+            await act(async () => {
+                h.socket().emit({
+                    type: 'plugins-changed', daemonID: 'shortcut-daemon', epoch: 'shortcut-epoch',
+                    plugins: [{ manifest, enabled: true, revision: 'r1', instanceID: 'i1', status: 'running', error: null }]
+                });
+                await Promise.resolve();
+            });
+
+            const frame = screen.getByTestId(`content-iframe-${paneID}`) as HTMLIFrameElement;
+            const document = new DOMParser().parseFromString(frame.srcdoc, 'text/html');
+            const script = document.querySelector('script');
+            expect(script).not.toBeNull();
+            // jsdom does not execute srcdoc. Run the actual injected bridge against the iframe's
+            // own window/document, with postMessage identifying its source window to the host.
+            new Function('window', 'document', 'parent', script!.textContent ?? '')(
+                frame.contentWindow, frame.contentDocument,
+                { postMessage: (data: unknown) => window.dispatchEvent(new MessageEvent('message', { data, source: frame.contentWindow })) }
+            );
+            expect(fireEvent.keyDown(frame.contentDocument!, { code: 'KeyB', key: 'b', ctrlKey: true, altKey: true })).toBe(false);
+            const runs = h.commands().filter((command) => command['command'] === 'plugin' && command['action'] === 'run');
+            expect(runs).toHaveLength(1);
+            expect(JSON.parse(String(runs[0]?.['text']))).toEqual({ command: 'sample.shortcuts.run', workspaceID: W1, paneID });
+
+            // An unclaimed chord stays in the document and sends no additional plugin command.
+            expect(fireEvent.keyDown(frame.contentDocument!, { code: 'KeyJ', key: 'j', ctrlKey: true, altKey: true })).toBe(true);
+            expect(h.commands().filter((command) => command['command'] === 'plugin' && command['action'] === 'run')).toHaveLength(1);
+        } finally { h.runtime.dispose(); }
+    });
+
     it('toggles markdown edit mode from the header button', async () => {
         const h = setup({ markdown: true });
 

@@ -4154,7 +4154,7 @@ function Shell(props: AppProps): ReactElement {
                             copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
                             findPalette={findPalette}
                             // H9: the preview is cross-origin, so it hands claimed chords back.
-                            claimedChords={contentPaneChords}
+                            claimedChords={allViewChords}
                             onOpenExternalEditor={act.openExternalEditor}
                         />
                     );
@@ -4172,7 +4172,7 @@ function Shell(props: AppProps): ReactElement {
                             findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                             findPalette={findPalette}
                             // H9: same relay as the preview — a focused diff must still answer ⌘D.
-                            claimedChords={contentPaneChords}
+                            claimedChords={allViewChords}
                         />
                     );
                 },

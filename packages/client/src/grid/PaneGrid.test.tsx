@@ -374,6 +374,76 @@ describe('PaneGrid divider drag', () => {
 });
 
 describe('PaneGrid pane-move drag', () => {
+    it.each(['top', 'bottom'] as const)('keeps targeting the %s of an iframe after entering from its side', zone => {
+        const onMovePane = vi.fn();
+        const { container } = renderGrid({
+            onMovePane,
+            renderPane: paneID => paneID === 'b' ? <iframe title="Plugin pane" /> : <div />
+        });
+        // Workbench containers, their toolbars and the sidebar move the grid away from (0, 0).
+        const origin = { left: 220, top: 112 };
+        stubBoundingRect(container, { ...origin, ...SIZE });
+        const header = screen.getByTestId('pane-header-a');
+        const frame = screen.getByTitle('Plugin pane') as HTMLIFrameElement;
+        let captured = false;
+        const setPointerCapture = vi.fn(() => { captured = true; });
+        const releasePointerCapture = vi.fn(() => { captured = false; });
+        Object.assign(header, { setPointerCapture, releasePointerCapture });
+        // Electron may route into the iframe despite successful capture. jsdom has no CSS
+        // layout, so model hit-testing for the Tailwind selector that excludes child frames.
+        // The live pane-drag-through-frames scenario checks Chromium's actual routing.
+        const overFrame = (type: 'pointermove' | 'pointerup', x: number, y: number): void => {
+            const target = container.classList.contains('[&_iframe]:pointer-events-none') ? container : frame.contentWindow!;
+            firePointer(target, type, {
+                clientX: origin.left + x, clientY: origin.top + y, pointerId: 7
+            });
+        };
+
+        act(() => firePointer(header, 'pointerdown', {
+            clientX: origin.left + 40, clientY: origin.top + 10, pointerId: 7
+        }));
+        expect(captured).toBe(true);
+        act(() => firePointer(window, 'pointermove', {
+            clientX: origin.left + 410, clientY: origin.top + 300, pointerId: 7
+        }));
+        expect(screen.getByTestId('drop-zone-overlay').getAttribute('data-zone')).toBe('left');
+
+        const y = zone === 'top' ? 80 : 520;
+        act(() => overFrame('pointermove', 600, y));
+        expect(screen.getByTestId('drop-zone-overlay').getAttribute('data-zone')).toBe(zone);
+        act(() => overFrame('pointerup', 600, y));
+
+        expect(onMovePane).toHaveBeenCalledExactlyOnceWith('a', 'b', zone);
+        expect(setPointerCapture).toHaveBeenCalledWith(7);
+        expect(releasePointerCapture).toHaveBeenCalledWith(7);
+        expect(captured).toBe(false);
+        expect(container.classList.contains('[&_iframe]:pointer-events-none')).toBe(false);
+        expect(screen.queryByTestId('drop-zone-overlay')).toBeNull();
+    });
+
+    it.each(['blur', 'pointercancel', 'hide', 'unmount'] as const)('releases capture without moving a pane on %s', finish => {
+        const onMovePane = vi.fn();
+        const view = renderGrid({ onMovePane });
+        const header = screen.getByTestId('pane-header-a');
+        const releasePointerCapture = vi.fn();
+        Object.assign(header, { setPointerCapture: vi.fn(), releasePointerCapture });
+        act(() => firePointer(header, 'pointerdown', { clientX: 40, clientY: 10, pointerId: 7 }));
+        act(() => firePointer(window, 'pointermove', { clientX: 600, clientY: 80, pointerId: 7 }));
+        expect(screen.getByTestId('drop-zone-overlay').getAttribute('data-zone')).toBe('top');
+
+        act(() => {
+            if (finish === 'blur') window.dispatchEvent(new Event('blur'));
+            else if (finish === 'pointercancel') firePointer(window, 'pointercancel', { clientX: 600, clientY: 80, pointerId: 7 });
+            else if (finish === 'hide') view.update({ visible: false });
+            else view.unmount();
+        });
+
+        expect(releasePointerCapture).toHaveBeenCalledExactlyOnceWith(7);
+        act(() => firePointer(window, 'pointerup', { clientX: 600, clientY: 80, pointerId: 7 }));
+        expect(onMovePane).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('drop-zone-overlay')).toBeNull();
+    });
+
     it('overlays the drop zone and moves the pane on release', () => {
         const onMovePane = vi.fn();
         renderGrid({ onMovePane });

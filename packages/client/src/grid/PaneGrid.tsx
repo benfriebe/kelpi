@@ -154,7 +154,24 @@ interface DividerGesture {
 interface MoveGesture {
     readonly paneID: string;
     readonly origin: Point;
+    readonly releaseCapture: () => void;
     active: boolean;
+}
+
+/** Keep the gesture attached to its header when the pointer leaves it. */
+function capturePanePointer(event: ReactPointerEvent<HTMLElement>): () => void {
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    if (typeof target.setPointerCapture !== 'function' || typeof pointerId !== 'number') return () => {};
+    try {
+        target.setPointerCapture(pointerId);
+    } catch {
+        return () => {};
+    }
+    return () => {
+        try { target.releasePointerCapture(pointerId); }
+        catch { /* A normal release or a removed header may already have released capture. */ }
+    };
 }
 
 interface RatioPreview {
@@ -226,6 +243,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const [preview, setPreview] = useState<RatioPreview | null>(null);
     const [activeDividerPath, setActiveDividerPath] = useState<string | null>(null);
+    const [paneDragArmed, setPaneDragArmed] = useState(false);
     const [draggingPaneID, setDraggingPaneID] = useState<string | null>(null);
     const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
     const [resizing, setResizing] = useState(false);
@@ -515,12 +533,14 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     // ── pane move drag (shell-ui.md §4.3, pane-layout.md §7.5) ──────────────────────
 
-    const endPaneDrag = useCallback((): void => {
+    const endPaneDrag = useCallback((event?: PointerEvent): void => {
         const gesture = moveRef.current;
-        const target = dropTargetRef.current;
+        const target = event?.type === 'pointercancel' ? null : dropTargetRef.current;
         moveRef.current = null;
         dropTargetRef.current = null;
         detachListeners();
+        gesture?.releaseCapture();
+        setPaneDragArmed(false);
         setDraggingPaneID(null);
         setDropTarget(null);
         if (gesture === null || !gesture.active || target === null) return;
@@ -559,8 +579,13 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const startPaneDrag = useCallback(
         (paneID: string, event: ReactPointerEvent<HTMLElement>): void => {
             if (event.button !== 0) return;
-            moveRef.current = { paneID, origin: { x: event.clientX, y: event.clientY }, active: false };
+            moveRef.current?.releaseCapture();
+            moveRef.current = {
+                paneID, origin: { x: event.clientX, y: event.clientY }, active: false,
+                releaseCapture: capturePanePointer(event)
+            };
             dropTargetRef.current = null;
+            setPaneDragArmed(true);
             attachListeners(onPanePointerMove, endPaneDrag);
         },
         [attachListeners, onPanePointerMove, endPaneDrag]
@@ -643,6 +668,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         () => () => {
             detachRef.current?.();
             detachRef.current = null;
+            moveRef.current?.releaseCapture();
             dividerRef.current?.commit.cancel();
             if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current);
             if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);
@@ -676,7 +702,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             ref={containerRef}
             data-testid="pane-grid"
             data-resizing={resizing ? 'true' : 'false'}
-            className={`relative h-full w-full overflow-hidden${className === undefined ? '' : ` ${className}`}`}
+            // Electron can route moves into a child iframe even with valid pointer capture.
+            // Disable only frame hit-testing from the initial press through release/reset;
+            // header clicks still work and newly mounted frames follow the same gesture.
+            className={`relative h-full w-full overflow-hidden${paneDragArmed ? ' [&_iframe]:pointer-events-none' : ''}${className === undefined ? '' : ` ${className}`}`}
             /*
              * §N17 — NO fill here. `PaneGridView.swift:104-118` is a bare `ZStack` over a
              * `GeometryReader`: the grid paints nothing, the app's ground shows through the

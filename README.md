@@ -294,6 +294,17 @@ Use `pnpm --filter @kelpi/shell package` for just the `.app` (no DMG/ZIP), and
 launches it with a throwaway environment and asserts that it starts its own daemon, serves its
 own client, answers the CLI, runs a real PTY, and leaves the daemon alive on quit.
 
+**Quit hangs on macOS 26.4.x:** Electron can finish closing every window and emit `quit`
+while its process remains stuck in native teardown. This also reproduces with a minimal
+Electron app containing only a hidden `about:blank` window; see
+[Electron #52582](https://github.com/electron/electron/issues/52582). The packaged smoke keeps
+its clean-exit assertion strict: `exit code null, signal SIGKILL, quit wait 20000 ms, timed out true`
+means the app failed to exit and the harness killed its isolated test process after the deadline.
+Kelpi does not work around this by force-killing itself. The upstream reporter confirmed that
+the same Electron binaries exited normally after
+[updating macOS from 26.4.1 to 26.6](https://github.com/electron/electron/issues/52582#issuecomment-5152586801).
+Re-run the packaged smoke after an OS update to verify shutdown on that machine.
+
 Inside `Kelpi.app/Contents/Resources`:
 
 ```

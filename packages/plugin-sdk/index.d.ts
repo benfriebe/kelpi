@@ -1,5 +1,7 @@
 import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, PanesAPI, Snapshot, TerminalAPI, WorkspacesAPI } from './domain.js';
+import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
 export * from './domain.js';
+export * from './services.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Data = { [key: string]: Json };
@@ -28,7 +30,7 @@ export interface KelpiAPI {
     storage: { get(key: string): Promise<Json>; set(key: string, value: Json): Promise<void> };
     settings: { get(): Promise<Data>; set(key: string, value: string | number | boolean): Promise<void> };
     files: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; open(path: string, options?: { paneID?: string; workspaceID?: string; reuse?: boolean }): Promise<void>; reveal(path: string, options?: { select?: boolean }): Promise<void> };
-    process: { exec(file: string, args?: string[], options?: { cwd?: string }): Promise<{ stdout: string; stderr: string }> };
+    process: { exec(file: string, args?: string[], options?: { cwd?: string }): Promise<ProcessExecResult> };
     terminal: TerminalAPI;
     workspaces: WorkspacesAPI;
     groups: GroupsAPI;
@@ -44,7 +46,9 @@ export interface ServiceDefinition { id: string; title: string; version: number;
 export interface ServiceProvider { id: string; title: string; pluginID?: string; status: 'available' | 'disabled' | 'failed'; error?: string }
 export interface ServicesAPI {
     list(): Promise<ServiceInfo[]>;
-    call<T = Json>(service: string, version: number, method: string, args?: Data, options?: { provider?: string }): Promise<T>;
+    /** Built-in version-1 contracts infer arguments and results; custom services retain a JSON escape hatch. */
+    call<S extends BuiltinServiceID, M extends BuiltinServiceMethod<S>>(service: S, version: 1, method: M, args: BuiltinServiceArgs<S, M>, options?: { provider?: string }): Promise<BuiltinServiceResult<S, M>>;
+    call<T = Json, S extends string = string>(service: S extends BuiltinServiceID ? never : S, version: number, method: string, args?: Data, options?: { provider?: string }): Promise<T>;
     select(service: string, version: number, providerID: string | null): Promise<ServiceInfo[]>;
 }
 export interface ServiceInfo extends ServiceDefinition { providers: ServiceProvider[]; selectedProviderID: string | null; activeProviderID: string | null }
@@ -56,7 +60,11 @@ export type HookDecision = { allow: true } | { allow: false; reason: string };
 export interface BackendAPI extends KelpiAPI {
     commands: KelpiAPI['commands'] & { register(id: string, handler: (args: Data, context: Context) => Json | void | Promise<Json | void>): Dispose };
     hooks: { register(id: string, handler: (invocation: HookInvocation) => HookDecision | void | Promise<HookDecision | void>): Dispose };
-    providers: { register(id: string, methods: Record<string, (args: Data, context: Context) => Json | void | Promise<Json | void>>): Dispose };
+    providers: {
+        /** Supply the service ID as a type argument to check a complete built-in implementation. */
+        register<S extends BuiltinServiceID = never>(id: string, methods: [S] extends [never] ? never : BuiltinProviderMethods<S>): Dispose;
+        register(id: string, methods: Record<string, (args: Data, context: Context) => Json | void | Promise<Json | void>>): Dispose;
+    };
 }
 export interface ViewAPI extends KelpiAPI {
     readonly ready: Promise<void>;

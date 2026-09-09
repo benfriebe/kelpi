@@ -8,7 +8,7 @@ Kelpi injects `window.kelpi` before a plugin view's scripts load. The accessor r
 same object; `await api.ready` waits for its private host channel. Backends receive a
 `BackendAPI` in their exported `activate(api)` function and do not call `getKelpi()`.
 
-See [the authoring guide](../../docs/plugins.md), [public types](index.d.ts), and the
+See [the authoring guide](../../docs/plugins.md), [public types](index.d.ts), [native service contracts](services.d.ts), and the
 [Agent Board example](../../examples/plugins/agent-board). Bundle dependencies and install
 the resulting directory with `kelpi plugin install <directory> --trust`.
 
@@ -98,10 +98,48 @@ registration is backend-only.
 `api.services.list()` returns versioned contracts, providers and `selectedProviderID` /
 `activeProviderID`. `services.call(service, version, method, args, {provider?})` uses the active
 provider unless explicitly overridden. `services.select(service, version, providerID)` persists
-the selection; `null` clears it. The bundled files provider is also available through the
-`bundled` call override, so a replacement can delegate without recursively calling itself.
-`api.files.read/write` honor the selected provider. Plugin result dictionaries are passed through
-unchanged, including keys containing underscores.
+the selection; `null` clears it. Every bundled service accepts the `bundled` call override,
+so a replacement can delegate without recursively calling itself. Plugin result dictionaries
+are passed through unchanged, including keys containing underscores.
+
+Built-in service calls infer their arguments and results from the [public service map](services.d.ts):
+
+```ts
+const branch = await api.services.call('kelpi.git', 1, 'getCurrentBranch', { repoPath: '/code/project' });
+// branch: string | null
+const status = await api.services.call('kelpi.git', 1, 'getStatus', { repoPath: '/code/project' });
+if (status.kind === 'dirty') console.log(status.changedFiles);
+const output = await api.services.call('kelpi.process', 1, 'exec', { file: 'git', args: ['--version'] });
+const rendered = await api.services.call('kelpi.content.render', 1, 'render', {
+    kind: 'markdown', source: '# Hello', backgroundColor: '#181818', fontSize: 14, assetBase: null,
+});
+```
+
+`kelpi.git@1` replaces the daemon's Git primitives used by repository discovery/status,
+worktree commands, graft, and diff generation. The high-level `api.git` helpers continue to
+run normal Kelpi commands with their existing workspace and state guards. The low-level
+service takes explicit repository/worktree paths and returns direct values, with `null`
+for successful mutation methods. It does not create workspace records for the caller.
+
+`kelpi.content.render@1` replaces HTML generation for native Markdown and diff previews.
+The native editor, source buffers, file watches, save lifecycle, and frame ownership remain
+with Kelpi. `kelpi.process@1` backs managed `api.process.exec`; `kelpi.files@1` still backs
+`api.files.read/write`. Neither service redirects arbitrary Node calls, terminal processes,
+or all internal file access. See the [service guide](../../docs/plugin-services.md) for native
+reach, limits, fallback behavior, and the complete Git method catalog.
+
+For provider authors, `BuiltinProviderMethods<'kelpi.content.render'>` describes a complete
+implementation. An explicit type argument on registration checks the same contract:
+
+```ts
+api.providers.register<'kelpi.content.render'>('example.my-board.renderer', {
+    render: args => api.services.call('kelpi.content.render', 1, 'render', args, { provider: 'bundled' }),
+});
+```
+
+Declare the matching provider, version, and complete method list in the manifest. Registration
+typing does not change runtime discovery. Custom contracts still use
+`services.call<MyResult>('example.my-board.catalog', 1, 'read', args)` and generic JSON handlers.
 
 Browser views can read `api.ui.getWorkbench()` to discover current slots, views and active tabs,
 then call `api.ui.selectView(slot, viewID)` or `api.ui.activateTab(containerID, slotID)` to build

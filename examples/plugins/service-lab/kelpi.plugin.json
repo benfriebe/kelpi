@@ -1,0 +1,48 @@
+{
+  "id": "example.service-lab",
+  "name": "Service Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "on-demand",
+  "contributes": {
+    "views": [],
+    "commands": [
+      { "id": "example.service-lab.history", "title": "Read Service Lab history" },
+      { "id": "example.service-lab.exec", "title": "Run a managed process through Service Lab" }
+    ],
+    "providers": [
+      {
+        "id": "example.service-lab.git",
+        "title": "Service Lab Git",
+        "service": "kelpi.git",
+        "version": 1,
+        "timeoutMs": 30000,
+        "methods": [
+          "getCurrentBranch", "getDiff", "getRemoteURL", "defaultBranch", "fetch",
+          "createWorktree", "createWorktreeFromBase", "worktreeAdd", "toplevel", "resolveRepoRoot",
+          "getStatus", "repoState", "getHeadSha", "resolveHeadPath", "stashPushIncludeUntracked",
+          "stashPopRef", "writeTreeForWorktree", "readTreeInto", "checkoutBranchForce", "checkoutHeadForce",
+          "resetHard", "resetMixed", "listWorktrees", "removeWorktree", "pruneWorktrees"
+        ]
+      },
+      {
+        "id": "example.service-lab.renderer",
+        "title": "Service Lab previews",
+        "service": "kelpi.content.render",
+        "version": 1,
+        "timeoutMs": 5000,
+        "methods": ["render"]
+      },
+      {
+        "id": "example.service-lab.process",
+        "title": "Service Lab processes",
+        "service": "kelpi.process",
+        "version": 1,
+        "timeoutMs": 30000,
+        "methods": ["exec"]
+      }
+    ]
+  }
+}

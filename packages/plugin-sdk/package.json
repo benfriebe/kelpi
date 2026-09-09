@@ -3,5 +3,5 @@
   "version": "0.1.0",
   "type": "module",
   "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
-  "files": ["index.js", "api.js", "index.d.ts", "domain.d.ts", "README.md"]
+  "files": ["index.js", "api.js", "index.d.ts", "domain.d.ts", "services.d.ts", "README.md"]
 }

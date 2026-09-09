@@ -2,10 +2,12 @@ import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, P
 import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
+import type { WindowChromeAPI } from './chrome.js';
 export * from './domain.js';
 export * from './services.js';
 export * from './contributions.js';
 export * from './ui.js';
+export * from './chrome.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Data = { [key: string]: Json };
@@ -81,7 +83,7 @@ export interface ViewAPI extends KelpiAPI {
     /** Runs after ready, then on context/theme/visibility/state updates. Disposal also cancels queued deliveries. */
     onContext(listener: (value: ViewEnvironment) => void | Promise<void>): Dispose;
     setState(state: Data): Promise<void>;
-    ui: KelpiAPI['ui'] & WindowUIServices & {
+    ui: KelpiAPI['ui'] & WindowUIServices & WindowChromeAPI & {
         activateWorkspace(workspaceID: string): Promise<void>;
         focusPane(workspaceID: string, paneID: string): Promise<void>;
         notify(message: string): Promise<void>;

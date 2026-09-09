@@ -1,3 +1,4 @@
+import { createWindowFeed } from './window-feed';
 import { pluginJSON } from '@kelpi/protocol';
 import type { WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
 import type { RemoteDaemonRuntime } from '../app/remote-daemons';
@@ -226,22 +227,5 @@ export function createPluginNavigation(options: PluginNavigationOptions): Plugin
 
 /** One outstanding frame plus the latest replacement. A stalled iframe cannot build a queue. */
 export function createPluginNavigationFeed(model: PluginNavigation, send: (message: PluginNavigationMessage) => void): PluginNavigationFeed {
-    let disposed = false, sequence = 0, outstanding: number | null = null, latest: Delivery | null = null;
-    let stop = (): void => {};
-    const dispose = (): void => { disposed = true; latest = null; outstanding = null; stop(); };
-    const flush = (): void => {
-        if (disposed || outstanding !== null || latest === null) return;
-        const delivery = latest;
-        latest = null;
-        if (sequence === Number.MAX_SAFE_INTEGER) { dispose(); return; }
-        outstanding = ++sequence;
-        try {
-            send('value' in delivery ? { type: 'navigation', sequence, value: delivery.value }
-                : { type: 'navigation-error', sequence, error: delivery.error.message.slice(0, 4096) });
-        } catch { dispose(); }
-    };
-    const offer = (delivery: Delivery): void => { if (!disposed) { latest = delivery; flush(); } };
-    stop = model.subscribe(value => offer({ value }), error => offer({ error }));
-    if (disposed) stop();
-    return { ack(value) { if (!disposed && outstanding !== null && value === outstanding) { outstanding = null; flush(); } }, dispose };
+    return createWindowFeed<NavigationSnapshot>('navigation', (listener, onError) => model.subscribe(listener, onError), message => send(message as PluginNavigationMessage));
 }

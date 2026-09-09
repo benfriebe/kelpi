@@ -21,61 +21,77 @@
         void ready.then(() => deliverContext(entry, environment()));
         return () => { contextListeners.delete(entry); };
     };
-    let navigation = null, navigationInitial = null, navigationDisposed = false;
-    const navigationListeners = new Set();
-    const freezeNavigation = value => {
-        if (value !== null && typeof value === 'object') {
-            for (const item of Object.values(value)) freezeNavigation(item);
-            Object.freeze(value);
-        }
-        return value;
-    };
-    const deliverNavigation = (entry, value) => {
-        if (navigationDisposed || !navigationListeners.has(entry) || value.sequence <= entry.sequence) return entry.draining;
-        entry.sequence = value.sequence;
-        entry.latest = value;
-        if (!entry.draining) entry.draining = Promise.resolve().then(async () => {
-            try {
-                while (!navigationDisposed && navigationListeners.has(entry) && entry.latest) {
-                    const next = entry.latest; entry.latest = null;
-                    const delivery = Promise.resolve().then(() => {
-                        if (navigationDisposed || !navigationListeners.has(entry)) return;
-                        if (next.type === 'navigation') return entry.listener(next.value);
-                        if (entry.onError) return entry.onError(new Error(next.error));
-                        reportError(next.error);
-                    }).catch(error => console.error('plugin navigation listener', error));
-                    // Unsubscribing releases the frame even if an author callback never settles.
-                    await Promise.race([delivery, entry.cancelled]);
-                }
-            } finally { entry.draining = null; }
-        });
-        return entry.draining;
-    };
-    const onNavigation = (listener, onError) => {
-        if (typeof listener !== 'function' || (onError !== undefined && typeof onError !== 'function')) throw new Error('Navigation requires a listener and an optional error listener.');
-        if (navigationDisposed) throw new Error('Navigation is unavailable after view disposal.');
-        if (navigationListeners.size >= 64) throw new Error('Too many navigation listeners.');
-        let cancel;
-        const entry = { listener, onError, latest: null, draining: null, sequence: -1, cancelled: new Promise(resolve => { cancel = resolve; }) };
-        entry.dispose = () => { navigationListeners.delete(entry); entry.latest = null; cancel(); };
-        navigationListeners.add(entry);
-        void ready.then(async () => {
-            if (navigationDisposed || !navigationListeners.has(entry)) return;
-            if (!navigation) {
-                // The host only starts feeds for eligible views. This bounded initial call
-                // also reports an unavailable host to subscribers without failing unrelated
-                // remote-owned views that never requested window navigation.
-                navigationInitial ??= base.call('ui.getNavigation').then(value => {
-                    if (!navigation && !navigationDisposed) navigation = freezeNavigation({ type: 'navigation', sequence: 0, value });
-                }, error => {
-                    if (!navigation && !navigationDisposed) navigation = { type: 'navigation-error', sequence: 0, error: String(error.message ?? error).slice(0, 4096) };
-                });
-                await navigationInitial;
+    const createWindowSubscription = (topic, method) => {
+        let snapshot = null, initial = null, disposed = false;
+        const entries = new Set();
+        const freezeSnapshot = value => {
+            if (value !== null && typeof value === 'object') {
+                for (const item of Object.values(value)) freezeSnapshot(item);
+                Object.freeze(value);
             }
-            if (navigation) return deliverNavigation(entry, navigation);
-        });
-        return entry.dispose;
+            return value;
+        };
+        const deliver = (entry, value) => {
+            if (disposed || !entries.has(entry) || value.sequence <= entry.sequence) return entry.draining;
+            entry.sequence = value.sequence;
+            entry.latest = value;
+            if (!entry.draining) entry.draining = Promise.resolve().then(async () => {
+                try {
+                    while (!disposed && entries.has(entry) && entry.latest) {
+                        const next = entry.latest; entry.latest = null;
+                        const delivery = Promise.resolve().then(() => {
+                            if (disposed || !entries.has(entry)) return;
+                            if (next.type === topic) return entry.listener(next.value);
+                            if (entry.onError) return entry.onError(new Error(next.error));
+                            reportError(next.error);
+                        }).catch(error => console.error(`plugin ${topic} listener`, error));
+                        // Unsubscribing releases the frame even if an author callback never settles.
+                        await Promise.race([delivery, entry.cancelled]);
+                    }
+                } finally { entry.draining = null; }
+            });
+            return entry.draining;
+        };
+        const subscribe = (listener, onError) => {
+            if (typeof listener !== 'function' || (onError !== undefined && typeof onError !== 'function')) throw new Error('Window feed requires a listener and an optional error listener.');
+            if (disposed) throw new Error('Window feed is unavailable after view disposal.');
+            if (entries.size >= 64) throw new Error(`Too many ${topic} listeners.`);
+            let cancel;
+            const entry = { listener, onError, latest: null, draining: null, sequence: -1, cancelled: new Promise(resolve => { cancel = resolve; }) };
+            entry.dispose = () => { entries.delete(entry); entry.latest = null; cancel(); };
+            entries.add(entry);
+            void ready.then(async () => {
+                if (disposed || !entries.has(entry)) return;
+                if (!snapshot) {
+                    // The host only starts feeds for eligible views. This bounded initial call
+                    // also reports an unavailable host to subscribers without failing unrelated
+                    // remote-owned views that never requested this window feed.
+                    initial ??= base.call(method).then(value => {
+                        if (!snapshot && !disposed) snapshot = freezeSnapshot({ type: topic, sequence: 0, value });
+                    }, error => {
+                        if (!snapshot && !disposed) snapshot = { type: `${topic}-error`, sequence: 0, error: String(error.message ?? error).slice(0, 4096) };
+                    });
+                    await initial;
+                }
+                if (snapshot) return deliver(entry, snapshot);
+            });
+            return entry.dispose;
+        };
+        return {
+            subscribe,
+            async receive(data) {
+                if (disposed || !Number.isSafeInteger(data.sequence) || data.sequence <= 0) return;
+                if (!snapshot || data.sequence > snapshot.sequence) {
+                    snapshot = freezeSnapshot(data);
+                    await Promise.all([...entries].map(entry => deliver(entry, snapshot)));
+                }
+                if (!disposed) send({ type: `${topic}-ack`, sequence: data.sequence });
+            },
+            dispose() { disposed = true; snapshot = null; for (const entry of entries) entry.dispose(); }
+        };
     };
+    const navigationFeed = createWindowSubscription('navigation', 'ui.getNavigation');
+    const chromeFeed = createWindowSubscription('chrome', 'ui.getChrome');
     const call = async (method, args = {}) => {
         await ready;
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
@@ -99,14 +115,8 @@
                 pending.delete(data.id); clearTimeout(entry.timer);
                 if (data.error) entry.reject(new Error(data.error)); else entry.resolve(data.result);
             } else if (data.type === 'context') { live = { ...live, ...data.value }; applyTheme(); notifyContext(); }
-            else if (data.type === 'navigation' || data.type === 'navigation-error') {
-                if (navigationDisposed || !Number.isSafeInteger(data.sequence) || data.sequence <= 0) return;
-                if (!navigation || data.sequence > navigation.sequence) {
-                    navigation = freezeNavigation(data);
-                    await Promise.all([...navigationListeners].map(entry => deliverNavigation(entry, navigation)));
-                }
-                if (!navigationDisposed) send({ type: 'navigation-ack', sequence: data.sequence });
-            }
+            else if (data.type === 'navigation' || data.type === 'navigation-error') await navigationFeed.receive(data);
+            else if (data.type === 'chrome' || data.type === 'chrome-error') await chromeFeed.receive(data);
             else if (data.type === 'event') {
                 for (const listener of [...(listeners.get(data.event.name) ?? []), ...(listeners.get('*') ?? [])]) {
                     await Promise.resolve().then(() => listener(data.event)).catch(error => console.error('plugin listener', error));
@@ -133,7 +143,10 @@
             activateTab: async (containerID, slotID) => { await base.call('ui.activateTab', { containerID, slotID }); },
             getNavigation: () => base.call('ui.getNavigation'),
             selectWorkspace: async (hostID, workspaceID) => { await base.call('ui.selectWorkspace', { hostID, workspaceID }); },
-            onNavigation,
+            onNavigation: navigationFeed.subscribe,
+            getChrome: () => base.call('ui.getChrome'),
+            onChrome: chromeFeed.subscribe,
+            executeChromeCommand: async (id, target = {}) => { await base.call('ui.executeChromeCommand', { id, target }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),
@@ -144,8 +157,7 @@
     addEventListener('error', event => reportError(event.message ?? 'Plugin resource failed to load'), true);
     addEventListener('unhandledrejection', event => reportError(event.reason?.message ?? event.reason));
     addEventListener('pagehide', () => {
-        navigationDisposed = true; navigation = null;
-        for (const entry of navigationListeners) entry.dispose();
+        navigationFeed.dispose(); chromeFeed.dispose();
     });
     addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus' }); }, true);
     addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); });

@@ -51,6 +51,11 @@ has one host; selecting a view already on the other side exchanges the two views
 placements permit it. Plugin views can still appear on both sides. Plugin sidebars retain
 their header picker and **Manage plugins…** shortcut. Choices survive window reloads.
 
+[Sidebar Lab](../examples/plugins/sidebar-lab) provides dedicated Workspaces and Inspector
+replacements, including connected-daemon navigation, repository tools and persisted display
+preferences. Install `./examples/plugins/sidebar-lab` to try it. The
+[feature guide](plugin-features.md) explains the native module contract and navigation scope.
+
 Settings → Plugins → Workbench views also lets you change the other placements.
 The default views are registered native adapters; external contributions use the same slot
 selection and fallback rules. Preferences belong to the client and stable daemon identity.
@@ -192,6 +197,8 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `ui.reveal(paneID)` | Ask the invoking window to reveal a pane; broadcasts when no window context exists. |
 | `setState(object)` | View only. Persist this pane's state and current manifest state version. |
 | `ui.activateWorkspace(id)` / `ui.focusPane(workspaceID, paneID)` | View only. Change selection in the attached client runtime. |
+| `ui.getNavigation()` / `ui.onNavigation(listener, onError?)` | View only. Read/watch the primary window's connected hosts, workspace summaries and active selection. Returns opaque host IDs without connection credentials. |
+| `ui.selectWorkspace(hostID, workspaceID)` | View only. Select a connected local or remote workspace in this window; domain commands retain their owning daemon. |
 | `ui.notify(message)` | View only. Show a Kelpi notification. |
 | `call(method, args?)` | Generic JSON bridge used by these helpers; method names are in `PluginService.api`. |
 

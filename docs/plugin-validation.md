@@ -231,3 +231,37 @@ The last command requires an existing packaged app. The fresh worktree initially
 the vendored Ghostty engine's ignored `dist/`; validation built it from the checked-in
 vendor source and refreshed the local file dependency. No tracked vendor runtime source
 was changed. Report artifacts under `out/` and `docs/audit/` are local and ignored by Git.
+
+## Bundled sidebar features and window navigation (2026-09-09)
+
+This phase was implemented in `out/worktrees/plugin-ui-features` on
+`feature/plugin-bundled-features`, based on merged main `8f234ed`. Workspaces and Inspector
+now bind their models, actions and lifecycles through registered feature modules. The public
+browser SDK adds window navigation, and Sidebar Lab supplies independent replacements for
+both sidebars. The [feature guide](plugin-features.md) documents ownership and lifetime rules.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,781 root tests and 868 shell tests, 7,649 total. One existing optional real-Swift-database test is skipped. | [Check log](../out/sidebar-feature-validation/check.log) |
+| Development builds | Daemon, client, CLI and shell builds pass in the isolated worktree. | [Build log](../out/sidebar-feature-validation/build.log) |
+| Replacement Sidebar Lab | 30/30 live checks pass with real pointer clicks, text entry and Enter submission. Covers repository errors/status/refresh/diff, terminal create/split/send/capture, workspace create/rename/select, persisted preferences, both placements, reload, disable/fallback/re-enable, remote navigation and separate owner storage. Computed styles and overflow are checked. | [Results](../out/sidebar-feature-validation/sidebar-lab/results.json) |
+| Native sidebar regression | 11/11 checks pass for swapped views, filter, resizing, picker controls and restoration. | [Results](../out/sidebar-feature-swap/results.json) |
+| Existing plugin workbench | 22/22 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-workbench/results.json) |
+| Existing remote plugins | 12/12 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-remote/results.json) |
+| Source consistency | Built client/SDK source remained unchanged through final scenarios. The example script matches the final live run after its pointer interaction fix. Whitespace and JavaScript syntax checks pass. | [Verification](../out/sidebar-feature-validation/source-verification.json), [Hashes](../out/sidebar-feature-validation/source-hashes.json) |
+
+The final [onscreen screenshot](../out/sidebar-feature-validation/sidebar-lab/plugin-sidebar-features-01-sidebar-lab-inspector-left-workspaces-right.png)
+was visually inspected: Inspector is on the left, Workspaces on the right, with styled controls
+and repository/terminal content in the native pane grid. The other three scenarios use hidden
+private instances; their screenshots are not used as visual evidence. All scenario instances
+were stopped without changing the installed Kelpi application's state.
+
+Validation found and fixed three behavior issues: replacing a selected remote URL could
+silently display a different runtime; the iframe document wrapper placed authored head assets
+in the body, where rendering could remove stylesheets; and live example updates could replace
+a pressed button before its click arrived. Regression coverage now exercises these paths.
+Example forms use explicit actions and Enter handling under the existing form sandbox policy.
+
+This phase's validation consists of the full automated suite, development builds and the four
+focused live scenarios above. Earlier full UI-audit and packaged-installer records describe the
+previous merged phases.

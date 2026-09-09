@@ -1,0 +1,28 @@
+{
+  "id": "example.sidebar-lab",
+  "name": "Sidebar Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "activation": "on-demand",
+  "contributes": {
+    "views": [
+      {
+        "id": "example.sidebar-lab.workspaces",
+        "title": "Sidebar Lab Workspaces",
+        "entry": "ui/workspaces.html",
+        "stateVersion": 1,
+        "placements": ["sidebar.primary", "sidebar.secondary", "pane"]
+      },
+      {
+        "id": "example.sidebar-lab.inspector",
+        "title": "Sidebar Lab Inspector",
+        "entry": "ui/inspector.html",
+        "stateVersion": 1,
+        "placements": ["sidebar.primary", "sidebar.secondary", "pane"]
+      }
+    ],
+    "commands": [],
+    "settings": {}
+  }
+}

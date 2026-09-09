@@ -70,7 +70,30 @@ function render(value) {
 async function choose(options, onChoice) {
     if (choosing || disposed) return;
     choosing = true;
-    try { const id = await api.ui.showQuickPick(options); if (id !== null && !disposed) await onChoice(id); }
+    try {
+        // Chrome IDs and labels can exceed quick-pick limits. Keep the original targets
+        // while sending bounded display rows, with space for navigation on larger lists.
+        const choices = new Map(options.items.map((item, index) => [`row:${index}`, item]));
+        const rows = [...choices].map(([id, item]) => ({
+            id, label: (item.label.trim() || 'Untitled').slice(0, 200), disabled: item.disabled === true,
+            ...(item.description === undefined ? {} : { description: item.description.trim().slice(0, 1024) })
+        }));
+        const pageSize = rows.length > 200 ? 198 : 200;
+        let page = 0;
+        while (!disposed) {
+            const items = rows.slice(page * pageSize, (page + 1) * pageSize);
+            const hasNext = (page + 1) * pageSize < rows.length;
+            if (page > 0) items.unshift({ id: 'previous', label: 'Previous page' });
+            if (hasNext) items.push({ id: 'next', label: 'Next page' });
+            const id = await api.ui.showQuickPick({ title: options.title, items });
+            if (id === null || disposed) return;
+            if (id === 'previous' && page > 0) { page--; continue; }
+            if (id === 'next' && hasNext) { page++; continue; }
+            const choice = choices.get(id);
+            if (choice && !choice.disabled) await onChoice(choice.id);
+            return;
+        }
+    }
     finally { choosing = false; }
 }
 if (toolbar) {

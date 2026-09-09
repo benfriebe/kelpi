@@ -51,6 +51,23 @@ was not replaced. This phase did not rerun the full UI audit or packaged applica
 the records below describe those gates for the preceding phases. Native document-pane
 extraction and plugin distribution remain separate follow-up work.
 
+### PR #142 review follow-up
+
+Chrome Lab now bounds quick-pick labels and descriptions, maps short picker IDs back to
+the original commands, and paginates lists above 200 entries. Disabled entries, captured
+workspace/pane targets, cancellation and view disposal retain their existing behavior.
+
+The 10 new integration tests pass against the fixed example; the same tests fail in nine
+cases against the original PR assets. They exercise the real window UI validator and
+check that every paginated entry remains reachable. See the [fixed results](../out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-fixed.log)
+and [original results](../out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-baseline.log).
+
+The complete [workspace check](../out/plugin-chrome-review-validation/check.log) passes all
+typechecks and 7,845 tests (6,977 root and 868 shell); one existing optional test is skipped.
+All four [production builds](../out/plugin-chrome-review-validation/build.log) pass. The updated
+[Chrome Lab scenario](../out/plugin-chrome-review-validation/live/results.json) passes 34/34
+checks in a private hidden instance, including a long agent label and exact pane selection.
+
 ## Native service replacement (2026-09-09)
 
 The daemon now registers native adapters for Git, content rendering, managed processes, and

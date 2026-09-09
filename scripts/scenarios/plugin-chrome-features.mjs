@@ -77,9 +77,16 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('stale layout actions reject instead of changing the newly selected workspace', stale && (await snapshot()).workspace.id === otherID);
         await selectWorkspace(workspaceID);
 
+        const longAgentLabel = `Chrome Beta agent ${'x'.repeat(240)}`;
+        await cli.ok(['pane', 'name', longAgentLabel, '--target', otherPane]);
         await inFrame(toolbar, `kelpi.agents.setStatus(${JSON.stringify(otherPane)}, 'waitingForInput')`);
         rec.check('agent activity in another workspace updates the replacement footer', await check(status, `document.getElementById('waiting').textContent === '1 waiting'`));
-        await click(status, '#waiting'); await pick('Waiting agents', 'Chrome Beta');
+        await click(status, '#waiting');
+        rec.check('the agent picker accepts a long pane label and bounds its displayed row', await d.settleDom(page, `
+            document.querySelector('input[aria-label="Waiting agents"]') &&
+            [...document.querySelectorAll('[role="listbox"] [role="option"] > span:first-child')].some(row => row.textContent === ${JSON.stringify(longAgentLabel.slice(0, 200))})
+        `));
+        await pick('Waiting agents', 'Chrome Beta');
         rec.check('the shared agent picker selects and focuses its exact pane', await check(toolbar, `document.body.dataset.workspace === ${JSON.stringify(otherID)}`) && (await snapshot()).focusedPane.id === otherPane);
         await selectWorkspace(workspaceID); await inFrame(toolbar, `kelpi.agents.clearStatus(${JSON.stringify(otherPane)})`);
         await inFrame(toolbar, `(async () => { const rows = await kelpi.git.status(${JSON.stringify(workspaceID)}); if (!rows.some(row => row.worktreePath === ${JSON.stringify(repository)})) await kelpi.git.associate(${JSON.stringify(workspaceID)}, ${JSON.stringify(repository)}); })()`);

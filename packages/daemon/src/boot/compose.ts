@@ -1225,6 +1225,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const offPluginServices = plugins.onServicesChanged(changed => {
         if (changed.includes('kelpi.content.render@1')) content.invalidateRenderer();
         if (changed.includes('kelpi.git@1')) {
+            autoDetect.invalidate();
             content.invalidateGit();
             repoWatch.invalidate();
             branchWatch.invalidate();

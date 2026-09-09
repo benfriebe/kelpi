@@ -66,6 +66,7 @@ import { useStore } from 'zustand';
 
 import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
+import { restartUI } from './app/reload';
 import { copySelection, pasteIntoFocusedPane } from './app/clipboard';
 import { sendLineEdit } from './app/line-editing';
 import type { DaemonTarget, StorageLike } from './app/config';
@@ -3200,7 +3201,11 @@ function Shell(props: AppProps): ReactElement {
                 id: 'restart-socket',
                 label: 'Restart Socket Server',
                 onSelect: () => act.restartControlServer()
-            }
+            },
+            // The renderer is a view of the daemon's state and can be thrown away; the daemon
+            // replays every pane on reconnect. Beside the socket restart because both are "the
+            // thing in front of me is wedged" rows, and this one is the cheaper of the two.
+            { id: 'restart-ui', label: 'Restart UI', onSelect: () => restartUI() }
         );
         return items;
     }, [act, inspectorVisible, openSettings, shellWindowID, pluginCommands.commands]);

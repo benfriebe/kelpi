@@ -17,6 +17,10 @@ import { contentState } from './content/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
+// jsdom's `Location` is unforgeable, so the menu row is tested through its seam.
+vi.mock('./app/reload', () => ({ restartUI: vi.fn() }));
+import { restartUI } from './app/reload';
+
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_MD = 'DDDDDDDD-0000-4000-8000-000000000002';
@@ -354,6 +358,7 @@ describe('the ••• title-bar menu (APP-052/053/054)', () => {
         expect(labels).toContain('Show Inspector');
         expect(labels).toContain('Kelpi Help');
         expect(labels).toContain('Restart Socket Server');
+        expect(labels).toContain('Restart UI');
         // A browser client never shows the two rows only a desktop shell can honour.
         expect(labels).not.toContain('Install CLI');
         expect(labels).not.toContain('Check for Updates…');
@@ -377,6 +382,15 @@ describe('the ••• title-bar menu (APP-052/053/054)', () => {
         fireEvent.click(screen.getByTestId('titlebar-menu-toggle'));
         fireEvent.click(screen.getByText('Kelpi Help'));
         expect(await screen.findByTestId('help-overlay')).toBeTruthy();
+    });
+
+    it('Restart UI reloads the renderer and asks the daemon for nothing', () => {
+        const h = setup();
+        fireEvent.click(screen.getByTestId('titlebar-menu-toggle'));
+        fireEvent.click(screen.getByText('Restart UI'));
+        expect(restartUI).toHaveBeenCalledTimes(1);
+        // A reload is the client's own business: no verb goes over the socket for it.
+        expect(h.lastCommand('restart-control-server')).toBeUndefined();
     });
 });
 

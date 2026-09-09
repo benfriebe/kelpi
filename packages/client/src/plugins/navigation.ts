@@ -59,6 +59,11 @@ interface Subscriber {
 }
 interface RemoteHost { readonly id: string; readonly held: RemoteDaemonRuntime }
 
+function newHostID(): string {
+    // getRandomValues also works on supported plain-HTTP hosts; randomUUID does not.
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function freeze<T>(value: T): T {
     if (value !== null && typeof value === 'object') {
         for (const item of Object.values(value)) freeze(item);
@@ -107,7 +112,7 @@ function navigationChanged(state: KelpiState, previous: KelpiState): boolean {
  * Store subscriptions are lazy, so construction during a React render has no effects.
  */
 export function createPluginNavigation(options: PluginNavigationOptions): PluginNavigation {
-    const localID = crypto.randomUUID();
+    const localID = newHostID();
     let disposed = false, queued = false, localName = options.localName ?? 'This daemon';
     let selection = options.selection;
     let remoteHosts = new Map<string, RemoteHost>();
@@ -119,7 +124,7 @@ export function createPluginNavigation(options: PluginNavigationOptions): Plugin
         const next = new Map<string, RemoteHost>();
         for (const [name, held] of remotes) {
             const previous = remoteHosts.get(name);
-            const id = previous?.held.name === held.name && previous.held.url === held.url ? previous.id : crypto.randomUUID();
+            const id = previous?.held.name === held.name && previous.held.url === held.url ? previous.id : newHostID();
             next.set(name, { id, held });
         }
         remoteHosts = next;

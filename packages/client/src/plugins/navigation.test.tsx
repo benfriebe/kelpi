@@ -35,9 +35,35 @@ function fixture() {
     const model = createPluginNavigation(options);
     return { local, remote, held, remotes, options, model, activateLocalWorkspace, selectRemoteWorkspace };
 }
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('window plugin navigation', () => {
+    it('allocates distinct local and remote IDs on plain HTTP and retains them until replacement', () => {
+        vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+        const h = fixture();
+        const first = h.model.getNavigation().hosts.map(host => host.id);
+        expect(first).toHaveLength(2);
+        expect(first.every(id => typeof id === 'string' && id.length > 0)).toBe(true);
+        expect(new Set(first).size).toBe(2);
+        h.model.update({ remotes: h.remotes, selection: null });
+        expect(h.model.getNavigation().hosts.map(host => host.id)).toEqual(first);
+        h.model.selectWorkspace(first[0], W1);
+        h.model.selectWorkspace(first[1], W1);
+        expect(h.activateLocalWorkspace).toHaveBeenCalledExactlyOnceWith(W1);
+        expect(h.selectRemoteWorkspace).toHaveBeenCalledExactlyOnceWith({ daemon: h.held.name, workspaceID: W1 });
+
+        h.model.update({ remotes: new Map([[h.held.name, { ...h.held, url: 'http://100.64.0.3:19470/' }]]), selection: null });
+        const replacement = h.model.getNavigation().hosts.map(host => host.id);
+        expect(replacement[0]).toBe(first[0]);
+        expect(new Set([...first, replacement[1]]).size).toBe(3);
+        expect(() => h.model.selectWorkspace(first[1], W1)).toThrow('no longer available');
+        h.model.dispose();
+
+        const next = createPluginNavigation(h.options);
+        expect(new Set([...first, ...replacement, ...next.getNavigation().hosts.map(host => host.id)]).size).toBe(5);
+        next.dispose();
+    });
+
     it('summarizes all hosts in sidebar order, including collapsed groups, without private state', () => {
         const h = fixture();
         h.local.daemon.dispatch({ type: 'create-workspace', id: W2, paneID: P2, name: 'Second', color: 'red', now: 2 });

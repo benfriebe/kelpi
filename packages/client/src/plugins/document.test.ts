@@ -1,10 +1,40 @@
 import { createContext, runInContext } from 'node:vm';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pluginDocument } from './document';
 
 const ROOT = 'http://localhost:123/plugin-assets/lease/';
 const BASE = `${ROOT}ui/`;
 const documentFor = (html: string) => new DOMParser().parseFromString(pluginDocument(html, ROOT, 'ui/index.html', { nonce: 'view-nonce' }), 'text/html');
+
+const frames = new Set<HTMLIFrameElement>();
+afterEach(() => {
+    for (const frame of frames) frame.remove();
+    frames.clear();
+    vi.restoreAllMocks();
+});
+
+async function executeDocument(html: string) {
+    const frame = document.createElement('iframe');
+    frames.add(frame);
+    document.body.append(frame);
+    const target = frame.contentWindow!;
+    const errors: string[] = [];
+    const messages: unknown[] = [];
+    target.document.open();
+    target.addEventListener('error', event => { errors.push(event.message); event.preventDefault(); });
+    // Parse into an empty frame with scripts enabled. Running scripts after DOMParser
+    // finishes would miss a synchronous script executing before the body is created.
+    target.document.write(pluginDocument(html, ROOT, 'ui/index.html', { nonce: 'view-nonce', state: { text: 'Ready' } }));
+    target.document.close();
+    const port = { start: vi.fn(), postMessage(message: unknown) { messages.push(message); } };
+    target.dispatchEvent(new MessageEvent('message', {
+        source: target.parent, data: { type: 'kelpi-plugin-connect', nonce: 'view-nonce' }, ports: [port as unknown as MessagePort],
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(port.start).toHaveBeenCalledOnce();
+    return { document: target.document, errors, messages };
+}
 
 function expectHostHead(document: Document): void {
     const first = [...document.head.children].slice(0, 3);
@@ -22,8 +52,8 @@ function expectHostHead(document: Document): void {
 }
 
 describe('plugin document assembly', () => {
-    it('keeps a full document stylesheet in its head when the authored script replaces the body', () => {
-        const document = documentFor(`<!doctype html><html lang="en" data-theme="plugin"><head>
+    it('keeps a full document stylesheet in its head when the parser executes the authored body render', async () => {
+        const { document, errors, messages } = await executeDocument(`<!doctype html><html lang="en" data-theme="plugin"><head>
             <title>Plugin page</title><link id="theme" rel="stylesheet" href="./theme.css">
             <style id="inline">main { color: red }</style>
             </head><body class="plugin-body"><main>Loading</main>
@@ -37,11 +67,64 @@ describe('plugin document assembly', () => {
         const stylesheet = document.querySelector<HTMLLinkElement>('#theme');
         expect(stylesheet?.parentElement).toBe(document.head);
         expect(stylesheet?.href).toBe(`${BASE}theme.css`);
-        const context = createContext({ document });
-        runInContext(document.querySelector('#render')!.textContent!, context);
-        expect(document.body.textContent).toBe('Ready');
-        expect(document.querySelector('#theme')).toBe(stylesheet);
+        expect(document.body.textContent?.trim()).toBe('Ready');
         expect(document.querySelector('#inline')?.parentElement).toBe(document.head);
+        expect(errors).toEqual([]);
+        expect(messages).toEqual([]);
+    });
+
+    it('relays synchronous parser-time script errors through the connected SDK', async () => {
+        const { errors, messages } = await executeDocument('<script>throw new Error("Authored startup failure");</script>');
+        expect(errors).toEqual(['Authored startup failure']);
+        expect(messages).toEqual([{ type: 'view-error', message: 'Authored startup failure' }]);
+    });
+
+    it.each([
+        ['script-only', '<script>document.body.innerHTML = "<main id=ready>" + kelpi.state.text + "</main>";</script>'],
+        ['style and script', '<style>main { color: red }</style><script>document.body.append(document.createElement("main")); document.body.lastChild.id = "ready"; document.body.lastChild.textContent = kelpi.state.text;</script>'],
+        ['comment and script', '\uFEFF\n<!-- <html><head> is only a comment -->\n<script>document.body.innerHTML = "<main id=ready>" + kelpi.state.text + "</main>";</script>'],
+        ['many comments and script', `${'<!-- banner -->\n'.repeat(100)}<script>document.body.innerHTML = "<main id=ready>" + kelpi.state.text + "</main>";</script>`],
+    ])('provides a body and SDK when a %s fragment executes during parsing', async (_name, html) => {
+        const { document, errors, messages } = await executeDocument(html);
+        expectHostHead(document);
+        expect(document.querySelector('#ready')?.textContent).toBe('Ready');
+        expect(errors).toEqual([]);
+        expect(messages).toEqual([]);
+    });
+
+    it.each([
+        '<!DOCTYPE HTML><HTML><HEAD>',
+        '<html lang="en"><head>',
+        '<head>',
+        '\uFEFF\n<!-- banner -->\n<!-- metadata -->\n<!doctype html><html><head>',
+    ])('preserves parser-time head/body ordering for a document beginning %j', async prefix => {
+        const { document, errors, messages } = await executeDocument(`${prefix}
+            <style id="theme">main { color: red }</style>
+            <script>
+                if (document.body !== null) throw new Error('Premature body');
+                if (document.baseURI !== ${JSON.stringify(BASE)}) throw new Error('Missing host base');
+                if (kelpi.state.text !== 'Ready') throw new Error('Missing SDK');
+                document.documentElement.dataset.headRan = 'true';
+            </script></head><body>
+            <script>document.body.innerHTML = '<main id="ready">' + kelpi.state.text + '</main>';</script>
+            </body></html>`);
+        expectHostHead(document);
+        expect(document.documentElement.dataset['headRan']).toBe('true');
+        expect(document.querySelector('#theme')?.parentElement).toBe(document.head);
+        expect(document.querySelector('#ready')?.textContent).toBe('Ready');
+        expect(errors).toEqual([]);
+        expect(messages).toEqual([]);
+    });
+
+    it('assembles authored resources without parsing them in the host', () => {
+        const parse = vi.spyOn(DOMParser.prototype, 'parseFromString');
+        const createDocument = vi.spyOn(document.implementation, 'createHTMLDocument');
+        const createElement = vi.spyOn(document, 'createElement');
+        const markup = '<html><head><link rel="stylesheet" href="theme.css"><script src="view.js"></script></head><body><img src="image.png"></body></html>';
+        expect(pluginDocument(markup, ROOT, 'ui/index.html', {})).toContain(markup);
+        expect(parse).not.toHaveBeenCalled();
+        expect(createDocument).not.toHaveBeenCalled();
+        expect(createElement).not.toHaveBeenCalled();
     });
 
     it.each(['', '\n  <!-- document banner -->\n', '\uFEFF<!-- UTF-8 file -->\n'])('handles a full document with prefix %j', prefix => {

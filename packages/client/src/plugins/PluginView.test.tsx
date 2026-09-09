@@ -2,6 +2,7 @@ import { MessageChannel, type MessagePort } from 'node:worker_threads';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, type PluginInfo } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { createKelpiRuntime } from '../state/bridge';
 import { createKelpiStore } from '../state/store';
 import { createFakeSocketFactory, completeHandshake } from '../connection/testing';
@@ -12,6 +13,43 @@ const manifest = decodePluginManifest({ id: 'sample.board', version: '1.0.0', ap
 const plugin: PluginInfo = { manifest, enabled: true, revision: 'r1', instanceID: 'i1', status: 'inactive', error: null };
 
 describe('isolated plugin view host', () => {
+    it('validates the full focus target before changing workspace or pane focus', async () => {
+        vi.stubGlobal('MessageChannel', MessageChannel);
+        const sockets = createFakeSocketFactory();
+        const runtime = createKelpiRuntime({ store: createKelpiStore(), url: 'ws://focus.test/ws', socketFactory: sockets.factory, notifications: null });
+        const state = createDaemonStore(emptyDaemonState('/tmp'));
+        state.dispatch({ type: 'create-workspace', id: 'workspace-one', paneID: 'pane-one', name: 'One', color: 'blue', now: 1 });
+        state.dispatch({ type: 'create-workspace', id: 'workspace-two', paneID: 'pane-two', name: 'Two', color: 'blue', now: 1 });
+        runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(state.getState())) });
+        runtime.activateWorkspace('workspace-two');
+        vi.spyOn(runtime.commands, 'raw').mockImplementation(async payload => payload['action'] === 'list'
+            ? { ok: true, result: [plugin] as never }
+            : payload['action'] === 'attach'
+                ? { ok: true, result: { lease: 'lease', html: '<h1>Board</h1>', entry: 'ui/index.html', context: { daemonID: 'D' }, state: {}, stateVersion: 1 } }
+                : { ok: true, result: null });
+        const activate = vi.spyOn(runtime, 'activateWorkspace');
+        const focus = vi.spyOn(runtime, 'focusPane');
+        let child: MessagePort | undefined;
+        try {
+            const view = render(<PluginView runtime={runtime} pluginID={manifest.id} viewID={manifest.contributes.views[0]!.id} />);
+            await waitFor(() => expect(screen.getByTitle('Board').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
+            const frame = screen.getByTitle('Board') as HTMLIFrameElement;
+            const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
+            const send = vi.spyOn(frame.contentWindow!, 'postMessage');
+            act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'kelpi-plugin-ready', nonce } })));
+            child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>)[0]![2][0]!;
+            const replies: Array<{ id?: string; error?: string }> = [];
+            child.on('message', message => replies.push(message));
+            child.postMessage({ type: 'call', id: 'invalid', method: 'ui.focusPane', args: { workspaceID: 'workspace-one', paneID: 'pane-two' } });
+            await waitFor(() => expect(replies.find(reply => reply.id === 'invalid')?.error).toContain('pane does not exist'));
+            expect(activate).not.toHaveBeenCalled(); expect(focus).not.toHaveBeenCalled();
+            expect(runtime.store.getState().ui.activeWorkspaceID).toBe('workspace-two');
+            child.postMessage({ type: 'call', id: 'valid', method: 'ui.focusPane', args: { workspaceID: 'workspace-one', paneID: 'pane-one' } });
+            await waitFor(() => expect(replies.find(reply => reply.id === 'valid')).toEqual(expect.objectContaining({ id: 'valid' })));
+            expect(activate).toHaveBeenCalledWith('workspace-one'); expect(focus).toHaveBeenCalledWith('workspace-one', 'pane-one');
+            view.unmount();
+        } finally { child?.close(); runtime.dispose(); }
+    });
     it('ignores keyboard and focus relays from a hidden retained frame, then re-enables them when shown', async () => {
         vi.stubGlobal('MessageChannel', MessageChannel);
         const sockets = createFakeSocketFactory();

@@ -86,9 +86,9 @@ export function PluginView(props: PluginViewProps): ReactElement {
                         const id = String(args['workspaceID']);
                         const workspace = runtime.store.getState().daemon.state.workspaces.find(workspace => workspace.id === id);
                         if (!workspace) throw new Error('workspace does not exist');
+                        if (data['method'] === 'ui.focusPane' && !workspace.panes.some(pane => pane.id === args['paneID'])) throw new Error('pane does not exist in workspace');
                         runtime.activateWorkspace(id);
                         if (data['method'] === 'ui.focusPane') {
-                            if (!workspace.panes.some(pane => pane.id === args['paneID'])) throw new Error('pane does not exist in workspace');
                             runtime.focusPane(id, String(args['paneID']));
                         }
                         return null;

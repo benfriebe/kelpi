@@ -100,6 +100,10 @@ function createContributionStore(runtime: KelpiRuntime) {
             }
             if (message['type'] !== 'plugin-event' || !pluginRecord(message['event'])) return;
             const event = message['event'];
+            // Validate ownership before advancing the stream cursor or merging snapshots.
+            // A colliding authored event must not impersonate another contribution owner.
+            if (event['name'] === 'plugin.contributions.changed' && (!pluginRecord(event['data'])
+                || typeof event['pluginID'] !== 'string' || event['pluginID'] !== event['data']['pluginID'])) return;
             if (typeof event['epoch'] !== 'string' || !Number.isSafeInteger(event['sequence']) || Number(event['sequence']) < 0) return;
             const sequence = Number(event['sequence']);
             const changedEpoch = epoch !== null && epoch !== event['epoch'];

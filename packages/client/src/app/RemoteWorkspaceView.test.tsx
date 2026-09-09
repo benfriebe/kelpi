@@ -248,7 +248,7 @@ describe('RemoteWorkspaceView (§1.7)', () => {
             runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(native.getState())) });
             return { runtime, calls, plugin, sockets, update(next: boolean) {
                 state = { ...state, sequence: state.sequence + 1, state: { ...state.state, context: { ready: next } } };
-                sockets.last().emit({ type: 'plugin-event', event: { epoch: name, sequence: state.sequence, name: 'plugin.contributions.changed', data: state } });
+                sockets.last().emit({ type: 'plugin-event', event: { epoch: name, sequence: state.sequence, name: 'plugin.contributions.changed', pluginID: state.pluginID, data: state } });
             } };
         };
         const primary = fixture('primary', false), remote = fixture('remote', true);

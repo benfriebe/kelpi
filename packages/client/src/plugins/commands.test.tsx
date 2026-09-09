@@ -25,7 +25,7 @@ it('rechecks stale menus, items and shortcuts synchronously and targets the expl
     ) as never }));
     const update = (patch: Record<string, boolean>) => {
         current = { ...current, sequence: current.sequence + 1, state: { ...current.state, context: { ...current.state.context, ...patch } } };
-        sockets.last().emit({ type: 'plugin-event', event: { epoch: 'actions', sequence: current.sequence, name: 'plugin.contributions.changed', data: current } });
+        sockets.last().emit({ type: 'plugin-event', event: { epoch: 'actions', sequence: current.sequence, name: 'plugin.contributions.changed', pluginID: current.pluginID, data: current } });
     };
     runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(daemon.getState())) });
     runtime.activateWorkspace('one');

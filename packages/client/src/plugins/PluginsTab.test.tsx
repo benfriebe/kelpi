@@ -104,6 +104,124 @@ describe('grouped plugin settings', () => {
         } finally { cleanup(); h.runtime.dispose(); }
     });
 
+    it.each([false, true])('persists the final valid edit with Settings closed=%s before the first acknowledgement', async close => {
+        const h = setup(), first = deferred<CommandReply>();
+        let saved = 'Before';
+        h.read.mockImplementation(async () => ({ ok: true, result: { ...VALUES, notes: saved } }));
+        h.write.mockImplementation(async args => {
+            saved = String(args['value']);
+            return h.write.mock.calls.length === 1 ? first.promise : { ok: true, result: null };
+        });
+        try {
+            const view = render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded();
+            fireEvent.change(input('Notes'), { target: { value: 'N' } });
+            fireEvent.change(input('Notes'), { target: { value: 'Newest complete value' } });
+            expect(h.write).toHaveBeenCalledTimes(1);
+            if (close) view.unmount(); // Closing Settings and switching tabs both unmount the panel.
+            await act(async () => first.resolve({ ok: true, result: null }));
+            expect(h.write.mock.calls.map(([args]) => args['value'])).toEqual(['N', 'Newest complete value']);
+            expect(saved).toBe('Newest complete value');
+            if (close) { render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded(); }
+            expect(input('Notes').value).toBe('Newest complete value');
+            expect(h.report).not.toHaveBeenCalled();
+            cleanup();
+            const reads = h.read.mock.calls.length;
+            h.sockets.last().emit({ type: 'plugin-event', event: { epoch: 'epoch', sequence: 10, name: 'gap', data: null } });
+            expect(h.read).toHaveBeenCalledTimes(reads);
+        } finally { cleanup(); h.runtime.dispose(); }
+    });
+
+    it('shares the pending save with a reopened panel so an old queued edit cannot overwrite a newer edit', async () => {
+        const h = setup(), first = deferred<CommandReply>(), latest = deferred<CommandReply>();
+        let saved = 'Before';
+        h.read.mockImplementation(async () => ({ ok: true, result: { ...VALUES, notes: saved } }));
+        h.write.mockImplementation(async args => {
+            saved = String(args['value']);
+            return h.write.mock.calls.length === 1 ? first.promise : latest.promise;
+        });
+        try {
+            const original = render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded();
+            fireEvent.change(input('Notes'), { target: { value: 'First edit' } });
+            fireEvent.change(input('Notes'), { target: { value: 'Old queued edit' } });
+            original.unmount();
+            const reopenedReport = vi.fn();
+            const reopened = render(<PluginSettings runtime={h.runtime} plugin={plugin} report={reopenedReport} />); await loaded();
+            expect(input('Notes').value).toBe('Old queued edit');
+            fireEvent.change(input('Notes'), { target: { value: 'Newest reopened edit' } });
+            expect(h.write).toHaveBeenCalledTimes(1);
+            await act(async () => first.resolve({ ok: true, result: null }));
+            expect(h.write.mock.calls.map(([args]) => args['value'])).toEqual(['First edit', 'Newest reopened edit']);
+            expect(input('Notes').value).toBe('Newest reopened edit');
+            reopened.unmount();
+            await act(async () => latest.resolve({ ok: true, result: null }));
+            render(<PluginSettings runtime={h.runtime} plugin={plugin} report={reopenedReport} />); await loaded();
+            expect(saved).toBe('Newest reopened edit');
+            expect(input('Notes').value).toBe(saved);
+            expect(h.report).not.toHaveBeenCalled();
+            expect(reopenedReport).not.toHaveBeenCalled();
+        } finally { cleanup(); h.runtime.dispose(); }
+    });
+
+    it.each(['reload', 'revision', 'disable', 'remove', 'dispose', 'reconnect'] as const)(
+        'drops queued writes when %s retires their owner after Settings closes', async lifecycle => {
+            const h = setup(), first = deferred<CommandReply>();
+            h.write.mockReturnValueOnce(first.promise);
+            try {
+                const view = render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded();
+                fireEvent.change(input('Notes'), { target: { value: 'First edit' } });
+                fireEvent.change(input('Notes'), { target: { value: 'Retired queued edit' } });
+                view.unmount();
+                act(() => {
+                    if (lifecycle === 'dispose') h.runtime.dispose();
+                    else if (lifecycle === 'reconnect') { h.runtime.connection.resync('new connection'); completeHandshake(h.sockets.last()); }
+                    else h.sockets.last().emit({ type: 'plugins-changed', epoch: 'epoch', plugins: lifecycle === 'remove' ? [] : [{ ...plugin,
+                        ...(lifecycle === 'reload' ? { instanceID: 'i2' } : {}),
+                        ...(lifecycle === 'revision' ? { revision: 'r2' } : {}),
+                        ...(lifecycle === 'disable' ? { enabled: false, status: 'disabled' } : {})
+                    }] });
+                });
+                await act(async () => first.resolve({ ok: true, result: null }));
+                expect(h.write).toHaveBeenCalledTimes(1);
+                expect(h.report).not.toHaveBeenCalled();
+            } finally { cleanup(); h.runtime.dispose(); }
+        }
+    );
+
+    it('fences queued writes as soon as the mounted plugin is disabled, before React receives new props', async () => {
+        const h = setup(), first = deferred<CommandReply>();
+        h.write.mockReturnValueOnce(first.promise);
+        try {
+            render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded();
+            fireEvent.change(input('Notes'), { target: { value: 'First edit' } });
+            fireEvent.change(input('Notes'), { target: { value: 'Retired queued edit' } });
+            await act(async () => {
+                h.sockets.last().emit({ type: 'plugins-changed', plugins: [{ ...plugin, enabled: false, status: 'disabled' }] });
+                first.resolve({ ok: true, result: null });
+            });
+            expect(h.write).toHaveBeenCalledTimes(1);
+            expect(input('Notes').disabled).toBe(true);
+            expect(h.report).not.toHaveBeenCalled();
+        } finally { cleanup(); h.runtime.dispose(); }
+    });
+
+    it.each(['plugin', 'runtime'] as const)('keeps a replacement %s isolated from the previous owner\'s queued writes and late replies', async replacement => {
+        const h = setup(), other = replacement === 'runtime' ? setup() : h, first = deferred<CommandReply>();
+        h.write.mockReturnValueOnce(first.promise);
+        try {
+            const view = render(<PluginSettings runtime={h.runtime} plugin={plugin} report={h.report} />); await loaded();
+            fireEvent.change(input('Notes'), { target: { value: 'Old first edit' } });
+            fireEvent.change(input('Notes'), { target: { value: 'Old queued edit' } });
+            const current = replacement === 'plugin' ? { ...plugin, instanceID: 'i2' } : plugin;
+            view.rerender(<PluginSettings runtime={other.runtime} plugin={current} report={other.report} />); await loaded();
+            fireEvent.change(input('Notes'), { target: { value: 'Replacement edit' } });
+            await act(async () => first.reject(new Error('Retired owner')));
+            expect(input('Notes').value).toBe('Replacement edit');
+            expect(h.write.mock.calls.map(([args]) => args['value'])).toEqual(replacement === 'plugin' ? ['Old first edit', 'Replacement edit'] : ['Old first edit']);
+            expect(h.report).not.toHaveBeenCalled();
+            expect(other.report).not.toHaveBeenCalled();
+        } finally { cleanup(); h.runtime.dispose(); if (other !== h) other.runtime.dispose(); }
+    });
+
     it('rolls a failed save back to a newer daemon event and reports the failure', async () => {
         const h = setup(), pending = deferred<CommandReply>();
         h.write.mockReturnValueOnce(pending.promise);

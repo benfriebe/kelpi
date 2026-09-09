@@ -1,121 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { pluginObject, pluginRecord, pluginSettingValue, type JsonObject, type PluginContextValue, type PluginInfo, type PluginSettingDefinition } from '@kelpi/protocol';
+import type { JsonObject, PluginInfo } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { pluginRequest, usePlugins } from './client';
 import { PlacementSettings, WorkbenchSlot } from './Workbench';
 import { PluginShortcuts } from './PluginShortcuts';
 import { PluginProviders } from './PluginProviders';
-
-interface SettingWrite {
-    inFlight: boolean;
-    desired: { value: PluginContextValue; edit: number } | null;
-}
-function settingSession() {
-    return { active: false, loaded: false, serial: 0, load: 0, values: {} as Record<string, PluginContextValue>,
-        versions: new Map<string, number>(), edits: new Map<string, number>(), editing: new Set<string>(),
-        drafts: new Map<string, string | boolean>(), errors: new Map<string, string>(), writes: new Map<string, SettingWrite>() };
-}
-const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+import { pluginSettingsSession } from './settings';
 
 /** Field drafts and writes belong to a particular installed instance, never a later reload. */
 export function PluginSettings(props: { plugin: PluginInfo; runtime: KelpiRuntime; report(error: unknown): void }): ReactElement {
     const { runtime, plugin } = props;
     const [, update] = useState(0);
     const report = useRef(props.report); report.current = props.report;
-    const session = useMemo(settingSession, [runtime, plugin.manifest.id, plugin.revision, plugin.instanceID, plugin.enabled]);
-    const changed = (): void => { if (session.active) update(value => value + 1); };
+    const settings = useMemo(() => pluginSettingsSession(runtime, plugin), [runtime, plugin.manifest.id, plugin.revision, plugin.instanceID, plugin.enabled]);
+    const previous = useRef(settings);
+    const { state: session, changed, edit } = settings;
     const definitions = plugin.manifest.contributes.settings;
     useEffect(() => {
-        session.active = true;
-        let epoch: string | null = null, lastSequence: number | null = null;
-        const refresh = (): void => {
-            if (!plugin.enabled || !runtime.connection.isConnected) return;
-            const request = ++session.load, before = new Map(session.versions);
-            void pluginRequest(runtime, 'settings', { pluginID: plugin.manifest.id }).then(raw => {
-                if (!session.active || request !== session.load) return;
-                const values = pluginObject(raw);
-                for (const [key, setting] of Object.entries(definitions)) {
-                    // A live setting event or completed write after this read began wins.
-                    if (session.versions.get(key) !== before.get(key)) continue;
-                    session.values[key] = pluginSettingValue(setting, values[key] ?? setting.default);
-                }
-                session.loaded = true; changed();
-            }).catch(error => { if (session.active && request === session.load) { report.current(error); changed(); } });
-        };
-        const status = runtime.connection.on('status', value => {
-            if (value === 'connected') refresh();
-            else { session.load += 1; session.loaded = false; changed(); }
-        });
-        const messages = runtime.connection.on('message', message => {
-            if (message['type'] !== 'plugin-event' || !pluginRecord(message['event'])) return;
-            const event = message['event'];
-            if (typeof event['epoch'] === 'string' && Number.isSafeInteger(event['sequence'])) {
-                const sequence = Number(event['sequence']);
-                if (epoch === event['epoch'] && lastSequence !== null && sequence <= lastSequence && event['name'] !== 'gap') return;
-                if (event['name'] === 'gap' || epoch !== null && epoch !== event['epoch'] || lastSequence !== null && sequence > lastSequence + 1) refresh();
-                lastSequence = epoch === event['epoch'] ? Math.max(lastSequence ?? sequence, sequence) : sequence;
-                epoch = event['epoch'];
-            }
-            if (event['name'] !== 'settings.changed' || event['pluginID'] !== plugin.manifest.id || !pluginRecord(event['data'])) return;
-            const data = event['data'], key = data['key'];
-            if (typeof key !== 'string' || !Object.hasOwn(definitions, key)) return;
-            try {
-                session.values[key] = pluginSettingValue(definitions[key]!, data['value']);
-                session.versions.set(key, ++session.serial);
-                if (!session.writes.has(key) && !session.editing.has(key) && !session.errors.has(key)) session.drafts.delete(key);
-                changed();
-            } catch (error) { report.current(error); }
-        });
-        refresh();
-        return () => { session.active = false; session.load += 1; status(); messages(); };
-    }, [runtime, plugin.manifest.id, plugin.enabled, session]);
-
-    const save = (key: string): void => {
-        const write = session.writes.get(key);
-        if (!session.active || !write || write.inFlight || !write.desired) return;
-        const { value, edit } = write.desired, before = session.versions.get(key);
-        write.desired = null; write.inFlight = true;
-        void pluginRequest(runtime, 'settings', { pluginID: plugin.manifest.id, key, value }).then(() => {
-            if (!session.active) return;
-            // A newer daemon event is authoritative even if this older acknowledgement is late.
-            if (session.versions.get(key) === before) { session.values[key] = value; session.versions.set(key, ++session.serial); }
-            if (session.edits.get(key) === edit) {
-                session.errors.delete(key);
-                if (!session.editing.has(key)) session.drafts.delete(key);
-            }
-        }).catch(error => {
-            if (!session.active) return;
-            if (session.edits.get(key) === edit) {
-                session.drafts.delete(key); session.errors.set(key, errorMessage(error));
-            }
-            report.current(error);
-        }).finally(() => {
-            if (!session.active) return;
-            write.inFlight = false;
-            if (write.desired) save(key); else session.writes.delete(key);
-            changed();
-        });
-    };
-    const edit = (key: string, setting: PluginSettingDefinition, draft: string | boolean): void => {
-        session.drafts.set(key, draft); const version = ++session.serial; session.edits.set(key, version);
-        try {
-            let candidate: unknown = draft;
-            if (setting.type === 'number') {
-                const text = String(draft).trim();
-                if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) throw new Error('Enter a valid number.');
-                candidate = Number(text);
-            }
-            const value = pluginSettingValue(setting, candidate);
-            session.errors.delete(key);
-            const write = session.writes.get(key) ?? { inFlight: false, desired: null };
-            write.desired = { value, edit: version }; session.writes.set(key, write); save(key);
-        } catch (error) {
-            // Keep intermediate strings such as "-" or "1e" editable; never send NaN/null.
-            session.errors.set(key, errorMessage(error));
-            const write = session.writes.get(key); if (write) write.desired = null;
-        }
-        changed();
-    };
+        // A mounted owner changing is distinct from closing or switching Settings tabs.
+        if (previous.current !== settings) previous.current.retire();
+        previous.current = settings;
+        return settings.subscribe({ changed: () => update(value => value + 1), report: error => report.current(error) });
+    }, [settings]);
     const groups = [
         { id: '', title: 'General', description: undefined as string | undefined },
         ...[...plugin.manifest.contributes.settingGroups ?? []].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id))

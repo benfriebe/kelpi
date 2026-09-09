@@ -37,7 +37,7 @@ function setup(initial: readonly PluginContributionInfo[] = [info()]) {
     const runtime = createKelpiRuntime({ store: createKelpiStore(), url: 'ws://daemon.test/ws', socketFactory: sockets.factory, notifications: null });
     const request = vi.spyOn(runtime.commands, 'raw').mockResolvedValue({ ok: true, result: initial as never });
     runtime.connect(); completeHandshake(sockets.last());
-    const emit = (entry: PluginContributionInfo, epoch = 'epoch-one') => sockets.last().emit({ type: 'plugin-event', event: { epoch, sequence: entry.sequence, name: 'plugin.contributions.changed', data: entry } });
+    const emit = (entry: PluginContributionInfo, epoch = 'epoch-one', owner: string | null = entry.pluginID) => sockets.last().emit({ type: 'plugin-event', event: { epoch, sequence: entry.sequence, name: 'plugin.contributions.changed', ...(owner === null ? {} : { pluginID: owner }), data: entry } });
     return { runtime, sockets, request, emit };
 }
 
@@ -79,6 +79,27 @@ describe('shared plugin contribution state', () => {
             expect(getPluginContributionState(h.runtime, ID, 'i1').context['ready']).toBe(false);
             act(() => h.emit(info(8)));
             expect(getPluginContributionState(h.runtime, ID, 'i1').context['ready']).toBe(false);
+        } finally { cleanup(); h.runtime.dispose(); }
+    });
+
+    it.each(['plugin.contributions', null])('rejects a contribution event from envelope owner %s before it can poison state or sequence merging', async owner => {
+        const h = setup([info(1, 'i1', false)]);
+        try {
+            const hook = renderHook(() => usePluginContributions(h.runtime));
+            await waitFor(() => expect(hook.result.current.states.get(ID)?.sequence).toBe(1));
+            await act(async () => h.sockets.last().emit({ type: 'plugins-changed', plugins: [plugin], epoch: 'epoch-one' }));
+            act(() => h.emit(info(2, 'i1', false)));
+            const reads = h.request.mock.calls.length;
+            await act(async () => h.emit(info(100, 'i1', true), 'forged-epoch', owner));
+            expect(getPluginContributionState(h.runtime, ID, 'i1').context['ready']).toBe(false);
+            expect(hook.result.current.states.get(ID)?.sequence).toBe(2);
+            expect(h.request).toHaveBeenCalledTimes(reads);
+            await act(async () => h.sockets.last().emit({ type: 'plugins-changed', plugins: [plugin], epoch: 'epoch-one' }));
+            expect(hook.result.current.states.get(ID)?.sequence).toBe(2);
+            act(() => h.emit(info(3, 'i1', true)));
+            expect(getPluginContributionState(h.runtime, ID, 'i1').context['ready']).toBe(true);
+            expect(getPluginContributionState(h.runtime, ID, 'retired').context).toEqual({});
+            await waitFor(() => expect(hook.result.current.states.get(ID)?.sequence).toBe(3));
         } finally { cleanup(); h.runtime.dispose(); }
     });
 

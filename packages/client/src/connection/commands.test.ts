@@ -237,3 +237,63 @@ describe('CommandClient reports', () => {
         expect(reports(socket, 'focus-report')[0]).toEqual({ type: 'focus-report', workspaceID: 'W1', paneID: PANE });
     });
 });
+
+describe('CommandClient close preparation', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    function deferred() {
+        let resolve!: () => void;
+        const promise = new Promise<void>(accept => { resolve = accept; });
+        return { promise, resolve };
+    }
+
+    it('waits for every guard before sending a command or starting its reply timeout', async () => {
+        const h = harness();
+        const first = deferred(), second = deferred();
+        h.client.registerCloseGuard(payload => payload['command'] === 'pane-close' ? first.promise : undefined);
+        h.client.registerCloseGuard(payload => payload['command'] === 'pane-close' ? second.promise : undefined);
+        const closing = h.client.closePane({ target: PANE });
+        expect(h.client.inFlight).toBe(0);
+        expect(() => h.lastCommand()).toThrow('no command was sent');
+        await vi.advanceTimersByTimeAsync(2000);
+        first.resolve(); await Promise.resolve();
+        expect(() => h.lastCommand()).toThrow('no command was sent');
+        second.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.lastCommand()).toEqual({ command: 'pane-close', target: PANE });
+        expect(h.client.inFlight).toBe(1);
+        h.answer({ ok: true }); await closing;
+        h.client.dispose(); h.connection.close();
+    });
+
+    it('never sends after a rejected guard and resumes ordinary sending after unregistering it', async () => {
+        const h = harness();
+        const guard = vi.fn(() => Promise.reject(new Error('document is unsaved')));
+        const remove = h.client.registerCloseGuard(guard);
+        await expect(h.client.closePane({ target: PANE })).rejects.toThrow('document is unsaved');
+        expect(() => h.lastCommand()).toThrow('no command was sent');
+        expect(h.client.inFlight).toBe(0);
+        remove();
+        const closing = h.client.closePane({ target: PANE });
+        expect(h.lastCommand()).toEqual({ command: 'pane-close', target: PANE });
+        expect(guard).toHaveBeenCalledOnce();
+        h.answer({ ok: true }); await closing;
+        h.client.dispose(); h.connection.close();
+    });
+
+    it('rejects a prepared command if its client is disposed while the guard is pending', async () => {
+        const h = harness();
+        const preparing = deferred();
+        const guard = vi.fn(() => preparing.promise);
+        h.client.registerCloseGuard(guard);
+        const closing = h.client.closePane({ target: PANE });
+        const rejection = expect(closing).rejects.toBeInstanceOf(CommandDisconnectedError);
+        h.client.dispose();
+        preparing.resolve(); await rejection;
+        expect(() => h.lastCommand()).toThrow('no command was sent');
+        await expect(h.client.closePane({ target: PANE })).rejects.toBeInstanceOf(CommandDisconnectedError);
+        expect(guard).toHaveBeenCalledOnce();
+        h.connection.close();
+    });
+});

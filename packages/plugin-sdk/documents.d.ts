@@ -22,3 +22,10 @@ export interface DocumentsAPI {
     watch(paneID?: string): Promise<{ subscription: string; state: DocumentSnapshot }>;
     unwatch(subscription: string): Promise<void>;
 }
+/** Drafts belong to this browser window and document pane. Available only in document renderers. */
+export interface ViewDocumentsAPI extends DocumentsAPI {
+    /** Persist every input before queueing daemon edits, so a reloaded/failed view can recover it. */
+    stage(text: string, revision: string): Promise<{ id: string }>;
+    /** Apply an exact staged draft with an explicit revision. A newer stage rejects a superseded ID. */
+    applyDraft(id: string, revision: string): Promise<DocumentSnapshot>;
+}

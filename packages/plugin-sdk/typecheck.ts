@@ -92,6 +92,15 @@ async function authoring(api: BackendAPI): Promise<void> {
     });
     const view = getKelpi();
     await view.ready;
+    const document = await api.documents.get('pane');
+    const edited = await api.documents.edit(document.paneID, 'text', document.revision);
+    await api.documents.save(edited.paneID, edited.revision);
+    const draft = await view.documents.stage('text', edited.revision);
+    await view.documents.applyDraft(draft.id, edited.revision);
+    // @ts-expect-error A document mutation must supply its observed revision.
+    await api.documents.edit(document.paneID, 'text');
+    // @ts-expect-error Durable browser drafts belong to a document view, not a backend.
+    await api.documents.stage('text', document.revision);
     await view.ui.focusPane(first.id, 'pane');
     const unsubscribe = view.onContext(environment => { if (!environment.visible) return; void environment.context.workspaceID; });
     const workbench = await view.ui.getWorkbench();

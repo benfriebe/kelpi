@@ -1,3 +1,5 @@
+import { DocumentPane, isDocumentPane } from './features/DocumentPane';
+import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
 import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
 import { bindStatusbarFeature, statusbarModel, useStatusbarActions } from './features/statusbar';
@@ -162,9 +164,6 @@ import {
     type WebGeometryResyncMessage
 } from './connection';
 import {
-    DiffPane,
-    MarkdownPane,
-    ScratchpadPane,
     chordKeysForBindings,
     chordKeysForTrigger,
     createContentClient,
@@ -1168,6 +1167,7 @@ function Shell(props: AppProps): ReactElement {
         [runtime, commands, notifyFailure]
     );
     useEffect(() => () => content.dispose(), [content]);
+    useEffect(() => registerDocumentCloseGuard(runtime, content), [runtime, content]);
 
     /**
      * §TERM-116's timer, owned by the window rather than by the overlay: the bar is unmounted
@@ -3325,60 +3325,20 @@ function Shell(props: AppProps): ReactElement {
                     />
                 );
             }
+            const renderDocument = (): ReactNode => isDocumentPane(pane.type) ? <DocumentPane
+                runtime={runtime} workspaceID={workspace?.id ?? ''} kind={pane.type}
+                paneID={paneID} content={content} focused={focused} visible={renderState.visible}
+                background={paneFill} documentBackground={contentDocumentFill} onFocusRequest={onTerminalFocus}
+                onToggleEdit={act.toggleMarkdownEdit} findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0} findPalette={findPalette}
+                claimedChords={allViewChords} onOpenExternalEditor={act.openExternalEditor} /> : null;
             const renderers = {
                 [pane.plugin?.viewID ?? 'kelpi.plugin']: () => {
                     return pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspace?.id} visible={renderState.visible} claimedChords={allViewChords} /> : <ContentPanePlaceholder pane={pane} />;
                 },
-                'kelpi.markdown': () => {
-                    return (
-                        <MarkdownPane
-                            paneID={paneID}
-                            content={content}
-                            focused={focused}
-                            visible={renderState.visible}
-                            background={paneFill}
-                            documentBackground={contentDocumentFill}
-                            onFocusRequest={onTerminalFocus}
-                            onToggleEdit={act.toggleMarkdownEdit}
-                            findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
-                            // §TERM-103: the header's copy button opens the frame's Copy menu.
-                            copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
-                            findPalette={findPalette}
-                            // H9: the preview is cross-origin, so it hands claimed chords back.
-                            claimedChords={allViewChords}
-                            onOpenExternalEditor={act.openExternalEditor}
-                        />
-                    );
-                },
-                'kelpi.diff': () => {
-                    return (
-                        <DiffPane
-                            paneID={paneID}
-                            content={content}
-                            focused={focused}
-                            visible={renderState.visible}
-                            background={paneFill}
-                            documentBackground={contentDocumentFill}
-                            onFocusRequest={onTerminalFocus}
-                            findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
-                            findPalette={findPalette}
-                            // H9: same relay as the preview — a focused diff must still answer ⌘D.
-                            claimedChords={allViewChords}
-                        />
-                    );
-                },
-                'kelpi.scratchpad': () => {
-                    return (
-                        <ScratchpadPane
-                            paneID={paneID}
-                            content={content}
-                            focused={focused}
-                            visible={renderState.visible}
-                            background={paneFill}
-                            onFocusRequest={onTerminalFocus}
-                        />
-                    );
-                },
+                'kelpi.markdown': renderDocument,
+                'kelpi.diff': renderDocument,
+                'kelpi.scratchpad': renderDocument,
                 // The one pane whose body this client cannot draw: the page lives in a native view
                 // the Electron shell owns. The chrome is ours, the page area is a measured hole
                 // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.

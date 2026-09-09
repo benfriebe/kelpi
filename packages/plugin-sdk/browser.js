@@ -133,6 +133,18 @@
         get stateVersion() { return live.stateVersion; }, get theme() { return live.theme; }, get visible() { return live.visible; },
         setState: async state => { const result = await base.call('views.setState', { state }); live = { ...live, state, stateVersion: result.stateVersion }; notifyContext(); },
         events: Object.freeze({ on }),
+        documents: Object.freeze({
+            ...base.documents,
+            stage: (text, revision) => base.call('documents.stage', { text, revision }),
+            applyDraft: async (id, revision) => {
+                try { return await base.call('documents.applyDraft', { id, revision }); }
+                catch (error) {
+                    const code = error.message?.split(':')[0];
+                    if (code === 'DOCUMENT_CONFLICT' || code === 'DOCUMENT_DRAFT_SUPERSEDED') throw new KelpiError(error.message, { code, method: 'documents.applyDraft', cause: error });
+                    throw error;
+                }
+            },
+        }),
         ui: Object.freeze({
             ...base.ui,
             activateWorkspace: workspaceID => base.call('ui.activateWorkspace', { workspaceID }),

@@ -15,6 +15,7 @@ const caches = new WeakMap<KelpiRuntime, { plugins: readonly PluginInfo[]; daemo
 export function getCurrentPlugins(runtime: KelpiRuntime): readonly PluginInfo[] {
     return caches.get(runtime)?.plugins ?? EMPTY;
 }
+export function getPluginDaemonID(runtime: KelpiRuntime): string | null { return caches.get(runtime)?.daemonID ?? null; }
 export function usePlugins(runtime: KelpiRuntime): { plugins: readonly PluginInfo[]; daemonID: string | null; error: string | null } {
     const [, update] = useState(0);
     useEffect(() => {

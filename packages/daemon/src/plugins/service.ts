@@ -670,9 +670,16 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return { paneID, workspaceID };
         }
         if (method === 'views.setState') {
+            if (operationScope().signal?.aborted) throw new Error('plugin invocation cancelled');
             const paneID = text(context.paneID ?? args['paneID'], 'paneID');
             const pane = this.options.store.getState().workspaces.flatMap(workspace => [...workspace.panes, ...workspace.parkedPanes]).find(pane => pane.id === paneID);
-            if (pane?.plugin?.pluginID !== id) throw new Error('plugin does not own this pane');
+            const documentView = item.manifest.contributes.views.find(view => view.id === context.viewID && ['markdown', 'scratchpad', 'diff'].includes(pane?.type ?? '') && view.placements.includes(`document.${pane!.type}`));
+            if (documentView) {
+                const key = `${paneID}:${documentView.id}`;
+                this.writeJSON(path.join(this.directory, 'data', id, 'documents.json'), pluginObject({ ...this.storage(id, 'documents'), [key]: { stateVersion: documentView.stateVersion, state: pluginObject(args['state']) } }));
+                return { stateVersion: documentView.stateVersion };
+            }
+            if (pane?.type !== 'plugin' || pane.plugin?.pluginID !== id) throw new Error('plugin does not own this pane');
             const version = item.manifest.contributes.views.find(view => view.id === pane.plugin!.viewID)?.stateVersion;
             if (!version) throw new Error('view is no longer registered');
             this.options.store.dispatch({ type: 'set-plugin-pane-state', paneID, plugin: { ...pane.plugin, stateVersion: version, state: pluginObject(args['state']) } });
@@ -838,27 +845,53 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (action === 'settings') return this.api(id, input['key'] === undefined ? 'settings.get' : 'settings.set', input, context);
         if (action === 'attach') {
             if (!item.enabled) throw new Error('plugin is disabled');
+            const signal = operationScope().signal;
+            if (signal?.aborted) throw new Error('plugin view attachment cancelled');
             for (const [leaseID, lease] of this.leases) if (lease.expires < Date.now()) this.release(leaseID);
             if (this.leases.size >= 128) throw new Error('too many attached plugin views');
             const viewID = text(input['viewID'], 'viewID');
-            if (!item.manifest.contributes.views.some(view => view.id === viewID)) throw new Error('plugin view is not registered');
+            const view = item.manifest.contributes.views.find(view => view.id === viewID);
+            if (!view) throw new Error('plugin view is not registered');
             const paneID = typeof input['paneID'] === 'string' ? input['paneID'] : undefined;
-            if (paneID) {
-                const pane = this.options.store.getState().workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID);
-                if (pane?.plugin?.pluginID !== id || pane.plugin.viewID !== viewID) throw new Error('plugin view does not own this pane');
-            }
+            const owningPane = () => {
+                if (!paneID) return undefined;
+                const workspace = this.options.store.getState().workspaces.find(workspace => workspace.panes.some(pane => pane.id === paneID));
+                const pane = workspace?.panes.find(pane => pane.id === paneID);
+                const documentView = pane && ['markdown', 'scratchpad', 'diff'].includes(pane.type) && view.placements.includes(`document.${pane.type}`);
+                if (!pane || (!documentView && (pane.type !== 'plugin' || pane.plugin?.pluginID !== id || pane.plugin.viewID !== viewID))) throw new Error('plugin view does not own this pane');
+                return { pane, workspaceID: workspace!.id };
+            };
+            owningPane();
             const generation = this.generations.get(id);
-            await this.activate(id);
-            if (this.closed || !this.item(id).enabled || this.item(id).revision !== item.revision || generation !== this.generations.get(id)) throw new Error('plugin changed while attaching; retry');
+            let cancelActivation: (() => void) | undefined;
+            try {
+                await Promise.race([
+                    this.activate(id),
+                    ...(signal ? [new Promise<never>((_resolve, reject) => {
+                        cancelActivation = () => reject(new Error('plugin view attachment cancelled'));
+                        if (signal.aborted) cancelActivation(); else signal.addEventListener('abort', cancelActivation, { once: true });
+                    })] : [])
+                ]);
+            } finally {
+                if (cancelActivation) signal?.removeEventListener('abort', cancelActivation);
+            }
+            if (signal?.aborted) throw new Error('plugin view attachment cancelled');
+            if (this.closed || this.changing.has(id) || !this.installations.get(id)?.enabled || this.installations.get(id)?.revision !== item.revision || generation !== this.generations.get(id)) throw new Error('plugin changed while attaching; retry');
             if (this.leases.size >= 128) throw new Error('too many attached plugin views');
-            const view = item.manifest.contributes.views.find(view => view.id === viewID)!;
+            // Activation can yield while the pane closes, moves, or is reused for another
+            // feature. Resolve its current owner again before granting view access.
+            const owned = owningPane(), pane = owned?.pane;
             const htmlPath = this.asset(id, item.revision, view.entry);
             if (fs.statSync(htmlPath).size > 256 * 1024) throw new Error('view HTML exceeds 256 KiB');
             const html = fs.readFileSync(htmlPath, 'utf8');
+            const savedDocument = pane && pane.type !== 'plugin' ? this.storage(id, 'documents')[`${pane.id}:${viewID}`] : undefined;
+            if (savedDocument !== undefined && (!pluginRecord(savedDocument) || !Number.isSafeInteger(savedDocument['stateVersion']) || Number(savedDocument['stateVersion']) < 1)) throw new Error('invalid saved document view state');
+            const state = pane?.plugin?.state ?? (pluginRecord(savedDocument) ? pluginObject(savedDocument['state']) : {});
+            const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedDocument) ? Number(savedDocument['stateVersion']) : view.stateVersion);
+            const workspaceID = owned?.workspaceID ?? input['workspaceID'] ?? context.workspaceID;
             const lease = randomUUID();
-            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...((input['workspaceID'] ?? context.workspaceID) ? { workspaceID: String(input['workspaceID'] ?? context.workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000 });
-            const pane = paneID ? this.options.store.getState().workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID) : undefined;
-            return { lease, html, entry: view.entry, state: pane?.plugin?.state ?? {}, stateVersion: pane?.plugin?.stateVersion ?? view.stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
+            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000 });
+            return { lease, html, entry: view.entry, state, stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
         }
         if (action === 'enable' || action === 'disable' || action === 'reload' || action === 'remove') return this.mutate(async () => {
             const item = this.item(id);

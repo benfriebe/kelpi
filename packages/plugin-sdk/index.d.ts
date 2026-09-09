@@ -3,7 +3,7 @@ import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, Buil
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
-import type { DocumentsAPI } from './documents.js';
+import type { DocumentsAPI, ViewDocumentsAPI } from './documents.js';
 export * from './domain.js';
 export * from './services.js';
 export * from './contributions.js';
@@ -77,6 +77,7 @@ export interface BackendAPI extends KelpiAPI {
     };
 }
 export interface ViewAPI extends KelpiAPI {
+    documents: ViewDocumentsAPI;
     readonly ready: Promise<void>;
     readonly context: Context;
     readonly state: Data;

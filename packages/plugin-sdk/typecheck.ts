@@ -32,6 +32,16 @@ async function authoring(api: BackendAPI): Promise<void> {
     const rendered = await api.services.call('kelpi.content.render', 1, 'render', { kind: 'markdown', source: '# Hello', backgroundColor: '#111111', fontSize: 13, assetBase: null });
     const html: string = rendered.html;
     const text: string = await api.services.call('kelpi.files', 1, 'read', { path: '/tmp/example.txt' });
+    // Native results must compose with the SDK's command, event, storage, and provider JSON APIs.
+    const root = await api.services.call('kelpi.git', 1, 'resolveRepoRoot', { directory: '/repo' });
+    api.commands.register('sample.plugin.exec', () => api.process.exec('git', ['--version']));
+    api.commands.register('sample.plugin.repo-root', () => api.services.call('kelpi.git', 1, 'resolveRepoRoot', { directory: '/repo' }));
+    api.commands.register('sample.plugin.worktrees', () => api.services.call('kelpi.git', 1, 'listWorktrees', { repoPath: '/repo' }));
+    await api.emit('sample.plugin.native-results', { process, root, trees });
+    await api.storage.set('native-results', { process, root, trees });
+    api.providers.register('sample.plugin.process', {
+        exec: args => api.services.call('kelpi.process', 1, 'exec', { file: String(args.file) }, { provider: 'bundled' }),
+    });
     // @ts-expect-error Native services use version 1.
     await api.services.call('kelpi.git', 2, 'getStatus', { repoPath: '/repo' });
     // @ts-expect-error The service determines its supported methods.

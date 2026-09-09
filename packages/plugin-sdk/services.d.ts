@@ -4,8 +4,8 @@ import type { Context } from './index.js';
 export type NativeGitStatus = { kind: 'unknown' | 'clean' }
     | { kind: 'dirty'; changedFiles: number; additions: number; deletions: number };
 export type NativeRepoState = 'clean' | 'merge' | 'rebase' | 'cherryPick' | 'revert' | 'bisect';
-export interface NativeRepoRoot { worktreeRoot: string; parentRepoRoot: string }
-export interface NativeWorktree { path: string; branch: string | null; isMain: boolean }
+export type NativeRepoRoot = { worktreeRoot: string; parentRepoRoot: string };
+export type NativeWorktree = { path: string; branch: string | null; isMain: boolean };
 export interface ContentRenderArgs {
     kind: 'markdown' | 'diff'; source: string; backgroundColor: string; fontSize: number;
     /** Host-provided base URL for native preview assets; null omits the bundled document's base element. */
@@ -18,7 +18,7 @@ export interface ProcessExecArgs {
     /** Defaults to the daemon account's home directory. */
     cwd?: string;
 }
-export interface ProcessExecResult { stdout: string; stderr: string }
+export type ProcessExecResult = { stdout: string; stderr: string };
 
 type Contract<Args, Result> = { args: Args; result: Result };
 type RepoArgs = { repoPath: string };

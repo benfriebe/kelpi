@@ -3,6 +3,9 @@
 Plugins can add custom panes, replace workbench views, register commands, and run background
 code on the daemon machine. They install independently of the Kelpi application build.
 Plugins can also define nested UI containers, guard commands, and supply versioned services.
+They can contribute conditional menus and native status/header items, publish live context
+and badges, group settings, and present shared prompts and actionable notifications. The
+[UI contribution guide](plugin-ui.md) and [UI Lab](../examples/plugins/ui-lab) cover these APIs.
 The included [Agent Board](../examples/plugins/agent-board) uses the same HTML view as a pane,
 sidebar, inspector, bottom panel, workspace, toolbar, status bar, or settings view.
 

@@ -1,0 +1,39 @@
+{
+  "id": "example.ui-lab",
+  "name": "UI Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "activation": "startup",
+  "backend": "backend.mjs",
+  "contributes": {
+    "views": [
+      { "id": "example.ui-lab.panel", "title": "UI Lab", "entry": "ui/index.html", "placements": ["pane", "sidebar.secondary"], "stateVersion": 1 }
+    ],
+    "commands": [
+      { "id": "example.ui-lab.increment", "title": "UI Lab: Increment", "shortcut": "ctrl+alt+u", "when": { "context.visible": true }, "enablement": { "context.enabled": true } },
+      { "id": "example.ui-lab.toggle", "title": "UI Lab: Toggle enabled" },
+      { "id": "example.ui-lab.snapshot", "title": "UI Lab: Read state" }
+    ],
+    "menus": [
+      { "id": "example.ui-lab.menu-pane", "command": "example.ui-lab.increment", "placement": "pane", "group": "UI Lab", "order": 10, "when": { "pane.exists": true } },
+      { "id": "example.ui-lab.menu-workspace", "command": "example.ui-lab.toggle", "placement": "workspace", "group": "UI Lab", "order": 10, "when": { "workspace.exists": true } },
+      { "id": "example.ui-lab.menu-header", "command": "example.ui-lab.increment", "placement": "pane.header", "group": "UI Lab", "order": 10, "when": { "pane.exists": true } },
+      { "id": "example.ui-lab.menu-palette", "command": "example.ui-lab.increment", "placement": "palette", "group": "UI Lab", "order": 10, "when": { "connection": "connected" } }
+    ],
+    "items": [
+      { "id": "example.ui-lab.counter", "placement": "statusbar", "text": "UI Lab", "tooltip": "Increment the UI Lab counter", "badge": "0", "tone": "info", "command": "example.ui-lab.increment", "order": 10, "when": { "connection": "connected", "context.visible": true }, "enablement": { "context.enabled": true } },
+      { "id": "example.ui-lab.workspace", "placement": "workspace.header", "text": "Lab workspace", "badge": "0", "tone": "info", "command": "example.ui-lab.increment", "order": 10, "when": { "workspace.exists": true, "context.visible": true }, "enablement": { "context.enabled": true } },
+      { "id": "example.ui-lab.pane", "placement": "pane.header", "text": "Lab pane", "badge": "0", "tone": "info", "command": "example.ui-lab.increment", "order": 10, "when": { "pane.exists": true, "context.visible": true }, "enablement": { "context.enabled": true } }
+    ],
+    "settingGroups": [
+      { "id": "example.ui-lab.appearance", "title": "Appearance", "description": "Choose how the lab panel is displayed.", "order": 10 },
+      { "id": "example.ui-lab.behavior", "title": "Behavior", "description": "Change how the counter and examples behave.", "order": 20 }
+    ],
+    "settings": {
+      "density": { "title": "Panel density", "type": "string", "default": "comfortable", "enum": ["compact", "comfortable"], "group": "example.ui-lab.appearance", "description": "Compact reduces the space between controls.", "order": 10 },
+      "step": { "title": "Counter step", "type": "number", "default": 1, "min": 1, "max": 10, "group": "example.ui-lab.behavior", "description": "Each increment adds this amount, from 1 to 10.", "order": 10 },
+      "notifications": { "title": "Enable notification example", "type": "boolean", "default": true, "group": "example.ui-lab.behavior", "description": "Enables the shared notification button in the panel.", "order": 20 }
+    }
+  }
+}

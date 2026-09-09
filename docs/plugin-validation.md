@@ -265,3 +265,50 @@ Example forms use explicit actions and Enter handling under the existing form sa
 This phase's validation consists of the full automated suite, development builds and the four
 focused live scenarios above. Earlier full UI-audit and packaged-installer records describe the
 previous merged phases.
+
+## Reactive contributions and shared window UI (2026-09-09)
+
+This follow-up continues `feature/plugin-bundled-features` from `c9d260e` in the same isolated
+worktree. Plugins now declare conditional menus, status/header items and grouped settings;
+backends and views publish bounded, atomic contribution state. The CLI can inspect that
+state. The browser SDK adds shared quick picks, inputs, dialogs and actionable notifications.
+The [UI guide](plugin-ui.md) documents conditions, validation, runtime scope and lifetime.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,915 root tests and 868 shell tests, **7,783 total**. One existing optional real-Swift-database test is skipped. | [Final check](../out/plugin-ui-validation/check-complete.log) |
+| Development builds | Daemon, client, CLI and shell builds pass against the final source. | [Build log](../out/plugin-ui-validation/build.log) |
+| UI Lab live scenario | 30/30 checks pass onscreen. Covers real item clicks and caller context, live badges/visibility/enablement, iframe shortcuts, disabled palette rows, grouped settings/ranges, every shared prompt, native shortcut protection, Settings queueing, reload cancellation, reset and recovery. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
+| Preview shortcuts | 6/6 checks pass onscreen against the final build: Markdown/diff iframe focus, exactly one invocation and correct pane/workspace context. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
+| Existing UI regressions | Workbench 22/22, remote plugins 12/12, swapped sidebars 11/11 and native confirmation dialogs 10/10 pass in a private background instance. | [Regression results](../out/plugin-ui-validation/regression/results.json) |
+| Actual example backend | 6/6 checks pass through a real PluginService child: activation, concurrent increments, settings, context/item updates, settings events without a mounted view, and reload/persistence. | [Backend results](../out/ui-lab-backend-validation.json) |
+| Source consistency | The committed product, SDK, examples and validation sources match the final hash manifest. Whitespace checks pass. | [Verification](../out/plugin-ui-validation/source-verification.json), [Hashes](../out/plugin-ui-validation/source-hashes.json) |
+
+The final [dialog screenshot](../out/plugin-ui-validation/verified-live/plugin-ui-services-01-shared-dialog-and-native-contributions.png)
+and [restored UI Lab](../out/plugin-ui-validation/verified-live/plugin-ui-services-02-ui-lab-ready.png)
+were visually inspected. Native header/footer items fit beside the existing controls, and the
+shared dialog remains legible over the themed example. Hidden-instance screenshots are not
+used as visual evidence. All instances use private state and were stopped afterward.
+
+Review found and fixed invocation-time manifest staleness, an overly short prompt-owner ID
+limit, and missing modal coordination with native Settings/shortcuts/menu commands. Remote
+pane headers now resolve and invoke contributions on their own daemon. Focused tests cover
+these boundaries, shared-state sequencing/reset, disposed iframe channels, input drafts,
+settings races, cancellation, queue limits and notification timers.
+
+The initial UI Lab run passed 23/26 checks. Its three failures were scenario assumptions:
+numeric drafts use a text input, and broad button selectors clicked the dialog/notification
+dismiss control. Corrected selectors and four additional modal checks produce the final
+30/30 run. The original [run](../out/plugin-ui-validation/live/results.json) is retained.
+
+The first full check caught an incomplete phone test runtime fixture and unnecessary enabled
+palette-row markup. Both were corrected. A later full check exposed an existing terminal
+test race: its wait accepted echoed input before the output line arrived. The test now waits
+for the actual shell output; the final full suite passes. The initial mixed regression run
+passed 60/61 checks because its first Markdown click did not retain iframe focus; command
+delivery still passed. A fresh onscreen repeat and the final combined live run both pass
+all six preview checks without changing that scenario or the preview implementation.
+
+This phase validates the complete automated suite, development builds and 91 distinct live
+scenario checks. Packaged-release and full UI-audit results above apply to the earlier phases;
+those larger batteries were not repeated for this follow-up.

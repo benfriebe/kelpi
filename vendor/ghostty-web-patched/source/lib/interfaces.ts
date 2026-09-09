@@ -21,6 +21,7 @@ export interface ITerminalOptions {
 
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
+  scrollOnUserInput?: boolean; // vendor 0.4.0-nex.11: a keystroke scrolls to the bottom (default: true)
 
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()

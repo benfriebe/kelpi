@@ -181,6 +181,7 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
+      scrollOnUserInput: options.scrollOnUserInput ?? true, // vendor 0.4.0-nex.11
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -557,6 +558,12 @@ export class Terminal implements ITerminalCore {
           if (this.options.disableStdin) {
             return;
           }
+          // vendor 0.4.0-nex.11: a keystroke brings the current output back into view
+          // (Ghostty's default; xterm.js's `scrollOnUserInput`). Mouse reports do not come
+          // this way — the host sends those on its own path — so this is keys and paste.
+          if (this.options.scrollOnUserInput !== false) {
+            this.scrollToBottom();
+          }
           // Input handler fires data events
           this.dataEmitter.fire(data);
         },
@@ -664,6 +671,10 @@ export class Terminal implements ITerminalCore {
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
 
+    // vendor 0.4.0-nex.11: measured only while scrolled up, so the at-bottom hot path pays
+    // nothing. See the pin below.
+    const scrollbackBefore = this.viewportY !== 0 ? this.wasmTerm!.getScrollbackLength() : 0;
+
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
 
@@ -682,9 +693,26 @@ export class Terminal implements ITerminalCore {
     // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
-    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
+    // vendor 0.4.0-nex.11: output never moves a scrolled viewport.
+    //
+    // Upstream snapped to the bottom here on every write while scrolled up ("xterm.js
+    // behavior" — it is not: xterm.js stays at the bottom only if it was already there, and
+    // native Ghostty never moves a scrolled viewport on output at all). Against a TUI that
+    // repaints its status line several times a second — a running codex session — every
+    // repaint yanked the viewport down, and the smooth-scroll animation still heading for the
+    // user's wheel target pulled it back up: the up/down jitter that only stopped once the
+    // target itself was the bottom.
+    //
+    // `viewportY` counts lines UP FROM THE BOTTOM, so holding it constant while scrollback
+    // grows would let the text drift upward under the reader. The pin shifts the offset (and a
+    // running animation's target) by the growth instead, so the lines on screen stay the lines
+    // on screen — Ghostty's own rule. The one thing this cannot see is growth past the
+    // scrollback cap, where the length stops moving while lines still roll off the top; the
+    // WASM exposes no counter for it, so under very heavy output at the cap the pin drifts by
+    // those lines. Typing scrolls to the bottom (`scrollOnUserInput`), as Ghostty does.
     if (this.viewportY !== 0) {
-      this.scrollToBottom();
+      const grown = this.wasmTerm!.getScrollbackLength() - scrollbackBefore;
+      if (grown > 0) this.pinViewportAcrossGrowth(grown);
     }
 
     // Check for title changes (OSC 0, 1, 2 sequences)
@@ -1115,6 +1143,21 @@ export class Terminal implements ITerminalCore {
       this.scrollEmitter.fire(this.viewportY);
       this.showScrollbar();
     }
+  }
+
+  /**
+   * Keep the lines on screen where they are while `grown` lines were appended below them
+   * (vendor 0.4.0-nex.11). Announced like any other move: the offset changed even though the
+   * content did not, and a host mirroring the offset (a scrollbar, a touch scroller) must not
+   * be left holding a stale one.
+   */
+  private pinViewportAcrossGrowth(grown: number): void {
+    const maxScroll = this.getScrollbackLength();
+    this.viewportY = Math.min(maxScroll, this.viewportY + grown);
+    if (this.scrollAnimationFrame) {
+      this.targetViewportY = Math.min(maxScroll, this.targetViewportY + grown);
+    }
+    this.scrollEmitter.fire(Math.floor(this.viewportY));
   }
 
   /**

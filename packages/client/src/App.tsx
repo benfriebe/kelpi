@@ -868,6 +868,7 @@ function Shell(props: AppProps): ReactElement {
     );
     const inspectorData = useInspectorData({
         commands,
+        events: runtime.connection,
         workspaceID: workspace?.id ?? null,
         // §APP-071: the FOOTER reads the same associations for its `doc N +A -B`, so the feed
         // runs whenever the active workspace has any — not only while the panel is open. With

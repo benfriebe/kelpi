@@ -1,5 +1,6 @@
 import { pluginAssetsRoute } from '../plugins/http.js';
 import { PluginService } from '../plugins/service.js';
+import { createPluginGitService } from '../plugins/git-service.js';
 import { pluginObject } from '@kelpi/protocol';
 /**
  * Composition root: every seam in `../seams.ts` gets its concrete implementation here, and
@@ -31,7 +32,7 @@ import { newUUID } from '@kelpi/core/codec';
 import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/protocol';
 import type { ResumeTuple } from '@kelpi/core/agent';
 
-import { createContentService, type ContentService } from '../content/index.js';
+import { createContentService, createContentRenderService, type ContentService } from '../content/index.js';
 import {
     contentAppearanceOf,
     createSettingsService,
@@ -561,7 +562,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     });
     const input = createTerminalInput({ pty, modes: (paneID) => term.modes(paneID) });
-    // M5: content panes. It owns its own git service (diff panes) and file watchers, and its
+    // M5: content panes. It shares the replaceable Git service and owns file watchers; its
     // edit buffers are flushed by `stop()` below before the persist gate closes.
     // M8: the settings authority. Created BEFORE the content service so markdown/diff panes
     // render against the user's real ghostty background from the very first load rather than
@@ -572,8 +573,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
         ...(onError !== undefined ? { onError } : {})
     });
+    let pluginHost: PluginService | undefined;
+    const pluginGit = createPluginGitService(createGitService(), () => pluginHost);
+    const git: GitService = pluginGit.git;
     const content = createContentService({
         store,
+        git,
+        services: () => pluginHost,
         appearance: contentAppearanceOf(settings.snapshot),
         ...(onError !== undefined ? { onError } : {}),
         ...(options.now !== undefined ? { now: options.now } : {})
@@ -625,7 +631,6 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
     // M7: one git service shared by the handlers, the graft engine and the HEAD watchers, so
     // every git spawn resolves the same executable and honours the same timeouts.
-    const git: GitService = createGitService();
     const graft = createGraftService({
         git,
         ...(options.now !== undefined ? { now: options.now } : {}),
@@ -1214,6 +1219,17 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         broadcast: event => ws?.broadcast(event),
         onError: error => report(error, 'plugins')
     });
+    plugins.registerBuiltinService(pluginGit.service);
+    plugins.registerBuiltinService(createContentRenderService());
+    pluginHost = plugins;
+    const offPluginServices = plugins.onServicesChanged(changed => {
+        if (changed.includes('kelpi.content.render@1')) content.invalidateRenderer();
+        if (changed.includes('kelpi.git@1')) {
+            content.invalidateGit();
+            repoWatch.invalidate();
+            branchWatch.invalidate();
+        }
+    });
     const dispatcher = createDispatcher<PaneHandlerContext>({
         ctx,
         operations: plugins,
@@ -1318,7 +1334,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             statsGateTimer = null;
             offStats();
             stats.dispose();
-            await plugins.dispose();
+            offPluginServices();
             settings.dispose();
             content.dispose();
             // Releases the host slot (the shell sees `host-revoked`) and ends every console
@@ -1326,6 +1342,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             webPanes.close();
             repoWatch.dispose();
             branchWatch.dispose();
+            // Stop background Git discovery before the provider-backed graft unwind.
+            autoDetect.stop();
             // §5 quit flush: unwind every graft session (2 s cap) so a clean quit never leaves
             // a `kelpi-graft-active` breadcrumb behind — anything slower falls back to the
             // orphan-recovery banner on the next launch.
@@ -1334,10 +1352,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             } catch (error) {
                 report(error, 'graft shutdown');
             }
+            // A selected Git provider must remain alive for the session's restoration verbs.
+            // Closing it first would switch a live graft to bundled Git during its unwind.
+            await plugins.dispose();
             offGraft();
             offOrphans();
-            // Pending auto-link/auto-unlink timers must not fire into a store nobody will save.
-            autoDetect.stop();
             // SIGTERM contract: write the debounced snapshot before anything else changes.
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).

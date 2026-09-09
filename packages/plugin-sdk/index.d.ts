@@ -84,6 +84,13 @@ export interface ViewAPI extends KelpiAPI {
         getWorkbench(): Promise<WorkbenchInfo>;
         selectView(slot: string, viewID: string): Promise<void>;
         activateTab(containerID: string, slotID: string): Promise<void>;
+        /** Window navigation is available only to views owned by the hosting primary daemon. */
+        getNavigation(): Promise<NavigationSnapshot>;
+        /** Selects a currently connected host/workspace in this window; never forwards daemon APIs. */
+        selectWorkspace(hostID: string, workspaceID: string): Promise<void>;
+        /** Initial/latest snapshots with bounded delivery. Dispose cancels queued callbacks.
+         * A snapshot exceeding 256 KiB calls onError, or reports a view error if omitted. */
+        onNavigation(listener: (value: NavigationSnapshot) => void | Promise<void>, onError?: (error: Error) => void | Promise<void>): Dispose;
     };
 }
 export interface ViewEnvironment {
@@ -94,6 +101,27 @@ export interface WorkbenchInfo {
     slots: { id: string; title: string; viewID: string | null }[];
     views: { id: string; title: string; placements: string[]; pluginID?: string }[];
     activeTabs: Record<string, string>;
+}
+export interface NavigationWorkspace {
+    readonly id: string;
+    readonly name: string;
+    readonly color: string | null;
+    /** Visible panes; excludes parked panes and closed-pane history. */
+    readonly paneCount: number;
+    readonly group: { readonly id: string; readonly name: string; readonly color: string | null } | null;
+}
+export interface NavigationHost {
+    /** Opaque window-local ID; changes when a remote's configured name/URL is replaced. */
+    readonly id: string;
+    readonly name: string;
+    /** The local host owns this view's daemon APIs. Remote rows support selection only. */
+    readonly kind: 'local' | 'remote';
+    readonly connection: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'rejected';
+    readonly workspaces: readonly NavigationWorkspace[];
+}
+export interface NavigationSnapshot {
+    readonly hosts: readonly NavigationHost[];
+    readonly active: { readonly hostID: string; readonly workspaceID: string } | null;
 }
 export function getKelpi(): ViewAPI;
 declare global { var kelpi: ViewAPI }

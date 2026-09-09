@@ -1,3 +1,4 @@
+import { BUNDLED_FEATURE_DEFINITIONS } from '../features/definitions';
 import { isPluginPlacement, type PluginContainerDefinition, type PluginContainerSlot, type PluginInfo, type PluginPlacement } from '@kelpi/protocol';
 
 export type SidebarPlacement = 'sidebar.primary' | 'sidebar.secondary';
@@ -13,19 +14,7 @@ export interface ViewContribution {
 /** Bundled and installed views share identities and placement resolution. React adapters
  * remain bundled; external views use PluginView's isolated host.
  */
-export const BUNDLED_VIEWS: readonly ViewContribution[] = [
-    { id: 'kelpi.shell', title: 'Terminal', placements: ['pane'] },
-    { id: 'kelpi.markdown', title: 'Markdown', placements: ['pane'] },
-    { id: 'kelpi.scratchpad', title: 'Scratchpad', placements: ['pane'] },
-    { id: 'kelpi.diff', title: 'Diff', placements: ['pane'] },
-    { id: 'kelpi.web', title: 'Browser', placements: ['pane'] },
-    { id: 'kelpi.workspaces', title: 'Workspaces', placements: ['sidebar.primary', 'sidebar.secondary'] },
-    { id: 'kelpi.inspector', title: 'Inspector', placements: ['sidebar.secondary', 'sidebar.primary'] },
-    { id: 'kelpi.topbar', title: 'Toolbar', placements: ['topbar'] },
-    { id: 'kelpi.statusbar', title: 'Status', placements: ['statusbar'] },
-    { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
-    { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }
-];
+export const BUNDLED_VIEWS: readonly ViewContribution[] = BUNDLED_FEATURE_DEFINITIONS;
 export const DEFAULT_SLOTS: Readonly<Partial<Record<PluginPlacement, string>>> = Object.fromEntries(BUNDLED_VIEWS.filter(view => !view.placements.includes('pane')).map(view => [view.placements[0], view.id]));
 export function viewRegistry(plugins: readonly PluginInfo[]): readonly ViewContribution[] {
     return [...BUNDLED_VIEWS, ...plugins.filter(plugin => plugin.enabled && plugin.status !== 'failed').flatMap(plugin => [

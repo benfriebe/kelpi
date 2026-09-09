@@ -86,6 +86,24 @@ async function authoring(api: BackendAPI): Promise<void> {
     const unsubscribe = view.onContext(environment => { if (!environment.visible) return; void environment.context.workspaceID; });
     const workbench = await view.ui.getWorkbench();
     if (workbench.slots[0]) await view.ui.selectView(workbench.slots[0].id, 'sample.plugin.view');
+    const navigation = await view.ui.getNavigation();
+    const stopNavigation = view.ui.onNavigation(async value => {
+        const host = value.hosts.find(host => host.id === value.active?.hostID);
+        const owner: boolean = host?.kind === 'local';
+        const count: number | undefined = host?.workspaces[0]?.paneCount;
+        const groupName: string | undefined = host?.workspaces[0]?.group?.name;
+        void owner; void count; void groupName;
+    }, error => { const message: string = error.message; void message; });
+    if (navigation.hosts[0]?.workspaces[0]) await view.ui.selectWorkspace(navigation.hosts[0].id, navigation.hosts[0].workspaces[0].id);
+    stopNavigation();
+    // @ts-expect-error Navigation does not expose connection credentials or URLs.
+    navigation.hosts[0]?.url;
+    // @ts-expect-error Navigation snapshots are immutable summaries.
+    navigation.hosts.push({});
+    // @ts-expect-error Window navigation is browser-only.
+    await api.ui.getNavigation();
+    // @ts-expect-error Cross-host selection requires both opaque IDs.
+    await view.ui.selectWorkspace(first.id);
     unsubscribe();
     // @ts-expect-error Provider registration is backend-only.
     view.providers.register('sample.plugin.provider', {});

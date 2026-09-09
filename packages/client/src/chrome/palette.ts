@@ -39,6 +39,7 @@ export interface PaletteItem {
     readonly workspaceColor: WorkspaceColor | null;
     /** Command items only. */
     readonly run?: (() => void) | undefined;
+    readonly disabled?: boolean | undefined;
     /**
      * A `keyTriggerDisplayString` hint (`⌘P`). Command items whose action the binding map
      * covers carry one; workspace/pane rows never do — there is no key for "this workspace".

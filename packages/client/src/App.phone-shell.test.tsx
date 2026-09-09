@@ -74,7 +74,7 @@ function memoryStorage(initial: Record<string, string> = {}): StorageLike & { re
 }
 
 /** A remote host's runtime: its own mirror, a fake PTY, stubbed commands, no socket. */
-function fakeRemoteRuntime(): { runtime: KelpiRuntime; calls: string[] } {
+function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: string[] } {
     const store = createKelpiStore();
     store.getState().applySnapshot(0, {
         workspaces: [
@@ -123,8 +123,16 @@ function fakeRemoteRuntime(): { runtime: KelpiRuntime; calls: string[] } {
     const calls: string[] = [];
     const runtime = {
         store,
+        connection: { target, status: 'connected', isConnected: true, on: () => () => {} },
         pty: createFakePtyApi(),
         commands: {
+            raw: vi.fn(async (input: JsonObject) => {
+                if (input['command'] === 'plugin') {
+                    if (input['action'] === 'list' || input['action'] === 'contributions') return { ok: true, result: [] };
+                    if (input['action'] === 'identity') return { ok: true, result: { daemonID: 'phone-test-remote' } };
+                }
+                throw new Error(`Unexpected remote command: ${JSON.stringify(input)}`);
+            }),
             createPane: vi.fn((input: { workspace: string }) => {
                 calls.push(`create:${input.workspace}`);
                 return Promise.resolve({ ok: true });
@@ -196,7 +204,7 @@ function setup(
     });
     const remotes = new Map<string, { entry: RemoteDaemonEntry; runtime: KelpiRuntime; calls: string[] }>();
     const factory = (entry: RemoteDaemonEntry): KelpiRuntime => {
-        const fake = fakeRemoteRuntime();
+        const fake = fakeRemoteRuntime(entry.url);
         remotes.set(entry.url, { entry, ...fake });
         return fake.runtime;
     };

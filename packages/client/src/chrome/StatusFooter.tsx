@@ -18,7 +18,7 @@
  * non-zero count is a button that opens the bucket popover.
  */
 
-import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from 'react';
 
 import { useSecondsTicker } from './clock';
 import { useDismissable } from './dismissable';
@@ -214,6 +214,8 @@ export interface StatusBarItem {
 }
 
 export interface StatusFooterProps {
+    readonly contributions?: ReactNode;
+    readonly contributionsKey?: string;
     readonly summary: AgentCountSummary;
     readonly focusedPane?: ChromePane | null | undefined;
     readonly homeDirectory?: string | undefined;
@@ -673,6 +675,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
      * does not, e.g. jsdom), and null means "render them all" — the pre-measurement behaviour.
      */
     const gaugeBudget = useFooterGaugeBudget(rowRef, leftRef, keepRef, [
+        props.contributionsKey ?? '',
         enabledGauges.join(','),
         String(stats?.showGraphs === true),
         String(stats?.graphWidth ?? 28),
@@ -750,6 +753,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                 data-testid="footer-left"
                 className="flex min-w-0 flex-auto items-center gap-2 overflow-hidden"
             >
+                {props.contributions ? <div className="flex min-w-0 max-w-[240px] shrink items-center overflow-hidden" data-testid="status-contributions">{props.contributions}</div> : null}
                 {pane === null ? null : (
                     <>
                         <span

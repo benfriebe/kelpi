@@ -15,7 +15,7 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@kelpi/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@kelpi/daemon/store';
-import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from 'react';
 
 import type { ConnectionStatus } from '../connection';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
@@ -28,6 +28,7 @@ import { tokens } from './tokens';
 import type { ChromePane } from './types';
 
 export interface TopBarProps {
+    readonly contributions?: ReactNode;
     readonly workspaceName: string | null;
     readonly workspaceColor?: WorkspaceColor | undefined;
     readonly panes: readonly ChromePane[];
@@ -384,6 +385,7 @@ export function TopBar(props: TopBarProps): ReactElement {
             </div>
 
             <div ref={trailingRef} className="ml-auto flex items-center gap-2 text-[11px]">
+                {props.contributions ? <div className="flex min-w-0 max-w-[180px] items-center overflow-hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} data-testid="workspace-contributions">{props.contributions}</div> : null}
                 <div className="relative flex items-center">
                     <button
                         type="button"

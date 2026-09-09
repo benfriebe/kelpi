@@ -1,3 +1,5 @@
+import { UIServiceHost, useUIServices } from './plugins/UIServiceHost';
+import { PluginContributionItems } from './plugins/contributions-ui';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
 import { bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
 import { createWorkspacesActions } from './features/workspaces-actions';
@@ -471,6 +473,7 @@ function Shell(props: AppProps): ReactElement {
         },
         [runtime]
     );
+    const uiServices = useUIServices();
     const pluginNavigation = usePluginNavigation({
         runtime, remotes: remoteDaemonRuntimes, selection: remoteSelection,
         activateLocalWorkspace: activateWorkspaceAndReveal, selectRemoteWorkspace: setRemoteSelection
@@ -2508,6 +2511,8 @@ function Shell(props: AppProps): ReactElement {
         } else if (helpOpenRef.current) {
             setHelpOpen(false);
             handOff();
+        } else if (uiServices.getSnapshot().active) {
+            uiServices.answer(uiServices.getSnapshot().active!.id, null);
         } else {
             return false; // no overlay after all (a state change raced the keystroke)
         }
@@ -2518,7 +2523,7 @@ function Shell(props: AppProps): ReactElement {
          */
         shellClose.noteKeyboardClose();
         return true;
-    }, [handBackPaneCaret, store, shellClose]);
+    }, [handBackPaneCaret, store, shellClose, uiServices]);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@kelpi/core/config` resolves the same overrides the daemon parsed, and the
@@ -2537,7 +2542,7 @@ function Shell(props: AppProps): ReactElement {
                 store.getState().ui.palette.open ||
                 settingsOpenRef.current ||
                 helpOpenRef.current ||
-                createSheetOpenRef.current,
+                createSheetOpenRef.current || uiServices.getSnapshot().active !== null,
             // N14's residual: the one chord that guard does NOT hand to the overlay's text field.
             onCloseChordWhileModal: closeModalOverlay,
             // §1.7: while a REMOTE workspace fills the area, the local pane keymap stands
@@ -2567,7 +2572,7 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines, closeModalOverlay]);
+    }, [store, keybindLines, closeModalOverlay, uiServices]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
@@ -2580,6 +2585,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             // Both halves, like `createKeyDispatcher`'s `consume`: `preventDefault` alone stops
@@ -2592,7 +2598,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines]);
+    }, [keybindLines, uiServices]);
 
     /**
      * ⌘? / ⌘/ opens Help (APP-027). Same reasoning as ⌘, above: `HelpCommands` in the Swift app
@@ -2608,6 +2614,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Slash' || !event.metaKey || event.ctrlKey || event.altKey) return;
+            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             event.preventDefault();
@@ -2616,7 +2623,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines]);
+    }, [keybindLines, uiServices]);
 
     /**
      * The shell's native menu bar, arriving the long way round: shell → daemon → every client,
@@ -2630,6 +2637,8 @@ function Shell(props: AppProps): ReactElement {
             const windowID = message['windowID'];
             if (typeof windowID === 'string' && windowID !== shellWindowID) return;
             const command = message['command'];
+            // Native menu gestures obey the same prompt ownership as in-window shortcuts.
+            if (uiServices.getSnapshot().active && command !== RECOVER_INTERFACE_COMMAND && !(typeof command === 'string' && command.startsWith('web-chord:'))) return;
             if (command === 'help') setHelpOpen(true);
             else if (command === 'open-file') actRef.current.openFile();
             else if (command === 'settings') setSettingsTab((current) => current ?? DEFAULT_SETTINGS_TAB);
@@ -2719,7 +2728,7 @@ function Shell(props: AppProps): ReactElement {
             else if (typeof command === 'string') replayChordCommand(command);
         });
         return off;
-    }, [runtime, shellWindowID]);
+    }, [runtime, shellWindowID, uiServices]);
 
     // ── palette ─────────────────────────────────────────────────────────────────────
 
@@ -2763,14 +2772,22 @@ function Shell(props: AppProps): ReactElement {
             ...(globalTrigger ? chordKeysForTrigger(canonicalTriggerForPlatform(globalTrigger, /Mac|iPhone|iPad/.test(navigator.platform))) : [])
         ])].sort();
     }, [bindings, contentPaneChords, settings.general.globalHotkey]);
+    // Publish the assembly-owned surfaces so shared plugin prompts wait for their turn.
+    useModalPresence(settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen);
     const anyModalMounted = useAnyModalOpen();
     const pluginCommands = usePluginCommands(runtime, reservedPluginChords, () =>
         store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current ||
         createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
+    const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
+        const items = pluginCommands.items(placement, paneID);
+        return items.length ? <PluginContributionItems items={items} paneID={paneID} compact={placement === 'pane.header'}
+            execute={(_command, target, itemID) => { if (itemID) pluginCommands.runItem(placement, itemID, target); }} /> : null;
+    };
+
     const paletteCommands = useMemo<PaletteItem[]>(
         () => [
-            ...pluginCommands.commands.map(command => paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut)),
+            ...pluginCommands.menu('palette').map(command => ({ ...paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut), disabled: !command.enabled })),
             paletteCommand('cmd:plugins', 'gearshape', 'Plugins…', 'Install plugins and choose workbench views', () => openSettings('plugins')),
             paletteCommand(
                 'cmd:new-pane',
@@ -3141,7 +3158,7 @@ function Shell(props: AppProps): ReactElement {
             label: 'Copy Working Directory',
             onSelect: () => act.copyWorkingDirectory(paneID)
         });
-        items.push(...pluginCommands.commands.filter(command => command.menu === 'pane' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run(paneID) })));
+        items.push(...pluginMenuItems(pluginCommands.menu('pane', paneID)));
         return items;
     }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace, pluginCommands.commands]);
 
@@ -3156,7 +3173,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
         const items: MenuItemSpec[] = [
-            ...pluginCommands.commands.filter(command => command.menu === 'workspace' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run() })),
+            ...pluginMenuItems(pluginCommands.menu('workspace')),
             { id: 'plugins', label: 'Plugins…', onSelect: () => openSettings('plugins') },
             { id: 'settings', label: 'Settings…', onSelect: () => openSettings() },
             {
@@ -3630,7 +3647,7 @@ function Shell(props: AppProps): ReactElement {
     };
 
     return (
-        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation}
+        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices}
             features={[
                 bindWorkspacesFeature({
                     model: workspacesModel, actions: act, lifecycle: workspacesLifecycle, store,
@@ -3739,6 +3756,7 @@ function Shell(props: AppProps): ReactElement {
             ) : (
             <>
             <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset}>{context => <TopBar
+                contributions={contributionItems('workspace.header')}
                 workspaceName={workspace?.name ?? null}
                 workspaceColor={workspace?.color}
                 panes={panes}
@@ -3906,7 +3924,8 @@ function Shell(props: AppProps): ReactElement {
                         // `/Users/…` path while the footer, describing the same pane, prints
                         // `~/…` (`PaneHeaderView.swift:503` abbreviates unconditionally).
                         homeDirectory={daemon.info?.home}
-                        headerCommands={pluginCommands.commands.filter(command => command.menu === 'pane.header')}
+                        headerCommandsFor={paneID => pluginCommands.menu('pane.header', paneID)}
+                        headerExtras={paneID => contributionItems('pane.header', paneID)}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}
@@ -4047,6 +4066,8 @@ function Shell(props: AppProps): ReactElement {
               */}
             <WorkbenchSlot placement="panel.bottom" />
             <WorkbenchSlot placement="statusbar"><StatusFooter
+                contributions={contributionItems('statusbar')}
+                contributionsKey={JSON.stringify(pluginCommands.items('statusbar'))}
                 summary={agentSummary}
                 focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
                 // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
@@ -4121,6 +4142,7 @@ function Shell(props: AppProps): ReactElement {
              * one, so a browser tab (which no shell will ever call into) draws nothing.
              */}
             <QuitGate />
+            {uiServices ? <UIServiceHost services={uiServices} /> : null}
 
             {helpOpen ? (
                 <HelpOverlay
@@ -4523,3 +4545,15 @@ function statusItems(workspaces: readonly WorkspaceState[], bucket: AgentBucket)
  * the caret nowhere. `focusPaneSurface` (app/pane-focus.ts) resolves the pane's marked surface
  * instead, which is the terminal host for a shell pane and the textarea for an editor.
  */
+
+/** Grouped extension menu sections retain their declared ordering and disabled state. */
+function pluginMenuItems(commands: readonly { id: string; title: string; group?: string; enabled: boolean; run(): unknown }[]): MenuItemSpec[] {
+    const items: MenuItemSpec[] = [];
+    let previous: string | undefined;
+    for (const command of commands) {
+        if (items.length && command.group !== previous) items.push({ id: `separator:${command.id}`, label: '', kind: 'separator' });
+        items.push({ id: command.id, label: command.title, disabled: !command.enabled, onSelect: () => { command.run(); } });
+        previous = command.group;
+    }
+    return items;
+}

@@ -249,6 +249,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
     const showDivider = showResults || showNoResults;
 
     const confirm = (item: PaletteItem | undefined): void => {
+        if (item?.disabled) return;
         if (item === undefined) {
             // §10.3: an out-of-range selection (zero matches) still closes AND hands off, so
             // the window is never left without keyboard focus.
@@ -539,6 +540,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                     data-testid="palette-row"
                                     data-item-id={item.id}
                                     data-item-kind={item.kind}
+                                    aria-disabled={item.disabled || undefined}
                                     data-selected={isSelected ? 'true' : 'false'}
                                     /* L98 / L99: `CommandPaletteRow`'s `HStack(spacing: 10)` with
                                        `.padding(.horizontal, 12).padding(.vertical, 6)`, and a
@@ -549,6 +551,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                             : 'flex w-full items-center gap-2.5 px-3 py-1.5 text-left'
                                     }
                                     style={{
+                                        ...(item.disabled ? { opacity: 0.45 } : {}),
                                         /* shell-ui.md §7 "accent @ 0.2" through the theme token
                                            (issue #57 shellui-28): a literal dark-column hex
                                            ignored a light chrome and an `accent` override. */

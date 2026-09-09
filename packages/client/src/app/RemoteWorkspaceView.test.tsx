@@ -1,9 +1,14 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import { decodePluginManifest, type PluginContributionInfo, type PluginInfo } from '@kelpi/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { firePointer, stubBoundingRect } from '../grid/testing';
 import type { KelpiRuntime } from '../state';
-import { createKelpiStore } from '../state';
+import { createKelpiRuntime, createKelpiStore } from '../state';
+import { createFakeSocketFactory, completeHandshake } from '../connection/testing';
+import { PluginHostUIContext } from '../plugins/host-ui';
+import { usePluginCommands } from '../plugins/commands';
 import { createFakePtyApi } from '../terminal/testing';
 import { RemoteWorkspaceView } from './RemoteWorkspaceView';
 
@@ -110,6 +115,7 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
     const calls: string[] = [];
     const runtime = {
         store,
+        connection: { target: 'ws://remote.test/ws', status: 'idle', isConnected: false, on: () => () => {} },
         pty: createFakePtyApi(),
         commands: {
             closePane: vi.fn((input: { paneID: string }) => {
@@ -220,5 +226,58 @@ describe('RemoteWorkspaceView (§1.7)', () => {
         const { runtime } = remoteRuntime();
         render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID="nope" />);
         expect(screen.getByTestId('remote-workspace-missing').textContent).toContain('Connecting to werk');
+    });
+
+    it('renders remote pane contributions from their own live state and dispatches only to that runtime', async () => {
+        const pluginID = 'sample.remote-ui', commandID = `${pluginID}.run`, itemID = `${pluginID}.item`;
+        const native = createDaemonStore(emptyDaemonState('/tmp'));
+        native.dispatch({ type: 'create-workspace', id: WS, paneID: SHELL, name: 'Remote workspace', color: 'blue', now: 1 });
+        native.dispatch({ type: 'open-markdown-pane', workspaceID: WS, paneID: NOTE, reusePaneID: SHELL, filePath: '/tmp/readme.md', now: 2 });
+        const paneID = native.getState().workspaces[0]!.panes[0]!.id;
+        const fixture = (name: string, ready: boolean) => {
+            const sockets = createFakeSocketFactory();
+            const runtime = createKelpiRuntime({ store: createKelpiStore(), url: `ws://${name}.test/ws`, socketFactory: sockets.factory, notifications: null });
+            const plugin: PluginInfo = { manifest: decodePluginManifest({ id: pluginID, name, version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs', contributes: {
+                commands: [{ id: commandID, title: `${name} header action`, menu: 'pane.header', shortcut: 'ctrl+alt+r', when: { 'pane.type': 'markdown' }, enablement: { 'context.ready': true } }],
+                items: [{ id: itemID, text: `${name} checks`, placement: 'pane.header', command: commandID }]
+            } }), enabled: true, revision: 'r1', instanceID: `${name}-i1`, status: 'running', error: null };
+            let state: PluginContributionInfo = { pluginID, instanceID: plugin.instanceID, sequence: 1, state: { context: { ready }, items: { [itemID]: { text: `From ${name}` } } } };
+            const calls = vi.spyOn(runtime.commands, 'raw').mockImplementation(async payload => ({ ok: true, result: (
+                payload['action'] === 'list' ? [plugin] : payload['action'] === 'identity' ? { daemonID: name } : payload['action'] === 'contributions' ? [state] : null
+            ) as never }));
+            runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(native.getState())) });
+            return { runtime, calls, plugin, sockets, update(next: boolean) {
+                state = { ...state, sequence: state.sequence + 1, state: { ...state.state, context: { ready: next } } };
+                sockets.last().emit({ type: 'plugin-event', event: { epoch: name, sequence: state.sequence, name: 'plugin.contributions.changed', data: state } });
+            } };
+        };
+        const primary = fixture('primary', false), remote = fixture('remote', true);
+        try {
+            renderHook(() => usePluginCommands(primary.runtime, [], () => true));
+            render(<PluginHostUIContext.Provider value={{ runtime: primary.runtime, request: () => null }}>
+                <RemoteWorkspaceView daemonName="Remote" runtime={remote.runtime} workspaceID={WS} />
+            </PluginHostUIContext.Provider>);
+            const button = await screen.findByRole('button', { name: 'From remote' });
+            expect(screen.queryByRole('button', { name: 'From primary' })).toBeNull();
+            expect(button.hasAttribute('disabled')).toBe(false);
+            fireEvent.click(button);
+            expect(remote.calls.mock.calls.filter(([payload]) => payload['action'] === 'run').map(([payload]) => JSON.parse(String(payload['text'])))).toEqual([{ command: commandID, workspaceID: WS, paneID }]);
+            fireEvent.click(screen.getByRole('button', { name: 'remote header action' }));
+            expect(remote.calls.mock.calls.filter(([payload]) => payload['action'] === 'run')).toHaveLength(2);
+            expect(primary.calls.mock.calls.some(([payload]) => payload['action'] === 'run')).toBe(false);
+
+            const chord = new KeyboardEvent('keydown', { code: 'KeyR', ctrlKey: true, altKey: true, cancelable: true });
+            fireEvent(window, chord);
+            expect(chord.defaultPrevented).toBe(false);
+            expect(remote.calls.mock.calls.filter(([payload]) => payload['action'] === 'run')).toHaveLength(2);
+            await act(async () => { primary.update(true); remote.update(false); });
+            await waitFor(() => expect(screen.getByRole('button', { name: 'From remote' }).hasAttribute('disabled')).toBe(true));
+            expect(screen.getByRole('button', { name: 'remote header action' }).hasAttribute('disabled')).toBe(true);
+            fireEvent.click(screen.getByRole('button', { name: 'From remote' }));
+            expect(remote.calls.mock.calls.filter(([payload]) => payload['action'] === 'run')).toHaveLength(2);
+            act(() => remote.sockets.last().emit({ type: 'plugins-changed', plugins: [{ ...remote.plugin, enabled: false, status: 'disabled' }] }));
+            expect(screen.queryByRole('button', { name: 'From remote' })).toBeNull();
+            expect(screen.queryByRole('button', { name: 'remote header action' })).toBeNull();
+        } finally { cleanup(); primary.runtime.dispose(); remote.runtime.dispose(); primary.calls.mockRestore(); remote.calls.mockRestore(); }
     });
 });

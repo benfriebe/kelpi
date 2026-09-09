@@ -777,7 +777,8 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     >
                         <PaneHeader
                             pane={pane}
-                            headerCommands={props.headerCommands}
+                            headerCommands={props.headerCommandsFor?.(pane.id) ?? props.headerCommands}
+                            headerExtras={props.headerExtras}
                             focused={focused}
                             // `PaneHeaderView.swift:279` — `.onTapGesture { onFocus() }` on the
                             // header itself, which every control inside it shadows.

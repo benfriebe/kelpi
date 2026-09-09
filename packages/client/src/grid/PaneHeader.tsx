@@ -662,8 +662,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
      * The other five trailing buttons are the two type ones and the four shared ones.
      */
     const showCopyButton = pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined;
+    const headerExtras = props.headerExtras?.(pane.id);
     const buttonCount =
-        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0) + (props.headerCommands?.length ?? 0);
+        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0) + (props.headerCommands?.length ?? 0) + (headerExtras ? 4 : 0);
     const fit = badgeFit({
         paneWidth,
         label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
@@ -686,6 +687,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         readonly testID: string;
         readonly label: string;
         readonly icon: IconName;
+        readonly disabled?: boolean;
         readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
         readonly onSelect: () => void;
     }[] = [
@@ -694,6 +696,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             testID: `pane-command-${command.id}-${pane.id}`,
             label: command.title,
             icon: 'plugin' as const,
+            disabled: command.enabled === false,
             onClick: () => command.run(pane.id),
             onSelect: () => command.run(pane.id)
         })),
@@ -778,6 +781,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const overflowItems: readonly MenuItemSpec[] = overflowTail.map((entry) => ({
         id: entry.key,
         label: entry.label,
+        disabled: entry.disabled,
         onSelect: entry.onSelect
     }));
     // §S40: widening the pane un-folds the row, and a menu anchored to a `•••` that is no longer
@@ -1028,12 +1032,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 every width where the whole row fits this is the same JSX it always was, in the
                 same order; below it the trailing entries become the `•••` menu instead, so the
                 ✕ is the last control the pane loses rather than the first. */}
+            {headerExtras ? <div className="flex min-w-0 max-w-[96px] shrink items-center overflow-hidden" data-testid={`pane-contributions-${pane.id}`}>{headerExtras}</div> : null}
             {inlineTail.map((entry) => (
                 <HeaderButton
                     key={entry.key}
                     testID={entry.testID}
                     label={entry.label}
                     icon={entry.icon}
+                    disabled={entry.disabled}
                     onClick={entry.onClick}
                 />
             ))}

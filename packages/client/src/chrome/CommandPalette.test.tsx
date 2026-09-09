@@ -190,6 +190,21 @@ describe('rendering', () => {
 });
 
 describe('keyboard navigation', () => {
+    it('keeps disabled commands visible without confirming or dismissing them', () => {
+        const props = baseProps();
+        const item: PaletteItem = { ...ITEMS[0]!, disabled: true };
+        const view = render(<CommandPalette {...props} items={[item]} />);
+        const row = screen.getByTestId('palette-row');
+        expect(row.getAttribute('aria-disabled')).toBe('true');
+        fireEvent.click(row);
+        fireEvent.keyDown(screen.getByLabelText('Jump to workspace or pane'), { key: 'Enter' });
+        expect(props.onConfirm).not.toHaveBeenCalled();
+        expect(props.onDismiss).not.toHaveBeenCalled();
+        view.rerender(<CommandPalette {...props} items={[{ ...item, disabled: false }]} />);
+        fireEvent.click(screen.getByTestId('palette-row'));
+        expect(props.onConfirm).toHaveBeenCalledOnce();
+    });
+
     it('↑/↓ move the selection, clamped at both ends', () => {
         render(<CommandPalette {...baseProps()} />);
         const input = screen.getByLabelText('Jump to workspace or pane');

@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.9';
+const EXPECTED_VERSION = '0.4.0-nex.10';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -218,6 +218,18 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle.match(/resetForReplay\(\)/g)?.length).toBeGreaterThanOrEqual(3);
         expect(bundle).toContain('new WebAssembly.Instance');
         expect(read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'))).toContain('this.cellPool = replacement.cellPool');
+    });
+
+    it('ships every terminal on its own WASM instance, with the shared one kept for key encoding (§-nex.10)', () => {
+        // Two terminals in one heap was the precondition for the heap-churn trap
+        // (`RuntimeError: memory access out of bounds` on a long session's remount replay,
+        // and every retry landing on the same corrupted heap). `createTerminal` instantiates
+        // the compiled module per terminal; the shared instance still serves the key encoder.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle.match(/createTerminalOnThisInstance\(/g)?.length).toBeGreaterThanOrEqual(3);
+        const ghosttySource = read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'));
+        expect(ghosttySource).toContain('return Ghostty.fromModule(module).createTerminalOnThisInstance(cols, rows, config);');
+        expect(ghosttySource).toContain('if (module === undefined) return this.createTerminalOnThisInstance(cols, rows, config);');
     });
 
     it('ships a bundle whose default cell colours follow a LIVE theme (§N18)', () => {

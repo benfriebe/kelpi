@@ -276,13 +276,19 @@ echo "restarter: relaunching"
 ${relaunchCmd}
 echo "restarter: waiting for the daemon"
 i=0
+# The port file is daemon-v<PROTOCOL>.port and the protocol number moves with the wire
+# (v1 → v2 on 2026-09-09): a restarter that names one version polls a stale file from the
+# daemon it just killed and reports restart-failed under a healthy app. Try every version
+# present; only a live daemon answers /healthz, so a stale file cannot pass.
 while [ $i -lt 60 ]; do
-  PORT=$(cat "${runDir}/daemon-v1.port" 2>/dev/null)
+  for PORT_FILE in "${runDir}"/daemon-v*.port; do
+  PORT=$(cat "$PORT_FILE" 2>/dev/null)
   if [ -n "$PORT" ] && curl -s -m 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-    echo "restarter: daemon healthy on port $PORT ($(date))"
+    echo "restarter: daemon healthy on port $PORT via $(basename "$PORT_FILE") ($(date))"
     printf '{\\n  "phase": "promoted",\\n  "port": %s,\\n  "updatedAt": "%s",\\n  "log": ${JSON.stringify(promoteLog ?? logFile)},\\n  "restarterLog": ${JSON.stringify(logFile)}\\n}\\n' "$PORT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${JSON.stringify(statusFile)}
     exit 0
   fi
+  done
   sleep 1; i=$((i+1))
 done
 echo "restarter: TIMED OUT waiting for health — check manually"

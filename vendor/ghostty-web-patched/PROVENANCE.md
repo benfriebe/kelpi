@@ -1,12 +1,13 @@
-# ghostty-web 0.4.0-nex.9 (vendored)
+# ghostty-web 0.4.0-nex.10 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus eight
+review in the orchestrating session and explicit user authorization to integrate both — plus nine
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
 `-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
-repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage).
+repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
+every terminal on its own WASM instance).
 
 | Version | What it added |
 |---|---|
@@ -19,6 +20,62 @@ repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM sto
 | `0.4.0-nex.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
 | `0.4.0-nex.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
 | `0.4.0-nex.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
+| `0.4.0-nex.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
+
+## Nex adaptation: one WASM instance per terminal (`0.4.0-nex.10`, 2026-09-09)
+
+**The defect.** Two long-running `codex` panes came up as *terminal renderer failed to start*
+after a couple of workspace swaps, Retry never brought them back, and only a reload did. Driven
+against the same daemon from a headless Chromium at the desktop's 2× scale, the cause was in the
+renderer console (the shell log did not carry it — it does now):
+
+```
+[kelpi] terminal renderer died for pane 7A89FA6B… (attempt 1/3) - rebuilding on a fresh engine
+RuntimeError: memory access out of bounds
+    at wasm://wasm/0019d216:wasm-function[162]:0xf837
+    …
+    at U.write (ghostty-web-….js)
+```
+
+A WASM trap inside libghostty-vt's `ghostty_terminal_write`, mid-replay, on a remount. Not the
+bytes: the pane's 91 042-byte replay frame, captured off the socket, writes cleanly into a fresh
+terminal at the same 90×46 grid — sixty create/write/free cycles in Node, and a brand-new
+terminal on the very heap that had just trapped, in the same page. It is the **heap**: the shared
+instance after enough siblings had been created, resized and freed around this one. That is the
+same precondition N24 documented (`-nex.6`: garbage cells after a sibling's free) — this time the
+corrupted storage is read by the parser rather than the painter, and the wasm traps.
+
+Which is also why the retry budget could not help. The client's rebuild is "a fresh engine", and it
+was: a fresh `Terminal` **on the same instance**, writing the same replay into the same
+corrupted heap. Three attempts, three traps, placeholder. `-nex.9` moved each *replay reset*
+onto a fresh instance; the terminal a pane is BUILT on still came from `init()`'s shared one.
+
+**The fix.** `Ghostty.createTerminal` instantiates the retained compiled module per terminal
+(`createTerminalOnThisInstance` is the pre-`nex.10` body, kept for the `resetForReplay`
+closure and for a `new Ghostty(instance)` caller with no module to instantiate from). The
+shared instance stays for what is genuinely shared — the key encoder — and no two VTs share a
+heap, so nothing a sibling does can reach this terminal's storage, and a retry really is a fresh
+engine. Instantiation of an already-compiled module is synchronous and takes a millisecond; a
+fresh instance starts at 1.19 MiB (19 pages, unbounded maximum), and it is garbage with its
+terminal once `free()` drops the last reference.
+
+**Measured** on the two panes that reproduced it, same daemon, same page protocol (reload, then
+20 workspace swaps between the codex workspace and a one-pane one at 2× scale), engine patched at
+runtime through Chromium's request interception to instantiate per terminal:
+
+| engine | swaps | traps | panes left on the placeholder |
+|---|---|---|---|
+| one shared heap (`-nex.9` behaviour) | 20 | 5 (× 3 attempts each) | 1 |
+| one heap per terminal | 20 | 0 (104 instances created) | 0 |
+
+Not addressed here: libghostty-vt's own defect (the wasm is still byte-identical to npm
+`ghostty-web@0.4.0`), and the engine's unmanaged `requestAnimationFrame`s (the scrollbar
+fade and the "next frame" helper), which keep a disposed `Terminal` alive until the frame
+fires — forever in a page with no frame clock, one frame in a visible window. Cosmetic, noted.
+
+- **Rebuild sanity**: `dist/ghostty-web.js` is **707.85 kB** as vite reports it, built from
+  `source/` with the documented recipe (`pnpm install` + `npx vite build`, wasm copied into
+  dist); the build prints the four known `Bun` / `fs/promises` errors and exits 0.
 
 ## Nex adaptation: replay storage (`0.4.0-nex.9`, 2026-09-09)
 

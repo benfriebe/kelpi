@@ -52,9 +52,37 @@ export class Ghostty {
     return new KeyEncoder(this.exports);
   }
 
+  /**
+   * Every terminal on its own WASM instance (`0.4.0-nex.10`).
+   *
+   * The shared instance `init()` builds is kept for what is genuinely shared — key encoding —
+   * and each terminal's VT storage lives in a heap no sibling can reach. Two terminals in one
+   * heap were the precondition for every heap-churn defect this fork has measured: N24's garbage
+   * cells after a sibling's free, and the `RuntimeError: memory access out of bounds` trap a
+   * long session's replay hit on remount once enough siblings had been created and freed around
+   * it — with every retry landing on the same corrupted heap, so the pane never came back until
+   * the page was reloaded. Isolation removes the sharing rather than the symptom: measured on
+   * the panes that reproduced it, 20 workspace swaps trapped on 5 with one heap and on 0 with
+   * one heap per terminal.
+   *
+   * Instantiation is synchronous and cheap (the module is already compiled; a fresh instance is
+   * ~1.2 MiB of initial memory). Without a compiled module — a `new Ghostty(instance)` caller —
+   * the terminal is created on this instance, exactly as before.
+   */
   createTerminal(
     cols: number = 80,
     rows: number = 24,
+    config?: GhosttyTerminalConfig
+  ): GhosttyTerminal {
+    const module = this.wasmModule;
+    if (module === undefined) return this.createTerminalOnThisInstance(cols, rows, config);
+    return Ghostty.fromModule(module).createTerminalOnThisInstance(cols, rows, config);
+  }
+
+  /** The pre-`nex.10` body: a terminal whose storage is THIS instance's heap. */
+  private createTerminalOnThisInstance(
+    cols: number,
+    rows: number,
     config?: GhosttyTerminalConfig
   ): GhosttyTerminal {
     const module = this.wasmModule;
@@ -66,7 +94,8 @@ export class Ghostty {
       config,
       module === undefined
         ? undefined
-        : (nextCols, nextRows) => Ghostty.fromModule(module).createTerminal(nextCols, nextRows, config)
+        : (nextCols, nextRows) =>
+            Ghostty.fromModule(module).createTerminalOnThisInstance(nextCols, nextRows, config)
     );
   }
 

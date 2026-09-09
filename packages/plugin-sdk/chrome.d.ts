@@ -33,6 +33,8 @@ export interface ChromeCommand {
     readonly id: string; readonly title: string; readonly enabled: boolean;
     readonly checked?: boolean;
     readonly group: 'layout' | 'window' | 'menu';
+    /** Adjacent menu entries in different sections receive a separator. */
+    readonly section?: string;
 }
 export interface ChromeItem {
     readonly id: string; readonly placement: 'workspace.header' | 'statusbar'; readonly text: string;

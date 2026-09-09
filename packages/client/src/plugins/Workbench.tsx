@@ -1,3 +1,4 @@
+import type { PluginChrome } from './chrome';
 import { featureBindings, type BundledFeatureBinding } from '../features/feature';
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
@@ -64,7 +65,7 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
         }
     };
 }
-export function WorkbenchProvider(props: { layout: WorkbenchLayout; features?: readonly BundledFeatureBinding[]; navigation?: PluginNavigation | null; services?: UIServiceModel | null; runtime: KelpiRuntime; workspaceID?: string | undefined; chords: readonly string[]; children: ReactNode }): ReactElement {
+export function WorkbenchProvider(props: { layout: WorkbenchLayout; features?: readonly BundledFeatureBinding[]; chrome?: PluginChrome | null; navigation?: PluginNavigation | null; services?: UIServiceModel | null; runtime: KelpiRuntime; workspaceID?: string | undefined; chords: readonly string[]; children: ReactNode }): ReactElement {
     const features = useMemo(() => featureBindings(props.features ?? []), [props.features]);
     const value: Workbench = { features, ...props.layout, runtime: props.runtime, workspaceID: props.workspaceID, chords: props.chords };
     const request = (method: string, args: JsonObject): JsonValue => {
@@ -90,7 +91,7 @@ export function WorkbenchProvider(props: { layout: WorkbenchLayout; features?: r
         }
         throw new Error('Workbench UI method is not supported.');
     };
-    return <WorkbenchContext.Provider value={value}><PluginHostUIContext.Provider value={{ runtime: props.runtime, navigation: props.navigation, services: props.services, request }}>{props.children}</PluginHostUIContext.Provider></WorkbenchContext.Provider>;
+    return <WorkbenchContext.Provider value={value}><PluginHostUIContext.Provider value={{ runtime: props.runtime, chrome: props.chrome, navigation: props.navigation, services: props.services, request }}>{props.children}</PluginHostUIContext.Provider></WorkbenchContext.Provider>;
 }
 interface NativeRenderers {
     readonly adapters: ViewRenderers;

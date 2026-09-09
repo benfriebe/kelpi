@@ -151,7 +151,9 @@ export function createHeadWatchService(
         },
 
         stopAll() {
-            for (const associationID of [...entries.keys()]) {
+            // A start can still be resolving HEAD without an entry yet. Retire those
+            // requests too, so disposal or a provider change cannot revive an old watch.
+            for (const associationID of epochs.keys()) {
                 epochs.set(associationID, (epochs.get(associationID) ?? 0) + 1);
                 teardown(associationID);
             }

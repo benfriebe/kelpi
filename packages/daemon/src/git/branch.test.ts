@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
-import { createPaneBranchWatch, type PaneBranchWatchService } from './branch.js';
+import { createPaneBranchWatch, type BranchGit, type PaneBranchWatchService } from './branch.js';
 
 const HOME = '/Users/test';
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -21,7 +21,7 @@ interface Harness {
     branchOf(paneID: string): string | null;
 }
 
-function harness(options: { cacheTtlMs?: number } = {}): Harness {
+function harness(options: { cacheTtlMs?: number; lookup?: BranchGit['getCurrentBranch'] } = {}): Harness {
     const store = createStore(emptyDaemonState(HOME));
     store.dispatch({ type: 'create-workspace', id: W1, paneID: P1, name: 'w1', now: NOW });
     const branches = new Map<string, string | null>();
@@ -32,6 +32,7 @@ function harness(options: { cacheTtlMs?: number } = {}): Harness {
         git: {
             async getCurrentBranch(repoPath) {
                 calls.push(repoPath);
+                if (options.lookup !== undefined) return options.lookup(repoPath);
                 if (failures.has(repoPath)) throw new Error('not a repo');
                 return branches.has(repoPath) ? (branches.get(repoPath) ?? null) : 'main';
             }
@@ -69,6 +70,17 @@ function harness(options: { cacheTtlMs?: number } = {}): Harness {
 function setDirectory(store: KelpiStore, paneID: string, directory: string): void {
     store.dispatch({ type: 'pane-directory-changed', paneID, directory, now: NOW });
 }
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
+const flush = async (): Promise<void> => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+};
 
 describe('createPaneBranchWatch (§GIT-091 / §TERM-145)', () => {
     it('resolves a branch for the panes already in state when it starts', async () => {
@@ -193,5 +205,105 @@ describe('createPaneBranchWatch (§GIT-091 / §TERM-145)', () => {
         await h.settle();
         expect(h.calls.length).toBe(before);
         h.watch.dispose();
+    });
+
+    it('immediately clears old provider branches and refreshes every live directory', async () => {
+        const h = harness({ cacheTtlMs: 60_000 });
+        h.store.dispatch({
+            type: 'split-pane', workspaceID: W1, sourcePaneID: P1, paneID: P2,
+            direction: 'horizontal', now: NOW
+        });
+        setDirectory(h.store, P1, '/repo');
+        setDirectory(h.store, P2, '/other');
+        h.watch.start();
+        await h.settle();
+        h.setBranch('/repo', 'provider/one');
+        h.setBranch('/other', 'provider/two');
+        h.watch.invalidate();
+        expect(h.branchOf(P1)).toBeNull();
+        expect(h.branchOf(P2)).toBeNull();
+        await h.settle();
+        expect(h.branchOf(P1)).toBe('provider/one');
+        expect(h.branchOf(P2)).toBe('provider/two');
+        expect(h.calls.filter((path) => path === '/repo')).toHaveLength(2);
+        expect(h.calls.filter((path) => path === '/other')).toHaveLength(2);
+        h.watch.dispose();
+    });
+
+    it('shares a pending branch read between panes in the same directory', async () => {
+        const answer = deferred<string | null>();
+        const h = harness({ lookup: () => answer.promise });
+        h.store.dispatch({
+            type: 'split-pane', workspaceID: W1, sourcePaneID: P1, paneID: P2,
+            direction: 'horizontal', now: NOW
+        });
+        setDirectory(h.store, P1, '/repo');
+        setDirectory(h.store, P2, '/repo');
+        h.watch.start();
+        const first = h.watch.refresh(P1);
+        const second = h.watch.refresh(P2);
+        await flush();
+        expect(h.calls).toEqual(['/repo']);
+        answer.resolve('shared/main');
+        await Promise.all([first, second]);
+        expect(h.branchOf(P1)).toBe('shared/main');
+        expect(h.branchOf(P2)).toBe('shared/main');
+        h.watch.dispose();
+    });
+
+    it.each(['provider', 'HEAD'] as const)('retires a pending read and its cache after a %s change', async (change) => {
+        const oldBranch = deferred<string | null>();
+        const lookup = vi.fn<BranchGit['getCurrentBranch']>()
+            .mockReturnValueOnce(oldBranch.promise)
+            .mockResolvedValue('new/main');
+        const h = harness({ lookup, cacheTtlMs: 60_000 });
+        setDirectory(h.store, P1, '/repo');
+        h.watch.start();
+        const oldRead = h.watch.refresh(P1);
+        await flush();
+        if (change === 'provider') h.watch.invalidate();
+        else {
+            h.watch.repoChanged('/repo');
+            await h.watch.refresh(P1);
+        }
+        await flush();
+        expect(h.branchOf(P1)).toBe('new/main');
+        oldBranch.resolve('stale/main');
+        await oldRead;
+        await h.watch.refresh(P1);
+        expect(h.branchOf(P1)).toBe('new/main');
+        expect(h.calls).toEqual(['/repo', '/repo']);
+        h.watch.dispose();
+    });
+
+    it('does not apply an old directory answer after the pane moved', async () => {
+        const oldBranch = deferred<string | null>();
+        const h = harness({ lookup: async (path) => path === '/repo' ? oldBranch.promise : 'other/main' });
+        setDirectory(h.store, P1, '/repo');
+        h.watch.start();
+        const oldRead = h.watch.refresh(P1);
+        await flush();
+        setDirectory(h.store, P1, '/other');
+        await h.watch.refresh(P1);
+        oldBranch.resolve('stale/main');
+        await oldRead;
+        expect(h.branchOf(P1)).toBe('other/main');
+        h.watch.dispose();
+    });
+
+    it('ignores pending reads and invalidation after disposal', async () => {
+        const oldBranch = deferred<string | null>();
+        const h = harness({ lookup: () => oldBranch.promise });
+        setDirectory(h.store, P1, '/repo');
+        h.watch.start();
+        const oldRead = h.watch.refresh(P1);
+        await flush();
+        h.watch.dispose();
+        oldBranch.resolve('stale/main');
+        await oldRead;
+        h.watch.invalidate();
+        await h.watch.refresh(P1);
+        expect(h.branchOf(P1)).toBeNull();
+        expect(h.calls).toEqual(['/repo']);
     });
 });

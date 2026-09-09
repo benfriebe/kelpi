@@ -41,6 +41,8 @@ export interface RepoAssociationWatchService {
     start(): void;
     /** Re-read branch + status for one association now (also the poll's unit of work). */
     refresh(associationID: string): Promise<void>;
+    /** Forget answers from the previous Git provider, rebind HEAD watches, and refresh. */
+    invalidate(): void;
     /** Last known dirtiness for an association; `unknown` until the first read lands. */
     statusFor(associationID: string): RepoGitStatus;
     dispose(): void;
@@ -76,6 +78,15 @@ interface Located {
     readonly association: RepoAssociation;
 }
 
+interface PendingRefresh {
+    readonly sequence: number;
+    readonly found: Located;
+    /** The read itself, excluding any wait for a newer read. */
+    readonly done: Promise<void>;
+    readonly retired: Promise<void>;
+    retire(): void;
+}
+
 function locate(state: DaemonState, associationID: string): Located | null {
     for (const workspace of state.workspaces) {
         for (const association of workspace.repoAssociations) {
@@ -85,14 +96,20 @@ function locate(state: DaemonState, associationID: string): Located | null {
     return null;
 }
 
-function associationPaths(state: DaemonState): Map<string, string> {
-    const map = new Map<string, string>();
+function associations(state: DaemonState): Map<string, Located> {
+    const map = new Map<string, Located>();
     for (const workspace of state.workspaces) {
         for (const association of workspace.repoAssociations) {
-            map.set(association.id, association.worktreePath);
+            map.set(association.id, { workspaceID: workspace.id, association });
         }
     }
     return map;
+}
+
+function sameAssociation(left: Located, right: Located): boolean {
+    return left.workspaceID === right.workspaceID &&
+        left.association.repoID === right.association.repoID &&
+        left.association.worktreePath === right.association.worktreePath;
 }
 
 export function createRepoAssociationWatch(
@@ -103,14 +120,26 @@ export function createRepoAssociationWatch(
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
     };
     const statuses = new Map<string, RepoGitStatus>();
-    let tracked = new Map<string, string>();
+    const requests = new Map<string, number>();
+    const pending = new Map<string, PendingRefresh>();
+    let requestSequence = 0;
+    let tracked = new Map<string, Located>();
     let poll: ReturnType<typeof setInterval> | null = null;
     let unsubscribe: (() => void) | null = null;
     let disposed = false;
+    let invalidating = false;
 
-    const refresh = async (associationID: string): Promise<void> => {
-        const found = locate(store.getState(), associationID);
-        if (found === null) return;
+    const retirePending = (associationID: string): void => {
+        pending.get(associationID)?.retire();
+        pending.delete(associationID);
+    };
+
+    const readAssociation = async (associationID: string, found: Located, request: number): Promise<void> => {
+        const currentAssociation = (): Located | null => {
+            if (disposed || requests.get(associationID) !== request) return null;
+            const current = locate(store.getState(), associationID);
+            return current !== null && sameAssociation(found, current) ? current : null;
+        };
         const worktreePath = found.association.worktreePath;
         let status: RepoGitStatus;
         try {
@@ -118,22 +147,25 @@ export function createRepoAssociationWatch(
         } catch {
             status = { kind: 'unknown' };
         }
+        // Native status/branch reads cannot be aborted. A newer refresh, provider switch,
+        // or association removal retires this request before it can publish an old answer.
+        if (currentAssociation() === null) return;
         let branch: string | null;
         try {
             branch = await git.getCurrentBranch(worktreePath);
         } catch {
             branch = null;
         }
-        if (disposed) return;
-        statuses.set(associationID, status);
-        // Re-locate: the association may have been removed while git ran.
-        const current = locate(store.getState(), associationID);
+        let current = currentAssociation();
         if (current === null) return;
+        statuses.set(associationID, status);
         // §GIT-091's trigger: whatever this read learned, the panes inside the tree may need to
         // learn too. Fired before the branch-label dispatch below because it is independent of
         // whether the ASSOCIATION's label changed — a pane can be on a different branch to the
         // association row (a nested worktree), and it still has to re-resolve on a checkout.
         options.onWorktreeChanged?.(worktreePath);
+        current = currentAssociation();
+        if (current === null) return;
         if (current.association.branchName === branch) return;
         store.dispatch({
             type: 'set-repo-association-branch',
@@ -142,6 +174,46 @@ export function createRepoAssociationWatch(
             branchName: branch
         });
         options.persist?.();
+    };
+
+    const refresh = async (associationID: string): Promise<void> => {
+        if (disposed) return;
+        const found = locate(store.getState(), associationID);
+        if (found === null) return;
+        const sequence = ++requestSequence;
+        requests.set(associationID, sequence);
+        retirePending(associationID);
+        let complete!: () => void;
+        let fail!: (error: unknown) => void;
+        let retire!: () => void;
+        const done = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject; });
+        const retired = new Promise<void>(resolve => { retire = resolve; });
+        const request: PendingRefresh = { sequence, found, done, retired, retire };
+        // Register before calling Git: provider/lifecycle callbacks can start another read.
+        pending.set(associationID, request);
+        void readAssociation(associationID, found, sequence).then(complete, fail);
+        try {
+            // A superseded caller can follow the current read even if its own native
+            // process has not finished; that old process still cannot publish a result.
+            await Promise.race([done, retired]);
+        } finally {
+            if (pending.get(associationID) === request) retirePending(associationID);
+        }
+
+        // A CLI/UI refresh is a promise of current data. If its own answer was retired,
+        // join a newer applicable read before the caller inspects statusFor(). Wait only
+        // for raw reads with increasing sequence numbers, never another refresh's join.
+        let joined = sequence;
+        while (!disposed) {
+            const current = locate(store.getState(), associationID);
+            const newest = pending.get(associationID);
+            if (current === null || !sameAssociation(found, current) || newest === undefined ||
+                newest.sequence <= joined || !sameAssociation(found, newest.found)) return;
+            joined = newest.sequence;
+            // If this intermediate read is superseded or removed, follow the next one
+            // immediately instead of waiting for an obsolete native process to finish.
+            await Promise.race([newest.done, newest.retired]);
+        }
     };
 
     const headWatch =
@@ -165,16 +237,23 @@ export function createRepoAssociationWatch(
         });
     };
 
-    const reconcile = (): void => {
-        if (disposed) return;
-        const next = associationPaths(store.getState());
-        for (const [associationID, worktreePath] of next) {
-            const previous = tracked.get(associationID);
-            if (previous === worktreePath) continue;
-            watchAssociation(associationID, worktreePath);
+    const reconcile = (restart = false): void => {
+        if (disposed || invalidating) return;
+        const previous = tracked;
+        const next = associations(store.getState());
+        tracked = next;
+        for (const [associationID, found] of next) {
+            const before = previous.get(associationID);
+            if (!restart && before !== undefined && sameAssociation(before, found)) continue;
+            requests.delete(associationID);
+            retirePending(associationID);
+            statuses.delete(associationID);
+            watchAssociation(associationID, found.association.worktreePath);
         }
-        for (const associationID of tracked.keys()) {
+        for (const associationID of previous.keys()) {
             if (next.has(associationID)) continue;
+            requests.delete(associationID);
+            retirePending(associationID);
             headWatch.stop(associationID);
             statuses.delete(associationID);
             // §8.8: unconditional force-stop. Unknown ids are a cheap no-op; a live session
@@ -183,7 +262,6 @@ export function createRepoAssociationWatch(
                 report(error, `graft force-stop ${associationID}`);
             });
         }
-        tracked = next;
     };
 
     return {
@@ -212,6 +290,34 @@ export function createRepoAssociationWatch(
 
         refresh,
 
+        invalidate() {
+            if (disposed) return;
+            requests.clear();
+            for (const associationID of pending.keys()) retirePending(associationID);
+            statuses.clear();
+            headWatch.stopAll();
+            invalidating = true;
+            let changed = false;
+            try {
+                for (const [associationID, found] of associations(store.getState())) {
+                    const current = locate(store.getState(), associationID);
+                    if (current === null || !sameAssociation(found, current) ||
+                        current.association.branchName === null) continue;
+                    store.dispatch({
+                        type: 'set-repo-association-branch',
+                        workspaceID: current.workspaceID,
+                        associationID,
+                        branchName: null
+                    });
+                    changed = true;
+                }
+            } finally {
+                invalidating = false;
+            }
+            if (changed) options.persist?.();
+            if (unsubscribe !== null) reconcile(true);
+        },
+
         statusFor(associationID) {
             return statuses.get(associationID) ?? { kind: 'unknown' };
         },
@@ -224,6 +330,10 @@ export function createRepoAssociationWatch(
             if (poll !== null) clearInterval(poll);
             poll = null;
             headWatch.stopAll();
+            requests.clear();
+            for (const associationID of pending.keys()) retirePending(associationID);
+            statuses.clear();
+            tracked.clear();
         },
 
         watched() {

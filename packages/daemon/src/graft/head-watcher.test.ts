@@ -191,4 +191,26 @@ describe('createHeadWatchService', () => {
         expect(service.watched()).toEqual([]);
         expect(watch.directories).toEqual([]);
     });
+
+    it('stopAll also retires unresolved HEAD paths and allows a fresh provider watch', async () => {
+        const watch = fakeDirWatch();
+        let release!: (path: string) => void;
+        const oldPath = new Promise<string>((resolve) => { release = resolve; });
+        const resolveHeadPath = vi.fn()
+            .mockReturnValueOnce(oldPath)
+            .mockResolvedValue('/provider/repo/HEAD');
+        const service = createHeadWatchService({
+            resolveHeadPath,
+            onChanged() {},
+            watch: watch.fn
+        });
+        const oldStart = service.start(A, '/repo');
+        service.stopAll();
+        await service.start(B, '/repo');
+        release('/bundled/repo/HEAD');
+        await oldStart;
+        expect(service.watched()).toEqual([B]);
+        expect(watch.directories).toEqual(['/provider/repo']);
+        service.stopAll();
+    });
 });

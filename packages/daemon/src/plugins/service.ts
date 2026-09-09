@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { fork, execFile, type ChildProcess } from 'node:child_process';
+import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,9 @@ import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js'
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
 import { inOperationScope, operationScope, type PluginOperationChannel, type PluginOperationScope, type PluginOperationSource } from './operations.js';
+import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-services.js';
+import { createFilesService } from './files-service.js';
+import { createProcessService } from './process-service.js';
 
 interface Installation { manifest: PluginManifest; revision: string; enabled: boolean }
 interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
@@ -44,7 +47,7 @@ function text(value: unknown, field: string): string {
 }
 
 /** Per-daemon installation registry and supervisor. No plugin code runs on the daemon loop. */
-export class PluginService implements PluginChannel, PluginOperationChannel {
+export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
     readonly epoch = randomUUID();
     readonly daemonID: string;
     readonly directory: string;
@@ -61,6 +64,9 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
     private readonly terminalSubs = new Map<string, { pluginID: string; paneID: string; lease?: string }>();
     private readonly watcherReplies = new Set<ReplyHandle>();
     private readonly serviceSelections = new Map<string, string>();
+    private readonly builtinServices = new Map<string, BuiltinPluginService>();
+    private readonly serviceListeners = new Set<(changed: readonly string[]) => void>();
+    private serviceIdentities = new Map<string, string>();
     private readonly changing = new Set<string>();
     private readonly offPty: (() => void) | undefined;
     private registryError: string | null = null;
@@ -116,6 +122,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
                 for (let offset = 0; offset < data.length; offset += 16_384) this.emit('terminal.output', { subscription, paneID, base64: Buffer.from(data.subarray(offset, offset + 16_384)).toString('base64') }, sub.pluginID);
             }
         });
+        this.registerBuiltinService(createFilesService());
+        this.registerBuiltinService(createProcessService({ homeDirectory: () => options.store.getState().homeDirectory, cliEnvironment: () => this.cliEnvironment() }));
     }
 
     list(): PluginInfo[] {
@@ -142,7 +150,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         this.started = true;
         this.startEligible();
     }
-    private changed(): void { this.options.broadcast({ type: 'plugins-changed', plugins: this.list() as unknown as JsonValue, epoch: this.epoch, daemonID: this.daemonID }); }
+    private changed(): void {
+        this.options.broadcast({ type: 'plugins-changed', plugins: this.list() as unknown as JsonValue, epoch: this.epoch, daemonID: this.daemonID });
+        this.notifyServicesChanged();
+    }
     private persist(): void { if (this.registryError) throw new Error(this.registryError); this.writeJSON(path.join(this.directory, 'installed.json'), [...this.installations.values()]); }
     private writeJSON(file: string, value: unknown): void {
         const temporary = `${file}.${randomUUID()}.tmp`;
@@ -326,7 +337,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
             else if (message['type'] === 'result') {
                 const call = runtime.pending.get(String(message['id'])); if (!call) return;
                 runtime.pending.delete(String(message['id'])); clearTimeout(call.timer);
-                try { if (typeof message['error'] === 'string') throw new Error(message['error'] || 'plugin invocation failed'); call.resolve(pluginJSON(message['result'] ?? null)); } catch (error) { call.reject(new Error(failure(error))); }
+                if (typeof message['error'] === 'string') { call.reject(new Error(message['error'] || 'plugin invocation failed')); return; }
+                try { call.resolve(pluginJSON(message['result'] ?? null)); }
+                catch (cause) {
+                    const error = new Error(`invalid plugin result: ${failure(cause)}`);
+                    call.reject(error); runtime.fail(error);
+                }
             } else if (message['type'] === 'call') {
                 const callID = String(message['id']);
                 if (runtime.stopping) { if (child.connected) child.send({ type: 'reply', id: callID, error: 'plugin is stopping' }, () => {}); return; }
@@ -394,16 +410,55 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         try { return pluginObject(JSON.parse(fs.readFileSync(path.join(this.directory, 'data', id, `${kind}.json`), 'utf8'))); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw error; }
     }
+    /** Compose native adapters before start; plugin manifests cannot replace these contracts. */
+    registerBuiltinService(service: BuiltinPluginService): void {
+        if (this.started || this.closed) throw new Error('built-in services must be registered before start');
+        const key = `${service.id}@${service.version}`;
+        if (!/^kelpi\.[a-z][a-z0-9.-]*$/.test(service.id) || !Number.isSafeInteger(service.version) || service.version < 1 || !Object.keys(service.methods).length) throw new Error('invalid built-in service contract');
+        if (this.builtinServices.has(key)) throw new Error(`built-in service is already registered: ${key}`);
+        this.builtinServices.set(key, service);
+        this.notifyServicesChanged(false, false);
+    }
+    /** Changes reflect the effective implementation, including reloads of the same provider. */
+    onServicesChanged(listener: (changed: readonly string[]) => void): () => void {
+        this.serviceListeners.add(listener);
+        return () => { this.serviceListeners.delete(listener); };
+    }
+    private notifyServicesChanged(force = false, publish = true): void {
+        if (this.closed) return;
+        const services = this.services();
+        const identities = new Map(services.map(service => {
+            const provider = (service['providers'] as JsonObject[]).find(provider => provider['id'] === service['activeProviderID']);
+            const pluginID = provider?.['pluginID'];
+            const identity = typeof pluginID === 'string' ? [service['activeProviderID'], this.installations.get(pluginID)?.revision, this.generations.get(pluginID) ?? 0] : [service['activeProviderID']];
+            return [`${service['id']}@${service['version']}`, JSON.stringify(identity)];
+        }));
+        const changed = [...new Set([...this.serviceIdentities.keys(), ...identities.keys()])].filter(key => this.serviceIdentities.get(key) !== identities.get(key));
+        this.serviceIdentities = identities;
+        if (!publish) return;
+        if (changed.length || force) this.emit('services.changed', services);
+        if (changed.length) this.emit('services.invalidated', changed);
+        if (changed.length) for (const listener of this.serviceListeners) {
+            try { listener(changed); } catch (error) { this.options.onError?.(new Error(`service change listener: ${failure(error)}`)); }
+        }
+    }
+    hasSelectedProvider(id: string, version: number): boolean {
+        if (this.closed) return false;
+        const selected = this.serviceSelections.get(`${id}@${version}`);
+        if (!selected || selected === `${id}.bundled`) return false;
+        const service = this.services().find(service => service['id'] === id && service['version'] === version);
+        return service?.['activeProviderID'] === selected;
+    }
     private serviceDefinitions() {
         return [
-            { id: 'kelpi.files', title: 'Files', version: 1, methods: ['read', 'write'], pluginID: undefined as string | undefined },
+            ...[...this.builtinServices.values()].map(service => ({ id: service.id, title: service.title, version: service.version, methods: Object.keys(service.methods), pluginID: undefined as string | undefined })),
             ...[...this.installations.values()].flatMap(item => (item.manifest.contributes.services ?? []).map(service => ({ ...service, pluginID: item.manifest.id })))
         ];
     }
     services(): JsonObject[] {
         return this.serviceDefinitions().map(service => {
-            const bundled = service.id === 'kelpi.files' && service.version === 1 ? 'kelpi.files.bundled' : null;
-            const providers: JsonObject[] = bundled ? [{ id: bundled, title: 'Bundled files', status: 'available' }] : [];
+            const bundled = this.builtinServices.has(`${service.id}@${service.version}`) ? `${service.id}.bundled` : null;
+            const providers: JsonObject[] = bundled ? [{ id: bundled, title: `Bundled ${service.title.toLowerCase()}`, status: 'available' }] : [];
             for (const item of this.installations.values()) for (const provider of item.manifest.contributes.providers ?? []) {
                 if (provider.service !== service.id || provider.version !== service.version) continue;
                 const incomplete = service.methods.some(method => !provider.methods.includes(method));
@@ -427,7 +482,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         if (providerID === null) next.delete(key); else next.set(key, providerID);
         this.writeJSON(path.join(this.directory, 'services.json'), Object.fromEntries(next));
         this.serviceSelections.clear(); for (const [key, value] of next) this.serviceSelections.set(key, value);
-        this.emit('services.changed', this.services());
+        this.notifyServicesChanged(true);
         return this.services();
     }
     private resolveService(args: JsonObject): JsonObject {
@@ -438,40 +493,24 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         if (!service) throw new Error(`service is unavailable: ${serviceID}@${version}`);
         return service;
     }
-    private async callService(input: JsonObject, context: PluginContext, signal = operationScope().signal): Promise<JsonValue> {
+    async callService(input: JsonObject, context: PluginContext = { daemonID: this.daemonID }, signal = operationScope().signal): Promise<JsonValue> {
+        if (this.closed) throw new Error('plugin service is stopped');
         if (signal?.aborted) throw new Error('plugin service call cancelled');
         const service = this.resolveService(input);
         const method = text(input['method'], 'method');
         if (!(service['methods'] as string[]).includes(method)) throw new Error(`unknown service method: ${method}`);
         const args = pluginObject(input['args'] ?? {});
-        const files = service['id'] === 'kelpi.files' && service['version'] === 1;
-        if (files) {
-            text(args['path'], 'path');
-            if (method === 'write' && typeof args['text'] !== 'string') throw new Error('expected text');
-        }
-        const explicit = input['provider'] === 'bundled' && files ? 'kelpi.files.bundled' : input['provider'];
+        const builtin = this.builtinServices.get(`${service['id']}@${service['version']}`);
+        const adapter = builtin?.methods[method];
+        adapter?.validateArgs(args);
+        const explicit = input['provider'] === 'bundled' && builtin ? `${builtin.id}.bundled` : input['provider'];
         const providerID = explicit ?? service['activeProviderID'];
         if (typeof providerID !== 'string' || !(service['providers'] as JsonObject[]).some(provider => provider['id'] === providerID && provider['status'] === 'available')) throw new Error(`service provider is unavailable: ${providerID ?? service['id']}`);
-        if (providerID === 'kelpi.files.bundled' && files) {
-            const file = text(args['path'], 'path');
-            if (method === 'read') {
-                const handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-                try {
-                    const stat = await handle.stat();
-                    if (!stat.isFile() || stat.size > 256 * 1024) throw new Error('file exceeds plugin read limit or is not a regular file');
-                    const bytes = Buffer.alloc(256 * 1024 + 1);
-                    let read = 0;
-                    while (read < bytes.length) {
-                        if (signal?.aborted) throw new Error('plugin service call cancelled');
-                        const result = await handle.read(bytes, read, bytes.length - read, read);
-                        if (result.bytesRead === 0) break;
-                        read += result.bytesRead;
-                    }
-                    if (read > 256 * 1024) throw new Error('file exceeds plugin read limit');
-                    return pluginJSON(bytes.subarray(0, read).toString('utf8'));
-                } finally { await handle.close(); }
-            }
-            await fs.promises.writeFile(file, args['text'] as string, { ...(signal ? { signal } : {}) }); return null;
+        if (builtin && adapter && providerID === `${builtin.id}.bundled`) {
+            const result = pluginJSON(await adapter.run(args, context, signal));
+            if (signal?.aborted) throw new Error('plugin service call cancelled');
+            adapter.validateResult(result);
+            return result;
         }
         const item = [...this.installations.values()].find(item => item.manifest.contributes.providers?.some(provider => provider.id === providerID));
         const provider = item?.manifest.contributes.providers?.find(provider => provider.id === providerID);
@@ -485,7 +524,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
             if (!(current['providers'] as JsonObject[]).some(entry => entry['id'] === provider.id && entry['status'] === 'available')) throw new Error('service provider is no longer available');
         };
         const result = await this.invokeBackend(item.manifest.id, `provider:${provider.id}`, { type: 'service', provider: provider.id, method, args, context: { ...context } }, provider.timeoutMs ?? 5000, true, signal, validate);
-        if (files && (method === 'read' ? typeof result !== 'string' : result !== null)) throw new Error(`invalid ${method} result from service provider ${provider.id}`);
+        validate();
+        try { adapter?.validateResult(result); }
+        catch (cause) {
+            const error = new Error(`invalid ${method} result from service provider ${provider.id}: ${failure(cause)}`);
+            this.running.get(item.manifest.id)?.fail(error);
+            throw error;
+        }
         return result;
     }
     private operationHooks(command: string) {
@@ -625,15 +670,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
             const subscription = text(args['subscription'], 'subscription');
             if (this.terminalSubs.get(subscription)?.pluginID === id) this.terminalSubs.delete(subscription); return null;
         }
-        if (method === 'process.exec') {
-            const file = text(args['file'], 'file'); const argv = args['args'] ?? [];
-            if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw new Error('process args must be strings');
-            return this.operation(id, lease, signal => new Promise<JsonValue>((resolve, reject) => {
-                execFile(file, argv as string[], { signal, env: { ...process.env, ...this.cliEnvironment() }, cwd: typeof args['cwd'] === 'string' ? args['cwd'] : this.options.store.getState().homeDirectory, timeout: 25_000, maxBuffer: 256 * 1024 }, (error, stdout, stderr) => {
-                    if (error) reject(new Error(`${error.message}\n${stderr}`)); else resolve({ stdout, stderr });
-                });
-            }));
-        }
+        if (method === 'process.exec') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.process', version: 1, method: 'exec', args }, context, signal));
         throw new Error(`unknown plugin API method: ${method}`);
     }
     async invoke(command: string, args: JsonObject, context: PluginContext): Promise<JsonValue> {
@@ -652,6 +689,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         const scope: PluginOperationScope = { trace: [...parent.trace, key], source: parent.source ?? 'plugin', ...(signal ? { signal } : {}) };
         const deadline = Date.now() + timeoutMs;
         let activationTimer: ReturnType<typeof setTimeout> | undefined;
+        let cancelActivation: (() => void) | undefined;
         try {
             await Promise.race([
                 this.activate(pluginID),
@@ -661,9 +699,16 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
                         if (generation === this.generations.get(pluginID) && this.installations.get(pluginID)?.revision === installation.revision) this.running.get(pluginID)?.fail(error);
                         reject(error);
                     }, timeoutMs);
-                })
+                }),
+                ...(signal ? [new Promise<never>((_resolve, reject) => {
+                    cancelActivation = () => reject(new Error('plugin invocation cancelled'));
+                    if (signal.aborted) cancelActivation(); else signal.addEventListener('abort', cancelActivation, { once: true });
+                })] : [])
             ]);
-        } finally { clearTimeout(activationTimer); }
+        } finally {
+            clearTimeout(activationTimer);
+            if (cancelActivation) signal?.removeEventListener('abort', cancelActivation);
+        }
         if (signal?.aborted) throw new Error('plugin invocation cancelled');
         if (this.closed || !this.installations.get(pluginID)?.enabled || this.changing.has(pluginID) || generation !== this.generations.get(pluginID) || this.installations.get(pluginID)?.revision !== installation.revision) throw new Error('plugin changed during invocation; retry the operation');
         validate?.();
@@ -789,7 +834,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel {
         if (this.running.get(id) === runtime) this.running.delete(id);
     }
     async dispose(): Promise<void> {
-        if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear();
+        if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear(); this.serviceListeners.clear();
         for (const lease of this.leases.keys()) this.release(lease);
         for (const operations of this.operations.values()) for (const operation of operations) operation.abort();
         this.operations.clear();

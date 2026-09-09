@@ -60,6 +60,8 @@ const ROUTES = {
     'sort-group': 'group',
 
     'create-pane': 'pane',
+    'create-plugin-pane': 'pane',
+    'set-plugin-pane-state': 'pane',
     'split-pane': 'pane',
     'split-pane-at-path': 'pane',
     'close-pane': 'pane',

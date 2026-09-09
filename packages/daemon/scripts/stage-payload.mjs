@@ -188,6 +188,7 @@ export function stageDaemonPayload({
     mkdirSync(target, { recursive: true });
 
     cpSync(bundle, path.join(target, BUNDLE_NAME), { dereference: true });
+    cpSync(path.join(distDir, 'runner.mjs'), path.join(target, 'runner.mjs'));
     chmodSync(path.join(target, BUNDLE_NAME), 0o755);
     const sourcemap = copyFileIfPresent(path.join(distDir, SOURCEMAP_NAME), path.join(target, SOURCEMAP_NAME));
 

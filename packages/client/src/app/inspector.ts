@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { InspectorAssociation, InspectorGitStatus, InspectorRepo } from '../chrome';
-import type { CommandReply } from '../connection';
+import type { CommandReply, KelpiConnection } from '../connection';
 
 /** The daemon's association-status poll, mirrored so the two cannot drift far apart. */
 export const INSPECTOR_POLL_MS = 30_000;
@@ -106,6 +106,8 @@ export interface InspectorReader {
 }
 
 export interface UseInspectorDataInput {
+    /** Native service changes can replace Git without changing workspace state. */
+    readonly events?: Pick<KelpiConnection, 'on'> | undefined;
     readonly commands: InspectorReader;
     readonly workspaceID: string | null;
     /** False = no association reads and no timer (nothing on screen wants them). */
@@ -170,6 +172,7 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
     const [repos, setRepos] = useState<readonly InspectorRepo[]>(EMPTY_REPOS);
     const [refreshing, setRefreshing] = useState(false);
     const [nonce, setNonce] = useState(0);
+    const serviceRefresh = useRef(false);
     /** Guards a late reply from a workspace the user has already left. */
     const generation = useRef(0);
     /**
@@ -187,6 +190,13 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
     const refresh = useCallback(() => {
         setNonce((value) => value + 1);
     }, []);
+
+    useEffect(() => input.events?.on('message', message => {
+        const event = message['event'];
+        if (message['type'] !== 'plugin-event' || !isRecord(event) || event['name'] !== 'services.invalidated' || !Array.isArray(event['data']) || !event['data'].includes('kelpi.git@1')) return;
+        serviceRefresh.current = true;
+        refresh();
+    }), [input.events, refresh]);
 
     // The registry: git-free, so it is read whether or not the inspector is open.
     useEffect(() => {
@@ -218,6 +228,8 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
         const forced =
             forceToken !== '' && forceWorkspaceID === workspaceID && spentForceToken.current !== forceToken;
         if (forced) spentForceToken.current = forceToken;
+        const providerChanged = serviceRefresh.current;
+        serviceRefresh.current = false;
         const read = async (options: { force?: boolean } = {}): Promise<void> => {
             setRefreshing(true);
             try {
@@ -233,7 +245,7 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
                 if (!cancelled && generation.current === mine) setRefreshing(false);
             }
         };
-        void read({ force: forced });
+        void read({ force: forced || providerChanged });
         if (pollMs <= 0) {
             return () => {
                 cancelled = true;

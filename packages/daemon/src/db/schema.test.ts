@@ -42,8 +42,8 @@ describe('migration ledger', () => {
             expect(MIGRATION_IDENTIFIERS).toContain(identifier);
         }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v19_pane_agent_profile');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(19);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v20_plugin_panes');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(20);
     });
 
     it('is a no-op on the second run', () => {
@@ -54,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v19 schema (§8 + the daemon-only tail)', () => {
+    it('produces the post-v20 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -89,7 +89,9 @@ describe('migration ledger', () => {
             'webActiveTabID',
             'webIsPrivate',
             'agentKind',
-            'agentProfileName'
+            'agentProfileName',
+            'pluginJSON',
+            'pluginParked'
         ]);
         expect(columnNames(db, 'workspace_group')).toEqual([
             'id',

@@ -44,10 +44,14 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
 
 ## Naming
 
+Custom panes, replaceable workbench views, and daemon backends are documented in the
+[plugin guide](docs/plugins.md), with a working [Agent Board example](examples/plugins/agent-board).
+This generation uses protocol 2 and `kelpi-v2.db`; see the guide's upgrade and rollback notes.
+
 Everything is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
 packages are `@kelpi/*`, the socket is `/tmp/kelpi.sock`, panes carry `KELPI_PANE_ID` /
 `KELPI_PROFILE` / `KELPI_SOCKET`, the config is `~/.config/kelpi/config`, the daemon's state is
-`~/Library/Application Support/kelpid/kelpi.db`, new worktrees go under `~/kelpi/worktrees/`, and
+`~/Library/Application Support/kelpid/kelpi-v2.db`, new worktrees go under `~/kelpi/worktrees/`, and
 the bundled Claude Code skill is `kelpi-agentic`.
 
 **Nothing is shared with Nex.** The Swift app keeps `/tmp/nex.sock`, its `NEX_*` pane
@@ -210,7 +214,7 @@ the file costs one badly-wrapped first prompt per pane and nothing else.
 ## Importing from the legacy macOS app
 
 The Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the daemon
-owns a separate database (`~/Library/Application Support/kelpid/kelpi.db`, or `KELPID_DB_PATH`)
+owns a separate database (`~/Library/Application Support/kelpid/kelpi-v2.db`, or `KELPID_DB_PATH`)
 so the two run side by side. `kelpid import` copies the legacy state into Kelpi's, once — the
 database AND `~/.config/nex/config` (never over an existing Kelpi config). Its default source
 is the pre-rename port daemon's `nexd/nex.db` when that exists (the reader handles both
@@ -289,6 +293,17 @@ Use `pnpm --filter @kelpi/shell package` for just the `.app` (no DMG/ZIP), and
 `pnpm --filter @kelpi/shell smoke:packaged` to verify a build end to end: it packages the app,
 launches it with a throwaway environment and asserts that it starts its own daemon, serves its
 own client, answers the CLI, runs a real PTY, and leaves the daemon alive on quit.
+
+**Quit hangs on macOS 26.4.x:** Electron can finish closing every window and emit `quit`
+while its process remains stuck in native teardown. This also reproduces with a minimal
+Electron app containing only a hidden `about:blank` window; see
+[Electron #52582](https://github.com/electron/electron/issues/52582). The packaged smoke keeps
+its clean-exit assertion strict: `exit code null, signal SIGKILL, quit wait 20000 ms, timed out true`
+means the app failed to exit and the harness killed its isolated test process after the deadline.
+Kelpi does not work around this by force-killing itself. The upstream reporter confirmed that
+the same Electron binaries exited normally after
+[updating macOS from 26.4.1 to 26.6](https://github.com/electron/electron/issues/52582#issuecomment-5152586801).
+Re-run the packaged smoke after an OS update to verify shutdown on that machine.
 
 Inside `Kelpi.app/Contents/Resources`:
 

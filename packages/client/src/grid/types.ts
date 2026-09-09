@@ -66,6 +66,8 @@ export type RenderPane = (
 
 /** Per-pane commands the header raises. All optional: an unwired button is inert. */
 export interface PaneActions {
+    /** Host-registered commands join the header's existing overflow and keyboard controls. */
+    readonly headerCommands?: readonly { readonly id: string; readonly title: string; run(paneID: string): void }[] | undefined;
     readonly onFocusPane?: ((paneID: string) => void) | undefined;
     readonly onClosePane?: ((paneID: string) => void) | undefined;
     /** Inline rename commit (Enter / blur). Empty string clears the label. */

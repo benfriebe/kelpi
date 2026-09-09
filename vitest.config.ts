@@ -15,7 +15,7 @@ export default defineConfig({
       {
         test: {
           name: 'node',
-          include: ['packages/{protocol,core,daemon,cli}/{src,tests}/**/*.test.ts'],
+          include: ['packages/{protocol,core,daemon,cli,plugin-sdk}/{src,tests}/**/*.test.ts'],
           exclude: ['**/node_modules/**', '**/dist/**'],
         },
       },
@@ -29,7 +29,7 @@ export default defineConfig({
         // live-app helpers into a vitest project that has no use for them.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs'],
         },
       },
     ],

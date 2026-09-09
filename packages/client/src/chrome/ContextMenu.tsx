@@ -88,6 +88,8 @@ export interface MenuItemSpec {
 }
 
 export interface ContextMenuProps {
+    /** A dropdown's toggle must stay inside its dismissal boundary. */
+    readonly anchorRef?: RefObject<HTMLElement | null> | undefined;
     readonly x: number;
     readonly y: number;
     readonly items: readonly MenuItemSpec[];
@@ -314,7 +316,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
      * one this component always had — the effect moved to `dismissable.ts` unchanged so the
      * footer's bucket popover and the title bar's layout dropdown could have it too.
      */
-    useDismissable(true, onClose, [rootRef]);
+    useDismissable(true, onClose, props.anchorRef ? [rootRef, props.anchorRef] : [rootRef]);
 
     /*
      * H1: a menu drawn while a web pane's page is live would be sliced at the page's edge, so it

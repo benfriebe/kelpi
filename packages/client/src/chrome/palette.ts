@@ -52,6 +52,7 @@ export const PANE_TYPE_ICONS: Readonly<Record<ChromePane['type'], string>> = {
     markdown: 'doc.text',
     scratchpad: 'note.text',
     diff: 'plusminus',
+    plugin: 'document',
     web: 'globe'
 };
 

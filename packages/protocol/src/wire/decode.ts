@@ -154,6 +154,8 @@ function decodeCommand(
     };
 
     switch (command) {
+        case 'plugin':
+            return { command, action: fields.text('action') ?? 'list', text: fields.rawText('text') ?? '{}' };
         // ── 6.1 agent lifecycle (pane_id already validated) ──────────────────────────
         case 'start':
             return { command, pane_id: paneId as string, agent: parseAgentKind(fields.rawText('agent')) };

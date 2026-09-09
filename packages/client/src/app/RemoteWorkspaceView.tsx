@@ -1,3 +1,4 @@
+import { PluginView } from '../plugins/PluginView';
 /**
  * A REMOTE daemon's workspace, rendered in this window (multi-daemon groups, §1.7).
  *
@@ -20,6 +21,7 @@ import type { KelpiRuntime } from '../state';
 import { TerminalPane } from '../terminal';
 
 export interface RemoteWorkspaceViewProps {
+    readonly visible?: boolean | undefined;
     readonly daemonName: string;
     readonly runtime: KelpiRuntime;
     readonly workspaceID: string;
@@ -61,6 +63,7 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
     const renderPane = (paneID: string, _frame: unknown, focused: boolean, state: { visible: boolean }): ReactNode => {
         const pane = workspace.panes.find((entry) => entry.id === paneID);
         if (pane === undefined) return null;
+        if (pane.type === 'plugin' && pane.plugin) return <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspaceID} visible={state.visible} />;
         if (pane.type !== 'shell') {
             return (
                 <div
@@ -86,6 +89,7 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
 
     return (
         <PaneGrid
+            visible={props.visible}
             layout={workspace.layout}
             panes={workspace.panes}
             focusedPaneID={focusedPaneID}

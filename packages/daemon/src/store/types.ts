@@ -46,6 +46,8 @@ export interface WebPaneState {
 
 /** Captured at close time so `reopen-closed-pane` can rebuild the pane (§1.4). */
 export interface ClosedPaneSnapshot {
+    readonly unavailable?: { readonly type: string; readonly pluginJSON: string | null };
+    readonly plugin?: import('@kelpi/protocol').PluginPaneDescriptor;
     readonly workingDirectory: string;
     readonly label: string | null;
     readonly type: PaneType;
@@ -188,6 +190,8 @@ export type NewWorkspacePlacement = 'end-of-list' | 'near-selection';
  * also keeps the reducers pure and trivially testable.
  */
 export type DomainAction =
+    | { readonly type: 'create-plugin-pane'; readonly workspaceID: string; readonly paneID: string; readonly title: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor; readonly now: number }
+    | { readonly type: 'set-plugin-pane-state'; readonly paneID: string; readonly plugin: import('@kelpi/protocol').PluginPaneDescriptor }
     // ── boot / wholesale ────────────────────────────────────────────────────
     | { readonly type: 'replace-state'; readonly state: DaemonState }
 

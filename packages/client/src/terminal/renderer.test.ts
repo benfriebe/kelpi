@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { REPLAY_CHUNK_BYTES } from './ingest';
+import { REPLAY_CHUNK_BYTES, createTerminalIngest } from './ingest';
 import {
     DEFAULT_FONT_FAMILY,
     DEFAULT_TERMINAL_ENGINE,
@@ -680,6 +680,9 @@ describe('the resize→replay paint hold (§N24)', () => {
         engine.terminal.onResizeRecorded = (): void => {
             order.push('resize');
         };
+        engine.terminal.onWriteRecorded = (): void => {
+            order.push(engine.terminal.writes.at(-1) === TERMINAL_RESET_SEQUENCE ? 'reset' : 'write');
+        };
         renderer.onPaintHoldChange((held) => {
             order.push(held ? 'suspend' : 'resume');
         });
@@ -687,13 +690,79 @@ describe('the resize→replay paint hold (§N24)', () => {
         renderer.resize(120, 40);
         expect(renderer.paintHeld).toBe(true);
         expect(order).toEqual(['suspend', 'resize']);
+        expect([renderer.cols, renderer.rows]).toEqual([120, 40]);
+        expect([engine.terminal.cols, engine.terminal.rows]).toEqual([120, 40]);
 
         // The replay, exactly as `ingest.replay()` produces it.
         renderer.reset();
         expect(renderer.paintHeld).toBe(true);
+        expect(order).toEqual(['suspend', 'resize', 'reset']);
         renderer.write('snapshot');
         expect(renderer.paintHeld).toBe(false);
-        expect(order).toEqual(['suspend', 'resize', 'resume']);
+        expect(order).toEqual(['suspend', 'resize', 'reset', 'write', 'resume']);
+        renderer.dispose();
+    });
+
+    it('keeps a chunked replay hidden until its final chunk', async () => {
+        const { engine, renderer } = await live();
+        const pending = new Set<() => void>();
+        const ingest = createTerminalIngest(renderer, {
+            chunkBytes: 3,
+            tickBudgetMs: 0,
+            schedule: (run) => {
+                pending.add(run);
+                return () => pending.delete(run);
+            }
+        });
+        renderer.resize(120, 40);
+        ingest.replay('snapshot');
+        expect(renderer.paintHeld).toBe(true);
+        ingest.live('tail');
+        renderer.write('');
+        expect(renderer.paintHeld).toBe(true);
+        while (pending.size > 0) {
+            const next = [...pending][0]!;
+            pending.delete(next);
+            next();
+            expect(renderer.paintHeld).toBe(pending.size > 0);
+        }
+        expect(engine.terminal.writes.slice(-4)).toEqual(['sna', 'psh', 'ot', 'tail']);
+        renderer.dispose();
+    });
+
+    it('ends the hold for an empty snapshot through the real ingest path', async () => {
+        const { engine, renderer } = await live();
+        renderer.resize(120, 40);
+        createTerminalIngest(renderer).replay(new Uint8Array(0));
+        expect(renderer.paintHeld).toBe(false);
+        expect(renderer.paintHoldTimeouts).toBe(0);
+        expect([engine.terminal.cols, engine.terminal.rows]).toEqual([120, 40]);
+        renderer.dispose();
+    });
+
+    it('keeps the hold when CAN supersedes the last pending unit of a replay', async () => {
+        const { engine, renderer } = await live();
+        const pending = new Set<() => void>();
+        const ingest = createTerminalIngest(renderer, {
+            chunkBytes: 1,
+            tickBudgetMs: 0,
+            schedule: (run) => {
+                pending.add(run);
+                return () => pending.delete(run);
+            }
+        });
+        renderer.resize(120, 40);
+        ingest.replay('ab');
+        ingest.replay('new');
+        expect(renderer.paintHeld).toBe(true);
+        expect(engine.paintSuspensions).toEqual([true]);
+        expect(engine.terminal.writes).toContain('\x18');
+        while (pending.size > 0) {
+            const next = [...pending][0]!;
+            pending.delete(next);
+            next();
+        }
+        expect(engine.paintSuspensions).toEqual([true, false]);
         renderer.dispose();
     });
 

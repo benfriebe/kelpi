@@ -1,3 +1,5 @@
+import { pluginObject, type PluginContext } from '@kelpi/protocol';
+import type { PluginChannel } from '../plugins/service.js';
 /**
  * The state-sync half of the client socket (WP2.7).
  *
@@ -60,7 +62,7 @@ import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
-import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
+import type { ControlDispatchItem, ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import {
     findPaneAnywhere,
     groupByID,
@@ -137,6 +139,8 @@ export interface SyncPaneBridge {
     attach(paneID: string, size?: { cols: number; rows: number } | undefined): void | Promise<void>;
     detach(paneID: string): void;
     resize(paneID: string, cols: number, rows: number): void;
+    /** Reconcile only this viewer after a local resize that cannot change the PTY's size. */
+    requestReplay?(paneID: string): void;
     close(): void;
 }
 
@@ -157,6 +161,7 @@ export interface SyncSession {
 }
 
 export interface SyncHubOptions {
+    readonly plugins?: PluginChannel | undefined;
     readonly store: KelpiDomainStore;
     /** Where client `command` messages go — the same dispatcher the control socket uses. */
     readonly dispatcher: ControlDispatcher;
@@ -249,6 +254,8 @@ export interface SessionOptions {
 }
 
 export interface SyncHub {
+    /** Execute against the same services without registering a UI, a PTY owner or a host. */
+    executeCommand(payload: JsonObject, context: PluginContext, signal: AbortSignal): Promise<JsonObject>;
     createSession(
         transport: SyncTransport,
         panes?: SyncPaneBridge | undefined,
@@ -1371,6 +1378,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         visiblePaneIDs: ReadonlySet<string> = new Set<string>();
         documentVisible = false;
         private disposed = false;
+        private readonly operationReplies = new Map<string, (reply: JsonObject) => void>();
+        private readonly pendingHookCommands = new Set<string>();
+        private commandSource: 'ui' | 'plugin' = 'ui';
+        private originatingClientID: string | undefined;
+        private readonly transport: SyncTransport;
         private readonly handles = new Set<WsReplyHandle>();
         /** paneID → this connection's content subscription (events go nowhere else). */
         private readonly contentSubs = new Map<string, ContentSubscription>();
@@ -1428,11 +1440,21 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
 
         constructor(
-            private readonly transport: SyncTransport,
+            transport: SyncTransport,
             private readonly panes: SyncPaneBridge | undefined,
             /** The upgrade presented a valid token; see `SessionOptions`. */
             private readonly upgradeAuthenticated: boolean
         ) {
+            this.transport = {
+                close: (code, reason) => transport.close(code, reason),
+                sendJson: message => {
+                    if (message['type'] === 'command-reply' && typeof message['id'] === 'string') {
+                        const complete = this.operationReplies.get(message['id']);
+                        if (complete) { this.operationReplies.delete(message['id']); complete(message['reply'] as JsonObject); }
+                    }
+                    transport.sendJson(message);
+                }
+            };
             if (helloTimeoutMs > 0) {
                 this.helloTimer = setTimeout(() => {
                     this.helloTimer = null;
@@ -1502,6 +1524,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     const cols = count(parsed['cols']);
                     const rows = count(parsed['rows']);
                     if (paneID === undefined || cols === undefined || rows === undefined) return;
+                    if (cols <= 0 || rows <= 0) return;
+                    const previous = this.paneSizes.get(paneID);
                     this.paneSizes.set(paneID, { cols, rows });
                     // No owner (the previous one left without a successor): the first client
                     // to breathe geometry claims. Otherwise only the owner's reports land —
@@ -1511,6 +1535,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         broadcastSizeControl();
                     }
                     if (this.ownsSize()) this.panes?.resize(paneID, cols, rows);
+                    else if (previous?.cols !== cols || previous?.rows !== rows) {
+                        // Its own renderer still resized. A fresh snapshot clears any local
+                        // reflow divergence without changing the owner's grid or other viewers.
+                        this.panes?.requestReplay?.(paneID);
+                    }
                     return;
                 }
                 case 'take-size-control':
@@ -1594,10 +1623,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
 
         close(): void {
+            options.plugins?.releaseClient?.(this.clientID);
             if (this.disposed) return;
             this.disposed = true;
             this.ready = false;
             this.clearHelloTimer();
+            for (const complete of this.operationReplies.values()) complete(failure('command caller disconnected'));
+            this.operationReplies.clear();
             for (const handle of [...this.handles]) handle.peerGone();
             this.handles.clear();
             // A dropped connection must not leave the daemon watching a file for nobody.
@@ -2069,7 +2101,51 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
         }
 
+        internalCommand(payload: JsonObject, context: PluginContext): void {
+            this.clearHelloTimer();
+            this.ready = true;
+            this.activeWorkspaceID = context.workspaceID ?? null;
+            this.focusedPaneID = context.paneID ?? null;
+            this.client = { kind: 'browser', ...(context.windowID ? { windowID: context.windowID } : {}) };
+            this.commandSource = 'plugin';
+            this.originatingClientID = context.clientID;
+            this.command({ id: 'internal', payload });
+        }
+
         private command(message: Record<string, unknown>): void {
+            const id = text(message['id']);
+            const payload = message['payload'];
+            const plugins = options.plugins;
+            const name = isRecord(payload) ? text(payload['command']) : undefined;
+            if (id === undefined || name === undefined || !plugins?.hasOperationHooks?.(name) || !plugins.interceptOperation) { this.commandNow(message); return; }
+            const supported = isContentCommand(name) || isWebCommand(name) || isAgentCommand(name) || isRemoteCommand(name) || isWsSettingsCommand(name) || isWsOnlyCommand(name) || isRepoCommand(name) || isGraftUiCommand(name) || isTerminalSearchCommand(name) || isPaneLifecycleCommand(name) || isDesktopCommand(name) || name === GUI_DELETE_WORKSPACE_COMMAND || decodeWireObject(payload).ok;
+            if (!supported) { this.commandNow(message); return; }
+            if (this.pendingHookCommands.has(id)) { this.send({ type: 'command-reply', id, reply: failure('command id is already in use') }); return; }
+            this.pendingHookCommands.add(id);
+            let invoked = false;
+            void plugins.interceptOperation(payload as JsonObject, {
+                clientID: this.originatingClientID ?? this.clientID,
+                ...(this.client?.windowID ? { windowID: this.client.windowID } : {}),
+                ...(this.activeWorkspaceID ? { workspaceID: this.activeWorkspaceID } : {}),
+                ...(this.focusedPaneID ? { paneID: this.focusedPaneID } : {})
+            }, this.commandSource, () => new Promise<JsonObject>(resolve => {
+                if (this.disposed) { resolve(failure('command caller disconnected')); return; }
+                invoked = true;
+                const timer = setTimeout(() => {
+                    this.operationReplies.delete(id);
+                    resolve(failure('operation completion was not observed within 60 seconds'));
+                }, 60_000);
+                timer.unref?.();
+                this.operationReplies.set(id, reply => { clearTimeout(timer); resolve(reply); });
+                // Re-enter the normal decoder and handlers after the hooks finish. They read
+                // current state, so a hook cannot turn stale pane/workspace ids into authority.
+                this.commandNow(message);
+            })).then(reply => {
+                if (!invoked) this.send({ type: 'command-reply', id, reply });
+            }, error => this.send({ type: 'command-reply', id, reply: failure(toError(error).message) })).finally(() => this.pendingHookCommands.delete(id));
+        }
+
+        private commandNow(message: Record<string, unknown>): void {
             const id = text(message['id']);
             if (id === undefined) return;
             const payload = message['payload'];
@@ -2078,6 +2154,23 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // unknown commands (they are deliberately not part of the CLI's vocabulary).
             if (isRecord(payload)) {
                 const name = text(payload['command']);
+                if (name === 'plugin') {
+                    const handle = new WsReplyHandle(this.transport, id, h => this.handles.delete(h));
+                    this.handles.add(handle);
+                    try {
+                        if (!options.plugins) throw new Error('plugins are not available');
+                        const action = text(payload['action']) ?? 'list';
+                        // A paired device can use installed views, but cannot install account-level code.
+                        if (this.credential?.startsWith(DEVICE_TOKEN_PREFIX) && ['install', 'enable', 'disable', 'reload', 'remove', 'service-select'].includes(action)) throw new Error('plugin management requires the daemon owner');
+                        options.plugins.run(action, pluginObject(JSON.parse(text(payload['text']) ?? '{}')), handle, {
+                            clientID: this.clientID,
+                            ...(this.client?.windowID ? { windowID: this.client.windowID } : {}),
+                            ...(this.activeWorkspaceID ? { workspaceID: this.activeWorkspaceID } : {}),
+                            ...(this.focusedPaneID ? { paneID: this.focusedPaneID } : {})
+                        });
+                    } catch (error) { handle.send({ ok: false, error: toError(error).message }); handle.close(); }
+                    return;
+                }
                 if (name !== undefined && isContentCommand(name)) {
                     this.contentCommand(id, name, payload);
                     return;
@@ -2156,6 +2249,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
 
             let answered = false;
+            const batch: ControlDispatchItem[] = [];
             for (const item of dispatchSequence(decoded)) {
                 const wire = item.kind === 'message' ? item.message : dualFireMessage(item.event);
                 let handle: WsReplyHandle | null = null;
@@ -2164,6 +2258,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h));
                     this.handles.add(handle);
                 }
+                if (dispatcher.dispatchBatch) { batch.push({ message: wire, reply: handle }); continue; }
                 try {
                     dispatcher(wire, handle);
                 } catch (error) {
@@ -2174,6 +2269,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     }
                 }
             }
+            if (dispatcher.dispatchBatch) dispatcher.dispatchBatch(batch);
 
             // Fire-and-forget verbs get an acknowledgement so the client's promise settles.
             if (!answered) this.send({ type: 'command-reply', id, reply: { ok: true } });
@@ -2810,6 +2906,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     });
 
     return {
+        executeCommand(payload, context, signal) {
+            if (closed || signal.aborted) return Promise.reject(new Error('command cancelled'));
+            return new Promise<JsonObject>((resolve, reject) => {
+                let settled = false;
+                const finish = (reply?: JsonObject, error?: Error): void => {
+                    if (settled) return;
+                    settled = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
+                    // Defer close: synchronous handlers may still be adding their reply handle.
+                    queueMicrotask(() => session.close());
+                    if (error) reject(error); else resolve(reply!);
+                };
+                const abort = (): void => finish(undefined, new Error('command cancelled'));
+                const timer = setTimeout(() => finish(undefined, new Error('plugin operation timed out')), 25_000);
+                const session = new SessionImpl({
+                    sendJson(message) { if (message['type'] === 'command-reply') finish(message['reply'] as JsonObject); },
+                    close() { finish(undefined, new Error('command session closed')); }
+                }, undefined, true);
+                signal.addEventListener('abort', abort, { once: true });
+                try { session.internalCommand(payload, context); } catch (error) { finish(undefined, toError(error)); }
+            });
+        },
         createSession(transport, panes, sessionOptions) {
             const session = new SessionImpl(transport, panes, sessionOptions?.authenticated === true);
             if (closed) {
@@ -2826,6 +2943,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (closed) return;
             const type = typeof event['type'] === 'string' ? (event['type'] as string) : 'notification';
             const message = { ...event, type } as JsonObject;
+            options.plugins?.observe?.(message);
             const workspaceID = typeof event['workspaceID'] === 'string' ? (event['workspaceID'] as string) : undefined;
             const paneID = typeof event['paneID'] === 'string' ? (event['paneID'] as string) : undefined;
             const suppressible = type === 'notification' && workspaceID !== undefined && paneID !== undefined;

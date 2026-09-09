@@ -6,7 +6,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CommandReply } from '../connection';
+import type { CommandReply, KelpiConnection } from '../connection';
 import {
     parseAssociations,
     parseGitStatus,
@@ -100,6 +100,27 @@ function reader(): Reader {
 }
 
 describe('useInspectorData', () => {
+    it('refreshes the native Git provider for the footer and drops superseded replies', async () => {
+        const commands = reader();
+        let listener: (message: CommandReply) => void = () => {};
+        const off = vi.fn();
+        const events = { on: vi.fn((_event: string, callback: typeof listener) => { listener = callback; return off; }) } as unknown as Pick<KelpiConnection, 'on'>;
+        let finishOld: (value: CommandReply) => void = () => {};
+        commands.workspaceRepoStatus.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+        commands.workspaceRepoStatus.mockResolvedValue({ ok: true, associations: [{ id: 'new', branch: 'provider' }] });
+        const { result, unmount } = renderHook(() => useInspectorData({ commands, events, workspaceID: 'w1', enabled: true, refreshOnRead: false, associationsKey: '', pollMs: 0 }));
+        expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: false });
+        act(() => listener({ type: 'plugin-event', event: { name: 'services.invalidated', data: ['kelpi.content.render@1'] } }));
+        expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(1);
+        act(() => listener({ type: 'plugin-event', event: { name: 'services.invalidated', data: ['kelpi.git@1'] } }));
+        await waitFor(() => expect(result.current.associations[0]?.branch).toBe('provider'));
+        expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: true });
+        await act(async () => finishOld({ ok: true, associations: [{ id: 'old', branch: 'stale' }] }));
+        expect(result.current.associations[0]?.branch).toBe('provider');
+        unmount();
+        expect(off).toHaveBeenCalledTimes(1);
+    });
+
     it('reads no GIT while the inspector is closed, but still knows the registry', () => {
         const commands = reader();
         renderHook(() =>

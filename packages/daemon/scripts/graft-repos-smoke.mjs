@@ -125,7 +125,7 @@ async function connectWs(base, token) {
             }, timeoutMs).unref?.();
         });
 
-    socket.send(JSON.stringify({ type: 'hello', protocolVersion: 1, client: { kind: 'browser' } }));
+    socket.send(JSON.stringify({ type: 'hello', protocolVersion: 2, client: { kind: 'browser' } }));
     await waitJson((m) => m.type === 'welcome', 'welcome');
     const snapshot = await waitJson((m) => m.type === 'snapshot', 'snapshot');
 

@@ -55,13 +55,21 @@ const options = {
 };
 
 mkdirSync(path.dirname(outfile), { recursive: true });
+// The backend runner uses the same public SDK facade as browser views. Bundle that
+// dependency so packaged apps never depend on the source workspace being present.
+const runnerOptions = {
+    entryPoints: [path.join(packageRoot, 'src', 'plugins', 'runner.mjs')],
+    outfile: path.join(packageRoot, 'dist', 'runner.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node24',
+    logLevel: 'info', keepNames: true,
+};
 
 if (process.argv.includes('--watch')) {
-    const context = await esbuild.context(options);
-    await context.watch();
+    const contexts = await Promise.all([esbuild.context(options), esbuild.context(runnerOptions)]);
+    await Promise.all(contexts.map(context => context.watch()));
     process.stdout.write(`watching → ${outfile}\n`);
 } else {
-    await esbuild.build(options);
+    await Promise.all([esbuild.build(options), esbuild.build(runnerOptions)]);
     chmodSync(outfile, 0o755);
     process.stdout.write(`built ${outfile}\n`);
 }

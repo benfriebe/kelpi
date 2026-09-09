@@ -89,7 +89,8 @@ describe('the tab list', () => {
             // Port-only: appended so it cannot displace any of the Swift seven.
             'workspaces',
             // Port-only too: the pair/devices/tailnet flow (RemoteTab).
-            'remote'
+            'remote',
+            'plugins'
         ]);
     });
 

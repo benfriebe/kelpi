@@ -27,7 +27,7 @@ function samplePane(): Pane {
 
 describe('pane type vocabulary', () => {
     it('uses the exact persisted raw strings', () => {
-        expect(PANE_TYPES).toEqual(['shell', 'markdown', 'scratchpad', 'diff', 'web']);
+        expect(PANE_TYPES).toEqual(['shell', 'markdown', 'scratchpad', 'diff', 'web', 'plugin']);
         expect(PANE_STATUSES).toEqual(['idle', 'running', 'waitingForInput']);
     });
 });

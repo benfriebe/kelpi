@@ -39,22 +39,23 @@ export type PointerEventName = 'pointerdown' | 'pointermove' | 'pointerup' | 'po
 export interface PointerInit {
     readonly clientX?: number | undefined;
     readonly clientY?: number | undefined;
+    readonly pointerId?: number | undefined;
     readonly button?: number | undefined;
     readonly shiftKey?: boolean | undefined;
 }
 
 /** Dispatch a pointer-named `MouseEvent` (see the module note on jsdom). */
 export function firePointer(target: EventTarget, type: PointerEventName, init: PointerInit = {}): void {
-    target.dispatchEvent(
-        new MouseEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            clientX: init.clientX ?? 0,
-            clientY: init.clientY ?? 0,
-            button: init.button ?? 0,
-            shiftKey: init.shiftKey ?? false
-        })
-    );
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: init.clientX ?? 0,
+        clientY: init.clientY ?? 0,
+        button: init.button ?? 0,
+        shiftKey: init.shiftKey ?? false
+    });
+    Object.defineProperty(event, 'pointerId', { value: init.pointerId ?? 1 });
+    target.dispatchEvent(event);
 }
 
 /**

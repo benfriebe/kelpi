@@ -93,6 +93,8 @@ export interface DropTarget {
 }
 
 export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
+    /** A retained workbench tab can hide the whole native grid without detaching its panes. */
+    readonly visible?: boolean | undefined;
     /** The workspace's live layout tree (already `leaf(zoomed)` when the daemon zoomed it). */
     readonly layout: PaneLayout;
     /** Every pane in the workspace — including ones the layout currently hides. */
@@ -152,7 +154,24 @@ interface DividerGesture {
 interface MoveGesture {
     readonly paneID: string;
     readonly origin: Point;
+    readonly releaseCapture: () => void;
     active: boolean;
+}
+
+/** Keep the gesture attached to its header when the pointer leaves it. */
+function capturePanePointer(event: ReactPointerEvent<HTMLElement>): () => void {
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    if (typeof target.setPointerCapture !== 'function' || typeof pointerId !== 'number') return () => {};
+    try {
+        target.setPointerCapture(pointerId);
+    } catch {
+        return () => {};
+    }
+    return () => {
+        try { target.releasePointerCapture(pointerId); }
+        catch { /* A normal release or a removed header may already have released capture. */ }
+    };
 }
 
 interface RatioPreview {
@@ -224,6 +243,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const [preview, setPreview] = useState<RatioPreview | null>(null);
     const [activeDividerPath, setActiveDividerPath] = useState<string | null>(null);
+    const [paneDragArmed, setPaneDragArmed] = useState(false);
     const [draggingPaneID, setDraggingPaneID] = useState<string | null>(null);
     const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
     const [resizing, setResizing] = useState(false);
@@ -242,7 +262,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     const measuring = fixedSize === undefined;
     useEffect(() => {
-        if (!measuring) return;
+        if (!measuring || props.visible === false) return;
         const element = containerRef.current;
         if (element === null) return;
         const read = (): void => {
@@ -324,7 +344,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         });
         observer.observe(element);
         return () => observer.disconnect();
-    }, [measuring]);
+    }, [measuring, props.visible]);
 
     const markResizing = useCallback((): void => {
         setResizing(true);
@@ -513,12 +533,14 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     // ── pane move drag (shell-ui.md §4.3, pane-layout.md §7.5) ──────────────────────
 
-    const endPaneDrag = useCallback((): void => {
+    const endPaneDrag = useCallback((event?: PointerEvent): void => {
         const gesture = moveRef.current;
-        const target = dropTargetRef.current;
+        const target = event?.type === 'pointercancel' ? null : dropTargetRef.current;
         moveRef.current = null;
         dropTargetRef.current = null;
         detachListeners();
+        gesture?.releaseCapture();
+        setPaneDragArmed(false);
         setDraggingPaneID(null);
         setDropTarget(null);
         if (gesture === null || !gesture.active || target === null) return;
@@ -557,8 +579,13 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const startPaneDrag = useCallback(
         (paneID: string, event: ReactPointerEvent<HTMLElement>): void => {
             if (event.button !== 0) return;
-            moveRef.current = { paneID, origin: { x: event.clientX, y: event.clientY }, active: false };
+            moveRef.current?.releaseCapture();
+            moveRef.current = {
+                paneID, origin: { x: event.clientX, y: event.clientY }, active: false,
+                releaseCapture: capturePanePointer(event)
+            };
             dropTargetRef.current = null;
+            setPaneDragArmed(true);
             attachListeners(onPanePointerMove, endPaneDrag);
         },
         [attachListeners, onPanePointerMove, endPaneDrag]
@@ -586,6 +613,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     }, [endPaneDrag, endDividerDrag]);
 
     useEffect(() => registerGestureReset(resetGestures), [resetGestures]);
+    useEffect(() => {
+        if (props.visible !== false) return;
+        resetGestures();
+        const active = containerRef.current?.ownerDocument.activeElement;
+        if (active instanceof HTMLElement && containerRef.current?.contains(active)) active.blur();
+    }, [props.visible, resetGestures]);
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 
@@ -601,7 +634,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         // §AGNT-056: the gate. `enabled` is a dependency of the timer's effect, so a
         // deactivate tears the pending clear down and the next activate schedules a fresh
         // 600 ms — the Swift's "same clear, scheduled again on didBecomeActive".
-        enabled: dwellEnabled,
+        enabled: dwellEnabled && props.visible !== false,
         ...(dwellMs === undefined ? {} : { delayMs: dwellMs })
     });
 
@@ -614,7 +647,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const onPaneEnter = useCallback(
         (paneID: string): void => {
             const current = latest.current;
-            if (current.focusFollowsMouse !== true) return;
+            if (current.focusFollowsMouse !== true || current.visible === false) return;
             if (current.focusedPaneID === paneID) return;
             cancelHover();
             const delay = current.focusFollowsMouseDelayMs ?? 0;
@@ -624,6 +657,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             }
             hoverTimerRef.current = setTimeout(() => {
                 hoverTimerRef.current = null;
+                if (latest.current.visible === false) return;
                 latest.current.onFocusPane?.(paneID);
             }, delay);
         },
@@ -634,6 +668,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         () => () => {
             detachRef.current?.();
             detachRef.current = null;
+            moveRef.current?.releaseCapture();
             dividerRef.current?.commit.cancel();
             if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current);
             if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);
@@ -667,7 +702,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             ref={containerRef}
             data-testid="pane-grid"
             data-resizing={resizing ? 'true' : 'false'}
-            className={`relative h-full w-full overflow-hidden${className === undefined ? '' : ` ${className}`}`}
+            // Electron can route moves into a child iframe even with valid pointer capture.
+            // Disable only frame hit-testing from the initial press through release/reset;
+            // header clicks still work and newly mounted frames follow the same gesture.
+            className={`relative h-full w-full overflow-hidden${paneDragArmed ? ' [&_iframe]:pointer-events-none' : ''}${className === undefined ? '' : ` ${className}`}`}
             /*
              * §N17 — NO fill here. `PaneGridView.swift:104-118` is a bare `ZStack` over a
              * `GeometryReader`: the grid paints nothing, the app's ground shows through the
@@ -684,9 +722,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
             {orderedPanes.map((pane) => {
                 const frame = frames.get(pane.id);
-                const visible = frame !== undefined;
+                const visible = frame !== undefined && props.visible !== false;
                 const rect = frame ?? lastFramesRef.current.get(pane.id) ?? bounds;
-                const focused = pane.id === focusedPaneID;
+                const focused = visible && pane.id === focusedPaneID;
                 return (
                     <div
                         key={pane.id}
@@ -739,6 +777,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     >
                         <PaneHeader
                             pane={pane}
+                            headerCommands={props.headerCommands}
                             focused={focused}
                             // `PaneHeaderView.swift:279` — `.onTapGesture { onFocus() }` on the
                             // header itself, which every control inside it shadows.

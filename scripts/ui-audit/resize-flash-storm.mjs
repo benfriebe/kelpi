@@ -5,8 +5,9 @@
  *
  * `replay-storm.mjs` (§N23) asks whether the client's screen SETTLES to the daemon's, which is
  * a question about the state after a gesture. N24 is the other question — what is on the canvas
- * *during* one — and it needs a different instrument: the settled comparison is clean either
- * way, because the corruption heals the moment the settled-resize replay lands.
+ * *during* one — and it needs a different instrument. The terminal-scrollback-resize scenario
+ * also checks for old printable output surviving a replay; this harness samples every frame
+ * through the resize and replay window.
  *
  * The instrument is the same stack `replay-storm.mjs` uses (a sandbox daemon on `mkdtemp` +
  * `KELPID_*` + ephemeral non-reserved ports, a real PTY running a real zsh, the real client
@@ -126,7 +127,7 @@ const options = {
 
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const encoder = new TextEncoder();
 
 const uuidToBytes = (uuid) => {
@@ -210,7 +211,12 @@ function makeHandle(cols, rows) {
             return { dispose() {} };
         }
     };
-    const handle = { terminal, wasmTerm, state };
+    const handle = {
+        terminal, wasmTerm, state,
+        resetForReplay() {
+            if (!wasmTerm.resetForReplay()) throw new Error('Ghostty replay reset requires its compiled module');
+        }
+    };
     if (options.hold) {
         handle.setPaintSuspended = (suspended) => {
             state.suspended = suspended;

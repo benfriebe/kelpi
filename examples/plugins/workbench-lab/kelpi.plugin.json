@@ -1,0 +1,38 @@
+{
+  "id": "example.workbench-lab",
+  "name": "Workbench Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "startup",
+  "dependencies": [{ "pluginID": "example.agent-board", "version": "^1.0.0" }],
+  "contributes": {
+    "views": [
+      { "id": "example.workbench-lab.dashboard", "title": "Lab dashboard", "entry": "ui/index.html", "placements": ["pane", "example.workbench-lab.metrics-slot"] },
+      { "id": "example.workbench-lab.notes", "title": "Lab notes", "entry": "ui/notes.html", "placements": ["example.workbench-lab.notes-slot", "example.workbench-lab.metrics-slot"] }
+    ],
+    "containers": [
+      { "id": "example.workbench-lab.layout", "title": "Workspace with tools", "placements": ["workspace"], "layout": "row", "slots": [
+        { "id": "example.workbench-lab.main", "title": "Workspace", "defaultView": "kelpi.workspace", "weight": 3 },
+        { "id": "example.workbench-lab.tools-slot", "title": "Tools", "defaultView": "example.workbench-lab.tools", "weight": 1 }
+      ] },
+      { "id": "example.workbench-lab.tools", "title": "Lab tools", "placements": ["example.workbench-lab.tools-slot", "sidebar.primary", "sidebar.secondary"], "layout": "tabs", "slots": [
+        { "id": "example.workbench-lab.metrics-slot", "title": "Dashboard", "defaultView": "example.workbench-lab.dashboard" },
+        { "id": "example.workbench-lab.notes-slot", "title": "Notes", "defaultView": "example.workbench-lab.notes" }
+      ] }
+    ],
+    "commands": [
+      { "id": "example.workbench-lab.open", "title": "Open Lab dashboard", "shortcut": "super+alt+l", "menu": "pane.header" },
+      { "id": "example.workbench-lab.history", "title": "Read Lab operation history" },
+      { "id": "example.workbench-lab.dependency-history", "title": "Read Agent Board activity" }
+    ],
+    "hooks": [
+      { "id": "example.workbench-lab.guard", "phase": "before", "commands": ["workspace-create"], "timeoutMs": 1000 },
+      { "id": "example.workbench-lab.observe", "phase": "after", "commands": ["workspace-create"], "timeoutMs": 1000 }
+    ],
+    "providers": [
+      { "id": "example.workbench-lab.files", "title": "Lab annotated files", "service": "kelpi.files", "version": 1, "methods": ["read", "write"] }
+    ]
+  }
+}

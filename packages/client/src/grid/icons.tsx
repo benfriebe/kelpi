@@ -9,6 +9,7 @@
 import type { ReactElement } from 'react';
 
 export type IconName =
+    | 'plugin'
     | 'document'
     | 'note'
     | 'plusminus'
@@ -35,6 +36,7 @@ export type IconName =
     | 'chevron-down';
 
 const PATHS: Record<IconName, ReactElement> = {
+    plugin: <path d="M4.5 1.5h3V4H10v4H7.5v2.5h-3V8H2V4h2.5z" />,
     document: (
         <>
             <path d="M3 1.5h4l2 2v7H3z" />

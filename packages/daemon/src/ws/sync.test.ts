@@ -1199,14 +1199,17 @@ describe('size control (terminal-surface.md §5.1)', () => {
     interface BridgeLog {
         readonly attaches: { paneID: string; size: { cols: number; rows: number } | undefined }[];
         readonly resizes: { paneID: string; cols: number; rows: number }[];
+        readonly replays: string[];
     }
 
     function paneBridge(): BridgeLog & { bridge: SyncPaneBridge } {
         const attaches: BridgeLog['attaches'] = [];
         const resizes: BridgeLog['resizes'] = [];
+        const replays: string[] = [];
         return {
             attaches,
             resizes,
+            replays,
             bridge: {
                 attach(paneID, size) {
                     attaches.push({ paneID, size });
@@ -1214,6 +1217,9 @@ describe('size control (terminal-surface.md §5.1)', () => {
                 detach() {},
                 resize(paneID, cols, rows) {
                     resizes.push({ paneID, cols, rows });
+                },
+                requestReplay(paneID) {
+                    replays.push(paneID);
                 },
                 close() {}
             }
@@ -1268,9 +1274,11 @@ describe('size control (terminal-surface.md §5.1)', () => {
         const b = connectWithBridge(f);
         send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
 
-        // A (non-owner now) resizes: recorded nowhere on the bridge…
+        // A (non-owner now) needs a local replay, but cannot change the PTY's geometry…
         send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 200, rows: 60 });
         expect(a.resizes).toEqual([]);
+        expect(a.replays).toEqual([f.paneID]);
+        expect(b.replays).toEqual([]);
 
         // …until A takes control, which applies its LAST-reported geometry immediately.
         send(a.session, { type: 'take-size-control' });
@@ -1280,9 +1288,31 @@ describe('size control (terminal-surface.md §5.1)', () => {
         // The owner's resizes apply directly.
         send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 201, rows: 61 });
         expect(a.resizes).toHaveLength(2);
+        expect(a.replays).toEqual([f.paneID]);
         // And the deposed owner's stop applying.
         send(b.session, { type: 'resize-pane', paneID: f.paneID, cols: 81, rows: 25 });
         expect(b.resizes).toEqual([]);
+        expect(b.replays).toEqual([f.paneID]);
+    });
+
+    it('requests a non-owner replay only when its cached local grid changes', () => {
+        const f = fixture();
+        const a = connectWithBridge(f);
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        const b = connectWithBridge(f);
+        send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
+        const owners = controlMessages(a.transport);
+
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        expect(a.replays).toEqual([]);
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 41 });
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 41 });
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 0, rows: 41 });
+
+        expect(a.replays).toEqual([f.paneID]);
+        expect(a.resizes).toEqual([]);
+        expect(b.replays).toEqual([]);
+        expect(controlMessages(a.transport)).toEqual(owners);
     });
 
     it('the departing owner hands control to the most recent remaining client, whose cache applies', () => {

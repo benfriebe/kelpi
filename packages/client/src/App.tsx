@@ -1,3 +1,9 @@
+import { PluginView } from './plugins/PluginView';
+import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
+import { resolveSidebarViews, selectWorkbenchView } from './plugins/registry';
+import { PluginsTab } from './plugins/PluginsTab';
+import { usePluginCommands } from './plugins/commands';
+import { renderRegisteredView } from './plugins/renderers';
 /**
  * The assembled client (WP3.6).
  *
@@ -26,7 +32,7 @@
  * the app" card — the pane is real daemon state either way.
  */
 
-import { parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
+import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
 import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import type { JsonObject } from '@kelpi/protocol';
 import {
@@ -164,6 +170,7 @@ import {
     MarkdownPane,
     ScratchpadPane,
     chordKeysForBindings,
+    chordKeysForTrigger,
     createContentClient,
     type FontSizeStep
 } from './content';
@@ -366,6 +373,11 @@ function Shell(props: AppProps): ReactElement {
     const { runtime, createRenderer, mountLimit } = props;
     const store = runtime.store;
     const commands = runtime.commands;
+    const workbench = useWorkbenchLayout(runtime);
+    // Move the existing hosts so native view state, commands and widths travel with them.
+    const sidebarsSwapped = workbench.sidebars['sidebar.primary'].id === 'kelpi.inspector' || workbench.sidebars['sidebar.secondary'].id === 'kelpi.workspaces';
+    const workspacesPlacement = sidebarsSwapped ? 'sidebar.secondary' : 'sidebar.primary';
+    const inspectorPlacement = sidebarsSwapped ? 'sidebar.primary' : 'sidebar.secondary';
     const { bucket, theme: chromeTheme } = useChromeTheme();
 
     const kelpi = useStore(store);
@@ -588,7 +600,7 @@ function Shell(props: AppProps): ReactElement {
     }, [sidebarPhase]);
 
     const sidebarMounted = isSidebarMounted(sidebarPhase);
-    const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing);
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing, sidebarsSwapped ? 'trailing' : 'leading');
 
     // ── §APP-066: the INSPECTOR's show/hide slide, the same machine mirrored ─────────
     //
@@ -624,7 +636,7 @@ function Shell(props: AppProps): ReactElement {
     }, [inspectorPhase]);
 
     const inspectorMounted = isSidebarMounted(inspectorPhase);
-    const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, 'trailing');
+    const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
 
@@ -856,6 +868,7 @@ function Shell(props: AppProps): ReactElement {
     );
     const inspectorData = useInspectorData({
         commands,
+        events: runtime.connection,
         workspaceID: workspace?.id ?? null,
         // §APP-071: the FOOTER reads the same associations for its `doc N +A -B`, so the feed
         // runs whenever the active workspace has any — not only while the panel is open. With
@@ -3442,8 +3455,25 @@ function Shell(props: AppProps): ReactElement {
         [bindings]
     );
 
+    // A plugin shortcut must reserve every native binding, including the copy/paste and
+    // text-editing chords intentionally omitted from the sandboxed content-frame relay.
+    const reservedPluginChords = useMemo(() => {
+        const globalTrigger = settings.general.globalHotkey ? parseKeyTrigger(settings.general.globalHotkey) : null;
+        return [...new Set([
+            ...contentPaneChords,
+            ...[...bindings.values()].flatMap(binding => chordKeysForTrigger(binding.trigger)),
+            ...(globalTrigger ? chordKeysForTrigger(canonicalTriggerForPlatform(globalTrigger, /Mac|iPhone|iPad/.test(navigator.platform))) : [])
+        ])].sort();
+    }, [bindings, contentPaneChords, settings.general.globalHotkey]);
+    const anyModalMounted = useAnyModalOpen();
+    const pluginCommands = usePluginCommands(runtime, reservedPluginChords, () =>
+        store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current ||
+        createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
+    const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
     const paletteCommands = useMemo<PaletteItem[]>(
         () => [
+            ...pluginCommands.commands.map(command => paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut)),
+            paletteCommand('cmd:plugins', 'gearshape', 'Plugins…', 'Install plugins and choose workbench views', () => openSettings('plugins')),
             paletteCommand(
                 'cmd:new-pane',
                 'terminal',
@@ -3536,7 +3566,7 @@ function Shell(props: AppProps): ReactElement {
                 '⌘,'
             )
         ],
-        [act, hint, openSettings]
+        [act, hint, openSettings, pluginCommands.commands]
     );
 
     const paletteItems = useMemo(
@@ -3822,8 +3852,9 @@ function Shell(props: AppProps): ReactElement {
             label: 'Copy Working Directory',
             onSelect: () => act.copyWorkingDirectory(paneID)
         });
+        items.push(...pluginCommands.commands.filter(command => command.menu === 'pane' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run(paneID) })));
         return items;
-    }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace]);
+    }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace, pluginCommands.commands]);
 
     /**
      * The ••• title-bar menu (APP-052/APP-053/APP-054).
@@ -3836,6 +3867,8 @@ function Shell(props: AppProps): ReactElement {
      */
     const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
         const items: MenuItemSpec[] = [
+            ...pluginCommands.commands.filter(command => command.menu === 'workspace' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run() })),
+            { id: 'plugins', label: 'Plugins…', onSelect: () => openSettings('plugins') },
             { id: 'settings', label: 'Settings…', onSelect: () => openSettings() },
             {
                 id: 'inspector',
@@ -3864,7 +3897,7 @@ function Shell(props: AppProps): ReactElement {
             }
         );
         return items;
-    }, [act, inspectorVisible, openSettings, shellWindowID]);
+    }, [act, inspectorVisible, openSettings, shellWindowID, pluginCommands.commands]);
 
     /**
      * The search overlay, drawn over the pane the DAEMON says is being searched.
@@ -3925,7 +3958,6 @@ function Shell(props: AppProps): ReactElement {
      * inside the inspector, a portal menu) registers instead, which is also why a surface added
      * later cannot be forgotten here.
      */
-    const anyModalMounted = useAnyModalOpen();
     const modalOpen =
         settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen || anyModalMounted;
 
@@ -4103,129 +4135,134 @@ function Shell(props: AppProps): ReactElement {
                     />
                 );
             }
-            if (pane.type === 'markdown') {
-                return (
-                    <MarkdownPane
-                        paneID={paneID}
-                        content={content}
-                        focused={focused}
-                        visible={renderState.visible}
-                        background={paneFill}
-                        documentBackground={contentDocumentFill}
-                        onFocusRequest={onTerminalFocus}
-                        onToggleEdit={act.toggleMarkdownEdit}
-                        findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
-                        // §TERM-103: the header's copy button opens the frame's Copy menu.
-                        copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
-                        findPalette={findPalette}
-                        // H9: the preview is cross-origin, so it hands claimed chords back.
-                        claimedChords={contentPaneChords}
-                        onOpenExternalEditor={act.openExternalEditor}
-                    />
-                );
-            }
-            if (pane.type === 'diff') {
-                return (
-                    <DiffPane
-                        paneID={paneID}
-                        content={content}
-                        focused={focused}
-                        visible={renderState.visible}
-                        background={paneFill}
-                        documentBackground={contentDocumentFill}
-                        onFocusRequest={onTerminalFocus}
-                        findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
-                        findPalette={findPalette}
-                        // H9: same relay as the preview — a focused diff must still answer ⌘D.
-                        claimedChords={contentPaneChords}
-                    />
-                );
-            }
-            if (pane.type === 'scratchpad') {
-                return (
-                    <ScratchpadPane
-                        paneID={paneID}
-                        content={content}
-                        focused={focused}
-                        visible={renderState.visible}
-                        background={paneFill}
-                        onFocusRequest={onTerminalFocus}
-                    />
-                );
-            }
-            // The one pane whose body this client cannot draw: the page lives in a native view
-            // the Electron shell owns. The chrome is ours, the page area is a measured hole
-            // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.
-            if (pane.type === 'web') {
-                const web = workspace?.webPanes[paneID];
-                // WEB-032/WEB-033/WEB-034: the ACTIVE tab's own last report. Reading it per tab
-                // is what makes a switch snap to the new tab's state instead of stranding the
-                // old one's bar.
-                const activeWebTab =
-                    (web?.tabs ?? []).find((tab) => tab.id === web?.activeTabID) ?? web?.tabs[0] ?? null;
-                const nav = webUI.navStates[navStateKey(paneID, activeWebTab?.id ?? null)];
-                return (
-                    <WebPane
-                        paneID={paneID}
-                        tabs={web?.tabs ?? EMPTY_WEB_TABS}
-                        activeTabID={web?.activeTabID ?? null}
-                        isPrivate={web?.isPrivate ?? false}
-                        loading={nav?.loading ?? false}
-                        canGoBack={nav?.canGoBack ?? false}
-                        canGoForward={nav?.canGoForward ?? false}
-                        focused={focused}
-                        visible={renderState.visible && !modalOpen}
-                        embedded={shellWindowID !== null}
-                        commands={webCommands}
-                        onGeometry={webGeometry.report}
-                        onHidden={webGeometry.hide}
-                        onFocusRequest={onTerminalFocus}
-                        findToken={webFindRequest?.paneID === paneID ? webFindRequest.seq : 0}
-                        focusURLToken={webURLRequest?.paneID === paneID ? webURLRequest.seq : 0}
-                        batch={webUI.batches[paneID] ?? null}
-                        batchDestinations={batchDestinations(panes, paneID)}
-                        favourites={webUI.favourites}
-                        onManageFavourites={() => setSettingsTab('web')}
-                    />
-                );
-            }
-            if (pane.type !== 'shell') {
-                return <ContentPanePlaceholder pane={pane} />;
-            }
-            if (!mountedSet.has(paneID)) {
-                return <ContentPanePlaceholder pane={pane} variant="detached" />;
-            }
-            /*
-             * SET-219 / TERM-021's terminal half. A terminal search match is shown by the
-             * engine SELECTING it (`renderer.revealMatch`), so the selection colours ARE the
-             * search-match colours while a search is open on this pane — which is exactly what
-             * ghostty's `search-selected-background` / `-foreground` did for the Swift app.
-             * Off the search path the palette is untouched, so an ordinary drag-selection keeps
-             * the theme's own colours.
-             */
-            const searching = workspace !== null && workspace.searchingPaneID === paneID;
-            const theme = searching ? searchPaneTheme : paneTheme;
-            return (
-                <TerminalPane
-                    paneID={paneID}
-                    ptyApi={runtime.pty}
-                    focused={focused}
-                    visible={renderState.visible}
-                    // §TERM-036: the accessible name is what the header shows, not the id.
-                    accessibilityName={paneDisplayTitle(pane, daemonHome)}
-                    theme={theme}
-                    background={paneFill}
-                    allowTransparency={paneTransparency}
-                    {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
-                    {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
-                    {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
-                    {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
-                    onFocusRequest={onTerminalFocus}
-                    onDimensionsChange={onDimensionsChange}
-                    reveal={searchReveal?.paneID === paneID ? searchReveal : null}
-                    createRenderer={createRenderer}
-                />
-            );
+            const renderers = {
+                [pane.plugin?.viewID ?? 'kelpi.plugin']: () => {
+                    return pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspace?.id} visible={renderState.visible} claimedChords={allViewChords} /> : <ContentPanePlaceholder pane={pane} />;
+                },
+                'kelpi.markdown': () => {
+                    return (
+                        <MarkdownPane
+                            paneID={paneID}
+                            content={content}
+                            focused={focused}
+                            visible={renderState.visible}
+                            background={paneFill}
+                            documentBackground={contentDocumentFill}
+                            onFocusRequest={onTerminalFocus}
+                            onToggleEdit={act.toggleMarkdownEdit}
+                            findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                            // §TERM-103: the header's copy button opens the frame's Copy menu.
+                            copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
+                            findPalette={findPalette}
+                            // H9: the preview is cross-origin, so it hands claimed chords back.
+                            claimedChords={allViewChords}
+                            onOpenExternalEditor={act.openExternalEditor}
+                        />
+                    );
+                },
+                'kelpi.diff': () => {
+                    return (
+                        <DiffPane
+                            paneID={paneID}
+                            content={content}
+                            focused={focused}
+                            visible={renderState.visible}
+                            background={paneFill}
+                            documentBackground={contentDocumentFill}
+                            onFocusRequest={onTerminalFocus}
+                            findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                            findPalette={findPalette}
+                            // H9: same relay as the preview — a focused diff must still answer ⌘D.
+                            claimedChords={allViewChords}
+                        />
+                    );
+                },
+                'kelpi.scratchpad': () => {
+                    return (
+                        <ScratchpadPane
+                            paneID={paneID}
+                            content={content}
+                            focused={focused}
+                            visible={renderState.visible}
+                            background={paneFill}
+                            onFocusRequest={onTerminalFocus}
+                        />
+                    );
+                },
+                // The one pane whose body this client cannot draw: the page lives in a native view
+                // the Electron shell owns. The chrome is ours, the page area is a measured hole
+                // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.
+                'kelpi.web': () => {
+                    const web = workspace?.webPanes[paneID];
+                    // WEB-032/WEB-033/WEB-034: the ACTIVE tab's own last report. Reading it per tab
+                    // is what makes a switch snap to the new tab's state instead of stranding the
+                    // old one's bar.
+                    const activeWebTab =
+                        (web?.tabs ?? []).find((tab) => tab.id === web?.activeTabID) ?? web?.tabs[0] ?? null;
+                    const nav = webUI.navStates[navStateKey(paneID, activeWebTab?.id ?? null)];
+                    return (
+                        <WebPane
+                            paneID={paneID}
+                            tabs={web?.tabs ?? EMPTY_WEB_TABS}
+                            activeTabID={web?.activeTabID ?? null}
+                            isPrivate={web?.isPrivate ?? false}
+                            loading={nav?.loading ?? false}
+                            canGoBack={nav?.canGoBack ?? false}
+                            canGoForward={nav?.canGoForward ?? false}
+                            focused={focused}
+                            visible={renderState.visible && !modalOpen}
+                            embedded={shellWindowID !== null}
+                            commands={webCommands}
+                            onGeometry={webGeometry.report}
+                            onHidden={webGeometry.hide}
+                            onFocusRequest={onTerminalFocus}
+                            findToken={webFindRequest?.paneID === paneID ? webFindRequest.seq : 0}
+                            focusURLToken={webURLRequest?.paneID === paneID ? webURLRequest.seq : 0}
+                            batch={webUI.batches[paneID] ?? null}
+                            batchDestinations={batchDestinations(panes, paneID)}
+                            favourites={webUI.favourites}
+                            onManageFavourites={() => setSettingsTab('web')}
+                        />
+                    );
+                },
+                'kelpi.shell': () => {
+                    if (!mountedSet.has(paneID)) {
+                        return <ContentPanePlaceholder pane={pane} variant="detached" />;
+                    }
+                    /*
+                     * SET-219 / TERM-021's terminal half. A terminal search match is shown by the
+                     * engine SELECTING it (`renderer.revealMatch`), so the selection colours ARE the
+                     * search-match colours while a search is open on this pane — which is exactly what
+                     * ghostty's `search-selected-background` / `-foreground` did for the Swift app.
+                     * Off the search path the palette is untouched, so an ordinary drag-selection keeps
+                     * the theme's own colours.
+                     */
+                    const searching = workspace !== null && workspace.searchingPaneID === paneID;
+                    const theme = searching ? searchPaneTheme : paneTheme;
+                    return (
+                        <TerminalPane
+                            paneID={paneID}
+                            ptyApi={runtime.pty}
+                            focused={focused}
+                            visible={renderState.visible}
+                            // §TERM-036: the accessible name is what the header shows, not the id.
+                            accessibilityName={paneDisplayTitle(pane, daemonHome)}
+                            theme={theme}
+                            background={paneFill}
+                            allowTransparency={paneTransparency}
+                            {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
+                            {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
+                            {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
+                            {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
+                            onFocusRequest={onTerminalFocus}
+                            onDimensionsChange={onDimensionsChange}
+                            reveal={searchReveal?.paneID === paneID ? searchReveal : null}
+                            createRenderer={createRenderer}
+                        />
+                    );
+                }
+            };
+            return renderRegisteredView(renderers, pane.plugin?.viewID ?? `kelpi.${pane.type}`, () => <ContentPanePlaceholder pane={pane} />);
         },
         [
             act,
@@ -4236,6 +4273,7 @@ function Shell(props: AppProps): ReactElement {
             copyRequest,
             // H9: a re-recorded keybinding has to reach a preview that is already open.
             contentPaneChords,
+            allViewChords,
             searchPaneTheme,
             searchReveal,
             paneByID,
@@ -4288,8 +4326,22 @@ function Shell(props: AppProps): ReactElement {
         />
     );
     const target = props.target ?? { url: undefined, token: undefined, fromQuery: false };
+    const selectWorkbench = (slot: WorkbenchSlotID, id: string): void => {
+        workbench.select(slot, id);
+        if ((slot !== 'sidebar.primary' && slot !== 'sidebar.secondary') || workbench.sidebars[slot].id === id) return;
+        const next = resolveSidebarViews(workbench.views, selectWorkbenchView(workbench.views, workbench.selections, slot, id));
+        const swapped = next['sidebar.primary'].id === 'kelpi.inspector' || next['sidebar.secondary'].id === 'kelpi.workspaces';
+        // Selecting a view reveals its new host, including an Inspector that was closed.
+        if (slot === (swapped ? 'sidebar.secondary' : 'sidebar.primary')) setSidebarVisible(true);
+        else setInspectorVisible(true);
+    };
+    const sidebarToggleLabel = (slot: 'sidebar.primary' | 'sidebar.secondary'): string => {
+        const view = workbench.sidebars[slot];
+        return `Toggle ${view.id === 'kelpi.workspaces' ? 'sidebar' : view.id === 'kelpi.inspector' ? 'inspector' : view.title}`;
+    };
 
     return (
+        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords}>
         <div
             data-testid="kelpi-app"
             data-connection={ui.connection}
@@ -4385,7 +4437,7 @@ function Shell(props: AppProps): ReactElement {
                 />
             ) : (
             <>
-            <TopBar
+            <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset}>{context => <TopBar
                 workspaceName={workspace?.name ?? null}
                 workspaceColor={workspace?.color}
                 panes={panes}
@@ -4408,17 +4460,21 @@ function Shell(props: AppProps): ReactElement {
                 onTakeSizeControl={() => {
                     commands.takeSizeControl();
                 }}
-                onToggleSidebar={act.toggleSidebar}
-                sidebarVisible={sidebarVisible}
-                onToggleInspector={act.toggleInspector}
-                inspectorVisible={inspectorVisible}
+                onToggleSidebar={sidebarsSwapped ? act.toggleInspector : act.toggleSidebar}
+                sidebarVisible={sidebarsSwapped ? inspectorVisible : sidebarVisible}
+                sidebarLabel={sidebarToggleLabel('sidebar.primary')}
+                sidebarTooltip={`${sidebarToggleLabel('sidebar.primary')}${workbench.sidebars['sidebar.primary'].id === 'kelpi.inspector' ? ' (⌘I)' : ''}`}
+                onToggleInspector={sidebarsSwapped ? act.toggleSidebar : act.toggleInspector}
+                inspectorVisible={sidebarsSwapped ? sidebarVisible : inspectorVisible}
+                inspectorLabel={sidebarToggleLabel('sidebar.secondary')}
+                inspectorTooltip={`${sidebarToggleLabel('sidebar.secondary')}${workbench.sidebars['sidebar.secondary'].id === 'kelpi.inspector' ? ' (⌘I)' : ''}`}
                 overflowItems={overflowMenuItems}
                 // §APP-046: this strip IS the title bar inside a shell window — the shell
                 // creates the window with a hidden one and draws the page up into the
                 // traffic-light row, so the bar clears the buttons and takes the drag.
-                trafficLightInset={trafficLightInset}
+                trafficLightInset={context.trafficLightInset}
                 dragRegion={shellWindowID !== null}
-            />
+            />}</WorkbenchSlot>
 
             {/*
               * §APP-046 / shell-ui.md §1 — the middle row: sidebar | pane grid | inspector,
@@ -4448,9 +4504,10 @@ function Shell(props: AppProps): ReactElement {
                    the middle div so the resizer's ±3px overhang is not shaved off with it. */
                 <div
                     data-testid="sidebar-slot"
+                    data-sidebar-side={sidebarsSwapped ? 'right' : 'left'}
                     data-sidebar-phase={sidebarPhase}
                     className="flex h-full shrink-0"
-                    style={{ width: sidebarSlide.slot.width, transition: sidebarSlide.slot.transition }}
+                    style={{ order: sidebarsSwapped ? 2 : 0, width: sidebarSlide.slot.width, transition: sidebarSlide.slot.transition }}
                 >
                     {/* §N31: the clip carries the panel's own ground for the full animated width,
                         so the reveal is the sidebar's colour from the first frame rather than
@@ -4480,7 +4537,7 @@ function Shell(props: AppProps): ReactElement {
                             right: sidebarSlide.panel.right
                         }}
                     >
-                <Sidebar
+                <WorkbenchSidebar placement={workspacesPlacement} nativeViewID="kelpi.workspaces" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleSidebar}>{() => <Sidebar
                     entries={filteredEntries}
                     remoteDaemons={settings.remoteDaemons.map((daemon) => daemon.name)}
                     onCreateRemoteGroup={(daemonName, name, color) => {
@@ -4574,13 +4631,14 @@ function Shell(props: AppProps): ReactElement {
                     onNewGroupWithRename={act.newGroupWithRename}
                     onDeleteWorkspaces={act.deleteWorkspaces}
                     repos={inspectorData.repos}
-                />
+                />}</WorkbenchSidebar>
                     </div>
                     </div>
                     {/* §WS-002: the invisible 6 px handle straddling the sidebar's edge. It is
                         rendered only at rest — mid-slide there is no edge to grab. */}
                     {sidebarPhase === 'closing' ? null : (
                         <SidebarResizer
+                            side={sidebarsSwapped ? 'right' : 'left'}
                             width={sidebarWidth}
                             onResizeStart={() => setSidebarResizing(true)}
                             /* Issue #79: the flag comes off when the GESTURE ends, not when a
@@ -4598,7 +4656,7 @@ function Shell(props: AppProps): ReactElement {
                 </div>
             ) : null}
 
-            <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex min-w-0 flex-1 flex-col" style={{ order: 1 }}>
                 <div className="relative min-h-0 flex-1">
                     {/*
                       * §APP-067 / §WS-156 — "No workspace selected".
@@ -4611,10 +4669,12 @@ function Shell(props: AppProps): ReactElement {
                       * `ready &&` because a client with no snapshot yet has no workspace either,
                       * and the honest thing to show THERE is the connection splash below.
                       */}
-                    {remoteSelection !== null && activeRemote !== null ? (
+                    <WorkbenchSlot placement="workspace">
+                    {context => remoteSelection !== null && activeRemote !== null ? (
                         /* §1.7: a REMOTE daemon's workspace fills the area — same grid, that
                            daemon's mirror, PTY stream and commands (`RemoteWorkspaceView`). */
                         <RemoteWorkspaceView
+                            visible={context.visible}
                             daemonName={activeRemote.name}
                             runtime={activeRemote.runtime}
                             workspaceID={remoteSelection.workspaceID}
@@ -4623,6 +4683,7 @@ function Shell(props: AppProps): ReactElement {
                         <NoWorkspaceSelected onCreate={() => act.newWorkspace()} />
                     ) : (
                     <PaneGrid
+                        visible={context.visible}
                         // §10: the daemon's config file drives hover-focus; the grid owns the
                         // cancel-on-re-hover timer semantics.
                         focusFollowsMouse={settings.general.focusFollowsMouse}
@@ -4638,6 +4699,7 @@ function Shell(props: AppProps): ReactElement {
                         // `/Users/…` path while the footer, describing the same pane, prints
                         // `~/…` (`PaneHeaderView.swift:503` abbreviates unconditionally).
                         homeDirectory={daemon.info?.home}
+                        headerCommands={pluginCommands.commands.filter(command => command.menu === 'pane.header')}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}
@@ -4678,6 +4740,7 @@ function Shell(props: AppProps): ReactElement {
                         }}
                     />
                     )}
+                    </WorkbenchSlot>
                     {ready ? null : <ConnectionSplash runtime={runtime} state={kelpi} target={target} />}
                 </div>
             </div>
@@ -4696,9 +4759,10 @@ function Shell(props: AppProps): ReactElement {
             {inspectorMounted && workspace !== null ? (
                 <div
                     data-testid="inspector-slot"
+                    data-sidebar-side={sidebarsSwapped ? 'left' : 'right'}
                     data-inspector-phase={inspectorPhase}
                     className="flex h-full shrink-0"
-                    style={{ width: inspectorSlide.slot.width, transition: inspectorSlide.slot.transition }}
+                    style={{ order: sidebarsSwapped ? 0 : 2, width: inspectorSlide.slot.width, transition: inspectorSlide.slot.transition }}
                 >
                     {/* §N31: the same clip fill and the same edge anchor as the sidebar's. The
                         inspector needed BOTH — its panel travels off the trailing edge while
@@ -4728,7 +4792,9 @@ function Shell(props: AppProps): ReactElement {
                                 right: inspectorSlide.panel.right
                             }}
                         >
-                <Inspector
+                <WorkbenchSidebar placement={inspectorPlacement} nativeViewID="kelpi.inspector" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleInspector}>{picker => <Inspector
+                    viewPicker={picker}
+                    side={sidebarsSwapped ? 'left' : 'right'}
                     workspace={workspace}
                     focusedPaneID={focusedPaneID}
                     associations={inspectorData.associations}
@@ -4788,7 +4854,7 @@ function Shell(props: AppProps): ReactElement {
                     onDismissGraftOrphan={(orphan) => {
                         void graft.controller.dismissOrphan(orphan);
                     }}
-                />
+                />}</WorkbenchSidebar>
                         </div>
                     </div>
                 </div>
@@ -4834,7 +4900,8 @@ function Shell(props: AppProps): ReactElement {
               * row, not the window), so a wider row simply affords more gauges before it starts
               * dropping them from the tail.
               */}
-            <StatusFooter
+            <WorkbenchSlot placement="panel.bottom" />
+            <WorkbenchSlot placement="statusbar"><StatusFooter
                 summary={agentSummary}
                 focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
                 // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
@@ -4846,7 +4913,7 @@ function Shell(props: AppProps): ReactElement {
                 bucketItems={bucketItems}
                 onSelectPane={onSelectStatusPane}
                 {...(statsView === null ? {} : { systemStats: statsView })}
-            />
+            /></WorkbenchSlot>
             </>
             )}
 
@@ -4855,6 +4922,7 @@ function Shell(props: AppProps): ReactElement {
             ) : null}
 
             <SettingsOverlay
+                pluginContent={<PluginsTab runtime={runtime} />}
                 open={settingsTab !== null}
                 initialTab={settingsTab ?? DEFAULT_SETTINGS_TAB}
                 settings={settings}
@@ -4976,6 +5044,7 @@ function Shell(props: AppProps): ReactElement {
 
             <ToastStack toasts={ui.toasts} onDismiss={(id) => store.getState().dismissToast(id)} />
         </div>
+        </WorkbenchProvider>
     );
 }
 

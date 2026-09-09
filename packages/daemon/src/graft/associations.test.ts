@@ -9,7 +9,7 @@ import {
     type AssociationGit,
     type RepoAssociationWatchService
 } from './associations.js';
-import type { HeadWatchService } from './head-watcher.js';
+import { createHeadWatchService, type HeadWatchService } from './head-watcher.js';
 
 const HOME = '/Users/test';
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -121,6 +121,12 @@ const flush = async (): Promise<void> => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
 };
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+}
 
 describe('createRepoAssociationWatch', () => {
     it('starts a HEAD watcher and back-fills the branch for a new association', async () => {
@@ -244,6 +250,289 @@ describe('createRepoAssociationWatch', () => {
         addAssociation(h.store, A2, '/worktrees/b');
         await flush();
         expect(h.headWatch.started.map((entry) => entry.id)).toEqual([A1]);
+    });
+
+    it('clears old provider answers immediately, rebinds HEAD, and reads current associations', async () => {
+        let branch = 'bundled/main';
+        let status = Promise.resolve<RepoGitStatus>({ kind: 'clean' });
+        const h = harness({ getStatus: () => status, getCurrentBranch: async () => branch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'clean' });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('bundled/main');
+
+        const nextStatus = deferred<RepoGitStatus>();
+        status = nextStatus.promise;
+        branch = 'provider/main';
+        h.watch.invalidate();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBeNull();
+        expect(h.headWatch.stopped).toEqual([A1]);
+        expect(h.headWatch.started).toEqual([
+            { id: A1, path: '/worktrees/a' },
+            { id: A1, path: '/worktrees/a' }
+        ]);
+
+        nextStatus.resolve({ kind: 'dirty', changedFiles: 1, additions: 2, deletions: 3 });
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 1, additions: 2, deletions: 3 });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('provider/main');
+        h.watch.dispose();
+    });
+
+    it('watches the new provider’s resolved HEAD location for an existing association', async () => {
+        const h = harness();
+        let headPath = '/bundled/repo/HEAD';
+        const directories: string[] = [];
+        const closed: string[] = [];
+        const headWatch = createHeadWatchService({
+            resolveHeadPath: async () => headPath,
+            onChanged() {},
+            watch(directory) {
+                directories.push(directory);
+                return { close() { closed.push(directory); }, on() {} };
+            }
+        });
+        const watch = createRepoAssociationWatch({
+            store: h.store,
+            git: stubGitService(),
+            graft: { stop: async () => {} },
+            headWatch,
+            pollIntervalMs: 0
+        });
+        addAssociation(h.store, A1, '/worktrees/a');
+        watch.start();
+        await flush();
+        headPath = '/provider/repo/HEAD';
+        watch.invalidate();
+        await flush();
+        expect(directories).toEqual(['/bundled/repo', '/provider/repo']);
+        expect(closed).toEqual(['/bundled/repo']);
+        expect(headWatch.headPath(A1)).toBe('/provider/repo/HEAD');
+        watch.dispose();
+        h.watch.dispose();
+    });
+
+    it('discards a pending old-provider status without starting its branch read', async () => {
+        const oldStatus = deferred<RepoGitStatus>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockImplementationOnce(() => oldStatus.promise)
+            .mockResolvedValue({ kind: 'clean' });
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>().mockResolvedValue('new/main');
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        h.watch.invalidate();
+        await flush();
+        oldStatus.resolve({ kind: 'dirty', changedFiles: 5, additions: 6, deletions: 7 });
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'clean' });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('new/main');
+        expect(getCurrentBranch).toHaveBeenCalledTimes(1);
+        h.watch.dispose();
+    });
+
+    it('keeps the latest refresh when an older branch read finishes last', async () => {
+        const oldBranch = deferred<string | null>();
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>()
+            .mockImplementationOnce(() => oldBranch.promise)
+            .mockResolvedValue('new/main');
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockResolvedValueOnce({ kind: 'clean' })
+            .mockResolvedValue({ kind: 'dirty', changedFiles: 1, additions: 0, deletions: 0 });
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        await flush();
+        await h.watch.refresh(A1);
+        oldBranch.resolve('stale/main');
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 1, additions: 0, deletions: 0 });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('new/main');
+        h.watch.dispose();
+    });
+
+    it('waits for current status and branch when a concurrent refresh supersedes its read', async () => {
+        const oldStatus = deferred<RepoGitStatus>();
+        const newStatus = deferred<RepoGitStatus>();
+        const newBranch = deferred<string | null>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockReturnValueOnce(oldStatus.promise)
+            .mockReturnValueOnce(newStatus.promise);
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>().mockReturnValue(newBranch.promise);
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        let oldFinished = false;
+        const oldRefresh = h.watch.refresh(A1).then(() => { oldFinished = true; });
+        const newRefresh = h.watch.refresh(A1);
+
+        oldStatus.resolve({ kind: 'clean' });
+        await flush();
+        expect(oldFinished).toBe(false);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        newStatus.resolve({ kind: 'dirty', changedFiles: 7, additions: 8, deletions: 9 });
+        await flush();
+        expect(oldFinished).toBe(false);
+        newBranch.resolve('provider/main');
+        await Promise.all([oldRefresh, newRefresh]);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 7, additions: 8, deletions: 9 });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('provider/main');
+        expect(getCurrentBranch).toHaveBeenCalledTimes(1);
+        h.watch.dispose();
+    });
+
+    it('joins the newer refresh after its own status succeeded but its branch was superseded', async () => {
+        const oldBranch = deferred<string | null>();
+        const newBranch = deferred<string | null>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockResolvedValueOnce({ kind: 'clean' })
+            .mockResolvedValue({ kind: 'dirty', changedFiles: 2, additions: 3, deletions: 4 });
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>()
+            .mockReturnValueOnce(oldBranch.promise)
+            .mockReturnValueOnce(newBranch.promise);
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        let oldFinished = false;
+        const oldRefresh = h.watch.refresh(A1).then(() => { oldFinished = true; });
+        await flush();
+        const newRefresh = h.watch.refresh(A1);
+        oldBranch.resolve('stale/main');
+        await flush();
+        expect(oldFinished).toBe(false);
+        newBranch.resolve('new/main');
+        await Promise.all([oldRefresh, newRefresh]);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 2, additions: 3, deletions: 4 });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('new/main');
+        h.watch.dispose();
+    });
+
+    it('joins the refreshed provider generation after invalidation clears the old cache', async () => {
+        const getStatus = vi.fn<AssociationGit['getStatus']>().mockResolvedValue({ kind: 'clean' });
+        const h = harness({ getStatus, getCurrentBranch: async () => 'new/main' });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        await flush();
+        const oldStatus = deferred<RepoGitStatus>();
+        const newStatus = deferred<RepoGitStatus>();
+        getStatus.mockReturnValueOnce(oldStatus.promise).mockReturnValueOnce(newStatus.promise);
+        let oldFinished = false;
+        const oldRefresh = h.watch.refresh(A1).then(() => { oldFinished = true; });
+        h.watch.invalidate();
+        oldStatus.resolve({ kind: 'clean' });
+        await flush();
+        expect(oldFinished).toBe(false);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        newStatus.resolve({ kind: 'dirty', changedFiles: 7, additions: 8, deletions: 9 });
+        await oldRefresh;
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 7, additions: 8, deletions: 9 });
+        h.watch.dispose();
+    });
+
+    it('follows successive refreshes without waiting for obsolete native reads to finish', async () => {
+        const oldStatus = deferred<RepoGitStatus>();
+        const middleStatus = deferred<RepoGitStatus>();
+        const newStatus = deferred<RepoGitStatus>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockReturnValueOnce(oldStatus.promise)
+            .mockReturnValueOnce(middleStatus.promise)
+            .mockReturnValueOnce(newStatus.promise);
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>().mockResolvedValue('new/main');
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        let finished = 0;
+        const oldRefresh = h.watch.refresh(A1).then(() => { finished += 1; });
+        const middleRefresh = h.watch.refresh(A1).then(() => { finished += 1; });
+        await flush();
+        expect(finished).toBe(0);
+        const newRefresh = h.watch.refresh(A1);
+        newStatus.resolve({ kind: 'dirty', changedFiles: 3, additions: 4, deletions: 5 });
+        await Promise.all([oldRefresh, middleRefresh, newRefresh]);
+        expect(finished).toBe(2);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 3, additions: 4, deletions: 5 });
+        expect(getCurrentBranch).toHaveBeenCalledTimes(1);
+
+        // Both superseded subprocesses can return after every current-data caller finished.
+        oldStatus.resolve({ kind: 'clean' });
+        middleStatus.resolve({ kind: 'unknown' });
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'dirty', changedFiles: 3, additions: 4, deletions: 5 });
+        expect(getCurrentBranch).toHaveBeenCalledTimes(1);
+        h.watch.dispose();
+    });
+
+    it.each(['remove', 'rescope', 'dispose'] as const)('releases joined callers on %s without waiting for a retired read', async action => {
+        const getStatus = vi.fn<AssociationGit['getStatus']>().mockResolvedValue({ kind: 'clean' });
+        const h = harness({ getStatus, getCurrentBranch: async () => 'current/main' });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        await flush();
+        const oldStatus = deferred<RepoGitStatus>();
+        const newStatus = deferred<RepoGitStatus>();
+        const movedStatus = deferred<RepoGitStatus>();
+        getStatus.mockReturnValueOnce(oldStatus.promise).mockReturnValueOnce(newStatus.promise).mockReturnValueOnce(movedStatus.promise);
+        let finished = 0;
+        const oldRefresh = h.watch.refresh(A1).then(() => { finished += 1; });
+        const newRefresh = h.watch.refresh(A1).then(() => { finished += 1; });
+        await flush();
+        expect(finished).toBe(0);
+        if (action === 'dispose') h.watch.dispose();
+        else {
+            h.store.dispatch({ type: 'remove-repo-association', workspaceID: W1, associationID: A1 });
+            if (action === 'rescope') addAssociation(h.store, A1, '/worktrees/moved');
+        }
+        await Promise.all([oldRefresh, newRefresh]);
+        expect(finished).toBe(2);
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        if (action === 'rescope') {
+            movedStatus.resolve({ kind: 'dirty', changedFiles: 8, additions: 0, deletions: 0 });
+            await flush();
+        }
+        oldStatus.resolve({ kind: 'clean' });
+        newStatus.resolve({ kind: 'clean' });
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual(action === 'rescope'
+            ? { kind: 'dirty', changedFiles: 8, additions: 0, deletions: 0 }
+            : { kind: 'unknown' });
+        h.watch.dispose();
+    });
+
+    it('does not revive the status of an association removed and recreated with the same id and path', async () => {
+        const oldStatus = deferred<RepoGitStatus>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>()
+            .mockImplementationOnce(() => oldStatus.promise)
+            .mockResolvedValue({ kind: 'clean' });
+        const h = harness({ getStatus, getCurrentBranch: async () => 'new/main' });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        h.store.dispatch({ type: 'remove-repo-association', workspaceID: W1, associationID: A1 });
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        addAssociation(h.store, A1, '/worktrees/a');
+        await flush();
+        oldStatus.resolve({ kind: 'dirty', changedFiles: 5, additions: 6, deletions: 7 });
+        await flush();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'clean' });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBe('new/main');
+        h.watch.dispose();
+    });
+
+    it('retires pending reads at disposal and ignores subsequent refresh and invalidation', async () => {
+        const oldStatus = deferred<RepoGitStatus>();
+        const getStatus = vi.fn<AssociationGit['getStatus']>().mockReturnValue(oldStatus.promise);
+        const getCurrentBranch = vi.fn<AssociationGit['getCurrentBranch']>().mockResolvedValue('stale/main');
+        const h = harness({ getStatus, getCurrentBranch });
+        addAssociation(h.store, A1, '/worktrees/a');
+        h.watch.start();
+        h.watch.dispose();
+        oldStatus.resolve({ kind: 'clean' });
+        await flush();
+        await h.watch.refresh(A1);
+        h.watch.invalidate();
+        expect(h.watch.statusFor(A1)).toEqual({ kind: 'unknown' });
+        expect(h.store.getState().workspaces[0]?.repoAssociations[0]?.branchName).toBeNull();
+        expect(getStatus).toHaveBeenCalledTimes(1);
+        expect(getCurrentBranch).not.toHaveBeenCalled();
+        expect(h.headWatch.started).toHaveLength(1);
     });
 });
 

@@ -260,6 +260,8 @@ export function splitHeaderTitle(title: string, tailMax = HEADER_TAIL_MAX): Trun
 /** The header's path/title string, by pane type (shell-ui.md §4.2 item 3). */
 export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
     switch (pane.type) {
+        case 'plugin':
+            return pane.label ?? pane.title ?? 'Plugin view';
         case 'scratchpad':
             return 'Scratchpad';
         case 'markdown':
@@ -282,6 +284,7 @@ const TYPE_GLYPHS: Record<Exclude<PaneModel['type'], 'shell'>, IconName> = {
     markdown: 'document',
     scratchpad: 'note',
     diff: 'plusminus',
+    plugin: 'document',
     web: 'globe'
 };
 
@@ -660,7 +663,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
      */
     const showCopyButton = pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined;
     const buttonCount =
-        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0);
+        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0) + (props.headerCommands?.length ?? 0);
     const fit = badgeFit({
         paneWidth,
         label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
@@ -686,6 +689,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
         readonly onSelect: () => void;
     }[] = [
+        ...(props.headerCommands ?? []).map(command => ({
+            key: command.id,
+            testID: `pane-command-${command.id}-${pane.id}`,
+            label: command.title,
+            icon: 'plugin' as const,
+            onClick: () => command.run(pane.id),
+            onSelect: () => command.run(pane.id)
+        })),
         ...(showCopyButton
             ? [
                   {

@@ -99,6 +99,9 @@ export interface WorktreeRequest {
 export type InspectorResult = Promise<string | null> | string | null | void;
 
 export interface InspectorProps {
+    readonly side?: 'left' | 'right';
+    /** Host-owned view picker in place of the static title. */
+    readonly viewPicker?: ReactNode;
     /** `profileName` lives on `ChromeWorkspace` itself now that §WS-049's row menu reads it too. */
     readonly workspace: ChromeWorkspace;
     readonly focusedPaneID?: string | null | undefined;
@@ -345,7 +348,7 @@ export function Inspector(props: InspectorProps): ReactElement {
     return (
         <div
             data-testid="inspector"
-            className="flex h-full min-h-0 shrink-0 flex-col border-l"
+            className={`flex h-full min-h-0 shrink-0 flex-col ${props.side === 'left' ? 'border-r' : 'border-l'}`}
             style={{
                 width: INSPECTOR_WIDTH_PX,
                 borderColor: tokens.divider,
@@ -354,7 +357,7 @@ export function Inspector(props: InspectorProps): ReactElement {
             }}
         >
             <div className="flex items-center gap-2 px-3 py-2">
-                <span className="flex-1 text-[13px] font-semibold">Inspector</span>
+                <div className="min-w-0 flex-1 text-[13px] font-semibold">{props.viewPicker ?? 'Inspector'}</div>
                 {props.refreshing === true ? (
                     <span data-testid="inspector-refreshing" className="text-[10px]" style={{ color: tokens.textTertiary }}>
                         reading git…
@@ -834,6 +837,7 @@ const PANE_ICONS: Readonly<Record<ChromePane['type'], ChromeIconName>> = {
     markdown: 'document',
     scratchpad: 'note',
     diff: 'plusminus',
+    plugin: 'document',
     web: 'globe'
 };
 

@@ -9,6 +9,7 @@
 import { PANE_ID_REQUIRED_COMMANDS, EXPLICIT_CHAIN_COMMANDS, type WireCommandName } from './wire/messages.js';
 
 export const REPLY_COMMANDS: ReadonlySet<WireCommandName> = new Set([
+    'plugin',
     'workspace-list',
     'group-list',
     'pane-list',

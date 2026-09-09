@@ -57,7 +57,7 @@ const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 
 /** The shipped Swift CLI — the whole point of this smoke. */
 const KELPI_CLI = process.env.KELPI_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';

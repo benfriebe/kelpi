@@ -158,6 +158,8 @@ function snapshotForReopen(workspace: WorkspaceState, pane: Pane): WorkspaceStat
     const snapshots = [
         ...workspace.recentlyClosedPanes,
         {
+            ...(pane.plugin === undefined ? {} : { plugin: pane.plugin }),
+        ...(pane.unavailable === undefined ? {} : { unavailable: pane.unavailable }),
             workingDirectory: pane.workingDirectory,
             label: pane.label,
             type: pane.type,
@@ -348,6 +350,8 @@ function reopenClosedPane(
     // profile env); markdownFontSize survives via the snapshot.
     const restored: Pane = {
         ...pane,
+        ...(snapshot.plugin === undefined ? {} : { plugin: snapshot.plugin }),
+        ...(snapshot.unavailable === undefined ? {} : { unavailable: snapshot.unavailable }),
         agentKind: snapshot.agentKind,
         agentProfileName: snapshot.agentProfileName,
         markdownFontSize: snapshot.markdownFontSize
@@ -708,6 +712,21 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
             return updateWorkspace(state, action.workspaceID, (workspace) =>
                 openDiffPane(workspace, action)
             );
+        case 'create-plugin-pane':
+            return updateWorkspace(state, action.workspaceID, workspace => {
+                if (workspace.panes.some(pane => pane.id === action.paneID)) return workspace;
+                const base = restoreZoomIfNeeded(workspace);
+                const sourceID = base.focusedPaneID ?? allPaneIDs(base.layout)[0] ?? null;
+                const pane: Pane = { ...newPane({ id: action.paneID, workingDirectory: state.homeDirectory, nowMillis: action.now, type: 'plugin', label: action.title }), plugin: action.plugin };
+                return setFocus({ ...appendPane(base, pane), layout: sourceID === null ? leaf(pane.id) : splitting(base.layout, sourceID, 'horizontal', pane.id).layout, currentLayoutIndex: null }, pane.id);
+            });
+        case 'set-plugin-pane-state':
+            return { ...state, workspaces: state.workspaces.map(workspace => {
+                const update = (pane: Pane): Pane => pane.id === action.paneID && pane.type === 'plugin' ? { ...pane, plugin: action.plugin } : pane;
+                if (workspace.panes.some(pane => pane.id === action.paneID)) return { ...workspace, panes: workspace.panes.map(update) };
+                if (workspace.parkedPanes.some(pane => pane.id === action.paneID)) return { ...workspace, parkedPanes: workspace.parkedPanes.map(update) };
+                return workspace;
+            }) };
         case 'create-scratchpad':
             return updateWorkspace(state, action.workspaceID, (workspace) =>
                 createScratchpad(workspace, action, state.homeDirectory)

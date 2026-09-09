@@ -533,6 +533,185 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
  * disagree over identical bytes. These cover the three properties the seam has to hold: one
  * replay per SETTLED gesture, no byte lost or doubled around it, and no way for it to loop.
  */
+describe('session-local resize replay', () => {
+    const SETTLE = 40;
+    type Snapshot = ReturnType<StubTerm['service']['snapshot']>;
+    type AsyncTerm = StubTerm['service'] & { snapshotAsync(paneID: string): Promise<Snapshot> };
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => {
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+    });
+
+    function deferNextSnapshot(h: Harness): { finish(): void; fail(): void } {
+        const service = h.term.service as AsyncTerm;
+        const snapshot = service.snapshotAsync.bind(service);
+        let finish!: () => void;
+        let fail!: (error: Error) => void;
+        const pending = new Promise<void>((resolve, reject) => {
+            finish = resolve;
+            fail = reject;
+        });
+        vi.spyOn(service, 'snapshotAsync').mockImplementationOnce(async (paneID) => {
+            await pending;
+            return snapshot(paneID);
+        });
+        return { finish, fail: () => fail(new Error('snapshot failed')) };
+    }
+
+    it('coalesces local resizes into one replay for the requesting session without changing geometry', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        const ownerTransport = recordingTransport();
+        const owner = h.hub.createSession(ownerTransport);
+        await owner.attach(PANE_A, { cols: 80, rows: 24 });
+        await h.session.attach(PANE_A);
+        await h.session.attach(PANE_B);
+        h.term.setSnapshot(PANE_A, 'current-screen');
+
+        for (let step = 0; step < 10; step += 1) {
+            h.session.requestReplay(PANE_A);
+            await vi.advanceTimersByTimeAsync(SETTLE / 2);
+        }
+        expect(h.frames()).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(SETTLE * 3);
+
+        expect(h.frames()).toEqual([
+            { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: '' },
+            { type: PTY_FRAME_TYPES.replay, paneID: PANE_B, text: '' },
+            { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'current-screen' }
+        ]);
+        expect(ownerTransport.frames).toHaveLength(1);
+        expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 80, rows: 24 }]);
+        expect(h.pty.resizes).toEqual(h.term.resizes);
+        expect(h.geometry).toEqual(h.term.resizes);
+        expect(h.transport.ofType('pty-resync')).toEqual([]);
+        h.hub.close();
+    });
+
+    it('includes pending bytes exactly once and leaves other viewers live while its snapshot settles', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        const otherTransport = recordingTransport();
+        const other = h.hub.createSession(otherTransport);
+        await h.session.attach(PANE_A);
+        await other.attach(PANE_A);
+        const snapshot = deferNextSnapshot(h);
+        h.session.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(h.session.stats(PANE_A)?.live).toBe(false);
+        expect(other.stats(PANE_A)?.live).toBe(true);
+
+        h.term.feedMidParse(PANE_A, 'during');
+        h.pty.emit(PANE_A, 'during');
+        expect(h.frames()).toHaveLength(1);
+        expect(otherTransport.frames).toHaveLength(2);
+        snapshot.finish();
+        await vi.advanceTimersByTimeAsync(0);
+        h.pty.emit(PANE_A, 'after');
+
+        expect(h.frames().slice(1)).toEqual([
+            { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'during' },
+            { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' }
+        ]);
+        expect(otherTransport.frames).toHaveLength(3);
+        h.hub.close();
+    });
+
+    it('replaces the old flow-control window and queued tail with the replay', async () => {
+        const h = harness({ resizeResyncMs: SETTLE, windowBytes: 8, maxQueuedBytes: 8 });
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, '12345678');
+        h.pty.emit(PANE_A, 'tail');
+        expect(h.session.stats(PANE_A)).toMatchObject({ unacked: 8, queuedBytes: 4 });
+        h.term.setSnapshot(PANE_A, 'seed');
+
+        h.session.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        expect(h.session.stats(PANE_A)).toMatchObject({ live: true, unacked: 4, queuedBytes: 0 });
+        expect(h.frames().at(-1)).toEqual({ type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'seed' });
+        h.pty.emit(PANE_A, '+');
+        expect(h.frames().at(-1)).toEqual({ type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: '+' });
+        h.hub.close();
+    });
+
+    it('leaves an existing flow-control reseed to the ACK path', async () => {
+        const h = harness({ resizeResyncMs: SETTLE, windowBytes: 8, maxQueuedBytes: 4 });
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, '12345678');
+        h.pty.emit(PANE_A, 'overflow');
+        expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
+        h.term.setSnapshot(PANE_A, 'seed');
+
+        h.session.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(h.frames().filter((frame) => frame.type === PTY_FRAME_TYPES.replay)).toHaveLength(1);
+        const ack = encodePtyFrame(PTY_FRAME_TYPES.ack, PANE_A, encodeAckPayload(8))!;
+        h.session.handleFrame(ack);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(h.frames().at(-1)).toEqual({ type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'seed' });
+        expect(h.session.stats(PANE_A)).toMatchObject({ live: true, unacked: 4, resyncPending: false });
+        expect(h.transport.ofType('pty-resync')).toHaveLength(1);
+        h.hub.close();
+    });
+
+    it.each(['finish', 'fail'] as const)('retires an in-flight snapshot after detach and reattach (%s)', async (complete) => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A);
+        const stale = deferNextSnapshot(h);
+        h.session.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(h.session.stats(PANE_A)?.live).toBe(false);
+
+        h.session.detach(PANE_A);
+        h.term.setSnapshot(PANE_A, 'new-attachment');
+        const current = deferNextSnapshot(h);
+        const attaching = h.session.attach(PANE_A);
+        stale[complete]();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.session.stats(PANE_A)?.live).toBe(false);
+        expect(h.frames()).toHaveLength(1);
+
+        current.finish();
+        await attaching;
+        expect(h.frames().at(-1)).toEqual({ type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'new-attachment' });
+        expect(h.session.stats(PANE_A)).toMatchObject({ live: true, unacked: 'new-attachment'.length });
+        h.hub.close();
+    });
+
+    it.each(['detach', 'exit', 'close', 'hub-close', 'dispose'] as const)('cancels a pending replay when the pane is unavailable (%s)', async (action) => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A);
+        const snapshot = vi.spyOn(h.term.service as AsyncTerm, 'snapshotAsync');
+        h.session.requestReplay(PANE_A);
+        if (action === 'detach') h.session.detach(PANE_A);
+        else if (action === 'exit') h.pty.exit(PANE_A, 0);
+        else if (action === 'close') h.session.close();
+        else if (action === 'hub-close') h.hub.close();
+        else h.term.service.dispose(PANE_A);
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+        expect(snapshot).not.toHaveBeenCalled();
+        expect(h.frames()).toHaveLength(1);
+        h.hub.close();
+    });
+
+    it('ignores unattached panes and respects disabled resize replays', async () => {
+        const h = harness({ resizeResyncMs: -1 });
+        await h.session.attach(PANE_A);
+        h.session.requestReplay(PANE_A);
+        const other = harness({ resizeResyncMs: SETTLE });
+        other.session.requestReplay(PANE_B);
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+        expect(h.frames()).toHaveLength(1);
+        expect(other.frames()).toEqual([]);
+        h.hub.close();
+        other.hub.close();
+    });
+});
+
 describe('settled-resize resync', () => {
     const SETTLE = 40;
 

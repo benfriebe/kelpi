@@ -24,6 +24,7 @@ const TYPE_ICON: Readonly<Record<PaneModel['type'], IconName>> = {
     markdown: 'document',
     scratchpad: 'note',
     diff: 'plusminus',
+    plugin: 'document',
     web: 'globe'
 };
 
@@ -32,6 +33,7 @@ const TYPE_LABEL: Readonly<Record<PaneModel['type'], string>> = {
     markdown: 'Markdown preview',
     scratchpad: 'Scratchpad',
     diff: 'Diff',
+    plugin: 'Plugin view',
     web: 'Web page'
 };
 

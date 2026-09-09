@@ -106,6 +106,8 @@ export interface RepoAutoDetectService {
      * `start` calls this for a moved pane; it stays public as the explicit trigger (tests).
      */
     paneDirectoryChanged(input: { workspaceID: string; paneID: string; directory: string }): void;
+    /** Retire the previous Git provider's reads and rediscover panes whose cwd has not moved. */
+    invalidate(): void;
     /** Test seam: settle everything currently in flight (timers already fired). */
     idle(): Promise<void>;
     /** Cancel every pending timer; safe to call twice. */
@@ -157,7 +159,10 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
     const unlinkTimers = new Map<string, NodeJS.Timeout>();
     /** Cancel-in-flight for the ASYNC half: a newer resolve invalidates an older one. */
     const linkGeneration = new Map<string, number>();
+    /** Multiple panes in the same repo share its remote read for each Git provider generation. */
+    const remoteGeneration = new Map<string, number>();
     const inFlight = new Set<Promise<void>>();
+    let gitGeneration = 0;
     let stopped = false;
 
     const track = (work: Promise<void>): void => {
@@ -165,12 +170,29 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
         void work.finally(() => inFlight.delete(work));
     };
 
+    const refreshRemote = async (repoID: string, repoPath: string, generation: number): Promise<void> => {
+        if (stopped || generation !== gitGeneration || remoteGeneration.get(repoID) === generation) return;
+        remoteGeneration.set(repoID, generation);
+        try {
+            const remoteURL = await git.getRemoteURL(repoPath);
+            if (stopped || generation !== gitGeneration || remoteGeneration.get(repoID) !== generation) return;
+            const repo = store.getState().repos.find(entry => entry.id === repoID);
+            // A removed or manually adopted repo no longer belongs to auto-detection.
+            if (!repo?.isAutoDiscovered || canonicalizePath(repo.path) !== canonicalizePath(repoPath) ||
+                repo.remoteURL === remoteURL) return;
+            store.dispatch({ type: 'set-repo-remote-url', id: repoID, remoteURL });
+            persist?.();
+        } catch (error) {
+            if (!stopped && generation === gitGeneration) report(error, 'auto-link remote url');
+        }
+    };
+
     /**
      * §GIT-077's registry half plus §GIT-078's dedupe, run after the git resolution lands and
      * after everything has been re-validated.
      */
     const link = async (workspaceID: string, paneID: string, directory: string): Promise<void> => {
-        if (!enabled()) return;
+        if (stopped || !enabled()) return;
         const before = workspaceOf(store.getState(), workspaceID);
         if (before === undefined) return;
         // The pane must still be where the debounce was scheduled for (§GIT-076 first check).
@@ -178,17 +200,18 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
 
         const generation = (linkGeneration.get(paneID) ?? 0) + 1;
         linkGeneration.set(paneID, generation);
+        const providerGeneration = gitGeneration;
 
         let info: Awaited<ReturnType<AutoDetectGit['resolveRepoRoot']>>;
         try {
             info = await git.resolveRepoRoot(directory);
         } catch (error) {
-            report(error, 'auto-link resolve');
+            if (!stopped && providerGeneration === gitGeneration) report(error, 'auto-link resolve');
             return;
         }
         if (info === null) return;
-        // Cancel-in-flight: a newer pwd for this pane started its own resolution.
-        if (linkGeneration.get(paneID) !== generation || stopped) return;
+        // Neither a moved pane nor a previous Git provider may publish an obsolete root.
+        if (linkGeneration.get(paneID) !== generation || providerGeneration !== gitGeneration || stopped) return;
 
         // §GIT-076's second check: the setting, the workspace, the pane, and the pane still
         // being INSIDE the resolved worktree.
@@ -240,20 +263,13 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             store.dispatch({ type: 'add-repo-association', workspaceID, association });
         }
 
-        if (addedRepo) {
-            // §GIT-069/§GIT-077: the remote URL is a display value, so it lands whenever it
-            // lands and never blocks the association.
-            try {
-                const remoteURL = await git.getRemoteURL(info.parentRepoRoot);
-                if (!stopped && remoteURL !== null) {
-                    store.dispatch({ type: 'set-repo-remote-url', id: repoID, remoteURL });
-                }
-            } catch (error) {
-                report(error, 'auto-link remote url');
-            }
-        }
-
+        // Persist the association before a remote read that can be retired or remain pending.
         if (!alreadyLinked || addedRepo) persist?.();
+        if (addedRepo || existing?.isAutoDiscovered) {
+            // §GIT-069/§GIT-077: remote metadata follows automatic repos, including a rescan
+            // after switching providers. Manual registry entries retain their own metadata.
+            await refreshRemote(repoID, info.parentRepoRoot, providerGeneration);
+        }
     };
 
     /** §GIT-080 + §GIT-081. Synchronous: everything it needs is already in the store. */
@@ -296,7 +312,10 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             const stillReferenced = after.workspaces.some((entry) =>
                 entry.repoAssociations.some((association) => association.repoID === repoID)
             );
-            if (!stillReferenced) store.dispatch({ type: 'remove-repo', id: repoID });
+            if (!stillReferenced) {
+                remoteGeneration.delete(repoID);
+                store.dispatch({ type: 'remove-repo', id: repoID });
+            }
         }
         persist?.();
     };
@@ -435,6 +454,19 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             moved(workspaceID, paneID, directory);
         },
 
+        invalidate() {
+            if (stopped) return;
+            gitGeneration += 1;
+            linkGeneration.clear();
+            remoteGeneration.clear();
+            for (const timer of linkTimers.values()) clearTimeout(timer);
+            linkTimers.clear();
+            seen.clear();
+            // Keep the existing associations and pending unlink decisions: only Git's
+            // discovery answers changed. start() owns discovery before the service is live.
+            if (unsubscribe !== null) reconcile();
+        },
+
         async idle() {
             while (inFlight.size > 0) await Promise.all([...inFlight]);
         },
@@ -447,6 +479,8 @@ export function createRepoAutoDetect(options: CreateRepoAutoDetectOptions): Repo
             for (const timer of unlinkTimers.values()) clearTimeout(timer);
             linkTimers.clear();
             unlinkTimers.clear();
+            linkGeneration.clear();
+            remoteGeneration.clear();
             seen.clear();
         }
     };

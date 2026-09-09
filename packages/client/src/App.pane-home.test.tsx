@@ -52,7 +52,7 @@ function handshake(socket: FakeWebSocket, options: { home?: string } = {}): void
     socket.open();
     socket.emit({
         type: 'welcome',
-        protocolVersion: 1,
+        protocolVersion: 2,
         clientID: 'client-1',
         daemon: {
             version: '0.1.0',

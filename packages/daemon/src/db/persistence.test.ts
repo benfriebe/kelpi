@@ -726,7 +726,7 @@ describe('degradation on load', () => {
         expect(workspace?.color).toBe('blue');
         expect(workspace?.labels).toEqual([]);
         expect(workspace?.slug).toBe('my-app-a4e8a251');
-        expect(workspace?.panes[0]?.type).toBe('shell');
+        expect(workspace?.panes[0]?.type).toBe('plugin');
         expect(workspace?.panes[0]?.status).toBe('idle');
         expect(workspace?.panes[0]?.agentKind).toBeNull();
     });

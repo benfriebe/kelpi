@@ -838,6 +838,22 @@ export class Terminal implements ITerminalCore {
     this.currentTitle = '';
   }
 
+  /** Reset the VT for a host-provided snapshot without replacing DOM or selection readers. */
+  resetForReplay(): boolean {
+    this.assertOpen();
+    if (!this.wasmTerm!.resetForReplay()) return false;
+    this.selectionManager?.clearSelection();
+    this.scrollToBottom();
+    this.targetViewportY = 0;
+    if (this.scrollAnimationFrame !== undefined) cancelAnimationFrame(this.scrollAnimationFrame);
+    this.scrollAnimationFrame = undefined;
+    this.scrollAnimationStartTime = undefined;
+    this.scrollAnimationStartY = undefined;
+    this.linkDetector?.invalidateCache();
+    this.currentTitle = '';
+    return true;
+  }
+
   /**
    * Focus terminal input
    */

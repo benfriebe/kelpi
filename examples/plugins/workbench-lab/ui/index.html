@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab dashboard</title>
+<style>
+body { margin: 0; padding: 16px; font: 13px system-ui; color: var(--kelpi-fg); background: var(--kelpi-bg); }
+h1 { font-size: 18px; margin: 0 0 8px; } p { color: var(--kelpi-fg-secondary); line-height: 1.5; }
+button, input { box-sizing: border-box; width: 100%; padding: 8px; margin: 4px 0; border: 1px solid var(--kelpi-border); border-radius: 6px; background: var(--kelpi-surface); color: inherit; font: inherit; }
+button { cursor: pointer; } output, pre { display: block; margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+li { padding: 4px 0; } ul { padding-left: 18px; }
+</style></head><body>
+<h1>Workbench Lab</h1><p>Native workspace, custom tools, and a shared daemon API.</p>
+<ul id="workspaces" aria-label="Workspaces"></ul>
+<button id="create">Create a workspace</button><button id="blocked">Try the operation guard</button>
+<label>File on the daemon<input id="path" placeholder="/path/to/a/text-file"></label><button id="read">Read through selected provider</button>
+<output id="status" aria-live="polite"></output><pre id="file"></pre>
+<script type="module">
+const api = window.kelpi;
+await api.ready;
+const status = document.getElementById('status');
+const report = action => async () => { try { await action(); } catch (error) { status.textContent = error.message; } };
+const refresh = async () => {
+    const rows = await api.workspaces.list();
+    document.getElementById('workspaces').replaceChildren(...rows.map(workspace => { const row = document.createElement('li'); row.textContent = workspace.name; row.dataset.workspaceId = workspace.id; return row; }));
+};
+document.getElementById('create').onclick = report(async () => { const created = await api.workspaces.create({ name: 'Lab workspace' }); status.textContent = `Created ${created.workspaceName}`; await refresh(); });
+document.getElementById('blocked').onclick = report(async () => { await api.workspaces.create({ name: 'Blocked by Workbench Lab' }); status.textContent = 'Created workspace'; });
+document.getElementById('read').onclick = report(async () => { document.getElementById('file').textContent = await api.files.read(document.getElementById('path').value); });
+api.events.on('state.changed', () => refresh().catch(error => { status.textContent = error.message; }));
+await refresh();
+document.body.dataset.ready = 'true';
+</script></body></html>

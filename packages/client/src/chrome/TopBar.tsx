@@ -53,9 +53,14 @@ export interface TopBarProps {
     readonly onToggleSyncInput?: (() => void) | undefined;
     readonly onToggleSidebar?: (() => void) | undefined;
     readonly sidebarVisible?: boolean | undefined;
+    /** Labels follow the view assigned to each physical edge. */
+    readonly sidebarLabel?: string | undefined;
+    readonly sidebarTooltip?: string | undefined;
     /** §WS-137/§WS-152: the trailing workspace inspector's toggle. */
     readonly onToggleInspector?: (() => void) | undefined;
     readonly inspectorVisible?: boolean | undefined;
+    readonly inspectorLabel?: string | undefined;
+    readonly inspectorTooltip?: string | undefined;
     /**
      * APP-052/APP-053 — the ••• menu's rows, built by the app (`WindowTitleBar.swift:243-251`).
      *
@@ -280,9 +285,10 @@ export function TopBar(props: TopBarProps): ReactElement {
                 {props.onToggleSidebar === undefined ? null : (
                     <button
                         type="button"
-                        aria-label="Toggle sidebar"
+                        data-testid="toggle-sidebar"
+                        aria-label={props.sidebarLabel ?? 'Toggle sidebar'}
                         aria-pressed={props.sidebarVisible ?? true}
-                        title="Toggle sidebar"
+                        title={props.sidebarTooltip ?? 'Toggle sidebar'}
                         data-hovered={hovered === 'sidebar' ? 'true' : 'false'}
                         style={{ padding: GLYPH_BUTTON_PAD_PX, color: hoverText(hovered === 'sidebar', tokens.textSecondary) }}
                         {...hover('sidebar')}
@@ -545,9 +551,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                     <button
                         type="button"
                         data-testid="toggle-inspector"
-                        aria-label="Toggle inspector"
+                        aria-label={props.inspectorLabel ?? 'Toggle inspector'}
                         aria-pressed={props.inspectorVisible ?? false}
-                        title="Toggle inspector (⌘I)"
+                        title={props.inspectorTooltip ?? 'Toggle inspector (⌘I)'}
                         data-hovered={hovered === 'inspector' ? 'true' : 'false'}
                         style={{
                             padding: GLYPH_BUTTON_PAD_PX,

@@ -108,9 +108,9 @@ describe('enum degradation (§9.6)', () => {
         expect(decodeGroupColor(null)).toBeNull();
     });
 
-    it('falls back to shell / idle and keeps agentKind strict', () => {
+    it('keeps unavailable panes inert, falls back to idle and keeps agentKind strict', () => {
         expect(decodePaneType('markdown')).toBe('markdown');
-        expect(decodePaneType('quantum')).toBe('shell');
+        expect(decodePaneType('quantum')).toBe('plugin');
         expect(decodePaneStatus('waitingForInput')).toBe('waitingForInput');
         expect(decodePaneStatus('exploded')).toBe('idle');
         expect(decodeAgentKind('codex')).toBe('codex');

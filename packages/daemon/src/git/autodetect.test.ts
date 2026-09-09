@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import { createRepoAutoDetect, isPathInside, type RepoAutoDetectService } from './autodetect.js';
@@ -11,6 +11,14 @@ const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
 const P1 = 'DDDDDDDD-0000-4000-8000-000000000001';
 const P2 = 'DDDDDDDD-0000-4000-8000-000000000002';
 const NOW = 1_755_500_000_000;
+const detectors: RepoAutoDetectService[] = [];
+afterEach(() => { for (const detect of detectors.splice(0)) detect.stop(); });
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(complete => { resolve = complete; });
+    return { promise, resolve };
+}
 
 /** Deterministic ids so assertions can name them. */
 function ids(): () => string {
@@ -63,6 +71,7 @@ function harness(
         linkDebounceMs: 0,
         unlinkDebounceMs: 0
     });
+    detectors.push(detect);
     // The store subscription is what production runs (#48); the explicit
     // `paneDirectoryChanged` calls in the older tests below are then a harmless double-arm of
     // the same debounce, and they keep pinning the explicit seam.
@@ -194,6 +203,188 @@ describe('auto-link (§GIT-075…§GIT-079)', () => {
         h.detect.paneDirectoryChanged({ workspaceID: W1, paneID: P1, directory: '/not/a/repo' });
         await h.settle();
         expect(associationsOf(h.store)).toHaveLength(0);
+    });
+});
+
+describe('Git provider invalidation', () => {
+    const currentRoot = { worktreeRoot: '/work/wt', parentRepoRoot: '/work/repo' };
+
+    it('retires pending root reads and discovers the same cwd through the new provider', async () => {
+        const old = deferred<Awaited<ReturnType<GitService['resolveRepoRoot']>>>();
+        const resolveRepoRoot = vi.fn<GitService['resolveRepoRoot']>()
+            .mockReturnValueOnce(old.promise)
+            .mockResolvedValue(currentRoot);
+        const h = harness({ resolveRepoRoot }, { paneDirectory: '/work/wt/src' });
+        await vi.waitFor(() => expect(resolveRepoRoot).toHaveBeenCalledTimes(1));
+
+        h.detect.invalidate();
+        // New discovery must not wait for a native Git read that cannot be cancelled.
+        await vi.waitFor(() => expect(h.store.getState().repos[0]?.path).toBe('/work/repo'));
+        old.resolve({ worktreeRoot: '/work', parentRepoRoot: '/old-provider/repo' });
+        await h.settle();
+
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(2);
+        expect(h.store.getState().repos.map(repo => repo.path)).toEqual(['/work/repo']);
+        expect(associationsOf(h.store)).toHaveLength(1);
+        expect(associationsOf(h.store)[0]?.worktreePath).toBe('/work/wt');
+    });
+
+    it.each(['visible', 'parked'] as const)('rescans a %s pane after a previous provider returned no repository', async kind => {
+        const resolveRepoRoot = vi.fn<GitService['resolveRepoRoot']>()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValue(currentRoot);
+        const h = harness({ resolveRepoRoot }, { paneDirectory: '/work/wt/src' });
+        if (kind === 'parked') h.store.dispatch({ type: 'park-pane', workspaceID: W1, paneID: P1 });
+        await h.settle();
+        expect(associationsOf(h.store)).toHaveLength(0);
+
+        h.detect.invalidate();
+        await h.settle();
+
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(2);
+        expect(associationsOf(h.store)[0]?.worktreePath).toBe('/work/wt');
+    });
+
+    it('replaces a pending remote read, shares the new read, and persists current metadata', async () => {
+        const old = deferred<string | null>();
+        const getRemoteURL = vi.fn<GitService['getRemoteURL']>()
+            .mockReturnValueOnce(old.promise)
+            .mockResolvedValue('git@example.invalid:current/repo.git');
+        const h = harness({ resolveRepoRoot: async () => currentRoot, getRemoteURL }, { paneDirectory: '/work/wt' });
+        h.store.dispatch({ type: 'create-pane', workspaceID: W1, paneID: P2, now: NOW, workingDirectory: '/work/wt/src' });
+        await vi.waitFor(() => expect(getRemoteURL).toHaveBeenCalledTimes(1));
+        expect(associationsOf(h.store)).toHaveLength(1);
+        // Registry and association persistence cannot depend on the outstanding remote read.
+        expect(h.persists()).toBeGreaterThan(0);
+        const before = h.persists();
+
+        h.detect.invalidate();
+        await vi.waitFor(() => expect(h.store.getState().repos[0]?.remoteURL).toBe('git@example.invalid:current/repo.git'));
+        expect(h.persists()).toBeGreaterThan(before);
+        const saved = h.persists();
+        old.resolve('git@example.invalid:old/repo.git');
+        await h.settle();
+
+        expect(getRemoteURL).toHaveBeenCalledTimes(2);
+        expect(h.store.getState().repos).toHaveLength(1);
+        expect(h.store.getState().repos[0]?.remoteURL).toBe('git@example.invalid:current/repo.git');
+        expect(associationsOf(h.store)).toHaveLength(1);
+        expect(h.persists()).toBe(saved);
+    });
+
+    it('clears obsolete remote metadata when the new provider reports no remote', async () => {
+        const getRemoteURL = vi.fn<GitService['getRemoteURL']>()
+            .mockResolvedValueOnce('git@example.invalid:old/repo.git')
+            .mockResolvedValue(null);
+        const h = harness({ resolveRepoRoot: async () => currentRoot, getRemoteURL }, { paneDirectory: '/work/wt' });
+        await h.settle();
+        expect(h.store.getState().repos[0]?.remoteURL).toBe('git@example.invalid:old/repo.git');
+        const before = h.persists();
+
+        h.detect.invalidate();
+        await h.settle();
+
+        expect(getRemoteURL).toHaveBeenCalledTimes(2);
+        expect(h.store.getState().repos[0]?.remoteURL).toBeNull();
+        expect(h.persists()).toBeGreaterThan(before);
+    });
+
+    it('preserves manually adopted metadata and associations when a remote read is retired', async () => {
+        const old = deferred<string | null>();
+        const getRemoteURL = vi.fn<GitService['getRemoteURL']>().mockReturnValue(old.promise);
+        const h = harness({ resolveRepoRoot: async () => currentRoot, getRemoteURL }, { paneDirectory: '/work/wt' });
+        await vi.waitFor(() => expect(getRemoteURL).toHaveBeenCalledTimes(1));
+        const repo = h.store.getState().repos[0]!;
+        h.store.dispatch({ type: 'set-repo-auto-discovered', id: repo.id, isAutoDiscovered: false });
+        h.store.dispatch({ type: 'set-repo-remote-url', id: repo.id, remoteURL: 'git@example.invalid:manual/repo.git' });
+        const associations = associationsOf(h.store);
+
+        h.detect.invalidate();
+        old.resolve('git@example.invalid:old/repo.git');
+        await h.settle();
+
+        expect(getRemoteURL).toHaveBeenCalledTimes(1);
+        expect(h.store.getState().repos[0]).toMatchObject({ isAutoDiscovered: false, remoteURL: 'git@example.invalid:manual/repo.git' });
+        expect(associationsOf(h.store)).toEqual(associations);
+    });
+
+    it('keeps manually added associations and their repository metadata intact during a rescan', async () => {
+        const getRemoteURL = vi.fn<GitService['getRemoteURL']>().mockResolvedValue('git@example.invalid:provider/repo.git');
+        const h = harness({ resolveRepoRoot: async () => currentRoot, getRemoteURL }, { paneDirectory: '/work/wt', start: false });
+        const repo = {
+            id: 'BBBBBBBB-0000-4000-8000-000000000001', path: '/work/repo', name: 'My repo',
+            remoteURL: 'git@example.invalid:manual/repo.git', lastAccessedAt: NOW / 1000, isAutoDiscovered: false
+        };
+        const association = {
+            id: 'CCCCCCCC-0000-4000-8000-000000000001', repoID: repo.id,
+            worktreePath: '/work/wt', branchName: 'manual', isAutoDetected: false
+        };
+        h.store.dispatch({ type: 'add-repo', repo });
+        h.store.dispatch({ type: 'add-repo-association', workspaceID: W1, association });
+
+        h.detect.start();
+        h.detect.invalidate();
+        await h.settle();
+
+        expect(h.store.getState().repos).toEqual([repo]);
+        expect(associationsOf(h.store)).toEqual([association]);
+        expect(getRemoteURL).not.toHaveBeenCalled();
+    });
+
+    it('coalesces pending discovery timers and does not start before start() or after stop()', async () => {
+        const resolveRepoRoot = vi.fn<GitService['resolveRepoRoot']>().mockResolvedValue(currentRoot);
+        const h = harness({ resolveRepoRoot }, { paneDirectory: '/work/wt', start: false });
+        h.detect.invalidate();
+        await h.settle();
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+
+        h.detect.start();
+        h.detect.invalidate();
+        h.detect.invalidate();
+        await h.settle();
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(1);
+
+        h.detect.invalidate();
+        h.detect.stop();
+        h.detect.invalidate();
+        h.detect.start();
+        await h.settle();
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(1);
+    });
+
+    it('respects disabled auto-detection while invalidating', async () => {
+        const resolveRepoRoot = vi.fn<GitService['resolveRepoRoot']>().mockResolvedValue(currentRoot);
+        const h = harness({ resolveRepoRoot }, { paneDirectory: '/work/wt', enabled: false });
+        h.detect.invalidate();
+        await h.settle();
+        expect(resolveRepoRoot).not.toHaveBeenCalled();
+
+        h.setEnabled(true);
+        h.detect.invalidate();
+        await h.settle();
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['root', 'remote'] as const)('drops a pending %s read after stop without writing or persisting', async stage => {
+        const root = deferred<Awaited<ReturnType<GitService['resolveRepoRoot']>>>();
+        const remote = deferred<string | null>();
+        const resolveRepoRoot = vi.fn<GitService['resolveRepoRoot']>()
+            .mockReturnValue(stage === 'root' ? root.promise : Promise.resolve(currentRoot));
+        const getRemoteURL = vi.fn<GitService['getRemoteURL']>().mockReturnValue(remote.promise);
+        const h = harness({ resolveRepoRoot, getRemoteURL }, { paneDirectory: '/work/wt' });
+        await vi.waitFor(() => expect(stage === 'root' ? resolveRepoRoot : getRemoteURL).toHaveBeenCalledTimes(1));
+        const before = h.store.getState();
+        const saved = h.persists();
+
+        h.detect.stop();
+        h.detect.invalidate();
+        root.resolve(currentRoot);
+        remote.resolve('git@example.invalid:stopped/repo.git');
+        await h.settle();
+
+        expect(h.store.getState()).toEqual(before);
+        expect(h.persists()).toBe(saved);
+        expect(resolveRepoRoot).toHaveBeenCalledTimes(1);
     });
 });
 

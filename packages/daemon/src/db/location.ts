@@ -6,8 +6,8 @@
  * path … on first run MIGRATE by copying the legacy macOS path's file if present").
  *
  *   KELPID_DB_PATH set → that file, verbatim (`~` expanded; `:memory:` honoured)
- *   darwin          → ~/Library/Application Support/kelpid/kelpi.db
- *   otherwise       → $XDG_DATA_HOME/kelpid/kelpi.db, else ~/.local/share/kelpid/kelpi.db
+ *   darwin          → ~/Library/Application Support/kelpid/kelpi-v2.db
+ *   otherwise       → $XDG_DATA_HOME/kelpid/kelpi-v2.db, else ~/.local/share/kelpid/kelpi-v2.db
  *
  * `kelpid`, not `Kelpi`: the daemon owns its own directory, distinct from any app-named one,
  * so implementations can run side by side without corrupting each other's state. The pre-rename
@@ -23,10 +23,11 @@
 import fs from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { PLUGIN_DATABASE_FILENAME } from './generation.js';
 
 export const DB_PATH_ENV = 'KELPID_DB_PATH';
 export const DB_DIR_MODE = 0o700;
-export const DATABASE_FILENAME = 'kelpi.db';
+export const DATABASE_FILENAME = PLUGIN_DATABASE_FILENAME;
 /** In-memory databases (tests) skip directory creation entirely. */
 export const MEMORY_DATABASE_PATH = ':memory:';
 

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lab notes</title>
+<style>body{margin:0;padding:16px;font:13px system-ui;background:var(--kelpi-bg);color:var(--kelpi-fg)}h1{font-size:18px}textarea{box-sizing:border-box;width:100%;height:220px;padding:8px;font:inherit;color:inherit;background:var(--kelpi-surface);border:1px solid var(--kelpi-border);border-radius:6px}</style>
+</head><body><h1>Lab notes</h1><label for="notes">Notes for this daemon</label><textarea id="notes" placeholder="Keep a note while switching tabs"></textarea><p id="status" aria-live="polite"></p>
+<script type="module">
+await kelpi.ready;
+const notes = document.getElementById('notes');
+notes.value = await kelpi.storage.get('notes') ?? '';
+let saving = Promise.resolve();
+notes.oninput = () => { const value = notes.value; saving = saving.then(() => kelpi.storage.set('notes', value)).then(() => { document.getElementById('status').textContent = 'Saved'; }, error => { document.getElementById('status').textContent = error.message; }); };
+document.body.dataset.ready = 'true';
+</script></body></html>

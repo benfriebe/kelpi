@@ -67,7 +67,7 @@ const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.ht
 const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 const shellBundle = path.join(shellRoot, 'dist', 'main.js');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 /** Forge writes `out/<productName>-<platform>-<arch>/<productName>.app`. */
 const appDir = path.join(shellRoot, 'out', `Kelpi-${process.platform}-${process.arch}`);
 const appPath = path.join(appDir, 'Kelpi.app');
@@ -599,9 +599,13 @@ function startApp(sandbox) {
 
     let exited = false;
     let exitCode = null;
+    let exitSignal = null;
+    let quitTimedOut = false;
+    let quitElapsedMs = null;
     child.on('exit', (code, signal) => {
         exited = true;
-        exitCode = code ?? (signal === null ? null : -1);
+        exitCode = code;
+        exitSignal = signal;
     });
 
     return {
@@ -613,21 +617,32 @@ function startApp(sandbox) {
         get exitCode() {
             return exitCode;
         },
+        exitDetail: () =>
+            `exit code ${String(exitCode)}, signal ${exitSignal ?? 'none'}, ` +
+            `quit wait ${String(quitElapsedMs)} ms, timed out ${String(quitTimedOut)}`,
         text: () => lines.join('\n'),
         waitForLine: (pattern, label, timeoutMs = 45_000) =>
             waitFor(
                 label,
                 () => {
-                    if (exited) throw new Error(`the app exited (code ${String(exitCode)}) before ${label}`);
+                    if (exited) {
+                        throw new Error(
+                            `the app exited (code ${String(exitCode)}, signal ${exitSignal ?? 'none'}) before ${label}`
+                        );
+                    }
                     return lines.find((line) => pattern.test(line));
                 },
                 timeoutMs
             ),
         async quit(signal = 'SIGTERM') {
             if (!exited) {
+                const started = Date.now();
+                const exit = new Promise((resolve) => child.once('exit', () => resolve('exit')));
                 if (signal === 'SIGTERM') child.kill('SIGTERM');
                 else signalGroup(child, signal);
-                await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(20_000)]);
+                const outcome = await Promise.race([exit, raceTimeout(20_000).then(() => 'timeout')]);
+                quitElapsedMs = Date.now() - started;
+                quitTimedOut = outcome === 'timeout';
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
@@ -895,7 +910,7 @@ async function launchPhase() {
 
         // ── quit: the sessions outlive the app ───────────────────────────────────
         await app.quit('SIGTERM');
-        check('the app exits cleanly on a quit request', app.exitCode === 0, `exit code ${String(app.exitCode)}`);
+        check('the app exits cleanly on a quit request', app.exitCode === 0, app.exitDetail());
         check('the quit path says it is leaving the daemon running', app.text().includes('quit: leaving the daemon running'));
 
         check('the daemon process is still alive', processAlive(daemonPid), `pid ${String(daemonPid)}`);

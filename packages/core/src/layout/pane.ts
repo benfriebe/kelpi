@@ -7,17 +7,19 @@
  * (parked panes, `movingPane` edge cases).
  */
 
+import type { PluginPaneDescriptor } from '@kelpi/protocol';
 import type { PaneID } from './types.js';
 
 /** Only `shell` panes have terminal surfaces / sync input / can be captured. */
-export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web';
+export type PaneType = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
 
 export const PANE_TYPES: readonly PaneType[] = [
     'shell',
     'markdown',
     'scratchpad',
     'diff',
-    'web'
+    'web',
+    'plugin'
 ];
 
 /** Persisted as these exact rawValue strings — note camelCase waitingForInput. */
@@ -43,10 +45,12 @@ export type EpochSeconds = number;
 export type EpochMilliseconds = number;
 
 export interface Pane {
+    readonly unavailable?: { readonly type: string; readonly pluginJSON: string | null };
     /** Keys the layout leaf, the PTY surface, `--target`, `KELPI_PANE_ID`. */
     id: PaneID;
     label: string | null;
     type: PaneType;
+    plugin?: PluginPaneDescriptor;
     /** Transient: live OSC title, display-only. */
     title: string | null;
     workingDirectory: string;

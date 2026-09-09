@@ -1,0 +1,21 @@
+{
+  "id": "example.agent-board",
+  "name": "Agent Board",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "backend": "backend.mjs",
+  "activation": "startup",
+  "contributes": {
+    "views": [
+      { "id": "example.agent-board.board", "title": "Agent Board", "entry": "ui/index.html", "stateVersion": 1, "placements": ["pane", "sidebar.primary", "sidebar.secondary", "panel.bottom", "workspace", "topbar", "statusbar", "settings"] }
+    ],
+    "commands": [
+      { "id": "example.agent-board.open", "title": "Open Agent Board", "shortcut": "super+shift+b", "menu": "both" },
+      { "id": "example.agent-board.history", "title": "Read Agent Board history" }
+    ],
+    "settings": {
+      "showIdle": { "title": "Show idle panes", "type": "boolean", "default": true }
+    }
+  }
+}

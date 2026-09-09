@@ -75,6 +75,8 @@ export interface PaneBranchWatchService {
      * sitting inside it.
      */
     repoChanged(worktreePath: string): void;
+    /** Forget the previous Git provider's cache and branch labels, then refresh live panes. */
+    invalidate(): void;
     /** Resolve one pane now, ignoring the debounce (test seam / explicit refresh). */
     refresh(paneID: string): Promise<void>;
     /** Test seam: settle everything currently in flight. */
@@ -133,24 +135,38 @@ export function createPaneBranchWatch(
     const cache = new Map<string, { branch: string | null; at: number }>();
     /** paneID → the directory we last DISPATCHED for, which is what stops a resolve loop. */
     const settled = new Map<string, string>();
+    const observed = new Map<string, string>();
+    const requests = new Map<string, number>();
+    const active = new Map<string, number>();
+    const lookups = new Map<string, Promise<string | null>>();
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
     const inFlight = new Set<Promise<void>>();
+    let requestSequence = 0;
     let unsubscribe: (() => void) | null = null;
     let disposed = false;
+    let invalidating = false;
 
     const lookup = async (directory: string): Promise<string | null> => {
         const cached = cache.get(directory);
         if (cached !== undefined && now() - cached.at < cacheTtlMs) return cached.branch;
-        let branch: string | null;
-        try {
-            // §GIT-091: git's own answer, verbatim. A detached HEAD prints the literal "HEAD"
-            // and that is exactly what the chip must show.
-            branch = await git.getCurrentBranch(directory);
-        } catch {
-            branch = null;
-        }
-        cache.set(directory, { branch, at: now() });
-        return branch;
+        const pending = lookups.get(directory);
+        if (pending !== undefined) return pending;
+        // Share in-flight work as well as completed cache entries between panes. Removing
+        // this promise from lookups invalidates its result without cancelling native Git.
+        const read = Promise.resolve()
+            .then(() => git.getCurrentBranch(directory))
+            .catch(() => null)
+            .then((branch) => {
+                if (!disposed && lookups.get(directory) === read) {
+                    cache.set(directory, { branch, at: now() });
+                }
+                return branch;
+            })
+            .finally(() => {
+                if (lookups.get(directory) === read) lookups.delete(directory);
+            });
+        lookups.set(directory, read);
+        return read;
     };
 
     const resolve = async (paneID: string): Promise<void> => {
@@ -161,14 +177,22 @@ export function createPaneBranchWatch(
             return;
         }
         const directory = target.directory;
-        const branch = await lookup(directory);
-        if (disposed) return;
-        // Re-read: the pane may have moved (or vanished) while git ran.
-        const current = findPane(store.getState(), paneID);
-        if (current === null || current.directory !== directory) return;
-        settled.set(paneID, directory);
-        if (current.branch === branch) return;
-        store.dispatch({ type: 'pane-branch-changed', paneID, branch });
+        const request = ++requestSequence;
+        requests.set(paneID, request);
+        active.set(paneID, request);
+        try {
+            const branch = await lookup(directory);
+            if (disposed || requests.get(paneID) !== request) return;
+            // Re-read: the pane may have moved (or vanished) while git ran. The request
+            // identity also rejects an old answer after moving away and back to this cwd.
+            const current = findPane(store.getState(), paneID);
+            if (current === null || current.directory !== directory) return;
+            settled.set(paneID, directory);
+            if (current.branch === branch) return;
+            store.dispatch({ type: 'pane-branch-changed', paneID, branch });
+        } finally {
+            if (active.get(paneID) === request) active.delete(paneID);
+        }
     };
 
     const run = (paneID: string): void => {
@@ -200,15 +224,24 @@ export function createPaneBranchWatch(
      * (including the `pane-branch-changed` this module itself dispatches).
      */
     const reconcile = (): void => {
-        if (disposed) return;
+        if (disposed || invalidating) return;
         const live = new Set<string>();
         for (const target of panesWithDirectories(store.getState())) {
             live.add(target.paneID);
+            if (observed.get(target.paneID) !== target.directory) {
+                requests.delete(target.paneID);
+                settled.delete(target.paneID);
+                observed.set(target.paneID, target.directory);
+            }
             if (settled.get(target.paneID) === target.directory) continue;
+            if (active.has(target.paneID) &&
+                active.get(target.paneID) === requests.get(target.paneID)) continue;
             schedule(target.paneID);
         }
-        for (const paneID of [...settled.keys()]) {
+        for (const paneID of [...observed.keys()]) {
             if (live.has(paneID)) continue;
+            observed.delete(paneID);
+            requests.delete(paneID);
             settled.delete(paneID);
             const timer = timers.get(paneID);
             if (timer !== undefined) {
@@ -231,17 +264,52 @@ export function createPaneBranchWatch(
             if (disposed) return;
             const root = canonicalizePath(worktreePath);
             if (root === '') return;
-            for (const directory of [...cache.keys()]) {
+            for (const directory of new Set([...cache.keys(), ...lookups.keys()])) {
                 const candidate = canonicalizePath(directory);
-                if (candidate === root || candidate.startsWith(`${root}/`)) cache.delete(directory);
+                if (candidate !== root && !candidate.startsWith(`${root}/`)) continue;
+                cache.delete(directory);
+                lookups.delete(directory);
             }
             for (const target of panesWithDirectories(store.getState())) {
                 const candidate = canonicalizePath(target.directory);
                 if (candidate !== root && !candidate.startsWith(`${root}/`)) continue;
                 // Force a re-resolve: the directory has not changed, only what git says about it.
+                requests.delete(target.paneID);
                 settled.delete(target.paneID);
                 schedule(target.paneID);
             }
+        },
+
+        invalidate() {
+            if (disposed) return;
+            cache.clear();
+            lookups.clear();
+            requests.clear();
+            settled.clear();
+            for (const timer of timers.values()) clearTimeout(timer);
+            timers.clear();
+            invalidating = true;
+            try {
+                for (const target of panesWithDirectories(store.getState())) {
+                    const current = findPane(store.getState(), target.paneID);
+                    if (current === null || current.branch === null) continue;
+                    store.dispatch({
+                        type: 'pane-branch-changed',
+                        paneID: current.paneID,
+                        branch: null
+                    });
+                }
+            } finally {
+                invalidating = false;
+            }
+            if (unsubscribe === null) return;
+            reconcile();
+            // A provider switch should be visible promptly, without waiting for the cwd
+            // debounce or a 30-second association poll to trigger another lookup.
+            const pending = [...timers.keys()];
+            for (const timer of timers.values()) clearTimeout(timer);
+            timers.clear();
+            for (const paneID of pending) run(paneID);
         },
 
         async refresh(paneID) {
@@ -274,6 +342,10 @@ export function createPaneBranchWatch(
             for (const timer of timers.values()) clearTimeout(timer);
             timers.clear();
             cache.clear();
+            lookups.clear();
+            requests.clear();
+            active.clear();
+            observed.clear();
             settled.clear();
         }
     };

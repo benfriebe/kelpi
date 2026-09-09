@@ -22,8 +22,8 @@ Kelpi persists its full workspace/pane/repo/group state to a single SQLite datab
 the daemon (`packages/daemon/src/db/location.ts:47-72`):
 
 ```
-macOS:  ~/Library/Application Support/kelpid/kelpi.db
-other:  $XDG_DATA_HOME/kelpid/kelpi.db, else ~/.local/share/kelpid/kelpi.db
+macOS:  ~/Library/Application Support/kelpid/kelpi-v2.db
+other:  $XDG_DATA_HOME/kelpid/kelpi-v2.db, else ~/.local/share/kelpid/kelpi-v2.db
 ```
 
 `KELPID_DB_PATH` overrides the path on every platform (`~` expanded; `:memory:` gives a
@@ -36,6 +36,10 @@ copies it across once (see Compatibility rationale). The database is opened by t
 
 - **WAL journal mode** for file databases (ignored for `:memory:`, which tests use).
 - **`PRAGMA foreign_keys = ON`** on every connection (cascade deletes depend on it).
+
+On first use of the default generation, a sibling `kelpi.db` is copied consistently with
+`VACUUM INTO` before migration. The old database is left unchanged for rollback. Explicit
+custom paths are upgraded in place. See [plugin upgrade notes](plugins.md#database-and-protocol-upgrade).
 
 The persistence strategy is deliberately simple:
 
@@ -109,7 +113,9 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `id`            | TEXT PK | no   |           | pane UUID |
 | `workspaceID`   | TEXT    | no   |           | FK → `workspace(id)` **ON DELETE CASCADE** |
 | `label`         | TEXT    | yes  |           | user-assigned pane label (used by CLI `--target` name resolution) |
-| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell | markdown | scratchpad | diff | web`. Unknown value on load → `shell`. |
+| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell | markdown | scratchpad | diff | web | plugin`. Unknown nonempty values load as unavailable plugin panes and preserve their original raw type. |
+| `pluginJSON` | TEXT | yes | | Versioned plugin ID, view ID, and JSON state. Invalid/future descriptors are preserved verbatim for recovery. |
+| `pluginParked` | BOOLEAN | no | `0` | Parked plugin panes survive restart; this flag has no effect on built-in pane types. |
 | `workingDirectory` | TEXT | no   |           | absolute path; new panes default to the user's home directory |
 | `createdAt`     | DOUBLE  | no   |           | epoch seconds |
 | `lastActivityAt`| DOUBLE  | no   |           | epoch seconds |
@@ -196,7 +202,7 @@ Kelpi keeps under the same name (`packages/daemon/src/db/schema.ts:22`):
 CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY);
 ```
 
-One row per applied migration identifier (`"v1_initial"` … `"v19_pane_agent_profile"`). On
+One row per applied migration identifier (`"v1_initial"` … `"v20_plugin_panes"`). On
 startup, any registered migration whose identifier is not present is run, in registration
 order, each in its own transaction together with its ledger row (`INSERT OR IGNORE`, so a
 failure can never record an unapplied step); identifiers already present are skipped
@@ -310,11 +316,11 @@ labels are trimmed, non-empty, order-preserving, deduped case-sensitively.
 
 ---
 
-## 4. Migration history (all 18, in order)
+## 4. Migration history
 
 Migration identifiers are strings; each runs once, recorded in `grdb_migrations`
-(`MIGRATIONS`, `packages/daemon/src/db/schema.ts:45-195`). There are 19 in total: the 18 shared
-with the legacy app plus the Kelpi-only `v19_pane_agent_profile`. From v3 onward, every
+(`MIGRATIONS`, `packages/daemon/src/db/schema.ts`). There are 20 in total: the 18 shared
+with the legacy app plus `v19_pane_agent_profile` and `v20_plugin_panes`. From v3 onward, every
 `ALTER TABLE ADD COLUMN` (and the v15 rename) is **guarded**: it first checks the live column
 list and skips if the column already exists (or, for v15, if the target name already exists /
 the source is missing). This guard exists because pre-release builds of the legacy app
@@ -345,6 +351,7 @@ migration idempotent regardless of ledger drift.
 | `v17_workspace_profile` | `workspace` + `profileName TEXT`. Guarded. |
 | `v18_pane_agent_kind` | `pane` + `agentKind TEXT` (`"claude"`/`"codex"`, issue #101 — picks the resume command on restart). Guarded. |
 | `v19_pane_agent_profile` | `pane` + `agentProfileName TEXT` (§2.2). Kelpi-only, no legacy counterpart: listed in `DAEMON_ONLY_MIGRATIONS` (`schema.ts:205`) so the importer does not treat a legacy ledger that lacks it as stale. Guarded. |
+| `v20_plugin_panes` | `pane` + `pluginJSON TEXT` and `pluginParked BOOLEAN NOT NULL DEFAULT 0`. Kelpi-only and guarded. Uses a new default database generation; see [plugin upgrades](plugins.md#database-and-protocol-upgrade). |
 
 ---
 
@@ -449,9 +456,9 @@ UPSERT appState rows               (the five keys in §2.4)
 - **Scratchpad content** is persisted in `pane.content`.
 - **Timestamps** are written as epoch seconds (float) through `toEpochSecondsColumn`; a
   millisecond-magnitude value is converted rather than written (§2).
-- **Parked panes are NOT saved.** A pane parked by `kelpi open --here` (off-layout but PTY kept
-  alive) lives in a separate `parkedPanes` lane that the snapshot ignores — it vanishes on
-  restart (its ghostty surface couldn't be restored anyway).
+- **Parked built-in panes are not saved.** They vanish on restart. Parked plugin panes retain
+  their descriptor and state in the same pane table, with `pluginParked = 1`; restoration
+  puts them back in the parked lane without adding them to the visible layout.
 - `recentlyClosedPanes` (reopen-closed-pane stack) is NOT saved.
 
 ---
@@ -488,7 +495,8 @@ topLevelOrder ← decode appState["topLevelOrder"] as [SidebarID] (fallback: [])
 
 Per-pane decode:
 
-- `type` ← `PaneType(raw) ?? shell`; `status` ← `PaneStatus(raw) ?? idle`;
+- `type` uses the known pane kind, `shell` for an absent/empty type, or an inert `plugin`
+  placeholder for unknown nonempty types; `status` ← `PaneStatus(raw) ?? idle`;
   `agentKind` ← `AgentKind(raw)` or nil (strict — unknown string → nil).
 - `isEditing` is DERIVED: `true` iff type is `scratchpad` (scratchpads restore into edit
   mode); all other panes restore in view mode.
@@ -619,14 +627,15 @@ focused pane id, createdAt, lastAccessedAt.
 Per pane: id, owning workspace, label, type, workingDirectory, filePath, scratchpad content,
 agentSessionID (written, but consumed-and-cleared by the next launch), agentKind,
 agentProfileName, status (written, but reset to idle on load), createdAt, lastActivityAt, web
-tabs + active tab + private flag (tabs/URLs withheld for private panes).
+tabs + active tab + private flag (tabs/URLs withheld for private panes), plugin descriptor
+and JSON state, and the parked flag for plugin panes.
 
 App level (daemon-owned `appState` keys, §2.4): label presets, the label-preset migration
 marker, the snapshot version.
 
 ### 7.2 Deliberately transient (reset every launch)
 
-Workspace: `focusHistory`, `parkedPanes` (and any pane in them, PTY included),
+Workspace: `focusHistory`, parked built-in panes (PTY included; plugin panes persist),
 `recentlyClosedPanes`, `zoomedPaneID` + `savedLayout` (the un-zoomed tree is what gets saved),
 search state (`searchingPaneID`, needle, counts), `currentLayoutIndex` (predefined-layout cycle
 position), `isSyncInputActive` + `syncInputExcluded` (sync-input always starts off).
@@ -674,7 +683,7 @@ Neither file is part of the SQLite schema, the migration ledger or the save tran
 
 ## 8. Equivalent SQLite DDL for the TS daemon
 
-This is the schema as it exists after v19, expressed as plain DDL. (SQLite's ALTER-produced
+This is the schema as it exists after v20, expressed as plain DDL. (SQLite's ALTER-produced
 schema differs cosmetically — column order and the absence of NOT NULL on late-added columns
 are preserved here.) An adopted legacy database may additionally hold `scheduledTask`,
 `workspaceFolder` and `workspace.folderID` (§2.6); they are not part of this DDL and Kelpi
@@ -717,7 +726,9 @@ CREATE TABLE pane (
   webActiveTabID   TEXT,
   webIsPrivate     BOOLEAN,                 -- 0/1/NULL(=false)
   agentKind        TEXT,                    -- claude|codex|NULL
-  agentProfileName TEXT                     -- Kelpi-only (v19); NULL = unknown
+  agentProfileName TEXT,                    -- Kelpi-only (v19); NULL = unknown
+  pluginJSON       TEXT,                    -- Kelpi-only (v20); versioned plugin descriptor
+  pluginParked     BOOLEAN NOT NULL DEFAULT 0
 );
 
 CREATE TABLE appState (
@@ -878,7 +889,7 @@ declined.
 
 **Where Kelpi deliberately diverges from the legacy app, and where it deliberately does not:**
 
-- **Daemon-owned DB location**: the daemon keeps its own file (`kelpid/kelpi.db`, §1) and never
+- **Daemon-owned DB location**: the daemon keeps its own file (`kelpid/kelpi-v2.db`, §1) and never
   opens the legacy app's `~/Library/Application Support/Nex/nex.db`, so the two can run side by
   side without corrupting each other's state. There is no automatic first-run copy;
   `kelpid import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]` performs the

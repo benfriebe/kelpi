@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.8';
+const EXPECTED_VERSION = '0.4.0-nex.9';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -71,7 +71,7 @@ const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDi
  * break for any other embedder — which is exactly the kind of silent fork loss this file exists
  * to catch. The needle is the minified form (`vite` keeps the guard as its own statement).
  */
-const EMPTY_WRITE_MARKERS = ['B.length === 0', 'ghostty_wasm_alloc_u8_array(B.length)'];
+const EMPTY_WRITE_GUARD = /if \((\w+)\.length === 0\)\s*return;\s*const \w+ = this\.exports\.ghostty_wasm_alloc_u8_array\(\1\.length\)/;
 
 /**
  * Markers of `-nex.6`'s paint suspension (§N24).
@@ -201,13 +201,8 @@ describe('vendored ghostty-web engine', () => {
 
     it('ships a bundle whose write() survives zero bytes (§N1 / §N23)', () => {
         const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
-        for (const marker of EMPTY_WRITE_MARKERS) {
-            expect(bundle).toContain(marker);
-        }
         // The guard has to come BEFORE the allocation it protects, or it protects nothing.
-        expect(bundle.indexOf(EMPTY_WRITE_MARKERS[0] as string)).toBeLessThan(
-            bundle.indexOf(EMPTY_WRITE_MARKERS[1] as string)
-        );
+        expect(EMPTY_WRITE_GUARD.test(bundle)).toBe(true);
     });
 
     it('ships a bundle that can suspend its paint, guarded before the first cell read (§N24)', () => {
@@ -216,6 +211,13 @@ describe('vendored ghostty-web engine', () => {
             expect(bundle).toContain(marker);
         }
         expect(bundle).toMatch(PAINT_SUSPEND_GUARD);
+    });
+
+    it('ships the fresh-instance replay reset in both the VT and the terminal host (§-nex.9)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle.match(/resetForReplay\(\)/g)?.length).toBeGreaterThanOrEqual(3);
+        expect(bundle).toContain('new WebAssembly.Instance');
+        expect(read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'))).toContain('this.cellPool = replacement.cellPool');
     });
 
     it('ships a bundle whose default cell colours follow a LIVE theme (§N18)', () => {

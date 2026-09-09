@@ -24,7 +24,8 @@
  * puts the client's VT back onto this buffer. It is server-initiated (no new wire verb: the
  * client already applies a mid-stream `replay` by resetting and rewriting) and it cannot
  * loop, because a replay provokes no resize on the client and an unchanged grid arms no
- * timer here.
+ * timer here. A viewer that does not own PTY sizing can request this same handover for its
+ * session alone: its local renderer resized even though the server's geometry stayed put.
  *
  * Flow control (`PTY_FLOW_CONTROL_WINDOW_BYTES`): the daemon counts unacked payload bytes
  * per (client, pane). Past the window it stops sending to THAT client and queues; past the
@@ -129,6 +130,8 @@ export interface PaneStreamSession {
      * shell's repaint arrives), and a settled change is followed by a resync.
      */
     resize(paneID: string, cols: number, rows: number): void;
+    /** Replay this session's attached pane after a local resize; never changes server geometry. */
+    requestReplay(paneID: string): void;
     stats(paneID: string): PaneStreamStats | undefined;
     close(): void;
 }
@@ -283,16 +286,17 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
      * chunk is therefore either inside the snapshot or arrives after the pane is live again;
      * nothing in between can run, because everything after the await is microtask-only.
      *
-     * One snapshot serves every session — they are all being reconciled to the same buffer.
+     * One snapshot serves every targeted session. Owner resizes target all viewers; a
+     * non-owner's local resize targets only that session and never changes server geometry.
      */
-    const resyncPane = async (paneID: string): Promise<void> => {
+    const resyncPane = async (paneID: string, onlySession?: SessionImpl): Promise<void> => {
         if (closed) return;
         // A pane the emulator has already disposed would snapshot EMPTY, and an empty replay
         // is not a reconciliation — it is a client screen wiped by a resize that raced a
         // close. Leave it to the detach that is already on its way.
         if (!paneIsKnown(term, paneID)) return;
         const targets: { session: SessionImpl; entry: PaneEntry }[] = [];
-        for (const session of sessions) {
+        for (const session of onlySession === undefined ? sessions : [onlySession]) {
             const entry = session.entryFor(paneID);
             // Skip a pane still attaching (its own replay is coming, and it is being taken
             // AFTER this resize) and one already marked for a flow-control re-seed (the ack
@@ -331,6 +335,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
 
     class SessionImpl implements PaneStreamSession {
         private readonly panes = new Map<string, PaneEntry>();
+        private readonly replayTimers = new Map<string, ReturnType<typeof setTimeout>>();
         private disposed = false;
 
         constructor(private readonly transport: PaneStreamTransport) {}
@@ -397,7 +402,26 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         }
 
         detach(paneID: string): void {
+            this.clearReplayTimer(paneID);
             this.panes.delete(paneID);
+        }
+
+        requestReplay(paneID: string): void {
+            if (this.disposed || closed || resizeResyncMs < 0) return;
+            const entry = this.panes.get(paneID);
+            if (entry === undefined) return;
+            this.clearReplayTimer(paneID);
+            const timer = setTimeout(() => {
+                this.replayTimers.delete(paneID);
+                if (this.panes.get(paneID) !== entry) return;
+                // A non-owner's local grid change needs the same replay/live handover as
+                // an owner resize, but only for this viewer and without resizing the PTY.
+                void resyncPane(paneID, this);
+            }, resizeResyncMs);
+            if (typeof (timer as { unref?: () => void }).unref === 'function') {
+                (timer as { unref: () => void }).unref();
+            }
+            this.replayTimers.set(paneID, timer);
         }
 
         resize(paneID: string, cols: number, rows: number): void {
@@ -508,11 +532,19 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         close(): void {
             if (this.disposed) return;
             this.disposed = true;
+            for (const paneID of this.replayTimers.keys()) this.clearReplayTimer(paneID);
             this.panes.clear();
             sessions.delete(this);
         }
 
         // ── internals ───────────────────────────────────────────────────────────────
+
+        private clearReplayTimer(paneID: string): void {
+            const timer = this.replayTimers.get(paneID);
+            if (timer === undefined) return;
+            clearTimeout(timer);
+            this.replayTimers.delete(paneID);
+        }
 
         deliver(paneID: string, chunk: Uint8Array): void {
             const entry = this.panes.get(paneID);
@@ -529,7 +561,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         paneExited(paneID: string, exitCode: number): void {
             if (!this.panes.has(paneID)) return;
             this.transport.sendJson({ type: 'pane-exit', paneID, exitCode });
-            this.panes.delete(paneID);
+            this.detach(paneID);
         }
 
         /**

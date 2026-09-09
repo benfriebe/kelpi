@@ -40,6 +40,7 @@ export interface PluginChannel extends Partial<PluginOperationChannel> {
     observe?(event: JsonObject): void;
 }
 
+const contributionEventName = 'plugin.contributions.changed';
 const failure = (error: unknown): string => error instanceof Error ? error.message : String(error);
 function text(value: unknown, field: string): string {
     if (typeof value !== 'string' || !value || value.length > 8192) throw new Error(`missing or invalid ${field}`);
@@ -167,7 +168,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     private publishContributions(id: string, state: PluginContributionState = this.contributionStates.get(id)?.state ?? { context: {}, items: {} }): void {
         this.contributionStates.set(id, { state, sequence: this.sequence + 1 });
-        this.emit('plugin.contributions.changed', pluginJSON(this.contributionInfo(id)), id);
+        this.emit(contributionEventName, pluginJSON(this.contributionInfo(id)), id);
     }
     /** Complete, ordered snapshots of available plugins; never persists author UI state. */
     contributions(): PluginContributionInfo[] {
@@ -691,7 +692,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             this.writeJSON(path.join(this.directory, 'data', id, 'settings.json'), pluginObject({ ...this.storage(id, 'settings'), [key]: value }));
             this.emit('settings.changed', { key, value }, id); return null;
         }
-        if (method === 'events.emit') return this.emit(`${id}.${text(args['name'], 'event name')}`, pluginJSON(args['data'] ?? null), id) as unknown as JsonValue;
+        if (method === 'events.emit') {
+            const name = `${id}.${text(args['name'], 'event name')}`;
+            // This host event also falls inside a valid plugin namespace.
+            if (name === contributionEventName) throw new Error(`plugin event name is reserved: ${name}`);
+            return this.emit(name, pluginJSON(args['data'] ?? null), id) as unknown as JsonValue;
+        }
         if (method === 'commands.execute') return this.operation(id, lease, signal => inOperationScope({ ...operationScope(), signal }, () => this.invoke(text(args['command'], 'command'), pluginObject(args['args'] ?? {}), context)));
         if (method === 'services.list') return this.services();
         if (method === 'services.select') return this.selectService(args);

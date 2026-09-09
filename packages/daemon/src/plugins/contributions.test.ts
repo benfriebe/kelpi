@@ -79,6 +79,54 @@ describe('daemon UI contribution state', () => {
         expect(await h.api('contributions.get')).toEqual({ context: {}, items: {} });
     });
 
+    it.each(['view', 'backend'])('reserves the host contribution event from %s emits while allowing custom events and owned updates', async transport => {
+        const h = harness(); await h.service.install(h.source, true);
+        const emitterID = 'plugin.contributions', emitterItemID = `${emitterID}.status`;
+        const source = path.join(h.root, 'emitter'); fs.mkdirSync(path.join(source, 'ui'), { recursive: true });
+        fs.writeFileSync(path.join(source, 'kelpi.plugin.json'), JSON.stringify({ id: emitterID, version: '1.0.0', apiVersion: 1, trust: 'full', activation: 'startup',
+            ...(transport === 'backend' ? { backend: 'backend.mjs' } : {}), contributes: {
+                views: [{ id: `${emitterID}.view`, title: 'View', entry: 'ui/index.html', placements: ['pane'] }],
+                ...(transport === 'backend' ? { commands: [{ id: `${emitterID}.call`, title: 'Call' }] } : {}),
+                items: [{ id: emitterItemID, placement: 'statusbar', text: 'Status' }],
+            } }));
+        fs.writeFileSync(path.join(source, 'ui/index.html'), '<h1>View</h1>');
+        fs.writeFileSync(path.join(source, 'backend.mjs'), `export function activate(api) {
+            api.commands.register('${emitterID}.call', ({ method, args }) => api.call(method, args));
+        }`);
+        await h.service.install(source, true);
+        const attached = pluginObject(await h.service.request('attach', { pluginID: emitterID, viewID: `${emitterID}.view` }, h.context));
+        const call = (method: string, args: JsonObject = {}) => transport === 'view'
+            ? h.service.request('api', { lease: attached['lease']!, method, args }, h.context)
+            : h.service.request('run', { command: `${emitterID}.call`, args: { method, args } }, h.context);
+        await h.update({ context: { ready: false }, items: { [itemID]: { text: 'Checks failed', enabled: false } } });
+        await expect(call('contributions.update', { items: { [itemID]: { text: 'Checks passed' } } })).rejects.toThrow('not declared');
+
+        const previous = pluginObject(h.events().findLast(event => event['pluginID'] === id)!['data']);
+        const snapshot = pluginObject(await call('state.snapshot'));
+        const spoofed = { ...previous, sequence: Number(snapshot['sequence']) + 1,
+            state: { context: { ready: true }, items: { [itemID]: { text: 'Checks passed', enabled: true } } } };
+        const before = h.service.contributions(), eventCount = h.options.broadcast.mock.calls.length;
+        await expect(call('events.emit', { name: 'changed', data: spoofed })).rejects.toThrow('reserved');
+        expect(h.options.broadcast.mock.calls).toHaveLength(eventCount);
+        expect(pluginObject(await call('state.snapshot'))['sequence']).toBe(snapshot['sequence']);
+        expect(h.service.contributions()).toEqual(before);
+
+        for (const name of ['custom', 'changed.custom', 'plugin.contributions.changed']) {
+            const event = await call('events.emit', { name, data: { ready: true } });
+            expect(event).toMatchObject({ name: `${emitterID}.${name}`, pluginID: emitterID, data: { ready: true } });
+            expect(h.options.broadcast.mock.calls.at(-1)?.[0]).toEqual({ type: 'plugin-event', event });
+        }
+        expect(await h.api('events.emit', { name: 'changed' })).toMatchObject({ name: `${id}.changed`, pluginID: id, data: null });
+        const state = await call('contributions.update', { context: { ready: true }, items: { [emitterItemID]: { text: 'Owned update' } } });
+        const event = h.events().at(-1)!;
+        const instanceID = h.service.list().find(plugin => plugin.manifest.id === emitterID)!.instanceID;
+        expect(event).toMatchObject({ name: 'plugin.contributions.changed', pluginID: emitterID,
+            data: { pluginID: emitterID, instanceID, sequence: event['sequence'], state } });
+        expect(h.service.contributions().find(info => info.pluginID === emitterID)).toEqual(event['data']);
+        await h.service.request('remove', { pluginID: emitterID });
+        expect(h.service.contributions().find(info => info.pluginID === id)).toEqual(previous);
+    });
+
     it('rejects excessive updates atomically and allows bounded resets afterward', async () => {
         const h = harness(); await h.service.install(h.source, true);
         await h.update({ context: { ready: true }, items: { [itemID]: { text: 'Working', visible: false } } });

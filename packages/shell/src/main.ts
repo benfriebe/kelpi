@@ -701,6 +701,22 @@ function createWindow(): BrowserWindow {
         Menu.buildFromTemplate(template).popup({ window });
     });
 
+    /**
+     * The renderer's `console.error`s, in the shell log.
+     *
+     * A pane that dies leaves its cause in the renderer console and nowhere else: the
+     * "terminal renderer failed to start" placeholder is all a person sees, DevTools is closed,
+     * and by the time it is reported the window has been reloaded and the console with it.
+     * That was the whole cost of the first heap-churn trap (`RuntimeError: memory access out
+     * of bounds` on a long session's remount) — days of "retry doesn't help, restart does"
+     * with nothing to chase. Errors only: the renderer is chatty at info and the shell log is
+     * a place to find a cause, not a mirror of the console.
+     */
+    window.webContents.on('console-message', (details) => {
+        if (details.level !== 'error') return;
+        const source = details.sourceId === '' ? '' : ` (${details.sourceId}:${String(details.lineNumber)})`;
+        logError(`renderer console: ${details.message.split('\n', 1)[0] ?? ''}${source}`);
+    });
     window.webContents.on('did-finish-load', () => {
         loadRetries = 0;
         log(`did-finish-load ${window.webContents.getURL()}`);

@@ -1,0 +1,29 @@
+:root { color-scheme: dark light; font: 13px/1.5 system-ui, sans-serif; color: var(--kelpi-fg, #ddd); background: var(--kelpi-surface, #18181c); }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px; border-bottom: 1px solid var(--kelpi-border, #3b3b44); }
+.eyebrow { margin: 0 0 3px; font-size: 10px; color: var(--kelpi-fg-secondary, #aaa); text-transform: uppercase; letter-spacing: .08em; }
+h1 { margin: 0; font-size: 21px; line-height: 1.2; }
+.count { min-width: 42px; padding: 5px 12px; border: 1px solid var(--kelpi-border, #3b3b44); border-radius: 8px; text-align: center; font-size: 22px; font-variant-numeric: tabular-nums; }
+main { display: grid; gap: 18px; padding: 20px; }
+p { margin: 0; }
+.intro, .hint, #state-summary { color: var(--kelpi-fg-secondary, #aaa); }
+section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--kelpi-border, #3b3b44); border-radius: 9px; }
+h2 { margin: 0; font-size: 14px; }
+.controls { display: flex; flex-wrap: wrap; gap: 7px; }
+button { padding: 7px 10px; border: 1px solid var(--kelpi-border, #50505a); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+button:hover:enabled { background: var(--kelpi-border, #343440); }
+button:focus-visible { outline: 2px solid var(--kelpi-accent, #99b7ff); outline-offset: 2px; }
+button:disabled { opacity: .5; cursor: default; }
+.examples { display: grid; gap: 12px; }
+.examples > div { display: grid; grid-template-columns: minmax(125px, 1fr) minmax(100px, 1fr); align-items: center; gap: 12px; }
+output, pre { overflow-wrap: anywhere; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }
+output { color: var(--kelpi-fg-secondary, #aaa); }
+pre { max-height: 220px; overflow: auto; margin-bottom: 0; }
+summary { cursor: pointer; color: var(--kelpi-fg-secondary, #aaa); }
+#error { color: #e99992; }
+#error:empty { display: none; }
+body[data-density="compact"] header, body[data-density="compact"] main { padding: 12px; }
+body[data-density="compact"] main, body[data-density="compact"] section { gap: 8px; }
+body[data-density="compact"] section { padding: 10px; }
+@media (max-width: 310px) { .examples > div { grid-template-columns: 1fr; gap: 4px; } }

@@ -231,3 +231,108 @@ The last command requires an existing packaged app. The fresh worktree initially
 the vendored Ghostty engine's ignored `dist/`; validation built it from the checked-in
 vendor source and refreshed the local file dependency. No tracked vendor runtime source
 was changed. Report artifacts under `out/` and `docs/audit/` are local and ignored by Git.
+
+## Bundled sidebar features and window navigation (2026-09-09)
+
+This phase was implemented in `out/worktrees/plugin-ui-features` on
+`feature/plugin-bundled-features`, based on merged main `8f234ed`. Workspaces and Inspector
+now bind their models, actions and lifecycles through registered feature modules. The public
+browser SDK adds window navigation, and Sidebar Lab supplies independent replacements for
+both sidebars. The [feature guide](plugin-features.md) documents ownership and lifetime rules.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,781 root tests and 868 shell tests, 7,649 total. One existing optional real-Swift-database test is skipped. | [Check log](../out/sidebar-feature-validation/check.log) |
+| Development builds | Daemon, client, CLI and shell builds pass in the isolated worktree. | [Build log](../out/sidebar-feature-validation/build.log) |
+| Replacement Sidebar Lab | 30/30 live checks pass with real pointer clicks, text entry and Enter submission. Covers repository errors/status/refresh/diff, terminal create/split/send/capture, workspace create/rename/select, persisted preferences, both placements, reload, disable/fallback/re-enable, remote navigation and separate owner storage. Computed styles and overflow are checked. | [Results](../out/sidebar-feature-validation/sidebar-lab/results.json) |
+| Native sidebar regression | 11/11 checks pass for swapped views, filter, resizing, picker controls and restoration. | [Results](../out/sidebar-feature-swap/results.json) |
+| Existing plugin workbench | 22/22 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-workbench/results.json) |
+| Existing remote plugins | 12/12 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-remote/results.json) |
+| Source consistency | Built client/SDK source remained unchanged through final scenarios. The example script matches the final live run after its pointer interaction fix. Whitespace and JavaScript syntax checks pass. | [Verification](../out/sidebar-feature-validation/source-verification.json), [Hashes](../out/sidebar-feature-validation/source-hashes.json) |
+
+The final [onscreen screenshot](../out/sidebar-feature-validation/sidebar-lab/plugin-sidebar-features-01-sidebar-lab-inspector-left-workspaces-right.png)
+was visually inspected: Inspector is on the left, Workspaces on the right, with styled controls
+and repository/terminal content in the native pane grid. The other three scenarios use hidden
+private instances; their screenshots are not used as visual evidence. All scenario instances
+were stopped without changing the installed Kelpi application's state.
+
+Validation found and fixed three behavior issues: replacing a selected remote URL could
+silently display a different runtime; the iframe document wrapper placed authored head assets
+in the body, where rendering could remove stylesheets; and live example updates could replace
+a pressed button before its click arrived. Regression coverage now exercises these paths.
+Example forms use explicit actions and Enter handling under the existing form sandbox policy.
+
+This phase's validation consists of the full automated suite, development builds and the four
+focused live scenarios above. Earlier full UI-audit and packaged-installer records describe the
+previous merged phases.
+
+## Reactive contributions and shared window UI (2026-09-09)
+
+This follow-up continues `feature/plugin-bundled-features` from `c9d260e` in the same isolated
+worktree. Plugins now declare conditional menus, status/header items and grouped settings;
+backends and views publish bounded, atomic contribution state. The CLI can inspect that
+state. The browser SDK adds shared quick picks, inputs, dialogs and actionable notifications.
+The [UI guide](plugin-ui.md) documents conditions, validation, runtime scope and lifetime.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,915 root tests and 868 shell tests, **7,783 total**. One existing optional real-Swift-database test is skipped. | [Final check](../out/plugin-ui-validation/check-complete.log) |
+| Development builds | Daemon, client, CLI and shell builds pass against the final source. | [Build log](../out/plugin-ui-validation/build.log) |
+| UI Lab live scenario | 30/30 checks pass onscreen. Covers real item clicks and caller context, live badges/visibility/enablement, iframe shortcuts, disabled palette rows, grouped settings/ranges, every shared prompt, native shortcut protection, Settings queueing, reload cancellation, reset and recovery. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
+| Preview shortcuts | 6/6 checks pass onscreen against the final build: Markdown/diff iframe focus, exactly one invocation and correct pane/workspace context. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
+| Existing UI regressions | Workbench 22/22, remote plugins 12/12, swapped sidebars 11/11 and native confirmation dialogs 10/10 pass in a private background instance. | [Regression results](../out/plugin-ui-validation/regression/results.json) |
+| Actual example backend | 6/6 checks pass through a real PluginService child: activation, concurrent increments, settings, context/item updates, settings events without a mounted view, and reload/persistence. | [Backend results](../out/ui-lab-backend-validation.json) |
+| Source consistency | The committed product, SDK, examples and validation sources match the final hash manifest. Whitespace checks pass. | [Verification](../out/plugin-ui-validation/source-verification.json), [Hashes](../out/plugin-ui-validation/source-hashes.json) |
+
+The final [dialog screenshot](../out/plugin-ui-validation/verified-live/plugin-ui-services-01-shared-dialog-and-native-contributions.png)
+and [restored UI Lab](../out/plugin-ui-validation/verified-live/plugin-ui-services-02-ui-lab-ready.png)
+were visually inspected. Native header/footer items fit beside the existing controls, and the
+shared dialog remains legible over the themed example. Hidden-instance screenshots are not
+used as visual evidence. All instances use private state and were stopped afterward.
+
+Review found and fixed invocation-time manifest staleness, an overly short prompt-owner ID
+limit, and missing modal coordination with native Settings/shortcuts/menu commands. Remote
+pane headers now resolve and invoke contributions on their own daemon. Focused tests cover
+these boundaries, shared-state sequencing/reset, disposed iframe channels, input drafts,
+settings races, cancellation, queue limits and notification timers.
+
+The initial UI Lab run passed 23/26 checks. Its three failures were scenario assumptions:
+numeric drafts use a text input, and broad button selectors clicked the dialog/notification
+dismiss control. Corrected selectors and four additional modal checks produce the final
+30/30 run. The original [run](../out/plugin-ui-validation/live/results.json) is retained.
+
+The first full check caught an incomplete phone test runtime fixture and unnecessary enabled
+palette-row markup. Both were corrected. A later full check exposed an existing terminal
+test race: its wait accepted echoed input before the output line arrived. The test now waits
+for the actual shell output; the final full suite passes. The initial mixed regression run
+passed 60/61 checks because its first Markdown click did not retain iframe focus; command
+delivery still passed. A fresh onscreen repeat and the final combined live run both pass
+all six preview checks without changing that scenario or the preview implementation.
+
+This phase validates the complete automated suite, development builds and 91 distinct live
+scenario checks. Packaged-release and full UI-audit results above apply to the earlier phases;
+those larger batteries were not repeated for this follow-up.
+
+## PR publication validation (2026-09-10)
+
+The six implementation commits were rebased onto current main `92de0aa`, including its
+terminal WASM-instance fix. `git range-diff` confirms every implementation patch is unchanged.
+The four review layers are `feature/plugin-sidebar-modules` → `feature/plugin-ui-contracts`
+→ `feature/plugin-ui-host` → `feature/plugin-bundled-features`. The previously tested tip is
+retained locally as `backup/plugin-ui-before-pr-20260910`.
+
+The worktree's local Ghostty package was refreshed to `0.4.0-nex.10` after checking all 32
+tracked vendor files against the existing build's source. The installed bundle matches that
+artifact, and the terminal vendor guard passes in the complete suite.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,916 root tests and 868 shell tests, **7,784 total**. One existing optional database test is skipped. | [Check log](../out/plugin-pr-validation/check.log) |
+| Development builds | Daemon, client, CLI and shell builds pass. | [Build log](../out/plugin-pr-validation/build.log) |
+| Onscreen scenarios | UI Lab 30/30, replacement Sidebar Lab 30/30, Markdown/diff preview shortcuts 6/6. | [Live results](../out/plugin-pr-validation/live/results.json) |
+| Background regressions | Plugin workbench 22/22, remote plugins 12/12, swapped sidebars 11/11, native confirmation dialogs 10/10. | [Regression results](../out/plugin-pr-validation/regression/results.json) |
+| User smoke test | The user ran the isolated development instance and reported the features working. | Session feedback |
+
+All **121 live checks** passed on the first post-rebase run. This validates the integrated
+stack; the earlier sections preserve the original per-phase results and investigation history.
+The validation-record update is documentation only. No installed Kelpi state was migrated.

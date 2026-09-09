@@ -112,6 +112,11 @@ export function useAnyModalOpen(): boolean {
     );
 }
 
+/** Lets a shared prompt distinguish its own registration from another window modal. */
+export function useModalPresenceCount(): number {
+    return useSyncExternalStore(subscribe, modalPresenceCount, () => 0);
+}
+
 // ── the finer half: floating surfaces that register WHERE they are ──────────────────
 
 /** A viewport-space box in CSS pixels — the same space `getBoundingClientRect` reports in. */

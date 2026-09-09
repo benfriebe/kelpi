@@ -8,6 +8,20 @@ beforeEach(async () => { server = await startFakeServer(); home = scratchHome();
 afterEach(async () => { await server.close(); fs.rmSync(home, { recursive: true, force: true }); });
 
 describe('bundled plugin CLI', () => {
+    it('inspects complete contribution state as JSON through a read-only request and documents the action', async () => {
+        const contributions = [{ pluginID: 'sample.board', instanceID: 'E:2', sequence: 12, state: { context: { ready: true }, items: { 'sample.board.status': { text: 'Ready', badge: '2' } } } }];
+        server.respond(() => ({ lines: [{ ok: true, result: contributions }] }));
+        for (const args of [['contributions'], ['contributions', '--json']]) {
+            const result = await runCLI(['plugin', ...args], { port: server.port, cwd: home });
+            expect(result.code).toBe(0); expect(JSON.parse(result.stdout)).toEqual(contributions);
+        }
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'contributions', text: '{}' }, { command: 'plugin', action: 'contributions', text: '{}' }]);
+        const help = await runCLI(['plugin', '--help'], { port: server.port, cwd: home });
+        expect(help.code).toBe(0); expect(help.stdout).toContain('contributions [--json]');
+        const invalid = await runCLI(['plugin', 'contributions', '--args', '{"context":{"ready":false}}'], { port: server.port, cwd: home });
+        expect(invalid.code).toBe(1); expect(invalid.stderr).toContain('unexpected arguments');
+        expect(server.requests).toHaveLength(2);
+    });
     it('encodes namespaced commands and structured arguments without shell interpretation', async () => {
         server.respond(() => ({ lines: [{ ok: true, result: { answer: 42 } }] }));
         const result = await runCLI(['plugin', 'run', 'sample.board.run', '--args', '{"text":"$(literal) `literal`"}', '--workspace', 'workspace'], { port: server.port, cwd: home });

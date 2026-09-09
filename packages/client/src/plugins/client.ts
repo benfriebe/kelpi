@@ -11,6 +11,10 @@ export async function pluginRequest(runtime: KelpiRuntime, action: string, input
 const EMPTY: readonly PluginInfo[] = [];
 /** Per-runtime cache: remote daemons and independent windows never share installed plugins. */
 const caches = new WeakMap<KelpiRuntime, { plugins: readonly PluginInfo[]; daemonID: string | null; error: string | null; listeners: Set<() => void>; stop: () => void }>();
+/** Invocation-time read: plugin lifecycle broadcasts reach this cache before React commits. */
+export function getCurrentPlugins(runtime: KelpiRuntime): readonly PluginInfo[] {
+    return caches.get(runtime)?.plugins ?? EMPTY;
+}
 export function usePlugins(runtime: KelpiRuntime): { plugins: readonly PluginInfo[]; daemonID: string | null; error: string | null } {
     const [, update] = useState(0);
     useEffect(() => {

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI Lab</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body data-ready="false">
+  <header><div><p class="eyebrow">Kelpi plugin example</p><h1>UI Lab</h1></div><span id="count" class="count" aria-label="Counter">0</span></header>
+  <main>
+    <p class="intro">Change a live counter across Kelpi, then try the shared window controls.</p>
+    <p id="error" role="alert"></p>
+    <section aria-labelledby="contribution-heading">
+      <h2 id="contribution-heading">Live contributions</h2>
+      <p id="state-summary" role="status">Connecting…</p>
+      <div class="controls">
+        <button id="increment" type="button" disabled>Increment</button>
+        <button id="toggle-enabled" type="button" disabled>Disable actions</button>
+        <button id="toggle-visible" type="button" disabled>Hide items</button>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+      <details><summary>Current state and settings</summary><pre id="snapshot"></pre></details>
+    </section>
+    <section aria-labelledby="shared-heading">
+      <h2 id="shared-heading">Shared window controls</h2>
+      <p class="hint">These open in the Kelpi window. Escape cancels a prompt.</p>
+      <div class="examples">
+        <div><button id="pick" type="button">Choose a color</button><output id="pick-result" aria-label="Color picker result">Not opened</output></div>
+        <div><button id="input" type="button">Enter a label</button><output id="input-result" aria-label="Input result">Not opened</output></div>
+        <div><button id="dialog" type="button">Show dialog</button><output id="dialog-result" aria-label="Dialog result">Not opened</output></div>
+        <div><button id="notification" type="button">Show notification</button><output id="notification-result" aria-label="Notification result">Not opened</output></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

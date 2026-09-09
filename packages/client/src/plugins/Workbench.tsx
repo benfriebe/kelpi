@@ -1,3 +1,4 @@
+import { featureBindings, type BundledFeatureBinding } from '../features/feature';
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
@@ -10,6 +11,8 @@ import { usePlugins } from './client';
 import { contributedSlots, DEFAULT_SLOTS, MAX_CONTAINER_DEPTH, planComposedViews, readWorkbenchSelections, resolveSidebarViews, resolveSlot, selectWorkbenchView, slotViews, viewRegistry, type SidebarPlacement, type ViewContribution, type WorkbenchSelections } from './registry';
 import { renderRegisteredView, type ViewRenderContext, type ViewRenderers } from './renderers';
 import { PluginHostUIContext } from './host-ui';
+import type { PluginNavigation } from './navigation';
+import type { UIServiceModel } from './ui-services';
 
 export type WorkbenchSlotID = Exclude<PluginPlacement, 'pane'>;
 interface WorkbenchLayout {
@@ -21,6 +24,7 @@ interface WorkbenchLayout {
     activateTab(containerID: string, slotID: string): void;
 }
 interface Workbench extends WorkbenchLayout {
+    features: ReadonlyMap<string, BundledFeatureBinding>;
     runtime: KelpiRuntime;
     workspaceID?: string | undefined;
     chords: readonly string[];
@@ -60,8 +64,9 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
         }
     };
 }
-export function WorkbenchProvider(props: { layout: WorkbenchLayout; runtime: KelpiRuntime; workspaceID?: string | undefined; chords: readonly string[]; children: ReactNode }): ReactElement {
-    const value: Workbench = { ...props.layout, runtime: props.runtime, workspaceID: props.workspaceID, chords: props.chords };
+export function WorkbenchProvider(props: { layout: WorkbenchLayout; features?: readonly BundledFeatureBinding[]; navigation?: PluginNavigation | null; services?: UIServiceModel | null; runtime: KelpiRuntime; workspaceID?: string | undefined; chords: readonly string[]; children: ReactNode }): ReactElement {
+    const features = useMemo(() => featureBindings(props.features ?? []), [props.features]);
+    const value: Workbench = { features, ...props.layout, runtime: props.runtime, workspaceID: props.workspaceID, chords: props.chords };
     const request = (method: string, args: JsonObject): JsonValue => {
         const custom = contributedSlots(value.views);
         if (method === 'ui.getWorkbench') return {
@@ -85,7 +90,7 @@ export function WorkbenchProvider(props: { layout: WorkbenchLayout; runtime: Kel
         }
         throw new Error('Workbench UI method is not supported.');
     };
-    return <WorkbenchContext.Provider value={value}><PluginHostUIContext.Provider value={{ runtime: props.runtime, request }}>{props.children}</PluginHostUIContext.Provider></WorkbenchContext.Provider>;
+    return <WorkbenchContext.Provider value={value}><PluginHostUIContext.Provider value={{ runtime: props.runtime, navigation: props.navigation, services: props.services, request }}>{props.children}</PluginHostUIContext.Provider></WorkbenchContext.Provider>;
 }
 interface NativeRenderers {
     readonly adapters: ViewRenderers;
@@ -237,12 +242,14 @@ export function WorkbenchSidebar(props: {
     nativeViewID: 'kelpi.workspaces' | 'kelpi.inspector';
     onManagePlugins(): void;
     onClose?(): void;
-    children(picker: ReactNode): ReactNode;
+    children?(picker: ReactNode): ReactNode;
 }): ReactElement {
     const host = useWorkbench();
     const selected = host.sidebars[props.placement];
     const picker = <SidebarViewPicker placement={props.placement} compact={selected?.id === 'kelpi.workspaces'} onManagePlugins={props.onManagePlugins} />;
-    if (!selected?.pluginID) return <>{props.children(picker)}</>;
+    const native = (context: ViewRenderContext): ReactNode => props.children ? props.children(picker)
+        : host.features.get(props.nativeViewID)?.render({ ...context, side: props.placement === 'sidebar.primary' ? 'left' : 'right', viewPicker: picker });
+    if (!selected?.pluginID) return <>{native({ visible: true, trafficLightInset: 0 })}</>;
     return <div
         data-workbench-slot={props.placement}
         data-view-id={selected.id}
@@ -254,7 +261,7 @@ export function WorkbenchSidebar(props: {
             {props.onClose ? <button type="button" className="shrink-0 rounded p-1" aria-label={`Close ${props.placement === 'sidebar.primary' ? 'left' : 'right'} sidebar`} onClick={props.onClose} style={{ color: tokens.textSecondary }}><ChromeIcon name="clear" size={12} /></button> : null}
         </div>
         <div className="min-h-0 flex-1">
-            <NativeRendererScope selected={selected} adapters={{ [props.nativeViewID]: () => props.children(picker) }}><RegisteredView view={selected} path="root" /></NativeRendererScope>
+            <NativeRendererScope selected={selected} adapters={{ [props.nativeViewID]: native }}><RegisteredView view={selected} path="root" /></NativeRendererScope>
         </div>
     </div>;
 }

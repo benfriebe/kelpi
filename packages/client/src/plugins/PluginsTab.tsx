@@ -1,21 +1,65 @@
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { JsonObject, PluginInfo } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { pluginRequest, usePlugins } from './client';
 import { PlacementSettings, WorkbenchSlot } from './Workbench';
 import { PluginShortcuts } from './PluginShortcuts';
 import { PluginProviders } from './PluginProviders';
+import { pluginSettingsSession } from './settings';
 
-function PluginSettings(props: { plugin: PluginInfo; runtime: KelpiRuntime; report(error: unknown): void }): ReactElement {
-    const [values, setValues] = useState<JsonObject>({});
-    useEffect(() => { if (props.plugin.enabled) void pluginRequest(props.runtime, 'settings', { pluginID: props.plugin.manifest.id }).then(value => setValues(value as JsonObject), props.report); }, [props.runtime, props.plugin.revision, props.plugin.enabled]);
-    return <>{Object.entries(props.plugin.manifest.contributes.settings).map(([key, setting]) => <label key={key} className="flex items-center justify-between gap-2">{setting.title}<input aria-label={setting.title} disabled={!props.plugin.enabled} type={setting.type === 'boolean' ? 'checkbox' : setting.type === 'number' ? 'number' : 'text'}
-        {...(setting.type === 'boolean' ? { checked: Boolean(values[key] ?? setting.default) } : { value: String(values[key] ?? setting.default) })}
-        onChange={event => {
-            const value = setting.type === 'boolean' ? event.target.checked : setting.type === 'number' ? Number(event.target.value) : event.target.value;
-            setValues(current => ({ ...current, [key]: value }));
-            void pluginRequest(props.runtime, 'settings', { pluginID: props.plugin.manifest.id, key, value }).catch(props.report);
-        }} /></label>)}</>;
+/** Field drafts and writes belong to a particular installed instance, never a later reload. */
+export function PluginSettings(props: { plugin: PluginInfo; runtime: KelpiRuntime; report(error: unknown): void }): ReactElement {
+    const { runtime, plugin } = props;
+    const [, update] = useState(0);
+    const report = useRef(props.report); report.current = props.report;
+    const settings = useMemo(() => pluginSettingsSession(runtime, plugin), [runtime, plugin.manifest.id, plugin.revision, plugin.instanceID, plugin.enabled]);
+    const previous = useRef(settings);
+    const { state: session, changed, edit } = settings;
+    const definitions = plugin.manifest.contributes.settings;
+    useEffect(() => {
+        // A mounted owner changing is distinct from closing or switching Settings tabs.
+        if (previous.current !== settings) previous.current.retire();
+        previous.current = settings;
+        return settings.subscribe({ changed: () => update(value => value + 1), report: error => report.current(error) });
+    }, [settings]);
+    const groups = [
+        { id: '', title: 'General', description: undefined as string | undefined },
+        ...[...plugin.manifest.contributes.settingGroups ?? []].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id))
+    ];
+    return <div data-testid={`plugin-settings-${plugin.manifest.id}`} className="flex flex-col gap-3">
+        {groups.map(group => {
+            const fields = Object.entries(definitions).filter(([, setting]) => (setting.group ?? '') === group.id)
+                .sort(([a, first], [b, second]) => (first.order ?? 0) - (second.order ?? 0) || a.localeCompare(b));
+            if (!fields.length) return null;
+            return <fieldset key={group.id} className="flex min-w-0 flex-col gap-2" data-plugin-setting-group={group.id || 'general'}>
+                <legend className="mb-1 font-medium">{group.title}</legend>
+                {group.description ? <p className="opacity-70">{group.description}</p> : null}
+                {fields.map(([key, setting]) => {
+                    const id = `plugin-setting-${plugin.manifest.id}-${key}`, failure = session.errors.get(key);
+                    const value = session.drafts.get(key) ?? session.values[key] ?? setting.default;
+                    const disabled = !plugin.enabled || !session.loaded;
+                    const common = { id, 'aria-label': setting.title, disabled,
+                        'aria-invalid': failure ? true as const : undefined,
+                        'aria-describedby': [setting.description ? `${id}-description` : '', failure ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined,
+                        onFocus: () => { session.editing.add(key); },
+                        onBlur: () => { session.editing.delete(key); if (!session.writes.has(key) && !session.errors.has(key)) { session.drafts.delete(key); changed(); } },
+                        className: 'min-w-0 max-w-[60%] rounded border bg-transparent px-2 py-1' };
+                    return <div key={key} className="flex flex-col gap-1">
+                        <label htmlFor={id} className="flex items-center justify-between gap-2"><span>{setting.title}</span>
+                            {setting.enum ? <select {...common} value={String(value)} onChange={event => {
+                                const choice = setting.enum!.find(choice => String(choice) === event.target.value);
+                                if (choice !== undefined) edit(key, setting, typeof choice === 'number' ? String(choice) : choice);
+                            }}>{setting.enum.map(choice => <option key={String(choice)} value={String(choice)}>{String(choice)}</option>)}</select>
+                            : setting.type === 'boolean' ? <input {...common} type="checkbox" checked={Boolean(value)} onChange={event => edit(key, setting, event.target.checked)} />
+                            : <input {...common} type="text" {...(setting.type === 'number' ? { inputMode: 'decimal' as const } : {})} value={String(value)} onChange={event => edit(key, setting, event.target.value)} />}
+                        </label>
+                        {setting.description ? <p id={`${id}-description`} className="opacity-70">{setting.description}</p> : null}
+                        {failure ? <p id={`${id}-error`} role="alert">{failure}</p> : null}
+                    </div>;
+                })}
+            </fieldset>;
+        })}
+    </div>;
 }
 
 export function PluginsTab(props: { runtime: KelpiRuntime }): ReactElement {

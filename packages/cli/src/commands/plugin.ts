@@ -9,6 +9,7 @@ import { scaffoldPlugin } from './plugin-scaffold.js';
 export const pluginUsage = `Usage: kelpi plugin <action>
   init <directory> --id <namespaced-id> [--name <title>]
   list [--json]
+  contributions [--json]
   install <directory> --trust
   enable|disable|reload|remove|logs <plugin-id>
   open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
@@ -67,7 +68,7 @@ export async function handlePlugin(args: string[]): Promise<void> {
             if (key !== null) { input['key'] = key; input['value'] = JSON.parse(value!) as JsonObject; }
             input['pluginID'] = args.shift() ?? '';
         } else if (['enable', 'disable', 'reload', 'remove', 'logs'].includes(action)) input['pluginID'] = args.shift() ?? '';
-        else if (action !== 'list' && action !== 'watch' && action !== 'services') throw new Error(`unknown plugin action: ${action}`);
+        else if (action !== 'list' && action !== 'watch' && action !== 'services' && action !== 'contributions') throw new Error(`unknown plugin action: ${action}`);
         if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
         const payload = { command: 'plugin', action, text: JSON.stringify(pluginObject(input)) };
         if (action === 'watch') {

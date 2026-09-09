@@ -1,3 +1,10 @@
+import { UIServiceHost, useUIServices } from './plugins/UIServiceHost';
+import { PluginContributionItems } from './plugins/contributions-ui';
+import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
+import { bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
+import { createWorkspacesActions } from './features/workspaces-actions';
+import { usePluginNavigation } from './plugins/use-navigation';
+import { useRemoteWorkspaceSelection } from './app/remote-selection';
 import { PluginView } from './plugins/PluginView';
 import { WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout, type WorkbenchSlotID } from './plugins/Workbench';
 import { resolveSidebarViews, selectWorkbenchView } from './plugins/registry';
@@ -7,9 +14,9 @@ import { renderRegisteredView } from './plugins/renderers';
 /**
  * The assembled client (WP3.6).
  *
- * Every other module under `src/` is deliberately store-free and props-driven; this is the one
- * place where the socket, the mirror and the surfaces are wired to each other. The rules it
- * follows are the ones the other work packages were written against:
+ * The shell owns window layout, pane lifetimes and shared command routing. Bundled feature
+ * modules bind their own models, actions and view lifecycles to the workbench registry;
+ * chrome components remain props-driven. The assembly follows these rules:
  *
  *   - **The daemon is the app.** Nothing here mutates domain state. A gesture becomes a command
  *     (`CommandClient`), the daemon answers with a delta, the mirror advances, the UI re-renders.
@@ -41,7 +48,6 @@ import {
     syncedPaneIDs,
     type Pane,
     type PredefinedLayoutKind,
-    type WorkspaceColor,
     type WorkspaceState
 } from '@kelpi/daemon/store';
 import {
@@ -74,12 +80,9 @@ import {
     ChromeIcon,
     CommandPalette,
     ContextMenu,
-    DEFAULT_PROFILE_NAME,
     HelpOverlay,
     INSPECTOR_WIDTH_PX,
-    Inspector,
     QuitGate,
-    Sidebar,
     SidebarResizer,
     StatusFooter,
     ThemeProvider,
@@ -93,7 +96,6 @@ import {
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
-    defaultGroupName,
     flattenOver,
     hoverFill,
     isSidebarMounted,
@@ -121,10 +123,8 @@ import {
     type MenuItemSpec,
     type PaletteItem,
     type SidebarPhase,
-    type SidebarSelectionCommands,
     type StatusBarItem,
     type SystemStatsView,
-    type WorkspaceWorktreeRequest
 } from './chrome';
 import {
     COMMAND_PALETTE_COMMAND,
@@ -137,11 +137,8 @@ import {
     workspaceSelectionReport
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
-import { useGraft } from './app/graft';
-import { useInspectorData } from './app/inspector';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
-import { RemoteDaemonSections, type RemoteSelection } from './app/RemoteDaemonSections';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
 import { PhoneShell, phoneVisiblePaneIDs, usePhoneView } from './phone';
@@ -187,11 +184,8 @@ import {
     selectActiveWorkspace,
     selectActiveWorkspaceID,
     selectAgentSummary,
-    selectFilteredSidebarEntries,
     selectFocusedPaneID,
-    selectGroupForWorkspace,
     selectPane,
-    selectVisibleWorkspaceIDs,
     recentlyClosedCount,
     type KelpiRuntime,
     type Toast
@@ -395,16 +389,9 @@ function Shell(props: AppProps): ReactElement {
      * selection (`activateWorkspaceAndReveal`); a vanished daemon clears it below.
      */
     const remoteDaemonRuntimes = useRemoteDaemons(settings.remoteDaemons);
-    const [remoteSelection, setRemoteSelection] = useState<RemoteSelection | null>(null);
+    const { selection: remoteSelection, select: setRemoteSelection, activeRemote } = useRemoteWorkspaceSelection(remoteDaemonRuntimes);
     const remoteSelectionRef = useRef(remoteSelection);
     remoteSelectionRef.current = remoteSelection;
-    const activeRemote =
-        remoteSelection === null ? null : (remoteDaemonRuntimes.get(remoteSelection.daemon) ?? null);
-    useEffect(() => {
-        if (remoteSelection !== null && !remoteDaemonRuntimes.has(remoteSelection.daemon)) {
-            setRemoteSelection(null);
-        }
-    }, [remoteSelection, remoteDaemonRuntimes]);
 
     const [sidebarVisible, setSidebarVisible] = useState(true);
     /**
@@ -440,16 +427,10 @@ function Shell(props: AppProps): ReactElement {
         inspectorVisible ? 'open' : 'hidden'
     );
     const [terminalTheme, setTerminalTheme] = useState<TerminalTheme | undefined>(undefined);
-    /**
-     * Two pieces of purely client-local UI state that only assembly can own:
-     *   - which content pane was last asked to open its find bar, and how many times (the pane
-     *     re-opens on every bump, so ⌘F twice on the same pane still works);
-     *   - the workspace THIS client just created, scrolled into view once (§15).
-     */
+    /** The find bar reopens when its per-pane request sequence advances. */
     const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
-    const [scrollToWorkspaceID, setScrollToWorkspaceID] = useState<string | null>(null);
-    /** §WS-100's group half: a group this client just created is revealed by its header. */
-    const [scrollToGroupID, setScrollToGroupID] = useState<string | null>(null);
+    const workspacesLifecycle = useWorkspacesFeatureLifecycle();
+    const { setScrollToWorkspaceID, createSheetOpen, sidebarEscapeRef } = workspacesLifecycle;
     /**
      * §APP-037's second half: the forced `git status` a workspace switch owes.
      *
@@ -492,37 +473,12 @@ function Shell(props: AppProps): ReactElement {
         },
         [runtime]
     );
-    /**
-     * §SET-153 / §SET-144: the row the sidebar should open its inline rename field on, set by
-     * the `rename_workspace` and `new_group` keybindings (the sidebar owns the field itself).
-     * One-shot — the sidebar clears it through `onRenameRequestHandled`.
-     */
-    const [sidebarRenameRequest, setSidebarRenameRequest] = useState<{
-        kind: 'workspace' | 'group';
-        id: string;
-    } | null>(null);
-    /**
-     * §APP-018 / §WS-156: "raise the New Workspace sheet", set by ⌘N, by the Electron File ▸ New
-     * Workspace row, by the command palette and by the no-workspace empty state's Create button.
-     *
-     * The shipped app's ⌘N is `showNewWorkspaceSheet()` — a SHEET, not a create — and this is
-     * exactly that: `NewEntrySheet`, a modal over the window, the one place the port collects a
-     * name, a colour, a group, a profile and repositories in one submit (§WS-075). One-shot; the
-     * sidebar clears it through `onCreateRequestHandled`, and it carries a `seq` so pressing ⌘N
-     * again after cancelling is a NEW request rather than an unchanged prop the effect ignores.
-     */
-    const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{
-        kind: 'workspace' | 'group';
-        groupID: string | null;
-        seq: number;
-    } | null>(null);
-    /**
-     * Whether that sheet is on screen. It is a MODAL, so it is a whole-window fact rather than a
-     * sidebar one: it joins `modalOpen` (which parks a web pane's native view, since no z-index
-     * in this document can get above one) and the key dispatcher's overlay gate (so a ⌘D behind
-     * the sheet does not split a pane). The sidebar owns the sheet and reports the transition.
-     */
-    const [createSheetOpen, setCreateSheetOpen] = useState(false);
+    const uiServices = useUIServices();
+    const pluginNavigation = usePluginNavigation({
+        runtime, remotes: remoteDaemonRuntimes, selection: remoteSelection,
+        activateLocalWorkspace: activateWorkspaceAndReveal, selectRemoteWorkspace: setRemoteSelection
+    });
+
     /**
      * Where the terminal search's selected match sits, for the pane whose renderer has to scroll
      * to it. The search itself is DAEMON state (needle, total, selected all ride the workspace's
@@ -831,73 +787,15 @@ function Shell(props: AppProps): ReactElement {
 
     const workspace = useMemo(() => selectActiveWorkspace(kelpi), [kelpi]);
     const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
-    const filteredEntries = useMemo(() => selectFilteredSidebarEntries(kelpi), [kelpi]);
+    const workspacesModel = useWorkspacesFeatureModel(kelpi);
+    const inheritGroupID = workspacesModel.inheritGroupID;
     const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
-    /**
-     * SET-011: the group the New Workspace form preselects when it was not opened scoped to one
-     * — the active workspace's, while "Inherit group when creating a new workspace" is on
-     * (§WS-076).
-     *
-     * This is now the ONLY place the rule is applied. ⌘N used to carry its own copy of it,
-     * because ⌘N used to create a workspace outright with no sheet to preselect in; §APP-018
-     * gave it the sheet, so the rule lives where the picker the user can override it in is.
-     */
-    const inheritGroupID = useMemo(
-        () =>
-            !settings.general.inheritGroupOnNewWorkspace || workspace === null
-                ? null
-                : (selectGroupForWorkspace(kelpi, workspace.id)?.id ?? null),
-        [kelpi, settings.general.inheritGroupOnNewWorkspace, workspace]
-    );
-
-    /**
-     * §WS-137's data feed. The key is a signature of the workspace's associations, so a delta
-     * that moves a branch (a HEAD change the daemon's watcher noticed) re-reads git; the hook's
-     * own 30 s poll covers dirtiness that never touches HEAD.
-     */
-    const associationsKey = useMemo(
-        () =>
-            (workspace?.repoAssociations ?? [])
-                .map((association) => `${association.id}:${association.worktreePath}:${association.branchName ?? ''}`)
-                .join('|'),
-        [workspace]
-    );
-    const registryKey = useMemo(
-        () => daemon.state.repos.map((repo) => repo.id).join('|'),
-        [daemon.state.repos]
-    );
-    const inspectorData = useInspectorData({
+    const inspectorData = useInspectorFeature({
         commands,
         events: runtime.connection,
-        workspaceID: workspace?.id ?? null,
-        // §APP-071: the FOOTER reads the same associations for its `doc N +A -B`, so the feed
-        // runs whenever the active workspace has any — not only while the panel is open. With
-        // the panel shut it reads the daemon watcher's last known values rather than forcing a
-        // `git status` (`refreshOnRead`), so an always-visible footer costs no extra git.
-        enabled: inspectorVisible || associationsKey !== '',
-        refreshOnRead: inspectorVisible,
-        // §APP-037: …except on arrival. Activating a workspace — from the palette, ⌘1–9, a
-        // sidebar click, the status popover — forces one real `git status`, exactly as the Swift
-        // reducer's `.refreshGitStatus` does, so a switch never lands on a stale badge.
-        forceRefreshFor: gitRefreshRequest,
-        associationsKey,
-        registryKey
-    });
-
-    /**
-     * Graft (§GIT-035…§GIT-051). The daemon owns the engine and broadcasts `graft-changed` /
-     * `graft-orphans`; this hook keeps the client half — the optimistic `.starting` row, the
-     * `.error` placeholder, the swap prompt and the orphan list — and drives the WS verbs.
-     * Unconditional, not gated on the inspector being open: a `graft-changed` that arrives
-     * while the panel is closed must already be in state when it opens.
-     */
-    const graft = useGraft({
-        commands,
-        events: runtime.connection,
-        // Re-sync on (re)connect AND whenever the inspector opens: the second is when an
-        // interrupted graft in a repo registered since boot has to be able to surface
-        // (`graft-session-list --refresh`, `daemon/src/ws/graft.ts`).
-        syncKey: `${ui.connection}:${inspectorVisible ? 'open' : 'closed'}`
+        workspace,
+        repos: daemon.state.repos,
+        lifecycle: { visible: inspectorVisible, connection: ui.connection, forceRefreshFor: gitRefreshRequest }
     });
 
     const panes = workspace?.panes ?? EMPTY_PANES;
@@ -1307,37 +1205,6 @@ function Shell(props: AppProps): ReactElement {
     }, []);
 
     /**
-     * §WS-151 — File ▸ Select All Workspaces / Deselect All Workspaces.
-     *
-     * The sidebar fills this while it is mounted (`SidebarProps.selectionCommandsRef`), exactly
-     * as it fills §SET-186's Escape predicate: the multi-selection and the full workspace set
-     * (collapsed groups included) are both its own, and assembly's part is to hold the ref and
-     * ask.
-     *
-     * It is a ref-LIKE object rather than a `useRef` for one reason: Select All on a HIDDEN
-     * sidebar has to show the sidebar first, and the sidebar does not exist to be asked until
-     * React has committed that. Parking the request and letting the arriving handle drain it is
-     * deterministic where a `queueMicrotask` or a `setTimeout(0)` would be a race with the
-     * scheduler. The shipped app has no such problem — its selection is reducer state that
-     * exists whether or not anything is drawing it.
-     */
-    const pendingSelectAllRef = useRef(false);
-    const sidebarSelectionRef = useMemo<{ current: SidebarSelectionCommands | null }>(() => {
-        let handle: SidebarSelectionCommands | null = null;
-        return {
-            get current(): SidebarSelectionCommands | null {
-                return handle;
-            },
-            set current(next: SidebarSelectionCommands | null) {
-                handle = next;
-                if (next === null || !pendingSelectAllRef.current) return;
-                pendingSelectAllRef.current = false;
-                next.selectAll();
-            }
-        };
-    }, []);
-
-    /**
      * Every intent the UI can raise, bound once. Each reads the CURRENT mirror through
      * `store.getState()` rather than closing over a render's values, so the object is stable
      * and the key dispatcher / menus never go stale.
@@ -1357,18 +1224,6 @@ function Shell(props: AppProps): ReactElement {
             return runTask('Toggle markdown edit', content.setMode(paneID, pane.isEditing ? 'view' : 'edit'));
         };
 
-        /**
-         * §15's one-shot "scroll the new entry into view", plus the switch to it.
-         *
-         * The reply carries the id, so this client knows the row is ITS doing — a
-         * `workspace-created` delta caused by another client must not move this one's
-         * viewport. **Creating a workspace switches to it** (the Swift app's behaviour,
-         * app-state-core.md §3 `createWorkspace` → `activeWorkspaceID = new`), which is what
-         * makes "New Workspace, then type" work; without it the row appeared and the window
-         * stayed on the old workspace forever (run-B L3). The daemon reveals a create to every
-         * attached client as well (`handlers/app/workspaces.ts`) — this is the local, instant
-         * half, and the two are idempotent.
-         */
         /**
          * TERM-043's upload, factored out of `pasteImage` so #81's paste action can reach it
          * too: a clipboard holding a PNG and no text takes this route from both entry points.
@@ -1437,80 +1292,9 @@ function Shell(props: AppProps): ReactElement {
             }
         };
 
-        /**
-         * §WS-100: a group this client created is revealed by its header, the same one-shot the
-         * workspace create path uses. `run` cannot do it — the id is in the reply.
-         */
-        const runCreateGroup = (
-            promise: Promise<CommandReply>,
-            options: { readonly rename?: boolean } = {}
-        ): true => {
-            void promise.then(
-                (reply) => {
-                    if (!isOkReply(reply)) {
-                        notifyFailure('New group', replyError(reply));
-                        return;
-                    }
-                    const created = replyText(reply, 'group_id');
-                    if (created === undefined) return;
-                    setScrollToGroupID(created);
-                    // §WS-052 / §APP-019: the gestures that mint a PLACEHOLDER name drop
-                    // straight into inline rename on the header the reply named — the id
-                    // exists nowhere else, so this is the only place the request can be made.
-                    if (options.rename === true) {
-                        setSidebarVisible(true);
-                        setSidebarRenameRequest({ kind: 'group', id: created });
-                    }
-                },
-                (error: unknown) => {
-                    notifyFailure('New group', error instanceof Error ? error.message : String(error));
-                }
-            );
-            return true;
-        };
-
-        const runCreateWorkspace = (
-            promise: Promise<CommandReply>,
-            repoPaths: readonly string[] = []
-        ): true => {
-            void promise.then(
-                (reply) => {
-                    if (!isOkReply(reply)) {
-                        notifyFailure('New workspace', replyError(reply));
-                        return;
-                    }
-                    const created = replyText(reply, 'workspace_id');
-                    if (created !== undefined) {
-                        activateWorkspaceAndReveal(created);
-                        // §WS-075's Repositories section: one association per chosen repo,
-                        // pointing at the repo's own path, once the workspace exists. The
-                        // create verb carries no repo list (only `--worktree` does), so these
-                        // ride the same `add-repo-association` the inspector uses.
-                        for (const path of repoPaths) {
-                            void commands
-                                .addRepoAssociation({ workspaceID: created, path })
-                                .then((association) => {
-                                    if (!isOkReply(association)) {
-                                        notifyFailure('Add repository', replyError(association));
-                                    }
-                                })
-                                .catch((error: unknown) => {
-                                    notifyFailure(
-                                        'Add repository',
-                                        error instanceof Error ? error.message : String(error)
-                                    );
-                                });
-                        }
-                    }
-                },
-                (error: unknown) => {
-                    notifyFailure('New workspace', error instanceof Error ? error.message : String(error));
-                }
-            );
-            return true;
-        };
-
         return {
+            ...createInspectorActions({ commands, activeWorkspace, focusedPaneID: focused, run, refresh: inspectorData.refresh }),
+            ...createWorkspacesActions({ store, commands, run, notifyFailure, activateWorkspaceAndReveal, setSidebarVisible, lifecycle: workspacesLifecycle }),
             focusPane(paneID: string | null): boolean {
                 const id = activeWorkspaceID();
                 if (id === null) return false;
@@ -1527,39 +1311,6 @@ function Shell(props: AppProps): ReactElement {
                 const next = order[(((at < 0 ? 0 : at) + delta + order.length) % order.length)];
                 if (next === undefined) return false;
                 runtime.focusPane(current.id, next);
-                return true;
-            },
-
-            // §WS-100: the sidebar's own row/filter clicks land here, and every one of them
-            // queues the reveal — a row activated from the filter is usually somewhere the
-            // main list is not scrolled to.
-            activateWorkspace(workspaceID: string): boolean {
-                activateWorkspaceAndReveal(workspaceID);
-                return true;
-            },
-
-            /** ⌘1–9 (§WS-100). */
-            switchToIndex(index: number): boolean {
-                const id = selectVisibleWorkspaceIDs(store.getState())[index];
-                if (id === undefined) return false;
-                activateWorkspaceAndReveal(id);
-                return true;
-            },
-
-            switchRelative(delta: 1 | -1): boolean {
-                const ids = selectVisibleWorkspaceIDs(store.getState());
-                if (ids.length === 0) return false;
-                const at = ids.indexOf(activeWorkspaceID() ?? '');
-                // app-state-core.md §3.2: a no-op when the active workspace is not in the
-                // visible order (its group just got collapsed) or there is none (issue #57
-                // asc-06). Stepping from index 0 instead jumped to an unrelated row at the top
-                // of the sidebar.
-                if (at < 0) return false;
-                const id = ids[(at + delta + ids.length) % ids.length];
-                if (id === undefined) return false;
-                // §WS-100: next/previous workspace, which is exactly the case where the row
-                // being activated can be off the bottom of a long sidebar.
-                activateWorkspaceAndReveal(id);
                 return true;
             },
 
@@ -1988,259 +1739,8 @@ function Shell(props: AppProps): ReactElement {
                 return run('Restart agent', commands.restartPaneAgent({ paneID }));
             },
 
-            /**
-             * ⌘N — **open the New Workspace sheet** (§APP-018).
-             *
-             * The shipped app spends ⌘N on `showNewWorkspaceSheet()` (`NexCommands.swift:10-13`),
-             * which is a form: a name, a colour, a group, a profile and repositories, submitted
-             * once. This used to create a workspace outright, named by the daemon, with no way to
-             * say any of that — the create was there and the SHEET was not, which is what kept
-             * the item partial.
-             *
-             * The sheet is `chrome/NewWorkspaceSheet.tsx` ▸ `NewEntrySheet` — a MODAL centred over
-             * the window, which is how `ContentView.swift:289-294` presents it. The sidebar is
-             * still revealed first, and the reason is now the RESULT rather than the form: the
-             * created workspace's row is the confirmation the gesture worked, and a row that
-             * appears in a panel nobody can see confirms nothing. (It is also what mounts the
-             * sheet's owner — the sidebar raises it, since the sidebar is where every other route
-             * to it lives.) The footer button, the chevron's first row, the group menu's "New
-             * Workspace", File ▸ New Workspace, the palette and §WS-156's empty state all land on
-             * this one action, so there is a single sheet with a single set of rules.
-             *
-             * SET-011's group inheritance is preserved and moves INTO the sheet: the picker opens
-             * preselected on the active workspace's group (`inheritGroupID`, which the sidebar
-             * already reads), which is the preselection `NewWorkspaceSheet.swift:66` makes. The
-             * wire verb is untouched, so `kelpi workspace create` still lands at top level.
-             */
-            newWorkspace(): boolean {
-                setSidebarVisible(true);
-                setSidebarCreateRequest((previous) => ({
-                    kind: 'workspace',
-                    // null: the SHEET applies §SET-011 itself, through the `inheritGroupID`
-                    // prop, so scoping the request to a group here would override a user who
-                    // had turned inheritance off.
-                    groupID: null,
-                    seq: (previous?.seq ?? 0) + 1
-                }));
-                return true;
-            },
-
-            /**
-             * The New Workspace form's submit. Unlike ⌘N this carries an EXPLICIT group (the
-             * form's picker, itself preselected by the same inheritance rule), so "No group"
-             * is honoured rather than being re-inherited here.
-             *
-             * `options` is what the shipped sheet collects beside the name: the colour swatch,
-             * the profile, and the repositories to associate once the workspace exists
-             * (§WS-075). Every field is optional, so the older two-argument call sites are
-             * unchanged.
-             */
-            createWorkspace(
-                name: string,
-                groupID: string | null,
-                options: {
-                    color?: WorkspaceColor | undefined;
-                    profile?: string | null | undefined;
-                    repoPaths?: readonly string[] | undefined;
-                } = {}
-            ): boolean {
-                const trimmed = name.trim();
-                const repoPaths = options.repoPaths ?? [];
-                return runCreateWorkspace(
-                    commands.createWorkspace({
-                        ...(trimmed.length > 0 ? { name: trimmed } : {}),
-                        ...(groupID === null ? {} : { group: groupID }),
-                        ...(options.color === undefined ? {} : { color: options.color }),
-                        // `default` (or null) means "no assignment" — the daemon's own
-                        // normalization — so it is simply not sent.
-                        ...(options.profile === undefined ||
-                        options.profile === null ||
-                        options.profile === DEFAULT_PROFILE_NAME
-                            ? {}
-                            : { profile: options.profile })
-                    }),
-                    repoPaths
-                );
-            },
-
-            deleteWorkspace(
-                workspaceID: string,
-                options: { allowLast?: boolean } = {}
-            ): boolean {
-                // The sidebar runs its own confirmation first, which is the GUI's
-                // "delete anyway?" — so the command goes out forced, as the app's own
-                // delete path does once the user has said yes.
-                //
-                // `allowLast` defaults OFF, so the sidebar's Delete keeps the shipped app's
-                // `.disabled(store.workspaces.count <= 1)` rule; only the ⌘W gate passes it on
-                // (§WS-156).
-                return run(
-                    'Delete workspace',
-                    commands.deleteWorkspace({
-                        workspace: workspaceID,
-                        force: true,
-                        ...(options.allowLast === true ? { allowLast: true } : {})
-                    })
-                );
-            },
-
-            renameWorkspace(workspaceID: string, name: string): boolean {
-                const trimmed = name.trim();
-                if (trimmed.length === 0) return false;
-                return run('Rename workspace', commands.renameWorkspace({ workspaceID, name: trimmed }));
-            },
-
-            moveWorkspace(request: { workspaceID: string; groupID: string | null; index: number }): boolean {
-                return run(
-                    'Move workspace',
-                    commands.moveWorkspace({
-                        workspace: request.workspaceID,
-                        ...(request.groupID === null ? {} : { group: request.groupID }),
-                        index: request.index
-                    })
-                );
-            },
-
-            /** A multi-row drag: ONE atomic bulk move, never N `workspace-move`s (§5.5). */
-            moveWorkspaces(request: {
-                workspaceIDs: readonly string[];
-                groupID: string | null;
-                index: number;
-            }): boolean {
-                return run(
-                    'Move workspaces',
-                    commands.moveWorkspaces({
-                        workspaceIDs: request.workspaceIDs,
-                        groupID: request.groupID,
-                        index: request.index
-                    })
-                );
-            },
-
-            /** "Change Icon" (§5.6). `icon` is the flat DB token; `null` resets to the letter. */
-            setWorkspaceIcon(workspaceID: string, icon: string | null): boolean {
-                return run('Change icon', commands.setWorkspaceIcon({ workspaceID, icon }));
-            },
-
-            setGroupIcon(groupID: string, icon: string | null): boolean {
-                return run('Change icon', commands.setGroupIcon({ groupID, icon }));
-            },
-
-            /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
-            setGroupColor(groupID: string, color: WorkspaceColor | null): boolean {
-                return run('Group color', commands.setGroupColor({ groupID, color }));
-            },
-
-            toggleWorkspaceLabel(workspaceID: string, label: string, applied: boolean): boolean {
-                return run(
-                    'Label workspace',
-                    commands.labelWorkspace({
-                        workspace: workspaceID,
-                        op: applied ? 'add' : 'remove',
-                        values: [label]
-                    })
-                );
-            },
-
-            /** `color` is the New Group form's swatch; `null`/absent is its "None" (§WS-082). */
-            createGroup(name: string, color?: WorkspaceColor | null | undefined): boolean {
-                const trimmed = name.trim();
-                if (trimmed.length === 0) return false;
-                return runCreateGroup(
-                    commands.createGroup({
-                        name: trimmed,
-                        ...(color === undefined || color === null ? {} : { color })
-                    })
-                );
-            },
-
-            /**
-             * §SET-144 / §APP-019 / §WS-123 — `new_group` (⌘⇧G). The Swift menu item does not
-             * ask for a name: it mints `New Group` / `New Group 2` / … , drops straight into
-             * inline rename and queues the new header's scroll-into-view. Same here, so the
-             * keystroke path never opens the sidebar's New Group *form* (that stays the footer
-             * button's affordance) — and it goes through `runCreateGroup`, which owns both
-             * one-shots.
-             *
-             * The verb is `create-group-for-workspaces` **with no workspaces**, and that is not
-             * a workaround: both halves need the new group's id, and the id only exists in a
-             * reply. The wire's `group-create` is fire-and-forget (wire-protocol.md §7) and its
-             * ack carries nothing, so the previous version of this — a `.then` reading
-             * `reply['group_id']` off that ack — silently did neither the rename nor the reveal
-             * for every ⌘⇧G ever pressed. The audit's `workspace-edges` flow is what found it:
-             * it timed out waiting for a rename field that never opened.
-             */
-            newGroupWithRename(): boolean {
-                const existing = store.getState().daemon.state.groups.map((group) => group.name);
-                return runCreateGroup(
-                    commands.createGroupForWorkspaces({
-                        name: defaultGroupName(existing),
-                        workspaceIDs: []
-                    }),
-                    { rename: true }
-                );
-            },
-
-            /**
-             * §SET-153 — `rename_workspace` (⌘⇧R): begin inline rename of the ACTIVE workspace
-             * in the sidebar (the same field the row menu's "Rename…" opens).
-             */
-            beginRenameActiveWorkspace(): boolean {
-                const id = activeWorkspaceID();
-                if (id === null) return false;
-                setSidebarVisible(true);
-                setSidebarRenameRequest({ kind: 'workspace', id });
-                return true;
-            },
-
-            /**
-             * §WS-151 — File ▸ Select All Workspaces / Deselect All Workspaces.
-             *
-             * Menu-only in the shipped app: two plain `Button`s outside the binding map
-             * (`NexCommands.swift:49-57`), so there is no action name to bind and nothing here
-             * is reachable from the key dispatcher. Both open the sidebar first — a selection
-             * nobody can see is not a selection — and then run the sidebar's OWN closures, the
-             * same ones its context menu's rows run (§WS-053).
-             *
-             * A hidden sidebar has published no handle on the tick the menu row arrives, so
-             * Select All PARKS the request and the arriving handle drains it, rather than
-             * declining a click the user did make. Deselect All never needs that: an unmounted
-             * sidebar has no selection to clear.
-             */
-            selectAllWorkspaces(): boolean {
-                setSidebarVisible(true);
-                if (sidebarSelectionRef.current !== null) return sidebarSelectionRef.current.selectAll();
-                // Nothing to ask yet — the sidebar was hidden. It drains this the moment it
-                // publishes its handle (see `sidebarSelectionRef`'s setter).
-                pendingSelectAllRef.current = true;
-                return true;
-            },
-
-            deselectAllWorkspaces(): boolean {
-                return sidebarSelectionRef.current?.deselectAll() ?? false;
-            },
-
-            renameGroup(groupID: string, name: string): boolean {
-                const trimmed = name.trim();
-                if (trimmed.length === 0) return false;
-                return run('Rename group', commands.renameGroup({ group: groupID, newName: trimmed }));
-            },
-
-            deleteGroup(groupID: string, cascade: boolean): boolean {
-                return run('Delete group', commands.deleteGroup({ group: groupID, cascade }));
-            },
-
-            setGroupCollapsed(groupID: string, collapsed: boolean): boolean {
-                return run('Collapse group', commands.setGroupCollapsed({ groupID, collapsed }));
-            },
-
             togglePalette(): boolean {
                 store.getState().togglePalette();
-                return true;
-            },
-
-            toggleSidebar(): boolean {
-                setSidebarVisible((visibleNow) => !visibleNow);
                 return true;
             },
 
@@ -2475,206 +1975,8 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
 
-            // ── bulk workspace operations (§5.6's multi-select menu) ─────────────────
-            //
-            // Each is ONE command for the whole selection (§WS-056…§WS-060): N single-workspace
-            // commands would arrive as N deltas and could half-apply.
-
-            setWorkspaceColor(workspaceID: string, color: WorkspaceColor): boolean {
-                return run('Workspace color', commands.setBulkColor({ workspaceIDs: [workspaceID], color }));
-            },
-
-            setBulkColor(workspaceIDs: readonly string[], color: WorkspaceColor): boolean {
-                return run('Workspace color', commands.setBulkColor({ workspaceIDs, color }));
-            },
-
-            setBulkLabel(workspaceIDs: readonly string[], label: string, apply: boolean): boolean {
-                return run('Label workspaces', commands.setBulkLabel({ workspaceIDs, label, apply }));
-            },
-
-            createGroupForWorkspaces(
-                name: string,
-                workspaceIDs: readonly string[],
-                color?: WorkspaceColor | null | undefined
-            ): boolean {
-                const trimmed = name.trim();
-                if (trimmed.length === 0) return false;
-                return runCreateGroup(
-                    commands.createGroupForWorkspaces({
-                        name: trimmed,
-                        workspaceIDs,
-                        ...(color === undefined || color === null ? {} : { color })
-                    })
-                );
-            },
-
-            /**
-             * §WS-052 — a row's "Move to Group ▸ New Group…".
-             *
-             * The Swift sends ONE `createGroup` carrying `initialWorkspaceIDs: [workspaceID]`
-             * and `autoRename: true`; the port's equivalent is the `create-group-for-workspaces`
-             * verb (which is `create-group` WITH members, atomically) plus the reply-driven
-             * rename. A create followed by a move would show the row jumping twice and could
-             * half-apply, which is the whole reason that verb exists.
-             *
-             * The name is the same placeholder the ⌘⇧G path mints, so a second one is
-             * "New Group 2" rather than a duplicate-name refusal.
-             */
-            newGroupForWorkspace(workspaceID: string): boolean {
-                const existing = store.getState().daemon.state.groups.map((group) => group.name);
-                return runCreateGroup(
-                    commands.createGroupForWorkspaces({
-                        name: defaultGroupName(existing),
-                        workspaceIDs: [workspaceID]
-                    }),
-                    { rename: true }
-                );
-            },
-
-            /**
-             * "Delete N Workspaces…" after the sidebar's single confirmation. The confirmation
-             * IS the GUI's "delete anyway?", so each delete goes out forced — the same reasoning
-             * as the single-row delete above.
-             */
-            deleteWorkspaces(workspaceIDs: readonly string[]): boolean {
-                for (const workspaceID of workspaceIDs) {
-                    run('Delete workspaces', commands.deleteWorkspace({ workspace: workspaceID, force: true }));
-                }
-                return true;
-            },
-
-            // ── workspace inspector ─────────────────────────────────────────────────
-
-            setWorkspaceProfile(workspaceID: string, profile: string | null): boolean {
-                return run(
-                    'Workspace profile',
-                    commands.setWorkspaceProfile({
-                        workspace: workspaceID,
-                        ...(profile === null ? {} : { profile })
-                    })
-                );
-            },
-
-            /**
-             * The inspector's "plusminus": a diff pane for that repo path (§WS-141).
-             *
-             * The focused pane rides along as `pane_id` — the shipped app's `fromPaneID`. It is
-             * not decoration: the daemon routes an `open`/`diff` without one to
-             * `lastActiveWorkspaceID`, which a freshly booted daemon has not been told yet, and
-             * the pane would silently never appear.
-             */
-            openRepoDiff(repoPath: string): boolean {
-                // Anchor: the focused pane, else ANY pane of the workspace on screen. Without
-                // one the daemon falls back to `lastActiveWorkspaceID`, which it has not
-                // necessarily been told yet — and the pane would silently never appear.
-                const paneID = focused() ?? activeWorkspace()?.panes[0]?.id ?? null;
-                return run(
-                    'Open diff',
-                    commands.openDiff({ repoPath, ...(paneID === null ? {} : { paneID }) })
-                );
-            },
-
-            /**
-             * The inspector's "terminal": a shell at that path — a split of the focused pane
-             * (Shift = vertical, matching the shipped tooltip), or a first pane when the
-             * workspace has none.
-             */
-            openTerminalAt(repoPath: string, options: { vertical: boolean }): boolean {
-                const paneID = focused() ?? activeWorkspace()?.panes[0]?.id ?? null;
-                if (paneID === null) {
-                    const id = activeWorkspaceID();
-                    if (id === null) return false;
-                    return run('Open terminal', commands.createPane({ workspace: id, path: repoPath }));
-                }
-                return run(
-                    'Open terminal',
-                    commands.splitPane({
-                        paneID,
-                        direction: options.vertical ? 'vertical' : 'horizontal',
-                        path: repoPath
-                    })
-                );
-            },
-
-            /**
-             * The three inspector mutations that can FAIL in a way the user must see: they
-             * answer with the daemon's own message so the sheet stays open and says why
-             * (§WS-079/§WS-148), instead of closing behind a toast.
-             */
-            async addRepoAssociation(path: string): Promise<string | null> {
-                const id = activeWorkspaceID();
-                if (id === null) return 'no active workspace';
-                try {
-                    const reply = await commands.addRepoAssociation({ workspaceID: id, path });
-                    return isOkReply(reply) ? null : replyError(reply);
-                } catch (error) {
-                    return error instanceof Error ? error.message : String(error);
-                }
-            },
-
-            async addWorktree(request: WorkspaceWorktreeRequest): Promise<string | null> {
-                const id = activeWorkspaceID();
-                if (id === null) return 'no active workspace';
-                try {
-                    const reply = await commands.addWorktree({
-                        workspaceID: id,
-                        repoID: request.repoID,
-                        name: request.name,
-                        branch: request.branch,
-                        updateMain: request.updateMain
-                    });
-                    return isOkReply(reply) ? null : replyError(reply);
-                } catch (error) {
-                    return error instanceof Error ? error.message : String(error);
-                }
-            },
-
-            /**
-             * §WS-078: the New Workspace form's worktree route rides `workspace-create
-             * --worktree` — the CLI's own path, so sanitization, the branch default and
-             * `--update-main` all stay daemon-side. A failure comes back as text for the form.
-             */
-            async createWorkspaceWithWorktree(
-                name: string,
-                groupID: string | null,
-                worktree: WorkspaceWorktreeRequest,
-                repoPath: string,
-                extras: { color?: WorkspaceColor | undefined; profile?: string | null | undefined } = {}
-            ): Promise<string | null> {
-                try {
-                    const reply = await commands.createWorkspace({
-                        ...(name.trim().length > 0 ? { name: name.trim() } : {}),
-                        ...(groupID === null ? {} : { group: groupID }),
-                        ...(extras.color === undefined ? {} : { color: extras.color }),
-                        ...(extras.profile === undefined ||
-                        extras.profile === null ||
-                        extras.profile === DEFAULT_PROFILE_NAME
-                            ? {}
-                            : { profile: extras.profile }),
-                        repo: repoPath,
-                        worktree: worktree.name,
-                        branch: worktree.branch,
-                        updateMain: worktree.updateMain
-                    });
-                    if (!isOkReply(reply)) return replyError(reply);
-                    const created = replyText(reply, 'workspace_id');
-                    if (created !== undefined) activateWorkspaceAndReveal(created);
-                    return null;
-                } catch (error) {
-                    return error instanceof Error ? error.message : String(error);
-                }
-            },
-
-            removeRepoAssociation(associationID: string, deleteWorktree: boolean): boolean {
-                const id = activeWorkspaceID();
-                if (id === null) return false;
-                return run(
-                    deleteWorktree ? 'Remove worktree' : 'Remove repository',
-                    commands.removeRepoAssociation({ workspaceID: id, associationID, deleteWorktree })
-                );
-            }
         };
-    }, [activateWorkspaceAndReveal, commands, content, notifyFailure, run, runTask, runtime, store]);
+    }, [activateWorkspaceAndReveal, commands, content, inspectorData.refresh, notifyFailure, run, runTask, runtime, store]);
 
     /**
      * `act` reachable from effects that must not re-subscribe when it is rebuilt (the shell's
@@ -3167,7 +2469,6 @@ function Shell(props: AppProps): ReactElement {
      * place that knows both whether a selection exists and whether one of its own overlays is
      * up and should eat the key instead. Assembly's whole part is to hold the ref and ask.
      */
-    const sidebarEscapeRef = useRef<(() => boolean) | null>(null);
 
     /**
      * N14's named residual — ⌘W while a modal overlay owns the keyboard.
@@ -3210,6 +2511,8 @@ function Shell(props: AppProps): ReactElement {
         } else if (helpOpenRef.current) {
             setHelpOpen(false);
             handOff();
+        } else if (uiServices.getSnapshot().active) {
+            uiServices.answer(uiServices.getSnapshot().active!.id, null);
         } else {
             return false; // no overlay after all (a state change raced the keystroke)
         }
@@ -3220,7 +2523,7 @@ function Shell(props: AppProps): ReactElement {
          */
         shellClose.noteKeyboardClose();
         return true;
-    }, [handBackPaneCaret, store, shellClose]);
+    }, [handBackPaneCaret, store, shellClose, uiServices]);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@kelpi/core/config` resolves the same overrides the daemon parsed, and the
@@ -3239,7 +2542,7 @@ function Shell(props: AppProps): ReactElement {
                 store.getState().ui.palette.open ||
                 settingsOpenRef.current ||
                 helpOpenRef.current ||
-                createSheetOpenRef.current,
+                createSheetOpenRef.current || uiServices.getSnapshot().active !== null,
             // N14's residual: the one chord that guard does NOT hand to the overlay's text field.
             onCloseChordWhileModal: closeModalOverlay,
             // §1.7: while a REMOTE workspace fills the area, the local pane keymap stands
@@ -3269,7 +2572,7 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines, closeModalOverlay]);
+    }, [store, keybindLines, closeModalOverlay, uiServices]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
@@ -3282,6 +2585,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             // Both halves, like `createKeyDispatcher`'s `consume`: `preventDefault` alone stops
@@ -3294,7 +2598,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines]);
+    }, [keybindLines, uiServices]);
 
     /**
      * ⌘? / ⌘/ opens Help (APP-027). Same reasoning as ⌘, above: `HelpCommands` in the Swift app
@@ -3310,6 +2614,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Slash' || !event.metaKey || event.ctrlKey || event.altKey) return;
+            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             event.preventDefault();
@@ -3318,7 +2623,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines]);
+    }, [keybindLines, uiServices]);
 
     /**
      * The shell's native menu bar, arriving the long way round: shell → daemon → every client,
@@ -3332,6 +2637,8 @@ function Shell(props: AppProps): ReactElement {
             const windowID = message['windowID'];
             if (typeof windowID === 'string' && windowID !== shellWindowID) return;
             const command = message['command'];
+            // Native menu gestures obey the same prompt ownership as in-window shortcuts.
+            if (uiServices.getSnapshot().active && command !== RECOVER_INTERFACE_COMMAND && !(typeof command === 'string' && command.startsWith('web-chord:'))) return;
             if (command === 'help') setHelpOpen(true);
             else if (command === 'open-file') actRef.current.openFile();
             else if (command === 'settings') setSettingsTab((current) => current ?? DEFAULT_SETTINGS_TAB);
@@ -3421,7 +2728,7 @@ function Shell(props: AppProps): ReactElement {
             else if (typeof command === 'string') replayChordCommand(command);
         });
         return off;
-    }, [runtime, shellWindowID]);
+    }, [runtime, shellWindowID, uiServices]);
 
     // ── palette ─────────────────────────────────────────────────────────────────────
 
@@ -3465,14 +2772,22 @@ function Shell(props: AppProps): ReactElement {
             ...(globalTrigger ? chordKeysForTrigger(canonicalTriggerForPlatform(globalTrigger, /Mac|iPhone|iPad/.test(navigator.platform))) : [])
         ])].sort();
     }, [bindings, contentPaneChords, settings.general.globalHotkey]);
+    // Publish the assembly-owned surfaces so shared plugin prompts wait for their turn.
+    useModalPresence(settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen);
     const anyModalMounted = useAnyModalOpen();
     const pluginCommands = usePluginCommands(runtime, reservedPluginChords, () =>
         store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current ||
         createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
+    const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
+        const items = pluginCommands.items(placement, paneID);
+        return items.length ? <PluginContributionItems items={items} paneID={paneID} compact={placement === 'pane.header'}
+            execute={(_command, target, itemID) => { if (itemID) pluginCommands.runItem(placement, itemID, target); }} /> : null;
+    };
+
     const paletteCommands = useMemo<PaletteItem[]>(
         () => [
-            ...pluginCommands.commands.map(command => paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut)),
+            ...pluginCommands.menu('palette').map(command => ({ ...paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut), disabled: !command.enabled })),
             paletteCommand('cmd:plugins', 'gearshape', 'Plugins…', 'Install plugins and choose workbench views', () => openSettings('plugins')),
             paletteCommand(
                 'cmd:new-pane',
@@ -3626,15 +2941,6 @@ function Shell(props: AppProps): ReactElement {
 
     const bucketItems = useCallback(
         (agentBucket: AgentBucket): readonly StatusBarItem[] => statusItems(daemon.state.workspaces, agentBucket),
-        [daemon.state.workspaces]
-    );
-
-    /** WS-108's input: agents (visible AND parked panes) a workspace delete would terminate. */
-    const workspaceAgentCount = useCallback(
-        (workspaceID: string): number => {
-            const target = daemon.state.workspaces.find((candidate) => candidate.id === workspaceID);
-            return target === undefined ? 0 : activeAgentCount(target);
-        },
         [daemon.state.workspaces]
     );
 
@@ -3852,7 +3158,7 @@ function Shell(props: AppProps): ReactElement {
             label: 'Copy Working Directory',
             onSelect: () => act.copyWorkingDirectory(paneID)
         });
-        items.push(...pluginCommands.commands.filter(command => command.menu === 'pane' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run(paneID) })));
+        items.push(...pluginMenuItems(pluginCommands.menu('pane', paneID)));
         return items;
     }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace, pluginCommands.commands]);
 
@@ -3867,7 +3173,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
         const items: MenuItemSpec[] = [
-            ...pluginCommands.commands.filter(command => command.menu === 'workspace' || command.menu === 'both').map(command => ({ id: command.id, label: command.title, onSelect: () => command.run() })),
+            ...pluginMenuItems(pluginCommands.menu('workspace')),
             { id: 'plugins', label: 'Plugins…', onSelect: () => openSettings('plugins') },
             { id: 'settings', label: 'Settings…', onSelect: () => openSettings() },
             {
@@ -4341,7 +3647,19 @@ function Shell(props: AppProps): ReactElement {
     };
 
     return (
-        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords}>
+        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices}
+            features={[
+                bindWorkspacesFeature({
+                    model: workspacesModel, actions: act, lifecycle: workspacesLifecycle, store,
+                    repos: inspectorData.repos, remotes: remoteDaemonRuntimes, remoteSelection,
+                    selectRemote: setRemoteSelection, bucket, reportSelection: reportWorkspaceSelection,
+                    suppressDeleteConfirm: () => { settingsActions.setGeneralSetting('confirm-workspace-delete', 'false'); },
+                    openSettings: section => openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB),
+                    reportFailure: notifyFailure
+                }),
+                bindInspectorFeature({ model: inspectorData, actions: act, focusedPaneID,
+                    profiles: settings.profiles, labelPresets: daemon.state.labelPresets, bucket })
+            ]}>
         <div
             data-testid="kelpi-app"
             data-connection={ui.connection}
@@ -4438,6 +3756,7 @@ function Shell(props: AppProps): ReactElement {
             ) : (
             <>
             <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset}>{context => <TopBar
+                contributions={contributionItems('workspace.header')}
                 workspaceName={workspace?.name ?? null}
                 workspaceColor={workspace?.color}
                 panes={panes}
@@ -4537,101 +3856,7 @@ function Shell(props: AppProps): ReactElement {
                             right: sidebarSlide.panel.right
                         }}
                     >
-                <WorkbenchSidebar placement={workspacesPlacement} nativeViewID="kelpi.workspaces" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleSidebar}>{() => <Sidebar
-                    entries={filteredEntries}
-                    remoteDaemons={settings.remoteDaemons.map((daemon) => daemon.name)}
-                    onCreateRemoteGroup={(daemonName, name, color) => {
-                        const held = remoteDaemonRuntimes.get(daemonName);
-                        if (held === undefined) return;
-                        void held.runtime.commands.createGroup({ name, ...(color !== null ? { color } : {}) });
-                    }}
-                    trailingSections={
-                        <RemoteDaemonSections
-                            daemons={[...remoteDaemonRuntimes.values()]}
-                            selection={remoteSelection}
-                            onSelect={setRemoteSelection}
-                            bucket={bucket}
-                        />
-                    }
-                    activeWorkspaceID={workspace?.id ?? null}
-                    filter={ui.sidebarFilter}
-                    onFilterChange={(filter) => store.getState().setSidebarFilter(filter)}
-                    labelPresets={daemon.state.labelPresets}
-                    bucket={bucket}
-                    onActivateWorkspace={act.activateWorkspace}
-                    onToggleGroupCollapse={act.setGroupCollapsed}
-                    onRenameWorkspace={act.renameWorkspace}
-                    onDeleteWorkspace={act.deleteWorkspace}
-                    // WS-108: the sidebar's confirmation becomes the agent alert when the
-                    // workspace still has running agents and the daemon's setting is on.
-                    activeAgentCount={workspaceAgentCount}
-                    confirmDeleteWhenActive={settings.general.confirmWorkspaceDeleteWhenActive}
-                    onSuppressDeleteConfirm={() => {
-                        settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
-                    }}
-                    onToggleWorkspaceLabel={act.toggleWorkspaceLabel}
-                    onMoveWorkspace={act.moveWorkspace}
-                    onMoveWorkspaces={act.moveWorkspaces}
-                    onSetWorkspaceIcon={act.setWorkspaceIcon}
-                    onSetGroupIcon={act.setGroupIcon}
-                    // §WS-049 / §WS-065: the two row-menu submenus the port was missing.
-                    onSetWorkspaceProfile={act.setWorkspaceProfile}
-                    onSetGroupColor={act.setGroupColor}
-                    // SET-186 / APP-109: the sidebar publishes "did I consume this Escape?".
-                    escapeRef={sidebarEscapeRef}
-                    // §WS-151: …and its two selection verbs, for File ▸ Select/Deselect All.
-                    selectionCommandsRef={sidebarSelectionRef}
-                    // §WS-151's other direction: how big the selection is now, so the shell can
-                    // grey File ▸ Deselect All Workspaces while it is empty. Observer only —
-                    // the sidebar keeps owning the selection (no `selectedWorkspaceIDs` prop),
-                    // so nothing about the existing gesture changes.
-                    onSelectionChange={reportWorkspaceSelection}
-                    onRenameGroup={act.renameGroup}
-                    onDeleteGroup={act.deleteGroup}
-                    onCreateWorkspace={(name, groupID, worktree, extras) => {
-                        if (worktree === undefined) return act.createWorkspace(name, groupID, extras ?? {});
-                        const repo = inspectorData.repos.find((candidate) => candidate.id === worktree.repoID);
-                        if (repo === undefined) return 'that repository is no longer registered';
-                        return act.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, extras ?? {});
-                    }}
-                    onCreateGroup={act.createGroup}
-                    // §WS-075/§SET-214/SET-011: the form's Profile picker and its preselected
-                    // group. Both are assembly's to resolve — the sidebar renders them.
-                    profiles={settings.profiles.map((profile) => profile.name)}
-                    inheritGroupID={inheritGroupID}
-                    scrollToWorkspaceID={scrollToWorkspaceID}
-                    scrollToGroupID={scrollToGroupID}
-                    onScrollHandled={() => {
-                        setScrollToWorkspaceID(null);
-                        setScrollToGroupID(null);
-                    }}
-                    // §SET-153 / §SET-144: the keyboard's "start renaming this row".
-                    renameRequest={sidebarRenameRequest}
-                    onRenameRequestHandled={() => setSidebarRenameRequest(null)}
-                    // §APP-018 / §WS-156: ⌘N, File ▸ New Workspace, the palette and the
-                    // no-workspace empty state all open THIS form.
-                    createRequest={sidebarCreateRequest}
-                    onCreateRequestHandled={() => setSidebarCreateRequest(null)}
-                    // …and the sheet's own open/closed edge, for `modalOpen` and the key gate.
-                    onCreateSheetOpenChange={setCreateSheetOpen}
-                    onOpenSettings={(section) => {
-                        openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB);
-                    }}
-                    onSetWorkspaceColor={act.setWorkspaceColor}
-                    onSetBulkColor={act.setBulkColor}
-                    onSetBulkLabel={act.setBulkLabel}
-                    onCreateGroupForWorkspaces={act.createGroupForWorkspaces}
-                    // §WS-052: "Move to Group ▸ New Group…" — one gesture from a row to a new
-                    // group with that row already in it, then straight into inline rename.
-                    onCreateGroupWithWorkspace={act.newGroupForWorkspace}
-                    // §WS-004 / §WS-123: the footer chevron's "New Group" is ⌘⇧G's own gesture,
-                    // not the footer form — mint the placeholder, drop into inline rename,
-                    // reveal the header. Same closure the chord and File ▸ New Group run, so
-                    // all three routes land on one set of rules.
-                    onNewGroupWithRename={act.newGroupWithRename}
-                    onDeleteWorkspaces={act.deleteWorkspaces}
-                    repos={inspectorData.repos}
-                />}</WorkbenchSidebar>
+                <WorkbenchSidebar placement={workspacesPlacement} nativeViewID="kelpi.workspaces" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleSidebar} />
                     </div>
                     </div>
                     {/* §WS-002: the invisible 6 px handle straddling the sidebar's edge. It is
@@ -4699,7 +3924,8 @@ function Shell(props: AppProps): ReactElement {
                         // `/Users/…` path while the footer, describing the same pane, prints
                         // `~/…` (`PaneHeaderView.swift:503` abbreviates unconditionally).
                         homeDirectory={daemon.info?.home}
-                        headerCommands={pluginCommands.commands.filter(command => command.menu === 'pane.header')}
+                        headerCommandsFor={paneID => pluginCommands.menu('pane.header', paneID)}
+                        headerExtras={paneID => contributionItems('pane.header', paneID)}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}
@@ -4792,69 +4018,7 @@ function Shell(props: AppProps): ReactElement {
                                 right: inspectorSlide.panel.right
                             }}
                         >
-                <WorkbenchSidebar placement={inspectorPlacement} nativeViewID="kelpi.inspector" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleInspector}>{picker => <Inspector
-                    viewPicker={picker}
-                    side={sidebarsSwapped ? 'left' : 'right'}
-                    workspace={workspace}
-                    focusedPaneID={focusedPaneID}
-                    associations={inspectorData.associations}
-                    repos={inspectorData.repos}
-                    profiles={settings.profiles.map((profile) => profile.name)}
-                    labelPresets={daemon.state.labelPresets}
-                    bucket={bucket}
-                    refreshing={inspectorData.refreshing}
-                    onClose={act.toggleInspector}
-                    onRenameWorkspace={(name) => act.renameWorkspace(workspace.id, name)}
-                    onSetWorkspaceColor={(color) => act.setWorkspaceColor(workspace.id, color)}
-                    onSetProfile={(profile) => act.setWorkspaceProfile(workspace.id, profile)}
-                    onOpenDiff={act.openRepoDiff}
-                    onOpenTerminal={act.openTerminalAt}
-                    onRemoveAssociation={(associationID, deleteWorktree) => {
-                        act.removeRepoAssociation(associationID, deleteWorktree);
-                        // The removal lands as a delta; the git read is ours to re-run.
-                        inspectorData.refresh();
-                    }}
-                    onAddAssociation={async (path) => {
-                        const error = await act.addRepoAssociation(path);
-                        if (error === null) inspectorData.refresh();
-                        return error;
-                    }}
-                    /* §GIT-066 inside §GIT-073's picker: register what a folder holds, then
-                       re-read the registry so the new rows appear in the open sheet. */
-                    onScanForRepos={(path) => {
-                        void commands.scanRepos({ path }).then(() => {
-                            inspectorData.refresh();
-                        });
-                    }}
-                    onCreateWorktree={async (request) => {
-                        const error = await act.addWorktree(request);
-                        if (error === null) inspectorData.refresh();
-                        return error;
-                    }}
-                    onFocusPane={act.focusPane}
-                    onClosePane={act.closePane}
-                    /* graft: state from the hook, gestures straight into its controller. */
-                    graftSessions={graft.state.sessions}
-                    graftOrphans={graft.state.orphans}
-                    graftSwapPrompt={graft.state.swapPrompt}
-                    onToggleGraft={(association) => {
-                        void graft.controller.toggle({
-                            id: association.id,
-                            worktreePath: association.worktreePath,
-                            branch: association.branch
-                        });
-                    }}
-                    onConfirmGraftSwap={(prompt) => {
-                        void graft.controller.confirmSwap(prompt);
-                    }}
-                    onCancelGraftSwap={graft.controller.cancelSwap}
-                    onRestoreGraftOrphan={(orphan) => {
-                        void graft.controller.recoverOrphan(orphan);
-                    }}
-                    onDismissGraftOrphan={(orphan) => {
-                        void graft.controller.dismissOrphan(orphan);
-                    }}
-                />}</WorkbenchSidebar>
+                <WorkbenchSidebar placement={inspectorPlacement} nativeViewID="kelpi.inspector" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleInspector} />
                         </div>
                     </div>
                 </div>
@@ -4902,6 +4066,8 @@ function Shell(props: AppProps): ReactElement {
               */}
             <WorkbenchSlot placement="panel.bottom" />
             <WorkbenchSlot placement="statusbar"><StatusFooter
+                contributions={contributionItems('statusbar')}
+                contributionsKey={JSON.stringify(pluginCommands.items('statusbar'))}
                 summary={agentSummary}
                 focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
                 // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
@@ -4976,6 +4142,7 @@ function Shell(props: AppProps): ReactElement {
              * one, so a browser tab (which no shell will ever call into) draws nothing.
              */}
             <QuitGate />
+            {uiServices ? <UIServiceHost services={uiServices} /> : null}
 
             {helpOpen ? (
                 <HelpOverlay
@@ -5378,3 +4545,15 @@ function statusItems(workspaces: readonly WorkspaceState[], bucket: AgentBucket)
  * the caret nowhere. `focusPaneSurface` (app/pane-focus.ts) resolves the pane's marked surface
  * instead, which is the terminal host for a shell pane and the textarea for an editor.
  */
+
+/** Grouped extension menu sections retain their declared ordering and disabled state. */
+function pluginMenuItems(commands: readonly { id: string; title: string; group?: string; enabled: boolean; run(): unknown }[]): MenuItemSpec[] {
+    const items: MenuItemSpec[] = [];
+    let previous: string | undefined;
+    for (const command of commands) {
+        if (items.length && command.group !== previous) items.push({ id: `separator:${command.id}`, label: '', kind: 'separator' });
+        items.push({ id: command.id, label: command.title, disabled: !command.enabled, onSelect: () => { command.run(); } });
+        previous = command.group;
+    }
+    return items;
+}

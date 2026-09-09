@@ -5,7 +5,9 @@ import type { KelpiRuntime } from '../state';
 import { tokens } from '../chrome/tokens';
 import { pluginRequest, usePlugins } from './client';
 import { pluginDocument } from './document';
-import { PluginHostUIContext, requestHostUI, WORKBENCH_UI_METHODS } from './host-ui';
+import { PluginHostUIContext, requestHostUI, HOST_UI_METHODS } from './host-ui';
+import { createPluginNavigationFeed, type PluginNavigationFeed } from './navigation';
+import { WINDOW_UI_METHODS, type UIServiceScope } from './ui-services';
 
 export interface PluginViewProps {
     readonly runtime: KelpiRuntime;
@@ -33,6 +35,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const latest = useRef(props); latest.current = props;
     const hostUI = useContext(PluginHostUIContext);
     const latestHostUI = useRef(hostUI); latestHostUI.current = hostUI;
+    const navigation = hostUI?.runtime === runtime ? hostUI.navigation : undefined;
+    const services = hostUI?.runtime === runtime ? hostUI.services : undefined;
     const [documentHTML, setDocumentHTML] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
@@ -43,6 +47,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
         if (!plugin || unavailable || connection !== 'connected') { setDocumentHTML(''); return; }
         let disposed = false, failed = false, lease = '', outstanding = 0, sending = false;
         let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+        let navigationFeed: PluginNavigationFeed | undefined;
+        let uiScope: UIServiceScope | undefined;
         const events = new PluginEventBuffer();
         const drain = (): void => {
             if (sending || !port.current) return;
@@ -54,6 +60,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
         const fail = (error: unknown): void => {
             if (disposed || failed) return;
             failed = true; clearTimeout(readinessTimer); port.current?.close(); port.current = null;
+            navigationFeed?.dispose();
+            uiScope?.dispose();
             if (lease) { void pluginRequest(runtime, 'release', { lease }).catch(() => {}); lease = ''; }
             setError(error instanceof Error ? error.message : String(error));
         };
@@ -62,10 +70,14 @@ export function PluginView(props: PluginViewProps): ReactElement {
             if (disposed || failed || !lease || event.source !== frame.current?.contentWindow || event.data?.type !== 'kelpi-plugin-ready' || event.data.nonce !== nonce || port.current) return;
             clearTimeout(readinessTimer);
             const channel = new MessageChannel(); port.current = channel.port1;
+            try {
+                if (services) uiScope = services.createScope({ id: nonce, pluginID, pluginName: plugin.manifest.name });
+            } catch (error) { channel.port2.close(); fail(error); return; }
             channel.port1.onmessage = ({ data }) => {
                 if (disposed || failed || !pluginRecord(data)) return;
                 if (data['type'] === 'view-error') { fail(new Error(String(data['message'] ?? 'Plugin view failed').slice(0, 4096))); return; }
                 if (data['type'] === 'event-ack') { sending = false; drain(); return; }
+                if (data['type'] === 'navigation-ack') { navigationFeed?.ack(data['sequence']); return; }
                 if (data['type'] === 'focus') { if (latest.current.visible !== false && paneID && workspaceID) runtime.focusPane(workspaceID, paneID); return; }
                 if (data['type'] === 'key') {
                     if (latest.current.visible === false) return;
@@ -81,7 +93,11 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 outstanding += 1;
                 void (async () => {
                     const args = pluginObject(data['args'] ?? {});
-                    if ((WORKBENCH_UI_METHODS as readonly unknown[]).includes(data['method'])) return requestHostUI(latestHostUI.current, runtime, String(data['method']), args);
+                    if ((WINDOW_UI_METHODS as readonly string[]).includes(String(data['method']))) {
+                        if (!uiScope || latestHostUI.current?.runtime !== runtime || latestHostUI.current.services !== services) throw new Error('Window UI is unavailable for this daemon in this window.');
+                        return uiScope.request(String(data['method']), args);
+                    }
+                    if ((HOST_UI_METHODS as readonly unknown[]).includes(data['method'])) return requestHostUI(latestHostUI.current, runtime, String(data['method']), args);
                     if (data['method'] === 'ui.activateWorkspace' || data['method'] === 'ui.focusPane') {
                         const id = String(args['workspaceID']);
                         const workspace = runtime.store.getState().daemon.state.workspaces.find(workspace => workspace.id === id);
@@ -100,6 +116,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
             channel.port1.start();
             frame.current!.contentWindow!.postMessage({ type: 'kelpi-plugin-connect', nonce }, '*', [channel.port2]);
             contextUpdate(); drain();
+            if (navigation) navigationFeed = createPluginNavigationFeed(navigation, message => channel.port1.postMessage(message));
         };
         ownerWindow.addEventListener('message', handleReady);
         const offEvents = runtime.connection.on('message', message => { if (message['type'] === 'plugin-event') { events.push(message['event'] as unknown as PluginEvent); drain(); } });
@@ -113,8 +130,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
             setDocumentHTML(pluginDocument(String(attached['html']), url.href, String(attached['entry']), { nonce, context: attached['context']!, state: attached['state']!, stateVersion: attached['stateVersion']!, theme: readPluginTheme(), visible: latest.current.visible ?? true, chords: latest.current.visible === false ? [] : [...latest.current.claimedChords ?? []] }));
             readinessTimer = setTimeout(() => fail(new Error('Plugin view did not connect. Retry to reload it.')), 10_000);
         }).catch(fail);
-        return () => { disposed = true; clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
-    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt]);
+        return () => { disposed = true; navigationFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
+    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services]);
     useEffect(() => {
         if (props.visible === false) frame.current?.blur();
         port.current?.postMessage({ type: 'context', value: { visible: props.visible ?? true, chords: props.visible === false ? [] : props.claimedChords ?? [], ...(props.descriptor ? { state: props.descriptor.state, stateVersion: props.descriptor.stateVersion } : {}) } });

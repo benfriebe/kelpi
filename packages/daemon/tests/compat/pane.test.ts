@@ -61,10 +61,10 @@ describe.skipIf(!swiftCLIAvailable())('compat: kelpi pane', () => {
     }
 
     /** Poll a pane's captured screen until it contains `needle`. */
-    async function captureUntil(paneID: string, needle: string): Promise<string> {
+    async function captureUntil(paneID: string, needle: string | RegExp): Promise<string> {
         const result = await eventually(
             () => kelpi.run(['pane', 'capture', '--target', paneID, '--scrollback']),
-            (r) => r.code === 0 && r.stdout.includes(needle)
+            (r) => r.code === 0 && (typeof needle === 'string' ? r.stdout.includes(needle) : needle.test(r.stdout))
         );
         expect(result.code).toBe(0);
         return result.stdout;
@@ -137,7 +137,8 @@ describe.skipIf(!swiftCLIAvailable())('compat: kelpi pane', () => {
         expect(sent.bare).toBe(false);
         expect(sent.label).toBe('worker-1');
 
-        const screen = await captureUntil(paneID, 'compat-hello');
+        // Command echo can arrive before execution completes; wait for the output line.
+        const screen = await captureUntil(paneID, /^compat-hello$/m);
         // Both the echoed command line AND the shell's output — proof the bytes went through
         // the PTY and the daemon's VT saw the result.
         expect(screen).toContain('echo compat-hello');

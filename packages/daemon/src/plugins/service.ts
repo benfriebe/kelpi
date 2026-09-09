@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newUUID } from '@kelpi/core/codec';
-import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest } from '@kelpi/protocol';
+import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -40,6 +40,7 @@ export interface PluginChannel extends Partial<PluginOperationChannel> {
     observe?(event: JsonObject): void;
 }
 
+const contributionEventName = 'plugin.contributions.changed';
 const failure = (error: unknown): string => error instanceof Error ? error.message : String(error);
 function text(value: unknown, field: string): string {
     if (typeof value !== 'string' || !value || value.length > 8192) throw new Error(`missing or invalid ${field}`);
@@ -64,6 +65,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly terminalSubs = new Map<string, { pluginID: string; paneID: string; lease?: string }>();
     private readonly watcherReplies = new Set<ReplyHandle>();
     private readonly serviceSelections = new Map<string, string>();
+    private readonly contributionStates = new Map<string, { readonly state: PluginContributionState; readonly sequence: number }>();
     private readonly builtinServices = new Map<string, BuiltinPluginService>();
     private readonly serviceListeners = new Set<(changed: readonly string[]) => void>();
     private serviceIdentities = new Map<string, string>();
@@ -143,7 +145,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         // A transition-time attach can fail before the backend is ready. A fresh instance
         // identity makes every host retry once the completed lifecycle transaction publishes.
         this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
-        this.changed(); this.startEligible();
+        this.changed();
+        // Activation may publish before the transaction advances its final instance ID.
+        // Re-publish that complete state against the now-current generation.
+        this.publishContributions(id);
+        if (!this.installations.has(id)) this.contributionStates.delete(id);
+        this.startEligible();
     }
     start(): void {
         if (this.started || this.closed) return;
@@ -153,6 +160,20 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private changed(): void {
         this.options.broadcast({ type: 'plugins-changed', plugins: this.list() as unknown as JsonValue, epoch: this.epoch, daemonID: this.daemonID });
         this.notifyServicesChanged();
+    }
+    private contributionInfo(id: string): PluginContributionInfo {
+        const current = this.contributionStates.get(id);
+        return { pluginID: id, instanceID: `${this.epoch}:${this.generations.get(id) ?? 0}`, sequence: current?.sequence ?? 0,
+            state: current?.state ?? { context: {}, items: {} } };
+    }
+    private publishContributions(id: string, state: PluginContributionState = this.contributionStates.get(id)?.state ?? { context: {}, items: {} }): void {
+        this.contributionStates.set(id, { state, sequence: this.sequence + 1 });
+        this.emit(contributionEventName, pluginJSON(this.contributionInfo(id)), id);
+    }
+    /** Complete, ordered snapshots of available plugins; never persists author UI state. */
+    contributions(): PluginContributionInfo[] {
+        return this.list().filter(plugin => plugin.enabled && plugin.status !== 'failed' && !this.changing.has(plugin.manifest.id))
+            .map(plugin => pluginJSON(this.contributionInfo(plugin.manifest.id)) as unknown as PluginContributionInfo);
     }
     private persist(): void { if (this.registryError) throw new Error(this.registryError); this.writeJSON(path.join(this.directory, 'installed.json'), [...this.installations.values()]); }
     private writeJSON(file: string, value: unknown): void {
@@ -221,7 +242,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (!this.installations.has(manifest.id) && this.installations.size >= 100) throw new Error('at most 100 plugins can be installed');
         const claims = (manifest: PluginManifest): string[] => [manifest.id, ...manifest.contributes.views.map(entry => entry.id), ...manifest.contributes.commands.map(entry => entry.id),
             ...(manifest.contributes.containers ?? []).flatMap(entry => [entry.id, ...entry.slots.map(slot => slot.id)]),
-            ...(manifest.contributes.hooks ?? []).map(entry => entry.id), ...(manifest.contributes.services ?? []).map(entry => entry.id), ...(manifest.contributes.providers ?? []).map(entry => entry.id)];
+            ...(manifest.contributes.hooks ?? []).map(entry => entry.id), ...(manifest.contributes.services ?? []).map(entry => entry.id), ...(manifest.contributes.providers ?? []).map(entry => entry.id),
+            ...(manifest.contributes.menus ?? []).map(entry => entry.id), ...(manifest.contributes.items ?? []).map(entry => entry.id), ...(manifest.contributes.settingGroups ?? []).map(entry => entry.id)];
         const incoming = new Set(claims(manifest));
         for (const installed of this.installations.values()) if (installed.manifest.id !== manifest.id) {
             const collision = claims(installed.manifest).find(id => incoming.has(id));
@@ -301,6 +323,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (this.running.get(id) !== runtime) return;
             this.running.delete(id);
             if (!runtime.stopping) { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.errors.set(id, error.message); this.log(id, error.message); }
+            this.publishContributions(id, { context: {}, items: {} });
             if (!runtime.stopping) void this.stopDependents(id);
             for (const operation of this.operations.get(id) ?? []) operation.abort();
             this.operations.delete(id);
@@ -599,6 +622,22 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (this.closed || !item.enabled) throw new Error('plugin is not enabled');
         const problem = this.dependencyProblem(id); if (problem) throw new Error(problem);
         const args = pluginObject(raw ?? {});
+        if (method === 'contributions.get' || method === 'contributions.update') {
+            if (this.errors.has(id)) throw new Error('plugin contributions are unavailable until reload');
+            // Old activated backends cannot write during their replacement. A new backend
+            // may seed state from activate() before its ready message completes the change.
+            if (this.changing.has(id) && this.running.get(id)?.activated !== false) throw new Error('plugin is changing; retry the operation');
+            if (operationScope().signal?.aborted) throw new Error('plugin invocation cancelled');
+            if (lease) {
+                const view = this.leases.get(lease);
+                if (!view || view.pluginID !== id || view.revision !== item.revision || view.expires < Date.now()) throw new Error('plugin view access expired');
+            }
+            const current = this.contributionInfo(id).state;
+            if (method === 'contributions.get') return pluginJSON(current);
+            const next = patchPluginContributionState(item.manifest, current, args);
+            if (JSON.stringify(current) !== JSON.stringify(next)) this.publishContributions(id, next);
+            return pluginJSON(next);
+        }
         if (method === 'state.snapshot') return { epoch: this.epoch, sequence: this.sequence, state: serializeState(this.options.store.getState()) };
         if (method === 'app.settings.get') {
             if (!this.options.applicationSettings) throw new Error('application settings are unavailable');
@@ -637,14 +676,28 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const next = pluginObject({ ...this.storage(id, 'storage'), [key]: args['value'] });
             this.writeJSON(path.join(this.directory, 'data', id, 'storage.json'), next); return null;
         }
-        if (method === 'settings.get') return { ...Object.fromEntries(Object.entries(item.manifest.contributes.settings).map(([key, setting]) => [key, setting.default])), ...this.storage(id, 'settings') } as JsonObject;
+        if (method === 'settings.get') {
+            const stored = this.storage(id, 'settings');
+            return Object.fromEntries(Object.entries(item.manifest.contributes.settings).map(([key, setting]) => {
+                // A new manifest can narrow choices/ranges. Retain the persisted file, but
+                // expose its valid default until the user supplies a compatible value.
+                try { return [key, pluginSettingValue(setting, stored[key])]; }
+                catch { return [key, setting.default]; }
+            })) as JsonObject;
+        }
         if (method === 'settings.set') {
             const key = text(args['key'], 'key'); const setting = item.manifest.contributes.settings[key];
-            if (!setting || typeof args['value'] !== setting.type) throw new Error('invalid plugin setting');
-            this.writeJSON(path.join(this.directory, 'data', id, 'settings.json'), pluginObject({ ...this.storage(id, 'settings'), [key]: args['value'] }));
-            this.emit('settings.changed', { key, value: args['value']! }, id); return null;
+            if (!setting) throw new Error('invalid plugin setting');
+            const value = pluginSettingValue(setting, args['value']);
+            this.writeJSON(path.join(this.directory, 'data', id, 'settings.json'), pluginObject({ ...this.storage(id, 'settings'), [key]: value }));
+            this.emit('settings.changed', { key, value }, id); return null;
         }
-        if (method === 'events.emit') return this.emit(`${id}.${text(args['name'], 'event name')}`, pluginJSON(args['data'] ?? null), id) as unknown as JsonValue;
+        if (method === 'events.emit') {
+            const name = `${id}.${text(args['name'], 'event name')}`;
+            // This host event also falls inside a valid plugin namespace.
+            if (name === contributionEventName) throw new Error(`plugin event name is reserved: ${name}`);
+            return this.emit(name, pluginJSON(args['data'] ?? null), id) as unknown as JsonValue;
+        }
         if (method === 'commands.execute') return this.operation(id, lease, signal => inOperationScope({ ...operationScope(), signal }, () => this.invoke(text(args['command'], 'command'), pluginObject(args['args'] ?? {}), context)));
         if (method === 'services.list') return this.services();
         if (method === 'services.select') return this.selectService(args);
@@ -748,6 +801,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (this.closed) throw new Error('plugin service is stopped');
         if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1 };
         if (action === 'list') { if (this.registryError) throw new Error(this.registryError); return this.list() as unknown as JsonValue; }
+        if (action === 'contributions') return this.contributions() as unknown as JsonValue;
         if (action === 'services') return this.services();
         if (action === 'service-call') return this.callService(input, context);
         if (action === 'service-select') return this.selectService(input);
@@ -820,6 +874,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private async stopPlugin(id: string, cascade = true): Promise<void> {
         if (cascade) await this.stopDependents(id);
         this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
+        this.publishContributions(id, { context: {}, items: {} });
         for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
         for (const [key, sub] of this.terminalSubs) if (sub.pluginID === id) this.terminalSubs.delete(key);
         for (const operation of this.operations.get(id) ?? []) operation.abort(); this.operations.delete(id);
@@ -840,6 +895,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.operations.clear();
         await this.mutation;
         await Promise.all([...this.running.keys()].map(id => this.stopPlugin(id)));
+        this.contributionStates.clear();
         if (this.temporary) fs.rmSync(this.directory, { recursive: true, force: true });
     }
 }

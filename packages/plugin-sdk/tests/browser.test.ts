@@ -4,6 +4,41 @@ import { describe, expect, it, vi } from 'vitest';
 import { KelpiError, type ViewAPI } from '../index.js';
 
 describe('injected browser SDK', () => {
+    it('keeps interactive requests alive beyond the ordinary RPC deadline', async () => {
+        vi.useFakeTimers();
+        try {
+            const events = new Map<string, (...args: any[]) => void>();
+            const parent = { postMessage: vi.fn() };
+            const port = { start: vi.fn(), postMessage: vi.fn(), onmessage: (_event: any): void | Promise<void> => {} };
+            const context = vm.createContext({
+                __KELPI_VIEW__: { nonce: 'prompt', state: {}, stateVersion: 1, context: { daemonID: 'D' } },
+                parent, TextEncoder, setTimeout, clearTimeout, console,
+                document: { documentElement: { style: { setProperty: vi.fn() } } },
+                addEventListener: (name: string, listener: (...args: any[]) => void) => events.set(name, listener),
+                removeEventListener: (name: string) => events.delete(name),
+            });
+            const shared = fs.readFileSync(new URL('../api.js', import.meta.url), 'utf8').replace(/^export /gm, '');
+            vm.runInContext(`(()=>{${shared}\n${fs.readFileSync(new URL('../browser.js', import.meta.url), 'utf8')}})()`, context);
+            const api = (context as typeof context & { kelpi: ViewAPI }).kelpi;
+            events.get('message')?.({ source: parent, data: { type: 'kelpi-plugin-connect', nonce: 'prompt' }, ports: [port] });
+            const settled = vi.fn();
+            const prompts = Promise.all([
+                api.ui.showQuickPick({ title: 'Pick', items: [{ id: 'one', label: 'One' }] }),
+                api.ui.showInput({ title: 'Name' }),
+                api.ui.showDialog({ title: 'Confirm', message: 'Continue?', actions: [{ id: 'yes', label: 'Yes' }] }),
+                api.ui.showNotification({ message: 'Done' })
+            ]).then(value => { settled(value); return value; });
+            const ordinary = api.workspaces.list().catch(error => error);
+            await vi.advanceTimersByTimeAsync(36_000);
+            expect(await ordinary).toMatchObject({ code: 'TRANSPORT_ERROR', message: 'Kelpi call timed out' });
+            expect(settled).not.toHaveBeenCalled();
+            const calls = port.postMessage.mock.calls.map(([message]) => message).filter(message => message.type === 'call' && message.method.startsWith('ui.show'));
+            expect(calls.map(message => message.method)).toEqual(['ui.showQuickPick', 'ui.showInput', 'ui.showDialog', 'ui.showNotification']);
+            for (const [index, message] of calls.entries()) await port.onmessage({ data: { type: 'reply', id: message.id, result: ['one', 'Late name', 'yes', null][index] } });
+            expect(await prompts).toEqual(['one', 'Late name', 'yes', null]);
+        } finally { vi.useRealTimers(); }
+    });
+
     it('shares the typed facade and waits for the private host channel', async () => {
         const events = new Map<string, (...args: any[]) => void>();
         const parent = { postMessage: vi.fn() };

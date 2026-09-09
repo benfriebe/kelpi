@@ -1,4 +1,6 @@
 import { PluginView } from '../plugins/PluginView';
+import { PluginContributionItems } from '../plugins/contributions-ui';
+import { usePluginCommands } from '../plugins/commands';
 /**
  * A REMOTE daemon's workspace, rendered in this window (multi-daemon groups, §1.7).
  *
@@ -27,8 +29,14 @@ export interface RemoteWorkspaceViewProps {
     readonly workspaceID: string;
 }
 
+const NO_WINDOW_CHORDS: readonly string[] = [];
+const blockWindowShortcuts = (): boolean => true;
+
 export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactElement {
     const { runtime, workspaceID } = props;
+    // These controls belong to the remote pane. The primary shell owns window shortcuts,
+    // top/status bars and shared prompts, so this host never dispatches a window shortcut.
+    const contributions = usePluginCommands(runtime, NO_WINDOW_CHORDS, blockWindowShortcuts);
     const workspace = useStore(runtime.store, (state) =>
         state.daemon.state.workspaces.find((entry) => entry.id === workspaceID)
     );
@@ -94,6 +102,12 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             panes={workspace.panes}
             focusedPaneID={focusedPaneID}
             zoomedPaneID={workspace.zoomedPaneID ?? null}
+            headerCommandsFor={paneID => contributions.menu('pane.header', paneID)}
+            headerExtras={paneID => {
+                const items = contributions.items('pane.header', paneID);
+                return items.length ? <PluginContributionItems items={items} paneID={paneID} compact
+                    execute={(_command, target, itemID) => { if (itemID) contributions.runItem('pane.header', itemID, target); }} /> : null;
+            }}
             renderPane={renderPane}
             onFocusPane={(paneID) => runtime.focusPane(workspaceID, paneID)}
             onClosePane={(paneID) => void runtime.commands.closePane({ paneID })}

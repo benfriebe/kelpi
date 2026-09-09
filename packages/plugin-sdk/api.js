@@ -110,6 +110,7 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         commands: Object.freeze({ execute: (command, args = {}) => call('commands.execute', { command, args }) }),
         storage: Object.freeze({ get: key => call('storage.get', { key }), set: async (key, value) => { await call('storage.set', { key, value }); } }),
         settings: Object.freeze({ get: () => call('settings.get'), set: async (key, value) => { await call('settings.set', { key, value }); } }),
+        contributions: Object.freeze({ get: () => call('contributions.get'), update: patch => call('contributions.update', patch) }),
         files: Object.freeze({
             read: path => call('files.read', { path }),
             write: async (path, text) => { await call('files.write', { path, text }); },

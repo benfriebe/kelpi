@@ -149,6 +149,13 @@ backend API. `api.onContext(listener)` delivers the initial view environment aft
 then changes to workspace context, theme, visibility and saved state. It returns a disposer that
 also cancels queued callbacks; hidden retained tabs do not relay host keyboard shortcuts or focus.
 
+`api.contributions.get/update` reads and atomically patches the current plugin instance's
+volatile context and native item overrides. Browser views also have `ui.showQuickPick`,
+`ui.showInput`, `ui.showDialog` and `ui.showNotification`, returning the user's choice or null
+on cancellation. These prompts belong to their attached view and hosting window. See the
+[UI guide](../../docs/plugin-ui.md), [types](ui.d.ts), and [UI Lab](../../examples/plugins/ui-lab)
+for conditions, grouped settings, scope and lifetime rules.
+
 ```sh
 kelpi plugin services
 kelpi plugin service-call kelpi.files read --args '{"path":"/tmp/example.txt"}'

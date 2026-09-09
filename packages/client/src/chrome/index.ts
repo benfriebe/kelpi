@@ -403,6 +403,7 @@ export {
     UNMEASURED_OVERLAY,
     useAnyModalOpen,
     useModalPresence,
+    useModalPresenceCount,
     useOverlayPresence,
     useOverlayRects,
     type OverlayHandle,

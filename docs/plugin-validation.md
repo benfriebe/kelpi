@@ -312,3 +312,27 @@ all six preview checks without changing that scenario or the preview implementat
 This phase validates the complete automated suite, development builds and 91 distinct live
 scenario checks. Packaged-release and full UI-audit results above apply to the earlier phases;
 those larger batteries were not repeated for this follow-up.
+
+## PR publication validation (2026-09-10)
+
+The six implementation commits were rebased onto current main `92de0aa`, including its
+terminal WASM-instance fix. `git range-diff` confirms every implementation patch is unchanged.
+The four review layers are `feature/plugin-sidebar-modules` → `feature/plugin-ui-contracts`
+→ `feature/plugin-ui-host` → `feature/plugin-bundled-features`. The previously tested tip is
+retained locally as `backup/plugin-ui-before-pr-20260910`.
+
+The worktree's local Ghostty package was refreshed to `0.4.0-nex.10` after checking all 32
+tracked vendor files against the existing build's source. The installed bundle matches that
+artifact, and the terminal vendor guard passes in the complete suite.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full typechecks and tests | `pnpm check` passes: 6,916 root tests and 868 shell tests, **7,784 total**. One existing optional database test is skipped. | [Check log](../out/plugin-pr-validation/check.log) |
+| Development builds | Daemon, client, CLI and shell builds pass. | [Build log](../out/plugin-pr-validation/build.log) |
+| Onscreen scenarios | UI Lab 30/30, replacement Sidebar Lab 30/30, Markdown/diff preview shortcuts 6/6. | [Live results](../out/plugin-pr-validation/live/results.json) |
+| Background regressions | Plugin workbench 22/22, remote plugins 12/12, swapped sidebars 11/11, native confirmation dialogs 10/10. | [Regression results](../out/plugin-pr-validation/regression/results.json) |
+| User smoke test | The user ran the isolated development instance and reported the features working. | Session feedback |
+
+All **121 live checks** passed on the first post-rebase run. This validates the integrated
+stack; the earlier sections preserve the original per-phase results and investigation history.
+The validation-record update is documentation only. No installed Kelpi state was migrated.

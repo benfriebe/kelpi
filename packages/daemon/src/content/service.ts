@@ -20,14 +20,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { pluginJSON } from '@kelpi/protocol';
+
 import { createGitService } from '../git/index.js';
+import type { BuiltinServiceHost } from '../plugins/builtin-services.js';
 import type { DomainStore } from '../seams.js';
 import { findPaneAnywhere } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, Pane } from '../store/types.js';
 import {
     DEFAULT_DIFF_FONT_SIZE,
-    gitFailureText,
-    renderDiffDocument
+    gitFailureText
 } from './diff.js';
 import { createEditorBuffers, type EditorBuffers, type EditorTarget } from './editor.js';
 import {
@@ -37,9 +39,9 @@ import {
 } from './html.js';
 import {
     DEFAULT_MARKDOWN_FONT_SIZE,
-    fileLoadErrorMarkdown,
-    renderMarkdownDocument
+    fileLoadErrorMarkdown
 } from './markdown.js';
+import { CONTENT_RENDER_SERVICE, CONTENT_RENDER_VERSION, contentRenderHTML, renderContentDocument, type ContentRenderArgs } from './render-service.js';
 import { watchFile, type FileWatcher } from './watcher.js';
 
 export type ContentPaneType = 'markdown' | 'diff' | 'scratchpad';
@@ -109,6 +111,8 @@ export interface ContentServiceOptions {
     readonly reattachDelayMs?: number | undefined;
     /** `false` disables file watching entirely (tests / headless batch use). */
     readonly watch?: boolean | undefined;
+    /** Lazy because content is composed before the plugin supervisor. */
+    readonly services?: (() => BuiltinServiceHost | undefined) | undefined;
 }
 
 export interface ContentService {
@@ -133,6 +137,10 @@ export interface ContentService {
     assetPath(paneID: string, relativePath: string): string | null;
     /** Re-render every live entry against a new ghostty background (§3.8 theme change). */
     setAppearance(appearance: ContentAppearance): void;
+    /** Provider selection, availability, or generation changed; source and dirty buffers stay. */
+    invalidateRenderer(): void;
+    /** Git provider changed; reload only existing diff entries, never open unobserved panes. */
+    invalidateGit(): void;
     /** Shutdown: write every dirty buffer synchronously (§4.2 quit flush, incl. scratchpads). */
     flushSync(): void;
     dispose(): void;
@@ -164,6 +172,11 @@ interface Entry {
      * finish last. Cleared when the run that owns it settles.
      */
     diffRun: AbortController | null;
+    /** Retires disk reads before newer source, edit intent, or entry ownership can change. */
+    markdownGeneration: number;
+    renderGeneration: number;
+    renderRun: AbortController | null;
+    rendering: Promise<boolean> | null;
     readonly listeners: Set<ContentListener>;
 }
 
@@ -231,23 +244,68 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     // ── rendering ───────────────────────────────────────────────────────────
 
-    const render = (entry: Entry): void => {
+    const cancelRender = (entry: Entry): void => {
+        entry.renderGeneration += 1;
+        entry.renderRun?.abort();
+        entry.renderRun = null;
+    };
+
+    const render = (entry: Entry): boolean | Promise<boolean> => {
+        cancelRender(entry);
+        if (disposed || entries.get(entry.paneID) !== entry) return false;
         if (entry.type === 'scratchpad') {
             entry.html = null;
-            return;
+            return true;
         }
-        const base = assetBaseFor(entry);
-        entry.html =
-            entry.type === 'markdown'
-                ? renderMarkdownDocument(entry.content, {
-                      backgroundColor: backgroundColor(),
-                      baseFontSize: entry.fontSize,
-                      ...(base !== null ? { baseHref: base } : {})
-                  })
-                : renderDiffDocument(entry.content, {
-                      backgroundColor: backgroundColor(),
-                      baseFontSize: entry.fontSize
-                  });
+        const args: ContentRenderArgs = { kind: entry.type, source: entry.content, backgroundColor: backgroundColor(), fontSize: entry.fontSize, assetBase: assetBaseFor(entry) };
+        const bundled = (): true => { entry.html = renderContentDocument(args); return true; };
+        const host = options.services?.();
+        if (!host?.hasSelectedProvider(CONTENT_RENDER_SERVICE, CONTENT_RENDER_VERSION)) return bundled();
+        const input = { service: CONTENT_RENDER_SERVICE, version: CONTENT_RENDER_VERSION, method: 'render', args: { ...args } };
+        const fallback = (error: unknown): true => {
+            report(error, `content renderer ${entry.paneID}; using bundled renderer`);
+            return bundled();
+        };
+        // Native documents are not truncated to the plugin transport limit. Rendering is pure,
+        // so an oversized request or failed provider can safely use the complete native source.
+        try { pluginJSON(input); } catch (error) { return fallback(error); }
+        const run = new AbortController();
+        const generation = entry.renderGeneration;
+        const context = { daemonID: host.daemonID, workspaceID: entry.workspaceID, paneID: entry.paneID };
+        entry.renderRun = run;
+        const current = (): boolean => !disposed && entries.get(entry.paneID) === entry && entry.renderGeneration === generation && !run.signal.aborted;
+        let onAbort: () => void;
+        const cancelled = new Promise<false>(resolve => { onAbort = () => resolve(false); run.signal.addEventListener('abort', onAbort, { once: true }); });
+        const work = Promise.resolve().then(async () => {
+            if (!current()) return false;
+            const result = await host.callService(input, context, run.signal);
+            if (!current()) return false;
+            entry.html = contentRenderHTML(pluginJSON(result));
+            return true;
+        }).catch((error: unknown) => current() ? fallback(error) : false);
+        const rendering = Promise.race([work, cancelled]).finally(() => {
+            run.signal.removeEventListener('abort', onAbort);
+            if (entry.renderRun === run) entry.renderRun = null;
+            if (entry.rendering === rendering) entry.rendering = null;
+        });
+        entry.rendering = rendering;
+        return rendering;
+    };
+
+    /** Keep synchronous native updates synchronous; external output publishes only when current. */
+    const renderAndEmit = (entry: Entry): void => {
+        const result = render(entry);
+        const generation = entry.renderGeneration;
+        if (typeof result === 'boolean') { if (result) emit(entry); }
+        else void result.then(applied => { if (applied && entry.renderGeneration === generation) emit(entry); });
+    };
+
+    const awaitRendering = async (entry: Entry): Promise<void> => {
+        while (entry.rendering && !disposed && entries.get(entry.paneID) === entry) await entry.rendering;
+    };
+
+    const assertLive = (entry: Entry): void => {
+        if (disposed || entries.get(entry.paneID) !== entry) throw new Error('content pane was closed while loading');
     };
 
     // ── the edit buffer ─────────────────────────────────────────────────────
@@ -266,11 +324,11 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         onSaved: (paneID, text) => {
             const entry = entries.get(paneID);
             if (entry === undefined) return;
+            cancelMarkdown(entry);
             entry.content = text;
             entry.loaded = true;
             entry.error = null;
-            render(entry);
-            emit(entry);
+            renderAndEmit(entry);
             releaseIfIdle(entry);
         },
         onSaveFailed: (paneID, error) => {
@@ -290,26 +348,46 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     // ── loading ─────────────────────────────────────────────────────────────
 
-    const loadMarkdown = async (entry: Entry): Promise<void> => {
+    const cancelMarkdown = (entry: Entry): void => {
+        entry.markdownGeneration += 1;
+    };
+
+    /** A disk read can finish after an edit, rescope, or close; it may then write nothing. */
+    const loadMarkdown = async (entry: Entry): Promise<boolean> => {
+        cancelMarkdown(entry);
+        const generation = entry.markdownGeneration;
         const filePath = entry.filePath;
-        if (filePath === null) {
-            entry.content = '';
-            entry.loaded = false;
-            entry.error = 'markdown pane has no file path';
-            return;
+        const mode = entry.mode;
+        const editing = findPaneAnywhere(store.getState(), entry.paneID)?.pane.isEditing;
+        const current = (): boolean => {
+            if (disposed || entries.get(entry.paneID) !== entry ||
+                entry.markdownGeneration !== generation || entry.filePath !== filePath ||
+                entry.mode !== mode || editor.isDirty(entry.paneID)) return false;
+            const found = findPaneAnywhere(store.getState(), entry.paneID);
+            return found?.pane.type === 'markdown' && found.pane.filePath === filePath &&
+                found.pane.isEditing === editing;
+        };
+        if (!current()) return false;
+        let content = '';
+        let loaded = false;
+        let error: string | null = 'markdown pane has no file path';
+        if (filePath !== null) {
+            try {
+                content = await fs.promises.readFile(filePath, 'utf8');
+                loaded = true;
+                error = null;
+            } catch (cause) {
+                // §3.11: the failure is rendered AS markdown, only if this read still owns it.
+                error = messageOf(cause);
+                content = fileLoadErrorMarkdown(filePath, error);
+            }
         }
-        try {
-            entry.content = await fs.promises.readFile(filePath, 'utf8');
-            entry.loaded = true;
-            entry.error = null;
-        } catch (error) {
-            // §3.11: the failure is rendered AS markdown (a blockquote), not as an error page.
-            const message = messageOf(error);
-            entry.content = fileLoadErrorMarkdown(filePath, message);
-            entry.loaded = false;
-            entry.error = message;
-        }
+        if (!current()) return false;
+        entry.content = content;
+        entry.loaded = loaded;
+        entry.error = error;
         editor.seed(entry.paneID, targetOf(entry), entry.content);
+        return true;
     };
 
     /** §CONT-107: kill whatever `git diff` is still running for this pane. */
@@ -363,14 +441,14 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (buffered === undefined) editor.seed(entry.paneID, targetOf(entry), entry.content);
     };
 
-    /** False only when a diff load was superseded (§CONT-107): nothing was written. */
+    /** A superseded disk/Git load writes nothing and must not render or announce a result. */
     const load = async (entry: Entry, pane: Pane): Promise<boolean> => {
-        if (entry.type === 'markdown') await loadMarkdown(entry);
-        else if (entry.type === 'diff') {
+        if (entry.type === 'markdown') {
+            if (!(await loadMarkdown(entry))) return false;
+        } else if (entry.type === 'diff') {
             if (!(await loadDiff(entry))) return false;
         } else loadScratchpad(entry, pane);
-        render(entry);
-        return true;
+        return await render(entry);
     };
 
     // ── watching ────────────────────────────────────────────────────────────
@@ -404,13 +482,13 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     /** §3.11: byte-identical content is a no-op (no re-render, no scroll flicker on `touch`). */
     const reloadFromDisk = async (entry: Entry): Promise<boolean> => {
-        if (disposed || !entries.has(entry.paneID)) return false;
+        if (disposed || entries.get(entry.paneID) !== entry || entry.mode === 'edit') return false;
         const before = entry.content;
-        await loadMarkdown(entry);
+        if (!(await loadMarkdown(entry))) return false;
         if (entry.content === before) return false;
-        render(entry);
-        emit(entry);
-        return true;
+        const applied = await render(entry);
+        if (applied) emit(entry);
+        return applied;
     };
 
     // ── entry lifecycle ─────────────────────────────────────────────────────
@@ -432,6 +510,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             changed = true;
         }
         if (entry.filePath !== pane.filePath) {
+            cancelMarkdown(entry);
             entry.filePath = pane.filePath;
             changed = true;
         }
@@ -453,11 +532,15 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 applied = result;
             })
             .finally(() => {
-                entry.loading = null;
+                if (entry.loading === loading) entry.loading = null;
             });
         entry.loading = loading;
         await loading;
         return applied;
+    };
+
+    const awaitLoading = async (entry: Entry): Promise<void> => {
+        while (entry.loading && !disposed && entries.get(entry.paneID) === entry) await entry.loading;
     };
 
     const ensure = async (paneID: string): Promise<Entry> => {
@@ -465,7 +548,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (existing !== undefined) {
             // A concurrent first-subscribe may still be reading the file; never hand back a
             // half-built entry.
-            if (existing.loading !== null) await existing.loading;
+            await awaitLoading(existing);
+            assertLive(existing);
             const { pane, workspaceID } = locate(paneID);
             if (sync(existing, pane, workspaceID)) {
                 stopWatch(existing);
@@ -500,10 +584,16 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             watcher: null,
             loading: null,
             diffRun: null,
+            markdownGeneration: 0,
+            renderGeneration: 0,
+            renderRun: null,
+            rendering: null,
             listeners: new Set<ContentListener>()
         };
         entries.set(paneID, entry);
         await runLoad(entry, pane);
+        await awaitLoading(entry);
+        assertLive(entry);
         return entry;
     };
 
@@ -519,7 +609,11 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         // Kill the read for the OLD scope BEFORE awaiting it: its answer is already wrong, and
         // waiting for a big `git diff` would hold the rescope open for no reason.
         cancelDiff(entry);
-        if (entry.loading !== null) await entry.loading;
+        cancelMarkdown(entry);
+        cancelRender(entry);
+        // Disk reads cannot be interrupted here; their generation guard permits the new
+        // scope to load immediately without waiting for the retired file read.
+        if (entry.type !== 'markdown' && entry.loading !== null) await entry.loading;
         if (disposed || entries.get(paneID) !== entry) return;
         const found = findPaneAnywhere(store.getState(), paneID);
         if (found === null || !CONTENT_PANE_TYPES.has(found.pane.type)) return;
@@ -533,8 +627,11 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     /** Drop an entry once nothing watches it AND its buffer holds nothing unsaved. */
     function releaseIfIdle(entry: Entry): void {
+        if (entries.get(entry.paneID) !== entry) return;
         if (entry.listeners.size > 0) return;
         stopWatch(entry);
+        cancelMarkdown(entry);
+        cancelRender(entry);
         if (editor.isDirty(entry.paneID)) return;
         cancelDiff(entry); // §CONT-107: nothing is watching, so nothing wants the answer.
         editor.drop(entry.paneID);
@@ -544,11 +641,13 @@ export function createContentService(options: ContentServiceOptions): ContentSer
     const forget = (paneID: string): void => {
         const entry = entries.get(paneID);
         if (entry === undefined) return;
+        cancelMarkdown(entry);
         // The pane is gone: save what the buffer still holds, then release everything.
         editor.forget(paneID);
         stopWatch(entry);
         // §CONT-107 (the Swift view's `deinit`): a pane that closed mid-`git diff` kills it.
         cancelDiff(entry);
+        cancelRender(entry);
         entry.listeners.clear();
         entries.delete(paneID);
     };
@@ -575,8 +674,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 const size = event.pane.markdownFontSize;
                 if (size > 0 && size !== entry.fontSize) {
                     entry.fontSize = size;
-                    render(entry);
-                    emit(entry);
+                    renderAndEmit(entry);
                 }
                 /*
                  * §CONT-106 — the pane's SCOPE moved under a live subscription.
@@ -605,11 +703,15 @@ export function createContentService(options: ContentServiceOptions): ContentSer
     const service: ContentService = {
         async state(paneID) {
             const entry = await ensure(paneID);
+            await awaitRendering(entry);
+            assertLive(entry);
             return snapshot(entry);
         },
 
         async subscribe(paneID, listener) {
             const entry = await ensure(paneID);
+            await awaitRendering(entry);
+            assertLive(entry);
             entry.listeners.add(listener);
             startWatch(entry);
             let released = false;
@@ -629,6 +731,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             if (entry.type !== 'markdown') {
                 throw new Error(`pane '${paneID}' is a ${entry.type} pane and has no edit mode`);
             }
+            cancelMarkdown(entry);
             if (entry.mode === mode) return snapshot(entry);
 
             if (mode === 'view') {
@@ -652,6 +755,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 await reloadFromDisk(entry);
                 startWatch(entry);
             }
+            await awaitRendering(entry);
             emit(entry);
             return snapshot(entry);
         },
@@ -662,7 +766,9 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             if (entry.type === 'markdown' && entry.mode !== 'edit') {
                 throw new Error(`pane '${paneID}' is not in edit mode`);
             }
+            cancelMarkdown(entry);
             entry.content = text;
+            cancelRender(entry);
             // Subscribers are notified on SAVE, not per keystroke: the debounced write is what
             // other clients follow (port note 7), and the typist already has the text.
             editor.set(paneID, targetOf(entry), text);
@@ -671,8 +777,10 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
         async save(paneID) {
             const entry = await ensure(paneID);
+            cancelMarkdown(entry);
             editor.flush(paneID);
             if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save content');
+            await awaitRendering(entry);
             return snapshot(entry);
         },
 
@@ -684,8 +792,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 // text it would be comparing against is the WINNER's, not its own.
                 const applied = await loadDiff(entry);
                 if (applied && entry.content !== before) {
-                    render(entry);
-                    emit(entry);
+                    const applied = await render(entry);
+                    if (applied) emit(entry);
                 }
                 return snapshot(entry);
             }
@@ -705,9 +813,9 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 paneID,
                 size
             });
-            // `dispatch` is synchronous and this service subscribes to the store, so by the time
-            // it returns the `pane-upserted` handler above has already re-rendered and emitted;
-            // the snapshot below is therefore the post-change one, not a stale read.
+            // Native rendering is synchronous. A selected external renderer must finish the
+            // new font-size generation before this command replies with its document.
+            await awaitRendering(entry);
             return snapshot(entry);
         },
 
@@ -743,8 +851,25 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         setAppearance(next) {
             appearance = next;
             for (const entry of entries.values()) {
-                render(entry);
-                emit(entry);
+                renderAndEmit(entry);
+            }
+        },
+
+        invalidateRenderer() {
+            for (const entry of entries.values()) renderAndEmit(entry);
+        },
+
+        invalidateGit() {
+            for (const entry of entries.values()) {
+                if (entry.type !== 'diff') continue;
+                const found = findPaneAnywhere(store.getState(), entry.paneID);
+                if (!found || found.pane.type !== 'diff') continue;
+                cancelDiff(entry);
+                cancelRender(entry);
+                sync(entry, found.pane, found.workspaceID);
+                void runLoad(entry, found.pane).then(applied => {
+                    if (applied && !disposed && entries.get(entry.paneID) === entry) emit(entry);
+                }).catch((error: unknown) => report(error, `content Git provider refresh ${entry.paneID}`));
             }
         },
 
@@ -760,6 +885,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 stopWatch(entry);
                 // §CONT-107: shutdown is a teardown too — no child outlives the service.
                 cancelDiff(entry);
+                cancelMarkdown(entry);
+                cancelRender(entry);
                 entry.listeners.clear();
             }
             entries.clear();

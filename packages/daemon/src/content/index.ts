@@ -87,6 +87,8 @@ export {
     type ContentSubscription
 } from './service.js';
 
+export { createContentRenderService } from './render-service.js';
+
 export {
     EDITOR_BEGIN_MARKER,
     EDITOR_END_MARKER,

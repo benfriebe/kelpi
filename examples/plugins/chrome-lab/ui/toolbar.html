@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Chrome Lab toolbar</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="toolbar">
+<header class="bar" aria-label="Chrome Lab toolbar">
+  <button id="left" disabled aria-label="Toggle left sidebar" title="Toggle left sidebar">◧</button>
+  <span class="brand">CHROME LAB</span>
+  <span id="workspace" class="identity">Kelpi</span>
+  <span id="connection" class="connection">Connecting</span>
+  <span id="scope" hidden>Primary host</span>
+  <span id="items" class="items" aria-label="Plugin toolbar items"></span>
+  <label class="sr-only" for="layout">Workspace layout</label><select id="layout" aria-label="Workspace layout" disabled><option value="">Custom layout</option></select>
+  <button id="sync" disabled>Sync</button><button id="size" hidden>Take size control</button>
+  <button id="more" disabled aria-label="Window commands" title="Window commands">•••</button>
+  <button id="right" disabled aria-label="Toggle right sidebar" title="Toggle right sidebar">◨</button>
+  <span id="error" role="alert" hidden></span>
+</header><script type="module" src="app.js"></script>
+</body></html>

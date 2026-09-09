@@ -1,0 +1,25 @@
+:root { color-scheme: dark light; font: 12px system-ui, sans-serif; color: var(--kelpi-fg); background: var(--kelpi-bg); }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; overflow: hidden; }
+.bar { display: flex; align-items: center; height: 100%; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--kelpi-border); }
+.status { gap: 10px; border-bottom: 0; border-top: 1px solid var(--kelpi-border); font-size: 11px; }
+.brand { color: var(--kelpi-accent); font-size: 9px; font-weight: 750; letter-spacing: .08em; white-space: nowrap; }
+.identity { min-width: 30px; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button, select { border: 1px solid transparent; border-radius: 5px; padding: 3px 6px; background: transparent; color: inherit; font: inherit; white-space: nowrap; }
+select { border-color: var(--kelpi-border); max-width: 135px; background: var(--kelpi-bg); }
+button { cursor: pointer; }
+button:hover:not(:disabled), button[aria-pressed="true"] { background: var(--kelpi-surface); border-color: var(--kelpi-border); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--kelpi-accent); outline-offset: -1px; }
+button:disabled, select:disabled { cursor: default; opacity: .45; }
+.connection { color: var(--kelpi-fg-secondary); font-size: 10px; white-space: nowrap; }
+.connection[data-connected="true"] { color: #68b695; }
+#scope { color: var(--kelpi-fg-secondary); font-size: 10px; white-space: nowrap; }
+.items, .metrics { display: flex; align-items: center; gap: 5px; max-width: 220px; overflow: hidden; white-space: nowrap; }
+.metrics { color: var(--kelpi-fg-secondary); gap: 10px; }
+.items button { max-width: 125px; overflow: hidden; text-overflow: ellipsis; }
+#branch, #git { color: var(--kelpi-fg-secondary); max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#waiting { color: #d4a562; }
+#error { max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #e68b89; }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+@media (max-width: 700px) { .brand, #scope, .metrics, #branch { display: none; } .bar { gap: 4px; padding: 0 5px; } .items { max-width: 100px; } }

@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Chrome Lab status</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="status">
+<footer class="bar status" aria-label="Chrome Lab status">
+  <span class="brand">CL</span><span id="cwd" class="identity">No focused pane</span>
+  <span id="branch"></span><span id="git"></span>
+  <span id="items" class="items" aria-label="Plugin status items"></span>
+  <span id="metrics" class="metrics" aria-label="System statistics"></span>
+  <button id="running" disabled>0 running</button><button id="waiting" disabled>0 waiting</button><button id="inactive" disabled>0 idle</button>
+  <span id="error" role="alert" hidden></span>
+</footer><script type="module" src="app.js"></script>
+</body></html>

@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.10';
+const EXPECTED_VERSION = '0.4.0-nex.11';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -230,6 +230,20 @@ describe('vendored ghostty-web engine', () => {
         const ghosttySource = read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'));
         expect(ghosttySource).toContain('return Ghostty.fromModule(module).createTerminalOnThisInstance(cols, rows, config);');
         expect(ghosttySource).toContain('if (module === undefined) return this.createTerminalOnThisInstance(cols, rows, config);');
+    });
+
+    it('ships a viewport that output cannot move, and a keystroke brings back (§-nex.11)', () => {
+        // Upstream snapped to the bottom on every write while scrolled up; against a TUI that
+        // repaints its status line several times a second that is a viewport nobody can hold,
+        // and with a smooth-scroll animation still heading the other way it jitters. The pin
+        // shifts the offset by the scrollback growth instead, and typing scrolls to the bottom.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle.match(/pinViewportAcrossGrowth\(/g)?.length).toBeGreaterThanOrEqual(2);
+        expect(bundle).toContain('scrollOnUserInput');
+        const terminalSource = read(path.join(vendorRoot, 'source', 'lib', 'terminal.ts'));
+        expect(terminalSource).not.toContain('Auto-scroll to bottom on new output');
+        expect(terminalSource).toContain('if (grown > 0) this.pinViewportAcrossGrowth(grown);');
+        expect(terminalSource).toContain('if (this.options.scrollOnUserInput !== false) {');
     });
 
     it('ships a bundle whose default cell colours follow a LIVE theme (§N18)', () => {

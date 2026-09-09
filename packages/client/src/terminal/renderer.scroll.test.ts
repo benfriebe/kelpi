@@ -123,26 +123,27 @@ describe('the scroll API against a real ghostty-web', () => {
         expect(renderer.scrollOffset()).toBe(0);
     });
 
-    it('announces every move, including the snap to the bottom that any PTY byte causes', async () => {
+    it('announces every move, including the pin that keeps a scrolled view on its lines under output', async () => {
         const seen: number[] = [];
         const off = renderer.onScrollChange((offset) => seen.push(offset));
         renderer.scrollLines(-4);
         expect(seen).toEqual([4]);
 
-        // THE CONSTRAINT THE PLAN NAMES (§7's spike): output snaps the viewport to the bottom, so
-        // a scrolled-back phone view is lost on the next chunk. It is the desktop's behaviour too
-        // and C3 does not change it - what it does is make the fact observable.
+        // §7's spike named the constraint: output snapped the viewport to the bottom, so a
+        // scrolled-back view was lost on the next chunk. `0.4.0-nex.11` removes it: the offset
+        // counts lines up from the bottom, so one appended line moves it from 4 to 5 and the
+        // lines on screen stay the lines on screen. The move is announced like any other.
         renderer.write('a new line of output\r\n');
         await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(renderer.scrollOffset()).toBe(0);
-        expect(seen).toEqual([4, 0]);
+        expect(renderer.scrollOffset()).toBe(5);
+        expect(seen).toEqual([4, 5]);
 
         renderer.scrollLines(-2);
         renderer.scrollToBottom();
-        expect(seen).toEqual([4, 0, 2, 0]);
+        expect(seen).toEqual([4, 5, 7, 0]);
         off();
         renderer.scrollLines(-1);
-        expect(seen).toEqual([4, 0, 2, 0]);
+        expect(seen).toEqual([4, 5, 7, 0]);
     });
 
     /**

@@ -1,13 +1,13 @@
-# ghostty-web 0.4.0-nex.10 (vendored)
+# ghostty-web 0.4.0-nex.11 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus nine
+review in the orchestrating session and explicit user authorization to integrate both — plus ten
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
 `-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
 repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
-every terminal on its own WASM instance).
+every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport).
 
 | Version | What it added |
 |---|---|
@@ -21,6 +21,43 @@ every terminal on its own WASM instance).
 | `0.4.0-nex.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
 | `0.4.0-nex.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
 | `0.4.0-nex.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
+| `0.4.0-nex.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
+
+## Nex adaptation: output never moves a scrolled viewport (`0.4.0-nex.11`, 2026-09-10)
+
+**The defect.** Scrolling up in a long, running codex session jittered up and down and kept
+pulling back to the bottom; the only way to make it stop was to scroll all the way to the hard
+bottom. Upstream's `writeInternal` ended with:
+
+```ts
+// Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
+if (this.viewportY !== 0) {
+  this.scrollToBottom();
+}
+```
+
+Every write while scrolled up snapped the viewport to the bottom. That is not xterm.js's
+behaviour (it stays at the bottom only if it was already there) and it is not Ghostty's (output
+never moves a scrolled viewport; `scroll-to-bottom` is a keypress rule). A TUI that repaints its
+status line several times a second — codex's spinner — therefore yanked the viewport down on
+every frame, and the smooth-scroll animation still heading for the user's wheel target pulled it
+back up between frames: the jitter, ending only when the target was the bottom itself.
+
+**The fix.** `viewportY` counts lines up from the bottom, so simply not snapping would let the
+text drift upward under the reader as scrollback grows. `writeInternal` now measures the
+scrollback length before and after the write — only while scrolled up, so the at-bottom path
+pays nothing — and `pinViewportAcrossGrowth` shifts the offset (and a running animation's
+target) by the growth, announcing the move through `onScroll` like any other so a host mirroring
+the offset is not left stale. A keystroke scrolls to the bottom (`scrollOnUserInput`, default
+`true`, the option xterm.js has and Ghostty's default), which upstream never did; mouse reports
+do not travel that path in this app (`packages/client/src/terminal/mouse.ts` sends them itself).
+
+**Known limit.** Past the scrollback cap the length stops growing while lines still roll off the
+top, and the WASM exposes no counter for that, so under very heavy output at the cap the pin
+drifts by those lines. Far smaller than the defect, and noted so it is not mistaken for it.
+
+- **Rebuild sanity**: `dist/ghostty-web.js` is **708.77 kB** as vite reports it (was 707.85 kB
+  at `-nex.10`), built from `source/` with the documented recipe.
 
 ## Nex adaptation: one WASM instance per terminal (`0.4.0-nex.10`, 2026-09-09)
 

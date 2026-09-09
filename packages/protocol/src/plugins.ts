@@ -1,6 +1,7 @@
 /** Public plugin contracts. JSON only: no daemon, React, Electron or Node dependencies. */
 import type { JsonObject, JsonValue } from './json.js';
 import { isPluginVersion, isPluginVersionRange } from './plugin-dependencies.js';
+import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, pluginContributionText, pluginSettingValue, type PluginWhen, type PluginMenuDefinition, type PluginItemDefinition, type PluginSettingGroupDefinition, type PluginContextValue } from './plugin-contributions.js';
 
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
@@ -62,11 +63,19 @@ export interface PluginCommandDefinition {
     readonly title: string;
     readonly shortcut?: string;
     readonly menu?: 'pane' | 'workspace' | 'both' | 'pane.header';
+    readonly when?: PluginWhen;
+    readonly enablement?: PluginWhen;
 }
 export interface PluginSettingDefinition {
     readonly title: string;
     readonly type: 'string' | 'number' | 'boolean';
     readonly default: string | number | boolean;
+    readonly group?: string;
+    readonly description?: string;
+    readonly order?: number;
+    readonly enum?: readonly PluginContextValue[];
+    readonly min?: number;
+    readonly max?: number;
 }
 export interface PluginManifest {
     readonly id: string;
@@ -85,6 +94,9 @@ export interface PluginManifest {
         readonly hooks?: readonly PluginHookDefinition[];
         readonly services?: readonly PluginServiceDefinition[];
         readonly providers?: readonly PluginProviderDefinition[];
+        readonly menus?: readonly PluginMenuDefinition[];
+        readonly items?: readonly PluginItemDefinition[];
+        readonly settingGroups?: readonly PluginSettingGroupDefinition[];
     };
 }
 export interface PluginInfo {
@@ -294,7 +306,33 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         const cmd = pluginObject(raw);
         const menu = cmd['menu'];
         if (menu !== undefined && menu !== 'pane' && menu !== 'workspace' && menu !== 'both' && menu !== 'pane.header') throw new Error('invalid plugin menu');
-        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }) };
+        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }),
+            ...(cmd['when'] === undefined ? {} : { when: decodePluginWhen(cmd['when']) }), ...(cmd['enablement'] === undefined ? {} : { enablement: decodePluginWhen(cmd['enablement']) }) };
+    });
+    const commandReference = (raw: unknown): string => {
+        if (typeof raw !== 'string' || !commands.some(command => command.id === raw)) throw new Error('plugin UI command must be owned and declared');
+        return raw;
+    };
+    const menus = array(contributes['menus']).map((raw): PluginMenuDefinition => {
+        const menu = pluginObject(raw);
+        const placement = menu['placement'];
+        if (placement !== 'pane' && placement !== 'workspace' && placement !== 'pane.header' && placement !== 'palette') throw new Error('invalid plugin menu placement');
+        return { id: contributionID(menu['id']), command: commandReference(menu['command']), placement,
+            ...(menu['group'] === undefined ? {} : { group: pluginContributionText(menu['group'], 'menu group', 64) }),
+            ...(menu['order'] === undefined ? {} : { order: pluginContributionOrder(menu['order']) }),
+            ...(menu['when'] === undefined ? {} : { when: decodePluginWhen(menu['when']) }),
+            ...(menu['enablement'] === undefined ? {} : { enablement: decodePluginWhen(menu['enablement']) }) };
+    });
+    const items = array(contributes['items']).map((raw): PluginItemDefinition => {
+        const item = pluginObject(raw);
+        const placement = item['placement'];
+        if (placement !== 'statusbar' && placement !== 'pane.header' && placement !== 'workspace.header') throw new Error('invalid plugin item placement');
+        const fields = decodePluginItemPatch(Object.fromEntries(['text', 'tooltip', 'badge', 'tone'].filter(key => item[key] !== undefined).map(key => [key, item[key]])));
+        return { id: contributionID(item['id']), placement, ...fields, text: pluginContributionText(item['text'], 'item text', 200),
+            ...(item['command'] === undefined ? {} : { command: commandReference(item['command']) }),
+            ...(item['order'] === undefined ? {} : { order: pluginContributionOrder(item['order']) }),
+            ...(item['when'] === undefined ? {} : { when: decodePluginWhen(item['when']) }),
+            ...(item['enablement'] === undefined ? {} : { enablement: decodePluginWhen(item['enablement']) }) };
     });
     const hooks = array(contributes['hooks']).map((raw): PluginHookDefinition => {
         const hook = pluginObject(raw);
@@ -318,14 +356,42 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
     });
     if ((commands.length || hooks.length || providers.length) && value['backend'] === undefined) throw new Error('plugin commands, hooks, and providers require a backend');
     if (typeof value['backend'] === 'string' && value['backend'].startsWith('ui/')) throw new Error('backend entry must be outside ui/');
+    const settingGroups = array(contributes['settingGroups']).map((raw): PluginSettingGroupDefinition => {
+        const group = pluginObject(raw);
+        return { id: contributionID(group['id']), title: label(group['title'], 'setting group title'),
+            ...(group['description'] === undefined ? {} : { description: pluginContributionText(group['description'], 'setting group description', 2000, true) }),
+            ...(group['order'] === undefined ? {} : { order: pluginContributionOrder(group['order']) }) };
+    });
     const settings: Record<string, PluginSettingDefinition> = {};
-    for (const [key, raw] of Object.entries(pluginObject(contributes['settings'] ?? {}))) {
-        if (!/^[a-z][a-zA-Z0-9.-]*$/.test(key)) throw new Error('invalid plugin setting key');
+    const settingsEntries = Object.entries(pluginObject(contributes['settings'] ?? {}));
+    if (settingsEntries.length > 100) throw new Error('expected at most 100 plugin settings');
+    for (const [key, raw] of settingsEntries) {
+        if (!/^[a-z][a-zA-Z0-9.-]{0,63}$/.test(key)) throw new Error('invalid plugin setting key');
         const setting = pluginObject(raw);
         const type = setting['type'];
         const fallback = setting['default'];
         if ((type !== 'string' && type !== 'number' && type !== 'boolean') || typeof fallback !== type) throw new Error(`invalid default for setting ${key}`);
-        settings[key] = { title: label(setting['title'], 'setting title'), type, default: fallback as string | number | boolean };
+        const group = setting['group'];
+        if (group !== undefined && !settingGroups.some(entry => entry.id === group)) throw new Error(`unknown setting group for ${key}`);
+        const choices = setting['enum'] === undefined ? undefined : array(setting['enum']);
+        if (choices && (!choices.length || choices.some(choice => typeof choice !== type) || new Set(choices).size !== choices.length)) throw new Error(`invalid choices for setting ${key}`);
+        const range = (field: 'min' | 'max'): number | undefined => {
+            const value = setting[field];
+            if (value === undefined) return undefined;
+            if (type !== 'number' || typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`invalid ${field} for setting ${key}`);
+            return value;
+        };
+        const min = range('min'), max = range('max');
+        if (min !== undefined && max !== undefined && min > max) throw new Error(`invalid range for setting ${key}`);
+        const definition: PluginSettingDefinition = { title: label(setting['title'], 'setting title'), type, default: fallback as PluginContextValue,
+            ...(group === undefined ? {} : { group: group as string }),
+            ...(setting['description'] === undefined ? {} : { description: pluginContributionText(setting['description'], 'setting description', 2000, true) }),
+            ...(setting['order'] === undefined ? {} : { order: pluginContributionOrder(setting['order']) }),
+            ...(choices === undefined ? {} : { enum: choices as PluginContextValue[] }),
+            ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) };
+        pluginSettingValue(definition, fallback);
+        if (choices) for (const choice of choices) pluginSettingValue(definition, choice);
+        settings[key] = definition;
     }
     const activation = value['activation'] ?? 'on-demand';
     if (activation !== 'startup' && activation !== 'on-demand') throw new Error('invalid activation policy');
@@ -334,7 +400,8 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         ...(dependencies.length ? { dependencies } : {}),
         contributes: { views, commands, settings,
             ...(containers.length ? { containers } : {}), ...(hooks.length ? { hooks } : {}),
-            ...(services.length ? { services } : {}), ...(providers.length ? { providers } : {}) } };
+            ...(services.length ? { services } : {}), ...(providers.length ? { providers } : {}),
+            ...(menus.length ? { menus } : {}), ...(items.length ? { items } : {}), ...(settingGroups.length ? { settingGroups } : {}) } };
 }
 
 export function decodePluginPane(raw: unknown): PluginPaneDescriptor | null {

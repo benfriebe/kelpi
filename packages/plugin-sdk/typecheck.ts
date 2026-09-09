@@ -2,8 +2,18 @@
 import { getKelpi, type BackendAPI, type BuiltinProviderMethods, type NativeGitStatus, type NativeWorktree, type WorkspaceInfo, type RepositoryAssociation } from './index.js';
 // This import also checks every runtime contract fixture against the published declarations.
 import './tests/service-fixtures.js';
+import './ui.typecheck.js';
 
 async function authoring(api: BackendAPI): Promise<void> {
+    const contributions = await api.contributions.update({ context: { ready: true, count: 3, removed: null }, items: {
+        'sample.plugin.status': { text: 'Ready', badge: '3', tone: 'success', enabled: true }
+    } });
+    await api.emit('sample.plugin.contributions', contributions);
+    await api.contributions.update({ items: { 'sample.plugin.status': null } });
+    // @ts-expect-error Context values are scalar JSON, not nested data.
+    await api.contributions.update({ context: { nested: { value: true } } });
+    // @ts-expect-error Item tones use a fixed vocabulary.
+    await api.contributions.update({ items: { 'sample.plugin.status': { tone: 'purple' } } });
     const workspaces: WorkspaceInfo[] = await api.workspaces.list();
     const first = workspaces[0];
     if (!first) return;

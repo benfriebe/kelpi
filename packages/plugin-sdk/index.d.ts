@@ -1,7 +1,11 @@
 import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, PanesAPI, Snapshot, TerminalAPI, WorkspacesAPI } from './domain.js';
 import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
+import type { ContributionsAPI } from './contributions.js';
+import type { WindowUIServices } from './ui.js';
 export * from './domain.js';
 export * from './services.js';
+export * from './contributions.js';
+export * from './ui.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Data = { [key: string]: Json };
@@ -29,6 +33,7 @@ export interface KelpiAPI {
     commands: { execute<T = Json>(id: string, args?: Data): Promise<T> };
     storage: { get(key: string): Promise<Json>; set(key: string, value: Json): Promise<void> };
     settings: { get(): Promise<Data>; set(key: string, value: string | number | boolean): Promise<void> };
+    contributions: ContributionsAPI;
     files: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; open(path: string, options?: { paneID?: string; workspaceID?: string; reuse?: boolean }): Promise<void>; reveal(path: string, options?: { select?: boolean }): Promise<void> };
     process: { exec(file: string, args?: string[], options?: { cwd?: string }): Promise<ProcessExecResult> };
     terminal: TerminalAPI;
@@ -76,7 +81,7 @@ export interface ViewAPI extends KelpiAPI {
     /** Runs after ready, then on context/theme/visibility/state updates. Disposal also cancels queued deliveries. */
     onContext(listener: (value: ViewEnvironment) => void | Promise<void>): Dispose;
     setState(state: Data): Promise<void>;
-    ui: KelpiAPI['ui'] & {
+    ui: KelpiAPI['ui'] & WindowUIServices & {
         activateWorkspace(workspaceID: string): Promise<void>;
         focusPane(workspaceID: string, paneID: string): Promise<void>;
         notify(message: string): Promise<void>;

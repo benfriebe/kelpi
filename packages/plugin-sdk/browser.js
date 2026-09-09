@@ -82,7 +82,10 @@
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
         const id = String(++next);
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { pending.delete(id); reject(new Error('Kelpi call timed out')); }, 35_000);
+            // Human interaction owns these requests' lifetime; the window cancels their
+            // scope on view removal. A normal RPC deadline must not abandon an open prompt.
+            const interactive = ['ui.showQuickPick', 'ui.showInput', 'ui.showDialog', 'ui.showNotification'].includes(method);
+            const timer = interactive ? undefined : setTimeout(() => { pending.delete(id); reject(new Error('Kelpi call timed out')); }, 35_000);
             pending.set(id, { resolve, reject, timer }); send({ type: 'call', id, method, args });
         });
     };
@@ -131,6 +134,10 @@
             getNavigation: () => base.call('ui.getNavigation'),
             selectWorkspace: async (hostID, workspaceID) => { await base.call('ui.selectWorkspace', { hostID, workspaceID }); },
             onNavigation,
+            showQuickPick: options => base.call('ui.showQuickPick', options),
+            showInput: options => base.call('ui.showInput', options),
+            showDialog: options => base.call('ui.showDialog', options),
+            showNotification: options => base.call('ui.showNotification', options),
         })
     });
     const reportError = message => { void ready.then(() => send({ type: 'view-error', message: String(message).slice(0, 4096) })); };

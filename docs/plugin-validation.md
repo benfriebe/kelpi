@@ -14,6 +14,43 @@ The [original audit](plugin-extensibility-audit.md) distinguishes the longer-ter
 from this implementation. This version supports explicitly trusted local plugins; it does
 not implement a marketplace or an untrusted execution runtime.
 
+## Window chrome features (2026-09-10)
+
+This phase was implemented and validated in `out/worktrees/plugin-chrome`, based on
+`9248790`. Toolbar and Status now have registered native feature bindings, a shared live
+chrome model and command declarations, and a public browser SDK bridge. The build-free
+[Chrome Lab](../examples/plugins/chrome-lab) replaces both bars and retains other plugins'
+menu and item contributions. The [chrome guide](plugin-chrome.md) documents targeting,
+bounded subscriptions, primary/remote ownership, desktop-only availability and recovery.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Final typechecks and automated tests | All workspace typechecks pass; 6,967 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | [Final log](../out/plugin-chrome-validation/final-check.log) |
+| Production builds | Daemon, client, CLI and shell build successfully. The isolated Electron runs below use those outputs. | [Final client build](../out/plugin-chrome-validation/build-client.log) |
+| Chrome Lab live scenario | 33/33 checks pass onscreen and 33/33 in a separate background instance. | [Onscreen](../out/plugin-chrome-validation/chrome-live/results.json), [Background](../out/plugin-chrome-validation/chrome-hidden/results.json) |
+| Existing UI regressions | 79 checks pass across UI services, sidebar swaps, confirmation keys, preview shortcuts and workbench replacement. Nested extensions pass all 23 checks in a fresh instance; the combined-run limitation is recorded below. | [Combined run](../out/plugin-chrome-validation/regression/results.json), [Isolated extensions](../out/plugin-chrome-validation/extensions-isolated/results.json) |
+| Contract and feature checks | 50 focused contract tests and 1,619 feature/plugin/App/chrome tests pass. These are also covered by the final full test suite. | [Contracts](../out/plugin-chrome-validation/contracts-tests.log), [Features](../out/plugin-chrome-validation/features-tests.log) |
+| Diff hygiene | `git diff --check` passes before committing the validated implementation in logical phases. | Git history |
+
+The live scenario exercises real sidebar swaps, layout/input commands, stale target rejection,
+cross-workspace agent navigation, Git changes, daemon metric samples, live contribution
+conditions, shared menus, two clients competing for size control, secondary-daemon isolation,
+direct browser attachment, phone panes, view/window reload, Restart UI and native fallback.
+The [onscreen result](../out/plugin-chrome-validation/chrome-live/plugin-chrome-features-01-chrome-lab-ready.png)
+was visually inspected: replacement bars fit their hosts, preserve the native window controls,
+and show other plugins' contributions. Hidden screenshots are not used as visual evidence.
+
+The combined regression run stopped during the nested extension scenario because its expected
+New Workspace field was absent. That scenario then passed in a fresh instance without source
+or fixture changes. Both results are retained; the combined run is not reported as globally
+green. Chrome Lab's initial fixture iterations corrected iframe navigation lifetime, canonical
+temporary paths, Git/metric setup and touch emulation before both final 33-check runs passed.
+
+All testing used private daemons, state, sockets and Electron profiles. The installed Kelpi
+was not replaced. This phase did not rerun the full UI audit or packaged application smoke;
+the records below describe those gates for the preceding phases. Native document-pane
+extraction and plugin distribution remain separate follow-up work.
+
 ## Native service replacement (2026-09-09)
 
 The daemon now registers native adapters for Git, content rendering, managed processes, and

@@ -1,0 +1,13 @@
+{
+  "id": "example.chrome-lab",
+  "name": "Chrome Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.chrome-lab.toolbar", "title": "Chrome Lab toolbar", "entry": "ui/toolbar.html", "placements": ["topbar"] },
+      { "id": "example.chrome-lab.status", "title": "Chrome Lab status", "entry": "ui/status.html", "placements": ["statusbar"] }
+    ]
+  }
+}

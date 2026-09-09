@@ -31,8 +31,9 @@ getters and report sheet errors without closing the form. The existing daemon op
 retain ownership of mutations, validation, persistence and Git orchestration.
 
 These modules are bundled TypeScript components. Installed plugins continue to run through
-the isolated iframe bridge and public SDK. Other native features still use their existing
-adapters; this extraction establishes the module contract for their later migration.
+the isolated iframe bridge and public SDK. Toolbar and Status also use registered feature bindings and a shared window command model;
+see the [chrome feature guide](plugin-chrome.md). Native pane features still use their existing
+adapters.
 
 ## Window navigation for plugins
 

@@ -71,6 +71,11 @@ Plugin panes participate in normal splits, moves, zoom, parking, and close/reope
 their descriptor and JSON state when the plugin is missing, disabled, updated, or removed.
 Parked plugin panes also survive daemon restarts. A missing plugin never spawns a terminal.
 
+[Chrome Lab](../examples/plugins/chrome-lab) replaces the toolbar and status bar using live
+window chrome state and the shared command registry. It preserves other plugins' menu/item
+contributions. See the [chrome feature guide](plugin-chrome.md) for commands, status data,
+ownership and the isolated development workflow.
+
 ## Package format
 
 Start a build-free local package with `kelpi plugin init ./my-plugin --id example.my-plugin`.

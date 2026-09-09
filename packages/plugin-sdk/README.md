@@ -162,3 +162,15 @@ kelpi plugin service-call kelpi.files read --args '{"path":"/tmp/example.txt"}'
 kelpi plugin service-select kelpi.files example.my-board.files
 kelpi plugin service-select kelpi.files default
 ```
+
+
+## Toolbar and status replacements
+
+Browser views can use `ui.getChrome()` / `ui.onChrome(listener, onError)` to read the owning
+primary desktop window's layout, physical sidebar visibility, connection, agent counts, Git
+status, metrics and live contributions. `ui.executeChromeCommand(id, target?)` invokes the
+same current command registry as native chrome. Pass the displayed `workspaceID` for layout,
+input and contributed actions so stale targets reject explicitly.
+
+The [chrome guide](../../docs/plugin-chrome.md) documents the full contract and ownership
+rules. [Chrome Lab](../../examples/plugins/chrome-lab) replaces both bars without a backend.

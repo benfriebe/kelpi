@@ -45,11 +45,14 @@ export const PENDING_LIVE_LIMIT_BYTES = 256 * 1024;
  * supersedes an INCOMPLETE application: the abandoned stream may have ended mid-sequence, and
  * without the abort the parser would eat the reset's own bytes as the sequence's tail.
  */
-const CANCEL_SEQUENCE = '\x18';
+export const REPLAY_CANCEL_SEQUENCE = '\x18';
 
 export interface IngestTarget {
     write(data: Uint8Array | string): void;
-    reset(): void;
+    /** The snapshot length lets a renderer hold its paint until every chunk has arrived. */
+    reset(replayLength?: number): void;
+    /** Abort an incomplete parse without counting the abort as a completed snapshot chunk. */
+    abortReplay?(): void;
 }
 
 export interface IngestOptions {
@@ -220,8 +223,11 @@ export function createTerminalIngest(target: IngestTarget, options: IngestOption
          * exposed it — until then nothing ever put a brand-new pane on screen a moment
          * after another pane left it. One RIS per attach makes the replay the whole truth.
          */
-        if (abortOpenSequence) target.write(CANCEL_SEQUENCE);
-        target.reset();
+        if (abortOpenSequence) {
+            if (target.abortReplay !== undefined) target.abortReplay();
+            else target.write(REPLAY_CANCEL_SEQUENCE);
+        }
+        target.reset(data.length);
         awaiting = true;
         applying = { data, offset: 0, cancel: null };
         // The first tick runs synchronously: a normal-sized screen applies in one chunk and

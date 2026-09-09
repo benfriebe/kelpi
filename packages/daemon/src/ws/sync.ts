@@ -139,6 +139,8 @@ export interface SyncPaneBridge {
     attach(paneID: string, size?: { cols: number; rows: number } | undefined): void | Promise<void>;
     detach(paneID: string): void;
     resize(paneID: string, cols: number, rows: number): void;
+    /** Reconcile only this viewer after a local resize that cannot change the PTY's size. */
+    requestReplay?(paneID: string): void;
     close(): void;
 }
 
@@ -1522,6 +1524,8 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     const cols = count(parsed['cols']);
                     const rows = count(parsed['rows']);
                     if (paneID === undefined || cols === undefined || rows === undefined) return;
+                    if (cols <= 0 || rows <= 0) return;
+                    const previous = this.paneSizes.get(paneID);
                     this.paneSizes.set(paneID, { cols, rows });
                     // No owner (the previous one left without a successor): the first client
                     // to breathe geometry claims. Otherwise only the owner's reports land —
@@ -1531,6 +1535,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         broadcastSizeControl();
                     }
                     if (this.ownsSize()) this.panes?.resize(paneID, cols, rows);
+                    else if (previous?.cols !== cols || previous?.rows !== rows) {
+                        // Its own renderer still resized. A fresh snapshot clears any local
+                        // reflow divergence without changing the owner's grid or other viewers.
+                        this.panes?.requestReplay?.(paneID);
+                    }
                     return;
                 }
                 case 'take-size-control':

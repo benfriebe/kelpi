@@ -15,7 +15,7 @@
  * live theming) is isolated in an `EngineLoader`, so a third engine is one loader away and the
  * component layer never learns which one it got.
  *
- * Three behaviours the adapter owns, all forced by the engines (verified hands-on — see the
+ * Four behaviours the adapter owns, all forced by the engines (verified hands-on — see the
  * spike doc):
  *
  *   1. **Deferred open.** Both engines load asynchronously (ghostty-web must `await init()`
@@ -26,20 +26,17 @@
  *   2. **Focus discipline.** `ghostty-web`'s `open()` calls `focus()` on itself (coder/
  *      ghostty-web#100). An unfocused pane mounting in a grid must not steal the caret, so the
  *      adapter re-asserts the caller's intent right after open.
- *   3. **Reset is a byte, not a call.** `reset()` writes RIS (`ESC c`) into the same stream
- *      instead of calling the engine's `reset()`: it keeps ordering with xterm.js's
- *      *asynchronous* write queue (a synchronous `reset()` would clobber bytes still parsing),
- *      and it avoids ghostty-web's `reset()`, which frees and re-creates the WASM terminal
- *      (ghostty-web#141 reports corruption after freeing a terminal that saw graphemes).
- *      Verified on both engines: RIS clears screen + scrollback, resets modes and leaves the
- *      alternate screen.
+ *   3. **Reset follows the engine's ordering.** xterm gets RIS (`ESC c`) in its asynchronous
+ *      write queue. Ghostty parses synchronously and gets a dedicated snapshot reset that
+ *      replaces its WASM instance while retaining the VT wrapper. RIS alone leaves allocator
+ *      pages containing old history that can reappear after resizing and replaying.
  *   4. **Startups are serialized, and an engine that throws is poisoned, not retried in
  *      place.** See `serializeEngineStartup` and `AdapterRenderer.poison` — the two halves of
  *      run-F N1.
  */
 
 import { loadTerminalFonts, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
-import { REPLAY_CHUNK_BYTES, REPLAY_TICK_BUDGET_MS, sliceChunk } from './ingest';
+import { REPLAY_CANCEL_SEQUENCE, REPLAY_CHUNK_BYTES, REPLAY_TICK_BUDGET_MS, sliceChunk } from './ingest';
 
 export type TerminalEngine = 'ghostty' | 'xterm';
 
@@ -164,8 +161,10 @@ export interface TerminalRenderer {
     open(element: HTMLElement): Promise<void>;
     /** Raw PTY bytes. Never decode them first — UTF-8 splits across chunk boundaries. */
     write(data: Uint8Array | string): void;
-    /** Full reset; used when a replay supersedes what is on screen. */
-    reset(): void;
+    /** Full reset; the optional snapshot length keeps a chunked replay under one paint hold. */
+    reset(replayLength?: number): void;
+    /** Abort the parser before a superseding replay, without ending the resize paint hold. */
+    abortReplay?(): void;
     /** Keyboard/paste output, already encoded by the engine. Returns an unsubscribe. */
     onData(listener: (data: string) => void): () => void;
     onBell(listener: () => void): () => void;
@@ -405,6 +404,8 @@ export interface XtermLikeTerminal {
 /** What a loader hands back: the terminal plus the engine-specific bits it can serve. */
 export interface EngineHandle {
     readonly terminal: XtermLikeTerminal;
+    /** Synchronous snapshot reset for engines whose in-stream reset retains stale storage. */
+    resetForReplay?(): void;
     /** Real cell metrics once the engine has measured its font. */
     cellSize?(): CellSize | undefined;
     /** Live theming; without it the adapter falls back to nothing (theme is init-only). */
@@ -900,6 +901,8 @@ class AdapterRenderer implements TerminalRenderer {
      * `ingest.ts`'s pump follows for the application it is in the middle of.
      */
     private draining: { cancel: (() => void) | null } | null = null;
+    /** The leading queued RIS represents reset(), including an engine-specific replay reset. */
+    private queuedReset = false;
     /**
      * The element `open()` was given, and the route to the engine's own hidden `<textarea>`.
      *
@@ -937,14 +940,15 @@ class AdapterRenderer implements TerminalRenderer {
     /**
      * §N24 — the resize→replay paint hold.
      *
-     * `holding` is set the moment the engine's grid actually changes and cleared when the
-     * settled-resize replay has been written back in (or the timeout fires). `sawResetWhileHeld`
+     * `holding` is set when a new grid is requested and cleared when the settled-resize replay
+     * has been written back in (or the timeout fires). `sawResetWhileHeld`
      * is how the replay is recognised: `ingest.replay()` is the ONLY caller of `reset()`, and it
      * always does `reset()` then `write(snapshot)` — so the write that follows a reset is the
      * authoritative screen, and the frame after it is safe to paint.
      */
     private holding = false;
     private sawResetWhileHeld = false;
+    private replayRemaining: number | null = null;
     private holdTimer: ReturnType<typeof setTimeout> | null = null;
     private holdTimeouts = 0;
     private readonly holdListeners = new Set<(held: boolean) => void>();
@@ -1032,7 +1036,9 @@ class AdapterRenderer implements TerminalRenderer {
              * corrupt cells needed). Returning without ending the hold would leave the pane
              * frozen on its last good frame until the timeout, for a replay that DID arrive.
              */
-            if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+            if (this.holding && this.sawResetWhileHeld && (this.replayRemaining ?? 0) <= 0) {
+                this.releaseHold();
+            }
             return;
         }
         const terminal = this.handle?.terminal;
@@ -1058,11 +1064,25 @@ class AdapterRenderer implements TerminalRenderer {
         this.deliver(terminal, data);
     }
 
-    reset(): void {
+    abortReplay(): void {
+        if (this.disposed || this.poisoned) return;
+        this.sawResetWhileHeld = false;
+        this.replayRemaining = null;
+        this.cancelDrain();
+        this.write(REPLAY_CANCEL_SEQUENCE);
+    }
+
+    reset(replayLength?: number): void {
         if (this.disposed || this.poisoned) return;
         // §N24: a reset while held is the leading edge of the replay — the write behind it is
         // the authoritative screen, and that is what ends the hold (see `write`).
-        if (this.holding) this.sawResetWhileHeld = true;
+        if (this.holding) {
+            this.sawResetWhileHeld = true;
+            this.replayRemaining = replayLength ?? null;
+            // The replay has arrived. Its budgeted parse, rather than the arrival timeout,
+            // now decides when the whole screen is safe to paint.
+            this.clearHoldTimer();
+        }
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             /**
@@ -1083,6 +1103,7 @@ class AdapterRenderer implements TerminalRenderer {
              */
             this.pending = [TERMINAL_RESET_SEQUENCE];
             this.pendingBytes = byteLength(TERMINAL_RESET_SEQUENCE);
+            this.queuedReset = true;
             return;
         }
         /**
@@ -1098,9 +1119,9 @@ class AdapterRenderer implements TerminalRenderer {
          * sequence half-read for the reset to be eaten by.
          */
         this.cancelDrain();
-        // RIS in-stream rather than `terminal.reset()` — see the header note (ordering with
-        // xterm's async write queue; ghostty-web's reset() frees the WASM terminal).
-        this.guard(() => terminal.write(TERMINAL_RESET_SEQUENCE), 'reset');
+        // xterm keeps an in-stream RIS; Ghostty's dedicated reset replaces its allocator.
+        this.guard(() => this.resetTerminal(terminal), 'reset');
+        if (this.holding && this.replayRemaining === 0) this.releaseHold();
     }
 
     onData(listener: (data: string) => void): () => void {
@@ -1214,11 +1235,9 @@ class AdapterRenderer implements TerminalRenderer {
          * (N23's exonerated residual — measured at 119 of 120 close/reopen cycles, and every
          * frame in the window, not just the first).
          *
-         * So: suspend the engine's paint BEFORE the resize (the canvas then keeps the last good
-         * frame across it, `0.4.0-nex.6`), and resume when the replay lands. No frame is ever
-         * produced from a resized-but-not-yet-replayed buffer. Nothing about the byte stream
-         * changes — this suppresses PAINTS, not writes, so there is no second reconciliation
-         * path and the daemon stays the only source of truth.
+         * Suspend the engine's paint before resizing, and resume after the complete replay.
+         * The Ghostty replay reset also replaces its VT storage: RIS alone can let recycled
+         * history pages bring old output back after the replacement snapshot starts scrolling.
          *
          * A re-arm during an existing hold is deliberate: a drag emits several grid changes and
          * each one gets its own window, ending at the last one's replay.
@@ -1379,14 +1398,15 @@ class AdapterRenderer implements TerminalRenderer {
     private beginHold(): void {
         if (this.handle?.setPaintSuspended === undefined) return;
         this.sawResetWhileHeld = false;
+        this.replayRemaining = null;
         if (!this.holding) {
             this.holding = true;
             this.swallow(() => this.handle?.setPaintSuspended?.(true));
             this.announceHold(true);
         }
         this.clearHoldTimer();
-        // The net under the net: the daemon always sends one replay per settled resize, but a
-        // pane must never be frozen by one that does not arrive.
+        // A missing replay must not freeze the pane (for example, a disconnected client or
+        // a secondary window whose local resize does not change the owning window's PTY).
         this.holdTimer = setTimeout(() => {
             this.holdTimer = null;
             if (!this.holding) return;
@@ -1402,6 +1422,7 @@ class AdapterRenderer implements TerminalRenderer {
         if (!this.holding) return;
         this.holding = false;
         this.sawResetWhileHeld = false;
+        this.replayRemaining = null;
         if (!this.disposed) this.swallow(() => this.handle?.setPaintSuspended?.(false));
         this.announceHold(false);
     }
@@ -1544,13 +1565,33 @@ class AdapterRenderer implements TerminalRenderer {
     }
 
     /** One chunk into the engine, plus §N24's "was this the replay?" question. */
-    private deliver(terminal: XtermLikeTerminal, data: Uint8Array | string): void {
+    private resetTerminal(terminal: XtermLikeTerminal): void {
+        if (this.handle?.resetForReplay !== undefined) this.handle.resetForReplay();
+        else terminal.write(TERMINAL_RESET_SEQUENCE);
+    }
+
+    private deliver(
+        terminal: XtermLikeTerminal,
+        data: Uint8Array | string,
+        strict = false,
+        queuedReset = false
+    ): void {
         // CONTAIN (run-F N1): ghostty-web's `write()` reaches straight into the shared WASM
         // heap and can throw `RangeError: offset is out of bounds`. Unwrapped, that throw goes
         // wherever the byte came from (the WebSocket message handler) as an unhandled
         // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
         // renderer exactly once, which is the signal the pane restarts on.
-        this.guard(() => terminal.write(data), 'write');
+        const write = (): void => {
+            if (queuedReset) this.resetTerminal(terminal);
+            else terminal.write(data);
+        };
+        if (strict) {
+            const planted = this.faults?.fault('write', this.engine);
+            if (planted !== undefined) throw new RangeError(planted);
+            write();
+        } else {
+            this.guard(write, 'write');
+        }
         /**
          * §N24, this was the replay: end the hold, in the SAME synchronous turn as the write.
          *
@@ -1561,7 +1602,10 @@ class AdapterRenderer implements TerminalRenderer {
          * snapshot that has just been parsed. `setPaintSuspended(false)` forces a full render,
          * so that frame is complete rather than a dirty-row patch.
          */
-        if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+        if (!queuedReset && this.holding && this.sawResetWhileHeld) {
+            if (this.replayRemaining !== null) this.replayRemaining -= data.length;
+            if (this.replayRemaining === null || this.replayRemaining <= 0) this.releaseHold();
+        }
     }
 
     /**
@@ -1608,14 +1652,9 @@ class AdapterRenderer implements TerminalRenderer {
             const chunk = this.pending.shift();
             if (chunk === undefined) break;
             this.pendingBytes = Math.max(0, this.pendingBytes - byteLength(chunk));
-            if (strict) {
-                const planted = this.faults?.fault('write', this.engine);
-                if (planted !== undefined) throw new RangeError(planted);
-                terminal.write(chunk);
-                if (this.holding && this.sawResetWhileHeld) this.releaseHold();
-            } else {
-                this.deliver(terminal, chunk);
-            }
+            const queuedReset = this.queuedReset;
+            this.queuedReset = false;
+            this.deliver(terminal, chunk, strict, queuedReset);
             // A write may have poisoned the engine, or fired a handler that superseded this
             // drain (a newer replay's `reset()`), or torn the pane down outright.
             if (this.disposed || this.poisoned || this.draining !== current) return;
@@ -1636,6 +1675,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.draining = null;
         this.pending = [];
         this.pendingBytes = 0;
+        this.queuedReset = false;
         current?.cancel?.();
     }
 
@@ -1810,6 +1850,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
     const engineTerminal = terminal as unknown as XtermLikeTerminal;
     return {
         terminal: engineTerminal,
+        resetForReplay: (): void => {
+            // The shipped loader retains its compiled Module. Custom Ghostty instances made
+            // from an Instance alone keep the existing in-stream-reset fallback.
+            if (!terminal.resetForReplay()) terminal.write(TERMINAL_RESET_SEQUENCE);
+        },
         cellSize: (): CellSize | undefined => {
             const renderer = terminal.renderer;
             if (renderer === undefined) return undefined;

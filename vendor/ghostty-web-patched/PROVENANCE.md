@@ -1,12 +1,12 @@
-# ghostty-web 0.4.0-nex.8 (vendored)
+# ghostty-web 0.4.0-nex.9 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus seven
+review in the orchestrating session and explicit user authorization to integrate both — plus eight
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
 `-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
-repainted when the scrollbar goes away).
+repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage).
 
 | Version | What it added |
 |---|---|
@@ -18,6 +18,30 @@ repainted when the scrollbar goes away).
 | `0.4.0-nex.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
 | `0.4.0-nex.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
 | `0.4.0-nex.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
+| `0.4.0-nex.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
+
+## Nex adaptation: replay storage (`0.4.0-nex.9`, 2026-09-09)
+
+Repeated pane resizes could append old service-selection output to current lines and prompts,
+including prompts printed later by Enter. The daemon's snapshot remained correct. The pinned
+Ghostty allocator assumes newly allocated pages are zeroed: see
+[PageList initialization](https://github.com/ghostty-org/ghostty/blob/5714ed07a1012573261b7b7e3ed2add9c1504496/src/terminal/PageList.zig#L341-L344).
+Its release WASM build instead uses Zig's allocator, which
+[reuses freed page slots](https://github.com/ziglang/zig/blob/0.15.2/lib/std/heap/WasmAllocator.zig#L159-L164).
+RIS frees excess history pages, so later snapshot writes could receive those old cells again.
+
+`Ghostty` now retains its compiled module. `GhosttyTerminal.resetForReplay()` creates a fresh
+instance from that cached code and adopts its VT storage, retaining dimensions, terminal config,
+and JavaScript object identity. Selection and buffer readers remain attached to the same wrapper;
+viewport and grapheme caches are invalidated. The host clears selection and any pending scroll
+animation without replacing its canvas or input handler. Direct `new Ghostty(instance)` callers
+can pass the compiled module as a second argument; without it, `resetForReplay()` returns false
+and leaves the existing terminal intact.
+
+The client invokes this reset for both mounted and queued attach replays, and holds resize paint
+until all snapshot chunks have arrived. The WASM binary is unchanged. Regression coverage in
+`packages/client/src/terminal/renderer-replay.test.ts` uses the shipped WASM and real daemon
+snapshots, including long history, repeated grow/shrink cycles, and subsequent Enter output.
 
 ## Base
 

@@ -43,7 +43,7 @@ export class Ghostty {
   private exports: GhosttyWasmExports;
   private memory: WebAssembly.Memory;
 
-  constructor(wasmInstance: WebAssembly.Instance) {
+  constructor(wasmInstance: WebAssembly.Instance, private readonly wasmModule?: WebAssembly.Module) {
     this.exports = wasmInstance.exports as GhosttyWasmExports;
     this.memory = this.exports.memory;
   }
@@ -57,7 +57,17 @@ export class Ghostty {
     rows: number = 24,
     config?: GhosttyTerminalConfig
   ): GhosttyTerminal {
-    return new GhosttyTerminal(this.exports, this.memory, cols, rows, config);
+    const module = this.wasmModule;
+    return new GhosttyTerminal(
+      this.exports,
+      this.memory,
+      cols,
+      rows,
+      config,
+      module === undefined
+        ? undefined
+        : (nextCols, nextRows) => Ghostty.fromModule(module).createTerminal(nextCols, nextRows, config)
+    );
   }
 
   static async load(wasmPath?: string): Promise<Ghostty> {
@@ -139,7 +149,12 @@ export class Ghostty {
     }
 
     const wasmModule = await WebAssembly.compile(wasmBytes);
-    const wasmInstance = await WebAssembly.instantiate(wasmModule, {
+    return Ghostty.fromModule(wasmModule);
+  }
+
+  /** Instantiate the already compiled code with an independent allocator and memory. */
+  private static fromModule(wasmModule: WebAssembly.Module): Ghostty {
+    const wasmInstance = new WebAssembly.Instance(wasmModule, {
       env: {
         log: (ptr: number, len: number) => {
           const bytes = new Uint8Array(
@@ -151,7 +166,7 @@ export class Ghostty {
         },
       },
     });
-    return new Ghostty(wasmInstance);
+    return new Ghostty(wasmInstance, wasmModule);
   }
 }
 
@@ -273,7 +288,8 @@ export class GhosttyTerminal {
     memory: WebAssembly.Memory,
     cols: number = 80,
     rows: number = 24,
-    config?: GhosttyTerminalConfig
+    config?: GhosttyTerminalConfig,
+    private readonly recreate?: (cols: number, rows: number) => GhosttyTerminal
   ) {
     this.exports = exports;
     this.memory = memory;
@@ -363,10 +379,39 @@ export class GhosttyTerminal {
     this.initCellPool();
   }
 
+  /**
+   * Replace VT storage for an authoritative replay while preserving this object's identity.
+   * RIS clears the viewport, but after column changes the allocator can recycle old history
+   * pages with stale cells. A fresh instance of the cached module gives every page clean
+   * storage. SelectionManager and other readers keep their reference to this wrapper.
+   *
+   * Callers that construct Ghostty directly from an Instance must also supply its Module to
+   * enable this operation. Return false, without changing state, when that code is unavailable.
+   */
+  resetForReplay(): boolean {
+    if (!this.recreate) return false;
+    const replacement = this.recreate(this._cols, this._rows);
+    this.free();
+    this.exports = replacement.exports;
+    this.memory = replacement.memory;
+    this.handle = replacement.handle;
+    this.viewportBufferPtr = 0;
+    this.viewportBufferSize = 0;
+    this.graphemeBuffer = null;
+    this.graphemeBufferPtr = 0;
+    this.cellPool = replacement.cellPool;
+    return true;
+  }
+
   free(): void {
     if (this.viewportBufferPtr) {
       this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
       this.viewportBufferPtr = 0;
+    }
+    if (this.graphemeBufferPtr) {
+      this.exports.ghostty_wasm_free_u8_array(this.graphemeBufferPtr, 16 * 4);
+      this.graphemeBufferPtr = 0;
+      this.graphemeBuffer = null;
     }
     this.exports.ghostty_terminal_free(this.handle);
   }

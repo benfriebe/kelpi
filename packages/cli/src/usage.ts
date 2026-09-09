@@ -11,6 +11,7 @@ export type Writer = (text: string) => void;
 
 export const globalUsage = `Usage:
   kelpi --version
+  kelpi document get|watch|edit|save|refresh|mode [--help]
   kelpi plugin list|contributions|init|install|enable|disable|reload|remove|open|run|settings|logs|watch|services|service-call|service-select [--help]
   kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]
   kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>]

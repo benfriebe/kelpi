@@ -186,6 +186,8 @@ export interface PersistenceHealth {
 
 /** Everything a handler may touch. Boot composes the concrete instance. */
 export interface HandlerContext<State, Action, Event> {
+  /** Refuse destructive close commands when a daemon-owned document cannot be saved. */
+  readonly prepareDocumentClose?: ((paneIDs: readonly string[]) => void) | undefined;
   readonly store: DomainStore<State, Action, Event>;
   readonly pty: PtyManager;
   readonly term: TerminalStateService;

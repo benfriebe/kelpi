@@ -487,6 +487,8 @@ function handleWorkspaceDelete(
         return;
     }
 
+    try { ctx.prepareDocumentClose?.([...workspace.panes, ...workspace.parkedPanes].map(pane => pane.id)); }
+    catch (error) { fail(reply, error instanceof Error ? error.message : String(error)); return; }
     const path = workspacePath(workspace);
     ok(reply, {
         workspace_id: uuidOut(workspace.id),

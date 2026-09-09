@@ -26,6 +26,9 @@ export const handlePaneClose: CommandHandler<PaneHandlerContext> = (msg, ctx, re
     }
     const { paneID, pane, workspace } = resolution;
 
+    try { ctx.prepareDocumentClose?.([paneID]); }
+    catch (error) { sendError(reply, error instanceof Error ? error.message : String(error)); return; }
+
     sendOK(reply, {
         pane_id: paneID,
         workspace_id: workspace.id,

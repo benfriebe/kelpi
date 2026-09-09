@@ -13,6 +13,8 @@ import { inOperationScope, operationScope, type PluginOperationChannel, type Plu
 import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-services.js';
 import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
+import { PluginDocuments } from './documents.js';
+import type { ContentService } from '../content/service.js';
 
 interface Installation { manifest: PluginManifest; revision: string; enabled: boolean }
 interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
@@ -22,6 +24,7 @@ interface Running {
     fail(error: Error): void;
 }
 export interface PluginServiceOptions {
+    readonly content?: ContentService;
     readonly directory?: string;
     readonly pty?: PtyManager;
     readonly term?: TerminalStateService;
@@ -49,6 +52,7 @@ function text(value: unknown, field: string): string {
 
 /** Per-daemon installation registry and supervisor. No plugin code runs on the daemon loop. */
 export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
+    private readonly documents: PluginDocuments;
     readonly epoch = randomUUID();
     readonly daemonID: string;
     readonly directory: string;
@@ -79,6 +83,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly offStore: () => void;
 
     constructor(private readonly options: PluginServiceOptions) {
+        this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); });
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));
         this.daemonID = randomUUID();
@@ -114,6 +119,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         }
         this.offStore = options.store.subscribe(events => {
             if (this.closed) return;
+            this.documents.prune(paneID => options.store.getState().workspaces.some(workspace => workspace.panes.some(pane => pane.id === paneID)));
             const sequence = ++this.sequence;
             // Reserve ordering synchronously, but do serialization and IPC outside dispatch.
             queueMicrotask(() => { if (!this.closed) this.publish({ epoch: this.epoch, sequence, name: 'state.changed', data: serializeDomainEvents(events) }); });
@@ -327,6 +333,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (!runtime.stopping) void this.stopDependents(id);
             for (const operation of this.operations.get(id) ?? []) operation.abort();
             this.operations.delete(id);
+            this.documents.release(owner => owner.pluginID === id);
             for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
             for (const [key, sub] of this.terminalSubs) if (sub.pluginID === id) this.terminalSubs.delete(key);
             child.kill('SIGKILL'); this.changed();
@@ -409,6 +416,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         return this.asset(lease.pluginID, lease.revision, relative);
     }
     private release(leaseID: string): void {
+        this.documents.release(owner => owner.lease === leaseID);
         this.leases.delete(leaseID);
         for (const operation of this.leaseOperations.get(leaseID) ?? []) operation.abort();
         this.leaseOperations.delete(leaseID);
@@ -702,6 +710,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (method === 'services.list') return this.services();
         if (method === 'services.select') return this.selectService(args);
         if (method === 'services.call') return this.operation(id, lease, signal => this.callService(args, context, signal));
+        if (method.startsWith('documents.')) {
+            const input = { ...args, paneID: args['paneID'] ?? context.paneID ?? null };
+            if (method === 'documents.unwatch') { this.documents.unwatch({ pluginID: id, ...(lease ? { lease } : {}) }, args['subscription']); return null; }
+            return this.operation(id, lease, signal => method === 'documents.watch'
+                ? this.documents.watch({ pluginID: id, ...(lease ? { lease } : {}) }, input, signal)
+                : this.documents.call(method.slice('documents.'.length), input, signal));
+        }
         if (method === 'files.read' || method === 'files.write') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.files', version: 1, method: method.slice(6), args }, context, signal));
         if (method === 'ui.reveal') {
             const paneID = text(args['paneID'] ?? context.paneID, 'paneID');
@@ -786,6 +801,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     run(action: string, input: JsonObject, reply: ReplyHandle, caller: Partial<PluginContext> = {}): void {
         const context: PluginContext = { ...caller, daemonID: this.daemonID };
+        if (action === 'document-watch') { this.documents.stream(String(input['paneID'] ?? ''), reply); return; }
         if (action === 'watch') {
             const anchor = this.sequence;
             const watcher = (event: PluginEvent): void => { if (!reply.closed && event.sequence > anchor) reply.send({ ok: true, event }); };
@@ -800,6 +816,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');
         if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1 };
+        if (action === 'document') return this.documents.call(text(input['method'], 'method'), pluginObject(input['args']), operationScope().signal);
         if (action === 'list') { if (this.registryError) throw new Error(this.registryError); return this.list() as unknown as JsonValue; }
         if (action === 'contributions') return this.contributions() as unknown as JsonValue;
         if (action === 'services') return this.services();
@@ -872,6 +889,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         for (const dependent of order) await this.stopPlugin(dependent, false);
     }
     private async stopPlugin(id: string, cascade = true): Promise<void> {
+        this.documents.release(owner => owner.pluginID === id);
         if (cascade) await this.stopDependents(id);
         this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
         this.publishContributions(id, { context: {}, items: {} });
@@ -889,6 +907,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (this.running.get(id) === runtime) this.running.delete(id);
     }
     async dispose(): Promise<void> {
+        this.documents.release(() => true);
         if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear(); this.serviceListeners.clear();
         for (const lease of this.leases.keys()) this.release(lease);
         for (const operations of this.operations.values()) for (const operation of operations) operation.abort();

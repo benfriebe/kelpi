@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document Lab</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header><div><span class="eyebrow">DOCUMENT LAB</span><h1 id="title">Loading document…</h1></div><span id="kind"></span></header>
+  <nav aria-label="Document actions">
+    <button id="mode" hidden>Edit</button><button id="save" disabled>Save</button>
+    <button id="refresh" disabled>Refresh</button><button id="wrap" aria-pressed="true">Wrap lines</button>
+  </nav>
+  <div id="problem" role="alert" hidden></div>
+  <div id="recovery" hidden>Review or restore your local edits in the recovery bar above.
+    <button id="reload">Load daemon text (draft kept)</button>
+  </div>
+  <main><textarea id="editor" aria-label="Document text" spellcheck="false" hidden></textarea><article id="preview" hidden></article></main>
+  <footer><span id="status" role="status">Connecting…</span><span id="identity"></span></footer>
+  <script type="module" src="./editor.js"></script>
+</body>
+</html>

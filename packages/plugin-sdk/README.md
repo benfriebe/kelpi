@@ -69,6 +69,15 @@ context)` remains compatible with the CLI/UI wire protocol and returns `{ok:fals
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
 
+## Documents
+
+Native document source is available through `api.documents.get/edit/save/setMode/refresh`
+and `watch/unwatch`. Mutations require an observed revision and reject stale writes with
+`DOCUMENT_CONFLICT`. Browser document renderers also use `stage` and `applyDraft` to preserve
+each input outside their iframe before serialized writes. See the
+[document contract](../../docs/plugin-documents.md), [types](documents.d.ts) and
+[Document Lab](../../examples/plugins/document-lab) for rendering, recovery and remote scope.
+
 ## Hooks and service providers
 
 Declare contributions in `kelpi.plugin.json`, then register them in the backend's `activate`:

@@ -1,0 +1,25 @@
+:root { color-scheme: dark light; font: 12px/1.5 system-ui, sans-serif; color: var(--kelpi-fg, #eee); background: var(--kelpi-bg, #181a20); }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 10px; }
+.eyebrow { color: var(--kelpi-accent, #94b8ff); font-size: 9px; font-weight: 700; letter-spacing: .15em; }
+h1 { font-size: 14px; font-weight: 600; margin: 3px 0 0; overflow-wrap: anywhere; }
+#kind { border: 1px solid var(--kelpi-border, #434651); border-radius: 4px; padding: 1px 6px; font-size: 10px; }
+nav { display: flex; gap: 5px; flex-wrap: wrap; padding: 0 16px 12px; }
+button { font: inherit; color: inherit; background: var(--kelpi-surface, #252830); border: 1px solid var(--kelpi-border, #434651); border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--kelpi-accent, #94b8ff); outline-offset: -2px; }
+#problem, #recovery { padding: 8px 16px; background: var(--kelpi-surface, #252830); overflow-wrap: anywhere; }
+#problem { color: #e6a684; }
+main { flex: 1; min-height: 0; border-block: 1px solid var(--kelpi-border, #434651); }
+textarea, article { margin: 0; width: 100%; height: 100%; padding: 16px; overflow: auto; }
+textarea { resize: none; border: 0; color: inherit; background: transparent; font: 13px/1.6 ui-monospace, monospace; tab-size: 4; white-space: pre-wrap; }
+article { font-size: 13px; overflow-wrap: anywhere; }
+article p { white-space: pre-wrap; }
+article pre, article .diff { font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; }
+.diff > div { min-height: 1.6em; }
+body[data-wrap="false"] .diff, body[data-wrap="false"] article pre { white-space: pre; }
+.added { color: #98d6ad; background: #71c79512; }.removed { color: #e6a5a5; background: #e99c9c12; }.hunk { color: #a3bce9; }
+footer { display: flex; justify-content: space-between; gap: 12px; padding: 6px 16px; color: var(--kelpi-fg-secondary, #a0a5b4); font-size: 10px; }
+[hidden] { display: none !important; }
+@media (max-width: 400px) { header { padding-top: 9px; } nav { padding-bottom: 8px; } textarea, article { padding: 10px; } #identity { display: none; } }

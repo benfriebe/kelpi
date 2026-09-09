@@ -32,8 +32,9 @@ retain ownership of mutations, validation, persistence and Git orchestration.
 
 These modules are bundled TypeScript components. Installed plugins continue to run through
 the isolated iframe bridge and public SDK. Toolbar and Status also use registered feature bindings and a shared window command model;
-see the [chrome feature guide](plugin-chrome.md). Native pane features still use their existing
-adapters.
+see the [chrome feature guide](plugin-chrome.md). Markdown, Scratchpad and Diff bodies now use
+registered bindings and a shared document host; see the [document guide](plugin-documents.md).
+Terminal and browser features retain their existing adapters.
 
 ## Window navigation for plugins
 

@@ -1,8 +1,11 @@
 # Plugin implementation validation
 
 Validation record for 2026-09-08 and 2026-09-09 in the isolated
-`feature/plugin-extensibility` worktree, based on `084a2bb`. Validation completed before
-the changes were organized into commits. Environment: macOS arm64, Node 24.15.0,
+`plugin-extensibility` worktree, based on `084a2bb`. The original implementation was
+validated before it was organized into commits; the native-service follow-up builds on
+`de3fc89` and was also validated before being committed in logical phases. The review stack
+is `feature/plugin-extensibility` → `feature/plugin-native-runtime` →
+`feature/plugin-native-integration` → `feature/plugin-native-sdk`. Environment: macOS arm64, Node 24.15.0,
 pnpm 10.28.1. Tests used private daemons, databases, sockets, ports, home directories, and
 Electron profiles.
 
@@ -10,6 +13,53 @@ The [plugin guide](plugins.md) describes the implemented API and upgrade require
 The [original audit](plugin-extensibility-audit.md) distinguishes the longer-term design
 from this implementation. This version supports explicitly trusted local plugins; it does
 not implement a marketplace or an untrusted execution runtime.
+
+## Native service replacement (2026-09-09)
+
+The daemon now registers native adapters for Git, content rendering, managed processes, and
+the existing files contract. Git selection reaches repository discovery, Inspector/footer
+status, worktree operations, graft, branch/HEAD watchers, and native diff sources. Rendering
+selection updates existing Markdown/diff previews inside their original sandboxed frames.
+Managed SDK processes use the same selected-service dispatch. The SDK includes typed native
+contracts and the build-free [Service Lab](../examples/plugins/service-lab) example.
+
+The implementation retains bundled fast paths when no available external provider is selected.
+Provider transitions invalidate cached data and cancel obsolete preview generations. Failed
+mutations are not retried. Regression tests cover malformed/oversized results, cancellation
+during activation, delayed Markdown reads against dirty/saved/closed/replaced buffers, and
+concurrent status refreshes. A real daemon shutdown test verifies that the selected Git
+provider restores an active graft before deactivation, preserving tracked/untracked edits,
+the original branch/HEAD, and an unrelated pre-existing stash.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Typechecks and automated tests | All workspace typechecks pass; 6,661 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | [Verification log](../out/plugin-native-full-verification.log) |
+| Live native-service scenario | 22/22 checks pass onscreen and in two separate concurrent background instances. Includes actual CLI worktree creation, Inspector-opened diffs, graft/restore/removal, native previews, process execution, reload/fallback, and saved text. | [Onscreen](../out/plugin-native-services-live/results.json), [Background](../out/plugin-native-services-hidden/results.json), [Background repeat](../out/plugin-native-services-hidden-repeat/results.json) |
+| Full scenario lane | All 264 checks across 20 scenarios pass on the first attempt against the final source. | [Results](audit/verify-latest/battery/scenarios/results.json) |
+| Full verification battery | All components completed in 21.6 minutes, without component retries. The full audit findings are recorded below; its exit status does not mean every assertion passed. | [Battery report](audit/verify-latest/verify-report.json) |
+| Packaged application smoke | 67/67 checks pass against the rebuilt application. | [Verification log](../out/plugin-native-full-verification.log) |
+| Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children using the rebuilt application's bundled payload and Node. Includes files/processes, CLI routing, restart, and browser/phone clients. | [Results](../out/plugin-native-packaged-validation/results.json) |
+| Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every failing/errored step from the full audit, plus its web-pane prerequisite and console check. | [Report](../out/plugin-native-audit-followup/index.md) |
+| Shutdown ownership | The real-daemon regression confirms provider restoration completes before backend deactivation. | [Focused log](../out/plugin-native-shutdown-tests.log) |
+| Concurrent status completion | The original failure was reproduced deterministically; 76 focused Git/watcher/WS repository tests pass after the fix. | [Reproduction](../out/plugin-status-refresh-red.log), [Tests](../out/plugin-status-refresh-tests.log) |
+| Source and diff hygiene | The validated product, SDK, example, and test sources match the SHA-256 manifest captured before the final battery. Only this validation record changed afterward. `git diff --check` passes. | [Source verification](../out/plugin-native-source-verification.json) |
+
+The full UI audit ran **131 steps / 1,636 assertions**, with **4 failed assertions and
+4 step errors**. Every finding matches the preserved pre-native-service baseline, including
+error messages after normalizing ephemeral pane IDs. There are no new failed assertions or
+error steps. The [comparison](../out/plugin-native-baseline-comparison.json) records the exact
+findings; the full audit is not reported as globally green.
+
+All seven affected steps pass in the fresh-instance **146-assertion follow-up**, without
+application or audit-fixture changes after the full battery. Both reports are retained so the
+isolated results do not hide the long-run findings.
+
+The final [onscreen provider preview](../out/plugin-native-services-live/plugin-native-services-01-native-inspector-markdown-and-diff-providers.png)
+was visually inspected. It shows the custom renderer in native Markdown and Diff panes and
+provider-supplied status in Inspector/footer, with the native Workspaces filter unchanged.
+The [service guide](plugin-services.md) records supported contracts and the remaining native
+lifecycle boundaries. This does not replace editor save ownership, terminal streams,
+authentication, or persistence formats.
 
 ## Extensibility follow-up (2026-09-09)
 
@@ -27,9 +77,9 @@ provider. The implementation boundaries and failure semantics are in the current
 | Gate | Result | Evidence |
 | --- | --- | --- |
 | Typechecks and automated tests | All workspace typechecks pass; 6,583 root tests and 868 shell tests pass. The existing optional real-Swift-database test remains skipped. | [Full verification log](../out/plugin-extension-full-verification.log) |
-| Full scenario lane | 242 checks across 19 scenarios pass after the corrected extension scenario is retried in isolation. | [Initial lane](audit/verify-latest/battery/scenarios/results.json), [Corrected retry](audit/verify-latest/battery/scenario-retry-plugin-extensions/results.json) |
+| Full scenario lane | 242 checks across 19 scenarios pass after the corrected extension scenario is retried in isolation. | [Initial lane](../out/plugin-before-native-verification/battery/scenarios/results.json), [Corrected retry](../out/plugin-before-native-verification/battery/scenario-retry-plugin-extensions/results.json) |
 | Extension scenario | 23/23 checks pass in both onscreen and hidden modes. | [Onscreen](../out/plugin-extension-final-live/results.json), [Hidden](../out/plugin-extension-final-hidden/results.json) |
-| Full verification battery | All components completed in 21.7 minutes. The UI audit findings are recorded below; its exit status does not mean every assertion passed. | [Battery report](audit/verify-latest/verify-report.json) |
+| Full verification battery | All components completed in 21.7 minutes. The UI audit findings are recorded below; its exit status does not mean every assertion passed. | [Battery report](../out/plugin-before-native-verification/verify-report.json) |
 | Packaged application smoke | 67/67 checks pass against the rebuilt application. | [Full verification log](../out/plugin-extension-full-verification.log) |
 | Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children running from the new application's bundled payload and Node. | [Results](../out/plugin-extension-packaged-validation/results.json) |
 | Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every step that failed in the full audit, plus its web-pane prerequisite and console check. | [Report](../out/plugin-extension-audit-followup/index.md) |
@@ -47,7 +97,7 @@ tab container, and Workspaces retains its full-width filter. The preceding live 
 passed all 22 workbench checks and all 11 native sidebar-swap checks with this same product
 build; the full scenario lane confirms those results.
 
-The latest full UI audit ran **131 steps / 1,636 assertions**, with **4 failed assertions and
+That full UI audit ran **131 steps / 1,636 assertions**, with **4 failed assertions and
 4 step errors**. Every failed assertion and error matches the recorded baseline; there are
 no new assertion failures, error steps, or changed error messages (ignoring ephemeral pane
 IDs). The baseline had 5 failed assertions and the same 4 errors. The earlier `sidebar-spring`

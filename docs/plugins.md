@@ -367,11 +367,21 @@ their own `id`/`title`, `service`, matching `version`, all required `methods`, a
 `timeoutMs` (25–30000). A provider may implement an owned service, a dependency's service,
 or a bundled service. Register its methods with `api.providers.register(id, methods)`.
 
-`kelpi.files` version 1 is the initial replaceable bundled service: `read({path})` returns
-UTF-8 text and `write({path,text})` writes it. Both SDK `files` helpers use its selected
-provider. A provider can delegate using
-`api.services.call('kelpi.files', 1, 'read', args, {provider: 'bundled'})`. This does not
-replace unrelated internal file operations in terminal, git, or editor services.
+The daemon exposes four version-1 bundled services:
+
+| Service | Native reach |
+| --- | --- |
+| `kelpi.git` | Git primitives used by repository discovery/status, worktree commands, graft, and diff generation. Kelpi's command guards and state ownership remain in place. |
+| `kelpi.content.render` | HTML generation for native Markdown and diff previews, including already-open previews when the provider changes. Source buffers, editing, watches, and save ownership remain with Kelpi. |
+| `kelpi.process` | Managed `api.process.exec` and explicit service calls. This does not replace PTY spawning or arbitrary Node subprocesses. |
+| `kelpi.files` | SDK `files.read/write` and explicit service calls, preserving the existing version-1 contract. Internal editor saves and unrelated file access retain their existing behavior. |
+
+Every service supports explicit bundled delegation, for example
+`api.services.call('kelpi.git', 1, 'getStatus', args, {provider: 'bundled'})`.
+The SDK infers built-in method arguments/results and exports `BuiltinProviderMethods` for
+typed implementations. The [native service guide](plugin-services.md) lists exact contracts,
+provider examples, and lifecycle boundaries. Built-in adapters validate inputs and provider
+results; ordinary high-level SDK helpers retain their command and reply semantics.
 
 Settings → Plugins → Service providers and `kelpi plugin service-select` choose providers
 explicitly. Selections are daemon-scoped, persisted, and retained when a provider disappears.
@@ -379,6 +389,8 @@ A failed or disabled selection falls back to the bundled implementation where on
 Custom services require an explicit provider choice; installation order never picks one.
 The failing call returns its error, avoiding an automatic retry of a possibly completed write.
 Later calls use the fallback. Explicit requests for an unavailable provider fail.
+Native content previews additionally recover from renderer errors or oversized documents by
+rendering the complete document with the bundled renderer, retaining the user's selection.
 
 ```sh
 kelpi plugin services
@@ -391,6 +403,9 @@ The SDK offers `services.list`, `services.call`, and `services.select`. Discover
 declared contracts, provider availability, and both preferred and active provider IDs.
 Method/version mismatches and recursive provider calls fail with diagnostics. Hook/provider
 registrations must match the manifest before activation completes and are revoked on stop.
+`services.changed` carries the discovery array; `services.invalidated` carries service keys
+such as `['kelpi.git@1']` when selection, reload, failure, or dependencies change the effective
+implementation. Native previews, Inspector data, and Git footer data refresh on invalidation.
 
 ## Execution and recovery
 
@@ -416,8 +431,9 @@ direct command/process requests and terminal subscriptions owned by that view.
 
 The supported boundary is registered views/containers, commands, events, operation hooks,
 and versioned services. Private functions and arbitrary native OS controls are not plugin
-APIs. Additional internal providers require explicit service adapters; `kelpi.files` is the
-first bundled provider contract. An untrusted runtime, marketplace, signatures, automatic
+APIs. Further internal replacements require explicit adapters with their own lifecycle and
+result contracts; terminal streams, authentication, and editor save ownership remain native.
+An untrusted runtime, marketplace, signatures, automatic
 package upgrades/rollback, and a published SDK remain outside this local-plugin implementation.
 
 ## Database and protocol upgrade

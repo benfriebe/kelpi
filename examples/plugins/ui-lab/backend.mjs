@@ -6,7 +6,7 @@ export async function activate(api) {
     let lastInvocation = null;
     let settings = await api.settings.get();
     let pending = Promise.resolve();
-    // Commands and setting events can overlap. Keep the example's read/change/publish
+    // Commands and settings/gap events can overlap. Keep the example's read/change/publish
     // sequence ordered without relying on a browser view being mounted.
     const serialize = operation => {
         const next = pending.then(operation);
@@ -35,10 +35,13 @@ export async function activate(api) {
         return publish();
     }));
     api.commands.register(`${id}.snapshot`, () => serialize(async () => ({ state: await api.contributions.get(), settings: await api.settings.get(), lastInvocation })));
+    const refreshSettings = () => serialize(async () => { settings = await api.settings.get(); await publish(); });
     const offSettings = api.events.on('settings.changed', event => {
         if (event.pluginID !== id) return;
-        return serialize(async () => { settings = await api.settings.get(); await publish(); });
+        return refreshSettings();
     });
+    // A gap can replace settings.changed events, so recover the cache before publishing.
+    const offGap = api.events.on('gap', refreshSettings);
     await publish();
-    return offSettings;
+    return () => { offSettings(); offGap(); };
 }

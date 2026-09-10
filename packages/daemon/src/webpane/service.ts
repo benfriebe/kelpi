@@ -273,7 +273,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const inspectionRevisions = new Map<string, number>();
     let nextInspectionRevision = 0;
     let nextPageGeneration = 0;
-    const findRequests = new Map<string, object>();
+    const findRequests = new Map<string, { latest: object | null; query: object | null }>();
     const stateChanged = (paneID: string | null): void => {
         for (const listener of stateListeners) {
             try { listener(paneID); } catch (error) { options.onError?.(error instanceof Error ? error : new Error(String(error)), 'browser-state'); }
@@ -801,18 +801,25 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
         async runFind(paneID, tabID, action, needle, signal) {
             const request = {}, generation = pages.get(paneID)?.generation, tabGeneration = tabGenerations.get(paneID)?.get(tabID), owner = host.hostID;
-            findRequests.set(paneID, request);
+            const requests = findRequests.get(paneID) ?? { latest: null, query: null };
+            requests.latest = request;
+            // Stepping changes the current match, not the query. Its newer count must not
+            // prevent an outstanding search/clear from updating the remembered needle.
+            if (action === 'search' || action === 'clear') requests.query = request;
+            findRequests.set(paneID, requests);
             const envelope = await host.call('find', { paneID, tabID, action, needle }, { signal });
             const current = webPaneOf(paneID);
-            if (signal?.aborted || owner !== host.hostID || findRequests.get(paneID) !== request || (store && (pages.get(paneID)?.generation !== generation || tabGenerations.get(paneID)?.get(tabID) !== tabGeneration || !current?.web.tabs.some(tab => tab.id === tabID)))) {
-                if (findRequests.get(paneID) === request) findRequests.delete(paneID);
-                return { ok: false, error: 'browser find target changed', tab_id: tabID };
-            }
-            findRequests.delete(paneID);
-            if (envelope['ok'] === true) {
+            const active = findRequests.get(paneID) === requests;
+            const latest = active && requests.latest === request, query = active && requests.query === request;
+            const targetChanged = signal?.aborted || owner !== host.hostID || !active || (store && (pages.get(paneID)?.generation !== generation || tabGenerations.get(paneID)?.get(tabID) !== tabGeneration || !current?.web.tabs.some(tab => tab.id === tabID)));
+            if (!targetChanged && query && envelope['ok'] === true) {
                 if (action === 'clear') findState.forget(paneID);
                 else if (action === 'search') findState.remember(paneID, tabID, needle);
             }
+            if (latest) requests.latest = null;
+            if (query) requests.query = null;
+            if (active && requests.latest === null && requests.query === null) findRequests.delete(paneID);
+            if (targetChanged || !latest) return { ok: false, error: 'browser find target changed', tab_id: tabID };
             // The tab rides back so a stale count (WEB-063) is recognisable as stale.
             return { ...envelope, tab_id: tabID };
         },

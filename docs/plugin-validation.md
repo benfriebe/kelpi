@@ -14,6 +14,52 @@ The [original audit](plugin-extensibility-audit.md) distinguishes the longer-ter
 from this implementation. This version supports explicitly trusted local plugins; it does
 not implement a marketplace or an untrusted execution runtime.
 
+## Browser pane replacement (2026-09-10)
+
+Implemented in `out/worktrees/plugin-browser` from merged main `24b19c9`. The review layers
+are `feature/plugin-browser-contract` → `feature/plugin-browser-features` →
+`feature/plugin-browser-lab`. Browser chrome is replaceable while the daemon and its native
+host retain tabs, live pages and storage sessions. The [browser guide](plugin-browser.md)
+documents shared operations, local surface attachment, ownership and private installation;
+[Browser Lab](../examples/plugins/browser-lab) is a build-free SDK-only example.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete workspace checks | All typechecks pass; 7,357 root tests and 868 shell tests pass (**8,225 total**). One existing optional database test is skipped. | [Check log](../out/plugin-browser-validation/check.log) |
+| Contract PR in isolation | All typechecks and **491 tests** pass in an export containing only the 27 foundational files. | [Typechecks](../out/plugin-browser-validation/contract-typecheck.log), [Tests](../out/plugin-browser-validation/contract-tests.log) |
+| UI PR in isolation | All typechecks and **663 tests** pass in a second export without Browser Lab. The 19 UI files match the export byte-for-byte. | [Typechecks](../out/plugin-browser-validation/features-typecheck.log), [Tests](../out/plugin-browser-validation/features-tests.log) |
+| Production outputs | Daemon, CLI, client and shell builds pass. All **18 artifact hashes** match across both final live runs and current outputs. | [Build hashes](audit/plugin-browser/live-hidden/build-manifest.json) |
+| Browser Lab hidden | **59/59** pass against owned loopback pages, including native page identity, navigation, shortcuts, private mode, inspection/batch watches, remote controls and host loss. | [Results](audit/plugin-browser/live-hidden/results.json) |
+| Browser Lab onscreen | **59/59** pass on the same build. Desktop, Tools, Settings coverage and the 390px phone UI were visually inspected. | [Results](audit/plugin-browser/live-onscreen/results.json), [Visual review](audit/plugin-browser/README.md) |
+| Existing native regressions | **20/20** pass: hide/restore 7/7 and crash recovery 13/13. | [Results](audit/plugin-browser/native-regressions/results.json) |
+
+The final live runs total **138 assertions**. Native CDP target IDs and in-page JavaScript,
+unsaved text, cookies and local storage establish that renderer swaps retain the actual
+page. Bounds are compared with the plugin's measured slot and native focus gutter.
+Inspection watches cover actual native picks, queue clears and same-count batch comment
+edits. Private/session and host changes invalidate obsolete picker arms. The control API
+also passes canonical operation-hook veto, delayed-target and released-view tests.
+
+Review found and fixed deferred focus stealing, stale actions after hide/focus loss, old
+renderer teardown parking a newly mounted page, and native workspace moves recreating
+pages. Native UI state reads remain independent of plugin JSON size limits. The full suite
+then required six legacy App checks to answer the new ownership query from their fake
+daemon; their existing geometry/reconnect/poster assertions remain intact. These final
+fixture changes do not alter the product artifacts used by the live runs.
+
+The ignored Ghostty bundle was rebuilt from this checkout's exact vendored source; no
+source or lockfile changed. All validation used private state, sockets and Electron
+profiles; the installed Kelpi was preserved and the live harness shut down cleanly.
+Versioned screenshots, result summaries and hashes are in the
+[review record](audit/plugin-browser/README.md); raw logs and target/placement diagnostics
+remain under `out/plugin-browser-validation`.
+
+Phone coverage uses Chromium emulation. Physical-device software keyboards/IME, packaged
+release validation and the full UI audit were not repeated. Native page streaming and
+multiple simultaneous browser hosts per daemon remain outside this contract; remote and
+phone clients control the owning daemon's page and show its availability accurately.
+Browser Lab demonstrates the replacement boundary without reproducing every bundled tool.
+
 ## Terminal renderer replacement (2026-09-10)
 
 Implemented in `out/worktrees/plugin-terminals` from merged main `021e193`. The review

@@ -1,0 +1,135 @@
+{
+  "stamp": "2026-09-10T09-32-59-480Z",
+  "windowPlacement": "hidden",
+  "files": [
+    "/Users/ben/code/kelpi/out/worktrees/plugin-browser/scripts/scenarios/web-pane-comes-back-after-hide.mjs",
+    "/Users/ben/code/kelpi/out/worktrees/plugin-browser/scripts/scenarios/web-pane-crashed-card.mjs"
+  ],
+  "summaries": [
+    {
+      "name": "web-pane-comes-back-after-hide",
+      "placement": "hidden",
+      "checks": 7,
+      "failed": 0,
+      "results": [
+        {
+          "label": "a web pane opened",
+          "ok": true,
+          "detail": "open ok: 218FC6DB-58FA-422D-9898-C3172C9C5AB5 ()"
+        },
+        {
+          "label": "its view is in the shell window to begin with",
+          "ok": true,
+          "detail": "{\"owner\":\"main\",\"bounds\":\"753,88 525×706\",\"reason\":\"attached\"}"
+        },
+        {
+          "label": "hiding the window takes the page off screen",
+          "ok": true,
+          "detail": "{\"owner\":\"holder\",\"bounds\":\"-\",\"reason\":\"window-hidden\"}"
+        },
+        {
+          "label": "coming back puts the page on screen again, with no user action (#75)",
+          "ok": true,
+          "detail": "{\"owner\":\"main\",\"bounds\":\"753,88 525×706\",\"reason\":\"attached\"}"
+        },
+        {
+          "label": "it comes back in the box it left",
+          "ok": true,
+          "detail": "753,88 525×706 -> 753,88 525×706"
+        },
+        {
+          "label": "switching workspace still parks the page",
+          "ok": true,
+          "detail": "{\"owner\":\"holder\",\"bounds\":\"-\",\"reason\":\"hidden\"}"
+        },
+        {
+          "label": "a page parked on purpose is NOT put back by a hide and a return",
+          "ok": true,
+          "detail": "{\"owner\":\"holder\",\"bounds\":\"-\",\"reason\":\"hidden\"}"
+        }
+      ],
+      "notes": [
+        "hide(): {\"visible\":true,\"minimized\":false}",
+        "restore(): {\"visible\":true,\"minimized\":false}",
+        "[shell] web pane 218FC6DB-58FA-422D-9898-C3172C9C5AB5 view owner=main bounds=753,88 525×706 (attached)",
+        "[shell] web host parking 1 view(s) (window-hidden)",
+        "[shell] web pane 218FC6DB-58FA-422D-9898-C3172C9C5AB5 view owner=holder bounds=- (window-hidden)",
+        "[shell] web pane 218FC6DB-58FA-422D-9898-C3172C9C5AB5 view owner=main bounds=753,88 525×706 (attached)",
+        "[shell] web host restoring 1 parked view(s) (window-shown): 1 placed, 0 still parked",
+        "[shell] web pane 218FC6DB-58FA-422D-9898-C3172C9C5AB5 view owner=holder bounds=- (hidden)"
+      ],
+      "ms": 7837
+    },
+    {
+      "name": "web-pane-crashed-card",
+      "placement": "hidden",
+      "checks": 13,
+      "failed": 0,
+      "results": [
+        {
+          "label": "`kelpi web open` opened a web pane",
+          "ok": true,
+          "detail": "open ok: DA3A9C6A-81E2-44AA-B1D7-3F55C4E1E5F8 (http://127.0.0.1:52979/)\n"
+        },
+        {
+          "label": "the fixture is running before anything is crashed",
+          "ok": true,
+          "detail": "http://127.0.0.1:52979/"
+        },
+        {
+          "label": "no card on a healthy pane",
+          "ok": true
+        },
+        {
+          "label": "a single renderer death rebuilds itself, with no card",
+          "ok": true,
+          "detail": "the page answers a read again"
+        },
+        {
+          "label": "and still no card afterwards",
+          "ok": true
+        },
+        {
+          "label": "a repeat crash raises the stopped-responding card",
+          "ok": true
+        },
+        {
+          "label": "it says what happened",
+          "ok": true
+        },
+        {
+          "label": "it names the address",
+          "ok": true
+        },
+        {
+          "label": "the nav row and the page hole are still there around it",
+          "ok": true
+        },
+        {
+          "label": "`kelpi web tabs` reports the tab as not live",
+          "ok": true,
+          "detail": "[{\"active\":true,\"id\":\"381E52DE-307D-4E8E-9AB3-B58C6D584A71\",\"index\":0,\"live\":false,\"title\":\"Crash Card Fixture\",\"url\":\"http://127.0.0.1:52979/\"}]"
+        },
+        {
+          "label": "the card carries a Reload button",
+          "ok": true
+        },
+        {
+          "label": "clicking Reload brings the page back",
+          "ok": true,
+          "detail": "the page answers a read after Reload"
+        },
+        {
+          "label": "and the card takes itself down",
+          "ok": true
+        }
+      ],
+      "notes": [
+        "shot: out/plugin-browser-validation/native-regressions/web-pane-crashed-card-01-crashed-card.png  [hidden: BLANK: a zero-opacity window composites to white through CDP; assertions only]",
+        "card: This page stopped responding http://127.0.0.1:52979/ was closed by the system. Reload to open it again. Reload",
+        "shot: out/plugin-browser-validation/native-regressions/web-pane-crashed-card-02-card-cleared.png  [hidden: BLANK: a zero-opacity window composites to white through CDP; assertions only]"
+      ],
+      "ms": 1411
+    }
+  ]
+}

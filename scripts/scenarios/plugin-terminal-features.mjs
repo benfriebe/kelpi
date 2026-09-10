@@ -22,6 +22,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
     const builtFiles = ['packages/daemon/dist/kelpid.js', 'packages/cli/dist/kelpi.js', 'packages/client/dist/index.html', 'packages/plugin-sdk/browser.js', 'examples/plugins/terminal-lab/ui/bundle.js', 'examples/plugins/terminal-lab/ui/bundle.css', 'scripts/fixtures/plugin-terminal.cjs', 'scripts/scenarios/plugin-terminal-features.mjs', ...fs.readdirSync(path.join(repoRoot, 'packages/client/dist/assets')).filter(file => /\.(js|css)$/.test(file)).map(file => `packages/client/dist/assets/${file}`)];
     fs.writeFileSync(path.join(rec.outDir, 'build-manifest.json'), JSON.stringify(Object.fromEntries(builtFiles.sort().map(file => [file, createHash('sha256').update(fs.readFileSync(path.join(repoRoot, file))).digest('hex')])), null, 2) + '\n');
     const originalURL = await page.eval('location.href');
+    const originalAgent = await page.eval('({ userAgent: navigator.userAgent, platform: navigator.platform })');
     const originalConfig = fs.readFileSync(sandbox.configPath, 'utf8');
     const originalClipboard = String((await harness.clipboardRead()).text);
     const json = async (args, target = cli) => JSON.parse(await target.ok(args));
@@ -153,12 +154,19 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         const switchedWhileBusy = state(local)?.busy;
         rec.check('switching renderers during a four MiB burst preserves process and authoritative screen', switchedWhileBusy && await ready(local.paneID) && await completed(local, sequence) && alive(local) && await sameScreen(local, 'SWITCH-BURST-COMPLETE'));
         await inside(local.paneID, `globalThis.__terminalScenarioIdentity = 'before-reload'; true`);
+        await page.eval(`(() => { const input = document.createElement('input'); input.id = 'terminal-review-caret'; input.setAttribute('aria-label', 'Review caret sentinel'); document.body.append(input); input.focus(); })()`);
         await cli.ok(['plugin', 'reload', pluginID]);
         rec.check('plugin reload reattaches and replays without restarting the process', await ready(local.paneID) && await check(local.paneID, `globalThis.__terminalScenarioIdentity === undefined`) && alive(local) && await sameScreen(local, 'SWITCH-BURST-COMPLETE'));
+        rec.check('delayed renderer attachment preserves an active chrome text field', await page.eval(`document.activeElement === document.getElementById('terminal-review-caret')`));
+        await page.eval(`document.getElementById('terminal-review-caret').remove()`);
         await inside(local.paneID, `setTimeout(() => { throw new Error('Intentional terminal renderer failure'); }, 0); true`);
         rec.check('renderer failure activates a bundled fallback with the same process', await native(local.paneID) && alive(local));
         await page.eval(`Array.from(document.querySelectorAll('[data-terminal-pane="${local.paneID}"] button')).find(button => button.textContent === 'Retry renderer').click()`);
         rec.check('retry restores the replacement after failure', await ready(local.paneID) && await sameScreen(local, 'SWITCH-BURST-COMPLETE'));
+        await inside(local.paneID, `void Promise.reject(new Error()); true`);
+        rec.check('an empty renderer error still activates the bundled fallback', await native(local.paneID) && alive(local));
+        await page.eval(`Array.from(document.querySelectorAll('[data-terminal-pane="${local.paneID}"] button')).find(button => button.textContent === 'Retry renderer').click()`);
+        rec.check('retry restores the renderer after an empty error', await ready(local.paneID) && alive(local));
 
         const otherWorkspace = await json(['workspace', 'create', '--name', 'Terminal Lab Hidden Check', '--json']);
         const otherPane = (await json(['pane', 'list', '--workspace', otherWorkspace.workspace_id, '--json']))[0].id;
@@ -220,6 +228,29 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         } finally {
             offReplay();
             await inside(local.paneID, `terminalLab.terminal.write = globalThis.__terminalScenarioWrite; delete globalThis.__terminalScenarioWrite; true`).catch(() => {});
+            await page.send('Emulation.clearDeviceMetricsOverride');
+        }
+        let queuedQuery = false, queuedReplay = false;
+        const offQueuedQuery = page.on('Network.webSocketFrameReceived', ({ response }) => {
+            if (response.opcode !== 2) return;
+            const data = Buffer.from(response.payloadData, 'base64');
+            if (data[0] === 1 && data.subarray(17).includes(Buffer.from('\x1b[6n'))) queuedQuery = true;
+            if (data[0] === 5 && queuedQuery) queuedReplay = true;
+        });
+        await inside(local.paneID, `(() => { const t = terminalLab.terminal, write = t.write; globalThis.__terminalScenarioWrite = write; t.write = function(data, done) { const text = typeof data === 'string' ? data : new TextDecoder().decode(data); if (text.includes('QUEUED-QUERY-BLOCKER') && !globalThis.__releaseQueuedWrite) { globalThis.__releaseQueuedWrite = () => write.call(this, data, done); return; } return write.call(this, data, done); }; })()`);
+        try {
+            await control(local, { op: 'paint', label: 'QUEUED-QUERY-BLOCKER' });
+            if (!await check(local.paneID, `typeof globalThis.__releaseQueuedWrite === 'function'`)) throw new Error('Ordinary output did not reach the held renderer');
+            offset = input(local).length;
+            await control(local, { op: 'query', label: 'RESIZE-QUERY-COMPLETE' });
+            if (!await d.settle(() => queuedQuery)) throw new Error('The query did not reach the host behind ordinary output');
+            await page.send('Emulation.setDeviceMetricsOverride', { width: 860, height: 640, deviceScaleFactor: 1, mobile: false });
+            const superseded = await d.settle(() => queuedReplay && input(local).length === offset);
+            await inside(local.paneID, `globalThis.__releaseQueuedWrite(); globalThis.__releaseQueuedWrite = true; true`);
+            rec.check('a queued device query survives resize replay before its renderer callback begins', superseded && await d.settle(() => /\x1b\[[0-9]+;[0-9]+R/.test(input(local).subarray(offset).toString())) && alive(local));
+        } finally {
+            offQueuedQuery();
+            await inside(local.paneID, `if (typeof globalThis.__releaseQueuedWrite === 'function') globalThis.__releaseQueuedWrite(); terminalLab.terminal.write = globalThis.__terminalScenarioWrite; delete globalThis.__terminalScenarioWrite; delete globalThis.__releaseQueuedWrite; true`).catch(() => {});
             await page.send('Emulation.clearDeviceMetricsOverride');
         }
         rec.note('Exercising host search through real keyboard input and repeated reveal actions');
@@ -346,6 +377,15 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('phone Control applies to an actual key and clears both latches', await d.settle(() => input(remote).subarray(offset).equals(Buffer.from([3]))) && await check(remote.paneID, `terminalLab.modifiers.ctrl === false`) && await d.settleDom(page, `document.querySelector(${JSON.stringify(ctrl)})?.getAttribute('aria-pressed') === 'false'`), JSON.stringify(input(remote).subarray(offset).toString()));
         await page.key('KeyC', { key: 'c', text: 'c', keyCode: 67 });
         rec.check('the following phone key is unmodified', await d.settle(() => input(remote).subarray(offset).equals(Buffer.from([3, 99]))));
+        const alt = `[data-testid="terminal-key-alt-${remote.paneID}"]`;
+        for (const [modifier, character, expected] of [['ctrl', '[', '\x1b'], ['ctrl', '\\', '\x1c'], ['alt', '/', '\x1b/'], ['alt', 'X', '\x1bX']]) {
+            await page.click(modifier === 'ctrl' ? ctrl : alt);
+            if (!await check(remote.paneID, `terminalLab.modifiers.${modifier} === true`)) throw new Error('Phone modifier did not reach the renderer');
+            offset = input(remote).length;
+            // Text insertion exercises beforeinput without inventing a physical key code.
+            await page.insertText(character);
+            rec.check(`phone ${modifier}+${character} preserves software-keyboard character encoding`, await d.settle(() => input(remote).subarray(offset).equals(Buffer.from(expected))), JSON.stringify(input(remote).subarray(offset).toString()));
+        }
         await diagnostics('phone-input');
         rec.check('terminal replacement fits the phone viewport', await check(remote.paneID, `document.documentElement.scrollWidth <= document.documentElement.clientWidth`));
         rec.check('the phone key bar fits inside the visible viewport', await d.settleDom(page, `(() => { const box = document.querySelector(${JSON.stringify(ctrl)})?.getBoundingClientRect(); return box && box.height > 0 && box.bottom <= (visualViewport?.height ?? innerHeight) + 1; })()`));
@@ -359,6 +399,15 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: `${remoteSandbox.base}/?token=${token}` });
         await choose(remote.paneID); rec.check('direct browser attachment preserves the remote process', await ready(remote.paneID) && alive(remote) && await sameScreen(remote, 'HIDDEN-QUERY-COMPLETE'));
+        await page.send('Emulation.setUserAgentOverride', { userAgent: originalAgent.userAgent, platform: 'Linux x86_64' });
+        await page.send('Page.reload');
+        if (!await ready(remote.paneID)) throw new Error('Non-Mac renderer did not reconnect');
+        await focus(remote.paneID); await inside(remote.paneID, `terminalLab.terminal.clearSelection(); true`);
+        offset = input(remote).length;
+        await harness.clipboardWrite('NON-MAC-COPY-SENTINEL');
+        await page.key('KeyC', { key: 'c', modifiers: d.MOD.ctrl, keyCode: 67 });
+        rec.check('non-Mac Ctrl+C sends exactly one interrupt with an empty selection', await d.settle(() => input(remote).subarray(offset).equals(Buffer.from([3]))) && String((await harness.clipboardRead()).text) === 'NON-MAC-COPY-SENTINEL');
+        await page.send('Emulation.setUserAgentOverride', originalAgent);
         await page.send('Page.navigate', { url: originalURL });
         rec.check('returning to the original window restores its local terminal process', await ready(local.paneID) && alive(local));
         rec.note('Physical mobile keyboards, actual OS IME candidate windows and two simultaneous native windows remain device/manual checks; this scenario used trusted CDP input and phone emulation.');
@@ -371,6 +420,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await harness.clipboardWrite(originalClipboard).catch(() => {});
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
+        await page.send('Emulation.setUserAgentOverride', originalAgent).catch(() => {});
         await page.send('Page.navigate', { url: originalURL }).catch(() => {});
         await cli.run(['plugin', 'remove', pluginID]);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);

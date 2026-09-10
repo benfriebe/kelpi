@@ -31,7 +31,7 @@ interface Workbench extends WorkbenchLayout {
     chords: readonly string[];
 }
 const WorkbenchContext = createContext<Workbench | null>(null);
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff'] as const;
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal'] as const;
 const SELECTIONS_CHANGED = 'kelpi-workbench-selections';
 export function useWorkbench(): Workbench {
     const value = useContext(WorkbenchContext); if (!value) throw new Error('WorkbenchProvider is required'); return value;

@@ -66,6 +66,10 @@ export interface TerminalPaneHandle {
      * Read at call time, never pushed: see the module header.
      */
     selection(): string;
+    /** Opaque plugin renderers answer a live read over their port, never a cached selection. */
+    readSelection?(): Promise<string>;
+    /** An isolated renderer applies the phone bar's one-shot modifiers in its own input path. */
+    setModifiers?(modifiers: { ctrl: boolean; alt: boolean }): void;
     /**
      * Bytes straight to this pane's PTY, as a KEYSTROKE (#82).
      *

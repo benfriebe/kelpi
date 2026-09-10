@@ -44,11 +44,28 @@ export interface CopySelectionDeps {
      * `null` and `''` are deliberately different answers: `null` means "not my chord", `''`
      * means "mine, and there is nothing to copy". Both decline; only the second is a terminal.
      */
-    readonly selectionFor: (paneID: string) => string | null;
+    readonly selectionFor: (paneID: string) => string | null | Promise<string>;
     /** The system clipboard write, or null when this browser exposes none. */
     readonly writeText: ((text: string) => Promise<void>) | null;
+    /** Start a clipboard write now while an opaque renderer resolves its selected text. */
+    readonly writePendingText?: ((text: Promise<string>) => Promise<void>) | undefined;
     /** Surfaced as the app's usual error toast. Never the copied text, only the reason. */
     readonly onError: (detail: string) => void;
+}
+
+/** A promised ClipboardItem checks activation when copy starts, before a renderer replies. */
+export function deferredClipboardWriter(
+    clipboard: Pick<Clipboard, 'write'> | undefined,
+    Item: typeof ClipboardItem | undefined = globalThis.ClipboardItem
+): ((text: Promise<string>) => Promise<void>) | undefined {
+    if (typeof clipboard?.write !== 'function' || typeof Item !== 'function') return undefined;
+    return text => {
+        const data = text.then(value => new Blob([value], { type: 'text/plain' }));
+        // Permission rejection or construction failure can happen before the browser reads
+        // this representation. Keep a later empty-selection rejection handled in that case.
+        void data.catch(() => {});
+        return clipboard.write([new Item({ 'text/plain': data })]);
+    };
 }
 
 /**
@@ -62,6 +79,32 @@ export function copySelection(deps: CopySelectionDeps): boolean {
     if (paneID === null) return false;
     const selection = deps.selectionFor(paneID);
     if (selection === null) return false;
+    if (typeof selection !== 'string') {
+        // The frame is opaque: ask its live renderer. Capture the pane now so a delayed reply
+        // cannot copy a newly focused pane, and never send a terminal interrupt for no selection.
+        if (deps.writePendingText) {
+            const empty = new Error('No terminal selection.');
+            const text = selection.then(value => { if (!value) throw empty; return value; });
+            void text.catch(() => {});
+            let writing: Promise<void>;
+            try { writing = deps.writePendingText(text); }
+            catch (error) { writing = Promise.reject(error); }
+            // An empty representation rejects the write, preserving the existing clipboard.
+            // Wait for the selection even if permission fails first, so no selection remains
+            // a quiet no-op and actual renderer/write errors are reported once.
+            void Promise.allSettled([text, writing]).then(([selected, written]) => {
+                const failure = selected.status === 'rejected' ? selected : written.status === 'rejected' ? written : null;
+                if (failure && failure.reason !== empty) deps.onError(failure.reason instanceof Error ? failure.reason.message : String(failure.reason));
+            });
+            return true;
+        }
+        void selection.then(async text => {
+            if (!text) return;
+            if (!deps.writeText) throw new Error('this browser exposes no clipboard');
+            await deps.writeText(text);
+        }).catch((error: unknown) => deps.onError(error instanceof Error ? error.message : String(error)));
+        return true;
+    }
     if (selection === '') return false;
     if (deps.writeText === null) {
         // Consumed: this IS a terminal pane with a selection, so falling through to a copy that

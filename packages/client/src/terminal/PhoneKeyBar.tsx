@@ -102,7 +102,7 @@ import {
 } from 'react';
 
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
-import { KEY_BAR_HEIGHT_PX, KeyBar } from './KeyBar';
+import { KEY_BAR_HEIGHT_PX, KeyBar, type StickyModifiers } from './KeyBar';
 import { PHONE_KEYBOARD_SETTLE_MS, keyboardBoxInset, watchSoftKeyboardMotion } from './keyboard-inset';
 import { paneHandle, subscribeTerminalPanes, terminalPanesVersion, type TerminalPaneHandle } from './pane-registry';
 import type { TerminalKeyInit } from './renderer';
@@ -350,6 +350,8 @@ export function PhoneKeyBar({
     const pasteText = useCallback((text: string): boolean => targetRef.current?.pasteText(text) ?? false, []);
     const showKeyboard = useCallback((): void => targetRef.current?.showKeyboard(), []);
     const hideKeyboard = useCallback((): void => targetRef.current?.hideKeyboard(), []);
+    // Capture this handle so a rebind can clear the old renderer's modifier state.
+    const setInputModifiers = useCallback((modifiers: StickyModifiers): void => target?.setModifiers?.(modifiers), [target]);
 
     // AND NOT ON DESKTOP: no element, no attributes, no bar. The content row is exactly the row
     // the app rendered before this component existed.
@@ -373,6 +375,7 @@ export function PhoneKeyBar({
                 paneID={paneID}
                 sendKey={sendKey}
                 captureRoot={captureRoot}
+                setInputModifiers={setInputModifiers}
                 hideKeyboard={hideKeyboard}
                 showKeyboard={showKeyboard}
                 pasteText={pasteText}

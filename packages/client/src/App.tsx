@@ -1,3 +1,4 @@
+import { TerminalFeaturePane } from './features/TerminalFeaturePane';
 import { DocumentPane, isDocumentPane } from './features/DocumentPane';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
@@ -72,8 +73,9 @@ import { useStore } from 'zustand';
 import { ConnectionBanner, ConnectionSplash } from './app/ConnectionScreen';
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
 import { restartUI } from './app/reload';
-import { copySelection, pasteIntoFocusedPane } from './app/clipboard';
+import { copySelection, deferredClipboardWriter, pasteIntoFocusedPane } from './app/clipboard';
 import { sendLineEdit } from './app/line-editing';
+import { TerminalShortcutContext, terminalWindowChords } from './app/terminal-shortcuts';
 import type { DaemonTarget, StorageLike } from './app/config';
 import {
     OPEN_PANEL_MESSAGE,
@@ -190,7 +192,6 @@ import {
 } from './state';
 import {
     PhoneKeyBar,
-    TerminalPane,
     createMountPolicy,
     mergeTerminalPalette,
     paneHandle,
@@ -1883,11 +1884,12 @@ function Shell(props: AppProps): ReactElement {
                 const clipboard = navigator.clipboard as Clipboard | undefined;
                 return copySelection({
                     focusedPaneID: focused,
-                    selectionFor: (paneID) => paneHandle(paneID)?.selection() ?? null,
+                    selectionFor: (paneID) => { const handle = paneHandle(paneID); return handle?.readSelection ? handle.readSelection() : handle?.selection() ?? null; },
                     writeText:
                         clipboard === undefined || typeof clipboard.writeText !== 'function'
                             ? null
                             : (text) => clipboard.writeText(text),
+                    writePendingText: deferredClipboardWriter(clipboard),
                     onError: (detail) => notifyFailure('Copy', detail)
                 });
             },
@@ -3304,7 +3306,10 @@ function Shell(props: AppProps): ReactElement {
             // to preview when the editor exits (CONT-091) without recreating anything.
             if (pane.externalEditorCommand !== null && mountedSet.has(paneID)) {
                 return (
-                    <TerminalPane
+                    <TerminalFeaturePane
+                        runtime={runtime}
+                        workspaceID={workspace?.id ?? ''}
+                        claimedChords={allViewChords}
                         paneID={paneID}
                         ptyApi={runtime.pty}
                         focused={focused}
@@ -3390,7 +3395,10 @@ function Shell(props: AppProps): ReactElement {
                     const searching = workspace !== null && workspace.searchingPaneID === paneID;
                     const theme = searching ? searchPaneTheme : paneTheme;
                     return (
-                        <TerminalPane
+                        <TerminalFeaturePane
+                            runtime={runtime}
+                            workspaceID={workspace?.id ?? ''}
+                            claimedChords={allViewChords}
                             paneID={paneID}
                             ptyApi={runtime.pty}
                             focused={focused}
@@ -3499,8 +3507,13 @@ function Shell(props: AppProps): ReactElement {
         const failed = (error: unknown): void => notifyFailure('Window chrome', error instanceof Error ? error.message : String(error));
         try { void Promise.resolve(chromeSource.execute(id, target)).catch(failed); } catch (error) { failed(error); }
     };
+    const terminalGlobalHotkey = settings.general.globalHotkey ? parseKeyTrigger(settings.general.globalHotkey) : null;
 
     return (
+        <TerminalShortcutContext.Provider value={{ bindings, windowChords: terminalWindowChords(bindings),
+            blocked: () => store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current || createSheetOpenRef.current || uiServices.getSnapshot().active !== null,
+            globalHotkey: terminalGlobalHotkey ? canonicalTriggerForPlatform(terminalGlobalHotkey, /Mac|iPhone|iPad/.test(navigator.platform)) : null,
+            onError: notifyFailure }}>
         <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices} chrome={phoneActive ? null : pluginChrome}
             features={[
                 bindWorkspacesFeature({
@@ -4018,6 +4031,7 @@ function Shell(props: AppProps): ReactElement {
             <ToastStack toasts={ui.toasts} onDismiss={(id) => store.getState().dismissToast(id)} />
         </div>
         </WorkbenchProvider>
+        </TerminalShortcutContext.Provider>
     );
 }
 

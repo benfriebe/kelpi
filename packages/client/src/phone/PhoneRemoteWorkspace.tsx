@@ -1,3 +1,4 @@
+import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 /**
@@ -19,7 +20,7 @@ import { layoutPaneOrder, type WorkspaceState } from '@kelpi/daemon/store';
 import { RemoteWorkspaceView } from '../app/RemoteWorkspaceView';
 import { tokens } from '../chrome/tokens';
 import type { KelpiRuntime } from '../state';
-import { TerminalPane, type TerminalRendererFactory } from '../terminal';
+import type { TerminalRendererFactory } from '../terminal';
 import type { PhoneViewMode } from './view';
 import { resolveShownPane } from './view';
 
@@ -102,7 +103,9 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
                         {pane.type} panes are not supported on remote daemons yet - open them on the daemon's own machine.
                     </div>
                 ) : (
-                    <TerminalPane
+                    <TerminalFeaturePane
+                        runtime={runtime}
+                        workspaceID={workspaceID}
                         paneID={pane.id}
                         ptyApi={runtime.pty}
                         focused

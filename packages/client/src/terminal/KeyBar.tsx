@@ -347,6 +347,8 @@ export interface KeyBarProps {
      * unbind from the old root and bind to the new one.
      */
     readonly captureRoot: RefObject<HTMLElement | null>;
+    /** Isolated renderers apply these modifiers inside their own keyboard event path. */
+    readonly setInputModifiers?: ((modifiers: StickyModifiers) => void) | undefined;
     /** Drop the caret inside the pane, which is what dismisses the software keyboard. */
     readonly hideKeyboard: () => void;
     /**
@@ -512,6 +514,7 @@ export function KeyBar({
     paneID,
     sendKey,
     captureRoot,
+    setInputModifiers,
     hideKeyboard,
     showKeyboard,
     pasteText,
@@ -526,6 +529,7 @@ export function KeyBar({
      * modifier still armed and apply it twice, forever.
      */
     const stickyRef = useRef<StickyModifiers>(NO_STICKY);
+    const modifiersRef = useRef(setInputModifiers); modifiersRef.current = setInputModifiers;
     const sendKeyRef = useRef(sendKey);
     sendKeyRef.current = sendKey;
     /** The last keystroke the interceptor consumed - read by the `beforeinput` effect below. */
@@ -545,7 +549,22 @@ export function KeyBar({
     const setLatch = useCallback((next: StickyModifiers): void => {
         stickyRef.current = next;
         setSticky(next);
+        modifiersRef.current?.(next);
     }, []);
+    useEffect(() => {
+        // A latch belongs to the current renderer. Clear both sides when the bar moves,
+        // including a renderer replacement that keeps the same pane ID.
+        stickyRef.current = NO_STICKY;
+        setSticky(NO_STICKY);
+        setInputModifiers?.(NO_STICKY);
+        return () => { setInputModifiers?.(NO_STICKY); };
+    }, [captureRoot, setInputModifiers]);
+    useEffect(() => {
+        const root = captureRoot.current;
+        const consumed = (): void => { if (stickyRef.current.ctrl || stickyRef.current.alt) setLatch(NO_STICKY); };
+        root?.addEventListener('kelpi-terminal-input', consumed);
+        return () => { root?.removeEventListener('kelpi-terminal-input', consumed); };
+    }, [captureRoot, setLatch]);
 
     /**
      * Ask the platform not to move the caret to the button, and then stop caring.
@@ -745,9 +764,6 @@ export function KeyBar({
         root.addEventListener('beforeinput', onBeforeInput, true);
         return () => root.removeEventListener('beforeinput', onBeforeInput, true);
     }, [captureRoot, setLatch]);
-
-    // A pane that loses its engine (or its bar) must not leave a latch behind for the next one.
-    useEffect(() => () => setLatch(NO_STICKY), [setLatch]);
 
     // ── C4: paste ───────────────────────────────────────────────────────────────────
 

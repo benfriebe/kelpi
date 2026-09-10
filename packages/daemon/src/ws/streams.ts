@@ -686,12 +686,15 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             entry.queue = [];
             entry.queuedBytes = 0;
             entry.unacked = 0;
-            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
+            // Invalidate the old client parser generation and byte credit BEFORE replay.
+            // A notice after replay would erase its fresh credit and make an acknowledged
+            // renderer discard the snapshot while waiting for a replay that never follows.
             this.transport.sendJson({
                 type: PTY_RESYNC_MESSAGE_TYPE,
                 paneID,
                 reason: 'flow-control-drop'
             });
+            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
         }
 
         private send(paneID: string, entry: PaneEntry, type: PtyFrameType, payload: Uint8Array): void {

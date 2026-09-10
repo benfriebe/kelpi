@@ -4,12 +4,14 @@ import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
 import type { DocumentsAPI, ViewDocumentsAPI } from './documents.js';
+import type { ViewTerminalAPI } from './terminal.js';
 export * from './domain.js';
 export * from './services.js';
 export * from './contributions.js';
 export * from './ui.js';
 export * from './chrome.js';
 export * from './documents.js';
+export * from './terminal.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Data = { [key: string]: Json };
@@ -78,6 +80,7 @@ export interface BackendAPI extends KelpiAPI {
 }
 export interface ViewAPI extends KelpiAPI {
     documents: ViewDocumentsAPI;
+    terminal: ViewTerminalAPI;
     readonly ready: Promise<void>;
     readonly context: Context;
     readonly state: Data;

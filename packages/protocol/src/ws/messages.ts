@@ -54,8 +54,9 @@ export interface WsHelloMessage {
 export interface WsAttachPaneMessage {
     readonly type: 'attach-pane';
     readonly paneID: string;
-    readonly cols: number;
-    readonly rows: number;
+    /** Omit both for a hidden viewer; the daemon replays its current grid without resizing. */
+    readonly cols?: number;
+    readonly rows?: number;
 }
 
 export interface WsDetachPaneMessage {

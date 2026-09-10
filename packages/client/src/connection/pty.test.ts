@@ -143,6 +143,76 @@ describe('PtyClient subscription', () => {
         expect(h.json('attach-pane')).toEqual([{ type: 'attach-pane', paneID: PANE, cols: 80, rows: 24 }]);
     });
 
+    it('hands an exclusive renderer a fresh replay without retaining native auto-ack', () => {
+        const h = harness({ ackThresholdBytes: 1 });
+        const nativeData = vi.fn();
+        const native = h.client.subscribe(PANE, { onData: nativeData });
+        const pluginData = vi.fn();
+        const plugin = h.client.subscribe(PANE, { exclusive: true, autoAck: false, onData: pluginData });
+        expect(h.json('detach-pane')).toHaveLength(1);
+        expect(h.json('attach-pane')).toHaveLength(2);
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('screen'));
+        expect(nativeData).not.toHaveBeenCalled();
+        expect(pluginData).toHaveBeenCalledOnce();
+        expect(h.frames().filter(frame => frame?.type === PTY_FRAME_TYPES.ack)).toHaveLength(0);
+
+        native.write('stale'); native.writeDirect('stale'); native.resize(1, 1); native.ack(100); native.unsubscribe();
+        expect(h.json('resize-pane')).toHaveLength(0);
+        expect(h.json('detach-pane')).toHaveLength(1);
+        expect(h.frames()).toHaveLength(0);
+        expect(native.unacked).toBe(0);
+        plugin.ack(6);
+        expect(h.frames().filter(frame => frame?.type === PTY_FRAME_TYPES.ack)).toHaveLength(1);
+
+        const fallback = h.client.subscribe(PANE, { onData: nativeData });
+        expect(h.json('detach-pane')).toHaveLength(2);
+        expect(h.json('attach-pane')).toHaveLength(3);
+        plugin.unsubscribe(); plugin.write('late'); plugin.ack(100);
+        expect(h.json('detach-pane')).toHaveLength(2);
+        fallback.unsubscribe();
+        expect(h.json('detach-pane')).toHaveLength(3);
+    });
+
+    it('released shared handles cannot write or acknowledge a surviving subscriber', () => {
+        const h = harness({ ackThresholdBytes: 1 });
+        const first = h.client.subscribe(PANE, { autoAck: false, onData: () => {} });
+        const second = h.client.subscribe(PANE, { autoAck: false, onData: () => {} });
+        first.unsubscribe();
+        h.serverSend(PTY_FRAME_TYPES.output, PANE, encoder.encode('data'));
+        first.write('late'); first.writeDirect('late'); first.resize(1, 1); first.ack(4);
+        expect(h.frames()).toHaveLength(0);
+        expect(h.json('resize-pane')).toHaveLength(0);
+        second.ack(4);
+        expect(h.client.stats(PANE)?.unacked).toBe(0);
+    });
+
+    it('reads exclusive renderer visibility at attach and reconnect before reporting geometry', () => {
+        const h = harness();
+        let visible = false;
+        const handle = h.client.subscribe(PANE, {
+            exclusive: true, cols: 80, rows: 24, onData: () => {},
+            getGeometry: () => visible ? { cols: 80, rows: 24 } : undefined,
+        });
+        expect(h.json('attach-pane')).toEqual([{ type: 'attach-pane', paneID: PANE }]);
+        visible = true;
+        handle.resize(80, 24);
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 80, rows: 24 }]);
+        visible = false;
+        h.redial();
+        expect(h.json('attach-pane')).toEqual([{ type: 'attach-pane', paneID: PANE }]);
+    });
+
+    it('makes disposed handles inert and refuses new subscriptions', () => {
+        const h = harness();
+        const handle = h.client.subscribe(PANE, { onData: () => {} });
+        h.client.dispose();
+        handle.write('late'); handle.resize(1, 1); handle.ack(1); handle.unsubscribe();
+        expect(h.frames()).toHaveLength(0);
+        expect(h.json('resize-pane')).toHaveLength(0);
+        expect(h.json('detach-pane')).toHaveLength(1);
+        expect(() => h.client.subscribe(PANE, { onData: () => {} })).toThrow('disposed');
+    });
+
     it('surfaces pane exit and flow-control resync notices', () => {
         const h = harness();
         const exits: (number | null)[] = [];
@@ -211,6 +281,18 @@ describe('PtyClient ack pacing', () => {
 
         handle.ack(32);
         expect(acks(h.frames())).toEqual([32]);
+    });
+
+    it('rejects invalid manual credits and caps duplicates at delivered bytes', () => {
+        const h = harness({ ackThresholdBytes: 1000, ackIntervalMs: 16 });
+        const handle = h.client.subscribe(PANE, { autoAck: false, onData: () => {} });
+        h.serverSend(PTY_FRAME_TYPES.output, PANE, new Uint8Array(32));
+        handle.ack(NaN); handle.ack(Infinity); handle.ack(-1); handle.ack(0.5);
+        expect(h.client.stats(PANE)?.pendingAck).toBe(0);
+        handle.ack(20); handle.ack(20); handle.ack(20);
+        vi.advanceTimersByTime(16);
+        expect(acks(h.frames())).toEqual([32]);
+        expect(h.client.stats(PANE)?.unacked).toBe(0);
     });
 
     it('defaults the flush threshold to a quarter of the protocol window', () => {

@@ -403,7 +403,8 @@ because no client is watching, section 4.1).
   `packages/protocol/src/ws/pty.ts:34`): the daemon counts unacked payload bytes per
   (client, pane). Past the window it stops sending to THAT client and queues; past
   `DEFAULT_CLIENT_QUEUE_BYTES` (1 MiB, `streams.ts:73`) it drops the queue, re-seeds the client
-  with a fresh `replay` and sends a `pty-resync` notice on the JSON channel. The PTY is never
+  with a fresh `replay`. The `pty-resync` JSON notice precedes that replay, after the snapshot
+  succeeds, so clients invalidate old parser state and byte credit before consuming it. The PTY is never
   paused and other viewers are never slowed down: a slow phone must not stall an agent.
 - **Renderer mount cap** (`packages/client/src/terminal/mount-policy.ts`): only the active
   workspace's visible panes get a live engine, LRU-capped at `DEFAULT_MOUNT_LIMIT` (12), where

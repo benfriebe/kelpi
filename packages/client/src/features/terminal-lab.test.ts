@@ -172,8 +172,8 @@ afterEach(() => {
     vi.unstubAllGlobals(); document.body.innerHTML = ''; delete document.body.dataset.ready;
 });
 
-async function fixture(phone = false, visible = true, engineCapture = false) {
-    vi.stubGlobal('matchMedia', () => ({ matches: phone }));
+async function fixture(phone = false, visible = true, engineCapture: boolean | 'xterm' = false) {
+    vi.stubGlobal('matchMedia', () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }));
     const observe = vi.fn(), disconnect = vi.fn();
     vi.stubGlobal('ResizeObserver', class { observe = observe; disconnect = disconnect; });
     const root = document.createElement('main'); root.tabIndex = -1; document.body.append(root);
@@ -188,7 +188,24 @@ async function fixture(phone = false, visible = true, engineCapture = false) {
         open: (target: HTMLElement) => {
             target.append(area);
             // xterm installs its own textarea capture handlers during open().
-            if (engineCapture) area.addEventListener('keydown', event => {
+            if (engineCapture === 'xterm') {
+                const require = createRequire(path.resolve('packages/client/package.json'));
+                // Keyboard encoding uses the installed browser engine. Supply only the DOM
+                // and composition hooks normally installed by open(); jsdom cannot paint it.
+                const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+                const { Terminal } = require('@xterm/xterm');
+                canvas.mockRestore();
+                const keyboard = new Terminal({ macOptionIsMeta: true });
+                const core = keyboard._core;
+                core.element = target; core.textarea = area;
+                core._compositionHelper = { keydown: () => true };
+                core.coreService.onUserInput(() => onUserInput());
+                keyboard.onData((data: string) => onData(data));
+                area.addEventListener('keydown', event => core._keyDown(event), true);
+                area.addEventListener('keypress', event => core._keyPress(event), true);
+                area.addEventListener('input', event => core._inputEvent(event), true);
+                cleanups.push(() => keyboard.dispose());
+            } else if (engineCapture) area.addEventListener('keydown', event => {
                 if (event.isComposing || event.keyCode === 229 || event.keyCode !== 67) return;
                 onUserInput(); onData(event.ctrlKey ? '\x03' : event.altKey ? '\x1bc' : 'c');
                 event.preventDefault();
@@ -218,6 +235,54 @@ async function fixture(phone = false, visible = true, engineCapture = false) {
 }
 
 describe('Terminal Lab presentation and public SDK actions', () => {
+    it.each([
+        ['c', { ctrl: true, alt: false }, '\x03'],
+        ['[', { ctrl: true, alt: false }, '\x1b'],
+        ['\\', { ctrl: true, alt: false }, '\x1c'],
+        [']', { ctrl: true, alt: false }, '\x1d'],
+        ['_', { ctrl: true, alt: false }, '\x1f'],
+        ['@', { ctrl: true, alt: false }, '\x00'],
+        ['/', { ctrl: false, alt: true }, '\x1b/'],
+        ['?', { ctrl: false, alt: true }, '\x1b?'],
+        ['|', { ctrl: false, alt: true }, '\x1b|'],
+        ['@', { ctrl: false, alt: true }, '\x1b@'],
+        ['x', { ctrl: false, alt: true }, '\x1bx'],
+        ['X', { ctrl: false, alt: true }, '\x1bX']
+    ])('encodes phone beforeinput %s with %j through the pinned xterm keyboard', async (data, modifiers, expected) => {
+        const h = await fixture(true, true, 'xterm');
+        h.callbacks.onAction({ type: 'modifiers', ...modifiers });
+        const input = new InputEvent('beforeinput', { data, inputType: 'insertText', bubbles: true, cancelable: true });
+        h.area.dispatchEvent(input);
+        expect(input.defaultPrevented).toBe(true);
+        expect(h.session.write.mock.calls).toEqual([[expected]]);
+        expect(h.session.writeDirect).not.toHaveBeenCalled();
+        expect(h.diagnostics.modifiers).toEqual({ ctrl: false, alt: false });
+        h.area.dispatchEvent(new InputEvent('input', { data: 'x', inputType: 'insertText', bubbles: true }));
+        expect(h.session.write.mock.calls).toEqual([[expected], ['x']]);
+    });
+
+    it.each(['é', '🐙', '日本語', ';'])('preserves phone text %s when xterm cannot encode its armed Control modifier', async data => {
+        const h = await fixture(true, true, 'xterm');
+        h.callbacks.onAction({ type: 'modifiers', ctrl: true, alt: false });
+        const input = new InputEvent('beforeinput', { data, inputType: 'insertText', bubbles: true, cancelable: true });
+        h.area.dispatchEvent(input);
+        expect(input.defaultPrevented).toBe(false);
+        expect(h.session.write).not.toHaveBeenCalled();
+        h.area.dispatchEvent(new InputEvent('input', { data, inputType: 'insertText', bubbles: true }));
+        expect(h.session.write.mock.calls).toEqual([[data]]);
+    });
+
+    it('maps a software-keyboard keydown without a code and leaves physical key positions intact', async () => {
+        const h = await fixture(true, true, 'xterm');
+        for (const init of [{ key: 'X' }, { key: '?', code: 'Slash', shiftKey: true }]) {
+            h.callbacks.onAction({ type: 'modifiers', ctrl: false, alt: true });
+            const event = new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true });
+            h.area.dispatchEvent(event);
+            expect(event.defaultPrevented).toBe(true);
+        }
+        expect(h.session.write.mock.calls).toEqual([['\x1bX'], ['\x1b?']]);
+    });
+
     it('keeps SGR mouse reports direct across a native listener microtask checkpoint without capturing later parser replies', async () => {
         const h = await fixture();
         h.root.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));

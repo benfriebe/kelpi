@@ -32,7 +32,9 @@ commits. It restores application cursor keys, bracketed paste and mouse modes th
 `_core.coreService.decPrivateModes` and `_core.coreMouseService` after a replay and on mode
 updates. Applying modes outside the parser preserves unfinished output escape sequences.
 DOM capture on the terminal root applies one-shot phone modifiers before xterm's textarea
-handlers. A scoped `_core.coreMouseService.triggerMouseEvent` wrapper identifies mouse output
+handlers. Phone characters without a physical key code use US key positions and inferred Shift;
+text that the adapter cannot modify keeps the emulator's ordinary input path.
+A scoped `_core.coreMouseService.triggerMouseEvent` wrapper identifies mouse output
 at the synchronous emulator call, including when native browser dispatch runs microtasks
 between DOM listeners. It restores ordinary routing as soon as that call returns. Parser
 responses and mouse reports use `writeDirect`, while keyboard/paste text uses `write`.

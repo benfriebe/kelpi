@@ -75,11 +75,14 @@ export async function mountTerminalLab(terminal, api, root) {
     listenInput('keydown', event => {
         if (synthetic.has(event)) return;
         const key = stickyKey(event, modifiers, composing); if (!key) return;
-        event.preventDefault(); event.stopImmediatePropagation(); setModifiers({ ctrl: false, alt: false }); dispatchKey(key);
+        setModifiers({ ctrl: false, alt: false });
+        if (dispatchKey(key)) { event.preventDefault(); event.stopImmediatePropagation(); }
     });
     listenInput('beforeinput', event => {
         const key = stickyText(event, modifiers, composing); if (!key) return;
-        event.preventDefault(); event.stopImmediatePropagation(); setModifiers({ ctrl: false, alt: false }); dispatchKey(key);
+        setModifiers({ ctrl: false, alt: false });
+        // Preserve the original text if xterm has no encoding for this modified key.
+        if (dispatchKey(key)) { event.preventDefault(); event.stopImmediatePropagation(); }
     });
     const fit = () => {
         if (disposed || !presentation.visible) return null;

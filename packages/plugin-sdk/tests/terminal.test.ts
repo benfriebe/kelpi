@@ -41,10 +41,56 @@ function harness() {
         await reply(call); return attaching;
     };
     const pagehide = (): void => { events.get('pagehide')?.({}); };
-    return { api, port, sent, connect, receive, reply, frame, action, attach, pagehide };
+    const keydown = (key: Record<string, unknown> = {}) => {
+        const event = { key: 'c', code: 'KeyC', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false,
+            isTrusted: false, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn(), ...key };
+        events.get('keydown')?.(event);
+        return event;
+    };
+    return { api, port, sent, connect, receive, reply, frame, action, attach, pagehide, keydown };
 }
 
 describe('browser terminal renderer sessions', () => {
+    it('does not relay a host-dispatched key back through claimed shortcuts, even after an async wait', async () => {
+        const h = harness(), ready = deferred(); h.connect();
+        await h.receive({ type: 'context', value: { chords: ['1/KeyC', '1/KeyD', '5/KeyC'] } });
+        let delivered: ReturnType<typeof h.keydown> | undefined;
+        const session = await h.attach({ onAction: async action => {
+            if (action.type !== 'dispatchKey') return null;
+            await ready.promise;
+            delivered = h.keydown(action.key);
+            if (!delivered.preventDefault.mock.calls.length) session.write('\x03');
+            return true;
+        } });
+        const action = h.action(session.id, 'interrupt', { type: 'dispatchKey', key: { key: 'c', code: 'KeyC', ctrlKey: true } });
+        await tick();
+        expect(h.keydown({ isTrusted: true }).preventDefault).toHaveBeenCalledOnce();
+        expect(h.keydown({ key: 'd', code: 'KeyD' }).preventDefault).toHaveBeenCalledOnce();
+        expect(h.keydown({ shiftKey: true }).preventDefault).toHaveBeenCalledOnce();
+        expect(h.sent('key')).toHaveLength(3);
+        ready.resolve(); await action;
+        expect(delivered?.preventDefault).not.toHaveBeenCalled();
+        expect(delivered?.stopImmediatePropagation).not.toHaveBeenCalled();
+        expect(h.sent('key')).toHaveLength(3);
+        expect(h.sent('terminal-input').map(message => [...message.data])).toEqual([[3]]);
+        expect(h.sent('terminal-action-reply')).toEqual([{ type: 'terminal-action-reply', session: session.id, id: 'interrupt', result: true }]);
+        // The exception ends when the action completes, rather than unbinding the shortcut.
+        expect(h.keydown().preventDefault).toHaveBeenCalledOnce();
+        session.dispose();
+    });
+
+    it('removes a pending key relay exception when its terminal session is disposed', async () => {
+        const h = harness(); h.connect();
+        await h.receive({ type: 'context', value: { chords: ['1/KeyC'] } });
+        const session = await h.attach({ onAction: () => new Promise(() => {}) });
+        const action = h.action(session.id, 'interrupt', { type: 'dispatchKey', key: { key: 'c', ctrlKey: true } });
+        await tick();
+        expect(h.keydown().preventDefault).not.toHaveBeenCalled();
+        session.dispose(); await action;
+        expect(h.keydown().preventDefault).toHaveBeenCalledOnce();
+        expect(h.sent('terminal-action-reply')).toEqual([]);
+    });
+
     it('waits for the private channel and consumes replay before the attachment reply arrives', async () => {
         const h = harness(), consumed = vi.fn();
         const attaching = h.api.terminal.attach({ cols: 96, rows: 30, onFrame: consumed });

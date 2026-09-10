@@ -136,7 +136,7 @@
         let cancel;
         const entry = {
             id: `terminal-${++terminalCounter}`, disposed: false, requested: false,
-            generation: 0, sequence: 0, processing: false, activeFrame: null, actions: new Set(),
+            generation: 0, sequence: 0, processing: false, activeFrame: null, actions: new Map(),
             onFrame: options.onFrame, onAction: options.onAction,
             cancelled: new Promise(resolve => { cancel = resolve; }),
         };
@@ -213,7 +213,7 @@
             send({ type: 'terminal-action-reply', session: entry.id, id: data.id, result, ...(error === undefined ? {} : { error: String(error?.message ?? error).slice(0, 4096) }) });
         };
         if (entry.actions.size >= 32) { reply(null, 'Too many pending terminal actions.'); return; }
-        entry.actions.add(data.id);
+        entry.actions.set(data.id, data.action);
         const type = data.action?.type;
         try {
             if (!['selection', 'dispatchKey', 'paste', 'focus', 'blur', 'showKeyboard', 'hideKeyboard', 'modifiers'].includes(type)) throw new Error('Unsupported terminal action.');
@@ -311,6 +311,14 @@
     addEventListener('keydown', event => {
         const modifiers = (event.shiftKey ? 4 : 0) | (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.metaKey ? 8 : 0);
         if (!port || live.visible === false || event.isComposing || !(live.chords ?? []).includes(`${modifiers}/${event.code}`)) return;
+        // A host key action belongs to the renderer's encoder. Its synthetic keydown must
+        // not relay back to the host, including when onAction awaits renderer readiness.
+        // Physical keys still relay while that action is pending.
+        if (event.isTrusted === false && terminalSession && [...terminalSession.actions.values()].some(action => {
+            const key = action?.type === 'dispatchKey' ? action.key : null;
+            return key && (key.code ? key.code === event.code : key.key === event.key) && modifiers ===
+                ((key.shiftKey ? 4 : 0) | (key.ctrlKey ? 1 : 0) | (key.altKey ? 2 : 0) | (key.metaKey ? 8 : 0));
+        })) return;
         event.preventDefault(); event.stopImmediatePropagation();
         send({ type: 'key', key: event.key, code: event.code, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey });
     }, true);

@@ -250,10 +250,12 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.mutation = result.catch(() => {}); return result;
     }
     install(source: string, trusted: boolean): Promise<PluginInfo[]> { return this.mutate(() => this.installNow(source, trusted)); }
-    private async installNow(source: string, trusted: boolean): Promise<PluginInfo[]> {
+    private async installNow(source: string, trusted: boolean, signal?: AbortSignal): Promise<PluginInfo[]> {
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         if (!trusted) throw new Error('Installation executes code with your account access. Pass --trust to install this plugin.');
         if (this.registryError) throw new Error(this.registryError);
         const { manifest, revision, files } = await readPluginPackage(source);
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         if (!this.installations.has(manifest.id) && this.installations.size >= 100) throw new Error('at most 100 plugins can be installed');
         const problem = this.revisionProblem(manifest, true);
         if (problem) throw new Error(problem);
@@ -265,7 +267,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 await fs.promises.rename(staging, target);
             } finally { await fs.promises.rm(staging, { recursive: true, force: true }); }
         } else await this.verifyRevision(manifest, revision);
-        return this.switchRevision(manifest, revision, true);
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
+        return this.switchRevision(manifest, revision, true, signal);
     }
     private async verifyRevision(manifest: PluginManifest, revision: string): Promise<void> {
         const root = path.join(await fs.promises.realpath(this.directory), 'packages', manifest.id, revision);
@@ -338,7 +341,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return this.switchRevision(selected.manifest, selected.revision, item.enabled);
         });
     }
-    private async switchRevision(manifest: PluginManifest, revision: string, enabled: boolean): Promise<PluginInfo[]> {
+    private async switchRevision(manifest: PluginManifest, revision: string, enabled: boolean, signal?: AbortSignal): Promise<PluginInfo[]> {
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         const id = manifest.id, previous = this.installations.get(id);
         const problem = this.revisionProblem(manifest, enabled); if (problem) throw new Error(problem);
         if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id)) return this.list();
@@ -347,6 +351,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.changing.add(manifest.id);
         try {
             await this.stopPlugin(id);
+            if (signal?.aborted) throw new Error('plugin dev installation cancelled');
             const latestProblem = this.revisionProblem(manifest, enabled); if (latestProblem) throw new Error(latestProblem);
             this.installations.set(id, selectPluginRevision(previous, manifest, revision, enabled));
             this.errors.delete(id); this.changed();
@@ -357,6 +362,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 const data = new PluginRevisionData(this.directory, id, previous.revision, revision, previous.selectionID, this.item(id).selectionID!);
                 this.candidateData.set(id, data);
                 if (enabled && manifest.backend) await this.activate(id, true);
+                if (signal?.aborted) throw new Error('plugin dev installation cancelled');
                 data.commit(() => this.persist());
                 committed = true;
                 this.candidateData.delete(id);
@@ -974,7 +980,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');
-        if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1, capabilities: ['plugin-packages', 'plugin-revisions'] };
+        if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1, capabilities: ['plugin-packages', 'plugin-revisions', 'plugin-dev'] };
         if (action === 'browser-state') return this.browser.nativeSnapshot(input) as unknown as JsonValue;
         if (action === 'document') return this.documents.call(text(input['method'], 'method'), pluginObject(input['args']), operationScope().signal);
         if (action === 'browser') return this.browserOperation(text(input['method'], 'method'), pluginObject(input['args']), context, operationScope().signal, context.clientID ? 'ui' : 'cli');
@@ -984,6 +990,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (action === 'service-call') return this.callService(input, context);
         if (action === 'service-select') return this.selectService(input);
         if (action === 'install') return await this.install(text(input['path'], 'path'), input['trust'] === true) as unknown as JsonValue;
+        if (action === 'dev-install') {
+            if (input['daemonID'] !== this.daemonID) throw new Error('plugin dev daemon changed; restart dev for the selected daemon');
+            const source = text(input['path'], 'path'), signal = operationScope().signal;
+            return await this.mutate(() => this.installNow(source, input['trust'] === true, signal)) as unknown as JsonValue;
+        }
         if (action === 'run') return this.invoke(text(input['command'], 'command'), pluginObject(input['args'] ?? {}), { ...context, ...this.context(input) });
         if (action === 'api') {
             const lease = this.leases.get(text(input['lease'], 'lease'));

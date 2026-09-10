@@ -1352,7 +1352,7 @@ describe('size control (terminal-surface.md §5.1)', () => {
 });
 
 describe('plugin revision management — owner-only', () => {
-    it.each(['history', 'rollback'])('reserves %s for the owner while paired devices can still list installed views', action => {
+    it.each(['history', 'rollback', 'dev-install'])('reserves %s for the owner while paired devices can still list installed views', action => {
         const calls: string[] = [];
         const hub = createSyncHub({ store: storeHarness(seededState()).store, dispatcher: () => {}, daemon: DAEMON,
             validateToken: token => token === 'tok' || token.startsWith('kd_'),

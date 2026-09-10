@@ -7,6 +7,7 @@ import { decodePluginManifest, pluginObject, type JsonObject, type PluginRevisio
 import { createStore } from '../store/store.js';
 import { seededState, W1 } from '../store/testing.js';
 import { PluginService } from './service.js';
+import { inOperationScope } from './operations.js';
 import { decodePluginInstallation, PLUGIN_RETAINED_REVISIONS, recoverPluginRevisionChange, selectPluginRevision } from './revisions.js';
 
 const ID = 'sample.revisions', VIEW = `${ID}.view`;
@@ -36,9 +37,54 @@ function harness(extra: JsonObject = {}) {
 }
 
 describe('plugin revision recovery', () => {
+    it('pins developer installations to the chosen daemon and routes valid requests through revision recovery', async () => {
+        const h = harness(), input = { path: h.source, trust: true, daemonID: h.service.daemonID };
+        await expect(h.service.request('dev-install', { ...input, daemonID: 'another-daemon' })).rejects.toThrow('daemon changed');
+        await expect(h.service.request('dev-install', { path: h.source, trust: true })).rejects.toThrow('daemon changed');
+        await expect(h.service.request('dev-install', { ...input, trust: false })).rejects.toThrow('--trust');
+        expect(h.service.list()).toEqual([]);
+        expect(fs.existsSync(path.join(h.options.directory, 'installed.json'))).toBe(false);
+        await h.service.request('dev-install', input);
+        const original = h.service.list()[0]!;
+        expect(original.status).toBe('running');
+        h.write({ version: '1.1.0' }, 'throw new Error("bad developer edit");');
+        await expect(h.service.request('dev-install', input)).rejects.toThrow('previous revision restored: bad developer edit');
+        expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+    });
+
+    it('does not read a queued developer snapshot after its connection is cancelled', async () => {
+        const h = harness(); await h.service.install(h.source, true);
+        const original = h.service.list()[0]!, controller = new AbortController();
+        h.write({ version: '1.1.0' });
+        const reloading = h.service.request('reload', { pluginID: ID });
+        const queued = inOperationScope({ trace: [], signal: controller.signal }, () => h.service.request('dev-install', { path: h.source, trust: true, daemonID: h.service.daemonID }));
+        const cancelled = expect(queued).rejects.toThrow('plugin dev installation cancelled');
+        controller.abort(); fs.rmSync(h.source, { recursive: true, force: true });
+        await reloading; await cancelled;
+        expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+        expect(await h.history()).toHaveLength(1);
+    });
+
+    it('restores an update cancelled during provisional developer activation before committing its JSON writes', async () => {
+        const h = harness(); await h.service.install(h.source, true);
+        const original = h.service.list()[0]!, controller = new AbortController();
+        const entered = path.join(h.root, 'entered'), proceed = path.join(h.root, 'proceed');
+        h.write({ version: '1.1.0' }, `await api.storage.set('provisional', true);
+            const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(entered)}, 'ready');
+            while (!fs.existsSync(${JSON.stringify(proceed)})) await new Promise(resolve => setTimeout(resolve, 5));
+            api.commands.register('${ID}.run', () => 'updated');`);
+        const update = inOperationScope({ trace: [], signal: controller.signal }, () => h.service.request('dev-install', { path: h.source, trust: true, daemonID: h.service.daemonID }));
+        const cancelled = expect(update).rejects.toThrow('previous revision restored: plugin dev installation cancelled');
+        await vi.waitFor(() => expect(fs.existsSync(entered)).toBe(true));
+        controller.abort(); fs.writeFileSync(proceed, 'continue'); await cancelled;
+        expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+        expect(await h.api('storage.get', { key: 'provisional' })).toBe(null);
+        expect(await h.history()).toHaveLength(1);
+    });
+
     it('retains exact revisions across updates, explicit selection and restart without changing native or plugin panes', async () => {
         const h = harness(); await h.service.install(h.source, true);
-        expect(await h.service.request('identity', {})).toMatchObject({ apiVersion: 1, capabilities: ['plugin-packages', 'plugin-revisions'] });
+        expect(await h.service.request('identity', {})).toMatchObject({ apiVersion: 1, capabilities: ['plugin-packages', 'plugin-revisions', 'plugin-dev'] });
         const first = h.service.list()[0]!, firstHistory = (await h.history())[0]!;
         const pane = await h.open(), paneID = String(pane['paneID']);
         const before = h.store.getState();

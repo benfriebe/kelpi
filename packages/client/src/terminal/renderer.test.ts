@@ -368,13 +368,14 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
-    it('drops the queue on a reset before the engine is up, and leads the flush with RIS', async () => {
-        // The RIS is not ceremony. ghostty-web hands a new Terminal the WASM slot a disposed
-        // one just freed, so the engine this queue flushes into may already hold another
-        // pane's grid — and a remount (workspace switch, font change, LRU eviction) delivers
-        // its replay while `open()` is still in flight, which is exactly when this branch
-        // runs. Swallowing the reset here is what painted a pane's snapshot over its
-        // predecessor's screen.
+    it('drops the queue on a reset before the engine is up, and skips the reset itself: the engine is fresh', async () => {
+        // A remount (workspace switch, font change, LRU eviction) delivers its replay while
+        // `open()` is still in flight, which is exactly when this branch runs. The queued bytes
+        // are superseded and go; the reset at the head of the queue is applied by
+        // `resetTerminal`, which knows nothing has reached this engine yet and leaves it be.
+        // (When every Terminal shared one WASM instance the RIS here was what kept a pane's
+        // snapshot off its predecessor's grid; since ghostty-web `0.4.0-nex.10` an engine comes
+        // up on its own instance, and a reset on it would only build a second one.)
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);
 
@@ -385,8 +386,43 @@ describe('TerminalRenderer adapter', () => {
         engine.settle();
         await opening;
 
-        expect(engine.terminal.writes).toEqual([TERMINAL_RESET_SEQUENCE, 'replay']);
-        // Still the in-stream byte, never the engine's own reset() (ghostty-web#141).
+        expect(engine.terminal.writes).toEqual(['replay']);
+        expect(engine.terminal.resets).toBe(0);
+        renderer.dispose();
+    });
+
+    it('applies a queued reset once bytes have reached the engine, and only then', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        const opening = renderer.open(host());
+        renderer.write('first screen');
+        engine.settle();
+        await opening;
+        // The mount flush handed `first screen` to the engine: a reset now has something to clear.
+        renderer.reset();
+        renderer.write('replay');
+        // …and a second reset with nothing written since is the no-op the first one was not.
+        renderer.reset();
+        renderer.write('again');
+
+        expect(engine.terminal.writes).toEqual(['first screen', TERMINAL_RESET_SEQUENCE, 'replay', TERMINAL_RESET_SEQUENCE, 'again']);
+        expect(engine.terminal.resets).toBe(0);
+        renderer.dispose();
+    });
+
+    it('skips the reset on an engine nothing has been written to, on the ghostty path too', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        renderer.reset();
+        renderer.write('SNAPSHOT');
+
+        expect(engine.terminal.writes).toEqual(['SNAPSHOT']);
         expect(engine.terminal.resets).toBe(0);
         renderer.dispose();
     });
@@ -673,6 +709,9 @@ describe('the resize→replay paint hold (§N24)', () => {
 
     it('suspends the engine BEFORE the resize reaches it, and resumes on the replay', async () => {
         const { engine, renderer } = await live();
+        // A pane being resized has output on it; on an engine nothing reached, the reset
+        // below would be the no-op a fresh instance makes it (see `resetTerminal`).
+        renderer.write('$ ');
         engine.paintSuspensions.length = 0;
         // Ordering is the whole point: a suspension that lands after the resize has already
         // let the engine's own forced render through is a suspension that came too late.
@@ -1135,17 +1174,18 @@ describe('the budgeted mount flush (issue #78)', () => {
     });
 
     /**
-     * The cap exists so the drain is bounded; the RIS at the head of the queue exists so the
-     * snapshot behind it is not painted over the previous pane's screen (`reset`). The pre-#78
+     * The cap exists so the drain is bounded; the reset at the head of the queue exists so the
+     * snapshot behind it is not painted over whatever the engine held (`reset`). The pre-#78
      * trim shifted from index 0, which dropped the reset FIRST: the two rules cancelling each
-     * other out at exactly the moment both matter.
+     * other out at exactly the moment both matter. The reset entry survives the trim; whether it
+     * has anything to clear is `resetTerminal`'s call, and on this fresh engine it has not.
      */
-    it('trims an over-cap queue from the oldest chunks, never the leading RIS', async () => {
+    it('trims an over-cap queue from the oldest chunks, never the leading reset', async () => {
         const engine = stubEngine();
         const renderer = createRendererFromLoader('ghostty', engine.loader);
         const opening = renderer.open(host());
 
-        renderer.reset(); // engine still loading: plants RIS at the head
+        renderer.reset(); // engine still loading: plants the reset at the head
         // Two megabytes into a one-megabyte queue: the tail is what the user is looking at.
         renderer.write('O'.repeat(PENDING_WRITE_LIMIT_BYTES));
         renderer.write('N'.repeat(PENDING_WRITE_LIMIT_BYTES));
@@ -1154,8 +1194,9 @@ describe('the budgeted mount flush (issue #78)', () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
 
         const written = engine.terminal.writes.join('');
-        expect(engine.terminal.writes[0]).toBe(TERMINAL_RESET_SEQUENCE);
-        expect(written.length - TERMINAL_RESET_SEQUENCE.length).toBeLessThanOrEqual(PENDING_WRITE_LIMIT_BYTES);
+        // Fresh engine: the queued reset is applied as a no-op, not written.
+        expect(engine.terminal.writes[0]).not.toBe(TERMINAL_RESET_SEQUENCE);
+        expect(written.length).toBeLessThanOrEqual(PENDING_WRITE_LIMIT_BYTES);
         // The newest bytes survived and the oldest went.
         expect(written.endsWith('N'.repeat(1000))).toBe(true);
         expect(written.split('O').length - 1).toBeLessThan(PENDING_WRITE_LIMIT_BYTES);

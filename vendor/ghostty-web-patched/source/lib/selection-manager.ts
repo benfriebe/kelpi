@@ -58,6 +58,7 @@ export class SelectionManager {
   private boundContextMenuHandler: ((e: MouseEvent) => void) | null = null;
   private boundClickHandler: ((e: MouseEvent) => void) | null = null;
   private boundDocumentMouseMoveHandler: ((e: MouseEvent) => void) | null = null;
+  private boundDocumentMouseDownHandler: ((e: MouseEvent) => void) | null = null;
 
   // Auto-scroll state for drag selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
@@ -394,6 +395,13 @@ export class SelectionManager {
       this.boundDocumentMouseMoveHandler = null;
     }
 
+    // Clean up document mousedown listener (`0.4.0-nex.12`): the one that was never removed.
+    if (this.boundDocumentMouseDownHandler) {
+      document.removeEventListener('mousedown', this.boundDocumentMouseDownHandler);
+      this.boundDocumentMouseDownHandler = null;
+    }
+    this.mouseDownTarget = null;
+
     // Clean up context menu event listener
     if (this.boundContextMenuHandler) {
       const canvas = this.renderer.getCanvas();
@@ -528,10 +536,14 @@ export class SelectionManager {
     };
     document.addEventListener('mousemove', this.boundDocumentMouseMoveHandler);
 
-    // Track mousedown on document to know if a click started inside the canvas
-    document.addEventListener('mousedown', (e: MouseEvent) => {
+    // Track mousedown on document to know if a click started inside the canvas.
+    // Bound and kept (`0.4.0-nex.12`): an anonymous listener on `document` outlives the
+    // terminal, and its closure holds this manager, the Terminal, its canvas and its WASM
+    // instance — one leaked engine per terminal ever opened. `dispose()` removes it.
+    this.boundDocumentMouseDownHandler = (e: MouseEvent) => {
       this.mouseDownTarget = e.target;
-    });
+    };
+    document.addEventListener('mousedown', this.boundDocumentMouseDownHandler);
 
     // CRITICAL FIX: Listen for mouseup on DOCUMENT, not just canvas
     // This catches mouseup events that happen outside the canvas (common during drag)

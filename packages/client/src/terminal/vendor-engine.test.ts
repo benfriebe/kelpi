@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.11';
+const EXPECTED_VERSION = '0.4.0-nex.12';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -244,6 +244,22 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).not.toContain('Auto-scroll to bottom on new output');
         expect(terminalSource).toContain('if (grown > 0) this.pinViewportAcrossGrowth(grown);');
         expect(terminalSource).toContain('if (this.options.scrollOnUserInput !== false) {');
+    });
+
+    it('ships a selection manager whose document listeners ALL come off on dispose (§-nex.12)', () => {
+        // The retainer behind "Cannot allocate Wasm memory for new instance": an anonymous
+        // `document` mousedown listener that dispose() never removed kept every terminal ever
+        // opened reachable — and, since `-nex.10`, its own WASM instance with it. The handler is
+        // bound and removed like the other three; the bundle must carry both halves.
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        expect(bundle).toMatch(/document\.addEventListener\("mousedown",\s*this\.boundDocumentMouseDownHandler\)/);
+        expect(bundle).toMatch(/document\.removeEventListener\("mousedown",\s*this\.boundDocumentMouseDownHandler\)/);
+        const source = read(path.join(vendorRoot, 'source', 'lib', 'selection-manager.ts'));
+        expect(source).not.toMatch(/document\.addEventListener\('mousedown',\s*\(/);
+        // Every document.addEventListener in the source has a matching removal on dispose.
+        const added = [...source.matchAll(/document\.addEventListener\('(\w+)'/g)].map((m) => m[1]).sort();
+        const removed = [...source.matchAll(/document\.removeEventListener\('(\w+)'/g)].map((m) => m[1]).sort();
+        expect(new Set(added)).toEqual(new Set(removed));
     });
 
     it('ships a bundle whose default cell colours follow a LIVE theme (§N18)', () => {

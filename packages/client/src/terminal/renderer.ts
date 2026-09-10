@@ -882,6 +882,14 @@ class AdapterRenderer implements TerminalRenderer {
     private poisoned = false;
     /** `open()` resolved — the point after which a failure is the owner's to hear about. */
     private opened = false;
+    /**
+     * Has the CURRENT engine been handed any bytes? A reset on an engine that has not is a
+     * no-op and is skipped (`resetTerminal`): since ghostty-web `0.4.0-nex.10` every engine
+     * comes up on its own fresh WASM instance, so there is no predecessor's grid to clear, and
+     * the fresh-instance replay reset would otherwise instantiate a SECOND memory per mount for
+     * nothing — one that lives until the next GC and counts against V8's per-process cap.
+     */
+    private engineWritten = false;
 
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
@@ -1087,19 +1095,17 @@ class AdapterRenderer implements TerminalRenderer {
         if (terminal === undefined) {
             /**
              * The engine is still loading — so drop the queue (a replay supersedes anything
-             * waiting) and make RIS the FIRST thing it will be handed.
+             * waiting) and make the reset the FIRST thing it will be handed.
              *
-             * "A fresh engine needs no RIS" is the assumption this used to make, and it is
-             * false for the engine the app actually ships: ghostty-web runs every Terminal
-             * through one shared WASM instance, and a Terminal constructed moments after
-             * another was disposed comes up holding that one's grid. `ingest.ts` already
-             * resets before every replay for exactly that reason, but on the path that
-             * matters — a pane REMOUNTING, where the replay lands while `open()` is still in
-             * flight — the reset arrived here with no terminal to write to and was swallowed,
-             * so the snapshot was painted over the previous pane's screen. Switching
-             * workspaces is that path for every visible pane at once (`mount-policy.ts`
-             * evicts a background workspace's engines), which is why clicking a sidebar row
-             * came back to a garbled grid.
+             * The reset is queued rather than assumed away: "a fresh engine needs no RIS" was
+             * once false for the engine the app ships, because ghostty-web ran every Terminal
+             * through one shared WASM instance and a Terminal constructed moments after
+             * another was disposed came up holding that one's grid — a pane REMOUNTING on a
+             * workspace switch painted its snapshot over its predecessor's screen. Since
+             * `0.4.0-nex.10` every engine has its own instance, so whether the queued reset
+             * has anything to clear is decided where it is applied (`resetTerminal`): it runs
+             * only if bytes have reached this engine, and the mount flush's first tick, which
+             * writes the queue straight into the engine `open()` just built, skips it.
              */
             this.pending = [TERMINAL_RESET_SEQUENCE];
             this.pendingBytes = byteLength(TERMINAL_RESET_SEQUENCE);
@@ -1510,6 +1516,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.engineDisposables.length = 0;
         const handle = this.handle;
         this.handle = undefined;
+        this.engineWritten = false;
         if (handle === undefined) return;
         try {
             handle.dispose?.();
@@ -1564,10 +1571,17 @@ class AdapterRenderer implements TerminalRenderer {
         }
     }
 
-    /** One chunk into the engine, plus §N24's "was this the replay?" question. */
+    /**
+     * Clear the engine for an authoritative replay — unless nothing has been written to it,
+     * in which case it is already clear (`engineWritten`). A fresh engine on its own WASM
+     * instance holds nothing, and ghostty's dedicated reset replaces that instance with
+     * another; skipping it halves the instances a mount creates.
+     */
     private resetTerminal(terminal: XtermLikeTerminal): void {
+        if (!this.engineWritten) return;
         if (this.handle?.resetForReplay !== undefined) this.handle.resetForReplay();
         else terminal.write(TERMINAL_RESET_SEQUENCE);
+        this.engineWritten = false;
     }
 
     private deliver(
@@ -1582,8 +1596,12 @@ class AdapterRenderer implements TerminalRenderer {
         // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
         // renderer exactly once, which is the signal the pane restarts on.
         const write = (): void => {
-            if (queuedReset) this.resetTerminal(terminal);
-            else terminal.write(data);
+            if (queuedReset) {
+                this.resetTerminal(terminal);
+                return;
+            }
+            terminal.write(data);
+            this.engineWritten = true;
         };
         if (strict) {
             const planted = this.faults?.fault('write', this.engine);
@@ -1727,6 +1745,7 @@ class AdapterRenderer implements TerminalRenderer {
             throw error;
         }
         this.handle = handle;
+        this.engineWritten = false;
 
         /**
          * Everything from here on talks to a LIVE engine, and every one of these calls reaches

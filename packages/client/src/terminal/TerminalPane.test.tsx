@@ -14,6 +14,7 @@ import {
     shouldGrabFocus
 } from './TerminalPane';
 import { PhoneKeyBar } from './PhoneKeyBar';
+import { restartUI } from '../app/reload';
 import { paneHandle } from './pane-registry';
 import {
     createFakePhoneWindow,
@@ -30,6 +31,10 @@ import {
  * test therefore injects the fake renderer behind the adapter interface — the seam exists for
  * exactly this reason.
  */
+
+// The placeholder's Restart UI reloads the page; jsdom's `Location` is unforgeable, so the
+// seam is replaced (the same one `app/file-menu.test.ts` replaces).
+vi.mock('../app/reload', () => ({ restartUI: vi.fn() }));
 
 /** jsdom reports 0×0 for everything; the pane takes its box through this seam. */
 function box(width: number, height: number): (element: HTMLElement) => { width: number; height: number } {
@@ -1969,5 +1974,86 @@ describe('TerminalPane — selection read (§TERM-034)', () => {
 
         expect(h.pty.last().directInput.length).toBeGreaterThan(0);
         expect(h.root.dataset['terminalSelection']).toBe('0');
+    });
+});
+
+/**
+ * The failure that is NOT a race: V8 has no address space left for another WebAssembly memory
+ * (`Cannot allocate Wasm memory for new instance`). Every engine in the process fails the same
+ * way until the UI restarts, so a retry is three more of the same failure and the placeholder
+ * has to say what actually helps. Seen across a whole window on 2026-09-10.
+ */
+describe('TerminalPane — the renderer is out of WebAssembly address space', () => {
+    const exhausted = (): Error =>
+        new Error(
+            'Failed to open terminal: RangeError: WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory for new instance'
+        );
+
+    it('does not retry, names the cause once, and offers Restart UI beside Retry', async () => {
+        const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+        const renderers = createFakeRendererFactory({ failOpensBefore: 99, openError: exhausted });
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(host.dataset['terminalStatus']).toBe('error');
+        expect(host.dataset['terminalFailure']).toBe('wasm-address-space');
+        expect(host.dataset['terminalAttempts']).toBe('1');
+        // No backoff was armed: the budget is not spent on a failure that cannot clear itself.
+        await runBackoff();
+        await runBackoff();
+        expect(renderers.instances).toHaveLength(1);
+        expect(info).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(String(error.mock.calls[0]?.[0])).toContain('WebAssembly address space');
+        expect(view.container.textContent).toContain('restart the UI');
+
+        const restart = view.container.querySelector('[data-testid="terminal-restart-ui-pane-1"]') as HTMLButtonElement;
+        expect(restart).not.toBeNull();
+        fireEvent.click(restart);
+        expect(vi.mocked(restartUI)).toHaveBeenCalledTimes(1);
+        // Retry is still there: a person may know the process has been relieved since.
+        expect(view.container.querySelector('[data-testid="terminal-retry-pane-1"]')).not.toBeNull();
+    });
+
+    it('clears the failure when a Retry brings a fresh engine up', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const fake: { failOpensBefore: number; openError: () => Error } = { failOpensBefore: 99, openError: exhausted };
+        const renderers = createFakeRendererFactory(fake);
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(host.dataset['terminalFailure']).toBe('wasm-address-space');
+
+        fake.failOpensBefore = 0;
+        fireEvent.click(view.container.querySelector('[data-testid="terminal-retry-pane-1"]') as HTMLButtonElement);
+        await settle();
+
+        expect(host.dataset['terminalStatus']).toBe('live');
+        expect(host.dataset['terminalFailure']).toBeUndefined();
+        expect(view.container.querySelector('[data-testid="terminal-restart-ui-pane-1"]')).toBeNull();
     });
 });

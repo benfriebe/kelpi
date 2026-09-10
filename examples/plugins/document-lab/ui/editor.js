@@ -3,7 +3,7 @@ const api = globalThis.kelpi;
 const $ = id => document.getElementById(id);
 const editor = $('editor');
 let state, subscription, reading = false, reread = false, stopped = false;
-let inputs = 0, accepted = 0, queued = null, writing = false, blocked = false, writeRevision;
+let inputs = 0, accepted = 0, queued = null, writing = false, blocked = false, writeState;
 let wrapping = true;
 
 function problem(error) {
@@ -61,7 +61,7 @@ function render() {
 function receive(next) {
     state = next;
     // A remote invalidation must never rebase text which this view has not applied yet.
-    if (inputs === accepted && !writing && !blocked) writeRevision = next.revision;
+    if (inputs === accepted && !writing && !blocked) writeState = next;
     render();
 }
 async function readLatest() {
@@ -71,6 +71,22 @@ async function readLatest() {
     catch (error) { if (!stopped) problem(error); }
     finally { reading = false; }
 }
+async function apply(edit) {
+    try { return await api.documents.applyDraft(edit.id, writeState.revision); }
+    catch (error) {
+        if (error.code !== 'DOCUMENT_CONFLICT' || stopped) throw error;
+        const current = await api.documents.get();
+        // Autosave changes the revision without changing the source we edited. Reconcile
+        // only that case, never text or document context changed by another writer.
+        const unchanged = ['paneID', 'workspaceID', 'kind', 'mode', 'path', 'text', 'loaded']
+            .every(key => current[key] === writeState[key]);
+        if (stopped || !unchanged) throw error;
+        writeState = current;
+        // Retry once; the guard still rejects any change made during this read/round trip.
+        // A newer staged input also supersedes this ID without losing its recovery record.
+        return api.documents.applyDraft(edit.id, writeState.revision);
+    }
+}
 async function pump() {
     if (writing || blocked || stopped) return;
     writing = true;
@@ -78,9 +94,9 @@ async function pump() {
         while (queued && !blocked && !stopped) {
             const edit = queued; queued = null;
             try {
-                const next = await api.documents.applyDraft(edit.id, writeRevision);
+                const next = await apply(edit);
                 if (next.text !== edit.text) throw new Error('The document changed before this edit was acknowledged. Review the preserved draft.');
-                writeRevision = next.revision; state = next; accepted = edit.number;
+                writeState = next; state = next; accepted = edit.number;
             } catch (error) {
                 if (error.code !== 'DOCUMENT_DRAFT_SUPERSEDED') { blocked = true; problem(error); }
             }
@@ -90,7 +106,7 @@ async function pump() {
 editor.addEventListener('input', () => {
     const number = ++inputs, text = editor.value;
     // Every input crosses the host bridge immediately. Only daemon writes are serialized.
-    void api.documents.stage(text, writeRevision).then(draft => {
+    void api.documents.stage(text, writeState?.revision).then(draft => {
         if (number !== inputs || stopped) return;
         queued = { id: draft.id, text, number }; void pump();
     }).catch(error => { blocked = true; problem(error); render(); });

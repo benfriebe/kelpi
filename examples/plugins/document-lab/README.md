@@ -10,8 +10,9 @@ as `document.markdown`, `document.scratchpad` and `document.diff`.
 
 The example reads and watches the daemon's native buffer, supports Markdown edit/preview and save,
 shows raw diff lines, and persists a wrap preference separately from source. Every input is
-staged outside the iframe before revision-checked writes are serialized. Conflicts preserve
-the local text for explicit recovery; they never trigger an automatic overwrite.
+staged outside the iframe before revision-checked writes are serialized. Autosave-only conflicts
+retry once after verifying that source and editing context are unchanged. Competing edits or
+context changes preserve the local text for explicit recovery.
 
 Its Markdown preview intentionally supports a small set of headings, paragraphs and fenced
 blocks. See [the document guide](../../../docs/plugin-documents.md) for source limits, API

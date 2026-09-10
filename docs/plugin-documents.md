@@ -92,8 +92,9 @@ Diff is read-only. Markdown requires edit mode and a successfully loaded source;
 editor ownership refuses document mutations. Scratchpads use native pane persistence.
 Revision tokens change when content/state changes and when an entry is recreated, including
 daemon restart. A stale token rejects as `KelpiError.code === 'DOCUMENT_CONFLICT'` before
-mutation. Never retry stale text with an automatically fetched token: show the conflict and
-let the person review it. Concurrent snapshots may already reflect a later update; validate
+mutation. Do not retry stale text with an automatically fetched token unless the latest source
+and editing context still match the last acknowledged snapshot. Otherwise show the conflict
+and let the person review it. Concurrent snapshots may already reflect a later update; validate
 the returned text before chaining edits. The bundled editor retains its existing native
 editing semantics; revision checks protect SDK/CLI writes against changes from other writers.
 
@@ -130,8 +131,11 @@ const edited = await kelpi.documents.applyDraft(draft.id, observedRevision);
 `stage` stores the text in the owning host window, outside the iframe. `applyDraft` applies
 that exact draft through `documents.edit`. A newer stage invalidates the old ID with
 `DOCUMENT_DRAFT_SUPERSEDED`; the host never replaces the newer recovery record when an older
-edit settles. Document Lab stages immediately on input and serializes the guarded writes,
-advancing the revision only from its own accepted writes. It stops on conflict. Its small
+edit settles. Document Lab stages immediately on input and serializes the guarded writes.
+Autosave can change the revision without changing source, so a conflict triggers a fresh read
+and at most one guarded retry when source, pane/workspace identity, kind, mode, path and loaded
+state still match the last acknowledged snapshot. A changed source or editing context, or a
+second conflict, stops editing and preserves the draft for review. Its small
 Markdown preview supports headings, paragraphs and fenced blocks; it is an authoring example,
 not a complete Markdown engine.
 

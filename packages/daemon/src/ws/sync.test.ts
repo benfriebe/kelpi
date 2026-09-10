@@ -1267,6 +1267,19 @@ describe('size control (terminal-surface.md §5.1)', () => {
         expect(a.attaches[1]).toEqual({ paneID: f.paneID, size: undefined });
     });
 
+    it('decodes an attachment without geometry and applies only a later visible measurement', () => {
+        const f = fixture();
+        const viewer = connectWithBridge(f);
+        send(viewer.session, { type: 'attach-pane', paneID: f.paneID });
+        expect(viewer.attaches).toEqual([{ paneID: f.paneID, size: undefined }]);
+        expect(viewer.resizes).toEqual([]);
+        // A takeover must not manufacture a default 80x24 size for this hidden attachment.
+        send(viewer.session, { type: 'take-size-control' });
+        expect(viewer.resizes).toEqual([]);
+        send(viewer.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        expect(viewer.resizes).toEqual([{ paneID: f.paneID, cols: 120, rows: 40 }]);
+    });
+
     it("a non-owner's resize is cached, never applied; take-size-control applies the cache in one step", () => {
         const f = fixture();
         const a = connectWithBridge(f);

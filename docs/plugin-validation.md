@@ -14,6 +14,74 @@ The [original audit](plugin-extensibility-audit.md) distinguishes the longer-ter
 from this implementation. This version supports explicitly trusted local plugins; it does
 not implement a marketplace or an untrusted execution runtime.
 
+## Terminal renderer replacement (2026-09-10)
+
+Implemented in `out/worktrees/plugin-terminals` from merged main `021e193`. The review
+layers are `feature/plugin-terminal-contract` → `feature/plugin-terminal-features` →
+`feature/plugin-terminal-lab`. Terminal views attach to the owning window's existing PTY
+connection; switching renderers preserves native pane/process ownership. Primary, embedded
+remote, phone and external-editor bodies share the replacement host. The
+[terminal guide](plugin-terminals.md) documents the public contract and private-instance
+installation; [Terminal Lab](../examples/plugins/terminal-lab) is an SDK-only xterm example.
+The [review record and screenshots](audit/plugin-terminals/README.md) are versioned;
+raw logs, JSON results and hash manifests below are local validation artifacts.
+
+The transport regressions cover acknowledged consumption, stale sessions and credits,
+bounded output, hidden geometry, and parser replies during visual resync. The daemon sends
+the flow-control reset notice before its replacement screen, preventing a late notice from
+invalidating the replay and stalling the stream. Clipboard shortcuts capture the exact
+owning pane/runtime, and the phone bar clears modifiers when its renderer changes.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete workspace checks | All typechecks pass; 7,198 root tests and 868 shell tests pass (**8,066 total**). One existing optional database test is skipped. | [Check log](../out/plugin-terminals-validation/check.log) |
+| First PR in isolation | All typechecks and 247 focused contract tests pass in an export containing only the foundational layer. | [Typechecks](../out/plugin-terminals-validation/contract-typecheck.log), [Tests](../out/plugin-terminals-validation/contract-tests.log) |
+| Second PR in isolation | All typechecks and 35 focused integration tests pass without Terminal Lab. Its 20 UI files match the validated export byte-for-byte. | [Typechecks](../out/plugin-terminals-validation/features-typecheck.log), [Tests](../out/plugin-terminals-validation/features-tests.log) |
+| Production outputs | Daemon, CLI, client and shell builds pass; cached outputs are checked against their source hashes. The example builds from pinned local dependencies. | [Coherent build/run log](../out/plugin-terminals-validation/final-coherent-build.log), [Artifact hashes](audit/plugin-terminals/live-hidden/build-manifest.json) |
+| Terminal Lab in a hidden instance | 49/49 checks pass, including three four-MiB bursts, resync, renderer handoff/fallback, live search, external-editor save/return, remote clipboard ownership, retained hidden sessions, phone modifiers, direct mouse input and PTY size ownership. | [Results](audit/plugin-terminals/live-hidden/results.json), [Resync evidence](audit/plugin-terminals/live-hidden/recovered-resync-diagnostics.json) |
+| Terminal Lab in an onscreen instance | 49/49 checks pass against the same 14 artifact hashes. Desktop, external-editor and phone screenshots were inspected; terminal backgrounds and the complete phone key bar fit their hosts. | [Results](audit/plugin-terminals/live-onscreen/results.json), [Run log](../out/plugin-terminals-validation/live-onscreen.log), [Visual record](audit/plugin-terminals/README.md) |
+| Existing native regressions | All 48 checks pass: workspace focus 14/14, platform shortcuts 20/20, Copy/Paste 14/14. | [Focus/shortcuts](../out/plugin-terminals-validation/native-regressions/results.json), [Clipboard](../out/plugin-terminals-validation/native-clipboard/results.json) |
+
+Local workspace/zoom eviction and remote phone mode changes retain their native detach/reattach
+behavior; the same pane/process is replayed on return. Remote desktop zoom retains an actual
+hidden iframe and is the live retention/input/geometry test. A second protocol client owns
+geometry during the live size-control check, then the real window reclaims it through the
+native **Take Size Control** action. Raw input/PID diagnostics and artifact hashes accompany
+the results. Hidden-window screenshots are not used as visual evidence.
+The two Terminal Lab runs and existing native scenarios total 146 live assertions.
+
+Phone checks use browser emulation. Physical keyboards/IME candidate windows, actual mobile
+software keyboards and simultaneous native-window ownership remain device/manual checks;
+the automated transport and daemon suites cover window size policy. Terminal Lab retains
+Kitty mode metadata but does not implement the bundled renderer's custom Kitty encoder.
+Packaged-release validation and the complete UI audit were not repeated for this phase.
+
+### Terminal PR review fixes (2026-09-10)
+
+The follow-up fixes queued device-query loss during replay, Windows/Linux empty-selection
+Ctrl+C interruption, attachment focus stealing, empty-message fallback, and phone modifier
+character encoding. SDK dispatch support stays in #149; pane integration stays in #150;
+the example and expanded live scenario stay in #151. Work was isolated from the existing
+checkouts, and the retained-query change also received an independent review.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete workspace checks | All typechecks pass; 7,233 root tests and 868 shell tests pass (**8,101 total**). One existing optional database test is skipped. | [Check log](../out/plugin-terminal-review-validation/check.log) |
+| Terminal Lab live regressions | **58/58** checks pass in a private background instance. New checks exercise queued queries across resize, delayed attachment caret ownership, empty error recovery, four phone modifier combinations, and exactly one Ctrl+C byte through a browser emulating Linux. | [Results](../out/plugin-terminal-review-validation/live-terminal-final/results.json), [Build hashes](../out/plugin-terminal-review-validation/live-terminal-final/build-manifest.json) |
+| Existing native regressions | **41/41** checks pass: deferred pane focus 7/7, Copy/Paste 14/14, and platform shortcuts 20/20. | [Combined results](../out/plugin-terminal-review-validation/live/results.json) |
+
+The first live run passed every new regression but exposed a timing assumption in the old
+slow-parser test: it waited for the renderer's resync callback before removing its parser
+delay, although that callback now follows retained live data. The scenario now observes the
+daemon's resync notice first, restores parser speed, and then requires the renderer notice
+and exact screen convergence. The final Terminal Lab run passes all checks. Initial results
+remain in the combined-run artifact above. Across the final Terminal Lab and native runs,
+**99 distinct live checks** pass against the same product changes.
+
+The ignored Ghostty build was copied from the existing terminal worktree only after all
+32 tracked vendor files matched the isolated checkout. Phone and Linux coverage uses browser
+emulation; physical-device, packaged-release, and full UI-audit checks were not repeated.
+
 ## Window chrome features (2026-09-10)
 
 This phase was implemented and validated in `out/worktrees/plugin-chrome`, based on

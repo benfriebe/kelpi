@@ -69,6 +69,16 @@ context)` remains compatible with the CLI/UI wire protocol and returns `{ok:fals
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
 
+## Terminal renderers
+
+Native terminal replacements use the view-only `kelpi.terminal.attach` API. Its dedicated
+binary feed acknowledges output only after the renderer consumes it and preserves the
+daemon-owned process across swaps, reload and fallback. It also carries terminal modes,
+presentation and host actions such as live selection and phone keys. See the
+[terminal contract](../../docs/plugin-terminals.md), [types](terminal.d.ts) and
+[Terminal Lab](../../examples/plugins/terminal-lab). Existing terminal commands and watches
+remain available to backend and ordinary pane plugins.
+
 ## Documents
 
 Native document source is available through `api.documents.get/edit/save/setMode/refresh`

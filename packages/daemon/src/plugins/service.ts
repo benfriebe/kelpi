@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newUUID } from '@kelpi/core/codec';
-import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo } from '@kelpi/protocol';
+import type { Pane } from '@kelpi/core/layout';
+import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -50,6 +51,20 @@ function text(value: unknown, field: string): string {
     return value;
 }
 
+/** A replacement renders an existing native body; it never acquires the pane descriptor. */
+function nativeTerminalPane(pane: Pane | undefined): boolean {
+    return pane?.type === 'shell' || (pane !== undefined && ['markdown', 'scratchpad', 'diff'].includes(pane.type) && pane.externalEditorCommand != null);
+}
+function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boolean {
+    if (!pane) return false;
+    const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
+    return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal'));
+}
+type TerminalPaneIdentity = Pick<Pane, 'type' | 'createdAt' | 'externalEditorCommand'>;
+function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity): boolean {
+    return nativeTerminalPane(pane) && pane?.type === identity.type && pane.createdAt === identity.createdAt && pane.externalEditorCommand === identity.externalEditorCommand;
+}
+
 /** Per-daemon installation registry and supervisor. No plugin code runs on the daemon loop. */
 export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
     private readonly documents: PluginDocuments;
@@ -63,7 +78,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly errors = new Map<string, string>();
     private readonly watchers = new Set<(event: PluginEvent) => void>();
     private readonly logs = new Map<string, string[]>();
-    private readonly leases = new Map<string, { pluginID: string; revision: string; context: PluginContext; expires: number }>();
+    private readonly leases = new Map<string, { pluginID: string; revision: string; context: PluginContext; expires: number; terminalPane?: TerminalPaneIdentity }>();
     private readonly operations = new Map<string, Set<AbortController>>();
     private readonly leaseOperations = new Map<string, Set<AbortController>>();
     private readonly terminalSubs = new Map<string, { pluginID: string; paneID: string; lease?: string }>();
@@ -120,6 +135,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         this.offStore = options.store.subscribe(events => {
             if (this.closed) return;
             this.documents.prune(paneID => options.store.getState().workspaces.some(workspace => workspace.panes.some(pane => pane.id === paneID)));
+            let visiblePanes: Map<string, Pane> | undefined;
+            for (const [id, lease] of this.leases) if (lease.terminalPane) {
+                visiblePanes ??= new Map(options.store.getState().workspaces.flatMap(workspace => workspace.panes.map(pane => [pane.id, pane] as const)));
+                if (!sameTerminalPane(visiblePanes.get(lease.context.paneID!), lease.terminalPane)) this.release(id);
+            }
             const sequence = ++this.sequence;
             // Reserve ordering synchronously, but do serialization and IPC outside dispatch.
             queueMicrotask(() => { if (!this.closed) this.publish({ epoch: this.epoch, sequence, name: 'state.changed', data: serializeDomainEvents(events) }); });
@@ -671,15 +691,20 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         }
         if (method === 'views.setState') {
             if (operationScope().signal?.aborted) throw new Error('plugin invocation cancelled');
+            const attached = lease ? this.leases.get(lease) : undefined;
+            if (lease && (!attached || attached.pluginID !== id || attached.revision !== item.revision || attached.expires < Date.now() || attached.context.paneID !== context.paneID || attached.context.viewID !== context.viewID)) throw new Error('plugin view access expired');
             const paneID = text(context.paneID ?? args['paneID'], 'paneID');
             const pane = this.options.store.getState().workspaces.flatMap(workspace => [...workspace.panes, ...workspace.parkedPanes]).find(pane => pane.id === paneID);
-            const documentView = item.manifest.contributes.views.find(view => view.id === context.viewID && ['markdown', 'scratchpad', 'diff'].includes(pane?.type ?? '') && view.placements.includes(`document.${pane!.type}`));
-            if (documentView) {
-                const key = `${paneID}:${documentView.id}`;
-                this.writeJSON(path.join(this.directory, 'data', id, 'documents.json'), pluginObject({ ...this.storage(id, 'documents'), [key]: { stateVersion: documentView.stateVersion, state: pluginObject(args['state']) } }));
-                return { stateVersion: documentView.stateVersion };
+            const nativeView = item.manifest.contributes.views.find(view => view.id === context.viewID && nativePaneView(pane, view));
+            if (nativeView) {
+                if (nativeTerminalPane(pane) && nativeView.placements.includes('terminal') && !attached?.terminalPane) throw new Error('plugin terminal renderer requires an attached view');
+                const key = `${paneID}:${nativeView.id}`;
+                // Keep the existing document-renderer envelope and filename so installed
+                // views retain their state while native feature coverage expands.
+                this.writeJSON(path.join(this.directory, 'data', id, 'documents.json'), pluginObject({ ...this.storage(id, 'documents'), [key]: { stateVersion: nativeView.stateVersion, state: pluginObject(args['state']) } }));
+                return { stateVersion: nativeView.stateVersion };
             }
-            if (pane?.type !== 'plugin' || pane.plugin?.pluginID !== id) throw new Error('plugin does not own this pane');
+            if (pane?.type !== 'plugin' || pane.plugin?.pluginID !== id || (context.viewID && pane.plugin.viewID !== context.viewID)) throw new Error('plugin does not own this pane');
             const version = item.manifest.contributes.views.find(view => view.id === pane.plugin!.viewID)?.stateVersion;
             if (!version) throw new Error('view is no longer registered');
             this.options.store.dispatch({ type: 'set-plugin-pane-state', paneID, plugin: { ...pane.plugin, stateVersion: version, state: pluginObject(args['state']) } });
@@ -857,11 +882,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 if (!paneID) return undefined;
                 const workspace = this.options.store.getState().workspaces.find(workspace => workspace.panes.some(pane => pane.id === paneID));
                 const pane = workspace?.panes.find(pane => pane.id === paneID);
-                const documentView = pane && ['markdown', 'scratchpad', 'diff'].includes(pane.type) && view.placements.includes(`document.${pane.type}`);
-                if (!pane || (!documentView && (pane.type !== 'plugin' || pane.plugin?.pluginID !== id || pane.plugin.viewID !== viewID))) throw new Error('plugin view does not own this pane');
+                if (!pane || (!nativePaneView(pane, view) && (pane.type !== 'plugin' || pane.plugin?.pluginID !== id || pane.plugin.viewID !== viewID))) throw new Error('plugin view does not own this pane');
                 return { pane, workspaceID: workspace!.id };
             };
-            owningPane();
+            const before = owningPane();
             const generation = this.generations.get(id);
             let cancelActivation: (() => void) | undefined;
             try {
@@ -881,16 +905,18 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             // Activation can yield while the pane closes, moves, or is reused for another
             // feature. Resolve its current owner again before granting view access.
             const owned = owningPane(), pane = owned?.pane;
+            if (before && before.pane.type !== 'plugin' && (pane?.type !== before.pane.type || pane.createdAt !== before.pane.createdAt)) throw new Error('plugin view does not own this pane');
+            if (before && view.placements.includes('terminal') && nativeTerminalPane(before.pane) && !sameTerminalPane(pane, before.pane)) throw new Error('plugin view does not own this pane');
             const htmlPath = this.asset(id, item.revision, view.entry);
             if (fs.statSync(htmlPath).size > 256 * 1024) throw new Error('view HTML exceeds 256 KiB');
             const html = fs.readFileSync(htmlPath, 'utf8');
-            const savedDocument = pane && pane.type !== 'plugin' ? this.storage(id, 'documents')[`${pane.id}:${viewID}`] : undefined;
-            if (savedDocument !== undefined && (!pluginRecord(savedDocument) || !Number.isSafeInteger(savedDocument['stateVersion']) || Number(savedDocument['stateVersion']) < 1)) throw new Error('invalid saved document view state');
-            const state = pane?.plugin?.state ?? (pluginRecord(savedDocument) ? pluginObject(savedDocument['state']) : {});
-            const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedDocument) ? Number(savedDocument['stateVersion']) : view.stateVersion);
+            const savedNative = pane && pane.type !== 'plugin' ? this.storage(id, 'documents')[`${pane.id}:${viewID}`] : undefined;
+            if (savedNative !== undefined && (!pluginRecord(savedNative) || !Number.isSafeInteger(savedNative['stateVersion']) || Number(savedNative['stateVersion']) < 1)) throw new Error('invalid saved native view state');
+            const state = pane?.plugin?.state ?? (pluginRecord(savedNative) ? pluginObject(savedNative['state']) : {});
+            const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedNative) ? Number(savedNative['stateVersion']) : view.stateVersion);
             const workspaceID = owned?.workspaceID ?? input['workspaceID'] ?? context.workspaceID;
             const lease = randomUUID();
-            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000 });
+            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000, ...(pane && nativeTerminalPane(pane) && view.placements.includes('terminal') ? { terminalPane: { type: pane.type, createdAt: pane.createdAt, externalEditorCommand: pane.externalEditorCommand } } : {}) });
             return { lease, html, entry: view.entry, state, stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
         }
         if (action === 'enable' || action === 'disable' || action === 'reload' || action === 'remove') return this.mutate(async () => {

@@ -261,6 +261,8 @@ describe('ack-based flow control', () => {
 
         expect(h.session.stats(PANE_A)).toMatchObject({ resyncPending: true, queuedBytes: 0 });
 
+        const notice = vi.spyOn(h.transport, 'sendJson');
+        const replay = vi.spyOn(h.transport, 'sendFrame');
         h.term.setSnapshot(PANE_A, 'REBUILT');
         ack(h.session, PANE_A, 4);
         // The re-seed takes the FLUSHING snapshot (N23), so it lands a turn later.
@@ -271,6 +273,8 @@ describe('ack-based flow control', () => {
         expect(h.transport.ofType('pty-resync')).toEqual([
             { type: 'pty-resync', paneID: PANE_A, reason: 'flow-control-drop' }
         ]);
+        // A late notice would invalidate the snapshot and zero its newly charged credit.
+        expect(notice.mock.invocationCallOrder[0]).toBeLessThan(replay.mock.invocationCallOrder[0]!);
         expect(h.session.stats(PANE_A)).toMatchObject({ resyncPending: false });
 
         // Live output continues after the resync.

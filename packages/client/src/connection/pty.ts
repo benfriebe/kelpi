@@ -36,6 +36,14 @@ import {
 import type { KelpiConnection } from './socket';
 
 export interface PtySubscription {
+    /**
+     * Own this pane's renderer stream. Replaces previous subscribers with a fresh attach;
+     * the next subscriber likewise replaces this one. Manual renderer credits must never
+     * share an auto-ack subscriber's window or start without an authoritative replay.
+     */
+    readonly exclusive?: boolean | undefined;
+    /** Current visible renderer geometry at attach/reconnect; absent means no size claim. */
+    readonly getGeometry?: (() => { cols: number; rows: number } | undefined) | undefined;
     /** Attach replay (the pane's screen as of attach). Falls back to `onData` when absent. */
     readonly onReplay?: ((data: Uint8Array) => void) | undefined;
     readonly onData: (data: Uint8Array) => void;
@@ -90,6 +98,9 @@ export interface PtyClientOptions {
 
 interface PaneEntry {
     readonly subscriptions: Set<PtySubscription>;
+    readonly exclusive: boolean;
+    readonly getGeometry: (() => { cols: number; rows: number } | undefined) | undefined;
+    geometryReported: boolean;
     cols: number;
     rows: number;
     attached: boolean;
@@ -212,11 +223,24 @@ export class PtyClient {
     }
 
     subscribe(paneID: string, subscription: PtySubscription): PtyStreamHandle {
+        if (this.disposed) throw new Error('PTY client is disposed.');
         let entry = this.panes.get(paneID);
+        if (entry !== undefined && (subscription.exclusive === true || entry.exclusive)) {
+            // Flush the old stream before detaching. A renderer change is a viewer handoff,
+            // never a process restart. Stale handles retain this entry but become inert.
+            this.flushAck(paneID, entry);
+            this.clearAckTimer(entry);
+            this.panes.delete(paneID);
+            this.connection.send({ type: 'detach-pane', paneID });
+            entry = undefined;
+        }
         const fresh = entry === undefined;
         if (entry === undefined) {
             entry = {
                 subscriptions: new Set<PtySubscription>(),
+                exclusive: subscription.exclusive === true,
+                getGeometry: subscription.getGeometry,
+                geometryReported: false,
                 cols: subscription.cols ?? 80,
                 rows: subscription.rows ?? 24,
                 attached: false,
@@ -250,25 +274,26 @@ export class PtyClient {
         }
 
         const client = this;
+        const active = (): boolean => !client.disposed && client.panes.get(paneID) === target && target.subscriptions.has(subscription);
         return {
             paneID,
             write(data: Uint8Array | string): void {
-                client.write(paneID, data);
+                if (active()) client.write(paneID, data);
             },
             writeDirect(data: Uint8Array | string): void {
-                client.writeDirect(paneID, data);
+                if (active()) client.writeDirect(paneID, data);
             },
             resize(cols: number, rows: number): void {
-                client.resize(paneID, cols, rows);
+                if (active()) client.resize(paneID, cols, rows);
             },
             ack(bytes: number): void {
-                client.queueAck(paneID, target, bytes);
+                if (active()) client.queueAck(paneID, target, bytes);
             },
             get unacked(): number {
-                return target.unacked;
+                return active() ? target.unacked : 0;
             },
             unsubscribe(): void {
-                client.unsubscribe(paneID, subscription);
+                if (active()) client.unsubscribe(paneID, subscription);
             }
         };
     }
@@ -294,9 +319,10 @@ export class PtyClient {
         const safeRows = Math.trunc(rows);
         if (safeCols <= 0 || safeRows <= 0) return;
         if (entry !== undefined) {
-            if (entry.cols === safeCols && entry.rows === safeRows) return;
+            if (entry.geometryReported && entry.cols === safeCols && entry.rows === safeRows) return;
             entry.cols = safeCols;
             entry.rows = safeRows;
+            entry.geometryReported = true;
         }
         this.sendResize(paneID, safeCols, safeRows);
     }
@@ -304,7 +330,7 @@ export class PtyClient {
     unsubscribe(paneID: string, subscription: PtySubscription): void {
         const entry = this.panes.get(paneID);
         if (entry === undefined) return;
-        entry.subscriptions.delete(subscription);
+        if (!entry.subscriptions.delete(subscription)) return;
         if (entry.subscriptions.size > 0) return;
         this.flushAck(paneID, entry);
         this.clearAckTimer(entry);
@@ -331,7 +357,10 @@ export class PtyClient {
         entry.attached = true;
         entry.unacked = 0;
         entry.pendingAck = 0;
-        this.connection.send({ type: 'attach-pane', paneID, cols: entry.cols, rows: entry.rows });
+        const geometry = entry.getGeometry === undefined ? { cols: entry.cols, rows: entry.rows } : entry.getGeometry();
+        entry.geometryReported = geometry !== undefined;
+        if (geometry !== undefined) { entry.cols = geometry.cols; entry.rows = geometry.rows; }
+        this.connection.send({ type: 'attach-pane', paneID, ...geometry });
     }
 
     private reattachAll(): void {
@@ -339,8 +368,7 @@ export class PtyClient {
             entry.unacked = 0;
             entry.pendingAck = 0;
             this.clearAckTimer(entry);
-            entry.attached = true;
-            this.connection.send({ type: 'attach-pane', paneID, cols: entry.cols, rows: entry.rows });
+            this.attach(paneID, entry);
         }
     }
 
@@ -372,8 +400,10 @@ export class PtyClient {
     }
 
     private queueAck(paneID: string, entry: PaneEntry, bytes: number): void {
-        if (bytes <= 0) return;
-        entry.pendingAck += bytes;
+        if (!Number.isSafeInteger(bytes) || bytes <= 0 || this.panes.get(paneID) !== entry) return;
+        // A duplicated completion callback cannot grant credit for bytes never delivered.
+        entry.pendingAck += Math.min(bytes, Math.max(0, entry.unacked - entry.pendingAck));
+        if (entry.pendingAck <= 0) return;
         if (entry.pendingAck >= this.ackThreshold) {
             this.flushAck(paneID, entry);
             return;

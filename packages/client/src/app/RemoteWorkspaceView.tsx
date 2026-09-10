@@ -1,3 +1,4 @@
+import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 import { PluginContributionItems } from '../plugins/contributions-ui';
@@ -20,7 +21,6 @@ import { useStore } from 'zustand';
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
 import type { KelpiRuntime } from '../state';
-import { TerminalPane } from '../terminal';
 
 export interface RemoteWorkspaceViewProps {
     readonly visible?: boolean | undefined;
@@ -86,7 +86,9 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             );
         }
         return (
-            <TerminalPane
+            <TerminalFeaturePane
+                runtime={runtime}
+                workspaceID={workspaceID}
                 paneID={paneID}
                 ptyApi={runtime.pty}
                 focused={focused}

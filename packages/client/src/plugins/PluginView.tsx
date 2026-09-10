@@ -10,6 +10,11 @@ import { PluginHostUIContext, requestHostUI, HOST_UI_METHODS } from './host-ui';
 import { createPluginNavigationFeed, type PluginNavigationFeed } from './navigation';
 import { WINDOW_UI_METHODS, type UIServiceScope } from './ui-services';
 import { getDocumentDraft, runDocumentEdit, stageDocumentDraft } from './document-drafts';
+import { createTerminalScope, type TerminalScope } from './terminal';
+import { registerPluginTerminal, terminalPresentation } from './terminal-pane';
+import { notifyTerminalPanes } from '../terminal/pane-registry';
+import type { TerminalPaneProps } from '../terminal/TerminalPane';
+import type { KeyEventLike } from '../chrome/keys';
 
 export interface PluginViewProps {
     readonly onError?: ((message: string) => void) | undefined;
@@ -22,6 +27,10 @@ export interface PluginViewProps {
     readonly visible?: boolean | undefined;
     readonly focused?: boolean | undefined;
     readonly claimedChords?: readonly string[] | undefined;
+    /** Granted only by the terminal feature host for this pane's selected renderer. */
+    readonly terminal?: TerminalPaneProps | undefined;
+    /** Terminal editing is handled against this view's owner before window shortcuts run. */
+    readonly onTerminalKey?: ((event: KeyEventLike) => boolean) | undefined;
 }
 const themeVariables = ['--kelpi-bg', '--kelpi-fg', '--kelpi-fg-secondary', '--kelpi-fg-tertiary', '--kelpi-surface', '--kelpi-border', '--kelpi-accent'];
 export function readPluginTheme(): Record<string, string> {
@@ -35,6 +44,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const plugin = plugins.find(item => item.manifest.id === pluginID);
     const frame = useRef<HTMLIFrameElement>(null);
     const port = useRef<MessagePort | null>(null);
+    const terminal = useRef<TerminalScope | null>(null);
+    const hasTerminal = props.terminal !== undefined;
     const latest = useRef(props); latest.current = props;
     const hostUI = useContext(PluginHostUIContext);
     const latestHostUI = useRef(hostUI); latestHostUI.current = hostUI;
@@ -44,6 +55,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const [documentHTML, setDocumentHTML] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
+    const [terminalAttachment, setTerminalAttachment] = useState(0);
     const [connection, setConnection] = useState(runtime.connection.status);
     useEffect(() => runtime.connection.on('status', setConnection), [runtime]);
     const unavailable = !plugin ? 'This plugin is not installed.' : !plugin.enabled ? 'This plugin is disabled.' : plugin.status === 'failed' ? plugin.error ?? 'This plugin failed.' : null;
@@ -54,6 +66,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
         let chromeFeed: WindowFeed | undefined;
         let navigationFeed: PluginNavigationFeed | undefined;
         let uiScope: UIServiceScope | undefined;
+        let terminalScope: TerminalScope | undefined;
+        let releaseTerminal = (): void => {};
         const events = new PluginEventBuffer();
         const drain = (): void => {
             if (sending || !port.current) return;
@@ -67,21 +81,42 @@ export function PluginView(props: PluginViewProps): ReactElement {
             failed = true; clearTimeout(readinessTimer); port.current?.close(); port.current = null;
             navigationFeed?.dispose(); chromeFeed?.dispose();
             uiScope?.dispose();
+            terminalScope?.dispose(); terminal.current = null; releaseTerminal();
             if (lease) { void pluginRequest(runtime, 'release', { lease }).catch(() => {}); lease = ''; }
             setError(error instanceof Error ? error.message : String(error));
             latest.current.onError?.(error instanceof Error ? error.message : String(error));
         };
-        const contextUpdate = (): void => port.current?.postMessage({ type: 'context', value: { theme: readPluginTheme(), chords: latest.current.visible === false ? [] : latest.current.claimedChords ?? [], visible: latest.current.visible ?? true, ...(latest.current.descriptor ? { state: latest.current.descriptor.state, stateVersion: latest.current.descriptor.stateVersion } : {}) } });
+        const contextUpdate = (): void => {
+            port.current?.postMessage({ type: 'context', value: { theme: readPluginTheme(), chords: latest.current.visible === false ? [] : latest.current.claimedChords ?? [], visible: latest.current.visible ?? true, ...(latest.current.descriptor ? { state: latest.current.descriptor.state, stateVersion: latest.current.descriptor.stateVersion } : {}) } });
+            if (latest.current.terminal) terminalScope?.update(terminalPresentation(latest.current.terminal));
+        };
         const handleReady = (event: MessageEvent): void => {
             if (disposed || failed || !lease || event.source !== frame.current?.contentWindow || event.data?.type !== 'kelpi-plugin-ready' || event.data.nonce !== nonce || port.current) return;
             clearTimeout(readinessTimer);
             const channel = new MessageChannel(); port.current = channel.port1;
             try {
                 if (services) uiScope = services.createScope({ id: nonce, pluginID, pluginName: plugin.manifest.name });
+                if (latest.current.terminal && paneID && plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes('terminal'))) {
+                    terminalScope = createTerminalScope({ paneID, pty: runtime.pty,
+                        presentation: terminalPresentation(latest.current.terminal),
+                        onResize: (cols, rows) => latest.current.terminal?.onDimensionsChange?.(paneID, { cols, rows }),
+                        send: message => { if (!disposed && !failed) channel.port1.postMessage(message); }, fail });
+                    terminal.current = terminalScope;
+                }
             } catch (error) { channel.port2.close(); fail(error); return; }
             channel.port1.onmessage = ({ data }) => {
                 if (disposed || failed || !pluginRecord(data)) return;
                 if (data['type'] === 'view-error') { fail(new Error(String(data['message'] ?? 'Plugin view failed').slice(0, 4096))); return; }
+                if (typeof data['type'] === 'string' && data['type'].startsWith('terminal-')) {
+                    if (!terminalScope) return;
+                    try {
+                        terminalScope.receive(data);
+                        if (!terminalScope.attached) releaseTerminal();
+                        if (data['type'] === 'terminal-metrics') notifyTerminalPanes();
+                        if (data['type'] === 'terminal-input' && data['direct'] === false && latest.current.visible !== false) frame.current?.dispatchEvent(new Event('kelpi-terminal-input'));
+                    } catch (error) { fail(error); }
+                    return;
+                }
                 if (data['type'] === 'event-ack') { sending = false; drain(); return; }
                 if (data['type'] === 'chrome-ack') { chromeFeed?.ack(data['sequence']); return; }
                 if (data['type'] === 'navigation-ack') { navigationFeed?.ack(data['sequence']); return; }
@@ -91,7 +126,9 @@ export function PluginView(props: PluginViewProps): ReactElement {
                     if (typeof data['key'] !== 'string' || typeof data['code'] !== 'string') return;
                     const bits = (data['ctrlKey'] === true ? 1 : 0) | (data['altKey'] === true ? 2 : 0) | (data['shiftKey'] === true ? 4 : 0) | (data['metaKey'] === true ? 8 : 0);
                     if (!(latest.current.claimedChords ?? []).includes(`${bits}/${data['code']}`)) return;
-                    ownerWindow.dispatchEvent(new KeyboardEvent('keydown', { key: data['key'], code: data['code'], ctrlKey: data['ctrlKey'] === true, altKey: data['altKey'] === true, shiftKey: data['shiftKey'] === true, metaKey: data['metaKey'] === true, bubbles: true, cancelable: true })); return;
+                    const key = new KeyboardEvent('keydown', { key: data['key'], code: data['code'], ctrlKey: data['ctrlKey'] === true, altKey: data['altKey'] === true, shiftKey: data['shiftKey'] === true, metaKey: data['metaKey'] === true, bubbles: true, cancelable: true });
+                    if (terminalScope && latest.current.onTerminalKey?.(key)) return;
+                    ownerWindow.dispatchEvent(key); return;
                 }
                 if (data['type'] !== 'call' || typeof data['id'] !== 'string' || typeof data['method'] !== 'string') return;
                 const id = data['id'];
@@ -100,6 +137,17 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 outstanding += 1;
                 void (async () => {
                     const args = pluginObject(data['args'] ?? {});
+                    if (data['method'] === 'terminal.attach') {
+                        if (!terminalScope || !paneID) throw new Error('Terminal attachment requires this pane\'s selected terminal renderer.');
+                        const result = terminalScope.attach(args);
+                        if (!terminalScope.attached) throw new Error('Terminal renderer attachment failed.');
+                        releaseTerminal();
+                        releaseTerminal = registerPluginTerminal(paneID, terminalScope, () => frame.current, () => latest.current.terminal);
+                        // Attachment can finish while chrome owns the caret. Re-arm the same
+                        // polite focus effect used for pane focus changes once the session exists.
+                        setTerminalAttachment(value => value + 1);
+                        return result;
+                    }
                     if ((WINDOW_UI_METHODS as readonly string[]).includes(String(data['method']))) {
                         if (!uiScope || latestHostUI.current?.runtime !== runtime || latestHostUI.current.services !== services) throw new Error('Window UI is unavailable for this daemon in this window.');
                         return uiScope.request(String(data['method']), args);
@@ -157,16 +205,19 @@ export function PluginView(props: PluginViewProps): ReactElement {
             setDocumentHTML(pluginDocument(String(attached['html']), url.href, String(attached['entry']), { nonce, context: attached['context']!, state: attached['state']!, stateVersion: attached['stateVersion']!, theme: readPluginTheme(), visible: latest.current.visible ?? true, chords: latest.current.visible === false ? [] : [...latest.current.claimedChords ?? []] }));
             readinessTimer = setTimeout(() => fail(new Error('Plugin view did not connect. Retry to reload it.')), 10_000);
         }).catch(fail);
-        return () => { disposed = true; navigationFeed?.dispose(); chromeFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
-    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome]);
+        return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); navigationFeed?.dispose(); chromeFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
+    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome, hasTerminal]);
+    useEffect(() => {
+        if (props.terminal) { terminal.current?.update(terminalPresentation(props.terminal)); notifyTerminalPanes(); }
+    }, [props.terminal]);
     useEffect(() => {
         if (props.visible === false) frame.current?.blur();
         port.current?.postMessage({ type: 'context', value: { visible: props.visible ?? true, chords: props.visible === false ? [] : props.claimedChords ?? [], ...(props.descriptor ? { state: props.descriptor.state, stateVersion: props.descriptor.stateVersion } : {}) } });
     }, [props.visible, props.claimedChords, props.descriptor]);
     useEffect(() => {
         if (!props.focused || props.visible === false || !documentHTML || !mayClaimPaneCaret()) return;
-        return armCaretClaim(frame.current, () => frame.current?.focus());
-    }, [props.focused, props.visible, documentHTML]);
+        return armCaretClaim(frame.current, () => { frame.current?.focus(); void terminal.current?.action({ type: 'focus' }).catch(() => {}); });
+    }, [props.focused, props.visible, documentHTML, terminalAttachment]);
     const problem = unavailable ?? error;
     return <div data-testid={`plugin-view-${paneID ?? viewID}`} className="relative flex h-full min-h-0 w-full flex-col" style={{ color: tokens.textPrimary, background: tokens.surfaceBackground }}>
         {problem ? <div role="status" className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs"><strong>{plugin?.manifest.name ?? pluginID}</strong><span>{problem}</span><span>Your pane and its state are preserved.</span><button onClick={() => { if (plugin?.enabled && plugin.status === 'failed') void pluginRequest(runtime, 'reload', { pluginID }).catch(error => setError(error.message)); else setAttempt(value => value + 1); }}>Retry</button></div> : null}

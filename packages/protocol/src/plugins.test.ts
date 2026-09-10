@@ -19,6 +19,10 @@ describe('public plugin protocol', () => {
         expect(decodePluginManifest(manifest)).toMatchObject({ name: 'sample.board', activation: 'on-demand', contributes: { commands: [], settings: {}, views: [{ stateVersion: 1 }] } });
         expect(decodeWireObject({ command: 'plugin', action: 'open', text: '{"viewID":"sample.board.view"}' }).ok).toBe(true);
     });
+    it('accepts terminal replacements alongside namespaced custom placements', () => {
+        const placements = ['terminal', 'sample.board.terminal'];
+        expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements }] } }).contributes.views[0]?.placements).toEqual(placements);
+    });
     it.each([
         { apiVersion: 9 }, { trust: 'sandbox' }, { id: 'kelpi.board' }, { id: '../escape' },
         { backend: '../code.js' }, { backend: 'ui/code.js' },

@@ -34,7 +34,9 @@ These modules are bundled TypeScript components. Installed plugins continue to r
 the isolated iframe bridge and public SDK. Toolbar and Status also use registered feature bindings and a shared window command model;
 see the [chrome feature guide](plugin-chrome.md). Markdown, Scratchpad and Diff bodies now use
 registered bindings and a shared document host; see the [document guide](plugin-documents.md).
-Terminal and browser features retain their existing adapters.
+Terminal panes also use a registered binding and a shared feature host, with an acknowledged
+SDK renderer stream; see the [terminal guide](plugin-terminals.md). Browser features retain
+their existing adapter.
 
 ## Window navigation for plugins
 

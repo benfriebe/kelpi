@@ -24,6 +24,7 @@ describe('declarative plugin extension contracts', () => {
     it.each([
         { ...container, placements: ['pane'] },
         { ...container, placements: ['terminal'] },
+        { ...container, placements: ['browser'] },
         { ...container, slots: [] },
         { ...container, slots: [{ id: slot, title: 'Bad', weight: 0 }] },
         { ...container, slots: [{ id: slot, title: 'Bad', defaultView: 'kelpi.shell' }] },

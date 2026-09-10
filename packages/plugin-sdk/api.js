@@ -109,6 +109,27 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             throw error;
         }
     };
+    // Browser operations share native replies, but never rename page-owned data.
+    // Attributes can contain underscores, and exec() may return any JSON object.
+    const browserDTO = value => Array.isArray(value) ? value.map(browserDTO) : value !== null && typeof value === 'object'
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [camelKey(key), key === 'attributes' ? item : browserDTO(item)])) : value;
+    const browserCall = (method, args = {}) => call(`browser.${method}`, clean(args));
+    const browserRun = async (method, args = {}) => {
+        const reply = await browserCall(method, args);
+        if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean') throw new KelpiError(`Invalid reply to browser.${method}`, { code: 'INVALID_REPLY', method: `browser.${method}`, details: reply });
+        if (!reply.ok) throw new KelpiError(reply.error ?? `browser.${method} failed`, { code: 'COMMAND_FAILED', method: `browser.${method}`, details: reply });
+        const { ok, ...result } = reply;
+        if (method === 'exec') {
+            const { result: value, ...envelope } = result;
+            return { ...browserDTO(envelope), result: value };
+        }
+        return browserDTO(result);
+    };
+    const browserList = async (method, field, args = {}) => {
+        const result = await browserRun(method, args);
+        if (!Array.isArray(result[field])) throw new KelpiError(`Invalid ${field} reply to browser.${method}`, { code: 'INVALID_REPLY', method: `browser.${method}`, details: result });
+        return result[field];
+    };
     return Object.freeze({
         call, command,
         snapshot: () => call('state.snapshot'),
@@ -135,6 +156,56 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             refresh: (paneID, revision) => documentCall('refresh', { paneID, revision }),
             watch: (paneID = getContext().paneID) => documentCall('watch', { paneID }),
             unwatch: async subscription => { await documentCall('unwatch', { subscription }); },
+        }),
+        browser: Object.freeze({
+            get: (paneID = getContext().paneID) => browserCall('get', { paneID }),
+            watch: (paneID = getContext().paneID) => browserCall('watch', { paneID }),
+            unwatch: async subscription => { await browserCall('unwatch', { subscription }); },
+            navigate: (paneID, url, options = {}) => browserRun('navigate', { paneID, url, tabID: options.tabID }),
+            url: (paneID, options = {}) => browserRun('url', { paneID, tabID: options.tabID }),
+            back: (paneID, options = {}) => browserRun('back', { paneID, tabID: options.tabID }),
+            forward: (paneID, options = {}) => browserRun('forward', { paneID, tabID: options.tabID }),
+            reload: (paneID, options = {}) => browserRun('reload', { paneID, tabID: options.tabID, hard: options.hard }),
+            stop: (paneID, options = {}) => browserRun('stop', { paneID, tabID: options.tabID }),
+            focus: (paneID, options = {}) => browserRun('focus', { paneID, tabID: options.tabID }),
+            blur: paneID => browserRun('blur', { paneID }),
+            toggleDevTools: (paneID, options = {}) => browserRun('devtools', { paneID, tabID: options.tabID }),
+            tabs: Object.freeze({
+                open: (paneID, url = '', options = {}) => browserRun('tabs.open', { paneID, url, makeActive: options.makeActive }),
+                select: (paneID, tabID) => browserRun('tabs.select', { paneID, tabID }),
+                close: (paneID, tabID) => browserRun('tabs.close', { paneID, tabID }),
+                reorder: (paneID, order) => browserRun('tabs.reorder', { paneID, order: [...order] }),
+            }),
+            setPrivate: (paneID, isPrivate) => browserRun('setPrivate', { paneID, isPrivate }),
+            find: (paneID, tabID, action, needle) => browserRun('find', { paneID, tabID, action, needle }),
+            zoom: (paneID, tabID, direction) => browserRun('zoom', { paneID, tabID, direction }),
+            favourites: Object.freeze({
+                list: () => browserList('favourites.list', 'favourites'),
+                toggle: (url, title) => browserRun('favourites.toggle', { url, title }),
+                remove: id => browserRun('favourites.remove', { id }),
+                rename: (id, title) => browserRun('favourites.rename', { id, title }),
+                move: (from, to) => browserRun('favourites.move', { from, to }),
+            }),
+            capture: (paneID, options = {}) => browserRun('capture', { paneID, tabID: options.tabID, mode: options.mode }),
+            inspect: (paneID, options = {}) => browserRun('inspect', { paneID, tabID: options.tabID, disarm: options.disarm, sendTo: options.sendTo, submit: options.submit }),
+            inspectResult: (paneID, options = {}) => browserList('inspectResult', 'results', { paneID, clear: options.clear }),
+            exec: (paneID, script, options = {}) => browserRun('exec', { paneID, script, tabID: options.tabID }),
+            console: (paneID, options = {}) => browserRun('console', { paneID, since: options.since, level: options.level, clear: options.clear }),
+            cookies: Object.freeze({
+                list: paneID => browserList('cookies.list', 'cookies', { paneID }),
+                clear: (paneID, options = {}) => browserRun('cookies.clear', { paneID, all: options.all, domain: options.domain }),
+                delete: (paneID, name, options = {}) => browserRun('cookies.delete', { paneID, name, domain: options.domain }),
+                set: (paneID, cookie, options = {}) => browserRun('cookies.set', { paneID, cookie: clean({ name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path, is_secure: cookie.isSecure, is_http_only: cookie.isHttpOnly, expires: cookie.expires }), original: options.original }),
+            }),
+            batch: Object.freeze({
+                state: paneID => browserRun('batch.state', { paneID }),
+                toggle: paneID => browserRun('batch.toggle', { paneID }),
+                cancel: paneID => browserRun('batch.cancel', { paneID }),
+                remove: (paneID, itemID) => browserRun('batch.remove', { paneID, itemID }),
+                comment: (paneID, itemID, comment, options = {}) => browserRun('batch.comment', { paneID, itemID, comment, tabID: options.tabID }),
+                focus: (paneID, itemID, origin) => browserRun('batch.focus', { paneID, itemID, origin }),
+                send: (paneID, sendTo) => browserRun('batch.send', { paneID, sendTo }),
+            }),
         }),
         workspaces: Object.freeze({
             list: (options = {}) => list('workspace-list', 'workspaces', { group: options.groupID }),

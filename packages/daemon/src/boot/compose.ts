@@ -1205,7 +1205,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
 
     const plugins = new PluginService({
-        store, pty, term, content,
+        store, pty, term, content, webPanes,
         applicationSettings: () => pluginObject(settings.snapshot),
         cliEnvironment: () => ({
             KELPI_SOCKET: paneRouteValue() ?? '',

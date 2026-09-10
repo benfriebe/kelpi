@@ -15,7 +15,9 @@ import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-service
 import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
 import { PluginDocuments } from './documents.js';
+import { PluginBrowser } from './browser.js';
 import type { ContentService } from '../content/service.js';
+import type { WebPaneService } from '../webpane/service.js';
 
 interface Installation { manifest: PluginManifest; revision: string; enabled: boolean }
 interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
@@ -26,6 +28,7 @@ interface Running {
 }
 export interface PluginServiceOptions {
     readonly content?: ContentService;
+    readonly webPanes?: WebPaneService;
     readonly directory?: string;
     readonly pty?: PtyManager;
     readonly term?: TerminalStateService;
@@ -58,7 +61,7 @@ function nativeTerminalPane(pane: Pane | undefined): boolean {
 function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boolean {
     if (!pane) return false;
     const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
-    return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal'));
+    return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal')) || (pane.type === 'web' && view.placements.includes('browser'));
 }
 type TerminalPaneIdentity = Pick<Pane, 'type' | 'createdAt' | 'externalEditorCommand'>;
 function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity): boolean {
@@ -68,6 +71,7 @@ function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity
 /** Per-daemon installation registry and supervisor. No plugin code runs on the daemon loop. */
 export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
     private readonly documents: PluginDocuments;
+    private readonly browser: PluginBrowser;
     readonly epoch = randomUUID();
     readonly daemonID: string;
     readonly directory: string;
@@ -78,7 +82,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly errors = new Map<string, string>();
     private readonly watchers = new Set<(event: PluginEvent) => void>();
     private readonly logs = new Map<string, string[]>();
-    private readonly leases = new Map<string, { pluginID: string; revision: string; context: PluginContext; expires: number; terminalPane?: TerminalPaneIdentity }>();
+    private readonly leases = new Map<string, { pluginID: string; revision: string; context: PluginContext; expires: number; terminalPane?: TerminalPaneIdentity; browserPane?: Pick<Pane, 'createdAt'> }>();
     private readonly operations = new Map<string, Set<AbortController>>();
     private readonly leaseOperations = new Map<string, Set<AbortController>>();
     private readonly terminalSubs = new Map<string, { pluginID: string; paneID: string; lease?: string }>();
@@ -99,6 +103,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
 
     constructor(private readonly options: PluginServiceOptions) {
         this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); });
+        this.browser = new PluginBrowser(options.store, options.webPanes, (name, data, id) => { this.emit(name, data, id); }, paneID => options.broadcast({ type: 'web-browser-changed', paneID }));
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));
         this.daemonID = randomUUID();
@@ -136,9 +141,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (this.closed) return;
             this.documents.prune(paneID => options.store.getState().workspaces.some(workspace => workspace.panes.some(pane => pane.id === paneID)));
             let visiblePanes: Map<string, Pane> | undefined;
-            for (const [id, lease] of this.leases) if (lease.terminalPane) {
+            for (const [id, lease] of this.leases) if (lease.terminalPane || lease.browserPane) {
                 visiblePanes ??= new Map(options.store.getState().workspaces.flatMap(workspace => workspace.panes.map(pane => [pane.id, pane] as const)));
-                if (!sameTerminalPane(visiblePanes.get(lease.context.paneID!), lease.terminalPane)) this.release(id);
+                const pane = visiblePanes.get(lease.context.paneID!);
+                if ((lease.terminalPane && !sameTerminalPane(pane, lease.terminalPane)) || (lease.browserPane && (pane?.type !== 'web' || pane.createdAt !== lease.browserPane.createdAt))) this.release(id);
             }
             const sequence = ++this.sequence;
             // Reserve ordering synchronously, but do serialization and IPC outside dispatch.
@@ -354,6 +360,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             for (const operation of this.operations.get(id) ?? []) operation.abort();
             this.operations.delete(id);
             this.documents.release(owner => owner.pluginID === id);
+            this.browser.release(owner => owner.pluginID === id);
             for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
             for (const [key, sub] of this.terminalSubs) if (sub.pluginID === id) this.terminalSubs.delete(key);
             child.kill('SIGKILL'); this.changed();
@@ -437,6 +444,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     private release(leaseID: string): void {
         this.documents.release(owner => owner.lease === leaseID);
+        this.browser.release(owner => owner.lease === leaseID);
         this.leases.delete(leaseID);
         for (const operation of this.leaseOperations.get(leaseID) ?? []) operation.abort();
         this.leaseOperations.delete(leaseID);
@@ -698,6 +706,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const nativeView = item.manifest.contributes.views.find(view => view.id === context.viewID && nativePaneView(pane, view));
             if (nativeView) {
                 if (nativeTerminalPane(pane) && nativeView.placements.includes('terminal') && !attached?.terminalPane) throw new Error('plugin terminal renderer requires an attached view');
+                if (pane?.type === 'web' && nativeView.placements.includes('browser') && !attached?.browserPane) throw new Error('plugin browser renderer requires an attached view');
                 const key = `${paneID}:${nativeView.id}`;
                 // Keep the existing document-renderer envelope and filename so installed
                 // views retain their state while native feature coverage expands.
@@ -749,6 +758,15 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 ? this.documents.watch({ pluginID: id, ...(lease ? { lease } : {}) }, input, signal)
                 : this.documents.call(method.slice('documents.'.length), input, signal));
         }
+        if (method.startsWith('browser.')) {
+            if (method === 'browser.unwatch') {
+                if (Object.keys(args).some(key => key !== 'subscription')) throw new Error('Unknown browser unwatch argument.');
+                this.browser.unwatch({ pluginID: id, ...(lease ? { lease } : {}) }, args['subscription']); return null;
+            }
+            return this.operation(id, lease, signal => Promise.resolve(method === 'browser.watch'
+                ? this.browser.watch({ pluginID: id, ...(lease ? { lease } : {}) }, { ...args, paneID: args['paneID'] ?? context.paneID ?? null }, signal)
+                : this.browserOperation(method.slice('browser.'.length), args, context, signal, 'plugin')));
+        }
         if (method === 'files.read' || method === 'files.write') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.files', version: 1, method: method.slice(6), args }, context, signal));
         if (method === 'ui.reveal') {
             const paneID = text(args['paneID'] ?? context.paneID, 'paneID');
@@ -772,6 +790,16 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         }
         if (method === 'process.exec') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.process', version: 1, method: 'exec', args }, context, signal));
         throw new Error(`unknown plugin API method: ${method}`);
+    }
+    private browserOperation(method: string, args: JsonObject, context: PluginContext, signal: AbortSignal | undefined, source: PluginOperationSource): Promise<JsonValue> {
+        return inOperationScope({ ...operationScope(), ...(signal ? { signal } : {}) }, async () => {
+            const operation = this.browser.operation(method, args, context, signal);
+            if (!operation) return this.browser.call(method, args, context, signal);
+            return this.interceptOperation(operation.payload, operation.context, source, async () => {
+                operation.validate();
+                return pluginObject(await this.browser.call(method, operation.args, operation.context, signal));
+            });
+        });
     }
     async invoke(command: string, args: JsonObject, context: PluginContext): Promise<JsonValue> {
         const item = [...this.installations.values()].find(item => item.manifest.contributes.commands.some(entry => entry.id === command));
@@ -834,6 +862,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     run(action: string, input: JsonObject, reply: ReplyHandle, caller: Partial<PluginContext> = {}): void {
         const context: PluginContext = { ...caller, daemonID: this.daemonID };
         if (action === 'document-watch') { this.documents.stream(String(input['paneID'] ?? ''), reply); return; }
+        if (action === 'browser-watch') { this.browser.stream(String(input['paneID'] ?? ''), reply); return; }
         if (action === 'watch') {
             const anchor = this.sequence;
             const watcher = (event: PluginEvent): void => { if (!reply.closed && event.sequence > anchor) reply.send({ ok: true, event }); };
@@ -848,7 +877,9 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');
         if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1 };
+        if (action === 'browser-state') return this.browser.nativeSnapshot(input) as unknown as JsonValue;
         if (action === 'document') return this.documents.call(text(input['method'], 'method'), pluginObject(input['args']), operationScope().signal);
+        if (action === 'browser') return this.browserOperation(text(input['method'], 'method'), pluginObject(input['args']), context, operationScope().signal, context.clientID ? 'ui' : 'cli');
         if (action === 'list') { if (this.registryError) throw new Error(this.registryError); return this.list() as unknown as JsonValue; }
         if (action === 'contributions') return this.contributions() as unknown as JsonValue;
         if (action === 'services') return this.services();
@@ -916,7 +947,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedNative) ? Number(savedNative['stateVersion']) : view.stateVersion);
             const workspaceID = owned?.workspaceID ?? input['workspaceID'] ?? context.workspaceID;
             const lease = randomUUID();
-            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000, ...(pane && nativeTerminalPane(pane) && view.placements.includes('terminal') ? { terminalPane: { type: pane.type, createdAt: pane.createdAt, externalEditorCommand: pane.externalEditorCommand } } : {}) });
+            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000, ...(pane && nativeTerminalPane(pane) && view.placements.includes('terminal') ? { terminalPane: { type: pane.type, createdAt: pane.createdAt, externalEditorCommand: pane.externalEditorCommand } } : {}), ...(pane?.type === 'web' && view.placements.includes('browser') ? { browserPane: { createdAt: pane.createdAt } } : {}) });
             return { lease, html, entry: view.entry, state, stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
         }
         if (action === 'enable' || action === 'disable' || action === 'reload' || action === 'remove') return this.mutate(async () => {
@@ -949,6 +980,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     private async stopPlugin(id: string, cascade = true): Promise<void> {
         this.documents.release(owner => owner.pluginID === id);
+        this.browser.release(owner => owner.pluginID === id);
         if (cascade) await this.stopDependents(id);
         this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
         this.publishContributions(id, { context: {}, items: {} });
@@ -967,6 +999,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     async dispose(): Promise<void> {
         this.documents.release(() => true);
+        this.browser.close();
         if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear(); this.serviceListeners.clear();
         for (const lease of this.leases.keys()) this.release(lease);
         for (const operations of this.operations.values()) for (const operation of operations) operation.abort();

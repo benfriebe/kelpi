@@ -60,6 +60,23 @@ multiple simultaneous browser hosts per daemon remain outside this contract; rem
 phone clients control the owning daemon's page and show its availability accurately.
 Browser Lab demonstrates the replacement boundary without reproducing every bundled tool.
 
+### Browser PR review fixes (2026-09-10)
+
+PRs #154–#156 now preserve pending Find queries when next/previous overlaps their reply,
+populate remote bundled pickup sessions and destinations, and preserve Browser Lab's
+private-mode confirmation intent, reopened Find query and capture result ownership.
+
+Thirty new automated regressions cover reply ordering and cancellation, session/host changes,
+remote reconnects and owner changes, shared private-mode updates, and obsolete captures.
+The combined `pnpm check` passes all workspace typechecks, **7,387 root tests and 868 shell
+tests (8,255 total)**; the existing optional database test remains skipped.
+
+`node scripts/scenario.mjs plugin-browser-features --window hidden` rebuilt all four app
+bundles and passed **66/66 live assertions** in private daemons and Electron profiles.
+The added live checks verify native Find marks after reopening, an Enable confirmation
+after another client enables private mode, and remote pickup start, native picks and Cancel.
+This run validates behavior; hidden-window screenshots are not visual evidence.
+
 ## Terminal renderer replacement (2026-09-10)
 
 Implemented in `out/worktrees/plugin-terminals` from merged main `021e193`. The review

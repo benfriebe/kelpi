@@ -185,6 +185,12 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         await click(local.paneID,'#find-next');
         rec.check('custom Find can advance to the second native match', await check(local.paneID,`document.getElementById('matches').textContent.startsWith('2 /')`));
         await click(local.paneID,'#find-close');
+        rec.check('closing custom Find clears the native marks', await d.settle(() => native.page.eval("document.querySelectorAll('.kelpi-webfind-match').length === 0")));
+        await click(local.paneID,'#find');
+        rec.check('reopening custom Find restores the retained query and native marks', await check(local.paneID,`document.getElementById('find-input').value === 'kelpi-browser-needle' && document.getElementById('matches').textContent === '1 / 2'`) && await d.settle(() => native.page.eval("document.querySelectorAll('.kelpi-webfind-match').length === 2")));
+        await click(local.paneID,'#find-next');
+        rec.check('reopened custom Find advances through the restored matches', await check(local.paneID,`document.getElementById('matches').textContent === '2 / 2'`));
+        await click(local.paneID,'#find-close');
 
         const firstTab = await inside(local.paneID,'browserLab.state.activeTabID');
         const firstState = await snapshot(native);
@@ -243,9 +249,15 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         rec.check('private mode warns before discarding live page state', await check(local.paneID,`!document.getElementById('confirmation').hidden && document.getElementById('confirmation-message').textContent.includes('Unsaved page state will be lost')`) && await sameState(native,beforePrivate));
         await click(local.paneID,'#cancel-private');
         rec.check('cancelling private mode leaves native page state untouched', await sameState(native,beforePrivate) && await check(local.paneID,'!browserLab.state.isPrivate'));
-        await click(local.paneID,'#private'); await click(local.paneID,'#confirm-private');
+        await click(local.paneID,'#private');
+        // Another client can change the shared session while this confirmation is open.
+        // Confirming Enable must remain an Enable intent after that watch update.
+        await cli.ok(['web','private','on','--target',local.paneID]);
         native.page.close(); native = await targetFor(sandbox.debugPort,local.url,native.id);
         const privateState = await snapshot(native);
+        if (!await check(local.paneID,"browserLab.state.isPrivate && document.getElementById('confirm-private').textContent === 'Enable private mode'")) throw new Error('Private-mode watch did not update the open Enable confirmation');
+        await click(local.paneID,'#confirm-private');
+        rec.check('Enable confirmation preserves private mode when another client already enabled it', await check(local.paneID,"browserLab.state.isPrivate && document.getElementById('confirmation').hidden") && await sameState(native,privateState));
         rec.check('private mode rebuilds against an isolated native session and clears stale inspection', await check(local.paneID,'browserLab.state.isPrivate && !browserLab.state.inspection.armed') && privateState.instance !== beforePrivate.instance && privateState.cookies === '' && privateState.storage === null);
         await native.page.click('#cookie'); const privateSaved = await snapshot(native);
         await cli.ok(['plugin','reload',pluginID]);
@@ -288,6 +300,13 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         if (!await d.settleDom(page,`document.activeElement === document.querySelector(${JSON.stringify(remoteFind)})`)) throw new Error('Remote bundled Find shortcut did not focus its search field');
         await page.insertText('kelpi-browser-needle');
         rec.check('remote bundled browser shortcuts search only their owning native page', await d.settleDom(page,`document.querySelector('[data-testid="web-find-count-${remotePane.paneID}"]')?.textContent.includes('2')`) && await sameState(native,localBeforeRemote));
+        await page.click(`[data-testid="web-find-close-${remotePane.paneID}"]`);
+        await page.click(`[data-testid="web-batch-toggle-${remotePane.paneID}"]`);
+        rec.check('remote bundled pickup shows its owning daemon session and controls', await d.settleDom(page,`document.querySelector('[data-testid="web-batch-panel-${remotePane.paneID}"]') && document.querySelector('[data-testid="web-batch-toggle-${remotePane.paneID}"]').getAttribute('aria-label') === 'Hide element pickup'`) && await d.settle(() => remoteNative.page.eval('window.__kelpiInspectorArmed?.() === true')));
+        await remoteNative.page.click('#increment');
+        rec.check('a native pick appears in the remote bundled pickup panel', await d.settleDom(page,`document.querySelector('[data-testid="web-batch-items-${remotePane.paneID}"]')?.textContent.includes('increment')`) && await sameState(native,localBeforeRemote));
+        await page.click(`[data-testid="web-batch-cancel-${remotePane.paneID}"]`);
+        rec.check('remote bundled Cancel clears the panel and native picker', await d.settleDom(page,`!document.querySelector('[data-testid="web-batch-panel-${remotePane.paneID}"]') && document.querySelector('[data-testid="web-batch-toggle-${remotePane.paneID}"]').getAttribute('aria-label') === 'Start element pickup'`) && await d.settle(() => remoteNative.page.eval('window.__kelpiInspectorArmed?.() === false')));
         await choose(remotePane.paneID); if (!await ready(remotePane.paneID)) throw new Error('Remote custom browser did not restore');
         const remoteBeforePhone = await snapshot(remoteNative);
         await page.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});

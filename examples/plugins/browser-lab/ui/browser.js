@@ -2,7 +2,7 @@
 const api = globalThis.kelpi;
 const $ = id => document.getElementById(id);
 let state, subscription, surface, presentation, stopped = false, reading = false, reread = false;
-let panel = null, confirmPrivate = false, findSequence = 0, pendingFocus = false, addressEditing = false;
+let panel = null, privateIntent = null, findSequence = 0, captureSequence = 0, pendingFocus = false, addressEditing = false;
 const actions = [];
 const active = () => state?.tabs.find(tab => tab.id === state.activeTabID) ?? state?.tabs[0];
 
@@ -89,7 +89,7 @@ function render() {
 function receive(next) {
     const changedTab = active()?.id !== (next.tabs.find(tab => tab.id === next.activeTabID) ?? next.tabs[0])?.id;
     state = next;
-    if (changedTab) { findSequence++; $('matches').textContent = ''; $('capture-result').hidden = true; }
+    if (changedTab) { findSequence++; captureSequence++; $('matches').textContent = ''; $('capture-result').hidden = true; }
     render();
 }
 async function readLatest() {
@@ -105,7 +105,7 @@ async function action(invoke) {
     catch (error) { if (!stopped) problem(error); }
 }
 function showPanel(next) {
-    panel = next; confirmPrivate = false;
+    panel = next; privateIntent = null;
     // Native WebContentsViews draw above HTML, including this iframe. Park the page before
     // displaying a menu over its reserved rectangle; disposing the surface clears the cover.
     surface?.setCovered(next !== null);
@@ -115,7 +115,12 @@ function showPanel(next) {
     $('tools').setAttribute('aria-expanded', String(next === 'tools'));
 }
 function focusAddress() { showPanel(null); $('address').focus(); $('address').select(); }
-function showFind() { showPanel(null); $('find-bar').hidden = false; $('find-input').focus(); $('find-input').select(); }
+function showFind() {
+    const reopening = $('find-bar').hidden;
+    showPanel(null); $('find-bar').hidden = false; $('find-input').focus(); $('find-input').select();
+    // Closing clears the native marks while retaining the query for the next search.
+    if (reopening) { $('matches').textContent = ''; if ($('find-input').value) void find(); }
+}
 async function navigate(url) {
     const result = await action(() => api.browser.navigate(state.paneID, url));
     if (result !== undefined) {
@@ -163,8 +168,11 @@ $('find-input').onkeydown = event => { if (event.key === 'Enter') { event.preven
 $('find-next').onclick = () => void find('next');
 $('find-prev').onclick = () => void find('prev');
 $('find-close').onclick = () => {
-    $('find-bar').hidden = true; findSequence++;
-    const tabID = active()?.id; if (tabID) void api.browser.find(state.paneID, tabID, 'clear').catch(problem);
+    $('find-bar').hidden = true; const sequence = ++findSequence;
+    const tabID = active()?.id;
+    if (tabID) void api.browser.find(state.paneID, tabID, 'clear').catch(error => {
+        if (!stopped && sequence === findSequence && $('find-bar').hidden) problem(error);
+    });
     surface?.focus();
 };
 $('favourite').onclick = () => void action(() => api.browser.favourites.toggle(active().url, active().title ?? ''));
@@ -173,13 +181,24 @@ $('tools').onclick = () => showPanel(panel === 'tools' ? null : 'tools');
 for (const close of document.querySelectorAll('[data-close-panel]')) close.onclick = () => showPanel(null);
 for (const direction of ['in', 'out', 'reset']) $(`zoom-${direction}`).onclick = () => void action(() => api.browser.zoom(state.paneID, active().id, direction));
 $('capture').onclick = async () => {
-    const result = await action(() => api.browser.capture(state.paneID, { mode: 'text' }));
-    if (result) { $('capture-result').textContent = typeof result.text === 'string' ? result.text : JSON.stringify(result, null, 2); $('capture-result').hidden = false; }
+    const tabID = active()?.id, sequence = ++captureSequence;
+    if (!tabID) return;
+    const current = () => !stopped && sequence === captureSequence && active()?.id === tabID;
+    try {
+        problem(null);
+        const result = await api.browser.capture(state.paneID, { tabID, mode: 'text' });
+        await readLatest();
+        // The host may finish a background-tab capture after selection or a newer request.
+        if (!current() || result.tabID !== tabID) return;
+        $('capture-result').textContent = typeof result.text === 'string' ? result.text : JSON.stringify(result, null, 2);
+        $('capture-result').hidden = false;
+    } catch (error) { if (current()) problem(error); }
 };
 $('inspect').onclick = () => { showPanel(null); void action(() => api.browser.inspect(state.paneID)); };
 $('private').onclick = () => {
-    confirmPrivate = true; $('tools-panel').hidden = true; $('confirmation').hidden = false;
-    const enabling = !state.isPrivate;
+    $('tools-panel').hidden = true; $('confirmation').hidden = false;
+    // Confirm the displayed mode even if another client changes the pane meanwhile.
+    const enabling = privateIntent = !state.isPrivate;
     $('confirmation-title').textContent = `${enabling ? 'Enable' : 'Disable'} private mode?`;
     $('confirmation-message').textContent = enabling
         ? 'All tabs will reload in a separate temporary session. Unsaved page state will be lost. Private cookies are discarded when Kelpi quits.'
@@ -189,13 +208,14 @@ $('private').onclick = () => {
 };
 $('cancel-private').onclick = () => showPanel('tools');
 $('confirm-private').onclick = async () => {
-    if (!confirmPrivate) return;
+    if (privateIntent === null) return;
+    const isPrivate = privateIntent;
     $('confirm-private').disabled = true;
-    try { await action(() => api.browser.setPrivate(state.paneID, !state.isPrivate)); showPanel(null); }
+    try { await action(() => api.browser.setPrivate(state.paneID, isPrivate)); showPanel(null); }
     finally { $('confirm-private').disabled = false; }
 };
 document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && (panel || confirmPrivate)) { event.preventDefault(); event.stopPropagation(); showPanel(null); }
+    if (event.key === 'Escape' && (panel || privateIntent !== null)) { event.preventDefault(); event.stopPropagation(); showPanel(null); }
 });
 const stopChanged = api.events.on('browser.changed', event => { if (event.data.subscription === subscription) return readLatest(); });
 const stopClosed = api.events.on('browser.closed', event => {

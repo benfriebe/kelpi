@@ -1,4 +1,5 @@
 import { TerminalFeaturePane } from './features/TerminalFeaturePane';
+import { BrowserFeaturePane } from './features/BrowserFeaturePane';
 import { DocumentPane, isDocumentPane } from './features/DocumentPane';
 import { registerDocumentCloseGuard } from './plugins/document-drafts';
 import { createChromeFeatureSource } from './features/chrome-source';
@@ -205,7 +206,6 @@ import {
     type TerminalTheme
 } from './terminal';
 import {
-    WebPane,
     batchDestinations,
     chromeTextIsFocused,
     replayChordCommand,
@@ -3356,7 +3356,10 @@ function Shell(props: AppProps): ReactElement {
                         (web?.tabs ?? []).find((tab) => tab.id === web?.activeTabID) ?? web?.tabs[0] ?? null;
                     const nav = webUI.navStates[navStateKey(paneID, activeWebTab?.id ?? null)];
                     return (
-                        <WebPane
+                        <BrowserFeaturePane
+                            runtime={runtime}
+                            workspaceID={workspace?.id ?? ''}
+                            claimedChords={allViewChords}
                             paneID={paneID}
                             tabs={web?.tabs ?? EMPTY_WEB_TABS}
                             activeTabID={web?.activeTabID ?? null}

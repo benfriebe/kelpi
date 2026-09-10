@@ -23,6 +23,10 @@ describe('public plugin protocol', () => {
         const placements = ['terminal', 'sample.board.terminal'];
         expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements }] } }).contributes.views[0]?.placements).toEqual(placements);
     });
+    it('registers browser chrome as an isolated native renderer while retaining per-view state', () => {
+        const views = [{ ...manifest.contributes.views[0], placements: ['browser'], stateVersion: 3 }];
+        expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views).toMatchObject([{ placements: ['browser'], stateVersion: 3 }]);
+    });
     it.each([
         { apiVersion: 9 }, { trust: 'sandbox' }, { id: 'kelpi.board' }, { id: '../escape' },
         { backend: '../code.js' }, { backend: 'ui/code.js' },

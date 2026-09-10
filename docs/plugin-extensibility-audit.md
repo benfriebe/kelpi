@@ -8,6 +8,11 @@ APIs below are design proposals, not an alternative API reference.
 Current implementation takes precedence over older architecture/specification comments
 where they differ.
 
+The subsequent [feature](plugin-features.md), [chrome](plugin-chrome.md),
+[document](plugin-documents.md), [terminal](plugin-terminals.md) and
+[browser](plugin-browser.md) guides describe the implemented replacement contracts.
+Distribution, update/rollback and an untrusted execution runtime remain future work.
+
 **Recommendation.** Build a small application kernel with bundled feature plugins and
 installable plugins. Make the workspace sidebar, inspector, pane bodies, menus, and status
 items consume the same contribution contracts available to plugin authors. Keep the daemon

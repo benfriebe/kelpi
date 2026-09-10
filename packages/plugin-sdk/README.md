@@ -79,6 +79,18 @@ presentation and host actions such as live selection and phone keys. See the
 [Terminal Lab](../../examples/plugins/terminal-lab). Existing terminal commands and watches
 remain available to backend and ordinary pane plugins.
 
+## Browser renderers
+
+`kelpi.browser` exposes the owning daemon's native tabs, navigation, Find, favourites,
+private mode, capture, inspection/batch tools and cookies. Watch invalidations include
+native picker revisions. The view-only `browser.attach({element, onPresentation, onAction})`
+places an existing native page in a measured slot and preserves its live session across
+renderer swaps. Use `surface.setCovered(true)` for HTML popups over the native page, and
+`surface.focus()` for local caret handoff. Remote controls can be available even when the
+current window cannot display that daemon's native page. See the
+[browser contract](../../docs/plugin-browser.md), [types](browser-pane.d.ts) and
+[Browser Lab](../../examples/plugins/browser-lab).
+
 ## Documents
 
 Native document source is available through `api.documents.get/edit/save/setMode/refresh`

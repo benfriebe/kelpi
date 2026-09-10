@@ -1,0 +1,266 @@
+{
+  "stamp": "2026-09-10T09-32-33-290Z",
+  "windowPlacement": "onscreen",
+  "files": [
+    "/Users/ben/code/kelpi/out/worktrees/plugin-browser/scripts/scenarios/plugin-browser-features.mjs"
+  ],
+  "summaries": [
+    {
+      "name": "plugin-browser-features",
+      "placement": "onscreen",
+      "checks": 59,
+      "failed": 0,
+      "results": [
+        {
+          "label": "fixture has actual page input, JS state, cookies and local storage",
+          "ok": true
+        },
+        {
+          "label": "browser replacement is an isolated SDK-only view of the existing native pane",
+          "ok": true
+        },
+        {
+          "label": "selecting Browser Lab retains the native target and unsaved page state",
+          "ok": true
+        },
+        {
+          "label": "the public snapshot and presentation identify the actual shell host",
+          "ok": true
+        },
+        {
+          "label": "native page bounds match the plugin’s measured page slot and focus gutter",
+          "ok": true,
+          "detail": "{\"owner\":\"main\",\"bounds\":\"222,210 1056×584\",\"reason\":\"attached\"}"
+        },
+        {
+          "label": "a plugin popup parks the native page before interaction",
+          "ok": true
+        },
+        {
+          "label": "typed SDK capture reads the hosted page behind the parked popup",
+          "ok": true
+        },
+        {
+          "label": "closing the plugin popup restores the same native page",
+          "ok": true
+        },
+        {
+          "label": "bundled renderer restoration retains the live page and cookies",
+          "ok": true
+        },
+        {
+          "label": "plugin reload restores its surface without recreating WebContents",
+          "ok": true
+        },
+        {
+          "label": "client window reload preserves renderer selection and native page identity",
+          "ok": true
+        },
+        {
+          "label": "a failed plugin releases geometry and falls back to the bundled browser",
+          "ok": true
+        },
+        {
+          "label": "disabling the plugin returns to native controls with the page intact",
+          "ok": true
+        },
+        {
+          "label": "reenabling restores the saved replacement and the same page",
+          "ok": true
+        },
+        {
+          "label": "zooming a sibling parks the hidden browser without replacing its page",
+          "ok": true
+        },
+        {
+          "label": "leaving sibling zoom restores the browser surface and live page",
+          "ok": true
+        },
+        {
+          "label": "switching workspaces parks the plugin’s native browser page",
+          "ok": true
+        },
+        {
+          "label": "returning to the workspace restores the same browser target and state",
+          "ok": true
+        },
+        {
+          "label": "Cmd+L from the native page focuses the plugin address field",
+          "ok": true
+        },
+        {
+          "label": "live navigation updates preserve an actively edited address draft",
+          "ok": true
+        },
+        {
+          "label": "a typed address navigates the owning native tab and returns native focus",
+          "ok": true
+        },
+        {
+          "label": "replacement Back follows native history",
+          "ok": true
+        },
+        {
+          "label": "replacement Forward follows native history",
+          "ok": true
+        },
+        {
+          "label": "Cmd+F from the native page opens the custom find row",
+          "ok": true
+        },
+        {
+          "label": "custom Find reports native match results",
+          "ok": true
+        },
+        {
+          "label": "custom Find can advance to the second native match",
+          "ok": true
+        },
+        {
+          "label": "custom New tab creates a native tab and focuses the address",
+          "ok": true
+        },
+        {
+          "label": "switching native tabs retains the original tab’s in-memory state",
+          "ok": true
+        },
+        {
+          "label": "closing a custom tab removes only that native tab",
+          "ok": true
+        },
+        {
+          "label": "custom bookmarks update daemon-owned favourites",
+          "ok": true
+        },
+        {
+          "label": "bookmark popover participates in native occlusion",
+          "ok": true
+        },
+        {
+          "label": "plugin zoom uses native page scaling",
+          "ok": true
+        },
+        {
+          "label": "reset zoom restores native page geometry",
+          "ok": true
+        },
+        {
+          "label": "resizing the client updates the exact reserved native page rectangle",
+          "ok": true
+        },
+        {
+          "label": "an app settings modal covers and parks the replacement’s native page",
+          "ok": true
+        },
+        {
+          "label": "closing the app modal restores the existing native page",
+          "ok": true
+        },
+        {
+          "label": "a native element pick invalidates the public watch without polling inspector results",
+          "ok": true
+        },
+        {
+          "label": "SDK inspector collects an actual native-page selection",
+          "ok": true
+        },
+        {
+          "label": "clearing collected picks updates the public inspection metadata",
+          "ok": true
+        },
+        {
+          "label": "a native batch pick invalidates the public browser watch",
+          "ok": true
+        },
+        {
+          "label": "same-count batch comment edits advance the watch revision",
+          "ok": true
+        },
+        {
+          "label": "private mode warns before discarding live page state",
+          "ok": true
+        },
+        {
+          "label": "cancelling private mode leaves native page state untouched",
+          "ok": true
+        },
+        {
+          "label": "private mode rebuilds against an isolated native session and clears stale inspection",
+          "ok": true
+        },
+        {
+          "label": "plugin reload preserves the private page and its ephemeral session",
+          "ok": true
+        },
+        {
+          "label": "leaving private mode restores the saved native session",
+          "ok": true
+        },
+        {
+          "label": "a single native page crash recovers beneath the plugin controls",
+          "ok": true
+        },
+        {
+          "label": "repeat native crashes show the host-owned recovery card",
+          "ok": true
+        },
+        {
+          "label": "host recovery reload works with custom browser controls selected",
+          "ok": true
+        },
+        {
+          "label": "embedded remote controls report that page display belongs to another shell",
+          "ok": true
+        },
+        {
+          "label": "remote navigation targets its own native page and preserves the local address caret",
+          "ok": true
+        },
+        {
+          "label": "the remote SDK refuses a pane from the local daemon",
+          "ok": true
+        },
+        {
+          "label": "remote bundled browser preserves native address editing chords",
+          "ok": true
+        },
+        {
+          "label": "remote bundled browser shortcuts search only their owning native page",
+          "ok": true
+        },
+        {
+          "label": "phone Browser Lab controls remain available with an explicit native-display limit",
+          "ok": true
+        },
+        {
+          "label": "phone browser controls fit the viewport and do not mount a terminal key bar",
+          "ok": true
+        },
+        {
+          "label": "a direct browser client exposes controls without pretending to host native pixels",
+          "ok": true
+        },
+        {
+          "label": "host loss updates availability and clears stale native inspection",
+          "ok": true
+        },
+        {
+          "label": "returning to the original shell restores its same local page",
+          "ok": true
+        }
+      ],
+      "notes": [
+        "Native page lifecycle and plugin browser controls",
+        "shot: out/plugin-browser-validation/live-onscreen/plugin-browser-features-01-browser-lab-covered-tools.png",
+        "shot: out/plugin-browser-validation/live-onscreen/plugin-browser-features-02-browser-lab-app-modal.png",
+        "Private mode intentionally rebuilds native pages and switches session partitions",
+        "shot: out/plugin-browser-validation/live-onscreen/plugin-browser-features-03-browser-lab-desktop-chrome.png",
+        "shot: out/plugin-browser-validation/live-onscreen/plugin-browser-features-04-browser-lab-native-page.png",
+        "Remote controls cannot claim page pixels from another native shell",
+        "shot: out/plugin-browser-validation/live-onscreen/plugin-browser-features-05-browser-lab-phone.png",
+        "The onscreen harness captures the composed native window, including its sibling WebContentsView. A separate native-page capture and placement logs corroborate page composition and ownership. Hidden screenshots are not visual evidence. Phone coverage uses emulation; physical-device keyboards and OS IME remain manual."
+      ],
+      "ms": 9057
+    }
+  ]
+}

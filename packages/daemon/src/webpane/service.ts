@@ -16,7 +16,7 @@
  * connected` when nobody is there.
  */
 
-import type { JsonObject } from '@kelpi/protocol';
+import type { BrowserInspectionSnapshot, JsonObject } from '@kelpi/protocol';
 
 import type { DomainStore } from '../seams.js';
 import { findPaneAnywhere, workspaceByID } from '../store/derived.js';
@@ -149,6 +149,16 @@ export interface WebPaneService {
     readonly favourites: FavouritesStore;
     /** True when a host is attached (handlers use it to answer `no web pane host connected`). */
     readonly hasHost: boolean;
+    /** Last host navigation report for a current tab, available immediately on attach. */
+    navState(paneID: string, tabID: string): WebNavState | null;
+    /** Native view/session incarnation. Changes on private toggle, rebuild and pane reuse. */
+    pageGeneration(paneID: string): number;
+    /** One tab incarnation, including close/reopen with a reused id. */
+    tabGeneration(paneID: string, tabID: string): number;
+    /** Bounded metadata for live inspector/batch changes, excluding captured page payloads. */
+    inspectionState(paneID: string): BrowserInspectionSnapshot;
+    /** Pane changes; null means host availability or the shared favourites changed. */
+    subscribeState(listener: (paneID: string | null) => void): () => void;
     /**
      * Drive the page's `__kelpiWebFind` on `tabID` and remember (or forget) the needle.
      *
@@ -160,7 +170,8 @@ export interface WebPaneService {
         paneID: string,
         tabID: string,
         action: WebFindAction,
-        needle: string
+        needle: string,
+        signal?: AbortSignal
     ): Promise<JsonObject>;
     /**
      * WEB-064: a tab switch (or close) while the bar is open. The outgoing tab is cleared and
@@ -251,12 +262,29 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const consoleStore = createConsoleStore(
         options.consoleCapacity !== undefined ? { capacity: options.consoleCapacity } : {}
     );
-    const inspectState = createInspectState(
-        options.nonce !== undefined ? { nonce: options.nonce } : {}
-    );
+    const inspectState = createInspectState({ ...(options.nonce !== undefined ? { nonce: options.nonce } : {}), onChange: paneID => inspectionChanged(paneID) });
     const findState = createWebFindState();
-    const batchState = createBatchState();
+    const batchState = createBatchState({ onChange: paneID => inspectionChanged(paneID) });
     const newID = options.newID ?? ((): string => `${String(now())}-${Math.random().toString(16).slice(2)}`);
+    const stateListeners = new Set<(paneID: string | null) => void>();
+    const navStates = new Map<string, Map<string, WebNavState>>();
+    const pages = new Map<string, { workspaceID: string; createdAt: number; web: WebPaneState; generation: number }>();
+    const tabGenerations = new Map<string, Map<string, number>>();
+    const inspectionRevisions = new Map<string, number>();
+    let nextInspectionRevision = 0;
+    let nextPageGeneration = 0;
+    const findRequests = new Map<string, { latest: object | null; query: object | null }>();
+    const stateChanged = (paneID: string | null): void => {
+        for (const listener of stateListeners) {
+            try { listener(paneID); } catch (error) { options.onError?.(error instanceof Error ? error : new Error(String(error)), 'browser-state'); }
+        }
+    };
+    const inspectionChanged = (paneID: string): void => {
+        // State can also be used without real panes in unit tests. Only retain live ids.
+        if (!pages.has(paneID)) return;
+        inspectionRevisions.set(paneID, ++nextInspectionRevision);
+        stateChanged(paneID);
+    };
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
@@ -264,7 +292,14 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
     const host = createHostRegistry({
         ...(options.newID !== undefined ? { newID: options.newID } : {}),
-        ...(options.onError !== undefined ? { onError: options.onError } : {})
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        onHostChanged: () => {
+            navStates.clear(); findRequests.clear();
+            // The nonce belongs to a picker installed in the previous host's document.
+            // Keep collected results and batch items, but never accept picks from that arm.
+            for (const paneID of pages.keys()) inspectState.disarm(paneID);
+            stateChanged(null);
+        }
     });
 
     const favouritesStore = createFavouritesStore({
@@ -274,7 +309,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         ...(options.newID !== undefined ? { uuid: options.newID } : {}),
         now,
         ...(options.onError !== undefined ? { onError: options.onError } : {}),
-        ...(options.onFavouritesChanged === undefined ? {} : { onChange: options.onFavouritesChanged })
+        onChange: favourites => { options.onFavouritesChanged?.(favourites); stateChanged(null); }
     });
 
     /** Web panes the host has been told about, so a re-render does not re-announce them. */
@@ -301,6 +336,32 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (found === null) return '';
         return resolvedActiveTab(found.web)?.id ?? '';
     };
+
+    const trackPages = (): void => {
+        if (!store) return;
+        const live = new Set<string>();
+        for (const workspace of store.getState().workspaces) for (const pane of workspace.panes) {
+            const web = workspace.webPanes[pane.id];
+            if (pane.type !== 'web' || !web) continue;
+            live.add(pane.id);
+            const previous = pages.get(pane.id);
+            if (previous?.web === web && previous.createdAt === pane.createdAt && previous.workspaceID === workspace.id) continue;
+            const replaced = !previous || previous.createdAt !== pane.createdAt || previous.web.isPrivate !== web.isPrivate
+                || previous.web.tabs.some(tab => tab.live !== false && web.tabs.find(next => next.id === tab.id)?.live === false);
+            pages.set(pane.id, { workspaceID: workspace.id, createdAt: pane.createdAt, web, generation: replaced ? ++nextPageGeneration : previous.generation });
+            const tabIDs = replaced ? new Map<string, number>() : tabGenerations.get(pane.id) ?? new Map<string, number>();
+            for (const tab of web.tabs) if (!tabIDs.has(tab.id)) tabIDs.set(tab.id, ++nextPageGeneration);
+            for (const tabID of tabIDs.keys()) if (!web.tabs.some(tab => tab.id === tabID)) tabIDs.delete(tabID);
+            tabGenerations.set(pane.id, tabIDs);
+            if (replaced) { navStates.delete(pane.id); findRequests.delete(pane.id); inspectState.disarm(pane.id); }
+            else for (const id of navStates.get(pane.id)?.keys() ?? []) if (!web.tabs.some(tab => tab.id === id)) navStates.get(pane.id)?.delete(id);
+            stateChanged(pane.id);
+        }
+        for (const paneID of pages.keys()) if (!live.has(paneID)) {
+            pages.delete(paneID); tabGenerations.delete(paneID); navStates.delete(paneID); findRequests.delete(paneID); inspectionRevisions.delete(paneID); stateChanged(paneID);
+        }
+    };
+    trackPages();
 
     // ── batch element pickup (§12) ──────────────────────────────────────────
 
@@ -378,8 +439,12 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         store === undefined
             ? (): void => {}
             : store.subscribe((events) => {
+                  trackPages();
                   for (const event of events) {
                       if (event.kind === 'pane-removed') {
+                          // A workspace move emits removal from the old workspace before its
+                          // upsert in the new one. The final state still owns the same page.
+                          if (pages.has(event.paneID)) continue;
                           consoleStore.disposePane(event.paneID);
                           inspectState.disposePane(event.paneID);
                           findState.disposePane(event.paneID);
@@ -420,6 +485,10 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (store === undefined) return false;
         const found = webPaneOf(paneID);
         if (found === null) return false;
+        const page = pages.get(paneID);
+        if (page) pages.set(paneID, { ...page, generation: ++nextPageGeneration });
+        navStates.delete(paneID); findRequests.delete(paneID);
+        inspectState.disarm(paneID);
         rebuiltAt.set(paneID, now());
         for (const tab of found.web.tabs) {
             if (tab.live !== false) continue;
@@ -437,6 +506,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (refreshed === null) return false;
         announced.add(paneID);
         host.notify('pane-open', paneStateArgs(paneID, refreshed.web));
+        stateChanged(paneID);
         return true;
     };
 
@@ -500,19 +570,27 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     /**
      * WEB-032/WEB-033: mirror the host's loading + history report to whoever is drawing chrome.
      *
-     * Nothing is stored: the client keeps the last report per (pane, tab) and the daemon has no
-     * use for it — a reconnecting client learns the state from the next event, and a tab that is
-     * idle by then simply has no strip to draw, which is the correct picture.
+     * Keep one report per current tab so a replacement can draw correct chrome immediately.
+     * The cache is transient and disappears with the native page/session or host.
      */
     const navStateEvent = (event: HostEventInput): void => {
         if (event.tabID === undefined || event.tabID === '') return;
-        options.onNavStateChanged?.({
+        const found = webPaneOf(event.paneID);
+        const currentTab = found?.web.tabs.some(tab => tab.id === event.tabID) === true;
+        const state = {
             paneID: event.paneID,
             tabID: event.tabID,
             loading: event.payload['loading'] === true,
             canGoBack: event.payload['can_go_back'] === true,
             canGoForward: event.payload['can_go_forward'] === true
-        });
+        };
+        // A service without a store is used by protocol tests; do not retain unbounded ids.
+        if (currentTab) {
+            const tabs = navStates.get(event.paneID) ?? new Map<string, WebNavState>();
+            tabs.set(event.tabID, state); navStates.set(event.paneID, tabs);
+        }
+        options.onNavStateChanged?.(state);
+        if (currentTab) stateChanged(event.paneID);
     };
 
     /**
@@ -707,13 +785,41 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         get hasHost() {
             return host.hasHost;
         },
+        navState: (paneID, tabID) => navStates.get(paneID)?.get(tabID) ?? null,
+        pageGeneration: paneID => pages.get(paneID)?.generation ?? 0,
+        tabGeneration: (paneID, tabID) => tabGenerations.get(paneID)?.get(tabID) ?? 0,
+        inspectionState(paneID) {
+            const arm = inspectState.armOf(paneID), batch = batchState.sessionOf(paneID);
+            return { revision: inspectionRevisions.get(paneID) ?? 0, armed: arm !== null, tabID: arm?.tabID ?? null,
+                pendingResults: inspectState.queued(paneID).length, batchVisible: batch?.visible ?? false,
+                batchItems: batch?.items.length ?? 0, batchFocusedID: batch?.focusedID ?? null };
+        },
+        subscribeState(listener) {
+            if (stateListeners.size >= 256) throw new Error('too many browser state listeners');
+            stateListeners.add(listener); return () => { stateListeners.delete(listener); };
+        },
 
-        async runFind(paneID, tabID, action, needle) {
-            const envelope = await callFind(paneID, tabID, action, needle);
-            if (envelope['ok'] === true) {
+        async runFind(paneID, tabID, action, needle, signal) {
+            const request = {}, generation = pages.get(paneID)?.generation, tabGeneration = tabGenerations.get(paneID)?.get(tabID), owner = host.hostID;
+            const requests = findRequests.get(paneID) ?? { latest: null, query: null };
+            requests.latest = request;
+            // Stepping changes the current match, not the query. Its newer count must not
+            // prevent an outstanding search/clear from updating the remembered needle.
+            if (action === 'search' || action === 'clear') requests.query = request;
+            findRequests.set(paneID, requests);
+            const envelope = await host.call('find', { paneID, tabID, action, needle }, { signal });
+            const current = webPaneOf(paneID);
+            const active = findRequests.get(paneID) === requests;
+            const latest = active && requests.latest === request, query = active && requests.query === request;
+            const targetChanged = signal?.aborted || owner !== host.hostID || !active || (store && (pages.get(paneID)?.generation !== generation || tabGenerations.get(paneID)?.get(tabID) !== tabGeneration || !current?.web.tabs.some(tab => tab.id === tabID)));
+            if (!targetChanged && query && envelope['ok'] === true) {
                 if (action === 'clear') findState.forget(paneID);
                 else if (action === 'search') findState.remember(paneID, tabID, needle);
             }
+            if (latest) requests.latest = null;
+            if (query) requests.query = null;
+            if (active && requests.latest === null && requests.query === null) findRequests.delete(paneID);
+            if (targetChanged || !latest) return { ok: false, error: 'browser find target changed', tab_id: tabID };
             // The tab rides back so a stale count (WEB-063) is recognisable as stale.
             return { ...envelope, tab_id: tabID };
         },
@@ -727,6 +833,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         },
 
         retargetFind(paneID, nextTabID) {
+            findRequests.delete(paneID);
             const session = findState.sessionOf(paneID);
             if (session === null) return;
             // Clear the tab that is going away, then re-run on the incoming one. The clear is
@@ -877,6 +984,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             unsubscribe();
             host.close();
             consoleStore.close();
+            stateListeners.clear(); navStates.clear(); pages.clear(); tabGenerations.clear(); findRequests.clear(); inspectionRevisions.clear();
         }
     };
 }

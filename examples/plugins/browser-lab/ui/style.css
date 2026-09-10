@@ -1,0 +1,51 @@
+:root { color-scheme: dark; font: 12px/1.45 system-ui, sans-serif; color: #d6dce6; background: #151b25; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: flex; flex-direction: column; position: relative; }
+button, input { font: inherit; color: inherit; }
+button { flex-shrink: 0; cursor: pointer; border: 1px solid #354050; border-radius: 5px; padding: 4px 9px; background: #222c3b; white-space: nowrap; }
+button:hover:not(:disabled) { background: #354458; }
+button:focus-visible, input:focus-visible { outline: 2px solid #80cbc4; outline-offset: 1px; }
+button:disabled { opacity: .4; cursor: default; }
+button[aria-pressed="true"] { color: #9ce0d5; border-color: #519990; }
+input { min-width: 0; border: 1px solid #3a485b; border-radius: 5px; background: #111924; padding: 5px 9px; }
+[hidden] { display: none !important; }
+.identity { display: flex; align-items: center; gap: 12px; padding: 7px 10px 3px; color: #91a1b4; font-size: 10px; white-space: nowrap; }
+.brand { color: #89cec7; font-size: 9px; letter-spacing: .14em; font-weight: 700; }
+#status { overflow: hidden; text-overflow: ellipsis; }
+#private-label { margin-left: auto; color: #c2acf0; }
+.tabs-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; min-height: 33px; }
+#tabs { display: flex; min-width: 0; flex: 1; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+.tab { display: flex; min-width: 75px; max-width: 190px; border: 1px solid transparent; border-radius: 6px; background: #202a37; }
+.tab.selected { background: #334052; border-color: #4b6075; }
+.tab button { border: 0; background: transparent; }
+.tab .label { min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.tab .close { padding-left: 4px; padding-right: 7px; color: #98a6b7; }
+.navigation { display: flex; gap: 5px; align-items: center; padding: 3px 8px 6px; }
+.icon { width: 27px; padding: 3px 0; font-size: 17px; line-height: 21px; }
+#address { flex: 1; }
+.actions { display: flex; align-items: center; gap: 5px; padding: 0 8px 6px; border-bottom: 1px solid #354052; }
+.actions button { font-size: 10px; padding: 3px 7px; }
+#host { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: #8496ab; font-size: 10px; white-space: nowrap; }
+.find-bar { display: flex; gap: 5px; padding: 7px 8px; align-items: center; background: #1d2837; }
+#find-input { flex: 1; }
+#matches { color: #95a8bb; font-size: 10px; white-space: nowrap; }
+.find-bar button { padding: 3px 7px; }
+#page-slot { min-width: 0; min-height: 0; flex: 1; background: #111722; }
+#problem { flex-shrink: 0; padding: 7px 10px; background: #552b36; color: #ffd8df; overflow-wrap: anywhere; max-height: 80px; overflow: auto; }
+.popover { position: absolute; z-index: 2; top: 129px; right: 8px; width: min(300px, calc(100% - 16px)); max-height: calc(100% - 139px); padding: 12px; overflow: auto; background: #202d3e; border: 1px solid #52647c; border-radius: 10px; box-shadow: 0 12px 35px #0008; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; }
+.panel-heading button { padding: 1px 7px; }
+.zoom { display: flex; align-items: center; gap: 6px; padding: 6px 0; }
+.zoom span { margin-right: auto; }
+.tool { display: block; width: 100%; text-align: left; margin-top: 7px; }
+.bookmark { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
+.bookmark .open { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.empty { margin: 6px 0; color: #9dafc3; }
+#capture-result { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px; font: 11px/1.5 ui-monospace, monospace; max-height: 180px; overflow: auto; background: #111a25; border-radius: 4px; }
+.confirmation { position: absolute; z-index: 3; top: 145px; left: 50%; transform: translateX(-50%); width: min(350px, calc(100% - 24px)); padding: 18px; background: #233043; border: 1px solid #6a7b96; border-radius: 12px; box-shadow: 0 12px 40px #000b; }
+.confirmation h2 { margin: 0 0 10px; font-size: 16px; }
+.confirmation p { color: #b8c7d8; }
+.confirmation > div { display: flex; gap: 8px; justify-content: flex-end; }
+#confirm-private { color: #c7f1e8; background: #295549; border-color: #5a9f8d; }
+@media (max-width: 420px) { .identity { gap: 7px; } #host { display: none; } .navigation { gap: 3px; } .navigation .icon { width: 24px; } #navigate { padding: 5px 7px; } .actions { gap: 4px; } }

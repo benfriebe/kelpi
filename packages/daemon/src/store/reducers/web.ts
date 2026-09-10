@@ -163,7 +163,7 @@ function navigate(
 ): WorkspaceState {
     const web = sidecarOf(workspace, action.paneID);
     if (web === null) return workspace;
-    const active = resolvedActiveTab(web);
+    const active = action.tabID === undefined ? resolvedActiveTab(web) : web.tabs.find(tab => tab.id === action.tabID) ?? null;
     if (active === null) return workspace;
     const url = normalizeURLInput(action.url);
     if (url === '' || url === active.url) return workspace;

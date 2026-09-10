@@ -1,0 +1,12 @@
+{
+  "id": "example.browser-lab",
+  "name": "Browser Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.browser-lab.browser", "title": "Browser Lab", "entry": "ui/index.html", "placements": ["browser"] }
+    ]
+  }
+}

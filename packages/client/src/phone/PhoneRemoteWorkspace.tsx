@@ -1,4 +1,5 @@
 import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
+import { BrowserFeaturePane } from '../features/BrowserFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 /**
@@ -7,8 +8,8 @@ import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
  * `layout` mode is `app/RemoteWorkspaceView.tsx` unchanged: the same `PaneGrid` the desktop's
  * multi-daemon groups draw, over that host's own mirror, PTY stream and commands. `pane` mode is
  * that view's one-pane half: the focused pane (echo-fast, then the daemon's) filling the box as a
- * terminal or document over the owning remote runtime. Browser panes retain their desktop
- * placeholder. The remote daemon fans PTY bytes out by what this connection
+ * terminal or document over the owning remote runtime. Browser controls use that same owner,
+ * with native page availability shown explicitly. The remote daemon fans PTY bytes out by what this connection
  * reports, so the report names exactly the pane on screen.
  */
 
@@ -94,7 +95,7 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
             className="flex h-full w-full flex-col overflow-hidden"
         >
             <div data-testid={`pane-body-${pane.id}`} className="relative min-h-0 flex-1">
-                {pane.type === 'plugin' && pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} paneID={pane.id} workspaceID={workspaceID} visible /> : isDocumentPane(pane.type) && pane.externalEditorCommand == null ? <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={pane.id} kind={pane.type} focused visible onFocusRequest={id => runtime.focusPane(workspaceID, id)} /> : pane.type !== 'shell' && pane.externalEditorCommand == null ? (
+                {pane.type === 'plugin' && pane.plugin ? <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} paneID={pane.id} workspaceID={workspaceID} visible /> : isDocumentPane(pane.type) && pane.externalEditorCommand == null ? <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={pane.id} kind={pane.type} focused visible onFocusRequest={id => runtime.focusPane(workspaceID, id)} /> : pane.type === 'web' ? <BrowserFeaturePane runtime={runtime} workspaceID={workspaceID} paneID={pane.id} focused visible embedded={false} onFocusRequest={id => runtime.focusPane(workspaceID, id)} /> : pane.type !== 'shell' && pane.externalEditorCommand == null ? (
                     <div
                         className="flex h-full items-center justify-center px-4 text-center text-[13px]"
                         data-testid={`remote-pane-placeholder-${pane.id}`}

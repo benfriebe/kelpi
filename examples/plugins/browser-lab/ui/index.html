@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser Lab</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="identity"><span class="brand">BROWSER LAB</span><span id="status" role="status">Connecting…</span><span id="private-label" hidden>Private</span></header>
+  <div class="tabs-row"><div id="tabs" role="tablist" aria-label="Browser tabs"></div><button id="new-tab" class="icon" title="New tab" aria-label="New tab">+</button></div>
+  <div id="navigation" class="navigation" role="search">
+    <button id="back" class="icon" type="button" title="Back" aria-label="Back">←</button>
+    <button id="forward" class="icon" type="button" title="Forward" aria-label="Forward">→</button>
+    <button id="reload" class="icon" type="button" title="Reload" aria-label="Reload">↻</button>
+    <input id="address" aria-label="Address" placeholder="Enter an address" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="navigate" type="button">Go</button>
+  </div>
+  <div class="actions">
+    <button id="find" type="button">Find</button>
+    <button id="favourite" type="button" aria-pressed="false">☆ Save</button>
+    <button id="bookmarks" type="button" aria-expanded="false">Bookmarks</button>
+    <button id="tools" type="button" aria-expanded="false">Tools</button>
+    <span id="host" title="Native page host"></span>
+  </div>
+  <div id="find-bar" class="find-bar" role="search" hidden>
+    <input id="find-input" aria-label="Find in page" placeholder="Find in page" autocomplete="off">
+    <output id="matches" aria-live="polite"></output>
+    <button id="find-prev" type="button" title="Previous match" aria-label="Previous match">↑</button>
+    <button id="find-next" type="button" title="Next match" aria-label="Next match">↓</button>
+    <button id="find-close" type="button" title="Close find" aria-label="Close find">×</button>
+  </div>
+  <main id="page-slot" aria-label="Native browser page"></main>
+  <div id="problem" role="alert" hidden></div>
+  <section id="bookmarks-panel" class="popover" aria-label="Saved bookmarks" hidden>
+    <div class="panel-heading"><strong>Bookmarks</strong><button data-close-panel="true" type="button" aria-label="Close bookmarks">×</button></div>
+    <div id="bookmark-items"></div>
+  </section>
+  <section id="tools-panel" class="popover" aria-label="Browser tools" hidden>
+    <div class="panel-heading"><strong>Page tools</strong><button data-close-panel="true" type="button" aria-label="Close tools">×</button></div>
+    <div class="zoom"><span>Page zoom</span><button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-reset">Reset</button><button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button></div>
+    <button id="capture" class="tool">Read page text</button>
+    <button id="inspect" class="tool">Pick an element</button>
+    <button id="private" class="tool">Enable private mode…</button>
+    <pre id="capture-result" tabindex="0" hidden></pre>
+  </section>
+  <section id="confirmation" class="confirmation" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" hidden>
+    <h2 id="confirmation-title">Enable private mode?</h2><p id="confirmation-message"></p>
+    <div><button id="cancel-private">Cancel</button><button id="confirm-private">Enable private mode</button></div>
+  </section>
+  <script type="module" src="browser.js"></script>
+</body>
+</html>

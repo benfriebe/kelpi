@@ -4,6 +4,7 @@ import { getKelpi, type BackendAPI, type BuiltinProviderMethods, type NativeGitS
 import './tests/service-fixtures.js';
 import './ui.typecheck.js';
 import './terminal.typecheck.js';
+import './browser.typecheck.js';
 
 async function authoring(api: BackendAPI): Promise<void> {
     const contributions = await api.contributions.update({ context: { ready: true, count: 3, removed: null }, items: {

@@ -1,4 +1,5 @@
 import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
+import { BrowserFeaturePane } from '../features/BrowserFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 import { PluginContributionItems } from '../plugins/contributions-ui';
@@ -12,7 +13,7 @@ import { usePluginCommands } from '../plugins/commands';
  * daemon's commands.
  *
  * Native documents and their selected replacements use the owning runtime's content host.
- * Browser panes still require their daemon's desktop shell.
+ * Browser controls use the owning daemon; native page pixels remain in its desktop shell.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
@@ -73,6 +74,7 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
         if (pane === undefined) return null;
         if (pane.type === 'plugin' && pane.plugin) return <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspaceID} visible={state.visible} />;
         if (isDocumentPane(pane.type) && pane.externalEditorCommand == null) return <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={paneID} kind={pane.type} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
+        if (pane.type === 'web') return <BrowserFeaturePane runtime={runtime} workspaceID={workspaceID} paneID={paneID} focused={focused} visible={state.visible} embedded={false} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
         if (pane.type !== 'shell' && pane.externalEditorCommand == null) {
             return (
                 <div

@@ -46,6 +46,8 @@ export interface HostRegistration {
 
 export interface HostCallOptions {
     readonly timeoutMs?: number | undefined;
+    /** Releasing a plugin view stops its pending host wait without affecting other callers. */
+    readonly signal?: AbortSignal | undefined;
 }
 
 export interface HostRegistry {
@@ -191,6 +193,7 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
         },
 
         call(verb, args, callOptions = {}) {
+            if (callOptions.signal?.aborted) return Promise.resolve(failure('web pane operation cancelled'));
             if (transport === null || hostID === null) {
                 return Promise.resolve(failure(NO_HOST_ERROR));
             }
@@ -202,7 +205,13 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
                 const settle = (reply: JsonObject): void => {
                     if (settled) return;
                     settled = true;
+                    callOptions.signal?.removeEventListener('abort', abort);
                     resolve(reply);
+                };
+                const abort = (): void => {
+                    pending.delete(id);
+                    clearTimeout(timer);
+                    settle(failure('web pane operation cancelled'));
                 };
                 const timer = setTimeout(() => {
                     pending.delete(id);
@@ -211,6 +220,7 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
                 // A pending RPC must never hold the event loop open on its own.
                 timer.unref?.();
                 pending.set(id, { hostID: owner, settle, timer });
+                callOptions.signal?.addEventListener('abort', abort, { once: true });
                 const delivered = send({ type: 'host-rpc', id, verb, args, timeoutMs });
                 if (!delivered) {
                     pending.delete(id);

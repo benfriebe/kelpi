@@ -135,9 +135,10 @@ the commands registered during activation.
 
 Supported placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`, and
-`document.diff`, plus `terminal`. A view can support several placements. Document and terminal placements accept isolated
+`document.diff`, `terminal`, and `browser`. A view can support several placements. Document, terminal and browser placements accept isolated
 views, not containers. Workbench chrome placement controls apply to the desktop layout.
-Plugin panes, document renderers and terminal renderers also work in phone and secondary-daemon workspaces.
+Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
+Browser controls target the owning daemon; native page display requires its Electron host window.
 Native window controls, layout/focus ownership,
 authentication, and recovery controls remain part of the application kernel.
 
@@ -181,7 +182,7 @@ Each HTML document receives `window.kelpi` before its scripts run. It can use or
 React, Vue, Svelte, or another framework bundled as browser code. Use relative asset URLs.
 The SDK's `getKelpi()` returns the same object if you prefer an imported, typed accessor.
 
-The SDK includes typed `workspaces`, `groups`, `panes`, `layout`, `terminal`, `agents`, `git`,
+The SDK includes typed `workspaces`, `groups`, `panes`, `layout`, `terminal`, `browser`, `agents`, `git`,
 and `appSettings` helpers over Kelpi's existing operations. Their public DTOs use camelCase,
 and command failures reject with `KelpiError`; the raw `command()` API retains its original
 reply shape. `settings` remains plugin-scoped; `appSettings` targets application settings.
@@ -210,6 +211,8 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `terminal.watch(paneID)` | Subscribe to an existing PTY and receive its initial base64 snapshot and geometry. `terminal.output` events identify the returned subscription. |
 | `terminal.unwatch(subscription)` | Release a terminal subscription. |
 | `terminal.attach({cols, rows, onFrame, onAction?})` | Terminal replacement view only. Attach an emulator to this pane's existing process with consumed-frame acknowledgements, raw input, modes, geometry and host actions. See [terminal renderers](plugin-terminals.md). |
+| `browser.get/watch/unwatch` | Observe native tabs, navigation, host availability, favourites and inspector revisions on the owning daemon. |
+| `browser.attach({element, onPresentation, onAction?})` | Browser replacement view only. Place the existing native page inside a measured slot; retain tabs and sessions across swaps. The [browser guide](plugin-browser.md) covers shared navigation, capture, cookies, inspection and batch APIs. |
 | `ui.reveal(paneID)` | Ask the invoking window to reveal a pane; broadcasts when no window context exists. |
 | `setState(object)` | View only. Persist this pane's state and current manifest state version. |
 | `ui.activateWorkspace(id)` / `ui.focusPane(workspaceID, paneID)` | View only. Change selection in the attached client runtime. |
@@ -450,13 +453,13 @@ MessageChannel. They receive neither the owner token nor access to the host DOM.
 assets are limited to the installed revision's `ui/` directory and a revocable view lease;
 the service worker never caches these URLs. Host initialization and uncaught view errors
 show a recoverable placeholder. Unmount/disconnect/reload revokes the lease and cancels
-direct command/process requests and terminal subscriptions owned by that view.
+direct command/process requests and terminal/browser subscriptions owned by that view.
 
 The supported boundary is registered views/containers, commands, events, operation hooks,
 and versioned services. Private functions and arbitrary native OS controls are not plugin
 APIs. Further internal replacements require explicit adapters with their own lifecycle and
-result contracts. Terminal renderers now have an explicit SDK attachment; transport, process
-ownership, authentication and editor save ownership remain native.
+result contracts. Terminal and browser renderers have explicit SDK attachments; transport,
+process/page ownership, authentication and editor save ownership remain native.
 An untrusted runtime, marketplace, signatures, automatic
 package upgrades/rollback, and a published SDK remain outside this local-plugin implementation.
 

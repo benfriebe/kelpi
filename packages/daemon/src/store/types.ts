@@ -501,6 +501,8 @@ export type DomainAction =
           readonly type: 'web-navigate';
           readonly workspaceID: string;
           readonly paneID: string;
+          /** Omitted for native active-tab navigation; plugins capture an exact tab. */
+          readonly tabID?: string | undefined;
           readonly url: string;
       }
     | {

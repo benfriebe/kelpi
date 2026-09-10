@@ -287,7 +287,7 @@ export interface InspectState {
 }
 
 export function createInspectState(
-    options: { readonly nonce?: (() => string) | undefined } = {}
+    options: { readonly nonce?: (() => string) | undefined; readonly onChange?: ((paneID: string) => void) | undefined } = {}
 ): InspectState {
     const arms = new Map<string, InspectArm>();
     const queues = new Map<string, InspectResult[]>();
@@ -297,6 +297,7 @@ export function createInspectState(
     return {
         arm(next) {
             arms.set(next.paneID, next);
+            options.onChange?.(next.paneID);
         },
         armOf(paneID) {
             return arms.get(paneID) ?? null;
@@ -304,6 +305,7 @@ export function createInspectState(
         disarm(paneID) {
             const current = arms.get(paneID) ?? null;
             arms.delete(paneID);
+            if (current) options.onChange?.(paneID);
             return current;
         },
         enqueue(paneID, result) {
@@ -311,16 +313,17 @@ export function createInspectState(
             queue.push(result);
             while (queue.length > INSPECT_QUEUE_CAP) queue.shift();
             queues.set(paneID, queue);
+            options.onChange?.(paneID);
         },
         queued(paneID) {
             return queues.get(paneID) ?? [];
         },
         clearQueue(paneID) {
-            queues.delete(paneID);
+            if (queues.delete(paneID)) options.onChange?.(paneID);
         },
         disposePane(paneID) {
-            arms.delete(paneID);
-            queues.delete(paneID);
+            const armed = arms.delete(paneID), queued = queues.delete(paneID);
+            if (armed || queued) options.onChange?.(paneID);
         },
         newNonce: nonce
     };

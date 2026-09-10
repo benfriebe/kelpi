@@ -92,7 +92,7 @@
     };
     const navigationFeed = createWindowSubscription('navigation', 'ui.getNavigation');
     const chromeFeed = createWindowSubscription('chrome', 'ui.getChrome');
-    const request = (method, args = {}, cancelled) => {
+    const request = (method, args = {}, cancelled, cancellationMessage = 'Terminal session is disposed.') => {
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
         const id = String(++next);
@@ -104,13 +104,170 @@
             pending.set(id, { resolve, reject, timer });
             if (cancelled) void cancelled.then(() => {
                 if (!pending.delete(id)) return;
-                clearTimeout(timer); reject(new Error('Terminal session is disposed.'));
+                clearTimeout(timer); reject(new Error(cancellationMessage));
             });
             try { send({ type: 'call', id, method, args }); }
             catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
         });
     };
     const call = async (method, args = {}) => { await ready; return request(method, args); };
+    let browserSession = null, browserCounter = 0, browserDisposed = false;
+    const browserTextElement = () => {
+        let element = document.activeElement;
+        while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+        return element instanceof HTMLElement && (element.isContentEditable || element.tagName === 'TEXTAREA'
+            || (element.tagName === 'INPUT' && !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(element.type))) ? element : null;
+    };
+    const browserError = (entry, error) => {
+        if (entry.disposed) return;
+        entry.dispose(); reportError(error?.message ?? error);
+    };
+    const browserPresentation = value => {
+        if (!value || !['available', 'visible', 'focused'].every(key => typeof value[key] === 'boolean')
+            || (value.reason !== undefined && (typeof value.reason !== 'string' || value.reason.length > 4096))) throw new Error('Invalid browser presentation.');
+        return Object.freeze({ available: value.available, visible: value.visible, focused: value.focused,
+            ...(value.reason === undefined ? {} : { reason: value.reason }) });
+    };
+    const deliverBrowserPresentation = (entry, sequence, value) => {
+        if (entry.disposed || sequence <= entry.sequence) return entry.draining;
+        const presentation = browserPresentation(value);
+        entry.sequence = sequence; entry.presentation = presentation; entry.latest = { sequence, value: presentation };
+        if (!entry.draining) entry.draining = Promise.resolve().then(async () => {
+            try {
+                while (!entry.disposed && entry.latest) {
+                    const next = entry.latest; entry.latest = null;
+                    await Promise.race([Promise.resolve().then(() => {
+                        if (!entry.disposed) return entry.onPresentation(next.value);
+                    }), entry.cancelled]);
+                }
+            } catch (error) { browserError(entry, error); }
+            finally { entry.draining = null; }
+        });
+        return entry.draining;
+    };
+    const attachBrowser = async options => {
+        if (browserDisposed) throw new Error('Browser attachment is unavailable after view disposal.');
+        if (browserSession) throw new Error('This view already has a browser surface.');
+        if (browserCounter >= 128) throw new Error('Too many browser attachments in this view.');
+        if (!options || typeof options.onPresentation !== 'function' || (options.onAction !== undefined && typeof options.onAction !== 'function')) throw new Error('Browser attachment requires onPresentation and an optional onAction callback.');
+        const { element } = options;
+        if (!(element instanceof HTMLElement) || element.ownerDocument !== document) throw new Error('Browser surface requires an HTMLElement from this view.');
+        let cancel;
+        const entry = {
+            id: `browser-${++browserCounter}`, element, disposed: false, requested: false, covered: false,
+            onPresentation: options.onPresentation, onAction: options.onAction,
+            sequence: -1, presentation: null, latest: null, draining: null, geometry: null, textFocus: null, observer: null, animation: null, actions: new Set(),
+            cancelled: new Promise(resolve => { cancel = resolve; }),
+        };
+        const assertActive = () => { if (entry.disposed) throw new Error('Browser surface is disposed.'); };
+        const geometry = () => {
+            const rect = element.getBoundingClientRect();
+            const width = globalThis.innerWidth, height = globalThis.innerHeight;
+            if (![rect.x, rect.y, rect.width, rect.height, width, height].every(value => Number.isFinite(value) && Math.abs(value) <= 1_000_000)
+                || rect.width < 0 || rect.height < 0 || width < 0 || height < 0) throw new Error('Invalid browser surface bounds.');
+            const x = Math.max(0, Math.min(width, rect.x)), y = Math.max(0, Math.min(height, rect.y));
+            const w = Math.max(0, Math.min(width, rect.x + rect.width) - x), h = Math.max(0, Math.min(height, rect.y + rect.height) - y);
+            let visible = live.visible !== false && document.visibilityState !== 'hidden' && element.isConnected && element.getClientRects().length > 0 && w > 0 && h > 0;
+            // Native child views do not inherit CSS visibility from the plugin document.
+            // Honor hidden ancestors as well as the slot before asking the host to show one.
+            for (let node = element; visible && node instanceof HTMLElement; node = node.parentElement) {
+                const style = getComputedStyle(node);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') visible = false;
+            }
+            return { rect: { x, y, w, h }, visible };
+        };
+        entry.measure = () => {
+            if (entry.disposed || !entry.requested) return;
+            try {
+                const value = geometry();
+                if (JSON.stringify(value) === JSON.stringify(entry.geometry)) return;
+                entry.geometry = value; send({ type: 'browser-geometry', session: entry.id, ...value });
+            } catch (error) { browserError(entry, error); }
+        };
+        entry.updateTextFocus = () => {
+            if (entry.disposed || !entry.requested) return;
+            const editing = browserTextElement() !== null;
+            if (editing === entry.textFocus) return;
+            entry.textFocus = editing; send({ type: 'browser-text-focus', session: entry.id, editing });
+        };
+        entry.dispose = () => {
+            if (entry.disposed) return;
+            entry.disposed = true; entry.latest = null; entry.actions.clear(); cancel();
+            entry.observer?.disconnect();
+            if (entry.animation !== null) cancelAnimationFrame(entry.animation);
+            removeEventListener('resize', entry.measure);
+            removeEventListener('scroll', entry.measure, true);
+            document.removeEventListener('visibilitychange', entry.measure);
+            if (browserSession === entry) browserSession = null;
+            if (entry.requested && port) { try { send({ type: 'browser-detach', session: entry.id }); } catch {} }
+        };
+        const surface = Object.freeze({
+            id: entry.id,
+            setCovered: covered => {
+                assertActive();
+                if (typeof covered !== 'boolean') throw new Error('Browser cover must be a boolean.');
+                if (covered === entry.covered) return;
+                entry.covered = covered; send({ type: 'browser-covered', session: entry.id, covered });
+            },
+            focus: () => {
+                assertActive(); entry.measure();
+                if (!entry.disposed && entry.presentation?.available && entry.presentation.visible && !entry.covered && entry.geometry?.visible) {
+                    (browserTextElement() ?? document.activeElement)?.blur?.(); entry.updateTextFocus();
+                    send({ type: 'browser-focus', session: entry.id });
+                }
+            },
+            dispose: entry.dispose,
+        });
+        browserSession = entry;
+        try {
+            await Promise.race([ready, entry.cancelled]); assertActive();
+            entry.geometry = geometry(); entry.requested = true;
+            entry.observer = new ResizeObserver(entry.measure); entry.observer.observe(element);
+            addEventListener('resize', entry.measure); addEventListener('scroll', entry.measure, true);
+            document.addEventListener('visibilitychange', entry.measure);
+            // ResizeObserver misses positional changes caused by neighbouring chrome,
+            // transforms or animation. Measure one element; unchanged bounds send nothing.
+            const animate = () => { entry.measure(); if (!entry.disposed) entry.animation = requestAnimationFrame(animate); };
+            entry.animation = requestAnimationFrame(animate);
+            const result = await request('browser.attach', { session: entry.id, ...entry.geometry }, entry.cancelled, 'Browser surface is disposed.');
+            assertActive();
+            if (result?.session !== entry.id) throw new Error('Invalid browser attachment reply.');
+            // A pushed update can arrive before this reply. Never replace it with the
+            // older initial presentation, or await an author callback inside attach().
+            deliverBrowserPresentation(entry, 0, result.presentation);
+            entry.updateTextFocus();
+            return surface;
+        } catch (error) { entry.dispose(); throw error; }
+    };
+    const receiveBrowserPresentation = async data => {
+        const entry = browserSession;
+        if (!entry || entry.disposed || entry.id !== data.session) return;
+        if (!Number.isSafeInteger(data.sequence) || data.sequence <= 0) return browserError(entry, 'Invalid browser presentation sequence.');
+        if (data.sequence <= entry.sequence) return;
+        try { await deliverBrowserPresentation(entry, data.sequence, data.value); }
+        catch (error) { browserError(entry, error); }
+        if (!entry.disposed) send({ type: 'browser-ack', session: entry.id, sequence: data.sequence });
+    };
+    const receiveBrowserAction = async data => {
+        const entry = browserSession;
+        if (!entry || entry.disposed || entry.id !== data.session || typeof data.id !== 'string' || !data.id || data.id.length > 128 || entry.actions.has(data.id)) return;
+        const reply = error => {
+            if (!entry.disposed) send({ type: 'browser-action-reply', session: entry.id, id: data.id, result: null,
+                ...(error === undefined ? {} : { error: String(error?.message ?? error).slice(0, 4096) }) });
+        };
+        if (entry.actions.size >= 16) { reply('Too many pending browser actions.'); return; }
+        entry.actions.add(data.id);
+        try {
+            if (!['focusAddress', 'showFind', 'focus'].includes(data.action?.type)) throw new Error('Unsupported browser action.');
+            const action = Object.freeze({ type: data.action.type });
+            const result = await Promise.race([Promise.resolve().then(() => {
+                if (!entry.disposed && entry.onAction) return entry.onAction(action);
+            }), entry.cancelled]);
+            if (result !== null && result !== undefined) throw new Error('Browser actions must return null or undefined.');
+            reply();
+        } catch (error) { reply(error); }
+        finally { entry.actions.delete(data.id); }
+    };
     let terminalSession = null, terminalCounter = 0, terminalDisposed = false;
     const terminalSize = (cols, rows) => {
         if (![cols, rows].every(value => Number.isSafeInteger(value) && value > 0 && value <= 65535)) throw new Error('Terminal dimensions must be integers from 1 through 65535.');
@@ -245,11 +402,13 @@
                 const entry = pending.get(data.id); if (!entry) return;
                 pending.delete(data.id); clearTimeout(entry.timer);
                 if (data.error) entry.reject(new Error(data.error)); else entry.resolve(data.result);
-            } else if (data.type === 'context') { live = { ...live, ...data.value }; applyTheme(); notifyContext(); }
+            } else if (data.type === 'context') { live = { ...live, ...data.value }; applyTheme(); notifyContext(); browserSession?.measure(); }
             else if (data.type === 'navigation' || data.type === 'navigation-error') await navigationFeed.receive(data);
             else if (data.type === 'chrome' || data.type === 'chrome-error') await chromeFeed.receive(data);
             else if (data.type === 'terminal-frame') await receiveTerminalFrame(data);
             else if (data.type === 'terminal-action') await receiveTerminalAction(data);
+            else if (data.type === 'browser-presentation') await receiveBrowserPresentation(data);
+            else if (data.type === 'browser-action') await receiveBrowserAction(data);
             else if (data.type === 'event') {
                 for (const listener of [...(listeners.get(data.event.name) ?? []), ...(listeners.get('*') ?? [])]) {
                     await Promise.resolve().then(() => listener(data.event)).catch(error => console.error('plugin listener', error));
@@ -267,6 +426,7 @@
         setState: async state => { const result = await base.call('views.setState', { state }); live = { ...live, state, stateVersion: result.stateVersion }; notifyContext(); },
         events: Object.freeze({ on }),
         terminal: Object.freeze({ ...base.terminal, attach: attachTerminal }),
+        browser: Object.freeze({ ...base.browser, attach: attachBrowser }),
         documents: Object.freeze({
             ...base.documents,
             stage: (text, revision) => base.call('documents.stage', { text, revision }),
@@ -305,12 +465,19 @@
     addEventListener('pagehide', () => {
         navigationFeed.dispose(); chromeFeed.dispose();
         terminalDisposed = true; terminalSession?.dispose();
+        browserDisposed = true; browserSession?.dispose();
     });
     addEventListener('pointerdown', () => { if (port && live.visible !== false) send({ type: 'focus' }); }, true);
-    addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); });
+    addEventListener('focusin', () => { if (port && live.visible !== false) send({ type: 'focus' }); browserSession?.updateTextFocus(); });
+    addEventListener('focusout', () => { void Promise.resolve().then(() => browserSession?.updateTextFocus()); });
     addEventListener('keydown', event => {
         const modifiers = (event.shiftKey ? 4 : 0) | (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.metaKey ? 8 : 0);
         if (!port || live.visible === false || event.isComposing || !(live.chords ?? []).includes(`${modifiers}/${event.code}`)) return;
+        // Browser chrome follows the native priority rule: these chords belong to the
+        // text editor while it has the caret. A host-side refusal is too late to undo
+        // preventDefault(), so keep the browser's actual editing behavior in this frame.
+        if (browserSession && browserTextElement() && ((modifiers === 8 && ['ArrowLeft', 'ArrowRight'].includes(event.code))
+            || (modifiers === 12 && ['BracketLeft', 'BracketRight'].includes(event.code)))) return;
         // A host key action belongs to the renderer's encoder. Its synthetic keydown must
         // not relay back to the host, including when onAction awaits renderer readiness.
         // Physical keys still relay while that action is pending.

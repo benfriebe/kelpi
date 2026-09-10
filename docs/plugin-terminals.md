@@ -180,5 +180,6 @@ results and the distinction between emulated phone checks and physical-device te
 
 This contract permits alternate terminal engines; it does not make every engine implement
 the bundled renderer's complete keyboard, selection or touch behavior. Terminal Lab's
-adapter details and limitations are documented with its source. Browser feature extraction,
-plugin distribution and update/rollback workflows remain separate phases.
+adapter details and limitations are documented with its source. Browser features have their
+own [replacement contract](plugin-browser.md). Plugin distribution and update/rollback
+workflows remain separate phases.

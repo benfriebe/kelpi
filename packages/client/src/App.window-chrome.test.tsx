@@ -403,6 +403,21 @@ describe('the poster refuses silently (issue #12)', () => {
         const restore = asShellWindow();
         try {
             const h = mount({ web: true });
+            // A shell URL identifies this window; the daemon separately confirms which
+            // window owns its native page before the shared browser host places it.
+            await act(async () => {
+                const request = h.socket().messages().find(message => message['type'] === 'command'
+                    && (message['payload'] as Record<string, unknown>)['action'] === 'browser-state');
+                expect(request).toBeDefined();
+                h.socket().emit({ type: 'command-reply', id: request!['id'], reply: { ok: true, result: {
+                    paneID: PANE_WEB, workspaceID: W1, isPrivate: false, activeTabID: WEB_TAB,
+                    tabs: [{ id: WEB_TAB, url: 'https://example.com', title: '', live: true,
+                        loading: false, canGoBack: false, canGoForward: false }], favourites: [],
+                    host: { available: true, id: 'native-host', name: 'Test shell', windowID: 'cccccccc-0000-4000-8000-000000000009' },
+                    inspection: { revision: 0, armed: false, tabID: null, pendingResults: 0,
+                        batchVisible: false, batchItems: 0, batchFocusedID: null }
+                } } });
+            });
             act(() => {
                 fireEvent.contextMenu(screen.getByTestId(`pane-header-${PANE_A}`));
             });

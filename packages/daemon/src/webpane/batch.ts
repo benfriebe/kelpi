@@ -77,7 +77,7 @@ function emptySession(lastTarget: string | null): BatchSession {
     return { visible: true, items: [], focusedID: null, lastTarget, submit: false };
 }
 
-export function createBatchState(): BatchState {
+export function createBatchState(stateOptions: { readonly onChange?: ((paneID: string) => void) | undefined } = {}): BatchState {
     const sessions = new Map<string, BatchSession>();
     /**
      * Survives the session it came from: the memory is per PANE for the whole daemon run, so a
@@ -88,6 +88,7 @@ export function createBatchState(): BatchState {
 
     const put = (paneID: string, session: BatchSession): BatchSession => {
         sessions.set(paneID, session);
+        stateOptions.onChange?.(paneID);
         return session;
     };
 
@@ -183,12 +184,13 @@ export function createBatchState(): BatchState {
             if (remembered !== undefined && remembered !== '' && current !== null && current.items.length > 0) {
                 lastTargets.set(paneID, remembered);
             }
+            if (current) stateOptions.onChange?.(paneID);
             return current;
         },
 
         disposePane(paneID) {
-            sessions.delete(paneID);
-            lastTargets.delete(paneID);
+            const session = sessions.delete(paneID), target = lastTargets.delete(paneID);
+            if (session || target) stateOptions.onChange?.(paneID);
         },
 
         panes() {

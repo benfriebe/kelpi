@@ -22,15 +22,15 @@ export interface DocumentPaneProps extends Omit<MarkdownPaneProps, 'content'> {
 export function isDocumentPane(kind: string): kind is ContentPaneType { return ['markdown', 'scratchpad', 'diff'].includes(kind); }
 
 export function DocumentPane(props: DocumentPaneProps): ReactElement {
-    const [owned, setOwned] = useState<{ runtime: KelpiRuntime; content: ContentApi } | null>(null);
+    const [owned, setOwned] = useState<{ runtime: KelpiRuntime; paneID: string; content: ContentApi } | null>(null);
     useEffect(() => {
         if (props.content) return;
         const content = createContentClient({ connection: props.runtime.connection, commands: props.runtime.commands });
         const stop = registerDocumentCloseGuard(props.runtime, content, props.paneID);
-        setOwned({ runtime: props.runtime, content }); return () => { stop(); content.dispose(); };
+        setOwned({ runtime: props.runtime, paneID: props.paneID, content }); return () => { stop(); content.dispose(); };
     }, [props.runtime, props.content, props.paneID]);
-    const content = props.content ?? (owned?.runtime === props.runtime ? owned.content : null);
-    return content ? <DocumentBody {...props} content={content} /> : <div role="status">Loading document…</div>;
+    const content = props.content ?? (owned?.runtime === props.runtime && owned.paneID === props.paneID ? owned.content : null);
+    return content ? <DocumentBody key={props.paneID} {...props} content={content} /> : <div role="status">Loading document…</div>;
 }
 
 function DocumentBody(props: DocumentPaneProps & { content: ContentApi }): ReactElement {

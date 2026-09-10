@@ -47,7 +47,7 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             ariaLabel={contentPaneLabel('scratchpad', paneID)}
             value={state?.text ?? ''}
             isDark={state?.isDark ?? true}
-            focused={props.focused}
+            focused={props.focused && state !== null}
             visible={props.visible}
             background={props.background}
             // Read-only until the first snapshot: a keystroke into the empty pre-load buffer

@@ -205,11 +205,15 @@ interface ReportedVisibility {
     readonly documentVisible: boolean;
 }
 
+/** Recheck local state synchronously after every asynchronous preparation has finished. */
+type CloseValidation = () => void;
+type CloseGuard = (payload: JsonObject) => Promise<void | CloseValidation> | void;
+
 // ── client ──────────────────────────────────────────────────────────────────────────
 
 export class CommandClient {
-    private readonly closeGuards = new Set<(payload: JsonObject) => Promise<void> | void>();
-    registerCloseGuard(guard: (payload: JsonObject) => Promise<void> | void): () => void {
+    private readonly closeGuards = new Set<CloseGuard>();
+    registerCloseGuard(guard: CloseGuard): () => void {
         this.closeGuards.add(guard); return () => this.closeGuards.delete(guard);
     }
     private readonly pending = new Map<string, PendingCommand>();
@@ -266,8 +270,11 @@ export class CommandClient {
     /** Any control-protocol request object; resolves with the reply, ok or not. */
     raw(payload: JsonObject, options: SendOptions = {}): Promise<CommandReply> {
         try {
-            const waiting = [...this.closeGuards].map(guard => guard(payload)).filter((value): value is Promise<void> => value !== undefined);
-            if (waiting.length) return Promise.all(waiting).then(() => this.sendRaw(payload, options));
+            const waiting = [...this.closeGuards].map(guard => guard(payload)).filter((value): value is Promise<void | CloseValidation> => value !== undefined);
+            if (waiting.length) return Promise.all(waiting).then(checks => {
+                for (const check of checks) check?.();
+                return this.sendRaw(payload, options);
+            });
         } catch (error) { return Promise.reject(error); }
         return this.sendRaw(payload, options);
     }

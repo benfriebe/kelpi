@@ -35,6 +35,23 @@ function pendingEdit() {
 }
 
 describe('registered native document features', () => {
+    it('resets a focused native editor when a shared content host renders a different pane', () => {
+        const first = paneID(), second = paneID(), content = createFakeContentApi();
+        const draw = (id: string, focused = true) => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="scratchpad" content={content} focused={focused} />;
+        const view = render(draw(first, false));
+        push(content, first, 'First document');
+        view.rerender(draw(first));
+        const firstEditor = screen.getByRole('textbox') as HTMLTextAreaElement;
+        act(() => firstEditor.focus());
+        view.rerender(draw(second));
+        push(content, second, 'Second document');
+        const secondEditor = screen.getByRole('textbox') as HTMLTextAreaElement;
+        expect(secondEditor).not.toBe(firstEditor);
+        expect(secondEditor.value).toBe('Second document');
+        fireEvent.change(secondEditor, { target: { value: `${secondEditor.value}!` } });
+        expect(content.texts).toEqual([{ paneID: second, text: 'Second document!' }]);
+    });
+
     it('keeps the content owner mounted through replacement, failure, disable and reenabling', async () => {
         const id = paneID(), content = createFakeContentApi();
         const draw = () => <DocumentPane runtime={local} workspaceID="workspace" paneID={id} kind="scratchpad" content={content} />;

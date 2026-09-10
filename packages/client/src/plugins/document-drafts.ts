@@ -21,8 +21,15 @@ const windowID = (() => {
 const cache = new Map<string, DocumentDraft | null>();
 const listeners = new Set<() => void>();
 const pending = new WeakMap<KelpiRuntime, Map<string, Set<Promise<unknown>>>>();
-const keys = (runtime: KelpiRuntime, paneID: string): string[] => [...new Set([getPluginDaemonID(runtime), new URL(runtime.connection.target).origin].filter(Boolean))]
-    .map(owner => `kelpi.document.draft.v1:${owner}:${windowID}:${paneID}`);
+const daemonOwners = new WeakMap<KelpiRuntime, string>();
+const keys = (runtime: KelpiRuntime, paneID: string): string[] => {
+    const daemonID = getPluginDaemonID(runtime);
+    if (daemonID) daemonOwners.set(runtime, daemonID);
+    // Catalog subscriptions may disappear with the last remote document. Its recovery
+    // records still belong to the runtime until that connection is disposed.
+    return [...new Set([daemonID ?? daemonOwners.get(runtime), new URL(runtime.connection.target).origin].filter(Boolean))]
+        .map(owner => `kelpi.document.draft.v1:${owner}:${windowID}:${paneID}`);
+};
 const notify = (): void => { for (const listener of listeners) listener(); };
 function read(key: string): DocumentDraft | null {
     if (cache.has(key)) return cache.get(key) ?? null;
@@ -88,7 +95,7 @@ export async function runDocumentEdit(runtime: KelpiRuntime, paneID: string, tex
     } finally { calls.delete(request); if (!calls.size) byPane.delete(paneID); }
 }
 /** Called before removing a view/pane. An ambiguous or rejected write stays recoverable. */
-export async function prepareDocumentViewsClose(runtime: KelpiRuntime, paneIDs: readonly string[]): Promise<void> {
+export async function prepareDocumentViewsClose(runtime: KelpiRuntime, paneIDs: readonly string[]): Promise<() => void> {
     for (const paneID of paneIDs) {
         await Promise.allSettled([...(pending.get(runtime)?.get(paneID) ?? [])]);
         const draft = getDocumentDraft(runtime, paneID); if (!draft) continue;
@@ -100,27 +107,63 @@ export async function prepareDocumentViewsClose(runtime: KelpiRuntime, paneIDs: 
         if (saved.dirty) throw new Error(saved.error ?? 'Document could not be saved.');
         clearDocumentDraft(runtime, paneID, draft.id);
     }
-}
-export function registerDocumentCloseGuard(runtime: KelpiRuntime, content: ContentApi, onlyPaneID?: string): () => void {
-    return runtime.commands.registerCloseGuard(payload => {
-        let command = payload;
-        // Plugin commands use the same window transport, inside the existing API envelope.
-        if (payload['command'] === 'plugin' && payload['action'] === 'api' && typeof payload['text'] === 'string') {
-            try { const input: unknown = JSON.parse(payload['text']); if (pluginRecord(input) && input['method'] === 'command' && pluginRecord(input['args']) && pluginRecord(input['args']['payload'])) command = input['args']['payload'] as JsonObject; } catch { return; }
+    const validate = (): void => {
+        if (paneIDs.some(paneID => getDocumentDraft(runtime, paneID) || pending.get(runtime)?.get(paneID)?.size)) {
+            throw new Error('Document changed while preparing to close. Save the latest edits before closing.');
         }
-        const cascade = command['command'] === 'group-delete' && command['cascade'] === true;
-        if (!cascade && !['pane-close', 'workspace-delete', 'delete-workspace'].includes(String(command['command']))) return;
-        const current = runtime.store.getState(), workspaces = current.daemon.state.workspaces;
-        const workspace = cascade ? undefined : command['workspace_id'] ?? command['workspace'] ?? command['name'];
-        const nameOrID = (id: string, name: string, value: unknown): boolean => typeof value === 'string' && (id.toUpperCase() === value.toUpperCase() || name === value);
-        const members = cascade ? current.daemon.state.groups.find(group => nameOrID(group.id, group.name, command['name']))?.childOrder ?? [] : null;
-        const paneTarget = command['target'] ?? command['pane_id'];
-        const ids = workspaces.filter(row => (!members || members.includes(row.id)) && (workspace === undefined || nameOrID(row.id, row.name, workspace))).flatMap(row => [...row.panes, ...row.parkedPanes].filter(pane => {
-            if (onlyPaneID && pane.id !== onlyPaneID) return false;
-            if (!['markdown', 'scratchpad', 'diff'].includes(pane.type)) return false;
-            return command['command'] !== 'pane-close' || nameOrID(pane.id, pane.label ?? '', paneTarget) || (paneTarget === undefined && row.id === current.ui.activeWorkspaceID && pane.id === row.focusedPaneID);
-        }).map(pane => pane.id));
-        if (!ids.length) return;
-        return (async () => { for (const id of ids) await content.flush(id); await prepareDocumentViewsClose(runtime, ids); })();
-    });
+    };
+    validate();
+    return validate;
+}
+
+interface ContentOwner { readonly content: ContentApi; readonly onlyPaneID?: string | undefined }
+const closeOwners = new WeakMap<KelpiRuntime, Set<ContentOwner>>();
+
+function documentCloseTargets(runtime: KelpiRuntime, payload: JsonObject): string[] {
+    let command = payload;
+    // Plugin commands use the same window transport, inside the existing API envelope.
+    if (payload['command'] === 'plugin' && payload['action'] === 'api' && typeof payload['text'] === 'string') {
+        try { const input: unknown = JSON.parse(payload['text']); if (pluginRecord(input) && input['method'] === 'command' && pluginRecord(input['args']) && pluginRecord(input['args']['payload'])) command = input['args']['payload'] as JsonObject; } catch { return []; }
+    }
+    const cascade = command['command'] === 'group-delete' && command['cascade'] === true;
+    if (!cascade && !['pane-close', 'workspace-delete', 'delete-workspace'].includes(String(command['command']))) return [];
+    const current = runtime.store.getState(), workspaces = current.daemon.state.workspaces;
+    const workspace = cascade ? undefined : command['workspace_id'] ?? command['workspace'] ?? command['name'];
+    const nameOrID = (id: string, name: string, value: unknown): boolean => typeof value === 'string' && (id.toUpperCase() === value.toUpperCase() || name === value);
+    const members = cascade ? current.daemon.state.groups.find(group => nameOrID(group.id, group.name, command['name']))?.childOrder ?? [] : null;
+    const paneTarget = command['target'] ?? command['pane_id'];
+    return workspaces.filter(row => (!members || members.includes(row.id)) && (workspace === undefined || nameOrID(row.id, row.name, workspace))).flatMap(row => [...row.panes, ...row.parkedPanes].filter(pane => {
+        if (!['markdown', 'scratchpad', 'diff'].includes(pane.type)) return false;
+        return command['command'] !== 'pane-close' || nameOrID(pane.id, pane.label ?? '', paneTarget) || (paneTarget === undefined && row.id === current.ui.activeWorkspaceID && pane.id === row.focusedPaneID);
+    }).map(pane => pane.id));
+}
+
+/** Mounts register their buffers; draft protection itself lasts until CommandClient.dispose(). */
+export function registerDocumentCloseGuard(runtime: KelpiRuntime, content: ContentApi, onlyPaneID?: string): () => void {
+    let owners = closeOwners.get(runtime);
+    if (!owners) {
+        owners = new Set<ContentOwner>();
+        closeOwners.set(runtime, owners);
+        const liveOwners = owners;
+        runtime.commands.registerCloseGuard(payload => {
+            const ids = documentCloseTargets(runtime, payload);
+            const ownersFor = (paneID: string): Set<ContentApi> => new Set([...liveOwners]
+                .filter(owner => owner.onlyPaneID === undefined || owner.onlyPaneID === paneID).map(owner => owner.content));
+            if (!ids.some(id => ownersFor(id).size || getDocumentDraft(runtime, id) || pending.get(runtime)?.get(id)?.size)) return;
+            return (async () => {
+                for (const id of ids) for (const content of ownersFor(id)) await content.flush(id);
+                const validate = await prepareDocumentViewsClose(runtime, ids);
+                return () => {
+                    const currentIDs = documentCloseTargets(runtime, payload);
+                    if (currentIDs.length !== ids.length || currentIDs.some(id => !ids.includes(id))) {
+                        throw new Error('Document targets changed while preparing to close. Try closing again.');
+                    }
+                    validate();
+                };
+            })();
+        });
+    }
+    const owner = { content, onlyPaneID };
+    owners.add(owner);
+    return () => { owners.delete(owner); };
 }

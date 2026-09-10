@@ -230,9 +230,106 @@ describe('document command close guards', () => {
         flush.resolve(); await rejection;
         expect(h.frames()).toHaveLength(0);
         remove();
+        await expect(h.runtime.commands.closePane({ target: PANE })).rejects.toThrow('unapplied local edits');
+        expect(content.flush).toHaveBeenCalledOnce();
+        clearDocumentDraft(h.runtime, PANE);
         const unguarded = h.runtime.commands.closePane({ target: PANE });
         expect(h.frames()).toHaveLength(1);
         h.answer(); await unguarded;
+    });
+
+    it('protects unmounted and parked remote drafts after releasing their content and catalog owners', async () => {
+        const h = setup(`remote-${crypto.randomUUID()}`), content = createFakeContentApi();
+        const remove = registerDocumentCloseGuard(h.runtime, content, PANE);
+        const draft = stageDocumentDraft(h.runtime, PANE, 'unapplied remote edits', 'source:1', 'custom.editor');
+        stageDocumentDraft(h.runtime, PARKED, 'parked remote edits', 'source:1', 'custom.editor');
+        remove();
+        daemonIDs.delete(h.runtime);
+        expect(getDocumentDraft(h.runtime, PANE)).toEqual(draft);
+        request.mockResolvedValue(snapshot('daemon source'));
+        await expect(h.runtime.commands.closePane({ paneID: PANE })).rejects.toThrow('unapplied local edits');
+        clearDocumentDraft(h.runtime, PANE);
+        await expect(h.runtime.commands.deleteWorkspace({ workspace: 'W1' })).rejects.toThrow('unapplied local edits');
+        expect(request).toHaveBeenLastCalledWith(h.runtime, 'document', { method: 'get', args: { paneID: PARKED } });
+        expect(content.flushes).toEqual([]);
+        expect(h.frames()).toHaveLength(0);
+    });
+
+    it('prepares each pane once when its content has overlapping mount registrations', async () => {
+        const h = setup(), content = createFakeContentApi();
+        const first = registerDocumentCloseGuard(h.runtime, content);
+        const second = registerDocumentCloseGuard(h.runtime, content, PANE);
+        stageDocumentDraft(h.runtime, PANE, 'accepted', 'source:1', 'custom.editor');
+        request.mockResolvedValueOnce(snapshot('accepted', 'source:2', true)).mockResolvedValueOnce(snapshot('accepted', 'source:3'));
+        const closing = h.runtime.commands.closePane({ paneID: PANE });
+        await vi.waitFor(() => expect(h.frames()).toHaveLength(1));
+        expect(content.flushes).toEqual([PANE]);
+        expect(request).toHaveBeenCalledTimes(2);
+        h.answer(); await closing;
+        first(); second();
+    });
+
+    it.each(['workspace', 'group', 'initially-clean'] as const)('revalidates earlier panes while preparing a %s deletion', async kind => {
+        const h = setup(), content = createFakeContentApi();
+        h.state.dispatch({ type: 'create-group', id: 'group-one', name: 'Development', initialWorkspaceIDs: ['W1'], now: 5 });
+        h.runtime.store.getState().applySnapshot(2, JSON.parse(JSON.stringify(h.state.getState())));
+        registerDocumentCloseGuard(h.runtime, content);
+        if (kind !== 'initially-clean') stageDocumentDraft(h.runtime, PANE, 'first accepted', 'source:1', 'custom.editor');
+        stageDocumentDraft(h.runtime, PARKED, 'second accepted', 'source:1', 'custom.editor');
+        const saving = deferred<JsonValue>();
+        request.mockImplementation(async (_runtime, _action, input) => {
+            const args = input?.['args'] as JsonObject;
+            if (args['paneID'] === PANE) return snapshot('first accepted');
+            if (input?.['method'] === 'get') return snapshot('second accepted');
+            return saving.promise;
+        });
+        const closing = kind === 'group'
+            ? h.runtime.commands.raw({ command: 'group-delete', name: 'Development', cascade: true })
+            : h.runtime.commands.deleteWorkspace({ workspace: 'W1' });
+        const rejected = expect(closing).rejects.toThrow('changed while preparing to close');
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(kind === 'initially-clean' ? 2 : 4));
+        expect(getDocumentDraft(h.runtime, PANE)).toBeNull();
+        const latest = stageDocumentDraft(h.runtime, PANE, 'new unapplied input', 'source:2', 'custom.editor');
+        saving.resolve(snapshot('second accepted'));
+        await rejected;
+        expect(h.frames()).toHaveLength(0);
+        expect(getDocumentDraft(h.runtime, PANE)).toEqual(latest);
+    });
+
+    it('revalidates documents after an unrelated close guard finishes waiting', async () => {
+        const h = setup(), content = createFakeContentApi(), otherGuard = deferred<void>();
+        registerDocumentCloseGuard(h.runtime, content);
+        h.runtime.commands.registerCloseGuard(payload => payload['command'] === 'pane-close' ? otherGuard.promise : undefined);
+        stageDocumentDraft(h.runtime, PANE, 'accepted', 'source:1', 'custom.editor');
+        request.mockResolvedValue(snapshot('accepted'));
+        const closing = h.runtime.commands.closePane({ paneID: PANE });
+        const rejected = expect(closing).rejects.toThrow('changed while preparing to close');
+        await vi.waitFor(() => expect(getDocumentDraft(h.runtime, PANE)).toBeNull());
+        stageDocumentDraft(h.runtime, PANE, 'typed while another guard waited', 'source:2', 'custom.editor');
+        otherGuard.resolve();
+        await rejected;
+        expect(h.frames()).toHaveLength(0);
+    });
+
+    it('rejects workspace deletion when a document moves into its targets during preparation', async () => {
+        const h = setup(), content = createFakeContentApi(), saving = deferred<JsonValue>();
+        const moved = 'eeeeeeee-2222-4333-8444-555555555555';
+        h.state.dispatch({ type: 'create-scratchpad', workspaceID: 'W2', paneID: moved, now: 5 });
+        h.runtime.store.getState().applySnapshot(2, JSON.parse(JSON.stringify(h.state.getState())));
+        drafts.push({ runtime: h.runtime, paneID: moved });
+        registerDocumentCloseGuard(h.runtime, content);
+        stageDocumentDraft(h.runtime, PANE, 'accepted', 'source:1', 'custom.editor');
+        stageDocumentDraft(h.runtime, moved, 'unapplied incoming document', 'source:1', 'custom.editor');
+        request.mockResolvedValueOnce(snapshot('accepted')).mockReturnValueOnce(saving.promise);
+        const closing = h.runtime.commands.deleteWorkspace({ workspace: 'W1' });
+        const rejected = expect(closing).rejects.toThrow('targets changed while preparing to close');
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+        h.state.dispatch({ type: 'move-pane-to-workspace', paneID: moved, toWorkspaceID: 'W1' });
+        h.runtime.store.getState().applySnapshot(3, JSON.parse(JSON.stringify(h.state.getState())));
+        saving.resolve(snapshot('accepted'));
+        await rejected;
+        expect(h.frames()).toHaveLength(0);
+        expect(getDocumentDraft(h.runtime, moved)?.text).toBe('unapplied incoming document');
     });
 
     it('covers SDK command envelopes and workspace deletion including parked documents', async () => {

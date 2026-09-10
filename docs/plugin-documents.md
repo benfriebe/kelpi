@@ -184,5 +184,6 @@ reload, renderer UI state, remote/phone ownership, daemon restart and plugin lif
 Hidden runs validate behavior; an onscreen run is required to inspect screenshots.
 
 This phase extracts document bodies and their content lifecycle. Some native keyboard actions
-remain in application assembly. Terminal and browser feature extraction, and plugin
-distribution/update workflows, remain later phases.
+remain in application assembly. [Terminal extraction](plugin-terminals.md) now also covers
+external editor sessions. Browser feature extraction and plugin distribution/update
+workflows remain later phases.

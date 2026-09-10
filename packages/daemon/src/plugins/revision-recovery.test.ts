@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, pluginObject, type JsonObject, type PluginRevisionInfo } from '@kelpi/protocol';
 import { createStore } from '../store/store.js';
-import { seededState, W1 } from '../store/testing.js';
+import { nextPaneID, seededState, W1 } from '../store/testing.js';
 import { PluginService } from './service.js';
 import { inOperationScope } from './operations.js';
 import { decodePluginInstallation, PLUGIN_RETAINED_REVISIONS, recoverPluginRevisionChange, selectPluginRevision } from './revisions.js';
@@ -34,6 +34,21 @@ function harness(extra: JsonObject = {}) {
     const history = async () => await service.request('history', { pluginID: ID }) as unknown as PluginRevisionInfo[];
     const open = () => service.request('open', { pluginID: ID, viewID: VIEW, workspaceID: W1, state: { keep: 'pane state' } }).then(pluginObject);
     return { root, source, manifest, write, store, options, service, caller, api, history, open, broadcast };
+}
+
+async function terminalRendererHarness() {
+    const h = harness(), paneID = nextPaneID();
+    const contributes = { ...h.manifest.contributes, views: [{ ...h.manifest.contributes.views[0]!, placements: ['terminal'] }] };
+    h.write({ contributes });
+    h.store.dispatch({ type: 'open-markdown-pane', workspaceID: W1, paneID, filePath: path.join(h.root, 'readme.md'), now: Date.now() });
+    const edit = (editing: boolean) => h.store.dispatch({ type: 'set-markdown-editing', workspaceID: W1, paneID, editing, externalEditorCommand: 'test-editor' });
+    const attach = () => h.service.request('attach', { pluginID: ID, viewID: VIEW, paneID }, h.caller).then(pluginObject);
+    const save = (lease: JsonObject, state: JsonObject) => h.service.request('api', { lease: lease['lease']!, method: 'views.setState', args: { state } }, h.caller);
+    edit(true);
+    await h.service.install(h.source, true);
+    const lease = await attach(); await save(lease, { fontSize: 15 });
+    edit(false);
+    return { ...h, paneID, contributes, edit, attach, save, lease, data: path.join(h.options.directory, 'data', ID, 'documents.json') };
 }
 
 describe('plugin revision recovery', () => {
@@ -257,6 +272,53 @@ describe('plugin revision recovery', () => {
         await expect(h.service.request('attach', { pluginID: ID, viewID: VIEW, paneID }, h.caller)).rejects.toThrow('state is newer');
         await expect(h.api('views.setState', { paneID, state: {} })).rejects.toThrow('state is newer');
         expect(h.store.getState().workspaces[0]!.panes.find(pane => pane.id === paneID)?.plugin?.state).toEqual({ keep: 'pane state' });
+    });
+
+    it.each(['active', 'parked'])('retains compatible terminal revisions after closing an external editor in an %s document pane', async location => {
+        const h = await terminalRendererHarness(), original = h.service.list()[0]!;
+        const saved = fs.readFileSync(h.data, 'utf8');
+        await expect(h.service.request('api', { lease: h.lease['lease']!, method: 'state.snapshot' }, h.caller)).rejects.toThrow('expired');
+        await expect(h.attach()).rejects.toThrow('does not own this pane');
+        if (location === 'parked') h.store.dispatch({ type: 'park-pane', workspaceID: W1, paneID: h.paneID });
+        const before = h.store.getState();
+        expect(await h.history()).toMatchObject([{ revision: original.revision, selected: true, problem: null }]);
+        await h.service.install(h.source, true);
+        expect(h.service.list()[0]?.instanceID).toBe(original.instanceID);
+        h.write({ version: '1.1.0', contributes: h.contributes });
+        await h.service.install(h.source, true);
+        const updated = h.service.list()[0]!;
+        expect(await h.history()).toMatchObject([{ revision: updated.revision, selected: true, problem: null }, { revision: original.revision, selected: false, problem: null }]);
+        await h.service.request('rollback', { pluginID: ID, revision: original.revision });
+        expect(h.service.list()[0]?.revision).toBe(original.revision);
+        expect(h.store.getState()).toBe(before);
+        expect(fs.readFileSync(h.data, 'utf8')).toBe(saved);
+        if (location === 'parked') h.store.dispatch({ type: 'unpark-pane', workspaceID: W1, paneID: h.paneID });
+        await expect(h.attach()).rejects.toThrow('does not own this pane');
+        h.edit(true);
+        expect(await h.attach()).toMatchObject({ stateVersion: 1, state: { fontSize: 15 } });
+    });
+
+    it.each(['pane', 'browser', 'document.markdown', 'document.scratchpad'])('refuses an incompatible %s placement while an external editor is closed', async placement => {
+        const h = await terminalRendererHarness(), original = h.service.list()[0]!;
+        const saved = fs.readFileSync(h.data, 'utf8'), before = h.store.getState();
+        h.write({ version: '1.1.0', contributes: { ...h.contributes, views: [{ ...h.contributes.views[0]!, placements: [placement] }] } });
+        await expect(h.service.install(h.source, true)).rejects.toThrow('placement no longer matches');
+        expect(h.service.list()[0]?.instanceID).toBe(original.instanceID);
+        expect(h.store.getState()).toBe(before);
+        expect(fs.readFileSync(h.data, 'utf8')).toBe(saved);
+    });
+
+    it('refuses older terminal state versions after closing an external editor', async () => {
+        const h = await terminalRendererHarness(), original = h.service.list()[0]!;
+        h.write({ version: '2.0.0', contributes: { ...h.contributes, views: [{ ...h.contributes.views[0]!, stateVersion: 2 }] } });
+        await h.service.install(h.source, true);
+        h.edit(true); await h.save(await h.attach(), { fontSize: 18, upgraded: true }); h.edit(false);
+        const current = h.service.list()[0]!, before = h.store.getState(), saved = fs.readFileSync(h.data, 'utf8');
+        expect(await h.history()).toMatchObject([{ revision: current.revision, problem: null }, { revision: original.revision, problem: expect.stringContaining('state version 2') }]);
+        await expect(h.service.request('rollback', { pluginID: ID, revision: original.revision })).rejects.toThrow('state version 2');
+        expect(h.service.list()[0]?.instanceID).toBe(current.instanceID);
+        expect(h.store.getState()).toBe(before);
+        expect(fs.readFileSync(h.data, 'utf8')).toBe(saved);
     });
 
     it('verifies retained bytes before rollback and preserves the currently running revision on tampering', async () => {

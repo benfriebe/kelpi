@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { newUUID } from '@kelpi/core/codec';
 import { readPluginPackage } from '@kelpi/core/plugin-package';
 import type { Pane } from '@kelpi/core/layout';
-import { PluginEventBuffer, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition, type PluginPaneDescriptor, type PluginRevisionInfo } from '@kelpi/protocol';
+import { PluginEventBuffer, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition, type PluginPaneDescriptor, type PluginRevisionInfo, type PluginPlacement } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -63,6 +63,16 @@ function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boo
     if (!pane) return false;
     const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
     return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal')) || (pane.type === 'web' && view.placements.includes('browser'));
+}
+/** Document panes retain terminal renderer state after their external editor closes. */
+function retainedNativePaneView(pane: Pane, view: PluginViewDefinition, previous: PluginViewDefinition | undefined): boolean {
+    const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
+    const placements: PluginPlacement[] = document ? [`document.${pane.type}`, 'terminal']
+        : pane.type === 'shell' ? ['terminal'] : pane.type === 'web' ? ['browser'] : [];
+    // One saved envelope is shared by the view's native placements. Keep a declared
+    // placement when known; older/uninstalled views leave only the pane type to check.
+    const declared = previous?.placements.filter(placement => placements.includes(placement));
+    return (declared?.length ? declared : placements).some(placement => view.placements.includes(placement));
 }
 type TerminalPaneIdentity = Pick<Pane, 'type' | 'createdAt' | 'externalEditorCommand'>;
 function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity): boolean {
@@ -318,7 +328,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 const viewID = key.slice(split + 1), view = manifest.contributes.views.find(view => view.id === viewID);
                 const problem = stateProblem(viewID, Number(raw['stateVersion']), `native view ${key}`); if (problem) return problem;
                 const pane = this.options.store.getState().workspaces.flatMap(workspace => [...workspace.panes, ...workspace.parkedPanes]).find(pane => pane.id === key.slice(0, split));
-                if (view && pane && !nativePaneView(pane, view)) return `revision cannot restore saved native view ${key}: its placement no longer matches the pane`;
+                const previousView = this.installations.get(manifest.id)?.manifest.contributes.views.find(view => view.id === viewID);
+                if (view && pane && !retainedNativePaneView(pane, view, previousView)) return `revision cannot restore saved native view ${key}: its placement no longer matches the pane`;
             }
         } catch (error) { return `saved plugin state is unreadable: ${failure(error)}`; }
         return null;

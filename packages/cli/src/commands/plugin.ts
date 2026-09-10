@@ -14,6 +14,8 @@ export const pluginUsage = `Usage: kelpi plugin <action>
   list [--json]
   contributions [--json]
   install <directory|file.kelpi-plugin> --trust
+  history <plugin-id> [--json]
+  rollback <plugin-id> [--revision <sha256>]
   enable|disable|reload|remove|logs <plugin-id>
   open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
   run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
@@ -56,6 +58,16 @@ export async function handlePlugin(args: string[]): Promise<void> {
             input['trust'] = popSwitch('--trust', args);
             const source = args.shift(); if (!source || source.startsWith('-')) throw new Error('install requires a directory or package file');
             input['path'] = path.resolve(source);
+        }
+        else if (action === 'history' || action === 'rollback') {
+            const revision = action === 'rollback' ? parseFlag('--revision', args) : null;
+            const id = args.shift();
+            if (!id || id.startsWith('-')) throw new Error(`${action} requires a plugin id`);
+            input['pluginID'] = id;
+            if (revision !== null) {
+                if (!/^[a-f0-9]{64}$/.test(revision)) throw new Error('--revision requires a full SHA-256 revision from plugin history');
+                input['revision'] = revision;
+            }
         }
         else if (action === 'service-call' || action === 'service-select') {
             const version = parseFlag('--version', args) ?? '1';

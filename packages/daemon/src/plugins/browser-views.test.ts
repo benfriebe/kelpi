@@ -44,6 +44,27 @@ async function policy(h: Awaited<ReturnType<typeof harness>>, before: string) {
 }
 
 describe('browser renderer view leases', () => {
+    it('preserves native browser sessions through revision switching and refuses incompatible renderer placements', async () => {
+        const h = await harness(), host = attachFakeHost(h.service), first = await h.attach();
+        const original = h.plugins.list()[0]!, manifestPath = path.join(h.source, 'kelpi.plugin.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        await h.api(String(first['lease']), 'views.setState', { state: { compact: true } });
+        await h.plugins.request('browser', { method: 'setPrivate', args: { paneID: WEB_PANE, isPrivate: true } });
+        const native = h.state(), notifications = host.notifies.length;
+        fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '1.1.0' }));
+        await h.plugins.install(h.source, true);
+        await h.plugins.request('rollback', { pluginID: PLUGIN, revision: original.revision });
+        expect(h.state()).toBe(native);
+        expect(host.notifies).toHaveLength(notifications);
+        await expect(h.api(String(first['lease']), 'browser.get')).rejects.toThrow('expired');
+        const current = await h.attach();
+        expect(current['state']).toEqual({ compact: true });
+        expect(await h.api(String(current['lease']), 'browser.get')).toMatchObject({ activeTabID: WEB_TAB, isPrivate: true, host: { available: true } });
+        fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0', contributes: { views: [{ ...manifest.contributes.views[0], placements: ['pane'] }] } }));
+        await expect(h.plugins.install(h.source, true)).rejects.toThrow('placement no longer matches');
+        expect(await h.api(String(current['lease']), 'browser.get')).toMatchObject({ activeTabID: WEB_TAB, isPrivate: true });
+    });
+
     it('attaches renderer state independently of native tabs, private partitions and host lifecycle', async () => {
         const h = await harness(), host = attachFakeHost(h.service);
         await h.plugins.request('browser', { method: 'setPrivate', args: { paneID: WEB_PANE, isPrivate: true } });

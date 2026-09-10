@@ -82,6 +82,24 @@ describe('bundled plugin CLI', () => {
         expect(invalid.code).toBe(1); expect(invalid.stderr).toContain('missing plugin entry');
         expect(server.requests).toHaveLength(0);
     });
+    it('lists retained versions and selects an explicit revision without treating version strings as identities', async () => {
+        const revision = 'a'.repeat(64);
+        const history = [{ revision, manifest: { id: 'example.package', version: '1.0.0' }, selected: false, installedAt: 123, problem: null }];
+        server.respond(request => ({ lines: [{ ok: true, result: request.action === 'history' ? history : [] }] }));
+        const listed = await runCLI(['plugin', 'history', 'example.package', '--json'], { port: server.port, cwd: home });
+        expect(listed.code).toBe(0); expect(JSON.parse(listed.stdout)).toEqual(history);
+        expect((await runCLI(['plugin', 'rollback', 'example.package', '--revision', revision], { port: server.port, cwd: home })).code).toBe(0);
+        expect((await runCLI(['plugin', 'rollback', 'example.package'], { port: server.port, cwd: home })).code).toBe(0);
+        expect(server.requests).toEqual([
+            { command: 'plugin', action: 'history', text: JSON.stringify({ pluginID: 'example.package' }) },
+            { command: 'plugin', action: 'rollback', text: JSON.stringify({ pluginID: 'example.package', revision }) },
+            { command: 'plugin', action: 'rollback', text: JSON.stringify({ pluginID: 'example.package' }) },
+        ]);
+        for (const args of [['history'], ['rollback'], ['rollback', 'example.package', '--revision', '1.0.0'], ['history', 'example.package', '--revision', revision]]) {
+            expect((await runCLI(['plugin', ...args], { port: server.port, cwd: home })).code).toBe(1);
+        }
+        expect(server.requests).toHaveLength(3);
+    });
     it('closes its event subscription on Ctrl-C and keeps watch output as JSON lines', async () => {
         server.respond(() => ({ lines: [{ ok: true, epoch: 'E', sequence: 1, state: {} }, { ok: true, event: { epoch: 'E', sequence: 2, name: 'state.changed', data: [] } }], keepOpen: true }));
         const result = await runCLI(['plugin', 'watch'], { port: server.port, cwd: home, sigintAfterMs: 500 });

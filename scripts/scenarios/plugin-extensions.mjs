@@ -34,9 +34,10 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
     const service = async () => JSON.parse(await cli.ok(['plugin', 'services'])).find(service => service.id === 'kelpi.files');
     try {
         const missing = await cli.run(['plugin', 'install', path.join(root, 'examples/plugins/workbench-lab'), '--trust']);
-        rec.check('missing required dependency leaves an actionable installed-plugin error', missing.code !== 0 && (await pluginList()).some(plugin => plugin.manifest.id === lab && plugin.error?.includes(dependency)));
+        rec.check('missing required dependency rejects installation before changing the registry', missing.code !== 0 && !(await pluginList()).some(plugin => plugin.manifest.id === lab));
         await cli.ok(['plugin', 'install', path.join(root, 'examples/plugins/agent-board'), '--trust']);
-        rec.check('installing the dependency automatically activates the waiting plugin', await running(lab));
+        await cli.ok(['plugin', 'install', path.join(root, 'examples/plugins/workbench-lab'), '--trust']);
+        rec.check('installing after its dependency activates the plugin', await running(lab));
         rec.check('the dependent backend can invoke a declared dependency command', Array.isArray(JSON.parse(await cli.ok(['plugin', 'run', `${lab}.dependency-history`]))));
 
         const denied = await cli.run(['workspace', 'create', '--name', 'Blocked by Workbench Lab', '--json']);

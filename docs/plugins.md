@@ -181,11 +181,52 @@ Reinstalling a package first installed by the older directory-only installer may
 new revision to identical files because the new hash uses a portable path order. Existing
 installed packages and saved panes remain usable.
 
-To develop, edit/build the source directory and **install it again**. Installation replaces
-the active revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
+To apply edits, build the source directory and **install it again**. Installation switches
+the selected revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
 installed copy; it does not copy edits from the original directory. Plugin data and settings
-survive reinstall and removal. Old revision directories are retained; automatic garbage
-collection and a version rollback UI are future work.
+survive reinstall and removal.
+Reinstalling the same healthy revision is a no-op; use `reload` when you want to restart it.
+
+## Updates and recovery
+
+Inspect retained revisions and switch back using their full content identity:
+
+```sh
+kelpi plugin history acme.dashboard --json
+kelpi plugin rollback acme.dashboard
+kelpi plugin rollback acme.dashboard --revision <full-sha256-from-history>
+```
+
+Without `--revision`, rollback selects the most recently selected other revision. An explicit
+revision can select either an older or newer retained version. Version strings are labels;
+two builds with the same version can contain different bytes. History reports the current
+selection, original installation time, and compatibility problems for each entry. Up to 100
+recently selected revisions are retained in the registry. Older package directories are not
+automatically deleted. On upgrade from the old installer, history begins with the currently
+selected revision; untracked older directories are not automatically trusted as history.
+
+Before changing a plugin, Kelpi checks contribution ownership, required dependencies and
+enabled dependents, and saved state. A revision that removes a saved view or cannot read its
+saved `stateVersion` is refused. This covers open, parked and recently closed plugin panes,
+and retained state for native document, terminal and browser renderers. Higher state versions
+must be handled by the plugin when its view attaches; Kelpi does not invent state migrations.
+After a view writes a newer state version, rolling back to code that declares an older version
+is blocked, with the saved state retained.
+
+An enabled backend update is checked for activation before the new selection is committed.
+An inactive on-demand backend is probed, then stopped after a successful update; its first
+installation remains lazy. Startup and already-running backends stay active.
+If activation fails, Kelpi restores the previous revision and restarts it when necessary.
+Plugin storage and settings writes during this provisional activation are held until it
+succeeds; a recovery journal handles a daemon interruption during their commit (it does not
+provide a power-loss durability guarantee). Opening panes or
+writing pane state from provisional activation is refused; perform those operations after
+activation, such as from a registered command or attached view.
+
+Revision switching preserves pane IDs, descriptors, saved state, and native terminal/browser
+sessions. It restarts plugin code and remounts its views. Selecting an older revision does
+not rewind data written by a previously successful version. Full-trust code can also change
+external files, processes and services; revision recovery cannot undo those effects.
 
 ## Backend and view APIs
 
@@ -387,9 +428,11 @@ Declare prerequisites in top-level `dependencies`:
 
 Version requirements accept exact semver, `^version`, `~version`, or `*`; other range syntax
 is rejected. Prereleases require an explicit matching prerelease requirement. Dependencies
-activate before their consumers. Missing, disabled, failed, incompatible, or cyclic required
-dependencies produce an actionable plugin error and bundled UI fallback. Installing or
-reenabling a dependency recovers eligible startup consumers. Disabling/reloading a required
+activate before their consumers. New installations or updates with missing, disabled, failed,
+incompatible, or cyclic required dependencies are refused before selection changes.
+If an installed dependency later becomes unavailable, its consumers report an actionable
+plugin error and use bundled UI fallback. Installing or reenabling a dependency recovers
+eligible startup consumers. Disabling/reloading a required
 dependency stops its dependent backends and revokes their views first. Unavailable optional
 dependencies are skipped. Dependency discovery does not download or trust new packages.
 
@@ -504,8 +547,9 @@ and versioned services. Private functions and arbitrary native OS controls are n
 APIs. Further internal replacements require explicit adapters with their own lifecycle and
 result contracts. Terminal and browser renderers have explicit SDK attachments; transport,
 process/page ownership, authentication and editor save ownership remain native.
-An untrusted runtime, marketplace, signatures, automatic
-package upgrades/rollback, and a published SDK remain outside this local-plugin implementation.
+An untrusted runtime, marketplace, signatures, automatic remote distribution, and a published
+SDK remain outside this local-plugin implementation. Local package updates and retained
+revision recovery are supported.
 
 ## Database and protocol upgrade
 

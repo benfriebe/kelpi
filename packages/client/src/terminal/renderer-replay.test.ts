@@ -138,11 +138,13 @@ it.each([300, 6000])(
             ingest.replay(daemon.snapshot('pane').data);
             finishReplay();
             expect(resets).toBe(0);
-            // A slow-load attach queues the replay before the engine exists. Its queued reset
-            // must use the same fresh-storage path as later resizes and reconnects.
+            // A slow-load attach queues the replay before the engine exists. The engine that
+            // flushes it is fresh — its own WASM instance, nothing written — so the queued
+            // reset is a no-op rather than a second instance; the resizes below, onto an
+            // engine that HAS been written to, take the fresh-storage path every time.
             await renderer.open({ querySelector: () => null } as unknown as HTMLElement);
             await expect.poll(() => clientRows(vt)).toEqual(daemonRows(daemon));
-            expect(resets).toBe(1);
+            expect(resets).toBe(0);
 
             await output('\x1b[?1h\x1b[?2004h');
             for (const [cols, rows] of [
@@ -161,7 +163,9 @@ it.each([300, 6000])(
                 expect(vt.getMode(2004, false)).toBe(true);
 
                 await daemon.flush('pane');
+                const resetsBefore = resets;
                 ingest.replay(daemon.snapshot('pane').data);
+                expect(resets).toBe(resetsBefore + 1);
                 expect(renderer.paintHeld).toBe(true);
                 while (scheduled.size > 0) {
                     const next = [...scheduled][0]!;

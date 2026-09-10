@@ -39,6 +39,7 @@ import {
     shouldGrabFocus,
     undoSurfaceAutoFocus
 } from '../app/pane-focus';
+import { restartUI } from '../app/reload';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
@@ -138,6 +139,29 @@ export const TERMINAL_START_ATTEMPTS = 3;
 
 /** Backoff before rebuilding a failed engine; doubles per attempt (150 ms, then 300 ms). */
 export const TERMINAL_START_RETRY_MS = 150;
+
+/**
+ * Why a pane is on the placeholder, when the reason changes what a person should do about it.
+ *
+ * `wasm-address-space`: V8 refused to reserve address space for another WebAssembly memory
+ * (`RangeError: WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory for new
+ * instance`). That is the whole renderer process, not this pane — every engine built from now
+ * on fails the same way, a retry is three more of the same failure, and nothing in the page can
+ * force the reclamation. The only way out is a restart of the UI (the daemon keeps every pane
+ * and session), so the placeholder says that and offers it. Seen on 2026-09-10 across a whole
+ * window at once: disposed terminals were being retained by a document listener
+ * (ghostty-web `0.4.0-nex.12`), and each carried its own instance since `-nex.10`.
+ */
+export type TerminalFailure = 'wasm-address-space';
+
+/** Does this start failure mean the renderer process is out of WebAssembly address space? */
+export function isWasmAddressSpaceExhausted(error: unknown): boolean {
+    const text =
+        error instanceof Error
+            ? `${error.message}\n${error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')}`
+            : String(error);
+    return /Cannot allocate Wasm memory/i.test(text);
+}
 
 /**
  * §N35 — how long after `open()` the pane keeps answering its ENGINE's own focus grabs.
@@ -472,6 +496,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** When the current run of coalesced resizes started (null = nothing pending). */
     const pendingResizeSince = useRef<number | null>(null);
     const [status, setStatus] = useState<PaneStatus>('loading');
+    /** The reason behind an `error` status when it is not the generic one (`TerminalFailure`). */
+    const [failure, setFailure] = useState<TerminalFailure | null>(null);
     /** Engine builds so far in this mount — surfaced on the root for the audit harness. */
     const [attempts, setAttempts] = useState(0);
     /**
@@ -701,6 +727,19 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         const failed = (error: unknown, phase: 'open' | 'engine'): void => {
             stop();
             if (cancelled) return;
+            if (isWasmAddressSpaceExhausted(error)) {
+                // Not a race, so not a retry: every engine in this process fails the same way
+                // until the UI restarts. Say so once, at `error` — a person is about to see it.
+                console.error(
+                    `[kelpi] terminal renderer cannot start for pane ${paneID}: the renderer is out of ` +
+                        'WebAssembly address space; every new engine fails until the UI restarts ' +
+                        '(View ▸ Recover Interface, or the placeholder\'s Restart UI)',
+                    error
+                );
+                setFailure('wasm-address-space');
+                setStatus('error');
+                return;
+            }
             if (attempt < TERMINAL_START_ATTEMPTS) {
                 console.info(
                     `[kelpi] terminal renderer ${phase === 'open' ? 'failed to start' : 'died'} for pane ${paneID} ` +
@@ -752,6 +791,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (initial !== null) renderer.resize(initial.cols, initial.rows);
             rendererRef.current = renderer;
             setStatus('loading');
+            setFailure(null);
 
             const ingest = createTerminalIngest(renderer);
             if (initial !== null) geometryRef.current = initial;
@@ -1806,6 +1846,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             data-pane-id={paneID}
             data-terminal-status={status}
             data-terminal-attempts={String(attempts)}
+            data-terminal-failure={failure ?? undefined}
             data-terminal-visible={visible ? 'true' : 'false'}
             /* The live DEC mouse-tracking mode (§TERM-037). Read by the audit so "reporting is
                on" is an observable fact about the pane rather than an inference from bytes. */
@@ -1920,7 +1961,28 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-xs"
                     style={{ color: 'var(--kelpi-fg-secondary, #9A9AA0)' }}
                 >
-                    <span>terminal renderer failed to start</span>
+                    <span>
+                        {failure === 'wasm-address-space'
+                            ? 'the renderer is out of WebAssembly memory - restart the UI to recover (the daemon keeps every pane and session)'
+                            : 'terminal renderer failed to start'}
+                    </span>
+                    {failure === 'wasm-address-space' ? (
+                        <button
+                            type="button"
+                            data-testid={`terminal-restart-ui-${paneID}`}
+                            onClick={restartUI}
+                            title="Reload the UI and reconnect to the daemon; panes and sessions are kept"
+                            className="cursor-pointer rounded text-xs font-medium whitespace-nowrap"
+                            style={{
+                                padding: '5px 12px',
+                                border: '1px solid var(--kelpi-border, #24242B)',
+                                color: 'var(--kelpi-accent, #6F9BD8)',
+                                backgroundColor: 'var(--kelpi-header-bg, #13131A)'
+                            }}
+                        >
+                            Restart UI
+                        </button>
+                    ) : null}
                     <button
                         type="button"
                         data-testid={`terminal-retry-${paneID}`}

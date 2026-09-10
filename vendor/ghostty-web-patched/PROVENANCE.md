@@ -1,13 +1,14 @@
-# ghostty-web 0.4.0-nex.11 (vendored)
+# ghostty-web 0.4.0-nex.12 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus ten
+review in the orchestrating session and explicit user authorization to integrate both — plus eleven
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
 `-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
 repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
-every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport).
+every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
+`-nex.12`: a disposed terminal is garbage — the document listener that pinned it is removed).
 
 | Version | What it added |
 |---|---|
@@ -22,6 +23,49 @@ every terminal on its own WASM instance; `-nex.11`: output never moves a scrolle
 | `0.4.0-nex.9` | authoritative replays use fresh WASM storage while preserving the VT wrapper |
 | `0.4.0-nex.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
 | `0.4.0-nex.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
+| `0.4.0-nex.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-nex.10`, its WASM instance) can be collected |
+
+## Nex adaptation: a disposed terminal is garbage (`0.4.0-nex.12`, 2026-09-10)
+
+**The defect.** Every terminal pane in a long-running window went to *terminal renderer failed
+to start* at once, Retry included:
+
+```
+RangeError: WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory for new instance
+```
+
+V8 reserves a guard region of several GiB of address space per WASM memory and caps the total
+per process, so on the order of a hundred live memories is the ceiling. Since `-nex.10` every
+terminal instantiates its own, which is fine for the dozen the mount policy keeps alive — and
+fatal if disposed terminals are never collected. Measured in a sandbox (three workspaces of six
+panes, swapped in a loop, counted with `Runtime.queryObjects(WebAssembly.Memory.prototype)`
+after `HeapProfiler.collectGarbage`): 38 live memories after the first visit, +18 per round of
+three swaps with never more than 6 renderers mounted, and the error above at 110–123 after
+twelve to fifteen swaps.
+
+**The retainer**, from a heap snapshot at that point, was the same for all 123 memories:
+
+```
+HTMLDocument → RegisteredEventListener → V8EventListener → closure
+  → (this) SelectionManager → .wasmTerm → GhosttyTerminal → .memory
+```
+
+`SelectionManager.attachEventListeners` registered an anonymous `document.addEventListener(
+'mousedown', …)` to remember where a click started, and `dispose()` — which does remove its
+`mouseup`, `mousemove` and `click` document listeners — never removed it. Upstream `0.4.0` has
+the same listener. With `document` holding the manager, and the manager holding the Terminal,
+its canvas, textarea and WASM handle, every terminal ever opened stayed reachable: a slow DOM and
+JS leak before `-nex.10`, a hard ceiling after it. Excluding document listeners from the
+retainer graph leaves 122 of the 123 memories unreachable; the one left is `init()`'s shared
+instance, which is meant to live.
+
+**The fix.** The handler is bound into `boundDocumentMouseDownHandler`, beside the three that
+already were, and `dispose()` removes it and drops `mouseDownTarget`. Nothing else changes: the
+same callback, the same event, the same target. Re-measured on the same protocol the count now
+tracks the mounted renderers instead of history.
+
+- **Rebuild sanity**: `dist/ghostty-web.js` is **709.08 kB** as vite reports it (was 708.77 kB
+  at `-nex.11`), built from `source/` with the documented recipe.
 
 ## Nex adaptation: output never moves a scrolled viewport (`0.4.0-nex.11`, 2026-09-10)
 

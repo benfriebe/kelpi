@@ -52,6 +52,31 @@ async function setup(granted = true) {
 }
 
 describe('selected terminal renderer through its private view port', () => {
+    it('defers attachment focus while a chrome editor owns the caret, then claims it after blur', async () => {
+        const h = await setup(), rename = document.createElement('input');
+        document.body.append(rename); rename.focus();
+        const focusActions = () => h.received.filter(item => item.type === 'terminal-action' && item.action.type === 'focus');
+        try {
+            await h.attach();
+            expect(focusActions()).toEqual([]);
+            expect(document.activeElement).toBe(rename);
+            act(() => rename.blur());
+            await waitFor(() => expect(focusActions()).toHaveLength(1));
+        } finally { h.dispose(); rename.remove(); }
+    });
+
+    it('cancels deferred attachment focus if the pane loses focus before chrome lets go', async () => {
+        const h = await setup(), rename = document.createElement('input');
+        document.body.append(rename); rename.focus();
+        try {
+            await h.attach();
+            h.view.rerender(<PluginView {...h.props} focused={false} terminal={{ ...h.props.terminal!, focused: false }} />);
+            act(() => rename.blur());
+            await new Promise(resolve => setTimeout(resolve, 10));
+            expect(h.received.filter(item => item.type === 'terminal-action' && item.action.type === 'focus')).toEqual([]);
+        } finally { h.dispose(); rename.remove(); }
+    });
+
     it('routes claimed terminal edits to the owning host callback before preserving window shortcut dispatch', async () => {
         const h = await setup(), editing = vi.fn((key: { code: string }) => key.code === 'KeyC'), windowKey = vi.fn();
         window.addEventListener('keydown', windowKey);

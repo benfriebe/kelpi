@@ -7,6 +7,7 @@ import type { TerminalPaneProps } from '../terminal/TerminalPane';
 import { TerminalFeaturePane } from './TerminalFeaturePane';
 
 let plugins: PluginInfo[] = [];
+let rendererError = 'Renderer failed';
 const mounted = vi.fn(), released = vi.fn();
 vi.mock('../plugins/client', () => ({
     usePlugins: (runtime: KelpiRuntime) => ({ plugins, daemonID: new URL(runtime.connection.target).host }),
@@ -19,13 +20,13 @@ vi.mock('../terminal/TerminalPane', () => ({ TerminalPane: (props: TerminalPaneP
 vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; viewID: string; terminal: TerminalPaneProps; onError(message: string): void }) => {
     useEffect(() => { mounted(props.paneID, props.viewID); return () => { released(props.paneID, props.viewID); }; }, [props.paneID, props.viewID]);
     return <button data-testid={`plugin-${props.paneID}`} data-visible={props.terminal.visible} data-focused={props.terminal.focused}
-        onClick={() => props.onError('Renderer failed')}>{props.viewID}</button>;
+        onClick={() => props.onError(rendererError)}>{props.viewID}</button>;
 } }));
 const runtime = (host: string) => ({ connection: { target: `ws://${host}/ws` } } as KelpiRuntime);
 const local = runtime('terminal.test'), remote = runtime('remote-terminal.test');
 const props = { runtime: local, workspaceID: 'W', paneID: 'P', ptyApi: { subscribe: vi.fn() }, focused: true, visible: true };
 beforeEach(() => {
-    localStorage.clear(); mounted.mockClear(); released.mockClear();
+    localStorage.clear(); mounted.mockClear(); released.mockClear(); rendererError = 'Renderer failed';
     plugins = [{ manifest: decodePluginManifest({ id: 'sample.terminal', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
         views: [{ id: 'sample.terminal.body', title: 'Custom terminal', entry: 'ui/index.html', placements: ['terminal'] }]
     } }), enabled: true, status: 'inactive', error: null, revision: 'one', instanceID: 'one' }];
@@ -60,7 +61,8 @@ describe('replaceable terminal feature', () => {
         expect(screen.getByTestId('plugin-P').dataset.focused).toBe('true');
     });
 
-    it('falls back on failure, retries explicitly, and recovers after plugin reload', () => {
+    it.each(['Renderer failed', ''])('falls back on failure "%s", retries explicitly, and recovers after plugin reload', message => {
+        rendererError = message;
         const view = render(<TerminalFeaturePane {...props} />);
         choose('sample.terminal.body'); fireEvent.click(screen.getByTestId('plugin-P'));
         expect(screen.getByTestId('native-P')).toBeDefined();

@@ -55,6 +55,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const [documentHTML, setDocumentHTML] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
+    const [terminalAttachment, setTerminalAttachment] = useState(0);
     const [connection, setConnection] = useState(runtime.connection.status);
     useEffect(() => runtime.connection.on('status', setConnection), [runtime]);
     const unavailable = !plugin ? 'This plugin is not installed.' : !plugin.enabled ? 'This plugin is disabled.' : plugin.status === 'failed' ? plugin.error ?? 'This plugin failed.' : null;
@@ -142,7 +143,9 @@ export function PluginView(props: PluginViewProps): ReactElement {
                         if (!terminalScope.attached) throw new Error('Terminal renderer attachment failed.');
                         releaseTerminal();
                         releaseTerminal = registerPluginTerminal(paneID, terminalScope, () => frame.current, () => latest.current.terminal);
-                        if (latest.current.focused && latest.current.visible !== false && mayClaimPaneCaret()) void terminalScope.action({ type: 'focus' }).catch(() => {});
+                        // Attachment can finish while chrome owns the caret. Re-arm the same
+                        // polite focus effect used for pane focus changes once the session exists.
+                        setTerminalAttachment(value => value + 1);
                         return result;
                     }
                     if ((WINDOW_UI_METHODS as readonly string[]).includes(String(data['method']))) {
@@ -214,7 +217,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     useEffect(() => {
         if (!props.focused || props.visible === false || !documentHTML || !mayClaimPaneCaret()) return;
         return armCaretClaim(frame.current, () => { frame.current?.focus(); void terminal.current?.action({ type: 'focus' }).catch(() => {}); });
-    }, [props.focused, props.visible, documentHTML]);
+    }, [props.focused, props.visible, documentHTML, terminalAttachment]);
     const problem = unavailable ?? error;
     return <div data-testid={`plugin-view-${paneID ?? viewID}`} className="relative flex h-full min-h-0 w-full flex-col" style={{ color: tokens.textPrimary, background: tokens.surfaceBackground }}>
         {problem ? <div role="status" className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs"><strong>{plugin?.manifest.name ?? pluginID}</strong><span>{problem}</span><span>Your pane and its state are preserved.</span><button onClick={() => { if (plugin?.enabled && plugin.status === 'failed') void pluginRequest(runtime, 'reload', { pluginID }).catch(error => setError(error.message)); else setAttempt(value => value + 1); }}>Retry</button></div> : null}

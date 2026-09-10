@@ -79,7 +79,8 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     if (!options.visible || host.blocked?.() || modalPresenceCount() > 0 ||
         (host.globalHotkey && trigger && keyTriggerKey(trigger) === keyTriggerKey(host.globalHotkey))) return true;
     const handle = paneHandle(paneID);
-    if (!handle || !isTerminal(ownedPane(runtime, paneID))) return true;
+    const original = ownedPane(runtime, paneID);
+    if (!handle || !isTerminal(original)) return true;
     const report = (title: string, error: unknown): void => {
         const message = error instanceof Error ? error.message : String(error);
         if (host.onError) host.onError(title, message);
@@ -87,8 +88,25 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     };
     const clipboard = options.clipboard ?? navigator.clipboard;
     if (action === 'copy') {
+        const interruptKey = event.code === 'KeyC' && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+            ? { key: 'key' in event && typeof event.key === 'string' ? event.key : 'c', code: event.code, ctrlKey: true }
+            : null;
+        const selected = (text: string): string => {
+            // Off macOS, empty-selection Ctrl+C falls through to the terminal's own encoder.
+            // The iframe already relayed that physical key, so return it only to the same live
+            // renderer after its selection reply. Empty Cmd+C remains a quiet copy attempt.
+            const current = ownedPane(runtime, paneID);
+            if (text === '' && interruptKey && paneHandle(paneID) === handle && handle.focusedOnScreen() &&
+                !host.blocked?.() && modalPresenceCount() === 0 && isTerminal(current) &&
+                current?.createdAt === original?.createdAt && current?.type === original?.type &&
+                current?.externalEditorCommand === original?.externalEditorCommand) handle.dispatchKey(interruptKey);
+            return text;
+        };
         copySelection({ focusedPaneID: () => paneID,
-            selectionFor: () => handle.readSelection ? handle.readSelection() : handle.selection(),
+            selectionFor: () => {
+                const selection = handle.readSelection ? handle.readSelection() : handle.selection();
+                return typeof selection === 'string' ? selected(selection) : selection.then(selected);
+            },
             writeText: typeof clipboard?.writeText === 'function' ? text => clipboard.writeText(text) : null,
             writePendingText: deferredClipboardWriter(clipboard), onError: message => report('Copy', message) });
     } else if (action === 'paste') void pasteIntoOwner(runtime, paneID, clipboard).catch(error => report('Paste', error));

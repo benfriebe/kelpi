@@ -12,7 +12,7 @@
  * own rules are pinned in `webpane/geometry.test.ts`.
  */
 
-import type { JsonObject } from '@kelpi/protocol';
+import type { BrowserSnapshot, JsonObject } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,17 @@ const NOW = 1_755_500_000_000;
 
 /** The hole the pane's chrome leaves for the page, as a real window would measure it. */
 const HOLE = { x: 220, y: 91, width: 529, height: 705 };
+
+const BROWSER_STATE: BrowserSnapshot = {
+    paneID: WEB_PANE,
+    workspaceID: W1,
+    isPrivate: false,
+    activeTabID: WEB_TAB,
+    tabs: [{ id: WEB_TAB, url: 'https://example.com', title: '', live: true, loading: false, canGoBack: false, canGoForward: false }],
+    host: { available: true, id: 'fixture-host', name: 'Kelpi', windowID: SHELL_WINDOW },
+    favourites: [],
+    inspection: { revision: 0, armed: false, tabID: null, pendingResults: 0, batchVisible: false, batchItems: 0, batchFocusedID: null }
+};
 
 function snapshotState(): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
@@ -69,7 +80,25 @@ function setup(): Harness {
     const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
-        socketFactory: sockets.factory,
+        socketFactory: (url) => {
+            sockets.factory(url);
+            const socket = sockets.last();
+            const send = socket.send.bind(socket);
+            socket.send = (data) => {
+                send(data);
+                if (typeof data !== 'string') return;
+                const message = JSON.parse(data) as Record<string, unknown>;
+                const payload = message['payload'] as Record<string, unknown> | undefined;
+                if (message['type'] !== 'command' || payload?.['command'] !== 'plugin' || payload['action'] !== 'browser-state') return;
+                expect(JSON.parse(payload['text'] as string)).toEqual({ paneID: WEB_PANE });
+                // The assembled browser now confirms native host ownership before placing
+                // pixels. Answer that read over the same wire, including after a redial.
+                queueMicrotask(() => {
+                    if (socket.readyState === 1) socket.emit({ type: 'command-reply', id: message['id'], reply: { ok: true, result: BROWSER_STATE } });
+                });
+            };
+            return socket;
+        },
         store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,

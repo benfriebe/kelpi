@@ -13,6 +13,7 @@ export const MARKDOWN_FEATURE = { id: 'kelpi.markdown', title: 'Markdown', place
 export const SCRATCHPAD_FEATURE = { id: 'kelpi.scratchpad', title: 'Scratchpad', placements: ['pane', 'document.scratchpad'] } as const satisfies BundledFeatureDefinition;
 export const DIFF_FEATURE = { id: 'kelpi.diff', title: 'Diff', placements: ['pane', 'document.diff'] } as const satisfies BundledFeatureDefinition;
 export const TERMINAL_FEATURE = { id: 'kelpi.shell', title: 'Terminal', placements: ['pane', 'terminal'] } as const satisfies BundledFeatureDefinition;
+export const BROWSER_FEATURE = { id: 'kelpi.web', title: 'Browser', placements: ['pane', 'browser'] } as const satisfies BundledFeatureDefinition;
 
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
@@ -20,7 +21,7 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     MARKDOWN_FEATURE,
     SCRATCHPAD_FEATURE,
     DIFF_FEATURE,
-    { id: 'kelpi.web', title: 'Browser', placements: ['pane'] },
+    BROWSER_FEATURE,
     WORKSPACES_FEATURE,
     INSPECTOR_FEATURE,
     TOOLBAR_FEATURE,

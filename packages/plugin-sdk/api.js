@@ -102,6 +102,13 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         reopen: workspaceID => run('reopen-closed-pane', { workspace_id: workspaceID }),
         scratchpad: workspaceID => run('create-scratchpad', { workspace_id: workspaceID }),
     });
+    const documentCall = async (method, args) => {
+        try { return await call(`documents.${method}`, clean(args)); }
+        catch (error) {
+            if (error.message?.startsWith('DOCUMENT_CONFLICT:')) throw new KelpiError(error.message, { code: 'DOCUMENT_CONFLICT', method: `documents.${method}`, cause: error });
+            throw error;
+        }
+    };
     return Object.freeze({
         call, command,
         snapshot: () => call('state.snapshot'),
@@ -120,6 +127,15 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         process: Object.freeze({ exec: (file, args = [], options = {}) => call('process.exec', clean({ file, args, ...options })) }),
         ui: Object.freeze({ reveal: async paneID => { await call('ui.reveal', { paneID }); } }),
         panes,
+        documents: Object.freeze({
+            get: (paneID = getContext().paneID) => documentCall('get', { paneID }),
+            edit: (paneID, text, revision) => documentCall('edit', { paneID, text, revision }),
+            save: (paneID, revision) => documentCall('save', { paneID, revision }),
+            setMode: (paneID, mode, revision) => documentCall('mode', { paneID, mode, revision }),
+            refresh: (paneID, revision) => documentCall('refresh', { paneID, revision }),
+            watch: (paneID = getContext().paneID) => documentCall('watch', { paneID }),
+            unwatch: async subscription => { await documentCall('unwatch', { subscription }); },
+        }),
         workspaces: Object.freeze({
             list: (options = {}) => list('workspace-list', 'workspaces', { group: options.groupID }),
             create: (options = {}) => run('workspace-create', {

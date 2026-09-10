@@ -966,6 +966,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     };
     const ctx: PaneHandlerContext = {
+        prepareDocumentClose: paneIDs => content.prepareClose(paneIDs),
         store,
         pty,
         term,
@@ -1204,7 +1205,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
 
     const plugins = new PluginService({
-        store, pty, term,
+        store, pty, term, content,
         applicationSettings: () => pluginObject(settings.snapshot),
         cliEnvironment: () => ({
             KELPI_SOCKET: paneRouteValue() ?? '',

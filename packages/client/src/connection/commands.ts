@@ -205,9 +205,17 @@ interface ReportedVisibility {
     readonly documentVisible: boolean;
 }
 
+/** Recheck local state synchronously after every asynchronous preparation has finished. */
+type CloseValidation = () => void;
+type CloseGuard = (payload: JsonObject) => Promise<void | CloseValidation> | void;
+
 // ── client ──────────────────────────────────────────────────────────────────────────
 
 export class CommandClient {
+    private readonly closeGuards = new Set<CloseGuard>();
+    registerCloseGuard(guard: CloseGuard): () => void {
+        this.closeGuards.add(guard); return () => this.closeGuards.delete(guard);
+    }
     private readonly pending = new Map<string, PendingCommand>();
     private readonly unsubscribers: (() => void)[] = [];
     private readonly newID: () => string;
@@ -253,6 +261,7 @@ export class CommandClient {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.closeGuards.clear();
         for (const off of this.unsubscribers) off();
         this.unsubscribers.length = 0;
         this.rejectAll();
@@ -260,6 +269,16 @@ export class CommandClient {
 
     /** Any control-protocol request object; resolves with the reply, ok or not. */
     raw(payload: JsonObject, options: SendOptions = {}): Promise<CommandReply> {
+        try {
+            const waiting = [...this.closeGuards].map(guard => guard(payload)).filter((value): value is Promise<void | CloseValidation> => value !== undefined);
+            if (waiting.length) return Promise.all(waiting).then(checks => {
+                for (const check of checks) check?.();
+                return this.sendRaw(payload, options);
+            });
+        } catch (error) { return Promise.reject(error); }
+        return this.sendRaw(payload, options);
+    }
+    private sendRaw(payload: JsonObject, options: SendOptions): Promise<CommandReply> {
         const command = typeof payload['command'] === 'string' ? (payload['command'] as string) : 'unknown';
         if (this.disposed) return Promise.reject(new CommandDisconnectedError(command));
         const id = this.newID();

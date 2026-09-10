@@ -9,8 +9,10 @@ import { pluginDocument } from './document';
 import { PluginHostUIContext, requestHostUI, HOST_UI_METHODS } from './host-ui';
 import { createPluginNavigationFeed, type PluginNavigationFeed } from './navigation';
 import { WINDOW_UI_METHODS, type UIServiceScope } from './ui-services';
+import { getDocumentDraft, runDocumentEdit, stageDocumentDraft } from './document-drafts';
 
 export interface PluginViewProps {
+    readonly onError?: ((message: string) => void) | undefined;
     readonly runtime: KelpiRuntime;
     readonly pluginID: string;
     readonly viewID: string;
@@ -67,6 +69,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
             uiScope?.dispose();
             if (lease) { void pluginRequest(runtime, 'release', { lease }).catch(() => {}); lease = ''; }
             setError(error instanceof Error ? error.message : String(error));
+            latest.current.onError?.(error instanceof Error ? error.message : String(error));
         };
         const contextUpdate = (): void => port.current?.postMessage({ type: 'context', value: { theme: readPluginTheme(), chords: latest.current.visible === false ? [] : latest.current.claimedChords ?? [], visible: latest.current.visible ?? true, ...(latest.current.descriptor ? { state: latest.current.descriptor.state, stateVersion: latest.current.descriptor.stateVersion } : {}) } });
         const handleReady = (event: MessageEvent): void => {
@@ -114,6 +117,25 @@ export function PluginView(props: PluginViewProps): ReactElement {
                         return null;
                     }
                     if (data['method'] === 'ui.notify') { runtime.store.getState().pushToast({ id: `plugin-${pluginID}`, kind: 'info', title: plugin.manifest.name, body: String(args['message'] ?? ''), paneID: paneID ?? null, workspaceID: workspaceID ?? null, createdAt: Date.now() }); return null; }
+                    if (data['method'] === 'documents.stage' || data['method'] === 'documents.applyDraft') {
+                        const pane = runtime.store.getState().daemon.state.workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID);
+                        if (!paneID || !pane || !['markdown', 'scratchpad'].includes(pane.type) || !plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(`document.${pane.type}`))) throw new Error('Drafts require an editable document renderer.');
+                        if (typeof args['revision'] !== 'string') throw new Error('revision is required');
+                        if (data['method'] === 'documents.stage') {
+                            if (typeof args['text'] !== 'string') throw new Error('text is required');
+                            const draft = stageDocumentDraft(runtime, paneID, args['text'], args['revision'], viewID);
+                            return { id: draft.id };
+                        }
+                        const draft = getDocumentDraft(runtime, paneID);
+                        if (!draft || draft.id !== args['id'] || draft.viewID !== viewID) throw new Error('DOCUMENT_DRAFT_SUPERSEDED: A newer local draft has replaced this edit.');
+                        const edit = { paneID, text: draft.text, revision: args['revision'] };
+                        return runDocumentEdit(runtime, paneID, draft.text, args['revision'], viewID,
+                            () => pluginRequest(runtime, 'api', { lease, method: 'documents.edit', args: edit }), draft);
+                    }
+                    if (data['method'] === 'documents.edit' && typeof args['text'] === 'string' && typeof args['revision'] === 'string' && typeof (args['paneID'] ?? paneID) === 'string') {
+                        return runDocumentEdit(runtime, String(args['paneID'] ?? paneID), args['text'], args['revision'], viewID,
+                            () => pluginRequest(runtime, 'api', { lease, method: 'documents.edit', args }));
+                    }
                     return pluginRequest(runtime, 'api', { lease, method: String(data['method']), args });
                 })().then(result => respond(result), error => respond(null, error.message)).finally(() => { outstanding -= 1; });
             };

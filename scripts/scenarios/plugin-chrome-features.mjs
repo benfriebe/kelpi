@@ -62,6 +62,12 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('native window buttons retain a separate drag strip', await page.eval(`document.querySelector('[data-workbench-slot="topbar"] > [data-titlebar-drag]')?.getBoundingClientRect().width > 0`));
         rec.check('authored styles fit both hosts without horizontal overflow', await check(toolbar, `getComputedStyle(document.documentElement).fontSize === '12px' && document.documentElement.scrollWidth <= document.documentElement.clientWidth`) && await check(status, `document.documentElement.scrollWidth <= document.documentElement.clientWidth`));
 
+        // Other scenarios retain this window's sidebar preferences. Establish the starting
+        // visibility explicitly before testing one-toggle transitions.
+        const initialChrome = await snapshot();
+        if (!initialChrome.sidebars.left.visible) await click(toolbar, '#left');
+        if (initialChrome.sidebars.right.visible) await click(toolbar, '#right');
+        await check(toolbar, `document.getElementById('left').getAttribute('aria-pressed') === 'true' && document.getElementById('right').getAttribute('aria-pressed') === 'false'`);
         await click(toolbar, '#left'); rec.check('the replacement hides the left sidebar', await check(toolbar, `document.getElementById('left').getAttribute('aria-pressed') === 'false'`));
         await click(toolbar, '#left'); await click(toolbar, '#right'); rec.check('both physical sidebars remain controllable', await check(toolbar, `document.getElementById('left').getAttribute('aria-pressed') === 'true' && document.getElementById('right').getAttribute('aria-pressed') === 'true'`));
         await inFrame(toolbar, `kelpi.ui.selectView('sidebar.primary', 'kelpi.inspector')`);

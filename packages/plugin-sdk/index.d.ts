@@ -3,11 +3,13 @@ import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, Buil
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
+import type { DocumentsAPI, ViewDocumentsAPI } from './documents.js';
 export * from './domain.js';
 export * from './services.js';
 export * from './contributions.js';
 export * from './ui.js';
 export * from './chrome.js';
+export * from './documents.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Data = { [key: string]: Json };
@@ -39,6 +41,7 @@ export interface KelpiAPI {
     files: { read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; open(path: string, options?: { paneID?: string; workspaceID?: string; reuse?: boolean }): Promise<void>; reveal(path: string, options?: { select?: boolean }): Promise<void> };
     process: { exec(file: string, args?: string[], options?: { cwd?: string }): Promise<ProcessExecResult> };
     terminal: TerminalAPI;
+    documents: DocumentsAPI;
     workspaces: WorkspacesAPI;
     groups: GroupsAPI;
     panes: PanesAPI;
@@ -74,6 +77,7 @@ export interface BackendAPI extends KelpiAPI {
     };
 }
 export interface ViewAPI extends KelpiAPI {
+    documents: ViewDocumentsAPI;
     readonly ready: Promise<void>;
     readonly context: Context;
     readonly state: Data;

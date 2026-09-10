@@ -9,13 +9,16 @@ export const INSPECTOR_FEATURE = {
 
 export const TOOLBAR_FEATURE = { id: 'kelpi.topbar', title: 'Toolbar', placements: ['topbar'] } as const satisfies BundledFeatureDefinition;
 export const STATUSBAR_FEATURE = { id: 'kelpi.statusbar', title: 'Status', placements: ['statusbar'] } as const satisfies BundledFeatureDefinition;
+export const MARKDOWN_FEATURE = { id: 'kelpi.markdown', title: 'Markdown', placements: ['pane', 'document.markdown'] } as const satisfies BundledFeatureDefinition;
+export const SCRATCHPAD_FEATURE = { id: 'kelpi.scratchpad', title: 'Scratchpad', placements: ['pane', 'document.scratchpad'] } as const satisfies BundledFeatureDefinition;
+export const DIFF_FEATURE = { id: 'kelpi.diff', title: 'Diff', placements: ['pane', 'document.diff'] } as const satisfies BundledFeatureDefinition;
 
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
     { id: 'kelpi.shell', title: 'Terminal', placements: ['pane'] },
-    { id: 'kelpi.markdown', title: 'Markdown', placements: ['pane'] },
-    { id: 'kelpi.scratchpad', title: 'Scratchpad', placements: ['pane'] },
-    { id: 'kelpi.diff', title: 'Diff', placements: ['pane'] },
+    MARKDOWN_FEATURE,
+    SCRATCHPAD_FEATURE,
+    DIFF_FEATURE,
     { id: 'kelpi.web', title: 'Browser', placements: ['pane'] },
     WORKSPACES_FEATURE,
     INSPECTOR_FEATURE,

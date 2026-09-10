@@ -210,7 +210,10 @@ export function createContentClient(options: ContentClientOptions): ContentClien
         }
         if (status === 'connecting') return;
         staleSubscriptions = true;
-        for (const entry of entries.values()) entry.subscribed = false;
+        // A restarted daemon creates a new content incarnation whose numeric revision may
+        // start below the previous one. Keep the rendered value until the new reply arrives,
+        // but do not reject that reply against the old incarnation's revision.
+        for (const entry of entries.values()) { entry.subscribed = false; entry.last = null; }
     });
 
     // ── client → daemon ─────────────────────────────────────────────────────────────

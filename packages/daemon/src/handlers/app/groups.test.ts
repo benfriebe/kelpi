@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 
+import { createContentService } from '../../content/service.js';
 import type { DaemonState, WorkspaceGroup } from '../../store/index.js';
 import { harness, id, NOW, seeded } from './testing.js';
 
@@ -105,10 +109,13 @@ describe('group-create / rename / delete', () => {
 
     it('promotes children to top level without --cascade, keeping their panes alive', () => {
         const h = grouped();
+        const prepare = vi.fn(() => { throw new Error('save unavailable'); });
+        Object.assign(h.ctx, { prepareDocumentClose: prepare });
         h.send({ command: 'group-delete', name: 'team' });
         expect(h.state().groups).toHaveLength(0);
         expect(h.state().workspaces).toHaveLength(3);
         expect(h.killed).toEqual([]);
+        expect(prepare).not.toHaveBeenCalled();
     });
 
     it('deletes members and kills their panes with --cascade', () => {
@@ -118,6 +125,45 @@ describe('group-create / rename / delete', () => {
         expect(h.state().workspaces).toHaveLength(0);
         expect(h.killed).toEqual(expect.arrayContaining([P1, P2]));
         expect(h.killed).toHaveLength(4);
+    });
+
+    it.each([false, true])('preserves every group member when a document cannot save (parked=%s)', async parked => {
+        const h = grouped();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-group-document-close-'));
+        const directory = path.join(root, 'notes'); fs.mkdirSync(directory);
+        const file = path.join(directory, 'note.md'); fs.writeFileSync(file, '# Original\n');
+        const paneID = id('eeeeeeee', 1);
+        h.dispatch({ type: 'open-markdown-pane', workspaceID: W3, paneID, filePath: file, now: NOW });
+        const content = createContentService({ store: h.store, watch: false, debounceMs: 60_000 });
+        Object.assign(h.ctx, { prepareDocumentClose: (paneIDs: readonly string[]) => content.prepareClose(paneIDs) });
+        try {
+            await content.setMode(paneID, 'edit');
+            if (parked) h.dispatch({ type: 'park-pane', workspaceID: W3, paneID });
+            await content.setText(paneID, 'keep these edits');
+            fs.unlinkSync(file); fs.rmdirSync(directory); fs.writeFileSync(directory, 'not a directory');
+            const before = h.state();
+            const reply = h.replyMessage({ command: 'group-delete', name: 'team', cascade: true });
+            expect(reply).toMatchObject({ ok: false, error: expect.any(String) });
+            expect(h.replies.at(-1)?.closed).toBe(true);
+            expect(h.state()).toBe(before);
+            expect(h.killed).toEqual([]);
+            expect(h.persists).toEqual([]);
+            expect(await content.document(paneID)).toMatchObject({ text: 'keep these edits', dirty: true });
+            // The historical fire-and-forget CLI path also refuses without tearing down
+            // prior members, even though that transport has no error reply channel.
+            expect(h.send({ command: 'group-delete', name: 'team', cascade: true })).toEqual([]);
+            expect(h.state()).toBe(before);
+            expect(h.killed).toEqual([]);
+            fs.unlinkSync(directory); fs.mkdirSync(directory);
+            h.send({ command: 'group-delete', name: 'team', cascade: true });
+            expect(fs.readFileSync(file, 'utf8')).toBe('keep these edits');
+            expect(h.state().groups).toHaveLength(0);
+            expect(h.state().workspaces).toHaveLength(0);
+            expect(h.killed).toEqual(expect.arrayContaining([P1, P2, id('dddddddd', 3), paneID]));
+            expect(h.persists).toHaveLength(1);
+        } finally {
+            content.dispose(); fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 });
 

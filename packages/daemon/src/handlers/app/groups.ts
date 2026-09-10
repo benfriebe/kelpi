@@ -106,6 +106,7 @@ function handleGroupDelete(
     nameOrID: string,
     cascade: boolean,
     ctx: AppContext,
+    reply: ReplyHandle | null,
     deps: AppDeps
 ): void {
     const state = ctx.store.getState();
@@ -116,13 +117,15 @@ function handleGroupDelete(
 
     if (cascade) {
         // Cascade destroys the member workspaces' surfaces too (app-state-core §5.4).
-        for (const memberID of group.childOrder) {
-            const workspace = workspaceByID(state, memberID);
-            if (workspace === null) continue;
-            for (const pane of [...workspace.panes, ...workspace.parkedPanes]) {
-                deps.killPane(pane.id, ctx);
-            }
-        }
+        const paneIDs = liveMembers(state, group).flatMap(memberID => {
+            const workspace = workspaceByID(state, memberID)!;
+            return [...workspace.panes, ...workspace.parkedPanes].map(pane => pane.id);
+        });
+        // Validate every member before tearing down any surface. A save refusal must
+        // leave the entire group usable, including members preceding the failed file.
+        try { ctx.prepareDocumentClose?.(paneIDs); }
+        catch (error) { fail(reply, error instanceof Error ? error.message : String(error)); return; }
+        for (const paneID of paneIDs) deps.killPane(paneID, ctx);
     }
     ctx.store.dispatch({ type: 'delete-group', id: group.id, cascade });
     if (cascade) for (const memberID of group.childOrder) refreshSyncGroup(ctx, memberID);
@@ -235,8 +238,8 @@ export function groupHandlerEntries(deps: AppDeps): readonly (readonly [string, 
         forCommand('group-rename', (msg, ctx) => {
             handleGroupRename(msg.name, msg.new_name, ctx, deps);
         }),
-        forCommand('group-delete', (msg, ctx) => {
-            handleGroupDelete(msg.name, msg.cascade, ctx, deps);
+        forCommand('group-delete', (msg, ctx, reply) => {
+            handleGroupDelete(msg.name, msg.cascade, ctx, reply, deps);
         }),
         forCommand('group-reorder', (msg, ctx, reply) => {
             handleGroupReorder(msg.name, msg.order, null, ctx, reply, deps);

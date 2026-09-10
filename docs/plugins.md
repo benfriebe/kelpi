@@ -76,6 +76,11 @@ window chrome state and the shared command registry. It preserves other plugins'
 contributions. See the [chrome feature guide](plugin-chrome.md) for commands, status data,
 ownership and the isolated development workflow.
 
+[Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
+while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
+covers shared SDK/CLI source APIs, guarded revisions, renderer selection and pending-input
+recovery, including remote and phone views.
+
 ## Package format
 
 Start a build-free local package with `kelpi plugin init ./my-plugin --id example.my-plugin`.
@@ -129,9 +134,11 @@ Settings support string, number, or boolean defaults. Declared backend commands 
 the commands registered during activation.
 
 Supported placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
-`topbar`, `statusbar`, `workspace`, and `settings`. A view can support several placements.
-Workbench placement controls currently apply to the desktop layout. Plugin panes also render
-in phone and secondary-daemon workspaces. Native window controls, layout/focus ownership,
+`topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`, and
+`document.diff`. A view can support several placements. Document placements accept isolated
+views, not containers. Workbench chrome placement controls apply to the desktop layout.
+Plugin panes and document renderers also work in phone and secondary-daemon workspaces.
+Native window controls, layout/focus ownership,
 authentication, and recovery controls remain part of the application kernel.
 
 `startup` activates a backend when the daemon starts, with no UI required. `on-demand`

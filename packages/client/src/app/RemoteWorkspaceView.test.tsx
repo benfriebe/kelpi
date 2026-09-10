@@ -11,6 +11,7 @@ import { PluginHostUIContext } from '../plugins/host-ui';
 import { usePluginCommands } from '../plugins/commands';
 import { createFakePtyApi } from '../terminal/testing';
 import { RemoteWorkspaceView } from './RemoteWorkspaceView';
+import { contentState } from '../content/testing';
 
 afterEach(cleanup);
 
@@ -118,6 +119,12 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
         connection: { target: 'ws://remote.test/ws', status: 'idle', isConnected: false, on: () => () => {} },
         pty: createFakePtyApi(),
         commands: {
+            registerCloseGuard: () => () => {},
+            subscribeContent: (input: { paneID: string }) => {
+                calls.push(`content:${input.paneID}`);
+                return Promise.resolve({ ok: true, state: contentState({ paneID: input.paneID, text: 'Remote document', html: '<p>Remote document</p>' }) });
+            },
+            unsubscribeContent: () => Promise.resolve({ ok: true }),
             closePane: vi.fn((input: { paneID: string }) => {
                 calls.push(`close:${input.paneID}`);
                 return Promise.resolve({ ok: true });
@@ -148,18 +155,17 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
 }
 
 describe('RemoteWorkspaceView (§1.7)', () => {
-    it('renders the remote grid — a terminal for the shell pane, an honest placeholder for content', () => {
+    it('renders remote terminal and document features through their owning runtime', async () => {
         const { runtime, calls } = remoteRuntime();
         render(
             <RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />
         );
         // The activation contract: the remote daemon fans PTY bytes by what we report.
         expect(calls).toContain(`activate:${WS}`);
-        // The shell pane mounts a real terminal host; the markdown pane says what it is not.
         expect(document.querySelector('[data-pane-id]')).toBeTruthy();
-        expect(screen.getByTestId(`remote-pane-placeholder-${NOTE}`).textContent).toContain(
-            'not supported on remote daemons yet'
-        );
+        await waitFor(() => expect(calls).toContain(`content:${NOTE}`));
+        expect(document.querySelector(`[data-document-pane="${NOTE}"]`)).toBeTruthy();
+        expect(screen.queryByTestId(`remote-pane-placeholder-${NOTE}`)).toBeNull();
     });
 
     it('routes header gestures to the REMOTE commands', () => {

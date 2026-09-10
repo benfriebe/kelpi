@@ -15,7 +15,8 @@ export interface ViewContribution {
  * remain bundled; external views use PluginView's isolated host.
  */
 export const BUNDLED_VIEWS: readonly ViewContribution[] = BUNDLED_FEATURE_DEFINITIONS;
-export const DEFAULT_SLOTS: Readonly<Partial<Record<PluginPlacement, string>>> = Object.fromEntries(BUNDLED_VIEWS.filter(view => !view.placements.includes('pane')).map(view => [view.placements[0], view.id]));
+export const DEFAULT_SLOTS: Readonly<Partial<Record<PluginPlacement, string>>> = Object.fromEntries(BUNDLED_VIEWS.flatMap(view =>
+    (view.placements.includes('pane') ? view.placements.filter(place => place.startsWith('document.')) : view.placements.slice(0, 1)).map(place => [place, view.id])));
 export function viewRegistry(plugins: readonly PluginInfo[]): readonly ViewContribution[] {
     return [...BUNDLED_VIEWS, ...plugins.filter(plugin => plugin.enabled && plugin.status !== 'failed').flatMap(plugin => [
         ...plugin.manifest.contributes.views.map(view => ({ ...view, pluginID: plugin.manifest.id })),

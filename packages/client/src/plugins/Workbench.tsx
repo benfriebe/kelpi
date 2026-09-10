@@ -31,7 +31,8 @@ interface Workbench extends WorkbenchLayout {
     chords: readonly string[];
 }
 const WorkbenchContext = createContext<Workbench | null>(null);
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings'] as const;
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff'] as const;
+const SELECTIONS_CHANGED = 'kelpi-workbench-selections';
 export function useWorkbench(): Workbench {
     const value = useContext(WorkbenchContext); if (!value) throw new Error('WorkbenchProvider is required'); return value;
 }
@@ -47,6 +48,12 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
     };
     const [selections, setSelections] = useState(read);
     useEffect(() => { setSelections(read()); }, [key]);
+    useEffect(() => {
+        const changed = (event: Event): void => { if ((event as CustomEvent).detail === key) setSelections(read()); };
+        const storage = (event: StorageEvent): void => { if (event.key === key) setSelections(read()); };
+        window.addEventListener(SELECTIONS_CHANGED, changed); window.addEventListener('storage', storage);
+        return () => { window.removeEventListener(SELECTIONS_CHANGED, changed); window.removeEventListener('storage', storage); };
+    }, [key]);
     const readTabs = (): Record<string, string> => {
         try {
             const saved: unknown = JSON.parse(localStorage.getItem(tabKey) ?? '{}');
@@ -58,7 +65,7 @@ export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
     useEffect(() => { setActiveTabs(readTabs()); }, [tabKey]);
     const views = useMemo(() => viewRegistry(plugins), [plugins]);
     return { views, selections, activeTabs, sidebars: resolveSidebarViews(views, selections),
-        select(slot, id) { setSelections(current => { const next = selectWorkbenchView(views, current, slot, id); try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* still usable for this session */ } return next; }); },
+        select(slot, id) { setSelections(current => { const next = selectWorkbenchView(views, current, slot, id); try { localStorage.setItem(key, JSON.stringify(next)); queueMicrotask(() => window.dispatchEvent(new CustomEvent(SELECTIONS_CHANGED, { detail: key }))); } catch { /* still usable for this session */ } return next; }); },
         activateTab(containerID, slotID) {
             if (!views.find(view => view.id === containerID)?.container?.slots.some(slot => slot.id === slotID)) return;
             setActiveTabs(current => { const next = { ...current, [containerID]: slotID }; try { localStorage.setItem(tabKey, JSON.stringify(next)); } catch { /* session selection still works */ } return next; });

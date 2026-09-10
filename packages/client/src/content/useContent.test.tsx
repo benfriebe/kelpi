@@ -201,9 +201,10 @@ describe('useContent lifecycle', () => {
         ]);
     });
 
-    it('re-subscribes after a reconnect, because the daemon drops the session’s subscriptions', () => {
+    it('re-subscribes after reconnect and accepts a restarted document revision', async () => {
         const h = harness();
         render(<Probe content={h.content} paneID={PANE} />);
+        await h.reply('content-subscribe', { ok: true, pane_id: PANE, state: contentState({ paneID: PANE, revision: 90, text: 'before restart' }) });
         const before = commandNames(h).filter((name) => name === 'content-subscribe').length;
 
         act(() => {
@@ -214,6 +215,8 @@ describe('useContent lifecycle', () => {
         });
 
         expect(commandNames(h).filter((name) => name === 'content-subscribe')).toHaveLength(before + 1);
+        await h.reply('content-subscribe', { ok: true, pane_id: PANE, state: contentState({ paneID: PANE, revision: 1, text: 'after restart' }) });
+        expect(probeText()).toContain('after restart');
     });
 
     it('surfaces a failed subscribe as an error the pane can render', async () => {

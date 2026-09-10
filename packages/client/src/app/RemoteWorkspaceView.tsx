@@ -1,4 +1,5 @@
 import { PluginView } from '../plugins/PluginView';
+import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 import { PluginContributionItems } from '../plugins/contributions-ui';
 import { usePluginCommands } from '../plugins/commands';
 /**
@@ -9,9 +10,8 @@ import { usePluginCommands } from '../plugins/commands';
  * for byte, with focus, splits, close, rename, zoom and divider drags routed to the remote
  * daemon's commands.
  *
- * Deliberately terminal-first: a remote CONTENT pane (markdown/diff) or WEB pane renders an
- * honest placeholder instead of a half-working body — content subscriptions and browser
- * views are deep per-daemon machinery, staged behind this view rather than faked by it.
+ * Native documents and their selected replacements use the owning runtime's content host.
+ * Browser panes still require their daemon's desktop shell.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
@@ -72,7 +72,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
         const pane = workspace.panes.find((entry) => entry.id === paneID);
         if (pane === undefined) return null;
         if (pane.type === 'plugin' && pane.plugin) return <PluginView runtime={runtime} pluginID={pane.plugin.pluginID} viewID={pane.plugin.viewID} descriptor={pane.plugin} focused={focused} paneID={paneID} workspaceID={workspaceID} visible={state.visible} />;
-        if (pane.type !== 'shell') {
+        if (isDocumentPane(pane.type) && pane.externalEditorCommand == null) return <DocumentPane runtime={runtime} workspaceID={workspaceID} paneID={paneID} kind={pane.type} focused={focused} visible={state.visible} onFocusRequest={id => runtime.focusPane(workspaceID, id)} />;
+        if (pane.type !== 'shell' && pane.externalEditorCommand == null) {
             return (
                 <div
                     className="flex h-full items-center justify-center px-4 text-center text-[12px]"

@@ -60,6 +60,67 @@ describe('native content renderer service contract', () => {
 });
 
 describe('selected providers in native content panes', () => {
+    it.each(['markdown', 'diff'] as const)('invalidates %s document revisions before refreshed source finishes rendering', async kind => {
+        const f = fixture(); f.provider.selected = true;
+        const paneID = kind === 'markdown' ? MD : DIFF;
+        await f.service.subscribe(paneID, () => {});
+        const initial = await f.service.document(paneID);
+        const pending = defer(f);
+        const source = kind === 'markdown' ? '# New source\n' : 'diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+latest\n';
+        if (kind === 'markdown') fs.writeFileSync(f.file, source);
+        else f.getDiff.mockResolvedValue(source);
+        const refreshing = f.service.refresh(paneID);
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+        const loaded = await f.service.document(paneID);
+        expect(loaded.text).toBe(source);
+        expect(loaded.revision).not.toBe(initial.revision);
+        await expect(f.service.save(paneID, { revision: initial.revision })).rejects.toThrow('DOCUMENT_CONFLICT');
+        if (kind === 'markdown') {
+            await expect(f.service.setMode(paneID, 'edit', { revision: initial.revision })).rejects.toThrow('DOCUMENT_CONFLICT');
+        }
+        pending[0]!.resolve({ html: '<p>New source</p>' });
+        await refreshing;
+        expect((await f.service.document(paneID)).text).toBe(source);
+    });
+
+    it('invalidates the previous mode revision while a selected renderer is pending', async () => {
+        const f = fixture(); f.provider.selected = true;
+        await f.service.subscribe(MD, () => {});
+        const initial = await f.service.document(MD);
+        const pending = defer(f);
+        f.service.invalidateRenderer();
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+        const editing = f.service.setMode(MD, 'edit', { revision: initial.revision });
+        await vi.waitFor(async () => expect((await f.service.document(MD)).mode).toBe('edit'));
+        const changed = await f.service.document(MD);
+        expect(changed.revision).not.toBe(initial.revision);
+        await expect(f.service.setText(MD, 'stale edit', { revision: initial.revision })).rejects.toThrow('DOCUMENT_CONFLICT');
+        pending[0]!.resolve({ html: '<p>Original</p>' });
+        await editing;
+        expect((await f.service.document(MD)).text).toBe(initial.text);
+    });
+
+    it('invalidates the dirty revision as soon as a save reaches disk, before rendering', async () => {
+        const f = fixture(); f.provider.selected = true;
+        await f.service.subscribe(MD, () => {});
+        await f.service.setMode(MD, 'edit');
+        await f.service.setText(MD, '# Saved source\n');
+        const dirty = await f.service.document(MD);
+        const pending = defer(f);
+        const saving = f.service.save(MD, { revision: dirty.revision });
+        await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+        const saved = await f.service.document(MD);
+        expect(saved).toMatchObject({ text: dirty.text, dirty: false });
+        expect(saved.revision).not.toBe(dirty.revision);
+        expect(fs.readFileSync(f.file, 'utf8')).toBe(dirty.text);
+        await expect(f.service.setText(MD, 'stale edit', { revision: dirty.revision })).rejects.toThrow('DOCUMENT_CONFLICT');
+        pending[0]!.resolve({ html: '<p>Saved source</p>' });
+        await saving;
+    });
+
     it('uses selected providers for native Markdown and Diff with authoritative pane context', async () => {
         const f = fixture(); f.provider.selected = true;
         const markdown = await f.service.subscribe(MD, state => f.seen.push(state));

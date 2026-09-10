@@ -13,6 +13,8 @@ import { inOperationScope, operationScope, type PluginOperationChannel, type Plu
 import type { BuiltinPluginService, BuiltinServiceHost } from './builtin-services.js';
 import { createFilesService } from './files-service.js';
 import { createProcessService } from './process-service.js';
+import { PluginDocuments } from './documents.js';
+import type { ContentService } from '../content/service.js';
 
 interface Installation { manifest: PluginManifest; revision: string; enabled: boolean }
 interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
@@ -22,6 +24,7 @@ interface Running {
     fail(error: Error): void;
 }
 export interface PluginServiceOptions {
+    readonly content?: ContentService;
     readonly directory?: string;
     readonly pty?: PtyManager;
     readonly term?: TerminalStateService;
@@ -49,6 +52,7 @@ function text(value: unknown, field: string): string {
 
 /** Per-daemon installation registry and supervisor. No plugin code runs on the daemon loop. */
 export class PluginService implements PluginChannel, PluginOperationChannel, BuiltinServiceHost {
+    private readonly documents: PluginDocuments;
     readonly epoch = randomUUID();
     readonly daemonID: string;
     readonly directory: string;
@@ -79,6 +83,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private readonly offStore: () => void;
 
     constructor(private readonly options: PluginServiceOptions) {
+        this.documents = new PluginDocuments(options.content, (name, data, id) => { this.emit(name, data, id); });
         this.temporary = options.directory === undefined;
         this.directory = options.directory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-plugins-'));
         this.daemonID = randomUUID();
@@ -114,6 +119,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         }
         this.offStore = options.store.subscribe(events => {
             if (this.closed) return;
+            this.documents.prune(paneID => options.store.getState().workspaces.some(workspace => workspace.panes.some(pane => pane.id === paneID)));
             const sequence = ++this.sequence;
             // Reserve ordering synchronously, but do serialization and IPC outside dispatch.
             queueMicrotask(() => { if (!this.closed) this.publish({ epoch: this.epoch, sequence, name: 'state.changed', data: serializeDomainEvents(events) }); });
@@ -327,6 +333,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (!runtime.stopping) void this.stopDependents(id);
             for (const operation of this.operations.get(id) ?? []) operation.abort();
             this.operations.delete(id);
+            this.documents.release(owner => owner.pluginID === id);
             for (const [key, lease] of this.leases) if (lease.pluginID === id) this.release(key);
             for (const [key, sub] of this.terminalSubs) if (sub.pluginID === id) this.terminalSubs.delete(key);
             child.kill('SIGKILL'); this.changed();
@@ -409,6 +416,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         return this.asset(lease.pluginID, lease.revision, relative);
     }
     private release(leaseID: string): void {
+        this.documents.release(owner => owner.lease === leaseID);
         this.leases.delete(leaseID);
         for (const operation of this.leaseOperations.get(leaseID) ?? []) operation.abort();
         this.leaseOperations.delete(leaseID);
@@ -662,9 +670,16 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             return { paneID, workspaceID };
         }
         if (method === 'views.setState') {
+            if (operationScope().signal?.aborted) throw new Error('plugin invocation cancelled');
             const paneID = text(context.paneID ?? args['paneID'], 'paneID');
             const pane = this.options.store.getState().workspaces.flatMap(workspace => [...workspace.panes, ...workspace.parkedPanes]).find(pane => pane.id === paneID);
-            if (pane?.plugin?.pluginID !== id) throw new Error('plugin does not own this pane');
+            const documentView = item.manifest.contributes.views.find(view => view.id === context.viewID && ['markdown', 'scratchpad', 'diff'].includes(pane?.type ?? '') && view.placements.includes(`document.${pane!.type}`));
+            if (documentView) {
+                const key = `${paneID}:${documentView.id}`;
+                this.writeJSON(path.join(this.directory, 'data', id, 'documents.json'), pluginObject({ ...this.storage(id, 'documents'), [key]: { stateVersion: documentView.stateVersion, state: pluginObject(args['state']) } }));
+                return { stateVersion: documentView.stateVersion };
+            }
+            if (pane?.type !== 'plugin' || pane.plugin?.pluginID !== id) throw new Error('plugin does not own this pane');
             const version = item.manifest.contributes.views.find(view => view.id === pane.plugin!.viewID)?.stateVersion;
             if (!version) throw new Error('view is no longer registered');
             this.options.store.dispatch({ type: 'set-plugin-pane-state', paneID, plugin: { ...pane.plugin, stateVersion: version, state: pluginObject(args['state']) } });
@@ -702,6 +717,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (method === 'services.list') return this.services();
         if (method === 'services.select') return this.selectService(args);
         if (method === 'services.call') return this.operation(id, lease, signal => this.callService(args, context, signal));
+        if (method.startsWith('documents.')) {
+            const input = { ...args, paneID: args['paneID'] ?? context.paneID ?? null };
+            if (method === 'documents.unwatch') { this.documents.unwatch({ pluginID: id, ...(lease ? { lease } : {}) }, args['subscription']); return null; }
+            return this.operation(id, lease, signal => method === 'documents.watch'
+                ? this.documents.watch({ pluginID: id, ...(lease ? { lease } : {}) }, input, signal)
+                : this.documents.call(method.slice('documents.'.length), input, signal));
+        }
         if (method === 'files.read' || method === 'files.write') return this.operation(id, lease, signal => this.callService({ service: 'kelpi.files', version: 1, method: method.slice(6), args }, context, signal));
         if (method === 'ui.reveal') {
             const paneID = text(args['paneID'] ?? context.paneID, 'paneID');
@@ -786,6 +808,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     run(action: string, input: JsonObject, reply: ReplyHandle, caller: Partial<PluginContext> = {}): void {
         const context: PluginContext = { ...caller, daemonID: this.daemonID };
+        if (action === 'document-watch') { this.documents.stream(String(input['paneID'] ?? ''), reply); return; }
         if (action === 'watch') {
             const anchor = this.sequence;
             const watcher = (event: PluginEvent): void => { if (!reply.closed && event.sequence > anchor) reply.send({ ok: true, event }); };
@@ -800,6 +823,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');
         if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1 };
+        if (action === 'document') return this.documents.call(text(input['method'], 'method'), pluginObject(input['args']), operationScope().signal);
         if (action === 'list') { if (this.registryError) throw new Error(this.registryError); return this.list() as unknown as JsonValue; }
         if (action === 'contributions') return this.contributions() as unknown as JsonValue;
         if (action === 'services') return this.services();
@@ -821,27 +845,53 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (action === 'settings') return this.api(id, input['key'] === undefined ? 'settings.get' : 'settings.set', input, context);
         if (action === 'attach') {
             if (!item.enabled) throw new Error('plugin is disabled');
+            const signal = operationScope().signal;
+            if (signal?.aborted) throw new Error('plugin view attachment cancelled');
             for (const [leaseID, lease] of this.leases) if (lease.expires < Date.now()) this.release(leaseID);
             if (this.leases.size >= 128) throw new Error('too many attached plugin views');
             const viewID = text(input['viewID'], 'viewID');
-            if (!item.manifest.contributes.views.some(view => view.id === viewID)) throw new Error('plugin view is not registered');
+            const view = item.manifest.contributes.views.find(view => view.id === viewID);
+            if (!view) throw new Error('plugin view is not registered');
             const paneID = typeof input['paneID'] === 'string' ? input['paneID'] : undefined;
-            if (paneID) {
-                const pane = this.options.store.getState().workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID);
-                if (pane?.plugin?.pluginID !== id || pane.plugin.viewID !== viewID) throw new Error('plugin view does not own this pane');
-            }
+            const owningPane = () => {
+                if (!paneID) return undefined;
+                const workspace = this.options.store.getState().workspaces.find(workspace => workspace.panes.some(pane => pane.id === paneID));
+                const pane = workspace?.panes.find(pane => pane.id === paneID);
+                const documentView = pane && ['markdown', 'scratchpad', 'diff'].includes(pane.type) && view.placements.includes(`document.${pane.type}`);
+                if (!pane || (!documentView && (pane.type !== 'plugin' || pane.plugin?.pluginID !== id || pane.plugin.viewID !== viewID))) throw new Error('plugin view does not own this pane');
+                return { pane, workspaceID: workspace!.id };
+            };
+            owningPane();
             const generation = this.generations.get(id);
-            await this.activate(id);
-            if (this.closed || !this.item(id).enabled || this.item(id).revision !== item.revision || generation !== this.generations.get(id)) throw new Error('plugin changed while attaching; retry');
+            let cancelActivation: (() => void) | undefined;
+            try {
+                await Promise.race([
+                    this.activate(id),
+                    ...(signal ? [new Promise<never>((_resolve, reject) => {
+                        cancelActivation = () => reject(new Error('plugin view attachment cancelled'));
+                        if (signal.aborted) cancelActivation(); else signal.addEventListener('abort', cancelActivation, { once: true });
+                    })] : [])
+                ]);
+            } finally {
+                if (cancelActivation) signal?.removeEventListener('abort', cancelActivation);
+            }
+            if (signal?.aborted) throw new Error('plugin view attachment cancelled');
+            if (this.closed || this.changing.has(id) || !this.installations.get(id)?.enabled || this.installations.get(id)?.revision !== item.revision || generation !== this.generations.get(id)) throw new Error('plugin changed while attaching; retry');
             if (this.leases.size >= 128) throw new Error('too many attached plugin views');
-            const view = item.manifest.contributes.views.find(view => view.id === viewID)!;
+            // Activation can yield while the pane closes, moves, or is reused for another
+            // feature. Resolve its current owner again before granting view access.
+            const owned = owningPane(), pane = owned?.pane;
             const htmlPath = this.asset(id, item.revision, view.entry);
             if (fs.statSync(htmlPath).size > 256 * 1024) throw new Error('view HTML exceeds 256 KiB');
             const html = fs.readFileSync(htmlPath, 'utf8');
+            const savedDocument = pane && pane.type !== 'plugin' ? this.storage(id, 'documents')[`${pane.id}:${viewID}`] : undefined;
+            if (savedDocument !== undefined && (!pluginRecord(savedDocument) || !Number.isSafeInteger(savedDocument['stateVersion']) || Number(savedDocument['stateVersion']) < 1)) throw new Error('invalid saved document view state');
+            const state = pane?.plugin?.state ?? (pluginRecord(savedDocument) ? pluginObject(savedDocument['state']) : {});
+            const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedDocument) ? Number(savedDocument['stateVersion']) : view.stateVersion);
+            const workspaceID = owned?.workspaceID ?? input['workspaceID'] ?? context.workspaceID;
             const lease = randomUUID();
-            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...((input['workspaceID'] ?? context.workspaceID) ? { workspaceID: String(input['workspaceID'] ?? context.workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000 });
-            const pane = paneID ? this.options.store.getState().workspaces.flatMap(workspace => workspace.panes).find(pane => pane.id === paneID) : undefined;
-            return { lease, html, entry: view.entry, state: pane?.plugin?.state ?? {}, stateVersion: pane?.plugin?.stateVersion ?? view.stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
+            this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000 });
+            return { lease, html, entry: view.entry, state, stateVersion, context: this.leases.get(lease)!.context as unknown as JsonValue, revision: item.revision };
         }
         if (action === 'enable' || action === 'disable' || action === 'reload' || action === 'remove') return this.mutate(async () => {
             const item = this.item(id);
@@ -872,6 +922,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         for (const dependent of order) await this.stopPlugin(dependent, false);
     }
     private async stopPlugin(id: string, cascade = true): Promise<void> {
+        this.documents.release(owner => owner.pluginID === id);
         if (cascade) await this.stopDependents(id);
         this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
         this.publishContributions(id, { context: {}, items: {} });
@@ -889,6 +940,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (this.running.get(id) === runtime) this.running.delete(id);
     }
     async dispose(): Promise<void> {
+        this.documents.release(() => true);
         if (this.closed) return; this.closed = true; this.offStore(); this.offPty?.(); this.terminalSubs.clear(); for (const reply of this.watcherReplies) reply.close(); this.watcherReplies.clear(); this.watchers.clear(); this.serviceListeners.clear();
         for (const lease of this.leases.keys()) this.release(lease);
         for (const operations of this.operations.values()) for (const operation of operations) operation.abort();

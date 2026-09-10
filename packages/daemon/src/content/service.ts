@@ -221,6 +221,18 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             : null;
 
     const documentRevision = (entry: Entry): string => `${entry.incarnation}:${entry.revision}`;
+    /** Invalidate retained edits as soon as state changes, before a renderer can yield. */
+    const advanceRevision = (entry: Entry): void => {
+        entry.revision += 1;
+        entry.updatedAt = now();
+    };
+    const setSource = (entry: Entry, content: string, loaded: boolean, error: string | null): void => {
+        if (entry.content === content && entry.loaded === loaded && entry.error === error) return;
+        entry.content = content;
+        entry.loaded = loaded;
+        entry.error = error;
+        advanceRevision(entry);
+    };
     const checkDocument = (entry: Entry, guard?: DocumentGuard): void => {
         assertLive(entry);
         if (!guard) return;
@@ -248,8 +260,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
     });
 
     const emit = (entry: Entry): void => {
-        entry.revision += 1;
-        entry.updatedAt = now();
+        advanceRevision(entry);
         if (entry.listeners.size === 0) return;
         const state = snapshot(entry);
         for (const listener of [...entry.listeners]) {
@@ -347,6 +358,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             entry.content = text;
             entry.loaded = true;
             entry.error = null;
+            // The editor already cleared dirty; expose that transition before rendering.
+            advanceRevision(entry);
             renderAndEmit(entry);
             releaseIfIdle(entry);
         },
@@ -402,9 +415,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             }
         }
         if (!current()) return false;
-        entry.content = content;
-        entry.loaded = loaded;
-        entry.error = error;
+        setSource(entry, content, loaded, error);
         editor.seed(entry.paneID, targetOf(entry), entry.content);
         return true;
     };
@@ -434,18 +445,14 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         try {
             const text = await git.getDiff(entry.repoPath, entry.filePath, { signal: run.signal });
             if (run.signal.aborted) return false;
-            entry.content = text;
-            entry.loaded = true;
-            entry.error = null;
+            setSource(entry, text, true, null);
             return true;
         } catch (error) {
             // An abort surfaces here as a rejection (killed child / `AbortError`); it is the
             // caller's own doing, never something to paint into the pane.
             if (run.signal.aborted) return false;
             const message = messageOf(error);
-            entry.content = gitFailureText(entry.repoPath, message);
-            entry.loaded = false;
-            entry.error = message;
+            setSource(entry, gitFailureText(entry.repoPath, message), false, message);
             return true;
         } finally {
             if (entry.diffRun === run) entry.diffRun = null;
@@ -454,9 +461,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     const loadScratchpad = (entry: Entry, pane: Pane): void => {
         const buffered = editor.text(entry.paneID);
-        entry.content = buffered ?? pane.scratchpadContent ?? '';
-        entry.loaded = true;
-        entry.error = null;
+        setSource(entry, buffered ?? pane.scratchpadContent ?? '', true, null);
         if (buffered === undefined) editor.seed(entry.paneID, targetOf(entry), entry.content);
     };
 
@@ -537,6 +542,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             entry.repoPath = pane.workingDirectory;
             changed = true;
         }
+        if (changed) advanceRevision(entry);
         return changed;
     };
 
@@ -775,6 +781,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save markdown');
             }
             entry.mode = mode;
+            advanceRevision(entry);
             store.dispatch({
                 type: 'set-markdown-editing',
                 workspaceID: entry.workspaceID,
@@ -811,8 +818,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             // other clients follow (port note 7), and the typist already has the text.
             editor.set(paneID, targetOf(entry), text);
             // A second editor must observe this write before autosave emits its notification.
-            entry.revision += 1;
-            entry.updatedAt = now();
+            advanceRevision(entry);
             return snapshot(entry);
         },
 

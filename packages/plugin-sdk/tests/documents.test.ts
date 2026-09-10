@@ -60,6 +60,22 @@ describe('public document API over the authoritative daemon buffer', () => {
         await expect(api.documents.save(SCRATCH, initial.revision)).rejects.toMatchObject({ code: 'DOCUMENT_CONFLICT' });
     });
 
+    it.each(['before editing', 'before saving'])('persists scratchpad edits when parked %s', async when => {
+        const { api, state } = await fixture();
+        const park = () => state.dispatch({ type: 'park-pane', workspaceID: W1, paneID: SCRATCH });
+        if (when === 'before editing') park();
+        const initial = await api.documents.get(SCRATCH);
+        const edited = await api.documents.edit(SCRATCH, 'keep these parked notes', initial.revision);
+        if (when === 'before saving') park();
+        const saved = await api.documents.save(SCRATCH, edited.revision);
+        expect(saved).toMatchObject({ text: 'keep these parked notes', dirty: false });
+        expect(state.state().workspaces[0]!.parkedPanes.find(pane => pane.id === SCRATCH)?.scratchpadContent).toBe(saved.text);
+
+        // Saving without a watch releases the edit buffer; reopening must read persisted text.
+        state.dispatch({ type: 'unpark-pane', workspaceID: W1, paneID: SCRATCH });
+        expect(await api.documents.get(SCRATCH)).toMatchObject({ text: saved.text, dirty: false });
+    });
+
     it('detects native buffer changes and invalidates tokens after the content entry is released', async () => {
         const { api, content } = await fixture();
         const attached = await api.documents.watch(SCRATCH);

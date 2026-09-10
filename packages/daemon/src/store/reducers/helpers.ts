@@ -69,7 +69,7 @@ export function mutatePane(
     return { ...workspace, parkedPanes };
 }
 
-/** Visible lane only (scratchpad content, labels, markdown flags). */
+/** Visible lane only (labels, markdown flags). */
 export function mutateVisiblePane(
     workspace: WorkspaceState,
     paneID: string,

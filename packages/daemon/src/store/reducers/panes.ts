@@ -52,6 +52,7 @@ import {
     clearSearchIfTargets,
     findParkedPane,
     findVisiblePane,
+    mutatePane,
     mutateVisiblePane,
     newPane,
     popFocusFromHistory,
@@ -737,7 +738,7 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
             );
         case 'scratchpad-content-changed':
             return updateWorkspace(state, action.workspaceID, (workspace) =>
-                mutateVisiblePane(workspace, action.paneID, (pane) => ({
+                mutatePane(workspace, action.paneID, (pane) => ({
                     ...pane,
                     scratchpadContent: action.content
                 }))

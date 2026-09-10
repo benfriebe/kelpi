@@ -139,11 +139,15 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('four MiB of live ANSI and Unicode output converges without display corruption', await completed(local, sequence) && await sameScreen(local, 'FOUR-MIB-COMPLETE'));
         await inside(local.paneID, `(() => { const t = terminalLab.terminal; globalThis.__terminalScenarioWrite = t.write; t.write = function(data, done) { return globalThis.__terminalScenarioWrite.call(this, data, () => setTimeout(done, 80)); }; })()`);
         let resynced = false;
+        const beforeResyncs = wire.resyncs;
         try {
             sequence = await control(local, { op: 'burst', bytes: 4 * 1024 * 1024, delayMs: 1, label: 'BACKPRESSURE-COMPLETE' });
-            resynced = await completed(local, sequence) && await check(local.paneID, `document.body.dataset.resync === 'flow-control-drop'`);
+            // The host retains live bytes until the parser consumes them, including device
+            // queries. Observe the native reset before removing the artificial parser delay;
+            // its renderer callback correctly waits behind those retained live bytes.
+            resynced = await completed(local, sequence) && await d.settle(() => wire.resyncs > beforeResyncs);
         } finally { await inside(local.paneID, `terminalLab.terminal.write = globalThis.__terminalScenarioWrite; delete globalThis.__terminalScenarioWrite; true`).catch(() => {}); }
-        const recovered = resynced && await sameScreen(local, 'BACKPRESSURE-COMPLETE') && alive(local);
+        const recovered = resynced && await check(local.paneID, `document.body.dataset.resync === 'flow-control-drop'`) && await sameScreen(local, 'BACKPRESSURE-COMPLETE') && alive(local);
         rec.check('a slow real renderer triggers native resync and recovers an exact screen', recovered);
         await diagnostics(recovered ? 'recovered-resync' : 'stalled-resync');
         await choose(local.paneID, 'kelpi.shell'); if (!await native(local.paneID)) throw new Error('Native terminal failed to resume before burst');

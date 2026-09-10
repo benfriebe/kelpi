@@ -56,6 +56,32 @@ the automated transport and daemon suites cover window size policy. Terminal Lab
 Kitty mode metadata but does not implement the bundled renderer's custom Kitty encoder.
 Packaged-release validation and the complete UI audit were not repeated for this phase.
 
+### Terminal PR review fixes (2026-09-10)
+
+The follow-up fixes queued device-query loss during replay, Windows/Linux empty-selection
+Ctrl+C interruption, attachment focus stealing, empty-message fallback, and phone modifier
+character encoding. SDK dispatch support stays in #149; pane integration stays in #150;
+the example and expanded live scenario stay in #151. Work was isolated from the existing
+checkouts, and the retained-query change also received an independent review.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete workspace checks | All typechecks pass; 7,233 root tests and 868 shell tests pass (**8,101 total**). One existing optional database test is skipped. | [Check log](../out/plugin-terminal-review-validation/check.log) |
+| Terminal Lab live regressions | **58/58** checks pass in a private background instance. New checks exercise queued queries across resize, delayed attachment caret ownership, empty error recovery, four phone modifier combinations, and exactly one Ctrl+C byte through a browser emulating Linux. | [Results](../out/plugin-terminal-review-validation/live-terminal-final/results.json), [Build hashes](../out/plugin-terminal-review-validation/live-terminal-final/build-manifest.json) |
+| Existing native regressions | **41/41** checks pass: deferred pane focus 7/7, Copy/Paste 14/14, and platform shortcuts 20/20. | [Combined results](../out/plugin-terminal-review-validation/live/results.json) |
+
+The first live run passed every new regression but exposed a timing assumption in the old
+slow-parser test: it waited for the renderer's resync callback before removing its parser
+delay, although that callback now follows retained live data. The scenario now observes the
+daemon's resync notice first, restores parser speed, and then requires the renderer notice
+and exact screen convergence. The final Terminal Lab run passes all checks. Initial results
+remain in the combined-run artifact above. Across the final Terminal Lab and native runs,
+**99 distinct live checks** pass against the same product changes.
+
+The ignored Ghostty build was copied from the existing terminal worktree only after all
+32 tracked vendor files matched the isolated checkout. Phone and Linux coverage uses browser
+emulation; physical-device, packaged-release, and full UI-audit checks were not repeated.
+
 ## Window chrome features (2026-09-10)
 
 This phase was implemented and validated in `out/worktrees/plugin-chrome`, based on

@@ -130,8 +130,11 @@ boolean; other actions return null or undefined. Renderer authors implement thes
 in their own input component; the opaque frame cannot expose its DOM to the parent.
 Where supported, the host starts a promised clipboard write before the selection reply
 arrives. An empty selection preserves the current clipboard. Browser clipboard permissions
-and focus requirements still apply. The phone bar clears armed modifiers when its target
-renderer changes.
+and focus requirements still apply. With the default Windows/Linux bindings, an empty
+Ctrl+C selection returns the key to the same live, focused renderer for interruption;
+empty Cmd+C stays a quiet copy attempt. Synthetic keys dispatched for a host action bypass
+the SDK shortcut relay so the renderer can encode them once. The phone bar clears armed
+modifiers when its target renderer changes.
 
 ## Ordering, bounds and ownership
 
@@ -139,14 +142,18 @@ Renderer frames use a dedicated acknowledged port feed rather than generic plugi
 At most one frame callback is in flight. A replay replaces the screen and parser state;
 never append a snapshot to an old partial escape sequence. Replay/resync advances the
 delivery generation, so an old callback's acknowledgement cannot grant credit for newer
-bytes. The window's existing PTY transport retains daemon replay, flow control and size
+bytes. Queued live output and its preceding replay/mode checkpoints finish before the
+newest snapshot: screen state cannot recreate unanswered device queries. Snapshot-only
+suffixes coalesce, and retained old generations receive no current output credit.
+The window's existing PTY transport retains daemon replay, flow control and size
 ownership. A slow view cannot stall the process or another window.
 The latest mode metadata follows each replay, including a mode update that was still queued
 when the old screen was superseded. Apply it to the emulator's supported input modes after
 resetting the parser and screen.
 
-The host bounds live backlog at 1 MiB, individual replay at 16 MiB and queued deliveries at
-2048. A callback that does not consume its frame within 30 seconds fails the view. Bounds
+The host bounds live backlog at 1 MiB, individual replay at 16 MiB, total retained replay
+data at 32 MiB, and queued deliveries at 2048. A callback that does not consume its frame
+within 30 seconds fails the view. Bounds
 fail the entire renderer and restore native rendering; they never discard individual byte
 fragments and continue with a corrupted parser. Host actions are limited to 16 pending
 requests. These are view-lifetime limits, separate from generic plugin RPC/event limits.

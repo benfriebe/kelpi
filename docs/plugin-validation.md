@@ -14,6 +14,28 @@ The [original audit](plugin-extensibility-audit.md) distinguishes the longer-ter
 from this implementation. This version supports explicitly trusted local plugins; it does
 not implement a marketplace or an untrusted execution runtime.
 
+## Plugin packages, recovery and authoring (2026-09-10)
+
+Implemented in `out/worktrees/plugin-packaging` from main `7ba942a`, with packaging,
+revision recovery and authoring workflow as three dependent PR layers. The
+[development guide](plugin-development.md) covers external projects, templates, private
+instances, live editing and Settings version selection.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Complete checks | All typechecks; **8,357 tests** pass (7,489 root + 868 shell). One existing optional database test skipped. | [Summary](audit/plugin-authoring/summary.json) |
+| Independent packaging layer | All typechecks and **828** tests pass at `cafd51d`. Includes packing/installing the actual SDK into an external browser/Node-only consumer. | [Layer checks](audit/plugin-authoring/lower-layer-validation.json) |
+| Independent recovery layer | All typechecks and **933** tests pass at `ed8d56c`, including identity-bound dev installs, cancellation, activation/storage recovery, interrupted commits and saved-state guards. | [Layer checks](audit/plugin-authoring/lower-layer-validation.json) |
+| Final live scenarios | **66/66 hidden and 66/66 onscreen**: external authoring 21, extensions 23, workbench 22 per run. | [Hidden](audit/plugin-authoring/hidden/results.json), [Onscreen](audit/plugin-authoring/onscreen/results.json) |
+| Build and visual review | All **13** recorded hashes match both runs and current outputs. Pane, version picker and blocked rollback screenshots inspected. | [Hashes](audit/plugin-authoring/onscreen/build-manifest.json), [Visual review](audit/plugin-authoring/README.md) |
+
+The authoring project is created outside the repository. Updates, failed edits and rollback
+preserve plugin notes, native renderer preferences, the original shell PID/variable and the
+same native browser page with unsaved DOM state. Lower layers resolve workspace modules
+only within their own clean exports. The [evidence](audit/plugin-authoring/README.md) records
+the checked behaviors and limits; full UI audit, packaged smoke and physical-device checks
+were not repeated in this phase.
+
 ## Browser pane replacement (2026-09-10)
 
 Implemented in `out/worktrees/plugin-browser` from merged main `24b19c9`. The review layers

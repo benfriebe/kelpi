@@ -83,6 +83,9 @@ recovery, including remote and phone views.
 
 ## Package format
 
+The [development guide](plugin-development.md) covers templates, live editing, portable
+artifacts and version controls in Settings using a private instance.
+
 Start a build-free local package with `kelpi plugin init ./my-plugin --id example.my-plugin`.
 This command works offline without a daemon and refuses to overwrite an existing directory.
 
@@ -186,6 +189,8 @@ the selected revision and refreshes attached views. `kelpi plugin reload <id>` r
 installed copy; it does not copy edits from the original directory. Plugin data and settings
 survive reinstall and removal.
 Reinstalling the same healthy revision is a no-op; use `reload` when you want to restart it.
+For continuous development, `kelpi plugin dev <directory> --trust` validates and applies
+stable changed revisions. It keeps watching after invalid edits or failed updates.
 
 ## Updates and recovery
 
@@ -571,6 +576,10 @@ upgraded custom database. Rolling back the default installation returns to the o
 as it stood at the copy, not the changes subsequently made in generation 2.
 
 ## Validation
+
+`node scripts/scenario.mjs plugin-authoring` creates a plugin outside the repository and
+checks deterministic packaging, live valid/invalid edits, failed activation recovery,
+Settings rollback, saved-state compatibility and native session preservation.
 
 `pnpm check` covers protocol validation, real child activation/failure/recovery, restart and
 parked-pane persistence, shared command cancellation, client binding, CLI streams, iframe

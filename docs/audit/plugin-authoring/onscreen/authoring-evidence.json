@@ -1,0 +1,247 @@
+{
+  "first": "dc0768bdb5432701e430b1507173c7489d677eb3e6e70e6bb955fcf39895bf13",
+  "updated": "e570c07cdcc2686d1433336dd146275094d531d816d8713e25642003bdc6b262",
+  "history": [
+    {
+      "manifest": {
+        "id": "example.external-author",
+        "name": "External author",
+        "version": "2.0.0",
+        "apiVersion": 1,
+        "trust": "full",
+        "activation": "startup",
+        "backend": "backend.mjs",
+        "contributes": {
+          "views": [
+            {
+              "id": "example.external-author.home",
+              "title": "External author",
+              "entry": "ui/index.html",
+              "placements": [
+                "pane",
+                "sidebar.primary",
+                "sidebar.secondary"
+              ],
+              "stateVersion": 2
+            },
+            {
+              "id": "example.external-author.browser",
+              "title": "Author browser",
+              "entry": "ui/browser.html",
+              "placements": [
+                "browser"
+              ],
+              "stateVersion": 1
+            }
+          ],
+          "commands": [
+            {
+              "id": "example.external-author.summary",
+              "title": "Version"
+            }
+          ],
+          "settings": {}
+        }
+      },
+      "revision": "bdae6e7e3cd3e8f887614d73e6028f6c77cecdb2505aed0935a71d541fe241f6",
+      "installedAt": 1789045898783,
+      "selected": true,
+      "problem": null
+    },
+    {
+      "manifest": {
+        "id": "example.external-author",
+        "name": "External author",
+        "version": "1.0.0",
+        "apiVersion": 1,
+        "trust": "full",
+        "activation": "startup",
+        "backend": "backend.mjs",
+        "contributes": {
+          "views": [
+            {
+              "id": "example.external-author.home",
+              "title": "External author",
+              "entry": "ui/index.html",
+              "placements": [
+                "pane",
+                "sidebar.primary",
+                "sidebar.secondary"
+              ],
+              "stateVersion": 1
+            },
+            {
+              "id": "example.external-author.browser",
+              "title": "Author browser",
+              "entry": "ui/browser.html",
+              "placements": [
+                "browser"
+              ],
+              "stateVersion": 1
+            }
+          ],
+          "commands": [
+            {
+              "id": "example.external-author.summary",
+              "title": "Version"
+            }
+          ],
+          "settings": {}
+        }
+      },
+      "revision": "dc0768bdb5432701e430b1507173c7489d677eb3e6e70e6bb955fcf39895bf13",
+      "installedAt": 1789045889816,
+      "selected": false,
+      "problem": "revision cannot read saved pane 6A78FA99-47DC-4891-9B2F-929A17980023: example.external-author.home state version 2 requires version 2 or newer (target 1)"
+    },
+    {
+      "manifest": {
+        "id": "example.external-author",
+        "name": "External author",
+        "version": "1.3.0",
+        "apiVersion": 1,
+        "trust": "full",
+        "activation": "startup",
+        "backend": "backend.mjs",
+        "contributes": {
+          "views": [
+            {
+              "id": "example.external-author.home",
+              "title": "External author",
+              "entry": "ui/index.html",
+              "placements": [
+                "pane",
+                "sidebar.primary",
+                "sidebar.secondary"
+              ],
+              "stateVersion": 1
+            },
+            {
+              "id": "example.external-author.browser",
+              "title": "Author browser",
+              "entry": "ui/browser.html",
+              "placements": [
+                "browser"
+              ],
+              "stateVersion": 1
+            }
+          ],
+          "commands": [
+            {
+              "id": "example.external-author.summary",
+              "title": "Version"
+            }
+          ],
+          "settings": {}
+        }
+      },
+      "revision": "7aac9989338012602c580e67c9ecc9d4658a6ee9f05159d5cbd3a383c5c9458f",
+      "installedAt": 1789045897790,
+      "selected": false,
+      "problem": "revision cannot read saved pane 6A78FA99-47DC-4891-9B2F-929A17980023: example.external-author.home state version 2 requires version 2 or newer (target 1)"
+    },
+    {
+      "manifest": {
+        "id": "example.external-author",
+        "name": "External author",
+        "version": "1.1.0",
+        "apiVersion": 1,
+        "trust": "full",
+        "activation": "startup",
+        "backend": "backend.mjs",
+        "contributes": {
+          "views": [
+            {
+              "id": "example.external-author.home",
+              "title": "External author",
+              "entry": "ui/index.html",
+              "placements": [
+                "pane",
+                "sidebar.primary",
+                "sidebar.secondary"
+              ],
+              "stateVersion": 1
+            },
+            {
+              "id": "example.external-author.browser",
+              "title": "Author browser",
+              "entry": "ui/browser.html",
+              "placements": [
+                "browser"
+              ],
+              "stateVersion": 1
+            }
+          ],
+          "commands": [
+            {
+              "id": "example.external-author.summary",
+              "title": "Version"
+            }
+          ],
+          "settings": {}
+        }
+      },
+      "revision": "e570c07cdcc2686d1433336dd146275094d531d816d8713e25642003bdc6b262",
+      "installedAt": 1789045892657,
+      "selected": false,
+      "problem": "revision cannot read saved pane 6A78FA99-47DC-4891-9B2F-929A17980023: example.external-author.home state version 2 requires version 2 or newer (target 1)"
+    }
+  ],
+  "events": [
+    {
+      "type": "watching",
+      "path": "/private/var/folders/5x/k7q6qbys3p35wb8dcn0dlfmh0000gn/T/kelpi-external-author-3XDueD/project"
+    },
+    {
+      "type": "applying",
+      "pluginID": "example.external-author",
+      "revision": "dc0768bdb5432701e430b1507173c7489d677eb3e6e70e6bb955fcf39895bf13"
+    },
+    {
+      "type": "applied",
+      "pluginID": "example.external-author",
+      "revision": "dc0768bdb5432701e430b1507173c7489d677eb3e6e70e6bb955fcf39895bf13"
+    },
+    {
+      "type": "applying",
+      "pluginID": "example.external-author",
+      "revision": "e570c07cdcc2686d1433336dd146275094d531d816d8713e25642003bdc6b262"
+    },
+    {
+      "type": "applied",
+      "pluginID": "example.external-author",
+      "revision": "e570c07cdcc2686d1433336dd146275094d531d816d8713e25642003bdc6b262"
+    },
+    {
+      "type": "invalid",
+      "error": "Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+    },
+    {
+      "type": "applying",
+      "pluginID": "example.external-author",
+      "revision": "199c06b6cc91167a82dac6267586018ac90851971886fb71d49b41b6febad12e"
+    },
+    {
+      "type": "failed",
+      "pluginID": "example.external-author",
+      "revision": "199c06b6cc91167a82dac6267586018ac90851971886fb71d49b41b6febad12e",
+      "error": "revision change failed; previous revision restored: Intentional author update failure"
+    },
+    {
+      "type": "applying",
+      "pluginID": "example.external-author",
+      "revision": "7aac9989338012602c580e67c9ecc9d4658a6ee9f05159d5cbd3a383c5c9458f"
+    },
+    {
+      "type": "applied",
+      "pluginID": "example.external-author",
+      "revision": "7aac9989338012602c580e67c9ecc9d4658a6ee9f05159d5cbd3a383c5c9458f"
+    },
+    {
+      "type": "stopped",
+      "signal": "SIGINT"
+    }
+  ],
+  "terminalPID": 28040,
+  "nativePage": "0da43a77-9994-43a8-bd9d-efc7646d2f4a"
+}

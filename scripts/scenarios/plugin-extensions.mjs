@@ -91,11 +91,14 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
         rec.check('the CLI calls the same provider with explicit bundled delegation', JSON.parse(await cli.ok(['plugin', 'service-call', 'kelpi.files', 'read', '--args', JSON.stringify({ path: fixture })])) === '[Workbench Lab]\nPrivate scenario file');
 
         await settings();
+        await page.eval("document.querySelector('[aria-label=\"Shortcut for Open Lab dashboard\"]').scrollIntoView({block:'center'})");
         await page.click('[aria-label="Shortcut for Open Lab dashboard"]');
+        if (!await d.settleDom(page, "document.activeElement === document.querySelector('[aria-label=\"Shortcut for Open Lab dashboard\"]')")) throw new Error('Shortcut input did not receive focus');
         // CDP on macOS needs the edit command as well as the key to select the existing text.
         await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, modifiers: 4, commands: ['selectAll'] });
         await page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, modifiers: 4 });
         await page.insertText('super+alt+k');
+        await page.eval("document.querySelector('[data-testid=\"plugin-shortcuts-example.workbench-lab\"] form:first-of-type button[type=\"submit\"]').scrollIntoView({block:'center'})");
         await page.click(`[data-testid="plugin-shortcuts-${lab}"] form:first-of-type button[type="submit"]`);
         const shortcutSaved = await d.settleDom(page, `document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]')?.value === 'alt+super+k' && document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]')?.getAttribute('aria-invalid') === 'false' && Object.keys(localStorage).filter(key => key.startsWith('kelpi.plugin-shortcuts.')).some(key => JSON.parse(localStorage.getItem(key))['${lab}.open'] === 'alt+super+k')`);
         rec.check('saving the edited shortcut persists its override without a validation error', shortcutSaved, await page.eval(`JSON.stringify((() => { const input = document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]'); return { value: input.value, error: input.closest('form').querySelector('[role="alert"]')?.textContent ?? null, shortcuts: Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith('kelpi.plugin-shortcuts.')).map(key => [key, localStorage.getItem(key)])) }; })())`));

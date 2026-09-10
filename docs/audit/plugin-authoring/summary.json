@@ -1,0 +1,27 @@
+{
+  "base": "7ba942a3d7ec07bc7a3b8dc93f9abcb61a8d6413",
+  "branch": "feature/plugin-authoring-workflow",
+  "typechecks": "passed",
+  "rootTestsPassed": 7489,
+  "shellTestsPassed": 868,
+  "optionalTestsSkipped": 1,
+  "lowerLayerTests": {
+    "packaging": 828,
+    "recovery": 933
+  },
+  "liveChecks": {
+    "hidden": 66,
+    "onscreen": 66
+  },
+  "matchingArtifacts": 13,
+  "changedSourceHashes": 29,
+  "visualReview": [
+    "external pane alongside native terminal/browser",
+    "retained version selection",
+    "blocked state downgrade explanation"
+  ],
+  "scopeLimits": [
+    "Full UI audit and packaged application smoke not rerun",
+    "Physical-device validation not rerun"
+  ]
+}

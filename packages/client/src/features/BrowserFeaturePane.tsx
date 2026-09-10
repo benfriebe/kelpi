@@ -8,8 +8,11 @@ import { getCurrentPlugins, pluginRequest } from '../plugins/client';
 import { resolveSlot, slotViews } from '../plugins/registry';
 import { tokens } from '../chrome/tokens';
 import { useBrowserShortcuts } from '../app/browser-shortcuts';
-import { createWebPaneCommands } from '../webpane/commands';
+import { isOkReply } from '../connection';
+import { createWebPaneCommands, type WebPaneCommands } from '../webpane/commands';
+import { replyBatch } from '../webpane/hooks';
 import { readShellWindowID } from '../webpane/shell-window';
+import { batchDestinations, parseBatchMessage, type WebBatchSession } from '../webpane/state';
 import type { WebPaneProps } from '../webpane/WebPane';
 import { bindBrowserFeature } from './browsers';
 import { BROWSER_FEATURE } from './definitions';
@@ -75,6 +78,40 @@ function useBrowserSnapshot(runtime: KelpiRuntime, paneID: string): { value: Bro
         ? { value: current.value, error: current.error } : { value: null, error: null };
 }
 
+/** Remote hosts need the full pickup session; the browser snapshot only carries its counts. */
+function useBrowserBatch(runtime: KelpiRuntime, paneID: string, commands: WebPaneCommands, enabled: boolean): WebBatchSession | null {
+    const [current, setCurrent] = useState<{
+        runtime: KelpiRuntime; paneID: string; commands: WebPaneCommands; value: WebBatchSession | null;
+    } | null>(null);
+    useEffect(() => {
+        if (!enabled) { setCurrent(null); return; }
+        let stopped = false, generation = 0;
+        const publish = (value: WebBatchSession | null): void => {
+            if (!stopped) setCurrent({ runtime, paneID, commands, value });
+        };
+        const refresh = (): void => {
+            const requested = ++generation;
+            if (!runtime.connection.isConnected) return;
+            void commands.batchState(paneID).then(reply => {
+                if (!stopped && requested === generation && runtime.connection.isConnected && isOkReply(reply)) publish(replyBatch(reply));
+            }).catch(() => {});
+        };
+        // A newer broadcast (including cancellation) supersedes an in-flight seed read.
+        const offMessage = runtime.connection.on('message', message => {
+            const batch = parseBatchMessage(message);
+            if (batch?.paneID !== paneID) return;
+            generation++; publish(batch.batch);
+        });
+        const offStatus = runtime.connection.on('status', status => {
+            if (status === 'connected') refresh();
+            else { generation++; publish(null); }
+        });
+        refresh();
+        return () => { stopped = true; generation++; offMessage(); offStatus(); };
+    }, [runtime, paneID, commands, enabled]);
+    return enabled && current?.runtime === runtime && current.paneID === paneID && current.commands === commands ? current.value : null;
+}
+
 /** A plugin replaces browser chrome; the selected native host retains every page and session. */
 export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement {
     const { runtime, paneID, workspaceID } = props;
@@ -84,6 +121,9 @@ export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement
     const web = pane ? workspace?.webPanes[paneID] : undefined;
     const state = snapshot.value?.paneID === paneID && snapshot.value.workspaceID === workspaceID ? snapshot.value : null;
     const commands = useMemo(() => props.commands ?? createWebPaneCommands(runtime.commands), [runtime.commands, props.commands]);
+    const batch = useBrowserBatch(runtime, paneID, commands, props.batch === undefined && pane !== undefined);
+    const destinations = useMemo(() => props.batchDestinations ?? batchDestinations(workspace?.panes ?? [], paneID),
+        [props.batchDestinations, workspace?.panes, paneID]);
     const [localFindToken, setFindToken] = useState(0), [localURLToken, setURLToken] = useState(0);
     const focusAddress = useCallback((): void => setURLToken(value => value + 1), []);
     const showFind = useCallback((): void => setFindToken(value => value + 1), []);
@@ -104,6 +144,8 @@ export function BrowserFeaturePane(props: BrowserFeaturePaneProps): ReactElement
         loading: props.loading ?? active?.loading ?? false,
         canGoBack: props.canGoBack ?? active?.canGoBack ?? false,
         canGoForward: props.canGoForward ?? active?.canGoForward ?? false,
+        batch: props.batch === undefined ? batch : props.batch,
+        batchDestinations: destinations,
         favourites: props.favourites ?? state?.favourites.map(item => ({ ...item, created_at: item.createdAt })) ?? [],
         findToken: (props.findToken ?? 0) + localFindToken, focusURLToken: (props.focusURLToken ?? 0) + localURLToken,
         onFocusRequest: props.onFocusRequest ?? (id => runtime.focusPane(workspaceID, id)) };

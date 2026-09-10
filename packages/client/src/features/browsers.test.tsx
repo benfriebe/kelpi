@@ -58,8 +58,9 @@ function fixture(name = 'browser.test') {
     return {runtime,daemon,store,sync,raw,connection,listeners,emit,snapshot};
 }
 function pending<T>() { let resolve!: (value:T) => void; const promise = new Promise<T>(accept => { resolve = accept; }); return {promise,resolve}; }
+// Match the primary App's supplied batch state; remote pickup is covered in browsers.batch.test.tsx.
 const draw = (h: ReturnType<typeof fixture>, props: Partial<Parameters<typeof BrowserFeaturePane>[0]> = {}) =>
-    <BrowserFeaturePane runtime={h.runtime} workspaceID={W} paneID={P} visible focused embedded {...props} />;
+    <BrowserFeaturePane runtime={h.runtime} workspaceID={W} paneID={P} visible focused embedded batch={null} {...props} />;
 const choose = (choice = 'sample.browser.chrome', index = 0) => fireEvent.change(screen.getAllByLabelText('Browser renderer')[index]!,{target:{value:choice}});
 beforeEach(() => {
     localStorage.clear(); history.replaceState({}, '', '/?shellWindow=local-window');

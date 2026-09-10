@@ -40,13 +40,33 @@ function harness(presentation: TerminalPresentation = { focused: true, visible: 
             sockets.last().emitBinary(encodePtyFrame(type, PANE, typeof data === 'string' ? encoder.encode(data) : data)!);
         },
         credits(): number[] { return wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.ack).map(frame => decodeAckPayload(frame!.payload)!); },
-        async drain() {
+        async drain(consume?: (frame: FrameMessage['frame']) => void | Promise<void>) {
             await tick();
             let last = -1;
             while (frames().length > last && frames().length) {
-                last = frames().length; ack(); await tick();
+                last = frames().length;
+                if (consume) await consume(lastFrame().frame);
+                ack(); await tick();
             }
         },
+    };
+}
+
+/** A real parser makes missing queries and missing pre-query cursor state observable. */
+async function parserConsumer(h: ReturnType<typeof harness>) {
+    // Only the parser runs here; xterm's module probes canvas support on import.
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const { Terminal } = await import('@xterm/xterm').finally(() => canvas.mockRestore());
+    const parser = new Terminal({ cols: 120, rows: 40 });
+    disposals.push(() => parser.dispose());
+    parser.onData(data => {
+        const frame = h.lastFrame();
+        h.scope.receive({ type: 'terminal-input', session: frame.session, generation: frame.generation,
+            sequence: frame.sequence, response: true, direct: true, data: encoder.encode(data) });
+    });
+    return async (frame: FrameMessage['frame']): Promise<void> => {
+        if (frame.type === 'replay') parser.reset();
+        if (frame.type === 'replay' || frame.type === 'output') await new Promise<void>(resolve => parser.write(frame.data, resolve));
     };
 }
 
@@ -79,7 +99,7 @@ describe('selected terminal renderer transport', () => {
         expect(h.pty.stats(PANE)?.unacked).toBe(0);
     });
 
-    it('waits for an obsolete callback without giving its ack credit against a newer replay', async () => {
+    it('drains obsolete live callbacks without giving their acks credit against a newer replay', async () => {
         const h = harness(); h.attach();
         h.output(PTY_FRAME_TYPES.replay, 'old');
         await tick(); h.ack(); await tick();
@@ -91,11 +111,14 @@ describe('selected terminal renderer transport', () => {
         expect(h.lastFrame()).toBe(old);
         h.ack(old); await tick();
         expect(h.credits()).toEqual([]);
-        expect(h.lastFrame().generation).toBeGreaterThan(old.generation);
+        expect(h.lastFrame().generation).toBe(old.generation);
+        const pending = h.lastFrame().frame;
+        expect(pending.type).toBe('output');
+        expect(decoder.decode((pending as { data: Uint8Array }).data)).toBe('superseded tail');
         h.ack(old); // A duplicate cannot consume the new frame.
         await h.drain();
         expect(h.credits()).toEqual([5]);
-        expect(h.frames().filter(message => message.frame.type === 'output')).toEqual([]);
+        expect(h.frames().filter(message => message.frame.type === 'output')).toHaveLength(1);
         expect(h.frames().some(message => message.frame.type === 'resync')).toBe(true);
     });
 
@@ -207,6 +230,69 @@ describe('selected terminal renderer transport', () => {
         expect(h.fail).not.toHaveBeenCalled();
     });
 
+    it.each([true, false])('answers a queued device query before applying a newer replay (visible=%s)', async visible => {
+        vi.useRealTimers();
+        const h = harness({ focused: visible, visible }), consume = await parserConsumer(h);
+        h.attach(); h.output(PTY_FRAME_TYPES.replay, 'screen'); await h.drain(consume);
+        h.output(PTY_FRAME_TYPES.output, 'text'); await tick();
+        const held = h.lastFrame(); expect(held.frame.type).toBe('output');
+        // The ordinary output callback is in flight, so the query waits in the host queue.
+        // Its DSR reply must describe the screen before the replacement, not an empty or
+        // newer screen, and consuming these superseded bytes must not credit that replay.
+        h.output(PTY_FRAME_TYPES.output, '\x1b[6n');
+        h.output(PTY_FRAME_TYPES.replay, 'fresh');
+        await h.drain(consume);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;11R']);
+        expect(h.credits()).toEqual([6, 5]);
+        expect(h.pty.stats(PANE)?.unacked).toBe(0);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('preserves split queued queries through repeated resyncs while coalescing unused snapshots', async () => {
+        vi.useRealTimers();
+        const h = harness(), consume = await parserConsumer(h);
+        h.attach(); h.output(PTY_FRAME_TYPES.replay, 'screen'); await h.drain(consume);
+        h.output(PTY_FRAME_TYPES.output, 'text'); await tick();
+        for (const part of ['\x1b[', '6', 'n']) h.output(PTY_FRAME_TYPES.output, part);
+        for (const replay of ['obsolete snapshot', 'fresh']) {
+            h.sockets.last().emit({ type: 'pty-resync', paneID: PANE, reason: 'flow-control-drop' });
+            h.output(PTY_FRAME_TYPES.replay, replay);
+        }
+        await h.drain(consume);
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[1;11R']);
+        expect(h.frames().filter(message => message.frame.type === 'replay').map(message => decoder.decode((message.frame as { data: Uint8Array }).data))).toEqual(['screen', 'fresh']);
+        expect(h.credits()).toEqual([6, 5]);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('retains queued replay and mode checkpoints needed to answer live queries across generations', async () => {
+        vi.useRealTimers();
+        const h = harness(), consume = await parserConsumer(h);
+        h.attach();
+        const modes = { applicationCursorKeys: true, bracketedPaste: true, mouseTracking: 'drag', mouseFormat: 'sgr', kittyKeyboardFlags: 7 };
+        for (const replay of ['\x1b[3;5H', '\x1b[7;9H']) {
+            h.output(PTY_FRAME_TYPES.replay, replay);
+            h.sockets.last().emit({ type: 'pane-modes', paneID: PANE, modes });
+            h.output(PTY_FRAME_TYPES.output, '\x1b[6n');
+        }
+        h.output(PTY_FRAME_TYPES.replay, 'fresh');
+        await h.drain(async frame => {
+            if (frame.type === 'replay' && decoder.decode(frame.data) !== 'fresh') {
+                const delivery = h.lastFrame();
+                h.scope.receive({ type: 'terminal-input', session: delivery.session, generation: delivery.generation,
+                    sequence: delivery.sequence, response: true, direct: true, data: encoder.encode('obsolete replay reply') });
+            }
+            await consume(frame);
+        });
+        expect(h.wireFrames().filter(frame => frame?.type === PTY_FRAME_TYPES.inputDirect).map(frame => decoder.decode(frame!.payload))).toEqual(['\x1b[3;5R', '\x1b[7;9R']);
+        const delivered = h.frames().map(message => message.frame);
+        expect(delivered[0]?.type).toBe('presentation');
+        for (const [index, frame] of delivered.entries()) if (frame.type === 'output') expect(delivered[index - 1]).toEqual({ type: 'modes', modes });
+        expect(h.credits()).toEqual([5]);
+        expect(h.pty.stats(PANE)?.unacked).toBe(0);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
     it('rejects replies from a superseded replay callback while preserving its completion barrier', async () => {
         const h = harness({ focused: false, visible: false }); h.attach();
         h.output(PTY_FRAME_TYPES.replay, 'obsolete'); await tick(); h.ack(); await tick();
@@ -284,6 +370,22 @@ describe('selected terminal renderer transport', () => {
         for (let index = 0; index < TERMINAL_SCOPE_LIMITS.frames; index += 1) h.output(PTY_FRAME_TYPES.output, 'x');
         expect(h.fail).toHaveBeenCalledOnce();
         expect(h.scope.attached).toBe(false);
+    });
+
+    it('bounds replay checkpoints retained behind a stalled callback', async () => {
+        const h = harness(); h.attach(); await tick();
+        const held = h.lastFrame();
+        const replay = new Uint8Array(TERMINAL_SCOPE_LIMITS.replayBytes);
+        for (let index = 0; index < 2; index++) {
+            h.output(PTY_FRAME_TYPES.replay, replay);
+            h.output(PTY_FRAME_TYPES.output, '\x1b[6n');
+        }
+        expect(h.fail).not.toHaveBeenCalled();
+        expect(h.lastFrame()).toBe(held);
+        h.output(PTY_FRAME_TYPES.replay, new Uint8Array(1));
+        expect(h.fail).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'Terminal renderer replay backlog exceeded its limit.' }));
+        expect(h.scope.attached).toBe(false);
+        expect(h.credits()).toEqual([]);
     });
 
     it('restores the latest modes after replay even when supersession discards their queued update', async () => {

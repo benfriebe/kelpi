@@ -66,8 +66,9 @@ const encoder = new TextEncoder();
 
 /**
  * A selected terminal view's one renderer attachment, over its existing window connection.
- * The view receives one frame at a time. Supersession retains that in-flight callback until
- * it acknowledges, then sends the newest replay; old generations never earn new PTY credit.
+ * The view receives one frame at a time. Supersession lets in-flight and queued output
+ * finish before the newest replay: snapshots cannot reproduce a program's device queries.
+ * Old generations never earn new PTY credit, including their retained parser checkpoints.
  * Bounds fail the whole view so its bundled fallback can attach to an authoritative screen.
  */
 export function createTerminalScope(options: TerminalScopeOptions): TerminalScope {
@@ -130,11 +131,20 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
         if (frame.type === 'replay' && frame.data.byteLength > TERMINAL_SCOPE_LIMITS.replayBytes) {
             fail(new Error('Terminal replay exceeds the renderer limit.')); return;
         }
-        if (frame.type === 'presentation') queue = queue.filter(entry => entry.frame.type !== 'presentation');
+        if (frame.type === 'presentation') {
+            const lastOutput = queue.findLastIndex(entry => entry.frame.type === 'output');
+            queue = queue.filter((entry, index) => index <= lastOutput || entry.frame.type !== 'presentation');
+        }
         queue.push({ generation, frame, credit });
-        // At most one old replay may be in flight while one new authoritative replay waits.
+        // Bound the whole replay backlog to two maximum-size snapshots, even when live bytes
+        // depend on several smaller checkpoints. Coalesce checkpoints without live successors.
         // Live output has its own tighter bound and is never truncated or spliced.
-        const liveBytes = [...queue, ...(inFlight ? [inFlight] : [])].reduce((total, entry) => total + (entry.frame.type === 'output' ? bytes(entry.frame) : 0), 0);
+        const pending = [...queue, ...(inFlight ? [inFlight] : [])];
+        const liveBytes = pending.reduce((total, entry) => total + (entry.frame.type === 'output' ? bytes(entry.frame) : 0), 0);
+        const replayBytes = pending.reduce((total, entry) => total + (entry.frame.type === 'replay' ? bytes(entry.frame) : 0), 0);
+        if (replayBytes > 2 * TERMINAL_SCOPE_LIMITS.replayBytes) {
+            fail(new Error('Terminal renderer replay backlog exceeded its limit.')); return;
+        }
         if (queue.length + (inFlight ? 1 : 0) > TERMINAL_SCOPE_LIMITS.frames || liveBytes > TERMINAL_SCOPE_LIMITS.liveBytes) {
             fail(new Error('Terminal renderer output backlog exceeded its limit.')); return;
         }
@@ -142,8 +152,12 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
     };
     const supersede = (): void => {
         generation += 1;
-        queue = [];
-        // Keep inFlight and its timeout. Its late ack releases the port, with zero credit.
+        // A live device query must still reach the parser, including when it spans frames.
+        // Preserve its preceding replay/modes too: they establish the parser state used to
+        // answer it. Only the suffix without live successors can be replaced by a snapshot.
+        const lastOutput = queue.findLastIndex(entry => entry.frame.type === 'output');
+        queue = queue.slice(0, lastOutput + 1);
+        // Keep inFlight and its timeout. All retained generations complete with zero credit.
         enqueue({ type: 'presentation', value: presentation });
     };
     const write = (data: Uint8Array | string, direct = false, response = false): void => {

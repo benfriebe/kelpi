@@ -1,5 +1,9 @@
 # Plugin authoring validation
 
+This is the pre-review baseline at `fbfe204`, recorded on 2026-09-10. Follow-up fixes
+and their validation are recorded in
+[Package and recovery review fixes](../../plugin-validation.md#package-and-recovery-review-fixes-2026-09-11).
+
 Validated on macOS arm64 with Node 24.15.0 and pnpm 10.28.1, in the isolated
 `out/worktrees/plugin-packaging` checkout based on main `7ba942a`.
 
@@ -15,7 +19,7 @@ include commands, commits, source hashes and module link targets.
 | Recovery layer `ed8d56c` | All typechecks and **933** selected tests pass independently. |
 | Hidden private instance | **66/66**: authoring 21, extensions 23, workbench 22. |
 | Visible private instance | **66/66** on the same build; all three authoring screenshots inspected. |
-| Build verification | All **13** recorded artifact/fixture hashes match both runs and current outputs. |
+| Build verification | All **13** recorded artifact/fixture hashes matched both baseline runs and the outputs used for those runs. |
 
 [Hidden results](hidden/results.json), [visible results](onscreen/results.json),
 [build hashes](onscreen/build-manifest.json), [authoring evidence](onscreen/authoring-evidence.json),

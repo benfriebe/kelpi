@@ -17,7 +17,8 @@ not implement a marketplace or an untrusted execution runtime.
 ## Plugin packages, recovery and authoring (2026-09-10)
 
 Implemented in `out/worktrees/plugin-packaging` from main `7ba942a`, with packaging,
-revision recovery and authoring workflow as three dependent PR layers. The
+revision recovery and authoring workflow as three dependent PR layers. The table below
+records the pre-review baseline at `fbfe204`. The
 [development guide](plugin-development.md) covers external projects, templates, private
 instances, live editing and Settings version selection.
 
@@ -27,7 +28,7 @@ instances, live editing and Settings version selection.
 | Independent packaging layer | All typechecks and **828** tests pass at `cafd51d`. Includes packing/installing the actual SDK into an external browser/Node-only consumer. | [Layer checks](audit/plugin-authoring/lower-layer-validation.json) |
 | Independent recovery layer | All typechecks and **933** tests pass at `ed8d56c`, including identity-bound dev installs, cancellation, activation/storage recovery, interrupted commits and saved-state guards. | [Layer checks](audit/plugin-authoring/lower-layer-validation.json) |
 | Final live scenarios | **66/66 hidden and 66/66 onscreen**: external authoring 21, extensions 23, workbench 22 per run. | [Hidden](audit/plugin-authoring/hidden/results.json), [Onscreen](audit/plugin-authoring/onscreen/results.json) |
-| Build and visual review | All **13** recorded hashes match both runs and current outputs. Pane, version picker and blocked rollback screenshots inspected. | [Hashes](audit/plugin-authoring/onscreen/build-manifest.json), [Visual review](audit/plugin-authoring/README.md) |
+| Build and visual review | All **13** recorded hashes matched both baseline runs and their build outputs. Pane, version picker and blocked rollback screenshots inspected. | [Hashes](audit/plugin-authoring/onscreen/build-manifest.json), [Visual review](audit/plugin-authoring/README.md) |
 
 The authoring project is created outside the repository. Updates, failed edits and rollback
 preserve plugin notes, native renderer preferences, the original shell PID/variable and the
@@ -35,6 +36,32 @@ same native browser page with unsaved DOM state. Lower layers resolve workspace 
 only within their own clean exports. The [evidence](audit/plugin-authoring/README.md) records
 the checked behaviors and limits; full UI audit, packaged smoke and physical-device checks
 were not repeated in this phase.
+
+### Package and recovery review fixes (2026-09-11)
+
+PR #160 now bounds complete package paths to 512 UTF-8 bytes during directory and archive
+validation, so multibyte paths cannot pass validation and then fail macOS extraction.
+PR #161 checks retained native renderer state against stable pane types and declared
+placements. Closing a document's external editor no longer blocks compatible updates,
+reinstalls or rollback; removal of its supported placement and older state versions remain
+rejected. Live renderer attachment still requires the appropriate current pane mode.
+
+Twelve new automated regression cases cover path boundaries, rejection before extraction,
+active and parked document panes, retained state, and incompatible revisions. The combined
+`pnpm check` passes all workspace typechecks and **8,369 tests** (7,501 root + 868 shell),
+with one existing optional database test skipped. The Settings compatibility test now
+controls the response and distinguishes loading from a completed compatibility rejection.
+
+`node scripts/scenario.mjs plugin-authoring plugin-extensions plugin-workbench --window hidden`
+rebuilt the daemon, CLI, client and shell and passed **70/70 live checks**: authoring 25,
+extensions 23 and workbench 22. The added checks save terminal renderer state inside a real
+external editor, close it before development updates and Settings rollback, and reopen it
+with the saved state intact. The original shell PID and native browser page survive these
+transitions. All **14** recorded build and fixture hashes match the tested files.
+
+Validation used private daemon state and Electron profiles. This run verifies behavior;
+hidden-window screenshots are not visual evidence. The earlier screenshot record remains
+the explicitly labeled pre-review baseline.
 
 ## Browser pane replacement (2026-09-10)
 

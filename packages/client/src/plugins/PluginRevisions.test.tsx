@@ -122,10 +122,17 @@ describe('retained plugin versions in Settings', () => {
         await waitFor(() => expect(row(CURRENT)?.textContent).toContain('Current'));
         await act(async () => old.resolve(reply([])));
         expect(row(CURRENT).textContent).toContain('Current');
-        h.read.mockResolvedValue(reply(retained.map(entry => ({ ...entry, problem: entry.revision === OLD ? 'Required dependency is disabled.' : entry.problem }))));
+        const compatibility = deferred<CommandReply>(), reason = 'Required dependency is disabled.';
+        expect(chooseOld().disabled).toBe(false);
+        h.read.mockReturnValueOnce(compatibility.promise);
         act(() => h.changed());
-        await waitFor(() => expect(chooseOld().disabled).toBe(true));
-        expect(screen.getByText('Required dependency is disabled.')).toBeTruthy();
+        expect(screen.getByText('Loading version history…')).toBeTruthy();
+        expect(chooseOld().disabled).toBe(true);
+        expect(screen.queryByText(reason)).toBeNull();
+        await act(async () => compatibility.resolve(reply(retained.map(entry => ({ ...entry, problem: entry.revision === OLD ? reason : entry.problem })))));
+        expect(await screen.findByText(reason)).toBeTruthy();
+        expect(screen.queryByText('Loading version history…')).toBeNull();
+        expect(chooseOld().disabled).toBe(true);
     });
 
     it.each(['runtime', 'plugin', 'revision', 'instance'] as const)('retires a pending history read when the %s changes', async change => {

@@ -10,7 +10,7 @@ import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
 
 export const covers = ['packages/core/src/plugin-package/', 'packages/cli/src/commands/plugin', 'packages/daemon/src/plugins/', 'packages/client/src/plugins/PluginRevisions', 'packages/client/src/plugins/PluginsTab', 'packages/plugin-sdk/'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const pluginID = 'example.external-author', viewID = pluginID + '.home', browserViewID = pluginID + '.browser';
+const pluginID = 'example.external-author', viewID = pluginID + '.home', browserViewID = pluginID + '.browser', terminalViewID = pluginID + '.terminal';
 const quote = JSON.stringify;
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 const frame = paneID => '[data-testid="plugin-view-' + paneID + '"] iframe';
@@ -29,7 +29,32 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
     }, { ceilingMs: 15_000 });
     const current = async () => (await json(['plugin', 'list', '--json'])).find(item => item.manifest.id === pluginID);
     const manifestPath = path.join(source, 'kelpi.plugin.json');
-    let dev, native, workspace, paneID, terminal, browserPaneID, manifest, pid;
+    let dev, native, workspace, paneID, terminal, browserPaneID, editorPaneID, manifest, pid;
+    const editorRoot = path.join(external, 'editor-process'), editorFile = path.join(external, 'document.md');
+    const editorProfiles = new Map();
+    const editorState = () => { try { return JSON.parse(fs.readFileSync(path.join(editorRoot, 'state.json'), 'utf8')); } catch { return null; } };
+    const chooseTerminal = async view => {
+        const selector = '[data-terminal-pane="' + editorPaneID + '"] select[aria-label="Terminal renderer"]';
+        if (!await d.settleDom(page, 'document.querySelector(' + quote(selector) + ')')) throw new Error('External-editor renderer selector is missing.');
+        await page.eval('(() => { const select = document.querySelector(' + quote(selector) + '); select.value = ' + quote(view) + '; select.dispatchEvent(new Event("change", {bubbles:true})); })()');
+    };
+    const openEditor = async version => {
+        const previousPID = editorState()?.pid;
+        fs.rmSync(path.join(editorRoot, 'command.json'), { force: true });
+        const button = '[data-testid="open-external-editor-' + editorPaneID + '"]';
+        if (!await d.settleDom(page, 'document.querySelector(' + quote(button) + ')')) throw new Error('External-editor control is missing.');
+        await page.click(button);
+        if (!await d.settle(() => editorState()?.pid > 0 && editorState()?.pid !== previousPID)) throw new Error('External-editor process did not start.');
+        await chooseTerminal(terminalViewID);
+        if (!await ready(editorPaneID, version)) throw new Error('External-editor renderer did not attach.');
+        return editorState().pid;
+    };
+    const closeEditor = async () => {
+        await chooseTerminal('kelpi.shell');
+        const sequence = (editorState()?.sequence ?? 0) + 1;
+        fs.writeFileSync(path.join(editorRoot, 'command.json'), JSON.stringify({ op: 'exit', sequence }));
+        if (!await d.settleDom(page, 'document.querySelector(\'[data-document-pane="' + editorPaneID + '"]\') && !document.querySelector(\'[data-terminal-pane="' + editorPaneID + '"]\')')) throw new Error('External editor did not return to the document.');
+    };
     let devOutput = '', devErrors = '';
     const events = () => devOutput.split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line));
     const stopDev = async () => {
@@ -63,6 +88,15 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
             'document.body.dataset.version = ' + quote(version) + ';',
             'document.body.dataset.ready = "true";',
         ].join('\n'));
+        fs.writeFileSync(path.join(source, 'ui', 'terminal.js'), [
+            'const api = globalThis.kelpi; await api.ready;',
+            'document.body.dataset.version = ' + quote(version) + ';',
+            'globalThis.session = await api.terminal.attach({cols:80, rows:24, onFrame(frame) {',
+            ' if (frame.type === "replay") document.getElementById("output").textContent = "";',
+            ' if (frame.type === "replay" || frame.type === "output") document.getElementById("output").textContent += new TextDecoder().decode(frame.data);',
+            '}});',
+            'document.body.dataset.ready = "true";',
+        ].join('\n'));
     };
     const retained = async label => {
         const panes = await json(['pane', 'list', '--workspace', workspace.workspace_id, '--json']);
@@ -84,8 +118,10 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         manifest.activation = 'startup';
         manifest.contributes.commands = [{ id: pluginID + '.summary', title: 'Version' }];
         manifest.contributes.views.push({ id: browserViewID, title: 'Author browser', entry: 'ui/browser.html', placements: ['browser'], stateVersion: 1 });
+        manifest.contributes.views.push({ id: terminalViewID, title: 'Author terminal', entry: 'ui/terminal.html', placements: ['terminal'], stateVersion: 1 });
         fs.writeFileSync(path.join(source, 'ui', 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><style>body{font:14px system-ui;background:#15262b;color:#d9eceb;padding:18px}textarea{display:block;width:90%;height:110px;margin:14px 0}button{padding:6px 12px}</style></head><body><h2>External author</h2><p>Version <span id="version"></span></p><textarea id="notes" aria-label="Saved plugin note"></textarea><button id="save">Save note</button><p id="status"></p><script type="module" src="./app.js"></script></body></html>');
         fs.writeFileSync(path.join(source, 'ui', 'browser.html'), '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#14272c;color:#d9eceb;font:12px system-ui}header{height:28px;padding:4px;box-sizing:border-box}#page{height:calc(100% - 28px)}</style></head><body><header>External browser renderer</header><div id="page"></div><script type="module" src="./browser.js"></script></body></html>');
+        fs.writeFileSync(path.join(source, 'ui', 'terminal.html'), '<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="output"></pre><script type="module" src="./terminal.js"></script></body></html>');
         writeVersion('1.0.0');
         const validated = await json(['plugin', 'validate', source, '--json']);
         const packed = await json(['plugin', 'pack', source, '--out', archive, '--json']);
@@ -118,6 +154,24 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         rec.check('the custom view saves edits through the injected SDK', await d.settle(async () => inside(paneID, 'document.getElementById("status").textContent === "Saved" && kelpi.state.note === "Edited plugin note"')));
         await inside(browserPaneID, 'kelpi.setState({nativePreference: "keep"})');
         await rec.shot(page, '01-external-plugin');
+
+        // A document retains its terminal renderer preference after its external editor exits.
+        // Keeping that dormant state must not block the unchanged package or later revisions.
+        const editorCommand = path.join(external, 'editor');
+        fs.writeFileSync(editorCommand, '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(path.join(repoRoot, 'scripts/fixtures/plugin-terminal.cjs')) + ' ' + shellQuote(editorRoot) + ' "$@"\n', { mode: 0o755 });
+        for (const profile of ['.zshenv', '.bash_profile', '.profile']) {
+            const file = path.join(sandbox.home, profile);
+            editorProfiles.set(file, fs.existsSync(file) ? fs.readFileSync(file) : null);
+            fs.appendFileSync(file, '\nexport EDITOR=' + shellQuote(editorCommand) + '\nexport VISUAL=' + shellQuote(editorCommand) + '\n');
+        }
+        fs.writeFileSync(editorFile, '# Document retained after its editor closes\n');
+        await cli.ok(['open', editorFile], { paneID: terminal });
+        if (!await d.settle(async () => { editorPaneID = (await json(['pane', 'list', '--workspace', workspace.workspace_id, '--json'])).find(pane => pane.type === 'markdown')?.id; return !!editorPaneID; })) throw new Error('External-editor document did not open.');
+        const editorPID = await openEditor('1.0.0');
+        await inside(editorPaneID, 'kelpi.setState({terminalPreference: "keep after editor closes"})');
+        rec.check('an attached terminal renderer saves state on the document hosting its live external editor', await d.settle(async () => inside(editorPaneID, 'kelpi.state.terminalPreference === "keep after editor closes" && document.getElementById("output").textContent.includes(' + quote('PID ' + editorPID) + ')')));
+        await closeEditor();
+        rec.check('leaving external-editor mode preserves the native document before plugin development resumes', (await json(['document', 'get', editorPaneID])).text === fs.readFileSync(editorFile, 'utf8'));
 
         dev = spawn(process.execPath, [path.join(repoRoot, 'packages/cli/dist/kelpi.js'), 'plugin', 'dev', source, '--trust'], {
             cwd: external, env: { PATH: sandbox.env.PATH, HOME: sandbox.home, KELPI_SOCKET: 'tcp:127.0.0.1:' + sandbox.controlPort, KELPI_REQUIRE_SOCKET: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -159,6 +213,10 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         await retained('rollback retains the same live native sessions');
         await page.send('Page.reload');
         rec.check('window reload reconnects to the selected retained revision', await ready(paneID, '1.0.0') && await ready(browserPaneID, '1.0.0'));
+        await openEditor('1.0.0');
+        rec.check('terminal renderer state survives compatible updates and rollback while the document is outside editor mode', await inside(editorPaneID, 'kelpi.state.terminalPreference === "keep after editor closes"'));
+        await closeEditor();
+        await retained('reopening the saved editor preference preserves the original shell and browser sessions');
 
         writeVersion('2.0.0', { stateVersion: 2 });
         await json(['plugin', 'install', source, '--trust']);
@@ -179,8 +237,8 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         await rec.shot(page, '03-blocked-state-rollback');
         await page.click('[data-testid="settings-close"]');
         await retained('refused state rollback leaves the native sessions intact');
-        fs.writeFileSync(path.join(rec.outDir, 'authoring-evidence.json'), JSON.stringify({ first: packed.revision, updated, history, events: events(), terminalPID: pid, nativePage: native.identity }, null, 2) + '\n');
-        const files = ['packages/cli/dist/kelpi.js', 'packages/daemon/dist/kelpid.js', 'packages/daemon/dist/runner.mjs', 'packages/shell/dist/main.js', 'packages/client/dist/index.html', 'scripts/scenarios/plugin-authoring.mjs', 'scripts/fixtures/plugin-browser.mjs',
+        fs.writeFileSync(path.join(rec.outDir, 'authoring-evidence.json'), JSON.stringify({ first: packed.revision, updated, history, events: events(), terminalPID: pid, nativePage: native.identity, editorPaneID }, null, 2) + '\n');
+        const files = ['packages/cli/dist/kelpi.js', 'packages/daemon/dist/kelpid.js', 'packages/daemon/dist/runner.mjs', 'packages/shell/dist/main.js', 'packages/client/dist/index.html', 'scripts/scenarios/plugin-authoring.mjs', 'scripts/fixtures/plugin-browser.mjs', 'scripts/fixtures/plugin-terminal.cjs',
             ...fs.readdirSync(path.join(repoRoot, 'packages/client/dist/assets')).filter(name => /\.(js|css)$/.test(name)).map(name => 'packages/client/dist/assets/' + name)];
         fs.writeFileSync(path.join(rec.outDir, 'build-manifest.json'), JSON.stringify(Object.fromEntries(files.map(file => [file, createHash('sha256').update(fs.readFileSync(path.join(repoRoot, file))).digest('hex')])), null, 2) + '\n');
     } finally {
@@ -189,6 +247,10 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         await fixture.close();
         if (workspace) await cli.run(['workspace', 'delete', workspace.workspace_id]);
         await cli.run(['plugin', 'remove', pluginID]);
+        for (const [file, contents] of editorProfiles) {
+            if (contents === null) fs.rmSync(file, { force: true });
+            else fs.writeFileSync(file, contents);
+        }
         fs.rmSync(external, { recursive: true, force: true });
     }
 }

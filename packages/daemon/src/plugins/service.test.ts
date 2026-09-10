@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pluginObject, type JsonObject, type PluginContext } from '@kelpi/protocol';
+import { packPlugin } from '@kelpi/core/plugin-package';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { createStore } from '../store/store.js';
 import { seededState, W1 } from '../store/testing.js';
 import { PluginService } from './service.js';
@@ -31,6 +33,31 @@ function harness(backend = `export async function activate(api) {
     return { root, source, store, command, broadcast, service, options, manifest };
 }
 describe('daemon plugin supervisor', () => {
+    it('installs a packed plugin with the same revision and preserves an active installation when validation fails', async () => {
+        const h = harness();
+        await h.service.install(h.source, true);
+        const original = h.service.list()[0]!;
+        const archive = path.join(h.root, 'board.kelpi-plugin');
+        const packed = await packPlugin(h.source, archive);
+        expect(packed.revision).toBe(original.revision);
+        await expect(h.service.install(archive, false)).rejects.toThrow('--trust');
+        fs.rmSync(h.source, { recursive: true });
+        await h.service.install(archive, true);
+        expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+        await h.service.api(id, 'storage.set', { key: 'keep', value: 42 }, { daemonID: h.service.daemonID });
+        const caller = { daemonID: h.service.daemonID, clientID: 'owner' };
+        const attached = pluginObject(await h.service.request('attach', { pluginID: id, viewID: `${id}.view` }, caller));
+        const installed = fs.readFileSync(path.join(h.options.directory, 'installed.json'), 'utf8');
+        const document = JSON.parse(gunzipSync(fs.readFileSync(archive)).toString());
+        document.files.find((file: { path: string }) => file.path === 'backend.mjs').data = Buffer.from('throw new Error("tampered")').toString('base64');
+        fs.writeFileSync(archive, gzipSync(JSON.stringify(document)));
+        await expect(h.service.install(archive, true)).rejects.toThrow('revision mismatch');
+        expect(fs.readFileSync(path.join(h.options.directory, 'installed.json'), 'utf8')).toBe(installed);
+        expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+        expect(await h.service.api(id, 'storage.get', { key: 'keep' }, caller)).toBe(42);
+        expect(await h.service.request('api', { lease: attached['lease']!, method: 'state.snapshot' }, caller)).toHaveProperty('epoch');
+        expect(await h.service.request('run', { command: `${id}.run` })).toHaveProperty('reply');
+    });
     it('pins backend and managed subprocess CLI routing and refuses the default socket without a route', async () => {
         const h = harness(`export function activate(api) { api.commands.register('${id}.run', () => ({ route: process.env.KELPI_SOCKET, required: process.env.KELPI_REQUIRE_SOCKET })); }`);
         await h.service.install(h.source, true);

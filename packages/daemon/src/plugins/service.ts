@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newUUID } from '@kelpi/core/codec';
+import { readPluginPackage } from '@kelpi/core/plugin-package';
 import type { Pane } from '@kelpi/core/layout';
 import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
@@ -239,38 +240,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     install(source: string, trusted: boolean): Promise<PluginInfo[]> { return this.mutate(() => this.installNow(source, trusted)); }
     private async installNow(source: string, trusted: boolean): Promise<PluginInfo[]> {
         if (!trusted) throw new Error('Installation executes code with your account access. Pass --trust to install this plugin.');
-        const root = await fs.promises.realpath(source);
         if (this.registryError) throw new Error(this.registryError);
-        const files: Array<{ relative: string; bytes: Buffer }> = [];
-        let total = 0;
-        const hash = createHash('sha256');
-        const scan = async (relative: string): Promise<void> => {
-            const entries = await fs.promises.readdir(path.join(root, relative), { withFileTypes: true });
-            for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-                if (entry.name === '.git' || entry.name === 'node_modules') continue;
-                const name = relative ? `${relative}/${entry.name}` : entry.name;
-                pluginAssetPath(name);
-                if (entry.isSymbolicLink()) throw new Error(`plugin packages cannot contain symlinks: ${name}`);
-                if (entry.isDirectory()) { await scan(name); continue; }
-                if (!entry.isFile()) throw new Error(`unsupported plugin file: ${name}`);
-                if (files.length >= 2000) throw new Error('plugin package has too many files');
-                const handle = await fs.promises.open(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-                let bytes: Buffer;
-                try {
-                    const stat = await handle.stat();
-                    if (!stat.isFile() || total + stat.size > 32 * 1024 * 1024) throw new Error('plugin package exceeds 32 MiB');
-                    bytes = await handle.readFile();
-                    total += bytes.length;
-                    if (total > 32 * 1024 * 1024) throw new Error('plugin package exceeds 32 MiB');
-                } finally { await handle.close(); }
-                hash.update(name).update('\0').update(String(bytes.length)).update('\0').update(bytes);
-                files.push({ relative: name, bytes });
-            }
-        };
-        await scan('');
-        const manifestFile = files.find(file => file.relative === 'kelpi.plugin.json');
-        if (!manifestFile) throw new Error('missing kelpi.plugin.json');
-        const manifest = decodePluginManifest(JSON.parse(manifestFile.bytes.toString('utf8')));
+        const { manifest, revision, files } = await readPluginPackage(source);
         if (!this.installations.has(manifest.id) && this.installations.size >= 100) throw new Error('at most 100 plugins can be installed');
         const claims = (manifest: PluginManifest): string[] => [manifest.id, ...manifest.contributes.views.map(entry => entry.id), ...manifest.contributes.commands.map(entry => entry.id),
             ...(manifest.contributes.containers ?? []).flatMap(entry => [entry.id, ...entry.slots.map(slot => slot.id)]),
@@ -281,13 +252,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const collision = claims(installed.manifest).find(id => incoming.has(id));
             if (collision) throw new Error(`plugin contribution ${collision} is already owned by ${installed.manifest.id}`);
         }
-        for (const entry of [...manifest.contributes.views.map(view => view.entry), ...(manifest.backend ? [manifest.backend] : [])]) if (!files.some(file => file.relative === entry)) throw new Error(`missing plugin entry: ${entry}`);
-        const revision = hash.digest('hex');
         const target = path.join(this.directory, 'packages', manifest.id, revision);
         if (!fs.existsSync(target)) {
             const staging = `${target}.${randomUUID()}.tmp`;
             try {
-                for (const file of files) { const destination = path.join(staging, file.relative); await fs.promises.mkdir(path.dirname(destination), { recursive: true }); await fs.promises.writeFile(destination, file.bytes); }
+                for (const file of files) { const destination = path.join(staging, file.relative); await fs.promises.mkdir(path.dirname(destination), { recursive: true }); await fs.promises.writeFile(destination, file.bytes, { flag: 'wx' }); }
                 await fs.promises.rename(staging, target);
             } finally { await fs.promises.rm(staging, { recursive: true, force: true }); }
         }

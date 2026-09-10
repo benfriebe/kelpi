@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { packPlugin, pluginPackageReport, readPluginPackage } from '@kelpi/core/plugin-package';
 import { pluginObject, type JsonObject, type JsonValue } from '@kelpi/protocol';
 import { parseFlag, popSwitch } from '../args.js';
 import { printLine, errLine, exit } from '../io.js';
@@ -8,9 +9,11 @@ import { scaffoldPlugin } from './plugin-scaffold.js';
 
 export const pluginUsage = `Usage: kelpi plugin <action>
   init <directory> --id <namespaced-id> [--name <title>]
+  validate <directory|file.kelpi-plugin> [--json]
+  pack <directory> --out <file.kelpi-plugin> [--json]
   list [--json]
   contributions [--json]
-  install <directory> --trust
+  install <directory|file.kelpi-plugin> --trust
   enable|disable|reload|remove|logs <plugin-id>
   open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
   run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
@@ -36,14 +39,23 @@ export async function handlePlugin(args: string[]): Promise<void> {
             if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
             printLine(JSON.stringify(scaffoldPlugin(directory, id, name ?? id), null, 2)); return;
         }
+        if (action === 'validate' || action === 'pack') {
+            const output = action === 'pack' ? parseFlag('--out', args) : null;
+            const source = args.shift();
+            if (!source || source.startsWith('-')) throw new Error(`${action} requires a plugin ${action === 'pack' ? 'directory' : 'directory or package file'}`);
+            if (action === 'pack' && !output) throw new Error('pack requires --out <file.kelpi-plugin>');
+            if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
+            const result = action === 'pack' ? await packPlugin(source, output!) : { path: path.resolve(source), ...pluginPackageReport(await readPluginPackage(source)) };
+            printLine(JSON.stringify(result, null, 2)); return;
+        }
         const input: Record<string, JsonValue> = {};
         const workspace = parseFlag('--workspace', args); if (workspace) input['workspaceID'] = workspace;
         const pane = parseFlag('--pane', args); if (pane) input['paneID'] = pane;
         const json = (flag: string): JsonObject => pluginObject(JSON.parse(parseFlag(flag, args) ?? '{}'));
         if (action === 'install') {
             input['trust'] = popSwitch('--trust', args);
-            const directory = args.shift(); if (!directory) throw new Error('install requires a directory');
-            input['path'] = path.resolve(directory);
+            const source = args.shift(); if (!source || source.startsWith('-')) throw new Error('install requires a directory or package file');
+            input['path'] = path.resolve(source);
         }
         else if (action === 'service-call' || action === 'service-select') {
             const version = parseFlag('--version', args) ?? '1';

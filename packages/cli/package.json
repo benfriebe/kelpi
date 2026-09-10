@@ -19,6 +19,7 @@
         "test": "vitest run --root ../.. --project node packages/cli"
     },
     "dependencies": {
+        "@kelpi/core": "workspace:*",
         "@kelpi/protocol": "workspace:*"
     },
     "devDependencies": {

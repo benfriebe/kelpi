@@ -53,6 +53,35 @@ describe('bundled plugin CLI', () => {
         expect(JSON.parse(fs.readFileSync(path.join(target, 'kelpi.plugin.json'), 'utf8')).name).toBe('My Starter');
         expect(server.requests).toHaveLength(0);
     });
+    it('validates and packs offline, then sends the artifact path to the selected daemon for installation', async () => {
+        const source = path.join(home, 'my plugin'), archive = path.join(home, 'my plugin.kelpi-plugin');
+        expect((await runCLI(['plugin', 'init', source, '--id', 'example.package'], { port: server.port, cwd: home })).code).toBe(0);
+        const validate = await runCLI(['plugin', 'validate', source, '--json'], { port: server.port, cwd: home });
+        expect(validate.code).toBe(0);
+        const report = JSON.parse(validate.stdout);
+        expect(report).toMatchObject({ format: 'directory', pluginID: 'example.package', apiVersion: 1 });
+        const packed = await runCLI(['plugin', 'pack', source, '--out', archive], { port: server.port, cwd: home });
+        expect(packed.code).toBe(0); expect(JSON.parse(packed.stdout)).toMatchObject({ path: archive, revision: report.revision });
+        fs.rmSync(source, { recursive: true });
+        const checked = await runCLI(['plugin', 'validate', archive], { port: server.port, cwd: home });
+        expect(checked.code).toBe(0); expect(JSON.parse(checked.stdout)).toMatchObject({ format: 'kelpi-plugin', revision: report.revision });
+        expect(server.requests).toHaveLength(0);
+        server.respond(() => ({ lines: [{ ok: true, result: [] }] }));
+        expect((await runCLI(['plugin', 'install', archive, '--trust'], { port: server.port, cwd: home })).code).toBe(0);
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'install', text: JSON.stringify({ trust: true, path: archive }) }]);
+    });
+    it('reports invalid package input and output without contacting a daemon', async () => {
+        const source = path.join(home, 'source');
+        expect((await runCLI(['plugin', 'init', source, '--id', 'example.package'], { port: server.port, cwd: home })).code).toBe(0);
+        for (const args of [['validate'], ['validate', source, '--trust'], ['pack', source], ['pack', source, '--out', path.join(source, 'out.kelpi-plugin')]]) {
+            const result = await runCLI(['plugin', ...args], { port: server.port, cwd: home });
+            expect(result.code).toBe(1); expect(result.stderr).toContain('kelpi plugin:');
+        }
+        fs.unlinkSync(path.join(source, 'backend.mjs'));
+        const invalid = await runCLI(['plugin', 'validate', source], { port: server.port, cwd: home });
+        expect(invalid.code).toBe(1); expect(invalid.stderr).toContain('missing plugin entry');
+        expect(server.requests).toHaveLength(0);
+    });
     it('closes its event subscription on Ctrl-C and keeps watch output as JSON lines', async () => {
         server.respond(() => ({ lines: [{ ok: true, epoch: 'E', sequence: 1, state: {} }, { ok: true, event: { epoch: 'E', sequence: 2, name: 'state.changed', data: [] } }], keepOpen: true }));
         const result = await runCLI(['plugin', 'watch'], { port: server.port, cwd: home, sigintAfterMs: 500 });

@@ -78,7 +78,7 @@ export function PluginsTab(props: { runtime: KelpiRuntime }): ReactElement {
     return <div data-testid="plugins-settings" className="flex flex-col gap-5 text-xs">
         <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void run('install', { path: source, trust: trusted }); }}>
             <strong>Install a plugin</strong>
-            <label>Directory on this daemon<input className="mt-1 w-full rounded border p-2" placeholder="/path/to/my-plugin" aria-label="Plugin directory" value={source} onChange={event => setSource(event.target.value)} /></label>
+            <label>Directory or package file on this daemon<input className="mt-1 w-full rounded border p-2" placeholder="/path/to/my-plugin.kelpi-plugin" aria-label="Plugin source" value={source} onChange={event => setSource(event.target.value)} /></label>
             <label className="flex items-start gap-2"><input type="checkbox" checked={trusted} onChange={event => setTrusted(event.target.checked)} />I trust this plugin to run code with my account’s access.</label>
             <button type="submit" className="self-start rounded border px-3 py-1" disabled={busy || !source.trim() || !trusted}>Install</button>
         </form>

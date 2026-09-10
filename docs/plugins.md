@@ -36,7 +36,7 @@ kelpi plugin run example.agent-board.open
 kelpi plugin run example.agent-board.history
 ```
 
-You can also install a local directory in Settings → Plugins. The directory must exist on
+You can also install a local directory or `.kelpi-plugin` file in Settings → Plugins. The source must exist on
 the **daemon machine**, including when using Kelpi from another device. Installation requires
 an explicit trust acknowledgement. Paired device credentials can use installed plugins;
 installing, removing, enabling, disabling, or reloading them requires the daemon owner.
@@ -85,6 +85,30 @@ recovery, including remote and phone views.
 
 Start a build-free local package with `kelpi plugin init ./my-plugin --id example.my-plugin`.
 This command works offline without a daemon and refuses to overwrite an existing directory.
+
+Validate the source and create a portable artifact without executing its code or contacting
+a daemon:
+
+```sh
+kelpi plugin validate ./my-plugin --json
+kelpi plugin pack ./my-plugin --out ./my-plugin.kelpi-plugin --json
+kelpi plugin validate ./my-plugin.kelpi-plugin --json
+kelpi plugin install ./my-plugin.kelpi-plugin --trust
+```
+
+Validation checks API compatibility, manifest declarations, entry files, portable paths,
+and package limits. The report includes the manifest version, dependencies, content revision,
+and each file's size and SHA-256 digest. Installed dependency availability is checked by the
+daemon, rather than by offline validation. Validation never runs the backend or proves that
+its code works.
+
+The version 1 `.kelpi-plugin` format is gzip-compressed JSON containing canonical, sorted
+paths and base64 file bytes. Packing the same bytes produces the same artifact, independently
+of source timestamps or directory enumeration order. The embedded revision is checked when
+reading it; this detects corruption, but is not a signature or a trust decision. Package output
+must be outside the source directory and must not already exist. Symlinks, special files,
+path traversal, case/Unicode aliases, and file/directory collisions are rejected. Both directory
+installs and artifact installs use the same validation and content identity.
 
 Ship prebuilt, self-contained JavaScript and browser assets:
 
@@ -152,6 +176,10 @@ bytes, and gives that revision a SHA-256 identity. It skips `.git` and `node_mod
 Bundle dependencies into your backend and UI before installing. Limits are 32 MiB and 2,000
 files per package, 100 installed plugins, and 100 contributions per contribution array.
 
+Reinstalling a package first installed by the older directory-only installer may assign a
+new revision to identical files because the new hash uses a portable path order. Existing
+installed packages and saved panes remain usable.
+
 To develop, edit/build the source directory and **install it again**. Installation replaces
 the active revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
 installed copy; it does not copy edits from the original directory. Plugin data and settings
@@ -163,6 +191,21 @@ collection and a version rollback UI are future work.
 The [SDK declarations](../packages/plugin-sdk/index.d.ts) are standalone and do not import
 Kelpi's internal stores or React types. The SDK package is available in this workspace as
 `@kelpi/plugin-sdk`; it has not been published to a package registry.
+
+To use it from a project outside this repository, create and install its npm artifact:
+
+```sh
+# From this checkout; choose an existing destination directory.
+npm pack ./packages/plugin-sdk --pack-destination /tmp
+# From your external plugin project.
+npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz
+```
+
+Bundle imported SDK runtime code with your browser assets before packaging. A build-free view
+can use the injected `window.kelpi` without a runtime dependency. Backend types work in a
+Node-only TypeScript project; view types additionally require the DOM library. Run
+`pnpm --filter @kelpi/plugin-sdk test:package` to pack the actual SDK, install it into a temporary
+external project, and verify both type environments and runtime imports without publishing.
 
 Backends export `activate(api)` from their entry module. Activation may return an async
 cleanup function; alternatively export `deactivate()`. Register handlers before activation

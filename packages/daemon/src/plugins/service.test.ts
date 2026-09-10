@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pluginObject, type JsonObject, type PluginContext } from '@kelpi/protocol';
 import { packPlugin } from '@kelpi/core/plugin-package';
@@ -35,8 +36,12 @@ function harness(backend = `export async function activate(api) {
 describe('daemon plugin supervisor', () => {
     it('installs a packed plugin with the same revision and preserves an active installation when validation fails', async () => {
         const h = harness();
+        const boundaryAsset = ['文'.repeat(80), '文'.repeat(80), '文'.repeat(10)].join('/');
+        const assetPath = path.join(h.source, boundaryAsset);
+        fs.mkdirSync(path.dirname(assetPath), { recursive: true }); fs.writeFileSync(assetPath, 'boundary asset');
         await h.service.install(h.source, true);
         const original = h.service.list()[0]!;
+        expect(fs.readFileSync(h.service.asset(id, original.revision, boundaryAsset), 'utf8')).toBe('boundary asset');
         const archive = path.join(h.root, 'board.kelpi-plugin');
         const packed = await packPlugin(h.source, archive);
         expect(packed.revision).toBe(original.revision);
@@ -44,6 +49,7 @@ describe('daemon plugin supervisor', () => {
         fs.rmSync(h.source, { recursive: true });
         await h.service.install(archive, true);
         expect(h.service.list()[0]).toMatchObject({ revision: original.revision, status: 'running' });
+        expect(fs.readFileSync(h.service.asset(id, original.revision, boundaryAsset), 'utf8')).toBe('boundary asset');
         await h.service.api(id, 'storage.set', { key: 'keep', value: 42 }, { daemonID: h.service.daemonID });
         const caller = { daemonID: h.service.daemonID, clientID: 'owner' };
         const attached = pluginObject(await h.service.request('attach', { pluginID: id, viewID: `${id}.view` }, caller));
@@ -57,6 +63,21 @@ describe('daemon plugin supervisor', () => {
         expect(await h.service.api(id, 'storage.get', { key: 'keep' }, caller)).toBe(42);
         expect(await h.service.request('api', { lease: attached['lease']!, method: 'state.snapshot' }, caller)).toHaveProperty('epoch');
         expect(await h.service.request('run', { command: `${id}.run` })).toHaveProperty('reply');
+    });
+    it('rejects overlong UTF-8 archive paths before creating an installation', async () => {
+        const h = harness();
+        const archive = path.join(h.root, 'overlong.kelpi-plugin');
+        const relative = Array.from({ length: 5 }, (_, i) => `${i}${'文'.repeat(80)}`).join('/') + '/asset.txt';
+        const files = [
+            { path: 'kelpi.plugin.json', bytes: Buffer.from(JSON.stringify({ id, name: 'Board', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {} })) },
+            { path: relative, bytes: Buffer.from('asset') },
+        ].sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+        const hash = createHash('sha256');
+        for (const file of files) hash.update(file.path).update('\0').update(String(file.bytes.length)).update('\0').update(file.bytes);
+        fs.writeFileSync(archive, gzipSync(JSON.stringify({ format: 'kelpi-plugin', formatVersion: 1, revision: hash.digest('hex'), files: files.map(file => ({ path: file.path, data: file.bytes.toString('base64') })) })));
+        await expect(h.service.install(archive, true)).rejects.toThrow('plugin path exceeds 512 UTF-8 bytes');
+        expect(fs.existsSync(path.join(h.options.directory, 'packages'))).toBe(false);
+        expect(h.service.list()).toEqual([]);
     });
     it('pins backend and managed subprocess CLI routing and refuses the default socket without a route', async () => {
         const h = harness(`export function activate(api) { api.commands.register('${id}.run', () => ({ route: process.env.KELPI_SOCKET, required: process.env.KELPI_REQUIRE_SOCKET })); }`);

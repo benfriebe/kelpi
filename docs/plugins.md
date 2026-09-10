@@ -175,6 +175,7 @@ The installer validates the manifest and entries, rejects symlinks, copies the e
 bytes, and gives that revision a SHA-256 identity. It skips `.git` and `node_modules`.
 Bundle dependencies into your backend and UI before installing. Limits are 32 MiB and 2,000
 files per package, 100 installed plugins, and 100 contributions per contribution array.
+Portable paths are limited to 512 UTF-8 bytes in total and 255 bytes per component.
 
 Reinstalling a package first installed by the older directory-only installer may assign a
 new revision to identical files because the new hash uses a portable path order. Existing

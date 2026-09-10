@@ -24,9 +24,12 @@ export interface PluginPackage {
 const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const excluded = (name: string): boolean => name === '.git' || name === 'node_modules';
 
-/** Reject aliases that can overwrite a different member on a supported filesystem. */
+/** Validate names for supported filesystems before hashing or extracting them. */
 function portablePath(relative: unknown): string {
     const name = pluginAssetPath(relative);
+    // Apply the protocol's 512-character budget in UTF-8 bytes too, leaving room
+    // for the installer prefix within macOS's 1024-byte filesystem path limit.
+    if (Buffer.byteLength(name) > 512) throw new Error(`plugin path exceeds 512 UTF-8 bytes: ${name}`);
     // JSON permits unpaired surrogates; Node replaces them when opening a path. Reject
     // them before hashing so distinct archive names can never address the same file.
     if (Buffer.from(name).toString('utf8') !== name || /[\x00-\x1f\x7f<>"|*]/.test(name) || name.split('/').some(part =>

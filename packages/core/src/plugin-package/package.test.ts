@@ -48,6 +48,34 @@ describe('shared plugin packaging', () => {
         expect(first.sha256).toBe(second.sha256); expect(first.revision).toBe(second.revision);
         expect(fs.readFileSync(a.archive)).toEqual(fs.readFileSync(b.archive));
     });
+    it.each([
+        ['ASCII', ['a'.repeat(170), 'b'.repeat(170), 'c'.repeat(170)].join('/')],
+        ['multibyte', ['文'.repeat(80), '文'.repeat(80), '文'.repeat(10)].join('/')],
+        ['surrogate pairs', ['😀'.repeat(60), '😀'.repeat(60), `${'😀'.repeat(7)}ab`].join('/')],
+    ] as const)('round-trips a %s path at the complete 512-byte boundary', async (_kind, relative) => {
+        const h = fixture();
+        expect(Buffer.byteLength(relative)).toBe(512);
+        const file = path.join(h.source, relative);
+        fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'boundary asset');
+        const original = await readPluginPackage(h.source);
+        expect(original.files).toContainEqual({ relative, bytes: Buffer.from('boundary asset') });
+        await packPlugin(h.source, h.archive);
+        expect(await readPluginPackage(h.archive)).toEqual({ ...original, format: 'kelpi-plugin' });
+    });
+    it('rejects a 513-byte multibyte path equally in directories and archives', async () => {
+        const h = fixture();
+        const relative = ['文'.repeat(80), '文'.repeat(80), `${'文'.repeat(10)}a`].join('/');
+        expect(relative.length).toBeLessThan(512);
+        expect(Buffer.byteLength(relative)).toBe(513);
+        expect(relative.split('/').every(part => Buffer.byteLength(part) <= 255)).toBe(true);
+        const file = path.join(h.source, relative);
+        fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'oversized path');
+        await expect(readPluginPackage(h.source)).rejects.toThrow('plugin path exceeds 512 UTF-8 bytes');
+        await expect(packPlugin(h.source, h.archive)).rejects.toThrow('plugin path exceeds 512 UTF-8 bytes');
+        expect(fs.existsSync(h.archive)).toBe(false);
+        h.writeArchive(envelope([member(relative)]));
+        await expect(readPluginPackage(h.archive)).rejects.toThrow('plugin path exceeds 512 UTF-8 bytes');
+    });
     it.each(['../escape', '/absolute', 'a/../escape', 'a\\escape', 'a//b', 'a%2fb', 'a:b', 'ui/NUL.txt', 'ui/COM¹.txt', 'ui/trailing.', 'ui/control\n', 'node_modules/a', '.git/config', '.GIT/config', 'NODE_MODULES/a', 'ui/\ud800', 'ui/\udc00', 'a'.repeat(256), 'é'.repeat(128)])('rejects unsafe or non-portable archive path %j', async name => {
         const h = fixture(); h.writeArchive(envelope([member(name)]));
         await expect(readPluginPackage(h.archive)).rejects.toThrow(/path|relative/);

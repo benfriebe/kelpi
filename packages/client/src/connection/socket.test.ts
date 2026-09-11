@@ -282,12 +282,12 @@ describe('KelpiConnection heartbeat', () => {
     // Issue #71: the deadline is wall clock but the check is a timer, and a suspended renderer
     // runs its overdue tick before the `pong` already sitting in its queue. `now` is driven by
     // hand so the clock can jump while the timer fires only once.
-    function suspendableConnection() {
+    function suspendableConnection(heartbeatIntervalMs = 1000, heartbeatTimeoutMs = 500) {
         let clock = 0;
         const errors: string[] = [];
         const { connection, harness } = connectionWith({
-            heartbeatIntervalMs: 1000,
-            heartbeatTimeoutMs: 500,
+            heartbeatIntervalMs,
+            heartbeatTimeoutMs,
             now: () => clock
         });
         connection.on('error', (error) => errors.push(error.context));
@@ -295,7 +295,7 @@ describe('KelpiConnection heartbeat', () => {
         completeHandshake(harness.last(), { snapshot: false });
         const tick = (wallClockMs: number) => {
             clock += wallClockMs;
-            vi.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(heartbeatIntervalMs);
         };
         return { harness, errors, tick };
     }
@@ -332,5 +332,38 @@ describe('KelpiConnection heartbeat', () => {
         tick(1000);
         expect(errors).toEqual(['heartbeat']);
         expect(harness.sockets).toHaveLength(2);
+    });
+
+    it('still gives up on a silent daemon while every tick fires late', () => {
+        const { harness, errors, tick } = suspendableConnection();
+
+        // A page hidden for a while gets its timers throttled to one wake-up a minute: at this
+        // scale, every one-second tick lands four seconds after the last.
+        tick(4000);
+        tick(4000);
+        expect(errors).toEqual([]);
+
+        // The renderer was running when it asked again, so this silence is the daemon's.
+        tick(4000);
+        expect(errors).toEqual(['heartbeat']);
+        expect(harness.sockets).toHaveLength(2);
+    });
+
+    it('treats a tick a few seconds late as suspended, at the shipped timings', () => {
+        const { harness, errors, tick } = suspendableConnection(15_000, 10_000);
+        const socket = harness.last();
+
+        tick(15_000);
+        const ping = socket.lastOfType('ping');
+
+        // A 20s suspension straight after the ping: not a whole tick missed, but the pong can
+        // still be queued behind the overdue one.
+        tick(20_000);
+        expect(errors).toEqual([]);
+        expect(socket.lastOfType('ping')?.['id']).not.toBe(ping?.['id']);
+
+        socket.emit({ type: 'pong', id: String(ping?.['id']) });
+        tick(15_000);
+        expect(harness.sockets).toHaveLength(1);
     });
 });

@@ -191,6 +191,12 @@ export interface KelpiConnectionOptions {
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
+/**
+ * How late a heartbeat tick may fire and still count as on time. Chromium aligns a hidden page's
+ * timers to whole seconds; a tick later than that was throttled, suspended or stuck behind a long
+ * task, and misreading one as late only puts off the verdict on a silent daemon, once.
+ */
+const HEARTBEAT_LATE_SLACK_MS = 1_000;
 const DEFAULT_MAX_QUEUED = 256;
 
 const DEFAULT_BACKOFF: Required<BackoffOptions> = {
@@ -268,6 +274,7 @@ export class KelpiConnection {
     private heartbeatDueAt = 0;
     private lastActivityAt = 0;
     private pingSentAt: number | null = null;
+    private pingDeferred = false;
     private pingCounter = 0;
 
     private readonly queuedJson: string[] = [];
@@ -563,6 +570,7 @@ export class KelpiConnection {
                 break;
             case 'pong':
                 this.pingSentAt = null;
+                this.pingDeferred = false;
                 break;
             default:
                 // Unknown types are forwarded raw and never fatal.
@@ -576,6 +584,7 @@ export class KelpiConnection {
         this.ready = true;
         this.attempt = 0;
         this.pingSentAt = null;
+        this.pingDeferred = false;
         this.startHeartbeat();
         // Status first, so subscribers (the PTY client's re-attach) get their frames onto the
         // wire ahead of whatever was queued during the handshake.
@@ -640,6 +649,7 @@ export class KelpiConnection {
         clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = null;
         this.pingSentAt = null;
+        this.pingDeferred = false;
     }
 
     private heartbeatTick(): void {
@@ -648,14 +658,20 @@ export class KelpiConnection {
         const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
         const timeout = this.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
         // Issue #71: `pingSentAt` is wall clock, and the only thing that reads it is this timer. A
-        // tick that fires more than a whole interval late (one went missing outright) ran in a
-        // renderer that was throttled or suspended - an occluded window, App Nap - and the `pong`
-        // can be sitting in the queue behind it, so the silence it measured is ours, not the
-        // daemon's. Such a tick does not judge the outstanding ping: it asks again, and the next
-        // tick that fires on time decides.
-        const late = now - this.heartbeatDueAt > interval;
+        // tick that fires late ran in a renderer that was throttled or suspended - an occluded
+        // window, App Nap - and the `pong` can be sitting in the queue behind it, so the silence
+        // it measured may be ours. Such a tick asks again instead of judging, but only once: the
+        // ping it sends is judged by the next tick however late that fires, since the renderer
+        // was running when it asked and a pong queued behind a late tick is dispatched straight
+        // after it. Deferring on every late tick would never give up on a silent daemon while
+        // all of them are late (Chromium's one-minute throttling of a page hidden for a while).
+        // Left open: a renderer suspended again before it dispatched anything is misjudged, a
+        // tick late by less than the slack still races the pong, and a repeating timer may fire
+        // again sooner than `timeout` after a late tick, so the verdict can take two intervals
+        // from the second ping.
+        const late = now - this.heartbeatDueAt > HEARTBEAT_LATE_SLACK_MS;
         this.heartbeatDueAt = now + interval;
-        if (this.pingSentAt !== null && !late) {
+        if (this.pingSentAt !== null && (!late || this.pingDeferred)) {
             if (now - this.pingSentAt >= timeout) {
                 this.emitError('heartbeat', new Error('daemon did not answer ping'));
                 this.resync('heartbeat timeout');
@@ -663,6 +679,7 @@ export class KelpiConnection {
             return;
         }
         if (this.pingSentAt === null && now - this.lastActivityAt < interval) return;
+        this.pingDeferred = this.pingSentAt !== null;
         this.pingSentAt = now;
         this.pingCounter += 1;
         this.send({ type: 'ping', id: `hb-${this.pingCounter}` });

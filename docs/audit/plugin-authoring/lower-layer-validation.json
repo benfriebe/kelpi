@@ -1,0 +1,149 @@
+{
+  "layers": [
+    {
+      "name": "packaging",
+      "commit": "cafd51d143f9b5cd8e79f0aeb89d003256ede409",
+      "directory": "/private/tmp/kelpi-pr-layers-NNphEW/packaging",
+      "trackedFiles": 1363,
+      "sourceManifestSHA256": "35059c84f50f9d14589e6e52179a56e570e27044e475735f78e496b053899633",
+      "sourceMatchesCommitAfterValidation": true,
+      "workspaceLinks": [
+        {
+          "at": "packages/cli/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/cli/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/daemon",
+          "target": "packages/daemon"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/core/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/daemon/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/daemon/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/daemon",
+          "target": "packages/daemon"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        }
+      ],
+      "typecheck": {
+        "command": "pnpm typecheck",
+        "exitCode": 0
+      },
+      "tests": {
+        "command": "pnpm exec vitest run --project node packages/protocol packages/core/src/plugin-package packages/plugin-sdk/tests packages/cli packages/daemon/src/plugins --reporter=default --reporter=json --outputFile=/private/tmp/kelpi-pr-layers-NNphEW/packaging-tests.json",
+        "success": true,
+        "passedTests": 828,
+        "failedTests": 0,
+        "files": 51
+      }
+    },
+    {
+      "name": "recovery",
+      "commit": "ed8d56c31edc9b8e803025e5d5b8426aed8eb587",
+      "directory": "/private/tmp/kelpi-pr-layers-NNphEW/recovery",
+      "trackedFiles": 1365,
+      "sourceManifestSHA256": "c4e698b661bda098f63a29181f5ef82595843c3f5562e08fe8691ae65a40d63a",
+      "sourceMatchesCommitAfterValidation": true,
+      "workspaceLinks": [
+        {
+          "at": "packages/cli/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/cli/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/daemon",
+          "target": "packages/daemon"
+        },
+        {
+          "at": "packages/client/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/core/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/daemon/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/daemon/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/core",
+          "target": "packages/core"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/daemon",
+          "target": "packages/daemon"
+        },
+        {
+          "at": "packages/shell/node_modules/@kelpi/protocol",
+          "target": "packages/protocol"
+        }
+      ],
+      "typecheck": {
+        "command": "pnpm typecheck",
+        "exitCode": 0
+      },
+      "tests": {
+        "command": "pnpm exec vitest run --project node packages/protocol packages/core/src/plugin-package packages/plugin-sdk/tests packages/cli packages/daemon/src/plugins --reporter=default --reporter=json --outputFile=/private/tmp/kelpi-pr-layers-NNphEW/recovery-tests.json",
+        "success": true,
+        "passedTests": 852,
+        "failedTests": 0,
+        "files": 52
+      },
+      "additionalTests": [
+        {
+          "command": "pnpm exec vitest run --project node packages/daemon/src/ws/sync.test.ts --reporter=default --reporter=json --outputFile=/private/tmp/kelpi-pr-layers-NNphEW/recovery-sync-tests.json",
+          "success": true,
+          "passedTests": 81,
+          "failedTests": 0,
+          "files": 1
+        }
+      ]
+    }
+  ],
+  "vendorArtifact": {
+    "version": "0.4.0-nex.12",
+    "files": 35,
+    "manifestSHA256": "9f840a4ca7ce28e3e0115ee1169117c48081f0a32179b988711b05172e0cfa61",
+    "copiedAndInstalledArtifactsMatch": true
+  }
+}

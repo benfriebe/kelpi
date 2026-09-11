@@ -365,12 +365,12 @@ describe('plugin dependency activation and cleanup', () => {
         expect(h.service.services()[0]).toMatchObject({ activeProviderID: 'sample.child.files' });
     });
 
-    it('keeps missing dependencies actionable and recovers when they are installed', async () => {
+    it('rejects missing dependencies before installation and succeeds once they are installed', async () => {
         const h = harness();
-        await h.install('sample.child', { commands: [{ id: 'sample.child.run', title: 'Run' }] }, `export function activate(api) { api.commands.register('sample.child.run', ()=>true); }`, { activation: 'on-demand', dependencies: [{ pluginID: 'sample.base', version: '~1.0.0' }] });
-        expect(h.service.list()[0]).toMatchObject({ status: 'failed', error: expect.stringContaining('not installed') });
-        await expect(h.service.request('run', { command: 'sample.child.run' })).rejects.toThrow('not installed');
+        await expect(h.install('sample.child', { commands: [{ id: 'sample.child.run', title: 'Run' }] }, `export function activate(api) { api.commands.register('sample.child.run', ()=>true); }`, { activation: 'on-demand', dependencies: [{ pluginID: 'sample.base', version: '~1.0.0' }] })).rejects.toThrow('not installed');
+        expect(h.service.list()).toEqual([]);
         await h.install('sample.base', {}, 'export function activate() {}');
+        await h.service.install(path.join(h.root, 'sample.child'), true);
         expect(await h.service.request('run', { command: 'sample.child.run' })).toBe(true);
     });
 

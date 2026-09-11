@@ -1351,6 +1351,27 @@ describe('size control (terminal-surface.md §5.1)', () => {
     });
 });
 
+describe('plugin revision management — owner-only', () => {
+    it.each(['history', 'rollback', 'dev-install'])('reserves %s for the owner while paired devices can still list installed views', action => {
+        const calls: string[] = [];
+        const hub = createSyncHub({ store: storeHarness(seededState()).store, dispatcher: () => {}, daemon: DAEMON,
+            validateToken: token => token === 'tok' || token.startsWith('kd_'),
+            plugins: { run(action, _input, reply) { calls.push(action); reply.send({ ok: true, result: [] }); reply.close(); } } });
+        try {
+            const owner = recordingTransport(), paired = recordingTransport();
+            const ownerSession = hub.createSession(owner), pairedSession = hub.createSession(paired);
+            ownerSession.handleMessage(hello({ token: 'tok' })); pairedSession.handleMessage(hello({ token: 'kd_device' }));
+            const command = (action: string) => JSON.stringify({ type: 'command', id: action, payload: { command: 'plugin', action, text: JSON.stringify({ pluginID: 'sample.revisions' }) } });
+            pairedSession.handleMessage(command(action));
+            expect(calls).toEqual([]);
+            expect(paired.json.find(event => event['type'] === 'command-reply')?.['reply']).toEqual({ ok: false, error: 'plugin management requires the daemon owner' });
+            ownerSession.handleMessage(command(action)); pairedSession.handleMessage(command('list'));
+            expect(calls).toEqual([action, 'list']);
+            expect(owner.json.find(event => event['type'] === 'command-reply')?.['reply']).toMatchObject({ ok: true });
+        } finally { hub.close(); }
+    });
+});
+
 describe('remote-access commands (ws/remote.ts) — owner-only', () => {
     function remoteHub() {
         const calls: string[] = [];

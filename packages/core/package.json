@@ -12,7 +12,8 @@
     "./icon": "./src/icon/index.ts",
     "./icon/png": "./src/icon/png.ts",
     "./config": "./src/config/index.ts",
-    "./qr": "./src/qr/index.ts"
+    "./qr": "./src/qr/index.ts",
+    "./plugin-package": "./src/plugin-package/index.ts"
   },
   "dependencies": {
     "@kelpi/protocol": "workspace:*"

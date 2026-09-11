@@ -36,7 +36,7 @@ kelpi plugin run example.agent-board.open
 kelpi plugin run example.agent-board.history
 ```
 
-You can also install a local directory in Settings → Plugins. The directory must exist on
+You can also install a local directory or `.kelpi-plugin` file in Settings → Plugins. The source must exist on
 the **daemon machine**, including when using Kelpi from another device. Installation requires
 an explicit trust acknowledgement. Paired device credentials can use installed plugins;
 installing, removing, enabling, disabling, or reloading them requires the daemon owner.
@@ -83,8 +83,35 @@ recovery, including remote and phone views.
 
 ## Package format
 
+The [development guide](plugin-development.md) covers templates, live editing, portable
+artifacts and version controls in Settings using a private instance.
+
 Start a build-free local package with `kelpi plugin init ./my-plugin --id example.my-plugin`.
 This command works offline without a daemon and refuses to overwrite an existing directory.
+
+Validate the source and create a portable artifact without executing its code or contacting
+a daemon:
+
+```sh
+kelpi plugin validate ./my-plugin --json
+kelpi plugin pack ./my-plugin --out ./my-plugin.kelpi-plugin --json
+kelpi plugin validate ./my-plugin.kelpi-plugin --json
+kelpi plugin install ./my-plugin.kelpi-plugin --trust
+```
+
+Validation checks API compatibility, manifest declarations, entry files, portable paths,
+and package limits. The report includes the manifest version, dependencies, content revision,
+and each file's size and SHA-256 digest. Installed dependency availability is checked by the
+daemon, rather than by offline validation. Validation never runs the backend or proves that
+its code works.
+
+The version 1 `.kelpi-plugin` format is gzip-compressed JSON containing canonical, sorted
+paths and base64 file bytes. Packing the same bytes produces the same artifact, independently
+of source timestamps or directory enumeration order. The embedded revision is checked when
+reading it; this detects corruption, but is not a signature or a trust decision. Package output
+must be outside the source directory and must not already exist. Symlinks, special files,
+path traversal, case/Unicode aliases, and file/directory collisions are rejected. Both directory
+installs and artifact installs use the same validation and content identity.
 
 Ship prebuilt, self-contained JavaScript and browser assets:
 
@@ -151,18 +178,81 @@ The installer validates the manifest and entries, rejects symlinks, copies the e
 bytes, and gives that revision a SHA-256 identity. It skips `.git` and `node_modules`.
 Bundle dependencies into your backend and UI before installing. Limits are 32 MiB and 2,000
 files per package, 100 installed plugins, and 100 contributions per contribution array.
+Portable paths are limited to 512 UTF-8 bytes in total and 255 bytes per component.
 
-To develop, edit/build the source directory and **install it again**. Installation replaces
-the active revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
+Reinstalling a package first installed by the older directory-only installer may assign a
+new revision to identical files because the new hash uses a portable path order. Existing
+installed packages and saved panes remain usable.
+
+To apply edits, build the source directory and **install it again**. Installation switches
+the selected revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
 installed copy; it does not copy edits from the original directory. Plugin data and settings
-survive reinstall and removal. Old revision directories are retained; automatic garbage
-collection and a version rollback UI are future work.
+survive reinstall and removal.
+Reinstalling the same healthy revision is a no-op; use `reload` when you want to restart it.
+For continuous development, `kelpi plugin dev <directory> --trust` validates and applies
+stable changed revisions. It keeps watching after invalid edits or failed updates.
+
+## Updates and recovery
+
+Inspect retained revisions and switch back using their full content identity:
+
+```sh
+kelpi plugin history acme.dashboard --json
+kelpi plugin rollback acme.dashboard
+kelpi plugin rollback acme.dashboard --revision <full-sha256-from-history>
+```
+
+Without `--revision`, rollback selects the most recently selected other revision. An explicit
+revision can select either an older or newer retained version. Version strings are labels;
+two builds with the same version can contain different bytes. History reports the current
+selection, original installation time, and compatibility problems for each entry. Up to 100
+recently selected revisions are retained in the registry. Older package directories are not
+automatically deleted. On upgrade from the old installer, history begins with the currently
+selected revision; untracked older directories are not automatically trusted as history.
+
+Before changing a plugin, Kelpi checks contribution ownership, required dependencies and
+enabled dependents, and saved state. A revision that removes a saved view or cannot read its
+saved `stateVersion` is refused. This covers open, parked and recently closed plugin panes,
+and retained state for native document, terminal and browser renderers. Higher state versions
+must be handled by the plugin when its view attaches; Kelpi does not invent state migrations.
+After a view writes a newer state version, rolling back to code that declares an older version
+is blocked, with the saved state retained.
+
+An enabled backend update is checked for activation before the new selection is committed.
+An inactive on-demand backend is probed, then stopped after a successful update; its first
+installation remains lazy. Startup and already-running backends stay active.
+If activation fails, Kelpi restores the previous revision and restarts it when necessary.
+Plugin storage and settings writes during this provisional activation are held until it
+succeeds; a recovery journal handles a daemon interruption during their commit (it does not
+provide a power-loss durability guarantee). Opening panes or
+writing pane state from provisional activation is refused; perform those operations after
+activation, such as from a registered command or attached view.
+
+Revision switching preserves pane IDs, descriptors, saved state, and native terminal/browser
+sessions. It restarts plugin code and remounts its views. Selecting an older revision does
+not rewind data written by a previously successful version. Full-trust code can also change
+external files, processes and services; revision recovery cannot undo those effects.
 
 ## Backend and view APIs
 
 The [SDK declarations](../packages/plugin-sdk/index.d.ts) are standalone and do not import
 Kelpi's internal stores or React types. The SDK package is available in this workspace as
 `@kelpi/plugin-sdk`; it has not been published to a package registry.
+
+To use it from a project outside this repository, create and install its npm artifact:
+
+```sh
+# From this checkout; choose an existing destination directory.
+npm pack ./packages/plugin-sdk --pack-destination /tmp
+# From your external plugin project.
+npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz
+```
+
+Bundle imported SDK runtime code with your browser assets before packaging. A build-free view
+can use the injected `window.kelpi` without a runtime dependency. Backend types work in a
+Node-only TypeScript project; view types additionally require the DOM library. Run
+`pnpm --filter @kelpi/plugin-sdk test:package` to pack the actual SDK, install it into a temporary
+external project, and verify both type environments and runtime imports without publishing.
 
 Backends export `activate(api)` from their entry module. Activation may return an async
 cleanup function; alternatively export `deactivate()`. Register handlers before activation
@@ -343,9 +433,11 @@ Declare prerequisites in top-level `dependencies`:
 
 Version requirements accept exact semver, `^version`, `~version`, or `*`; other range syntax
 is rejected. Prereleases require an explicit matching prerelease requirement. Dependencies
-activate before their consumers. Missing, disabled, failed, incompatible, or cyclic required
-dependencies produce an actionable plugin error and bundled UI fallback. Installing or
-reenabling a dependency recovers eligible startup consumers. Disabling/reloading a required
+activate before their consumers. New installations or updates with missing, disabled, failed,
+incompatible, or cyclic required dependencies are refused before selection changes.
+If an installed dependency later becomes unavailable, its consumers report an actionable
+plugin error and use bundled UI fallback. Installing or reenabling a dependency recovers
+eligible startup consumers. Disabling/reloading a required
 dependency stops its dependent backends and revokes their views first. Unavailable optional
 dependencies are skipped. Dependency discovery does not download or trust new packages.
 
@@ -460,8 +552,9 @@ and versioned services. Private functions and arbitrary native OS controls are n
 APIs. Further internal replacements require explicit adapters with their own lifecycle and
 result contracts. Terminal and browser renderers have explicit SDK attachments; transport,
 process/page ownership, authentication and editor save ownership remain native.
-An untrusted runtime, marketplace, signatures, automatic
-package upgrades/rollback, and a published SDK remain outside this local-plugin implementation.
+An untrusted runtime, marketplace, signatures, automatic remote distribution, and a published
+SDK remain outside this local-plugin implementation. Local package updates and retained
+revision recovery are supported.
 
 ## Database and protocol upgrade
 
@@ -483,6 +576,10 @@ upgraded custom database. Rolling back the default installation returns to the o
 as it stood at the copy, not the changes subsequently made in generation 2.
 
 ## Validation
+
+`node scripts/scenario.mjs plugin-authoring` creates a plugin outside the repository and
+checks deterministic packaging, live valid/invalid edits, failed activation recovery,
+Settings rollback, saved-state compatibility and native session preservation.
 
 `pnpm check` covers protocol validation, real child activation/failure/recovery, restart and
 parked-pane persistence, shared command cancellation, client binding, CLI streams, iframe

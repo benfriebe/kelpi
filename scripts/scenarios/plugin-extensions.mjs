@@ -34,9 +34,10 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
     const service = async () => JSON.parse(await cli.ok(['plugin', 'services'])).find(service => service.id === 'kelpi.files');
     try {
         const missing = await cli.run(['plugin', 'install', path.join(root, 'examples/plugins/workbench-lab'), '--trust']);
-        rec.check('missing required dependency leaves an actionable installed-plugin error', missing.code !== 0 && (await pluginList()).some(plugin => plugin.manifest.id === lab && plugin.error?.includes(dependency)));
+        rec.check('missing required dependency rejects installation before changing the registry', missing.code !== 0 && !(await pluginList()).some(plugin => plugin.manifest.id === lab));
         await cli.ok(['plugin', 'install', path.join(root, 'examples/plugins/agent-board'), '--trust']);
-        rec.check('installing the dependency automatically activates the waiting plugin', await running(lab));
+        await cli.ok(['plugin', 'install', path.join(root, 'examples/plugins/workbench-lab'), '--trust']);
+        rec.check('installing after its dependency activates the plugin', await running(lab));
         rec.check('the dependent backend can invoke a declared dependency command', Array.isArray(JSON.parse(await cli.ok(['plugin', 'run', `${lab}.dependency-history`]))));
 
         const denied = await cli.run(['workspace', 'create', '--name', 'Blocked by Workbench Lab', '--json']);
@@ -90,11 +91,14 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
         rec.check('the CLI calls the same provider with explicit bundled delegation', JSON.parse(await cli.ok(['plugin', 'service-call', 'kelpi.files', 'read', '--args', JSON.stringify({ path: fixture })])) === '[Workbench Lab]\nPrivate scenario file');
 
         await settings();
+        await page.eval("document.querySelector('[aria-label=\"Shortcut for Open Lab dashboard\"]').scrollIntoView({block:'center'})");
         await page.click('[aria-label="Shortcut for Open Lab dashboard"]');
+        if (!await d.settleDom(page, "document.activeElement === document.querySelector('[aria-label=\"Shortcut for Open Lab dashboard\"]')")) throw new Error('Shortcut input did not receive focus');
         // CDP on macOS needs the edit command as well as the key to select the existing text.
         await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, modifiers: 4, commands: ['selectAll'] });
         await page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, modifiers: 4 });
         await page.insertText('super+alt+k');
+        await page.eval("document.querySelector('[data-testid=\"plugin-shortcuts-example.workbench-lab\"] form:first-of-type button[type=\"submit\"]').scrollIntoView({block:'center'})");
         await page.click(`[data-testid="plugin-shortcuts-${lab}"] form:first-of-type button[type="submit"]`);
         const shortcutSaved = await d.settleDom(page, `document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]')?.value === 'alt+super+k' && document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]')?.getAttribute('aria-invalid') === 'false' && Object.keys(localStorage).filter(key => key.startsWith('kelpi.plugin-shortcuts.')).some(key => JSON.parse(localStorage.getItem(key))['${lab}.open'] === 'alt+super+k')`);
         rec.check('saving the edited shortcut persists its override without a validation error', shortcutSaved, await page.eval(`JSON.stringify((() => { const input = document.querySelector('[aria-label="Shortcut for Open Lab dashboard"]'); return { value: input.value, error: input.closest('form').querySelector('[role="alert"]')?.textContent ?? null, shortcuts: Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith('kelpi.plugin-shortcuts.')).map(key => [key, localStorage.getItem(key)])) }; })())`));

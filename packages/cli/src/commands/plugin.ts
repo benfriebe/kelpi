@@ -1,16 +1,23 @@
 import path from 'node:path';
-import { pluginObject, type JsonObject, type JsonValue } from '@kelpi/protocol';
+import { packPlugin, pluginPackageReport, readPluginPackage } from '@kelpi/core/plugin-package';
+import { pluginObject, pluginRecord, type JsonObject, type JsonValue } from '@kelpi/protocol';
 import { parseFlag, popSwitch } from '../args.js';
 import { printLine, errLine, exit } from '../io.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
-import { streamJSON, printTransportFailure } from '../transport.js';
-import { scaffoldPlugin } from './plugin-scaffold.js';
+import { sendJSONAndReadReply, streamJSON, printTransportFailure } from '../transport.js';
+import { scaffoldPlugin, pluginScaffoldTemplates, type PluginScaffoldTemplate } from './plugin-scaffold.js';
+import { startPluginDev } from './plugin-dev.js';
 
 export const pluginUsage = `Usage: kelpi plugin <action>
-  init <directory> --id <namespaced-id> [--name <title>]
+  init <directory> --id <namespaced-id> [--name <title>] [--template pane|sidebar|document|browser]
+  validate <directory|file.kelpi-plugin> [--json]
+  pack <directory> --out <file.kelpi-plugin> [--json]
+  dev <directory> --trust
   list [--json]
   contributions [--json]
-  install <directory> --trust
+  install <directory|file.kelpi-plugin> --trust
+  history <plugin-id> [--json]
+  rollback <plugin-id> [--revision <sha256>]
   enable|disable|reload|remove|logs <plugin-id>
   open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
   run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
@@ -21,7 +28,7 @@ export const pluginUsage = `Usage: kelpi plugin <action>
   watch
 
 Install trusted local code only. Backends run with your account's access.
-Results are JSON; watch emits JSON lines. See docs/plugins.md.
+Results are JSON; watch and dev emit JSON lines. See docs/plugin-development.md.
 `;
 
 export async function handlePlugin(args: string[]): Promise<void> {
@@ -31,10 +38,51 @@ export async function handlePlugin(args: string[]): Promise<void> {
         popSwitch('--json', args);
         if (action === 'init') {
             const id = parseFlag('--id', args); const name = parseFlag('--name', args);
+            const template = parseFlag('--template', args) ?? 'pane';
+            if (!pluginScaffoldTemplates.includes(template as PluginScaffoldTemplate)) throw new Error('unknown plugin template: ' + template + '; choose ' + pluginScaffoldTemplates.join(', '));
             const directory = args.shift();
             if (!directory || directory.startsWith('-') || !id) throw new Error('init requires a directory and --id <namespaced-id>');
             if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
-            printLine(JSON.stringify(scaffoldPlugin(directory, id, name ?? id), null, 2)); return;
+            printLine(JSON.stringify(scaffoldPlugin(directory, id, name ?? id, template as PluginScaffoldTemplate), null, 2)); return;
+        }
+        if (action === 'validate' || action === 'pack') {
+            const output = action === 'pack' ? parseFlag('--out', args) : null;
+            const source = args.shift();
+            if (!source || source.startsWith('-')) throw new Error(`${action} requires a plugin ${action === 'pack' ? 'directory' : 'directory or package file'}`);
+            if (action === 'pack' && !output) throw new Error('pack requires --out <file.kelpi-plugin>');
+            if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
+            const result = action === 'pack' ? await packPlugin(source, output!) : { path: path.resolve(source), ...pluginPackageReport(await readPluginPackage(source)) };
+            printLine(JSON.stringify(result, null, 2)); return;
+        }
+        if (action === 'dev') {
+            const trusted = popSwitch('--trust', args), directory = args.shift();
+            if (!directory || directory.startsWith('-')) throw new Error('dev requires a plugin directory');
+            if (!trusted) throw new Error('dev requires --trust because every valid edit can execute code');
+            if (args.length) throw new Error('unexpected arguments: ' + args.join(' '));
+            // A failed edit must reject the apply callback, not exit the watcher via decodeReply.
+            const request = async (action: string, input: JsonObject): Promise<unknown> => {
+                // Install can wait behind other mutations/dependencies. Keep its captured
+                // files until the daemon replies, including when Ctrl-C stops new polls.
+                const data = await sendJSONAndReadReply({ command: 'plugin', action, text: JSON.stringify(input) }, { timeoutSeconds: action === 'dev-install' ? 0 : 35 });
+                if (!data) throw new Error('No reply from the selected daemon; check its socket and connection.');
+                const reply: unknown = JSON.parse(data);
+                if (!pluginRecord(reply) || reply['ok'] !== true) throw new Error(pluginRecord(reply) && typeof reply['error'] === 'string' ? reply['error'] : 'Invalid plugin reply from the selected daemon.');
+                return reply['result'];
+            };
+            const identity = await request('identity', {});
+            if (!pluginRecord(identity) || typeof identity['daemonID'] !== 'string' || !identity['daemonID'] || !Array.isArray(identity['capabilities']) || !identity['capabilities'].includes('plugin-dev')) throw new Error('plugin dev requires a daemon with plugin revision recovery; update the daemon and CLI together.');
+            const daemonID = identity['daemonID'];
+            const controller = await startPluginDev(directory, {
+                trust: trusted,
+                onEvent: event => printLine(JSON.stringify(event)),
+                apply: async snapshot => {
+                    const result = await request('dev-install', { path: snapshot.path, trust: true, daemonID });
+                    if (!Array.isArray(result) || !result.some(item => pluginRecord(item) && pluginRecord(item['manifest']) && item['manifest']['id'] === snapshot.pluginID && item['revision'] === snapshot.revision && item['enabled'] === true && item['status'] !== 'failed')) throw new Error('The daemon did not confirm the requested plugin revision.');
+                },
+            });
+            const { signal } = await controller.done;
+            if (signal) exit(signal === 'SIGINT' ? 130 : 143);
+            return;
         }
         const input: Record<string, JsonValue> = {};
         const workspace = parseFlag('--workspace', args); if (workspace) input['workspaceID'] = workspace;
@@ -42,8 +90,18 @@ export async function handlePlugin(args: string[]): Promise<void> {
         const json = (flag: string): JsonObject => pluginObject(JSON.parse(parseFlag(flag, args) ?? '{}'));
         if (action === 'install') {
             input['trust'] = popSwitch('--trust', args);
-            const directory = args.shift(); if (!directory) throw new Error('install requires a directory');
-            input['path'] = path.resolve(directory);
+            const source = args.shift(); if (!source || source.startsWith('-')) throw new Error('install requires a directory or package file');
+            input['path'] = path.resolve(source);
+        }
+        else if (action === 'history' || action === 'rollback') {
+            const revision = action === 'rollback' ? parseFlag('--revision', args) : null;
+            const id = args.shift();
+            if (!id || id.startsWith('-')) throw new Error(`${action} requires a plugin id`);
+            input['pluginID'] = id;
+            if (revision !== null) {
+                if (!/^[a-f0-9]{64}$/.test(revision)) throw new Error('--revision requires a full SHA-256 revision from plugin history');
+                input['revision'] = revision;
+            }
         }
         else if (action === 'service-call' || action === 'service-select') {
             const version = parseFlag('--version', args) ?? '1';

@@ -23,8 +23,19 @@ kelpi plugin open example.my-board example.my-board.home
 ```
 
 The generated package needs no build and contains a pane/sidebar UI plus a backend command.
-`init` works without a daemon and refuses existing directories. Install the directory again
-after edits; `reload` restarts the installed copy without copying changed source files.
+`init` works without a daemon and refuses existing directories. Select `--template sidebar`,
+`document` or `browser` for a more specific starting point. Run
+`kelpi plugin dev ./my-board --trust` in another terminal to validate and apply changed
+revisions. Invalid edits and failed updates retain the previous working version; `reload`
+restarts the installed copy without copying source changes.
+
+Use `kelpi plugin pack ./my-board --out ./my-board.kelpi-plugin` to create a portable artifact.
+`plugin history`, `plugin rollback` and Settings → Plugins → Versions expose retained builds.
+The [development guide](../../docs/plugin-development.md) covers external projects and the
+private instance workflow. To install this SDK outside the repository, run
+`npm pack ./packages/plugin-sdk --pack-destination /tmp` from the checkout, then
+`npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz` in your project. Bundle browser imports before
+packing your plugin.
 
 ## Typed host operations
 

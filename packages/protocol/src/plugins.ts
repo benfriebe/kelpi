@@ -108,6 +108,15 @@ export interface PluginInfo {
     readonly status: 'inactive' | 'starting' | 'running' | 'failed' | 'disabled';
     readonly error: string | null;
 }
+/** Retained package selection history; compatibility is rechecked when selecting a revision. */
+export interface PluginRevisionInfo {
+    readonly revision: string;
+    readonly manifest: PluginManifest;
+    /** Unknown for installations created before revision history was recorded. */
+    readonly installedAt: number | null;
+    readonly selected: boolean;
+    readonly problem: string | null;
+}
 export interface PluginContext {
     readonly daemonID: string;
     readonly clientID?: string;

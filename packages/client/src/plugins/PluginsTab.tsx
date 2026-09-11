@@ -5,6 +5,7 @@ import { pluginRequest, usePlugins } from './client';
 import { PlacementSettings, WorkbenchSlot } from './Workbench';
 import { PluginShortcuts } from './PluginShortcuts';
 import { PluginProviders } from './PluginProviders';
+import { PluginRevisions } from './PluginRevisions';
 import { pluginSettingsSession } from './settings';
 
 /** Field drafts and writes belong to a particular installed instance, never a later reload. */
@@ -69,16 +70,32 @@ export function PluginsTab(props: { runtime: KelpiRuntime }): ReactElement {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [logs, setLogs] = useState<string | null>(null);
-    const report = (error: unknown): void => setError(error instanceof Error ? error.message : String(error));
-    const run = async (action: string, args: JsonObject): Promise<void> => {
+    const currentRuntime = useRef(props.runtime); currentRuntime.current = props.runtime;
+    const operation = useRef(0), pending = useRef(false);
+    useEffect(() => {
+        operation.current += 1; pending.current = false;
+        setBusy(false); setError(null); setLogs(null); setTrusted(false);
+        return () => { operation.current += 1; };
+    }, [props.runtime]);
+    const report = (error: unknown): void => { if (currentRuntime.current === props.runtime) setError(error instanceof Error ? error.message : String(error)); };
+    const run = async (action: string, args: JsonObject): Promise<boolean> => {
+        if (currentRuntime.current !== props.runtime || pending.current) return false;
+        const requested = ++operation.current;
+        const current = (): boolean => currentRuntime.current === props.runtime && requested === operation.current;
+        pending.current = true;
         setBusy(true); setError(null);
-        try { const result = await pluginRequest(props.runtime, action, args); if (action === 'logs') setLogs((result as string[]).join('\n')); }
-        catch (error) { report(error); } finally { setBusy(false); }
+        try {
+            const result = await pluginRequest(props.runtime, action, args);
+            if (!current()) return false;
+            if (action === 'logs') setLogs((result as string[]).join('\n'));
+            return true;
+        } catch (error) { if (current()) report(error); return false; }
+        finally { if (current()) { pending.current = false; setBusy(false); } }
     };
     return <div data-testid="plugins-settings" className="flex flex-col gap-5 text-xs">
         <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void run('install', { path: source, trust: trusted }); }}>
             <strong>Install a plugin</strong>
-            <label>Directory on this daemon<input className="mt-1 w-full rounded border p-2" placeholder="/path/to/my-plugin" aria-label="Plugin directory" value={source} onChange={event => setSource(event.target.value)} /></label>
+            <label>Directory or package file on this daemon<input className="mt-1 w-full rounded border p-2" placeholder="/path/to/my-plugin.kelpi-plugin" aria-label="Plugin source" value={source} onChange={event => setSource(event.target.value)} /></label>
             <label className="flex items-start gap-2"><input type="checkbox" checked={trusted} onChange={event => setTrusted(event.target.checked)} />I trust this plugin to run code with my account’s access.</label>
             <button type="submit" className="self-start rounded border px-3 py-1" disabled={busy || !source.trim() || !trusted}>Install</button>
         </form>
@@ -89,6 +106,7 @@ export function PluginsTab(props: { runtime: KelpiRuntime }): ReactElement {
             {plugin.error ? <p role="alert">{plugin.error}</p> : null}
             <div className="flex flex-wrap gap-3">{[plugin.enabled ? 'disable' : 'enable', 'reload', 'logs', 'remove'].map(action => <button key={action} disabled={busy} onClick={() => void run(action, { pluginID: plugin.manifest.id })}>{action[0]!.toUpperCase() + action.slice(1)}</button>)}</div>
             {plugin.manifest.contributes.views.filter(view => view.placements.includes('pane')).map(view => <button key={view.id} className="self-start" disabled={!plugin.enabled || busy} onClick={() => void run('open', { pluginID: plugin.manifest.id, viewID: view.id })}>Open {view.title}</button>)}
+            <PluginRevisions plugin={plugin} runtime={props.runtime} busy={busy} selectRevision={revision => run('rollback', { pluginID: plugin.manifest.id, revision })} />
             <PluginSettings plugin={plugin} runtime={props.runtime} report={report} />
             <PluginShortcuts plugin={plugin} runtime={props.runtime} />
         </section>)}

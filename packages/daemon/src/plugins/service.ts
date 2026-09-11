@@ -1,12 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newUUID } from '@kelpi/core/codec';
+import { readPluginPackage } from '@kelpi/core/plugin-package';
 import type { Pane } from '@kelpi/core/layout';
-import { PluginEventBuffer, decodePluginManifest, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition } from '@kelpi/protocol';
+import { PluginEventBuffer, pluginAssetPath, pluginDependencyOrder, pluginDependencyProblem, pluginJSON, pluginObject, pluginRecord, patchPluginContributionState, pluginSettingValue, type JsonObject, type JsonValue, type PluginContext, type PluginEvent, type PluginInfo, type PluginManifest, type PluginContributionState, type PluginContributionInfo, type PluginViewDefinition, type PluginPaneDescriptor, type PluginRevisionInfo, type PluginPlacement } from '@kelpi/protocol';
 import type { ReplyHandle, PtyManager, TerminalStateService } from '../seams.js';
 import type { KelpiStore } from '../store/store.js';
 import { serializeState, serializeDomainEvents } from '../ws/serialize.js';
@@ -18,8 +19,8 @@ import { PluginDocuments } from './documents.js';
 import { PluginBrowser } from './browser.js';
 import type { ContentService } from '../content/service.js';
 import type { WebPaneService } from '../webpane/service.js';
+import { decodePluginInstallation, legacyPluginRevision, PluginRevisionData, recoverPluginRevisionChange, selectPluginRevision, type PluginInstallation } from './revisions.js';
 
-interface Installation { manifest: PluginManifest; revision: string; enabled: boolean }
 interface PendingCall { resolve(value: JsonValue): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; scope: PluginOperationScope }
 interface Running {
     process: ChildProcess; ready: Promise<void>; pending: Map<string, PendingCall>;
@@ -63,6 +64,16 @@ function nativePaneView(pane: Pane | undefined, view: PluginViewDefinition): boo
     const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
     return (document && view.placements.includes(`document.${pane.type}`)) || (nativeTerminalPane(pane) && view.placements.includes('terminal')) || (pane.type === 'web' && view.placements.includes('browser'));
 }
+/** Document panes retain terminal renderer state after their external editor closes. */
+function retainedNativePaneView(pane: Pane, view: PluginViewDefinition, previous: PluginViewDefinition | undefined): boolean {
+    const document = pane.type === 'markdown' || pane.type === 'scratchpad' || pane.type === 'diff';
+    const placements: PluginPlacement[] = document ? [`document.${pane.type}`, 'terminal']
+        : pane.type === 'shell' ? ['terminal'] : pane.type === 'web' ? ['browser'] : [];
+    // One saved envelope is shared by the view's native placements. Keep a declared
+    // placement when known; older/uninstalled views leave only the pane type to check.
+    const declared = previous?.placements.filter(placement => placements.includes(placement));
+    return (declared?.length ? declared : placements).some(placement => view.placements.includes(placement));
+}
 type TerminalPaneIdentity = Pick<Pane, 'type' | 'createdAt' | 'externalEditorCommand'>;
 function sameTerminalPane(pane: Pane | undefined, identity: TerminalPaneIdentity): boolean {
     return nativeTerminalPane(pane) && pane?.type === identity.type && pane.createdAt === identity.createdAt && pane.externalEditorCommand === identity.externalEditorCommand;
@@ -76,7 +87,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     readonly daemonID: string;
     readonly directory: string;
     private readonly temporary: boolean;
-    private readonly installations = new Map<string, Installation>();
+    private readonly installations = new Map<string, PluginInstallation>();
+    private readonly candidateData = new Map<string, PluginRevisionData>();
     private readonly running = new Map<string, Running>();
     private readonly generations = new Map<string, number>();
     private readonly errors = new Map<string, string>();
@@ -118,15 +130,18 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
                 fs.writeFileSync(identityPath, this.daemonID, { flag: 'wx', mode: 0o600 });
             }
-            const raw: unknown = JSON.parse(fs.readFileSync(path.join(this.directory, 'installed.json'), 'utf8'));
+            let raw: unknown = [];
+            try { raw = JSON.parse(fs.readFileSync(path.join(this.directory, 'installed.json'), 'utf8')); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
             if (!Array.isArray(raw) || raw.length > 100) throw new Error('invalid plugin installation registry');
             for (const record of raw) {
-                if (!pluginRecord(record) || typeof record['revision'] !== 'string' || !/^[a-f0-9]{64}$/.test(record['revision'])) throw new Error('invalid installed plugin');
-                const manifest = decodePluginManifest(record['manifest']);
-                this.installations.set(manifest.id, { manifest, revision: record['revision'], enabled: record['enabled'] === true });
+                const item = decodePluginInstallation(record);
+                if (this.installations.has(item.manifest.id)) throw new Error('duplicate installed plugin');
+                this.installations.set(item.manifest.id, item);
             }
+            recoverPluginRevisionChange(this.directory, this.installations);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { this.installations.clear(); this.registryError = `Plugin registry: ${failure(error)}`; options.onError?.(new Error(this.registryError)); }
+            this.installations.clear(); this.registryError = `Plugin registry: ${failure(error)}`; options.onError?.(new Error(this.registryError));
         }
         try {
             const selections = pluginObject(JSON.parse(fs.readFileSync(path.join(this.directory, 'services.json'), 'utf8')));
@@ -163,13 +178,14 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     list(): PluginInfo[] {
         return [...this.installations.values()].map(item => {
             const error = this.errors.get(item.manifest.id) ?? this.dependencyProblem(item.manifest.id);
-            return { ...item, instanceID: `${this.epoch}:${this.generations.get(item.manifest.id) ?? 0}`, status: !item.enabled ? 'disabled' : error ? 'failed' : this.running.has(item.manifest.id) ? (this.running.get(item.manifest.id)!.activated ? 'running' : 'starting') : 'inactive', error };
+            return { manifest: item.manifest, revision: item.revision, enabled: item.enabled, instanceID: `${this.epoch}:${this.generations.get(item.manifest.id) ?? 0}`, status: !item.enabled ? 'disabled' : error ? 'failed' : this.running.has(item.manifest.id) ? (this.running.get(item.manifest.id)!.activated ? 'running' : 'starting') : 'inactive', error };
         });
     }
     private dependencyProblem(id: string): string | null {
         return pluginDependencyProblem(id, [...this.installations.values()].map(item => ({ ...item, enabled: item.enabled && !this.changing.has(item.manifest.id), ...(this.errors.has(item.manifest.id) ? { status: 'failed', error: this.errors.get(item.manifest.id)! } : {}) })));
     }
     private startEligible(): void {
+        if (this.registryError) return;
         for (const item of this.installations.values()) if (item.enabled && item.manifest.activation === 'startup' && !this.dependencyProblem(item.manifest.id) && !this.errors.has(item.manifest.id)) void this.activate(item.manifest.id).catch(() => {});
     }
     private finishChange(id: string): void {
@@ -211,10 +227,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     private writeJSON(file: string, value: unknown): void {
         const temporary = `${file}.${randomUUID()}.tmp`;
         fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-        try { fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(temporary, file); }
-        finally { fs.rmSync(temporary, { force: true }); }
+        let published = false;
+        try { fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(temporary, file); published = true; }
+        finally { if (!published) fs.rmSync(temporary, { force: true }); }
     }
-    private item(id: string): Installation {
+    private item(id: string): PluginInstallation {
         const item = this.installations.get(id);
         if (!item) throw new Error(`plugin not installed: ${id}`);
         return item;
@@ -233,45 +250,43 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         return result;
     }
     private mutate<T>(operation: () => Promise<T>): Promise<T> {
-        const result = this.mutation.then(() => { if (this.closed) throw new Error('plugin service is stopped'); return operation(); });
+        const result = this.mutation.then(() => {
+            if (this.closed) throw new Error('plugin service is stopped');
+            if (this.registryError) throw new Error(this.registryError);
+            try { recoverPluginRevisionChange(this.directory, this.installations); }
+            catch (error) { this.registryError = `Plugin revision recovery: ${failure(error)}`; throw new Error(this.registryError); }
+            return operation();
+        });
         this.mutation = result.catch(() => {}); return result;
     }
     install(source: string, trusted: boolean): Promise<PluginInfo[]> { return this.mutate(() => this.installNow(source, trusted)); }
-    private async installNow(source: string, trusted: boolean): Promise<PluginInfo[]> {
+    private async installNow(source: string, trusted: boolean, signal?: AbortSignal): Promise<PluginInfo[]> {
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         if (!trusted) throw new Error('Installation executes code with your account access. Pass --trust to install this plugin.');
-        const root = await fs.promises.realpath(source);
         if (this.registryError) throw new Error(this.registryError);
-        const files: Array<{ relative: string; bytes: Buffer }> = [];
-        let total = 0;
-        const hash = createHash('sha256');
-        const scan = async (relative: string): Promise<void> => {
-            const entries = await fs.promises.readdir(path.join(root, relative), { withFileTypes: true });
-            for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-                if (entry.name === '.git' || entry.name === 'node_modules') continue;
-                const name = relative ? `${relative}/${entry.name}` : entry.name;
-                pluginAssetPath(name);
-                if (entry.isSymbolicLink()) throw new Error(`plugin packages cannot contain symlinks: ${name}`);
-                if (entry.isDirectory()) { await scan(name); continue; }
-                if (!entry.isFile()) throw new Error(`unsupported plugin file: ${name}`);
-                if (files.length >= 2000) throw new Error('plugin package has too many files');
-                const handle = await fs.promises.open(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-                let bytes: Buffer;
-                try {
-                    const stat = await handle.stat();
-                    if (!stat.isFile() || total + stat.size > 32 * 1024 * 1024) throw new Error('plugin package exceeds 32 MiB');
-                    bytes = await handle.readFile();
-                    total += bytes.length;
-                    if (total > 32 * 1024 * 1024) throw new Error('plugin package exceeds 32 MiB');
-                } finally { await handle.close(); }
-                hash.update(name).update('\0').update(String(bytes.length)).update('\0').update(bytes);
-                files.push({ relative: name, bytes });
-            }
-        };
-        await scan('');
-        const manifestFile = files.find(file => file.relative === 'kelpi.plugin.json');
-        if (!manifestFile) throw new Error('missing kelpi.plugin.json');
-        const manifest = decodePluginManifest(JSON.parse(manifestFile.bytes.toString('utf8')));
+        const { manifest, revision, files } = await readPluginPackage(source);
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
         if (!this.installations.has(manifest.id) && this.installations.size >= 100) throw new Error('at most 100 plugins can be installed');
+        const problem = this.revisionProblem(manifest, true);
+        if (problem) throw new Error(problem);
+        const target = path.join(this.directory, 'packages', manifest.id, revision);
+        if (!fs.existsSync(target)) {
+            const staging = `${target}.${randomUUID()}.tmp`;
+            try {
+                for (const file of files) { const destination = path.join(staging, file.relative); await fs.promises.mkdir(path.dirname(destination), { recursive: true }); await fs.promises.writeFile(destination, file.bytes, { flag: 'wx' }); }
+                await fs.promises.rename(staging, target);
+            } finally { await fs.promises.rm(staging, { recursive: true, force: true }); }
+        } else await this.verifyRevision(manifest, revision);
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
+        return this.switchRevision(manifest, revision, true, signal);
+    }
+    private async verifyRevision(manifest: PluginManifest, revision: string): Promise<void> {
+        const root = path.join(await fs.promises.realpath(this.directory), 'packages', manifest.id, revision);
+        if (await fs.promises.realpath(root) !== root) throw new Error('installed plugin package cannot be a symlink');
+        const stored = await readPluginPackage(root);
+        if ((stored.revision !== revision && legacyPluginRevision(stored.files) !== revision) || JSON.stringify(stored.manifest) !== JSON.stringify(manifest)) throw new Error('installed plugin package revision mismatch');
+    }
+    private revisionProblem(manifest: PluginManifest, enabled: boolean): string | null {
         const claims = (manifest: PluginManifest): string[] => [manifest.id, ...manifest.contributes.views.map(entry => entry.id), ...manifest.contributes.commands.map(entry => entry.id),
             ...(manifest.contributes.containers ?? []).flatMap(entry => [entry.id, ...entry.slots.map(slot => slot.id)]),
             ...(manifest.contributes.hooks ?? []).map(entry => entry.id), ...(manifest.contributes.services ?? []).map(entry => entry.id), ...(manifest.contributes.providers ?? []).map(entry => entry.id),
@@ -279,27 +294,112 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         const incoming = new Set(claims(manifest));
         for (const installed of this.installations.values()) if (installed.manifest.id !== manifest.id) {
             const collision = claims(installed.manifest).find(id => incoming.has(id));
-            if (collision) throw new Error(`plugin contribution ${collision} is already owned by ${installed.manifest.id}`);
+            if (collision) return `plugin contribution ${collision} is already owned by ${installed.manifest.id}`;
         }
-        for (const entry of [...manifest.contributes.views.map(view => view.entry), ...(manifest.backend ? [manifest.backend] : [])]) if (!files.some(file => file.relative === entry)) throw new Error(`missing plugin entry: ${entry}`);
-        const revision = hash.digest('hex');
-        const target = path.join(this.directory, 'packages', manifest.id, revision);
-        if (!fs.existsSync(target)) {
-            const staging = `${target}.${randomUUID()}.tmp`;
-            try {
-                for (const file of files) { const destination = path.join(staging, file.relative); await fs.promises.mkdir(path.dirname(destination), { recursive: true }); await fs.promises.writeFile(destination, file.bytes); }
-                await fs.promises.rename(staging, target);
-            } finally { await fs.promises.rm(staging, { recursive: true, force: true }); }
+        const before = [...this.installations.values()].map(item => ({ manifest: item.manifest, enabled: item.enabled, ...(this.errors.has(item.manifest.id) ? { status: 'failed', error: this.errors.get(item.manifest.id)! } : {}) }));
+        const after = [...before.filter(item => item.manifest.id !== manifest.id), { manifest, enabled }];
+        const dependency = enabled ? pluginDependencyProblem(manifest.id, after) : null;
+        if (dependency) return dependency;
+        for (const installed of before) if (installed.manifest.id !== manifest.id && installed.enabled && !pluginDependencyProblem(installed.manifest.id, before)) {
+            const problem = pluginDependencyProblem(installed.manifest.id, after);
+            if (problem) return `revision would break an enabled plugin: ${problem}`;
         }
+        const stateProblem = (viewID: string, version: number, owner: string, pane = false): string | null => {
+            const view = manifest.contributes.views.find(view => view.id === viewID);
+            if (!view || (pane && !view.placements.includes('pane'))) return `revision cannot restore saved ${owner}: view ${viewID} is unavailable`;
+            if (version > view.stateVersion) return `revision cannot read saved ${owner}: ${viewID} state version ${version} requires version ${version} or newer (target ${view.stateVersion})`;
+            return null;
+        };
+        for (const workspace of this.options.store.getState().workspaces) {
+            const descriptors: Array<{ plugin: PluginPaneDescriptor | undefined; owner: string }> = [
+                ...workspace.panes.map(pane => ({ plugin: pane.plugin, owner: `pane ${pane.id}` })),
+                ...workspace.parkedPanes.map(pane => ({ plugin: pane.plugin, owner: `parked pane ${pane.id}` })),
+                ...workspace.recentlyClosedPanes.map(pane => ({ plugin: pane.plugin, owner: 'recently closed pane' }))
+            ];
+            for (const { plugin, owner } of descriptors) if (plugin?.pluginID === manifest.id) {
+                const problem = stateProblem(plugin.viewID, plugin.stateVersion, owner, true); if (problem) return problem;
+            }
+        }
+        try {
+            for (const [key, raw] of Object.entries(this.storedObject(manifest.id, 'documents'))) {
+                const split = key.indexOf(':');
+                if (split < 1 || !pluginRecord(raw) || !Number.isSafeInteger(raw['stateVersion']) || Number(raw['stateVersion']) < 1) return 'invalid saved native view state';
+                pluginObject(raw['state']);
+                const viewID = key.slice(split + 1), view = manifest.contributes.views.find(view => view.id === viewID);
+                const problem = stateProblem(viewID, Number(raw['stateVersion']), `native view ${key}`); if (problem) return problem;
+                const pane = this.options.store.getState().workspaces.flatMap(workspace => [...workspace.panes, ...workspace.parkedPanes]).find(pane => pane.id === key.slice(0, split));
+                const previousView = this.installations.get(manifest.id)?.manifest.contributes.views.find(view => view.id === viewID);
+                if (view && pane && !retainedNativePaneView(pane, view, previousView)) return `revision cannot restore saved native view ${key}: its placement no longer matches the pane`;
+            }
+        } catch (error) { return `saved plugin state is unreadable: ${failure(error)}`; }
+        return null;
+    }
+    private history(id: string): PluginRevisionInfo[] {
+        if (this.registryError) throw new Error(this.registryError);
+        const item = this.item(id);
+        return item.revisions.map(revision => ({ ...revision, selected: item.revision === revision.revision,
+            problem: this.revisionProblem(revision.manifest, item.enabled) ?? (fs.existsSync(path.join(this.directory, 'packages', id, revision.revision)) ? null : 'installed plugin package is missing') }));
+    }
+    private rollback(id: string, revision?: string): Promise<PluginInfo[]> {
+        return this.mutate(async () => {
+            if (this.registryError) throw new Error(this.registryError);
+            const item = this.item(id);
+            if (revision !== undefined && !/^[a-f0-9]{64}$/.test(revision)) throw new Error('revision must be the full 64-character package revision');
+            const selected = revision === undefined ? item.revisions.find(entry => entry.revision !== item.revision) : item.revisions.find(entry => entry.revision === revision);
+            if (!selected) throw new Error(revision === undefined ? 'no previous plugin revision is retained' : 'plugin revision is not retained');
+            const problem = this.revisionProblem(selected.manifest, item.enabled); if (problem) throw new Error(problem);
+            await this.verifyRevision(selected.manifest, selected.revision);
+            return this.switchRevision(selected.manifest, selected.revision, item.enabled);
+        });
+    }
+    private async switchRevision(manifest: PluginManifest, revision: string, enabled: boolean, signal?: AbortSignal): Promise<PluginInfo[]> {
+        if (signal?.aborted) throw new Error('plugin dev installation cancelled');
+        const id = manifest.id, previous = this.installations.get(id);
+        const problem = this.revisionProblem(manifest, enabled); if (problem) throw new Error(problem);
+        if (previous?.revision === revision && previous.enabled === enabled && !this.errors.has(id)) return this.list();
+        const wasRunning = this.running.has(id), previousError = this.errors.get(id);
+        let committed = false;
         this.changing.add(manifest.id);
         try {
-            await this.stopPlugin(manifest.id);
-            const previous = this.installations.get(manifest.id);
-            this.installations.set(manifest.id, { manifest, revision, enabled: true });
-            try { this.persist(); } catch (error) { if (previous) this.installations.set(manifest.id, previous); else this.installations.delete(manifest.id); throw error; }
-            this.errors.delete(manifest.id); this.changed();
-            if (manifest.activation === 'startup') await this.activate(manifest.id, true);
-        } finally { this.finishChange(manifest.id); }
+            await this.stopPlugin(id);
+            if (signal?.aborted) throw new Error('plugin dev installation cancelled');
+            const latestProblem = this.revisionProblem(manifest, enabled); if (latestProblem) throw new Error(latestProblem);
+            this.installations.set(id, selectPluginRevision(previous, manifest, revision, enabled));
+            this.errors.delete(id); this.changed();
+            if (!previous) {
+                try { this.persist(); } catch (error) { this.installations.delete(id); throw error; }
+                if (enabled && manifest.activation === 'startup') await this.activate(id, true);
+            } else {
+                const data = new PluginRevisionData(this.directory, id, previous.revision, revision, previous.selectionID, this.item(id).selectionID!);
+                this.candidateData.set(id, data);
+                if (enabled && manifest.backend) await this.activate(id, true);
+                if (signal?.aborted) throw new Error('plugin dev installation cancelled');
+                data.commit(() => this.persist());
+                committed = true;
+                this.candidateData.delete(id);
+                for (const [key, value] of data.settings) this.emit('settings.changed', { key, value }, id);
+                if (enabled && manifest.activation === 'on-demand' && !wasRunning) await this.stopPlugin(id, false);
+            }
+        } catch (error) {
+            if (previous && !committed) {
+                await this.stopPlugin(id);
+                const recoveryPending = this.candidateData.get(id)?.recoveryPending;
+                this.candidateData.delete(id);
+                this.installations.set(id, previous); this.errors.delete(id);
+                if (recoveryPending) {
+                    this.registryError = `Plugin revision recovery requires a daemon restart: ${failure(error)}`;
+                    this.errors.set(id, this.registryError);
+                    throw new Error(this.registryError);
+                }
+                if (previousError) this.errors.set(id, previousError);
+                if (previous.enabled && !previousError && (wasRunning || previous.manifest.activation === 'startup')) {
+                    try { await this.activate(id, true); }
+                    catch (restoreError) { throw new Error(`revision change failed: ${failure(error)}; previous revision selected but activation failed: ${failure(restoreError)}`); }
+                }
+                throw new Error(`revision change failed; previous revision restored: ${failure(error)}`);
+            }
+            throw error;
+        } finally { this.candidateData.delete(id); this.finishChange(id); }
         return this.list();
     }
     private log(id: string, text: string): void {
@@ -466,8 +566,16 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     private storage(id: string, kind: string): JsonObject {
         this.item(id);
+        return this.candidateData.get(id)?.read(kind) ?? this.storedObject(id, kind);
+    }
+    private storedObject(id: string, kind: string): JsonObject {
         try { return pluginObject(JSON.parse(fs.readFileSync(path.join(this.directory, 'data', id, `${kind}.json`), 'utf8'))); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw error; }
+    }
+    private writeData(id: string, kind: 'storage' | 'settings', value: JsonObject): void {
+        const candidate = this.candidateData.get(id);
+        if (candidate) candidate.write(kind, value);
+        else this.writeJSON(path.join(this.directory, 'data', id, `${kind}.json`), value);
     }
     /** Compose native adapters before start; plugin manifests cannot replace these contracts. */
     registerBuiltinService(service: BuiltinPluginService): void {
@@ -655,9 +763,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     async api(id: string, method: string, raw: unknown, context: PluginContext, lease?: string): Promise<JsonValue> {
         const item = this.item(id);
+        if (this.registryError) throw new Error(this.registryError);
         if (this.closed || !item.enabled) throw new Error('plugin is not enabled');
         const problem = this.dependencyProblem(id); if (problem) throw new Error(problem);
         const args = pluginObject(raw ?? {});
+        if (this.candidateData.has(id) && (method === 'views.open' || method === 'views.setState')) throw new Error('pane changes must wait until the plugin revision is committed; migrate state after attaching the view');
         if (method === 'contributions.get' || method === 'contributions.update') {
             if (this.errors.has(id)) throw new Error('plugin contributions are unavailable until reload');
             // Old activated backends cannot write during their replacement. A new backend
@@ -708,6 +818,8 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
                 if (nativeTerminalPane(pane) && nativeView.placements.includes('terminal') && !attached?.terminalPane) throw new Error('plugin terminal renderer requires an attached view');
                 if (pane?.type === 'web' && nativeView.placements.includes('browser') && !attached?.browserPane) throw new Error('plugin browser renderer requires an attached view');
                 const key = `${paneID}:${nativeView.id}`;
+                const saved = this.storage(id, 'documents')[key];
+                if (pluginRecord(saved) && Number(saved['stateVersion']) > nativeView.stateVersion) throw new Error('saved view state is newer than this plugin revision');
                 // Keep the existing document-renderer envelope and filename so installed
                 // views retain their state while native feature coverage expands.
                 this.writeJSON(path.join(this.directory, 'data', id, 'documents.json'), pluginObject({ ...this.storage(id, 'documents'), [key]: { stateVersion: nativeView.stateVersion, state: pluginObject(args['state']) } }));
@@ -716,6 +828,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (pane?.type !== 'plugin' || pane.plugin?.pluginID !== id || (context.viewID && pane.plugin.viewID !== context.viewID)) throw new Error('plugin does not own this pane');
             const version = item.manifest.contributes.views.find(view => view.id === pane.plugin!.viewID)?.stateVersion;
             if (!version) throw new Error('view is no longer registered');
+            if (pane.plugin.stateVersion > version) throw new Error('saved view state is newer than this plugin revision');
             this.options.store.dispatch({ type: 'set-plugin-pane-state', paneID, plugin: { ...pane.plugin, stateVersion: version, state: pluginObject(args['state']) } });
             return { stateVersion: version };
         }
@@ -723,7 +836,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (method === 'storage.set') {
             const key = text(args['key'], 'key'); pluginObject({ [key]: args['value'] });
             const next = pluginObject({ ...this.storage(id, 'storage'), [key]: args['value'] });
-            this.writeJSON(path.join(this.directory, 'data', id, 'storage.json'), next); return null;
+            this.writeData(id, 'storage', next); return null;
         }
         if (method === 'settings.get') {
             const stored = this.storage(id, 'settings');
@@ -738,8 +851,10 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             const key = text(args['key'], 'key'); const setting = item.manifest.contributes.settings[key];
             if (!setting) throw new Error('invalid plugin setting');
             const value = pluginSettingValue(setting, args['value']);
-            this.writeJSON(path.join(this.directory, 'data', id, 'settings.json'), pluginObject({ ...this.storage(id, 'settings'), [key]: value }));
-            this.emit('settings.changed', { key, value }, id); return null;
+            this.writeData(id, 'settings', pluginObject({ ...this.storage(id, 'settings'), [key]: value }));
+            const candidate = this.candidateData.get(id);
+            if (candidate) candidate.settings.set(key, value); else this.emit('settings.changed', { key, value }, id);
+            return null;
         }
         if (method === 'events.emit') {
             const name = `${id}.${text(args['name'], 'event name')}`;
@@ -876,7 +991,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
     }
     async request(action: string, input: JsonObject, context: PluginContext = { daemonID: this.daemonID }): Promise<JsonValue> {
         if (this.closed) throw new Error('plugin service is stopped');
-        if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1 };
+        if (action === 'identity') return { daemonID: this.daemonID, epoch: this.epoch, apiVersion: 1, capabilities: ['plugin-packages', 'plugin-revisions', 'plugin-dev'] };
         if (action === 'browser-state') return this.browser.nativeSnapshot(input) as unknown as JsonValue;
         if (action === 'document') return this.documents.call(text(input['method'], 'method'), pluginObject(input['args']), operationScope().signal);
         if (action === 'browser') return this.browserOperation(text(input['method'], 'method'), pluginObject(input['args']), context, operationScope().signal, context.clientID ? 'ui' : 'cli');
@@ -886,6 +1001,11 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (action === 'service-call') return this.callService(input, context);
         if (action === 'service-select') return this.selectService(input);
         if (action === 'install') return await this.install(text(input['path'], 'path'), input['trust'] === true) as unknown as JsonValue;
+        if (action === 'dev-install') {
+            if (input['daemonID'] !== this.daemonID) throw new Error('plugin dev daemon changed; restart dev for the selected daemon');
+            const source = text(input['path'], 'path'), signal = operationScope().signal;
+            return await this.mutate(() => this.installNow(source, input['trust'] === true, signal)) as unknown as JsonValue;
+        }
         if (action === 'run') return this.invoke(text(input['command'], 'command'), pluginObject(input['args'] ?? {}), { ...context, ...this.context(input) });
         if (action === 'api') {
             const lease = this.leases.get(text(input['lease'], 'lease'));
@@ -897,8 +1017,13 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
         if (action === 'release') { this.release(text(input['lease'], 'lease')); return null; }
         const id = text(input['pluginID'], 'pluginID'); const item = this.item(id);
         if (action === 'logs') return this.logs.get(id) ?? [];
+        if (action === 'history') return this.history(id) as unknown as JsonValue;
+        if (action === 'rollback') return await this.rollback(id, input['revision'] === undefined ? undefined : text(input['revision'], 'revision')) as unknown as JsonValue;
         if (action === 'open') return this.api(id, 'views.open', input, context);
-        if (action === 'settings') return this.api(id, input['key'] === undefined ? 'settings.get' : 'settings.set', input, context);
+        if (action === 'settings') {
+            if (input['key'] !== undefined && this.changing.has(id)) throw new Error('plugin is changing; retry the settings write');
+            return this.api(id, input['key'] === undefined ? 'settings.get' : 'settings.set', input, context);
+        }
         if (action === 'attach') {
             if (!item.enabled) throw new Error('plugin is disabled');
             const signal = operationScope().signal;
@@ -945,6 +1070,7 @@ export class PluginService implements PluginChannel, PluginOperationChannel, Bui
             if (savedNative !== undefined && (!pluginRecord(savedNative) || !Number.isSafeInteger(savedNative['stateVersion']) || Number(savedNative['stateVersion']) < 1)) throw new Error('invalid saved native view state');
             const state = pane?.plugin?.state ?? (pluginRecord(savedNative) ? pluginObject(savedNative['state']) : {});
             const stateVersion = pane?.plugin?.stateVersion ?? (pluginRecord(savedNative) ? Number(savedNative['stateVersion']) : view.stateVersion);
+            if (stateVersion > view.stateVersion) throw new Error('saved view state is newer than this plugin revision; select a compatible revision');
             const workspaceID = owned?.workspaceID ?? input['workspaceID'] ?? context.workspaceID;
             const lease = randomUUID();
             this.leases.set(lease, { pluginID: id, revision: item.revision, context: { daemonID: this.daemonID, ...(context.clientID ? { clientID: context.clientID } : {}), ...(context.windowID ? { windowID: context.windowID } : {}), viewID, ...(paneID ? { paneID } : {}), ...(workspaceID ? { workspaceID: String(workspaceID) } : {}) }, expires: Date.now() + 24 * 60 * 60 * 1000, ...(pane && nativeTerminalPane(pane) && view.placements.includes('terminal') ? { terminalPane: { type: pane.type, createdAt: pane.createdAt, externalEditorCommand: pane.externalEditorCommand } } : {}), ...(pane?.type === 'web' && view.placements.includes('browser') ? { browserPane: { createdAt: pane.createdAt } } : {}) });

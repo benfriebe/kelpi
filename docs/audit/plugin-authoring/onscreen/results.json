@@ -1,0 +1,325 @@
+{
+  "stamp": "2026-09-10T13-11-28-963Z",
+  "windowPlacement": "onscreen",
+  "files": [
+    "/Users/ben/code/kelpi/out/worktrees/plugin-packaging/scripts/scenarios/plugin-authoring.mjs",
+    "/Users/ben/code/kelpi/out/worktrees/plugin-packaging/scripts/scenarios/plugin-extensions.mjs",
+    "/Users/ben/code/kelpi/out/worktrees/plugin-packaging/scripts/scenarios/plugin-workbench.mjs"
+  ],
+  "summaries": [
+    {
+      "name": "plugin-authoring",
+      "placement": "onscreen",
+      "checks": 21,
+      "failed": 0,
+      "results": [
+        {
+          "label": "external project packs reproducibly with the same validated revision",
+          "ok": true
+        },
+        {
+          "label": "artifact install activates the external backend",
+          "ok": true
+        },
+        {
+          "label": "external pane and native browser renderer mount from the installed artifact",
+          "ok": true
+        },
+        {
+          "label": "the custom view saves edits through the injected SDK",
+          "ok": true
+        },
+        {
+          "label": "dev applies valid edits and remounts both views",
+          "ok": true
+        },
+        {
+          "label": "saved plugin and native renderer preferences survive an update",
+          "ok": true
+        },
+        {
+          "label": "update retains pane identities, the terminal PID and unsaved native browser state",
+          "ok": true,
+          "detail": "{\"terminalPID\":28040,\"nativePage\":\"0da43a77-9994-43a8-bd9d-efc7646d2f4a\"}"
+        },
+        {
+          "label": "an incomplete manifest is reported without replacing working code",
+          "ok": true
+        },
+        {
+          "label": "backend activation failure is reported and the previous revision recovers",
+          "ok": true
+        },
+        {
+          "label": "failed activation does not overwrite plugin storage",
+          "ok": true
+        },
+        {
+          "label": "dev continues after invalid and failed edits",
+          "ok": true
+        },
+        {
+          "label": "Ctrl-C closes dev cleanly and leaves the installed revision usable",
+          "ok": true,
+          "detail": "{\"stop\":{\"code\":130,\"signal\":null},\"stderr\":\"\"}"
+        },
+        {
+          "label": "failure recovery preserves both native sessions",
+          "ok": true,
+          "detail": "{\"terminalPID\":28040,\"nativePage\":\"0da43a77-9994-43a8-bd9d-efc7646d2f4a\"}"
+        },
+        {
+          "label": "Settings selects the requested retained revision",
+          "ok": true
+        },
+        {
+          "label": "UI rollback restores old code with saved pane and native view state",
+          "ok": true
+        },
+        {
+          "label": "rollback retains the same live native sessions",
+          "ok": true,
+          "detail": "{\"terminalPID\":28040,\"nativePage\":\"0da43a77-9994-43a8-bd9d-efc7646d2f4a\"}"
+        },
+        {
+          "label": "window reload reconnects to the selected retained revision",
+          "ok": true
+        },
+        {
+          "label": "rollback refuses incompatible saved state without losing the current pane",
+          "ok": true,
+          "detail": "kelpi plugin rollback: revision cannot read saved pane 6A78FA99-47DC-4891-9B2F-929A17980023: example.external-author.home state version 2 requires version 2 or newer (target 1)\n"
+        },
+        {
+          "label": "history explains the blocked retained revision",
+          "ok": true
+        },
+        {
+          "label": "Settings explains and disables a revision that cannot read newer saved state",
+          "ok": true
+        },
+        {
+          "label": "refused state rollback leaves the native sessions intact",
+          "ok": true,
+          "detail": "{\"terminalPID\":28040,\"nativePage\":\"0da43a77-9994-43a8-bd9d-efc7646d2f4a\"}"
+        }
+      ],
+      "notes": [
+        "Create and validate a self-contained plugin outside the Kelpi repository",
+        "shot: out/plugin-authoring-final-onscreen/plugin-authoring-01-01-external-plugin.png",
+        "shot: out/plugin-authoring-final-onscreen/plugin-authoring-02-02-retained-revisions.png",
+        "shot: out/plugin-authoring-final-onscreen/plugin-authoring-03-03-blocked-state-rollback.png"
+      ],
+      "ms": 10016
+    },
+    {
+      "name": "plugin-extensions",
+      "placement": "onscreen",
+      "checks": 23,
+      "failed": 0,
+      "results": [
+        {
+          "label": "missing required dependency rejects installation before changing the registry",
+          "ok": true
+        },
+        {
+          "label": "installing after its dependency activates the plugin",
+          "ok": true
+        },
+        {
+          "label": "the dependent backend can invoke a declared dependency command",
+          "ok": true
+        },
+        {
+          "label": "the CLI returns an operation veto before creating a workspace",
+          "ok": true
+        },
+        {
+          "label": "native UI commands respect the same veto and display its reason",
+          "ok": true
+        },
+        {
+          "label": "a contributed layout hosts the live native pane grid and nested custom tabs",
+          "ok": true
+        },
+        {
+          "label": "a custom view discovers the native and contributed workbench slots",
+          "ok": true
+        },
+        {
+          "label": "a custom pane can change another named view slot through the UI API",
+          "ok": true
+        },
+        {
+          "label": "invalid programmatic placement returns an error without changing the layout",
+          "ok": true
+        },
+        {
+          "label": "typed plugin operations surface veto errors through the real frame bridge",
+          "ok": true
+        },
+        {
+          "label": "after hooks distinguish CLI, native UI, and plugin callers without duplicate dispatch",
+          "ok": true
+        },
+        {
+          "label": "typed workspace operations update the native sidebar and return typed list data",
+          "ok": true
+        },
+        {
+          "label": "inactive plugin tabs retain their documents and receive visible=false",
+          "ok": true
+        },
+        {
+          "label": "layout, active tab, and namespaced notes survive window reload",
+          "ok": true
+        },
+        {
+          "label": "Settings selects and persists an explicit service provider",
+          "ok": true
+        },
+        {
+          "label": "the plugin files API uses the selected provider through its backend",
+          "ok": true
+        },
+        {
+          "label": "the CLI calls the same provider with explicit bundled delegation",
+          "ok": true
+        },
+        {
+          "label": "saving the edited shortcut persists its override without a validation error",
+          "ok": true,
+          "detail": "{\"value\":\"alt+super+k\",\"error\":null,\"shortcuts\":{\"kelpi.plugin-shortcuts.v1:29cbf7f2-6dc8-479e-a040-027c23b15127\":\"{\\\"example.workbench-lab.open\\\":\\\"alt+super+k\\\"}\"}}"
+        },
+        {
+          "label": "editing a plugin shortcut changes the live keybinding and opens its pane",
+          "ok": true,
+          "detail": "{\"shortcuts\":{\"kelpi.plugin-shortcuts.v1:29cbf7f2-6dc8-479e-a040-027c23b15127\":\"{\\\"example.workbench-lab.open\\\":\\\"alt+super+k\\\"}\"},\"focused\":\"IFRAME\",\"body\":\"Lab workspace\\n·\\n2 panes\\ncustom\\nsync\\nconnected\\nD\\nDefault\\n⌘1\\nE\\nExtension validation\\n⌘2\\nL\\nLab workspace\\n⌘3\\nNew Workspace\\n⌘N\\nWorkspace view\\nEmpty\\nPane grid\\nReset\\nLab dashboard\\nLab dashboard\\n~\\nTerminal content area\\nTools view\\nEmpty\\nLab tools\\nReset\\nDashboard\\nNotes\\nDashboard view\\nEmpty\\nLab dashboard\\nLab notes\\nReset\\n~\\n36%\\n64%\\n8.77\\n0\\nrunning\\n0\\nwaiting\\n0\\ninactive\\n23:11\"}"
+        },
+        {
+          "label": "disabling a dependency stops its consumer and restores the native workspace",
+          "ok": true
+        },
+        {
+          "label": "an unavailable preferred provider falls back while retaining its selection",
+          "ok": true
+        },
+        {
+          "label": "reenabling the dependency restores the chosen layout and provider automatically",
+          "ok": true,
+          "detail": "{\"plugins\":[{\"manifest\":{\"id\":\"example.agent-board\",\"name\":\"Agent Board\",\"version\":\"1.0.0\",\"apiVersion\":1,\"trust\":\"full\",\"activation\":\"startup\",\"backend\":\"backend.mjs\",\"contributes\":{\"views\":[{\"id\":\"example.agent-board.board\",\"title\":\"Agent Board\",\"entry\":\"ui/index.html\",\"placements\":[\"pane\",\"sidebar.primary\",\"sidebar.secondary\",\"panel.bottom\",\"workspace\",\"topbar\",\"statusbar\",\"settings\"],\"stateVersion\":1}],\"commands\":[{\"id\":\"example.agent-board.open\",\"title\":\"Open Agent Board\",\"shortcut\":\"super+shift+b\",\"menu\":\"both\"},{\"id\":\"example.agent-board.history\",\"title\":\"Read Agent Board history\"}],\"settings\":{\"showIdle\":{\"title\":\"Show idle panes\",\"type\":\"boolean\",\"default\":true}}}},\"revision\":\"c2b8933362f2e3fd051b0611a42cd2a8ffc7c15f18d9e3176fe45a5087ec4023\",\"enabled\":true,\"instanceID\":\"dcf9631e-ad12-49a9-8636-d56d8a38a0b1:6\",\"status\":\"running\",\"error\":null},{\"manifest\":{\"id\":\"example.workbench-lab\",\"name\":\"Workbench Lab\",\"version\":\"1.0.0\",\"apiVersion\":1,\"trust\":\"full\",\"activation\":\"startup\",\"backend\":\"backend.mjs\",\"dependencies\":[{\"pluginID\":\"example.agent-board\",\"version\":\"^1.0.0\"}],\"contributes\":{\"views\":[{\"id\":\"example.workbench-lab.dashboard\",\"title\":\"Lab dashboard\",\"entry\":\"ui/index.html\",\"placements\":[\"pane\",\"example.workbench-lab.metrics-slot\"],\"stateVersion\":1},{\"id\":\"example.workbench-lab.notes\",\"title\":\"Lab notes\",\"entry\":\"ui/notes.html\",\"placements\":[\"example.workbench-lab.notes-slot\",\"example.workbench-lab.metrics-slot\"],\"stateVersion\":1}],\"commands\":[{\"id\":\"example.workbench-lab.open\",\"title\":\"Open Lab dashboard\",\"shortcut\":\"super+alt+l\",\"menu\":\"pane.header\"},{\"id\":\"example.workbench-lab.history\",\"title\":\"Read Lab operation history\"},{\"id\":\"example.workbench-lab.dependency-history\",\"title\":\"Read Agent Board activity\"}],\"settings\":{},\"containers\":[{\"id\":\"example.workbench-lab.layout\",\"title\":\"Workspace with tools\",\"placements\":[\"workspace\"],\"layout\":\"row\",\"slots\":[{\"id\":\"example.workbench-lab.main\",\"title\":\"Workspace\",\"defaultView\":\"kelpi.workspace\",\"weight\":3},{\"id\":\"example.workbench-lab.tools-slot\",\"title\":\"Tools\",\"defaultView\":\"example.workbench-lab.tools\",\"weight\":1}]},{\"id\":\"example.workbench-lab.tools\",\"title\":\"Lab tools\",\"placements\":[\"example.workbench-lab.tools-slot\",\"sidebar.primary\",\"sidebar.secondary\"],\"layout\":\"tabs\",\"slots\":[{\"id\":\"example.workbench-lab.metrics-slot\",\"title\":\"Dashboard\",\"defaultView\":\"example.workbench-lab.dashboard\"},{\"id\":\"example.workbench-lab.notes-slot\",\"title\":\"Notes\",\"defaultView\":\"example.workbench-lab.notes\"}]}],\"hooks\":[{\"id\":\"example.workbench-lab.guard\",\"phase\":\"before\",\"commands\":[\"workspace-create\"],\"timeoutMs\":1000},{\"id\":\"example.workbench-lab.observe\",\"phase\":\"after\",\"commands\":[\"workspace-create\"],\"timeoutMs\":1000}],\"providers\":[{\"id\":\"example.workbench-lab.files\",\"title\":\"Lab annotated files\",\"service\":\"kelpi.files\",\"version\":1,\"methods\":[\"read\",\"write\"]}]}},\"revision\":\"39b4558c3b20fd2525c0b682e515f4c76912b24216b4b06f40df3daabff6e175\",\"enabled\":true,\"instanceID\":\"dcf9631e-ad12-49a9-8636-d56d8a38a0b1:4\",\"status\":\"running\",\"error\":null}],\"service\":{\"id\":\"kelpi.files\",\"title\":\"Files\",\"version\":1,\"methods\":[\"read\",\"write\"],\"selectedProviderID\":\"example.workbench-lab.files\",\"activeProviderID\":\"example.workbench-lab.files\",\"providers\":[{\"id\":\"example.workbench-lab.files\",\"title\":\"Lab annotated files\",\"pluginID\":\"example.workbench-lab\",\"status\":\"available\"},{\"id\":\"kelpi.files.bundled\",\"title\":\"Bundled files\",\"status\":\"available\"}]},\"body\":\"Lab workspace\\n·\\n2 panes\\ncustom\\nsync\\nconnected\\nD\\nDefault\\n⌘1\\nE\\nExtension validation\\n⌘2\\nL\\nLab workspace\\n⌘3\\nNew Workspace\\n⌘N\\nWorkspace view\\nEmpty\\nPane grid\\nReset\\nLab dashboard\\nLab dashboard\\n~\\nTerminal content area\\nTools view\\nEmpty\\nLab tools\\nReset\\nDashboard\\nNotes\\nDashboard view\\nEmpty\\nLab dashboard\\nLab notes\\nReset\\n~\\n36%\\n64%\\n8.77\\n0\\nrunning\\n0\\nwaiting\\n0\\ninactive\\n23:11\"}"
+        },
+        {
+          "label": "backend reload restores nested view leases and preserves slot storage",
+          "ok": true
+        }
+      ],
+      "notes": [
+        "shot: out/plugin-authoring-final-onscreen/plugin-extensions-01-nested-workbench-and-plugin-pane.png"
+      ],
+      "ms": 2531
+    },
+    {
+      "name": "plugin-workbench",
+      "placement": "onscreen",
+      "checks": 22,
+      "failed": 0,
+      "results": [
+        {
+          "label": "local plugin installs and activates through the shipped CLI",
+          "ok": true,
+          "detail": "[\n  {\n    \"manifest\": {\n      \"id\": \"example.agent-board\",\n      \"name\": \"Agent Board\",\n      \"version\": \"1.0.0\",\n      \"apiVersion\": 1,\n      \"trust\": \"full\",\n      \"activation\": \"startup\",\n      \"backend\": \"backend.mjs\",\n      \"contributes\": {\n        \"views\": [\n          {\n            \"id\": \"example.agent-board.board\",\n            \"title\": \"Agent Board\",\n            \"entry\": \"ui/index.html\",\n            \"placements\": [\n              \"pane\",\n              \"sidebar.primary\",\n              \"sidebar.secondary\",\n              \"panel.bottom\",\n              \"workspace\",\n              \"topbar\",\n              \"statusbar\",\n              \"settings\"\n            ],\n            \"stateVersion\": 1\n          }\n        ],\n        \"commands\": [\n          {\n            \"id\": \"example.agent-board.open\",\n            \"title\": \"Open Agent Board\",\n            \"shortcut\": \"super+shift+b\",\n            \"menu\": \"both\"\n          },\n          {\n            \"id\": \"example.agent-board.history\",\n            \"title\": \"Read Agent Board history\"\n          }\n        ],\n        \"settings\": {\n          \"showIdle\": {\n            \"title\": \"Show idle panes\",\n            \"type\": \"boolean\",\n            \"default\": true\n          }\n        }\n      }\n    },\n    \"revision\": \"c2b8933362f2e3fd051b0611a42cd2a8ffc7c15f18d9e3176fe45a5087ec4023\",\n    \"enabled\": true,\n    \"instanceID\": \"dcf9631e-ad12-49a9-8636-d56d8a38a0b1:10\",\n    \"status\": \"running\",\n    \"error\": null\n  }\n]\n"
+        },
+        {
+          "label": "plugin pane appears in the normal grid",
+          "ok": true
+        },
+        {
+          "label": "the real sandboxed iframe renders daemon state using the SDK",
+          "ok": true
+        },
+        {
+          "label": "plugin cannot access the host DOM",
+          "ok": true
+        },
+        {
+          "label": "pane view receives daemon, client, workspace and pane context",
+          "ok": true
+        },
+        {
+          "label": "custom UI creates a real terminal through shared daemon commands",
+          "ok": true
+        },
+        {
+          "label": "reload attaches a fresh view to the restarted backend",
+          "ok": true
+        },
+        {
+          "label": "reloading preserves pane state and restores a working API",
+          "ok": true
+        },
+        {
+          "label": "Kelpi shortcuts work while typing inside a plugin and open management",
+          "ok": true
+        },
+        {
+          "label": "Workbench settings replace Workspaces with the live plugin view",
+          "ok": true
+        },
+        {
+          "label": "Escape closes the view menu and returns focus to its picker",
+          "ok": true
+        },
+        {
+          "label": "the right sidebar picker swaps Inspector independently",
+          "ok": true
+        },
+        {
+          "label": "the plugin header restores Workspaces without a filter picker while the right plugin stays active",
+          "ok": true
+        },
+        {
+          "label": "both sidebar selections survive a window reload",
+          "ok": true
+        },
+        {
+          "label": "the right plugin header restores the working Inspector",
+          "ok": true
+        },
+        {
+          "label": "an uncaught view error is isolated to a recoverable placeholder",
+          "ok": true
+        },
+        {
+          "label": "retry restores the view and API without losing saved state",
+          "ok": true
+        },
+        {
+          "label": "disabling restores bundled navigation and preserves the missing-plugin pane",
+          "ok": true
+        },
+        {
+          "label": "reenabling recovers the existing pane",
+          "ok": true
+        },
+        {
+          "label": "reenabling restores the preferred sidebar with its picker still accessible",
+          "ok": true
+        },
+        {
+          "label": "the sidebar picker opens plugin management directly",
+          "ok": true
+        },
+        {
+          "label": "backend retained activity independently of view mounts",
+          "ok": true,
+          "detail": "[{\"at\":1789045902303,\"workspaceID\":\"F3DC3CEB-1867-4A98-8EA0-3F6CA8C3FFC1\",\"paneID\":\"94FE9231-183E-49F2-B0AC-1B16A69C0AFF\",\"title\":\"Agent Board\",\"status\":\"idle\"},{\"at\":1789045902378,\"workspaceID\":\"F3DC3CEB-1867-4A98-8EA0-3F6CA8C3FFC1\",\"paneID\":\"94FE9231-183E-49F2-B0AC-1B16A69C0AFF\",\"title\":\"Agent Board\",\"status\":\"idle\"},{\"at\":1789045902421,\"workspaceID\":\"F3DC3CEB-1867-4A98-8EA0-3F6CA8C3FFC1\",\"paneID\":\"8FC0A1DB-A91C-4606-B0CC-E50214AECDD7\",\"title\":null,\"status\":\"idle\"}]"
+        }
+      ],
+      "notes": [
+        "shot: out/plugin-authoring-final-onscreen/plugin-workbench-01-plugin-pane-and-sidebar.png"
+      ],
+      "ms": 2644
+    }
+  ]
+}

@@ -23,6 +23,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@kelpi/core':
+        specifier: workspace:*
+        version: link:../core
       '@kelpi/protocol':
         specifier: workspace:*
         version: link:../protocol

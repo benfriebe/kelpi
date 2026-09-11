@@ -159,6 +159,13 @@ describe('resolveTailnetURL', () => {
         expect(calls).toContainEqual(['serve', '--bg', '61154']);
     });
 
+    it('REFUSES port 0 before asking tailscale anything: `serve --bg 0` fronts nothing (#130)', async () => {
+        const { run, calls } = scripted({});
+        const result = await resolveTailnetURL({ port: 0, token: 't', run });
+        expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('no bound HTTP port') });
+        expect(calls).toEqual([]);
+    });
+
     it('REFUSES when the serve config cannot be inspected — unreadable is not absent', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 1, stdout: '', stderr: 'unknown flag' } });
         const result = await resolveTailnetURL({ port: 61154, token: 't', run });

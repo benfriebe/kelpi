@@ -1448,8 +1448,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 agents: createAgentChannel({ store, pty, input }),
                 // Settings ▸ Remote: the `kelpid pair`/`devices`/`url --tailnet` flow in-app
                 // (`ws/remote.ts`). Owner-only at the sync layer; same registry + tailscale
-                // modules as the CLI, so the two surfaces cannot drift.
-                remote: createRemoteChannel({ env, port: () => port }),
+                // modules as the CLI, so the two surfaces cannot drift. The port is the one the
+                // listener BOUND (what the port file records), never `build`'s argument: that is
+                // `0` on a first boot and on the bind-failure fallback, and a pairing built from
+                // it configured `tailscale serve --bg 0`, a proxy to nothing (#130).
+                remote: createRemoteChannel({ env, port: () => ws?.port }),
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),

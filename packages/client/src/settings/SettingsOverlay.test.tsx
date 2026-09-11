@@ -233,4 +233,28 @@ describe('the Settings window', () => {
         view.rerender(<SettingsOverlay open initialTab="labels" {...props} />);
         expect(screen.getByTestId('settings-tab-labels')).toBeDefined();
     });
+
+    // #176: focus lands on the tab the window re-opens on. The reset to `initialTab` has not
+    // re-rendered yet when the open edge moves focus, so reading the tab there put the ring on
+    // wherever the last visit ended while the rail selected another tab.
+    it('focuses the tab it re-opens on, not the one the last visit ended on', () => {
+        const props = {
+            settings: DEFAULT_WS_SETTINGS,
+            domain: { labelPresets: [], workspaces: [] },
+            actions: NOOP_ACTIONS,
+            onClose: vi.fn()
+        } as const;
+        const view = render(<SettingsOverlay open {...props} />);
+        fireEvent.click(screen.getByTestId('settings-tab-button-plugins'));
+        view.rerender(<SettingsOverlay open={false} {...props} />);
+        view.rerender(<SettingsOverlay open {...props} />);
+        const general = screen.getByTestId('settings-tab-button-general');
+        expect(general.getAttribute('aria-selected')).toBe('true');
+        expect(document.activeElement).toBe(general);
+
+        // …and a deep link is the same edge: focus follows the link, not the tab it replaced.
+        view.rerender(<SettingsOverlay open={false} {...props} />);
+        view.rerender(<SettingsOverlay open initialTab="labels" {...props} />);
+        expect(document.activeElement).toBe(screen.getByTestId('settings-tab-button-labels'));
+    });
 });

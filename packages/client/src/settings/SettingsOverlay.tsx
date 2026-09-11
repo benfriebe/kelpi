@@ -225,7 +225,10 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
         if (!props.open) return;
         // The phone sheet has no rail to focus; its own rule is the effect below.
         if (phone) return;
-        tabRefs.current.get(tab)?.focus();
+        // `initial`, not `tab` (#176): this runs in the same commit as the reset above, before it
+        // has re-rendered, so `tab` still holds wherever the last visit ended and focus would land
+        // on that rail button while the rail selects `initial`.
+        tabRefs.current.get(initial)?.focus();
         // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only: moving focus on
         // every tab change would fight a click inside the panel.
     }, [props.open]);
@@ -239,14 +242,17 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
      * (and the test that pins it) requires. So the list focuses the row for the current tab and a
      * pushed screen focuses its back button, which is also the reading order a screen reader
      * announces after each transition.
+     *
+     * `tab` is a dependency for the open edge (#176): the first run reads the last visit's tab,
+     * because the reset above has not re-rendered yet, and a re-open that stays on the list changes
+     * nothing else that would run this again. A phone only changes the tab by pushing it or on that
+     * reset, so this never moves focus under a click inside a panel.
      */
     useEffect(() => {
         if (!props.open || !phone) return;
         if (pushed) backRef.current?.focus();
         else tabRefs.current.get(tab)?.focus();
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- screen edges only, for the same
-        // reason the desktop effect above is open-edge only.
-    }, [props.open, phone, pushed]);
+    }, [props.open, phone, pushed, tab]);
 
     const bindings = useMemo(() => clientKeyBindings(props.settings.keybindLines), [props.settings.keybindLines]);
 

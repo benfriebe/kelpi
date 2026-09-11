@@ -6,7 +6,8 @@
  * shell-ui.md §4.6 / agent-lifecycle.md §5.8: focusing a pane also schedules a 600 ms timer
  * that clears that pane's status back to idle, so an "awaiting input" badge auto-dismisses
  * shortly after the user attends to it. The timer is rescheduled (cancelling the old one) on
- * every focus change and only runs while the focused pane's status is non-idle.
+ * every focus change. It arms only when the focused pane's status is non-idle at that moment,
+ * and a later status change neither cancels nor re-arms it (#108).
  */
 
 import { useEffect, useRef, type ReactElement } from 'react';
@@ -43,7 +44,10 @@ export function FocusRing({ focused, radius = 0 }: FocusRingProps): ReactElement
 export interface FocusDwellOptions {
     /** The focused pane, or null when nothing is focused. */
     readonly paneID: string | null;
-    /** That pane's status; `idle` (or null) means there is nothing to clear. */
+    /**
+     * That pane's status; `idle` (or null) means there is nothing to clear. Read when the timer
+     * is armed, never a trigger of its own.
+     */
     readonly status: PaneStatus | null;
     readonly onDwellClear?: ((paneID: string) => void) | undefined;
     readonly delayMs?: number | undefined;
@@ -52,24 +56,30 @@ export interface FocusDwellOptions {
 }
 
 /**
- * Schedules the 600 ms dwell clear. Fires at most once per (pane, status) pair: the
- * callback is held in a ref so a parent re-render with a fresh closure cannot restart the
- * countdown, and the daemon's resulting `idle` status tears the timer down for good.
+ * Schedules the 600 ms dwell clear on a FOCUS: a new `paneID`, or `enabled` coming back on
+ * (the Swift's `didBecomeActive`). A status change on the pane that already has focus never
+ * arms it: the Swift's `scheduleClearStatus` runs only from those two events, and Status ▸
+ * Awaiting Input is exactly such a change, which the clear undid 600 ms later (#108). Status
+ * and callback are both read through refs, so neither a status delta nor a parent re-render
+ * with a fresh closure can restart the countdown.
  */
 export function useFocusDwell(options: FocusDwellOptions): void {
     const { paneID, status, onDwellClear, delayMs = FOCUS_DWELL_MS, enabled = true } = options;
     const callbackRef = useRef(onDwellClear);
     callbackRef.current = onDwellClear;
+    const statusRef = useRef(status);
+    statusRef.current = status;
 
     useEffect(() => {
         if (!enabled) return;
         if (paneID === null) return;
-        if (status === null || status === 'idle') return;
+        const current = statusRef.current;
+        if (current === null || current === 'idle') return;
         const timer = setTimeout(() => {
             callbackRef.current?.(paneID);
         }, delayMs);
         return () => {
             clearTimeout(timer);
         };
-    }, [paneID, status, delayMs, enabled]);
+    }, [paneID, delayMs, enabled]);
 }

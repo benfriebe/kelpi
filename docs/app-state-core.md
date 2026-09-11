@@ -509,8 +509,12 @@ Behavior, in order:
    `workingDirectory` and the optional `repoAssociations` the worktree branch fills;
    `packages/daemon/src/handlers/app/workspaces.ts:160`). Repos chosen in the GUI sheet are
    attached AFTER creation: the client sends one WS `add-repo-association` per chosen repo once
-   the reply carries the new id (`packages/client/src/App.tsx:1252`), and each registers the repo
-   via `ensureRepo` when the registry does not have it (`packages/daemon/src/ws/repos.ts:272`).
+   the reply carries the new id (`packages/client/src/features/workspaces-actions.ts`), and each
+   registers the repo via `ensureRepo` when the registry does not have it
+   (`packages/daemon/src/ws/repos.ts:272`). When exactly one repo is chosen the client also sends
+   its path as the create's `path`, so the first pane opens in that repo (step 6's
+   `workingDirectory`; a path gone from disk falls back to home at spawn). None or several leave
+   the first pane at home (issue #38).
 8. Append the workspace to the flat `workspaces` array (always at the end; only sidebar order
    reflects placement).
 9. Sidebar placement, governed by settings `newWorkspacePlacement` (default `end-of-list`):

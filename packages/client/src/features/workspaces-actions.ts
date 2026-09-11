@@ -144,9 +144,14 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
         ): boolean {
             const trimmed = name.trim();
             const repoPaths = options.repoPaths ?? [];
+            // Issue #38: with exactly one repo chosen there is no doubt where the shell
+            // belongs, so the first pane opens in it. None or several stay at home; a repo
+            // gone from disk falls back to home at spawn (`resolveSpawnCwd`).
+            const onlyRepo = repoPaths.length === 1 ? repoPaths[0] : undefined;
             return runCreateWorkspace(
                 commands.createWorkspace({
                     ...(trimmed.length > 0 ? { name: trimmed } : {}),
+                    ...(onlyRepo === undefined ? {} : { path: onlyRepo }),
                     ...(groupID === null ? {} : { group: groupID }),
                     ...(options.color === undefined ? {} : { color: options.color }),
                     // `default` (or null) means "no assignment" — the daemon's own

@@ -186,6 +186,23 @@ describe('the Settings sheet on a phone', () => {
         expect(screen.getByTestId('settings-toolbar').textContent).toContain('Web');
     });
 
+    // #176 on the phone: a visit that ends on the list leaves `pushed` false, so a plain re-open
+    // does not change the screen, and the row it focused was the last visit's tab, not General's.
+    it('focuses the landing row when it re-opens on the list, not the row the last visit ended on', () => {
+        const onClose = vi.fn();
+        const win = createFakePhoneWindow();
+        const props = { ...baseProps(), formFactorWindow: win, onClose };
+        const view = render(<SettingsOverlay {...props} />);
+        fireEvent.click(screen.getByTestId('settings-tab-button-plugins'));
+        fireEvent.click(screen.getByTestId('settings-phone-back'));
+        expect(document.activeElement).toBe(screen.getByTestId('settings-tab-button-plugins'));
+
+        view.rerender(<SettingsOverlay {...props} open={false} />);
+        view.rerender(<SettingsOverlay {...props} />);
+        expect(screen.getByTestId('settings-phone-list')).toBeDefined();
+        expect(document.activeElement).toBe(screen.getByTestId('settings-tab-button-general'));
+    });
+
     it('keeps Close reachable on both screens, and closes from either', () => {
         const first = renderPhone();
         fireEvent.click(screen.getByTestId('settings-close'));

@@ -15,12 +15,28 @@
  * jsdom. What CAN be checked here, in milliseconds, is that the artifact those measurements
  * were taken against is the artifact this workspace installs, and that the built bundle and
  * the snapshotted source it claims to come from have not drifted apart.
+ *
+ * From `-nex.13` the fork is no longer TypeScript-only: `ghostty-vt.wasm` carries a libghostty-vt
+ * patch (§165), and a marker string cannot see inside a 413 KB binary. So this file grew two new
+ * kinds of case.
+ *
+ * FOUR run the REAL wasm (`WebAssembly.compile` on the file this directory ships, driven through
+ * the public `Ghostty` constructor exactly as `renderer-replay.test.ts` does) and assert the VT's
+ * behaviour rather than its bytes.
+ *
+ * TWO load no wasm at all and hash the one INLINED in the built bundles against the one on disk.
+ * Those are the cases that actually guard a re-vendored engine, and the reason is worth stating
+ * plainly because the first pass at §165 got it wrong: the four behavioural cases read the wasm
+ * off disk, which is not where the app gets its engine from (see `inlinedWasm`). A patched wasm
+ * shipped behind a dist still carrying upstream's left all four green and the app unchanged.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Ghostty, type GhosttyTerminal } from 'ghostty-web';
 import { describe, expect, it } from 'vitest';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +44,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.12';
+const EXPECTED_VERSION = '0.4.0-nex.13';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -150,6 +166,55 @@ const REPLACED_CHIP_LABEL = String.fromCodePoint(0xc870, 0xd569, 0xc911); // 조
 function read(file: string): string {
     return fs.readFileSync(file, 'utf8');
 }
+
+/**
+ * The shipped wasm, instantiated through the public API.
+ *
+ * `new Ghostty(instance, module)` is the same two-argument form the app uses (the module is what
+ * `-nex.10` needs to give every terminal its own instance), and it is the form
+ * `renderer-replay.test.ts` already proves works under vitest. Node's `WebAssembly` is a global
+ * in the jsdom environment too, so nothing here needs a browser.
+ */
+async function loadEngine(): Promise<Ghostty> {
+    const module = await WebAssembly.compile(
+        new Uint8Array(fs.readFileSync(path.join(vendorRoot, 'ghostty-vt.wasm')))
+    );
+    const instance = await WebAssembly.instantiate(module, { env: { log: () => {} } });
+    return new Ghostty(instance, module);
+}
+
+/** Every physical row's text, trailing blanks trimmed: what a reader of the pane sees. */
+function rowTexts(vt: GhosttyTerminal): string[] {
+    return Array.from({ length: vt.rows }, (_, row) =>
+        (vt.getLine(row) ?? [])
+            .map((cell) => (cell.codepoint === 0 ? ' ' : String.fromCodePoint(cell.codepoint)))
+            .join('')
+            .trimEnd()
+    );
+}
+
+/** The indices of the rows the engine reports as soft-wrap continuations. */
+function wrappedRows(vt: GhosttyTerminal): number[] {
+    return Array.from({ length: vt.rows }, (_, row) => row).filter((row) => vt.isRowWrapped(row));
+}
+
+/**
+ * The wasm the BUILT BUNDLE will actually run, pulled back out of the bundle.
+ *
+ * `source/lib/ghostty.ts` resolves the engine with `new URL('../ghostty-vt.wasm',
+ * import.meta.url)`, and vite, building a library, cannot know what URL that will have at
+ * runtime, so it INLINES the file it finds at the build-tree root as a
+ * `data:application/wasm;base64,…` URI. `Ghostty.load()` then tries that data URI first and
+ * only falls back to a `.wasm` on disk, which the client build does not even emit. So the
+ * bundle IS the engine, and the file beside it is decoration.
+ */
+function inlinedWasm(bundle: string): Buffer {
+    const base64 = /data:application\/wasm;base64,([A-Za-z0-9+/=]+)/.exec(read(bundle))?.[1];
+    if (base64 === undefined) throw new Error(`no inlined wasm data URI in ${bundle}`);
+    return Buffer.from(base64, 'base64');
+}
+
+const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
 
 describe('vendored ghostty-web engine', () => {
     it('is the fork this repo builds, at the version the audit evidence names', () => {
@@ -328,5 +393,194 @@ describe('vendored ghostty-web engine', () => {
         expect(rendererSource).toContain('const scrollbarPainted = !!scrollbackProvider && scrollbarOpacity > 0;');
         expect(rendererSource).toContain('if (this.scrollbarWasPainted && !scrollbarPainted) {');
         expect(rendererSource).toContain('this.scrollbarWasPainted = scrollbarPainted;');
+    });
+
+    it('inlines the SHIPPED wasm in both bundles, not a stale one (§165)', () => {
+        // The finding this case exists for, and the one the two behavioural cases below could
+        // not see: they compile `ghostty-vt.wasm` off disk, which is not where the app gets its
+        // engine from. Both bundles carry the wasm as a base64 data URI baked in at build time
+        // (see `inlinedWasm`), and `Ghostty.load()` tries that URI FIRST; the client build emits
+        // no `.wasm` asset at all, so the data URI is the only engine that ever runs in the app.
+        //
+        // Rebuilding the wasm therefore does nothing until the TypeScript dist is rebuilt on top
+        // of it, and the first pass at this fix shipped a patched `ghostty-vt.wasm` beside a dist
+        // still carrying upstream's: every test green, the app unchanged. Nothing else in this
+        // file, or in the audit, or in the scenarios, would have caught that.
+        const onDisk = sha256(fs.readFileSync(path.join(vendorRoot, 'ghostty-vt.wasm')));
+        for (const bundle of ['ghostty-web.js', 'ghostty-web.umd.cjs']) {
+            expect(sha256(inlinedWasm(path.join(vendorRoot, 'dist', bundle)))).toBe(onDisk);
+        }
+    });
+
+    it('installs that same bundle where the client imports it from (§165)', () => {
+        // pnpm materialises the `file:` override as its own directory, so the bundle the client
+        // resolves is a separate path. A rebuilt dist that was never reinstalled is the same
+        // failure as the one above, one directory further along.
+        //
+        // Be honest about where this one earns its keep: with pnpm's default linker the installed
+        // file is a HARD LINK, sharing an inode with the vendor bundle, so on this machine it
+        // cannot disagree with the case above and cannot fail independently. It matters wherever
+        // pnpm copies instead of linking (`package-import-method=copy`, the hoisted linker, a
+        // store on a different filesystem, CI caches that rehydrate node_modules), which is
+        // exactly where a stale install is plausible and invisible.
+        const installed = path.join(repoRoot, 'packages', 'client', 'node_modules', 'ghostty-web');
+        const onDisk = sha256(fs.readFileSync(path.join(vendorRoot, 'ghostty-vt.wasm')));
+        for (const bundle of ['ghostty-web.js', 'ghostty-web.umd.cjs']) {
+            expect(sha256(inlinedWasm(path.join(installed, 'dist', bundle)))).toBe(onDisk);
+        }
+    });
+
+    it('ships a wasm that forgets a row is wrapped once ESC[2K erases it (§165)', async () => {
+        // The narrowest statement of the defect, straight off the wasm.
+        //
+        // libghostty-vt models soft wrap with two flags per row: `wrap` ("continues onto the next
+        // row") and `wrap_continuation` ("is the continuation of the previous row"). `isRowWrapped`
+        // exports the second one, which is also the only one xterm.js has (`BufferLine.isWrapped`).
+        // Upstream ghostty's `Terminal.eraseLine` left BOTH standing on EL 2, under a note saying
+        // xterm does not reset them either: true of xterm(1), false of the xterm.js lineage the
+        // daemon runs (`InputHandler.eraseInLine` case 2 passes `clearWrap = true`), and the
+        // disagreement is what #165 is. A row that has been erased to nothing cannot be the tail
+        // of the line above it, and PageList's column reflow believes the flag over the cells.
+        const ghostty = await loadEngine();
+        const vt = ghostty.createTerminal(10, 4);
+        try {
+            // 16 cells at 10 columns: row 0 holds '0123456789' and soft-wraps into row 1.
+            vt.write('0123456789abcdef\r\n');
+            expect(wrappedRows(vt)).toEqual([1]);
+
+            // CUP to row 2 column 1, then EL 2. Row 1 is now blank, so it is nobody's tail.
+            vt.write('\x1b[2;1H\x1b[2K');
+            expect(rowTexts(vt)[1]).toBe('');
+            expect(wrappedRows(vt)).toEqual([]);
+        } finally {
+            vt.free();
+        }
+    });
+
+    it('keeps ESC[K at column 0 from tearing a line a progress bar redraws (§165)', async () => {
+        // The deliberate NON-change, pinned because the obvious "completion" of this fix breaks
+        // real programs.
+        //
+        // xterm.js clears its wrap flag for EL 0 when the cursor is at column 0 as well as for
+        // EL 2, and an earlier draft of the wasm patch matched it. That is wrong HERE, because
+        // xterm.js never reflows and this engine does: `CR` + `ESC[K` + rewrite is how a progress
+        // bar, a spinner or a status line redraws the tail of a line it has already printed, and
+        // when that line has soft-wrapped the row it lands on is a continuation row. Breaking the
+        // backward linkage there tears the logical line PERMANENTLY on the next widen. Measured
+        // on the draft: this case came back as '0123456789' + 'ABCDEF' instead of one line.
+        //
+        // Nothing about §165 needs it. Ink's `eraseLines()` and ratatui/crossterm's
+        // `Clear(CurrentLine)` are both `ESC[2K`, which the case below covers.
+        const ghostty = await loadEngine();
+        const vt = ghostty.createTerminal(10, 4);
+        try {
+            vt.write('0123456789ABCDEF'); // wraps: '0123456789' then 'ABCDEF'
+            expect(wrappedRows(vt)).toEqual([1]);
+
+            vt.write('\r\x1b[K'); // the progress-bar idiom: CR, then erase to end of line
+            vt.write('ABCDEF'); // and rewrite the tail in place
+            expect(wrappedRows(vt)).toEqual([1]); // still the tail of the line above
+
+            vt.resize(30, 4);
+            expect(rowTexts(vt)).toEqual(['0123456789ABCDEF', '', '', '']);
+        } finally {
+            vt.free();
+        }
+    });
+
+    it('clears the previous row spacer head when ESC[2K erases a wide-char continuation (§165)', async () => {
+        // The other half of `Screen.cursorResetWrapFull`, on the real wasm.
+        //
+        // A wide character that cannot fit in the last column leaves a SPACER HEAD there and
+        // wraps the character itself onto the next row. Once the linkage is broken that head has
+        // no tail to point at, so it has to be cleared, exactly as upstream's `cursorResetWrap`
+        // clears the one on its own row. A spacer head reads back through `getLine` as a cell
+        // with `width === 0`; upstream leaves it standing after the erase.
+        const ghostty = await loadEngine();
+        const vt = ghostty.createTerminal(7, 4);
+        try {
+            vt.write('abcdef\u4e2d'); // six narrow cells, then a two-cell wide char
+            expect(wrappedRows(vt)).toEqual([1]);
+            expect((vt.getLine(0) ?? [])[6]?.width).toBe(0); // the spacer head
+
+            vt.write('\x1b[2;1H\x1b[2K');
+            expect(wrappedRows(vt)).toEqual([]);
+            expect((vt.getLine(0) ?? [])[6]?.width).not.toBe(0); // cleared with the linkage
+        } finally {
+            vt.free();
+        }
+    });
+
+    it('ships a wasm whose widen stacks the rows a TUI repainted while narrow, never glues them (§165)', async () => {
+        // The reported symptom end to end, on the real VT: shrink, in-place repaint, widen.
+        //
+        // The gesture is the one every pane resize produces (a window drag, a split, the
+        // inspector opening, another client taking size ownership), and the repaint is Ink's,
+        // i.e. Claude Code's: `ansi-escapes`' `eraseLines(n)` is `ESC[2K` + `ESC[1A` per row and a
+        // final `ESC[2K ESC[G`, then the whole frame is rewritten at the new width. Before the
+        // `-nex.13` wasm patch every one of those erased rows kept the `wrap_continuation` flag
+        // the shrink's reflow had put on it, so the widen's reflow appended each row's NEW,
+        // unrelated contents to the row above: the reporter's screenshot, rows of 17-cell
+        // fragments separated by 9-cell blank runs (the diff frame's line-number gutter) at a
+        // constant 26-cell stride, which is the width the frame had been painted at.
+        const ROWS = 12;
+        const NARROW = 26;
+        const WIDE = 190;
+        const gutter = (n: number | null) => (n === null ? ' '.repeat(9) : `   ${n} +| `);
+
+        const ghostty = await loadEngine();
+        const vt = ghostty.createTerminal(WIDE, ROWS);
+        try {
+            // A diff frame at the wide width, each row far longer than the narrow width.
+            for (let n = 73; n < 77; n += 1) vt.write(`   ${n} +| ${'x'.repeat(150)}\r\n`);
+            vt.write('> \r\n');
+
+            // The pane shrinks. Ghostty reflows: every wide row becomes several narrow rows
+            // linked as continuations. This half is upstream behaviour and stays.
+            vt.resize(NARROW, ROWS);
+            expect(wrappedRows(vt).length).toBeGreaterThan(0);
+
+            // The TUI answers SIGWINCH: erase the frame in place, then rewrite it at 26 columns.
+            vt.write('\x1b[2K\x1b[1A'.repeat(ROWS - 1) + '\x1b[2K\x1b[G');
+            const repainted: string[] = [];
+            for (let n = 73; n < 77; n += 1) {
+                repainted.push(`${gutter(n)}code line no ${n} co`);
+                repainted.push(`${gutter(null)}ntinues here and `);
+                repainted.push(`${gutter(null)}wraps at seventee`);
+            }
+            vt.write(`${repainted.slice(0, ROWS - 1).join('\r\n')}\r\n> `);
+
+            // The only rows that may read as continuations now are the ones the REPAINT wrapped:
+            // `   NN +| code line no NN co` is 27 cells at 26 columns, so its last cell lands on
+            // the row below. Every other row was written whole and ends in a newline. Anything
+            // else here is a stale flag, and the widen below is where it does its damage.
+            expect(wrappedRows(vt)).toEqual([1, 5, 9]);
+
+            // The pane widens again. Reflow rejoins the rows it genuinely wrapped and leaves the
+            // rest standing: the frame comes back stacked, exactly as it was painted.
+            vt.resize(WIDE, ROWS);
+            expect(rowTexts(vt)).toEqual([
+                '   73 +| code line no 73 co',
+                '         ntinues here and',
+                '         wraps at seventee',
+                '   74 +| code line no 74 co',
+                '         ntinues here and',
+                '         wraps at seventee',
+                '   75 +| code line no 75 co',
+                '         ntinues here and',
+                '         wraps at seventee',
+                '   76 +| code line no 76 co',
+                '         ntinues here and',
+                '>'
+            ]);
+
+            // Said once more as the mechanism rather than as a golden frame, so a future failure
+            // reads as "rows got glued" and not merely "the dump moved": nothing the repaint drew
+            // was wider than 27 cells, so no row of the widened screen may be either. The defect
+            // produced rows of 150+ cells built out of seven narrow rows side by side.
+            for (const text of rowTexts(vt)) expect(text.length).toBeLessThanOrEqual(27);
+        } finally {
+            vt.free();
+        }
     });
 });

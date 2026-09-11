@@ -10,6 +10,15 @@
  * Once unacked bytes exceed `PTY_FLOW_CONTROL_WINDOW_BYTES` the daemon stops draining that
  * pane's ring buffer for that client (the PTY itself keeps running — a slow client must not
  * stall the process or other viewers).
+ *
+ * One PAIR on this channel, and the only one: `replayGrid` immediately followed by `replay`
+ * for the same pane (kelpi #166). A serialised screen only means what it says at the column
+ * count it was taken at, and the client that rendered it is not always the client whose
+ * measurement the PTY follows — so the snapshot states its own grid, in its own frame, ahead
+ * of itself. See `replayGrid` below for why it is a separate frame rather than a header on the
+ * replay payload (an old client writes a replay's payload straight into its engine, so a
+ * prefix would paint four bytes of garbage) and for what each side does without the other's
+ * half.
  */
 
 export const PTY_FRAME_TYPES = {
@@ -33,7 +42,35 @@ export const PTY_FRAME_TYPES = {
      * (forward-compat rule in `decodePtyFrame`), which degrades to "no mouse reporting"
      * rather than to fan-out.
      */
-    inputDirect: 0x06
+    inputDirect: 0x06,
+    /**
+     * server → client: the grid the NEXT `replay` frame for this pane was serialised at
+     * (cols/rows, the same two uint16 BE a `resize` carries — `decodeResizePayload` reads it).
+     *
+     * **Why the snapshot needs to say how wide it is (kelpi #166).** A serialised screen is
+     * not width-independent. `@xterm/addon-serialize` emits a soft-wrapped row and its
+     * continuation with NO newline between them, because the row's `isWrapped` says the
+     * replaying terminal will wrap it again at the same column — true only if that terminal
+     * has the same column count. PTY geometry follows exactly ONE client (`sizeOwnerID`,
+     * `daemon/src/ws/sync.ts`), so every other attached client renders a snapshot taken at
+     * somebody else's width, and each wrapped pair landed side by side on one row of a wider
+     * engine: a fixed-stride garble at the owner's column count, steady by construction.
+     * Nothing on the wire carried the number, so no client could even know.
+     *
+     * Sent immediately before EVERY `replay` (attach, settled-resize resync, flow-control
+     * re-seed), in the same synchronous turn, so the pair cannot be separated. Its bytes are
+     * NOT charged to the flow-control window: the client acks what it feeds its engine, and
+     * this frame is never fed to anything (see `ws/streams.ts` `sendReplayWithGrid`).
+     *
+     * Backward compatible in both directions. An old client drops the frame as an unknown
+     * type (`decodePtyFrame` below) and behaves exactly as it did. A new client on an old
+     * daemon sees no grid and keeps its own measurement, which is also exactly as it was — so
+     * the geometry is advisory on arrival and must never be applied on its own: a client holds
+     * it until the replay it belongs to actually lands (`client/src/connection/pty.ts`).
+     * Resizing an engine that is then not re-seeded would leave it holding a grid it has never
+     * been told the contents of, which is the one state §N24's paint hold exists to hide.
+     */
+    replayGrid: 0x07
 } as const;
 
 export type PtyFrameTypeName = keyof typeof PTY_FRAME_TYPES;

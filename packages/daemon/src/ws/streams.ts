@@ -46,6 +46,7 @@ import {
     decodePtyFrame,
     decodeResizePayload,
     encodePtyFrame,
+    encodeResizePayload,
     type JsonObject,
     type PtyFrameType,
     type WsMouseFormat,
@@ -208,6 +209,20 @@ function paneIsKnown(term: TerminalStateService, paneID: string): boolean {
 }
 
 /**
+ * A snapshot as every replay path here reads it: the serialised bytes plus the grid they were
+ * serialised AT (`term/service.ts` `snapshot()` returns the emulator's live `cols`/`rows`).
+ *
+ * Named rather than written inline at each site because #166 made the grid load-bearing: it is
+ * no longer a diagnostic beside the bytes, it is the other half of the replay, and it travels
+ * with them as far as the wire (`sendReplayWithGrid`).
+ */
+export interface ReplaySnapshot {
+    readonly data: Uint8Array;
+    readonly cols: number;
+    readonly rows: number;
+}
+
+/**
  * Prefer the terminal state's async snapshot: it settles the pending write chain first, so
  * bytes fed a moment ago are inside the replay instead of missing from it.
  */
@@ -282,6 +297,14 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
      * renews the budget the owner's gesture had spent, so that pane can see three snapshot
      * attempts rather than two. Bounded the same way everything else here is, by externally
      * driven gestures, so it cannot run away; not worth a per-session map to tighten.
+     *
+     * Since #166 "gesture" includes an OWNERSHIP HAND-OFF. A client that has just lost size control
+     * asks to be re-seeded with a forced `resize-pane`, which reaches `requestReplay` like any local
+     * resize and therefore renews this budget too. Bounded by the same rule as the rest: the client
+     * sends that report on the ownership transition only, one per hand-off, never on a timer
+     * (`client/src/terminal/TerminalPane.tsx`, the ownership effect). So a hand-off can buy a pane
+     * one more snapshot attempt than the gesture before it had left, which is the same
+     * externally-driven renewal a viewer's window drag already buys.
      */
     const resyncRetried = new Set<string>();
     let closed = false;
@@ -432,7 +455,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             // Identity, not presence: a detach + re-attach during the settle installs a NEW
             // entry with a replay of its own, and this stale one must not paint over it.
             if (target.session.entryFor(paneID) !== target.entry) continue;
-            target.session.sendResync(paneID, target.entry, snapshot.data);
+            target.session.sendResync(paneID, target.entry, snapshot);
         }
 
         // Anything that came due while the snapshot was in flight was skipped by the guard at
@@ -499,7 +522,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             if (this.disposed || closed) return;
             if (this.panes.get(paneID) !== entry) return;
 
-            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
+            this.sendReplayWithGrid(paneID, entry, snapshot);
             entry.live = true;
             // The pane's VT modes, right behind the replay it belongs to (§TERM-037): the client
             // encodes DEC mouse reports itself, so an attach that did not carry the modes would
@@ -685,15 +708,69 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
          * over it. No JSON notice rides with it — a notice that arrived without its replay
          * (a snapshot that threw) would leave the client's ingest holding live bytes forever.
          */
-        sendResync(paneID: string, entry: PaneEntry, data: Uint8Array): void {
+        sendResync(paneID: string, entry: PaneEntry, snapshot: ReplaySnapshot): void {
             if (this.disposed || closed) return;
             // The client zeroes its own unacked/pending counters the moment a replay lands
             // (`client/src/connection/pty.ts`), which drops the acks it had not flushed yet.
             // Zero ours in the same breath or those bytes stay charged against this client's
             // window for the life of the pane — and enough of them stall it.
             entry.unacked = 0;
-            this.send(paneID, entry, PTY_FRAME_TYPES.replay, data);
+            this.sendReplayWithGrid(paneID, entry, snapshot);
             entry.live = true;
+        }
+
+        /**
+         * The `replayGrid` + `replay` pair, in that order and in one turn (kelpi #166).
+         *
+         * WHY THE GRID GOES WITH EVERY REPLAY, TO EVERY CLIENT. A snapshot is not
+         * width-independent: `@xterm/addon-serialize` writes a soft-wrapped row and its
+         * continuation with no newline between them (the row's `isWrapped` says the replaying
+         * terminal will wrap it again at the same column), and `term/service.ts`'s header has
+         * the rest of the ways a serialised screen depends on `term.cols`. PTY geometry follows
+         * exactly ONE client (`sizeOwnerID`, `ws/sync.ts:1320`; a non-owner's measured grid is
+         * cached and never applied, `:1528-1542`), so for every OTHER attached client this
+         * snapshot was taken at a width its engine does not have, and each wrapped pair landed
+         * side by side on one row: the fixed-stride garble of kelpi #166, steady by
+         * construction because every later replay reproduced it.
+         *
+         * The daemon states the FACT (this is the grid the bytes were serialised at) and does
+         * not decide the policy. It is the client that knows whether it owns sizing — it is
+         * told on every change and at handshake (`size-control`, `ws/sync.ts:1322`) and it
+         * already shows the user a chip about it — so the client decides whether to mirror the
+         * grid or keep its own box. Keeping ownership out of this hub is deliberate: the hub
+         * has no session↔client identity and would need sync.ts to hand it one, for an answer
+         * the client can give itself.
+         *
+         * UN-METERED on purpose. `send()` charges payload bytes to this client's flow-control
+         * window and is repaid by the client's `ack`, which the client sends for what it FEEDS
+         * its engine. These four bytes are never fed to anything (the client stashes them and
+         * applies them to the replay), so charging them would leak four bytes of window per
+         * replay, for the life of the pane, until the pane stalled. Not counted in `sentBytes`
+         * either, which is the same ledger read from the other side.
+         *
+         * A grid of 0×0 is skipped rather than sent: `term/service.ts` `snapshot()` answers
+         * `{cols: 0, rows: 0}` for a pane it no longer holds, and a client must never resize an
+         * engine to nothing. The replay still goes, exactly as it did before this existed.
+         */
+        private sendReplayWithGrid(paneID: string, entry: PaneEntry, snapshot: ReplaySnapshot): void {
+            if (snapshot.cols > 0 && snapshot.rows > 0) {
+                const grid = encodePtyFrame(
+                    PTY_FRAME_TYPES.replayGrid,
+                    paneID,
+                    encodeResizePayload(snapshot.cols, snapshot.rows)
+                );
+                if (grid !== undefined) {
+                    try {
+                        this.transport.sendFrame(grid);
+                    } catch (error) {
+                        // Reported, never fatal: the replay behind it is what the screen needs,
+                        // and a client that gets the replay without the grid is a client that
+                        // behaves exactly as it did before #166.
+                        report(error, `pty-replay-grid ${paneID}`);
+                    }
+                }
+            }
+            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
         }
 
         /** Push this pane's current VT modes, if this session is attached to it. */
@@ -807,7 +884,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
                 paneID,
                 reason: 'flow-control-drop'
             });
-            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
+            this.sendReplayWithGrid(paneID, entry, snapshot);
         }
 
         private send(paneID: string, entry: PaneEntry, type: PtyFrameType, payload: Uint8Array): void {

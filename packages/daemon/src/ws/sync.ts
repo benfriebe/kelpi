@@ -1525,6 +1525,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     const rows = count(parsed['rows']);
                     if (paneID === undefined || cols === undefined || rows === undefined) return;
                     if (cols <= 0 || rows <= 0) return;
+                    // #166: "act on this even though the numbers have not changed" — the report a
+                    // client sends when size control changed hands rather than when its box moved.
+                    const forced = parsed['force'] === true;
                     const previous = this.paneSizes.get(paneID);
                     this.paneSizes.set(paneID, { cols, rows });
                     // No owner (the previous one left without a successor): the first client
@@ -1535,9 +1538,21 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         broadcastSizeControl();
                     }
                     if (this.ownsSize()) this.panes?.resize(paneID, cols, rows);
-                    else if (previous?.cols !== cols || previous?.rows !== rows) {
-                        // Its own renderer still resized. A fresh snapshot clears any local
-                        // reflow divergence without changing the owner's grid or other viewers.
+                    else if (forced || previous?.cols !== cols || previous?.rows !== rows) {
+                        /*
+                         * Its own renderer still resized. A fresh snapshot clears any local
+                         * reflow divergence without changing the owner's grid or other viewers.
+                         *
+                         * `forced` is what makes this the "re-seed me" path #166 needs, and the
+                         * only one there is: a client that has just LOST size control may be
+                         * holding a replay it applied at its own grid (the `size-control`
+                         * broadcast can reach its view a render behind a big chunked replay), and
+                         * its box has not moved, so nothing here would otherwise fire — the
+                         * daemon replays on a CHANGED grid and a replay is never provoked by a
+                         * replay. One forced report per hand-off turns that dead end into the
+                         * snapshot that states the new owner's grid. It cannot poll: the client
+                         * sends it on the ownership transition only (`TerminalPane.tsx`).
+                         */
                         this.panes?.requestReplay?.(paneID);
                     }
                     return;

@@ -1,4 +1,4 @@
-import { PTY_FRAME_TYPES, decodePtyFrame, encodeAckPayload, encodePtyFrame, encodeResizePayload } from '@kelpi/protocol';
+import { PTY_FRAME_TYPES, decodePtyFrame, decodeResizePayload, encodeAckPayload, encodePtyFrame, encodeResizePayload } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPaneStreamHub, type PaneStreamHub, type PaneStreamSession } from './streams.js';
@@ -43,6 +43,17 @@ function harness(
             transport.frames.map((frame) => {
                 const decoded = decodePtyFrame(frame);
                 if (decoded === undefined) throw new Error('undecodable frame');
+                // #166: a `replayGrid` carries two uint16s, not text. Rendered as `CxR` so the
+                // expectations below read as what they are — the grid the replay behind it was
+                // serialised at — instead of as four bytes of mojibake.
+                if (decoded.type === (PTY_FRAME_TYPES.replayGrid as number)) {
+                    const grid = decodeResizePayload(decoded.payload);
+                    return {
+                        type: decoded.type as number,
+                        paneID: decoded.paneID,
+                        text: grid === undefined ? 'undecodable' : `${String(grid.cols)}x${String(grid.rows)}`
+                    };
+                }
                 return { type: decoded.type as number, paneID: decoded.paneID, text: textOf(decoded.payload) };
             })
     };
@@ -61,6 +72,10 @@ describe('attach → replay → live', () => {
         h.pty.emit(PANE_A, 'live-2');
 
         expect(h.frames()).toEqual([
+            // #166: every replay is preceded by the grid it was serialised at, for every client.
+            // This one owns sizing, so the grid is the one it just asked for; a non-owner gets
+            // the same frame carrying the OWNER's grid, which is the whole point.
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '100x30' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'scrollback' },
             { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'live-1' },
             { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'live-2' }
@@ -108,6 +123,7 @@ describe('attach → replay → live', () => {
         h.pty.emit(PANE_A, 'after');
 
         expect(h.frames()).toEqual([
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '80x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'during' },
             { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' }
         ]);
@@ -586,15 +602,21 @@ describe('session-local resize replay', () => {
             h.session.requestReplay(PANE_A);
             await vi.advanceTimersByTimeAsync(SETTLE / 2);
         }
-        expect(h.frames()).toHaveLength(2);
+        expect(h.frames()).toHaveLength(4);
         await vi.advanceTimersByTimeAsync(SETTLE * 3);
 
+        // Two frames per replay since #166 (grid, then snapshot). The grid is the OWNER's
+        // 80x24 every time: this session never owned sizing, so its own `requestReplay` moves
+        // the daemon's emulator not at all — it is handed the owner's grid to mirror.
         expect(h.frames()).toEqual([
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '80x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: '' },
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_B, text: '80x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_B, text: '' },
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '80x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'current-screen' }
         ]);
-        expect(ownerTransport.frames).toHaveLength(1);
+        expect(ownerTransport.frames).toHaveLength(2);
         expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 80, rows: 24 }]);
         expect(h.pty.resizes).toEqual(h.term.resizes);
         expect(h.geometry).toEqual(h.term.resizes);
@@ -616,17 +638,19 @@ describe('session-local resize replay', () => {
 
         h.term.feedMidParse(PANE_A, 'during');
         h.pty.emit(PANE_A, 'during');
-        expect(h.frames()).toHaveLength(1);
-        expect(otherTransport.frames).toHaveLength(2);
+        // Grid + replay from the attach (#166), and nothing since: this session is off live.
+        expect(h.frames()).toHaveLength(2);
+        expect(otherTransport.frames).toHaveLength(3);
         snapshot.finish();
         await vi.advanceTimersByTimeAsync(0);
         h.pty.emit(PANE_A, 'after');
 
-        expect(h.frames().slice(1)).toEqual([
+        expect(h.frames().slice(2)).toEqual([
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '80x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'during' },
             { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' }
         ]);
-        expect(otherTransport.frames).toHaveLength(3);
+        expect(otherTransport.frames).toHaveLength(4);
         h.hub.close();
     });
 
@@ -684,7 +708,7 @@ describe('session-local resize replay', () => {
         stale[complete]();
         await vi.advanceTimersByTimeAsync(0);
         expect(h.session.stats(PANE_A)?.live).toBe(false);
-        expect(h.frames()).toHaveLength(1);
+        expect(h.frames()).toHaveLength(2); // the first attach's grid + replay (#166)
 
         current.finish();
         await attaching;
@@ -706,7 +730,7 @@ describe('session-local resize replay', () => {
 
         await vi.advanceTimersByTimeAsync(SETTLE * 2);
         expect(snapshot).not.toHaveBeenCalled();
-        expect(h.frames()).toHaveLength(1);
+        expect(h.frames()).toHaveLength(2); // the attach's grid + replay, and nothing after it
         h.hub.close();
     });
 
@@ -718,7 +742,7 @@ describe('session-local resize replay', () => {
         other.session.requestReplay(PANE_B);
 
         await vi.advanceTimersByTimeAsync(SETTLE * 2);
-        expect(h.frames()).toHaveLength(1);
+        expect(h.frames()).toHaveLength(2); // the attach's grid + replay (#166)
         expect(other.frames()).toEqual([]);
         h.hub.close();
         other.hub.close();
@@ -845,12 +869,13 @@ describe('settled-resize resync', () => {
         }
 
         expect(h.frames().slice(framesBefore)).toEqual([
+            { type: PTY_FRAME_TYPES.replayGrid, paneID: PANE_A, text: '60x24' },
             { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'typed-1typed-2' }
         ]);
 
         // …and the stream is live again straight behind it.
         h.pty.emit(PANE_A, 'after');
-        expect(h.frames().slice(framesBefore + 1)).toEqual([
+        expect(h.frames().slice(framesBefore + 2)).toEqual([
             { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' }
         ]);
     });
@@ -1122,5 +1147,168 @@ describe('settled-resize resync', () => {
         viewer.requestReplay(PANE_A);
         await vi.advanceTimersByTimeAsync(SETTLE * 20);
         expect(calls).toHaveLength(4); // a second local gesture, a second retry
+    });
+});
+/**
+ * kelpi #166 — the replay says how wide it is.
+ *
+ * The defect these pin: PTY geometry follows ONE client (`ws/sync.ts` `sizeOwnerID`), so a
+ * viewer renders a snapshot serialised at somebody else's column count, and the serialiser
+ * glues a soft-wrapped row to its continuation on the promise that the replaying terminal wraps
+ * at the same column. The daemon cannot fix the viewer's engine from here; what it can do is
+ * stop withholding the number, which is what every case below is about.
+ *
+ * The shape a NON-OWNER has at this seam is `attach(paneID)` with no size and no `resize` ever
+ * (`ws/sync.ts:2095` passes the measured size only `if (this.ownsSize())`, and `:1541` applies a
+ * `resize-pane` only for the owner), so that is how the viewer is driven here.
+ */
+describe('replay geometry (#166)', () => {
+    const SETTLE = 40;
+
+    it("carries the DAEMON's grid to a viewer that never sized the pane", async () => {
+        const h = harness();
+        const viewerTransport = recordingTransport();
+        const viewer = h.hub.createSession(viewerTransport);
+        h.term.setSnapshot(PANE_A, 'owner-width-screen');
+
+        await h.session.attach(PANE_A, { cols: 73, rows: 19 });
+        await viewer.attach(PANE_A);
+
+        const frames = viewerTransport.frames.map((frame) => decodePtyFrame(frame));
+        expect(frames.map((frame) => frame?.type)).toEqual([
+            PTY_FRAME_TYPES.replayGrid,
+            PTY_FRAME_TYPES.replay
+        ]);
+        expect(decodeResizePayload(frames[0]?.payload as Uint8Array)).toEqual({ cols: 73, rows: 19 });
+        expect(textOf(frames[1]?.payload as Uint8Array)).toBe('owner-width-screen');
+        // And nothing about the viewer's attach moved the pane: the grid it was told is the
+        // owner's because the owner's is the only one there is.
+        expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 73, rows: 19 }]);
+    });
+
+    it('carries it again on the settled-resize resync, for owner and viewer alike', async () => {
+        vi.useFakeTimers();
+        try {
+            const h = harness({ resizeResyncMs: SETTLE });
+            const viewerTransport = recordingTransport();
+            const viewer = h.hub.createSession(viewerTransport);
+            await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+            await viewer.attach(PANE_A);
+            h.term.setSnapshot(PANE_A, 'reflowed');
+
+            // The OWNER drags its window; the daemon's emulator follows it, and both clients
+            // are reconciled to the buffer it now holds.
+            h.session.resize(PANE_A, 61, 25);
+            await vi.advanceTimersByTimeAsync(SETTLE * 2);
+
+            const gridsOf = (transport: RecordedTransport): { cols: number; rows: number }[] =>
+                transport.frames
+                    .map((frame) => decodePtyFrame(frame))
+                    .filter((frame) => frame?.type === PTY_FRAME_TYPES.replayGrid)
+                    .map((frame) => decodeResizePayload(frame?.payload as Uint8Array) as { cols: number; rows: number });
+
+            expect(gridsOf(h.transport)).toEqual([
+                { cols: 80, rows: 24 },
+                { cols: 61, rows: 25 }
+            ]);
+            // The viewer's is IDENTICAL. Its own box is irrelevant here and that is the fix:
+            // the one grid the snapshot can be parsed at is the one the daemon holds.
+            expect(gridsOf(viewerTransport)).toEqual([
+                { cols: 80, rows: 24 },
+                { cols: 61, rows: 25 }
+            ]);
+            h.hub.close();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("reports the owner's grid to a viewer whose own local resize asked for the replay", async () => {
+        vi.useFakeTimers();
+        try {
+            const h = harness({ resizeResyncMs: SETTLE });
+            const viewerTransport = recordingTransport();
+            const viewer = h.hub.createSession(viewerTransport);
+            await h.session.attach(PANE_A, { cols: 73, rows: 19 });
+            await viewer.attach(PANE_A);
+            h.term.setSnapshot(PANE_A, 'still-the-owners-screen');
+
+            // This is what a non-owner's window resize becomes: `requestReplay`, never a
+            // `resize` (`ws/sync.ts:1541-1546`). The pane's grid must not move, and the replay
+            // must state it.
+            viewer.requestReplay(PANE_A);
+            await vi.advanceTimersByTimeAsync(SETTLE * 2);
+
+            const last = viewerTransport.frames.slice(-2).map((frame) => decodePtyFrame(frame));
+            expect(last.map((frame) => frame?.type)).toEqual([
+                PTY_FRAME_TYPES.replayGrid,
+                PTY_FRAME_TYPES.replay
+            ]);
+            expect(decodeResizePayload(last[0]?.payload as Uint8Array)).toEqual({ cols: 73, rows: 19 });
+            expect(textOf(last[1]?.payload as Uint8Array)).toBe('still-the-owners-screen');
+            expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 73, rows: 19 }]);
+            h.hub.close();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('charges the grid frame to nobody: four bytes per replay would stall a pane', async () => {
+        // The client acks what it FEEDS its engine, and it never feeds this frame to anything
+        // (it holds the numbers and applies them to the replay). Charging them would leak four
+        // bytes of window per replay for the life of the pane — 512 KB of window, gone one
+        // resync at a time — so `sendReplayWithGrid` sends it outside the meter.
+        const h = harness();
+        h.term.setSnapshot(PANE_A, '12345');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        expect(h.session.stats(PANE_A)).toMatchObject({ unacked: 5, sentBytes: 5 });
+    });
+
+    it('re-seeds a dropped client in the order pty-resync, grid, replay', async () => {
+        /*
+         * The flow-control re-seed is the third replay site and the one a revert can hide: its
+         * other tests read `frames().at(-1)`, which is the replay either way, so taking the grid
+         * back out of `reseed` left them green. This one pins the whole ordering across BOTH
+         * channels, which is where that path's correctness actually lives:
+         *
+         *   - the `pty-resync` notice leads, because a notice that arrived after the replay would
+         *     erase the byte credit the replay just granted (`reseed`'s own comment), and
+         *   - the grid sits between the two, because the client holds it until the replay lands and
+         *     drops it if anything else arrives first.
+         */
+        const h = harness({ windowBytes: 8, maxQueuedBytes: 4 });
+        h.term.setSnapshot(PANE_A, 'reseeded');
+        await h.session.attach(PANE_A, { cols: 61, rows: 25 });
+        const before = h.transport.outbound.length;
+
+        h.pty.emit(PANE_A, '12345678');
+        h.pty.emit(PANE_A, 'overflowing');
+        expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
+        h.session.handleFrame(encodePtyFrame(PTY_FRAME_TYPES.ack, PANE_A, encodeAckPayload(8)) as Uint8Array);
+        await settle();
+
+        const sent = h.transport.outbound.slice(before).map((entry) => {
+            if (entry.kind === 'json') return `json:${String(entry.message['type'])}`;
+            const decoded = decodePtyFrame(entry.frame);
+            if (decoded?.type === (PTY_FRAME_TYPES.replayGrid as number)) {
+                const grid = decodeResizePayload(decoded.payload) as { cols: number; rows: number };
+                return `grid:${String(grid.cols)}x${String(grid.rows)}`;
+            }
+            return `frame:${String(decoded?.type)}:${textOf(decoded?.payload as Uint8Array)}`;
+        });
+        expect(sent).toEqual(['json:pty-resync', 'grid:61x25', `frame:${String(PTY_FRAME_TYPES.replay)}:reseeded`]);
+    });
+
+    it('sends no grid for a pane the emulator no longer holds, but still sends the replay', async () => {
+        // `term/service.ts` `snapshot()` answers `{cols: 0, rows: 0}` for a pane it has thrown
+        // away. A client must never resize an engine to nothing, so the pair degrades to the
+        // single frame it was before #166 rather than carrying a grid that means "gone".
+        const h = harness();
+        h.term.setSnapshot(PANE_A, 'whatever');
+        h.term.setGrid(PANE_A, 0, 0);
+        await h.session.attach(PANE_A);
+
+        expect(h.frames()).toEqual([{ type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'whatever' }]);
     });
 });

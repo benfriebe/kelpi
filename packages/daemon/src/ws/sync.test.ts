@@ -1308,6 +1308,39 @@ describe('size control (terminal-surface.md §5.1)', () => {
         expect(b.replays).toEqual([f.paneID]);
     });
 
+    it("re-seeds a non-owner whose grid did NOT change when the report says force (#166)", () => {
+        /*
+         * The "re-seed me" path, and the only one the protocol has. A client that has just LOST
+         * size control may be holding a replay it applied at its own grid: the `size-control`
+         * broadcast can reach its view a render behind a big chunked replay, and by the time it
+         * knows it is a non-owner the snapshot is already on screen at the wrong width. Its box has
+         * not moved, so the clause below would not fire; the daemon replays on a CHANGED grid, and
+         * a replay provokes no replay. `force` is the client saying "I know my numbers are the same
+         * and I still need the screen", which is exactly one message per hand-off.
+         */
+        const f = fixture();
+        const a = connectWithBridge(f);
+        send(a.session, { type: 'attach-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        const b = connectWithBridge(f);
+        send(b.session, { type: 'attach-pane', paneID: f.paneID, cols: 80, rows: 24 });
+
+        // A is the deposed owner, reporting the grid it has been reporting all along.
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 40 });
+        expect(a.replays).toEqual([]);
+
+        send(a.session, { type: 'resize-pane', paneID: f.paneID, cols: 120, rows: 40, force: true });
+        expect(a.replays).toEqual([f.paneID]);
+        // Still a cache write and never a PTY resize: `force` buys a replay, not the geometry.
+        expect(a.resizes).toEqual([]);
+        expect(b.replays).toEqual([]);
+
+        // And for the OWNER it is an ordinary apply: a forced report is how the client that has
+        // just TAKEN control claims the PTY, which must not also re-seed anybody.
+        send(b.session, { type: 'resize-pane', paneID: f.paneID, cols: 80, rows: 24, force: true });
+        expect(b.resizes).toEqual([{ paneID: f.paneID, cols: 80, rows: 24 }]);
+        expect(b.replays).toEqual([]);
+    });
+
     it('requests a non-owner replay only when its cached local grid changes', () => {
         const f = fixture();
         const a = connectWithBridge(f);

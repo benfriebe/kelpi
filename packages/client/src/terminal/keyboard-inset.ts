@@ -187,6 +187,12 @@ export const KEYBOARD_INSET_ATTRIBUTE = 'data-terminal-keyboard-inset';
 /**
  * The rows the pane last sent the daemon. Rows and not cols: the keyboard takes HEIGHT, so rows
  * is the number the rule moves and cols is the number that must not move.
+ *
+ * It is a report about this pane's MEASUREMENT, which since #166 is no longer always a report
+ * about its screen: a pane that does not own PTY sizing keeps measuring and reporting its own box
+ * (that report is the daemon's takeover cache) while its engine mirrors the owner's grid. What is
+ * on the canvas in that case is `data-terminal-mirror` (`TerminalPane.tsx`), and the two
+ * disagreeing is the mirror working rather than a fault.
  */
 export const TERMINAL_ROWS_ATTRIBUTE = 'data-terminal-rows';
 

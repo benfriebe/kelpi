@@ -545,6 +545,35 @@ describe('the overflow menu', () => {
         expect(h.commands().some((command) => command['command'] === 'pane-close' && command['pane_id'] === PANE_A)).toBe(true);
     });
 
+    it('offers Take size control only while another client owns the PTY (#166)', () => {
+        /*
+         * The phone's escape hatch from a mirror. A phone claims PTY sizing on its first
+         * `attach-pane`, so it is normally the owner and this row is absent; once a desktop window
+         * takes sizing back the phone renders that window's grid (the owner's screen, clipped at the
+         * phone's edge - `terminal/TerminalPane.tsx`), and the desktop's way back is a top-bar chip
+         * this shell replaces. Same rule as the chip: shown only to a client that knows somebody
+         * else owns it.
+         */
+        const h = setup();
+        tap('phone-more');
+        expect(screen.queryByTestId('phone-menu-take-size-control')).toBeNull();
+        tap('phone-menu-header-close');
+
+        act(() => {
+            h.socket().emit({ type: 'size-control', ownerClientID: 'another-window' });
+        });
+        tap('phone-more');
+        tap('phone-menu-take-size-control');
+        expect(h.lastOfType('take-size-control')).toEqual({ type: 'take-size-control' });
+
+        // …and it goes away again the moment the daemon says this client owns sizing.
+        act(() => {
+            h.socket().emit({ type: 'size-control', ownerClientID: 'client-1' });
+        });
+        tap('phone-more');
+        expect(screen.queryByTestId('phone-menu-take-size-control')).toBeNull();
+    });
+
     it('renames through a prompt that shows the current name', () => {
         const h = setup();
         tap('phone-more');

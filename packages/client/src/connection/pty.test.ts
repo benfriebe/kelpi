@@ -3,7 +3,9 @@ import {
     PTY_FRAME_TYPES,
     decodeAckPayload,
     decodePtyFrame,
-    encodePtyFrame
+    encodePtyFrame,
+    encodeResizePayload,
+    type PtyResize
 } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,7 +39,7 @@ function harness(options: { ackThresholdBytes?: number; ackIntervalMs?: number }
             sockets.last().messages().filter((message) => message['type'] === type),
         frames: (): ReturnType<typeof decodePtyFrame>[] => sockets.last().frames.map((frame) => decodePtyFrame(frame)),
         serverSend(type: number, paneID: string, payload: Uint8Array): void {
-            const frame = encodePtyFrame(type as 1 | 2 | 3 | 4 | 5, paneID, payload);
+            const frame = encodePtyFrame(type as 1 | 2 | 3 | 4 | 5 | 6 | 7, paneID, payload);
             sockets.last().emitBinary(frame as Uint8Array);
         },
         redial(): void {
@@ -367,5 +369,126 @@ describe('pane-modes (§TERM-037: the client encodes DEC mouse reports itself)',
         expect(() => {
             h.socket().emit({ type: 'pane-modes', paneID: PANE, modes: {} });
         }).not.toThrow();
+    });
+});
+
+/**
+ * #166 — the grid the replay was serialised at, held until the replay it belongs to lands.
+ *
+ * The daemon sends `replayGrid` immediately before every `replay` for that pane, in the same turn
+ * (`daemon/src/ws/streams.ts` `sendReplayWithGrid`). This module's whole job with it is to keep
+ * the two together and hand them to the subscriber as one event: a grid applied WITHOUT its
+ * replay would resize an engine that is then never re-seeded, which is the state §N24's paint hold
+ * exists to cover — and it only covers a second.
+ */
+describe('replay geometry (#166)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function subscribe(h: ReturnType<typeof harness>): { grids: (PtyResize | undefined)[]; replays: string[] } {
+        const grids: (PtyResize | undefined)[] = [];
+        const replays: string[] = [];
+        h.client.subscribe(PANE, {
+            cols: 120,
+            rows: 40,
+            onReplay: (bytes, grid) => {
+                grids.push(grid);
+                replays.push(decoder.decode(bytes));
+            },
+            onData: () => undefined
+        });
+        return { grids, replays };
+    }
+
+    it('hands the grid to the replay behind it', () => {
+        const h = harness();
+        const seen = subscribe(h);
+
+        h.serverSend(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19));
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('snapshot'));
+
+        expect(seen.replays).toEqual(['snapshot']);
+        expect(seen.grids).toEqual([{ cols: 73, rows: 19 }]);
+    });
+
+    it('applies it to exactly ONE replay, never to the next one', () => {
+        // A settled-resize resync sends its own grid. If the first one lingered, a replay whose
+        // grid frame was lost would be parsed at a width that is no longer the daemon's.
+        const h = harness();
+        const seen = subscribe(h);
+
+        h.serverSend(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19));
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('first'));
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('second'));
+
+        expect(seen.replays).toEqual(['first', 'second']);
+        expect(seen.grids).toEqual([{ cols: 73, rows: 19 }, undefined]);
+    });
+
+    it('does nothing at all with a grid that has no replay behind it', () => {
+        const h = harness();
+        const seen = subscribe(h);
+        const framesBefore = h.frames().length;
+
+        h.serverSend(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19));
+        vi.advanceTimersByTime(100);
+
+        // Not delivered, and not acked: a client acks what it FEEDS its engine, and four bytes
+        // charged per replay would leak this pane's flow-control window away for good.
+        expect(seen.replays).toEqual([]);
+        expect(h.client.stats(PANE)).toMatchObject({ unacked: 0, pendingAck: 0 });
+        expect(h.frames().length).toBe(framesBefore);
+    });
+
+    it('leaves the grid undefined against a daemon that sends none', () => {
+        const h = harness();
+        const seen = subscribe(h);
+
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('snapshot'));
+
+        expect(seen.grids).toEqual([undefined]);
+    });
+
+    it('drops a zero grid rather than passing on a grid of nothing', () => {
+        const h = harness();
+        const seen = subscribe(h);
+
+        h.serverSend(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(0, 0));
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('snapshot'));
+
+        expect(seen.grids).toEqual([undefined]);
+    });
+
+    it('forgets a grid that a reconnect interrupted', () => {
+        // The grid describes one snapshot on one socket; the re-attach brings its own.
+        const h = harness();
+        const seen = subscribe(h);
+
+        h.serverSend(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19));
+        h.redial();
+        h.serverSend(PTY_FRAME_TYPES.replay, PANE, encoder.encode('re-seeded'));
+
+        expect(seen.replays).toEqual(['re-seeded']);
+        expect(seen.grids).toEqual([undefined]);
+    });
+
+    it('re-sends an unchanged grid only when the caller forces it', () => {
+        // The PTY claim half of #166: a pane that has been a cached non-owner takes size control
+        // without its box moving, and that claim has to reach the daemon.
+        const h = harness();
+        const handle = h.client.subscribe(PANE, { cols: 120, rows: 40, onData: () => undefined });
+
+        handle.resize(120, 40);
+        expect(h.json('resize-pane')).toEqual([]);
+
+        handle.resize(120, 40, true);
+        // …and the flag rides with it, so the daemon can tell a claim from a measurement.
+        expect(h.json('resize-pane')).toEqual([
+            { type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }
+        ]);
     });
 });

@@ -229,8 +229,9 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
         // has re-rendered, so `tab` still holds wherever the last visit ended and focus would land
         // on that rail button while the rail selects `initial`.
         tabRefs.current.get(initial)?.focus();
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only: moving focus on
-        // every tab change would fight a click inside the panel.
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only: `initial` and
+        // `phone` are left out on purpose. A deep link that arrives while the panel is already open
+        // moves the selection but not focus (pre-existing; the phone effect below does follow it).
     }, [props.open]);
 
     /*

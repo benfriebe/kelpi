@@ -2441,6 +2441,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 springTimer: null
             };
             setDragID(id);
+            // A press is not yet a drag (#41): clear any drag-active left behind by a gesture whose
+            // mouseup was lost, so the companions are not collapsed before the geometry is measured.
+            setDragActive(false);
         },
         [baseModel, rename, selection, visibleOrder]
     );
@@ -4205,9 +4208,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     /**
-     * §5.5 multi-drag: the selected rows that are NOT the grabbed one. They collapse to zero
-     * height for the duration so the list shows a single moving row and one gap, and the
-     * grabbed row wears a `+N` capsule for the rest.
+     * §5.5 multi-drag: the selected rows that are NOT the grabbed one. The set is live from the
+     * press so the grabbed row already wears its `+N` capsule when the ghost is cloned; the
+     * companions' collapse to zero height waits for `dragActive` (#41), after which the list
+     * shows a single moving row and one gap.
      */
     const dragCompanions = useMemo((): ReadonlySet<string> => {
         if (dragID === null) return EMPTY_SELECTION;
@@ -4459,7 +4463,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             presets={presets}
                             renaming={rename?.kind === 'workspace' && rename.id === workspace.id}
                             dragging={dragID === workspace.id}
-                            dragHidden={dragCompanions.has(workspace.id)}
+                            // §5.5's companions collapse only once the gesture IS a drag, like
+                            // the gap below. §WS-093's gate measures every rendered row BEFORE
+                            // `dragActive` flips, so a companion collapsed on the bare press is
+                            // an unmeasured row and the drag could never start (kelpi#41). The
+                            // `+N` stays on the press: it is an overlay that moves no geometry,
+                            // and the cursor clone is photographed on the threshold move, before
+                            // the `dragActive` commit lands.
+                            dragHidden={dragActive && dragCompanions.has(workspace.id)}
                             dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
                             // §WS-089: the dragged row previews the nesting it is about to get.
                             nestPreview={dragID === workspace.id && previewGroupID !== null}

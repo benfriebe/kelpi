@@ -537,32 +537,41 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
  * disagree over identical bytes. These cover the three properties the seam has to hold: one
  * replay per SETTLED gesture, no byte lost or doubled around it, and no way for it to loop.
  */
+type Snapshot = ReturnType<StubTerm['service']['snapshot']>;
+type AsyncTerm = StubTerm['service'] & { snapshotAsync(paneID: string): Promise<Snapshot> };
+
+/**
+ * Hold the NEXT snapshot open, then resolve or reject it by hand.
+ *
+ * `resyncPane` takes every target off live before it awaits its snapshot, so "what happens
+ * inside that await" is a real state the hub can be in for as long as the emulator keeps
+ * parsing, and it is the only way to express a resize landing mid-resync with a clock that
+ * can be advanced by hand. One-shot: the call after this one runs the real implementation.
+ */
+function deferNextSnapshot(h: Harness): { finish(): void; fail(): void } {
+    const service = h.term.service as AsyncTerm;
+    const snapshot = service.snapshotAsync.bind(service);
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+    });
+    vi.spyOn(service, 'snapshotAsync').mockImplementationOnce(async (paneID) => {
+        await pending;
+        return snapshot(paneID);
+    });
+    return { finish, fail: () => fail(new Error('snapshot failed')) };
+}
+
 describe('session-local resize replay', () => {
     const SETTLE = 40;
-    type Snapshot = ReturnType<StubTerm['service']['snapshot']>;
-    type AsyncTerm = StubTerm['service'] & { snapshotAsync(paneID: string): Promise<Snapshot> };
 
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => {
         vi.restoreAllMocks();
         vi.useRealTimers();
     });
-
-    function deferNextSnapshot(h: Harness): { finish(): void; fail(): void } {
-        const service = h.term.service as AsyncTerm;
-        const snapshot = service.snapshotAsync.bind(service);
-        let finish!: () => void;
-        let fail!: (error: Error) => void;
-        const pending = new Promise<void>((resolve, reject) => {
-            finish = resolve;
-            fail = reject;
-        });
-        vi.spyOn(service, 'snapshotAsync').mockImplementationOnce(async (paneID) => {
-            await pending;
-            return snapshot(paneID);
-        });
-        return { finish, fail: () => fail(new Error('snapshot failed')) };
-    }
 
     it('coalesces local resizes into one replay for the requesting session without changing geometry', async () => {
         const h = harness({ resizeResyncMs: SETTLE });
@@ -949,5 +958,169 @@ describe('settled-resize resync', () => {
 
         await vi.advanceTimersByTimeAsync(1000);
         expect(replays(h, PANE_A)).toHaveLength(1);
+    });
+
+    it('still reconciles a resize that settled INSIDE an in-flight resync (#165)', async () => {
+        // The hole behind "the garbage is a steady state".
+        //
+        // `resyncPane` takes every target off live BEFORE it awaits the snapshot, so a second
+        // `resyncPane` for the same pane while that await is outstanding used to find no live
+        // target, return with `targets.length === 0`, and be gone. Nothing re-arms a settle
+        // timer except another APPLIED geometry change, so the dropped reconciliation was the
+        // LAST one, for the geometry the user is now looking at.
+        //
+        // The await is not a microtask: `snapshotAsync` flushes the emulator's write chain
+        // first (`term/service.ts` `flush` loops while `done < issued`), so a pane that keeps
+        // printing through the gesture (a TUI repainting, a spinner) holds it open for
+        // exactly as long as the gesture lasts.
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        // The shrink settles and its resync starts, then stalls on the snapshot.
+        const stalled = deferNextSnapshot(h);
+        h.term.setSnapshot(PANE_A, 'narrow');
+        h.session.resize(PANE_A, 26, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(replays(h, PANE_A)).toEqual(['attached']);
+
+        // The widen lands inside that await and settles there.
+        h.session.resize(PANE_A, 120, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(replays(h, PANE_A)).toEqual(['attached']); // still nothing: the snapshot is held
+
+        h.term.setSnapshot(PANE_A, 'wide');
+        stalled.finish();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // TWO post-attach replays: the stalled one, and the one the widen was owed. Without
+        // the owed-resync bookkeeping the second never happens and the client keeps whatever
+        // the shrink's repaint left on its canvas for good.
+        expect(replays(h, PANE_A)).toEqual(['attached', 'wide', 'wide']);
+    });
+
+    it('keeps a session-local replay session-local when it is owed (#165)', async () => {
+        // A non-owner's local resize replays for THAT viewer only and changes no server
+        // geometry, so an owed reconciliation must be run at the scope it was asked for: an
+        // owner's broadcast must not shrink to one session, and a viewer's request must not
+        // grow into a replay that resets every other client's engine for nothing.
+        const h = harness({ resizeResyncMs: SETTLE });
+        const viewerTransport = recordingTransport();
+        const viewer = h.hub.createSession(viewerTransport);
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        await viewer.attach(PANE_A);
+
+        const stalled = deferNextSnapshot(h);
+        h.session.resize(PANE_A, 26, 24); // the owner: a broadcast resync, which stalls
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        viewer.requestReplay(PANE_A); // the viewer, while that is in flight
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        h.term.setSnapshot(PANE_A, 'settled');
+        stalled.finish();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const viewerReplays = viewerTransport.frames
+            .map((frame) => decodePtyFrame(frame))
+            .filter((frame) => frame !== undefined && frame.type === PTY_FRAME_TYPES.replay)
+            .map((frame) => textOf(frame!.payload));
+        // The owner got its broadcast resync; the viewer got that one PLUS the session-local
+        // replay it was owed, and the owner did not get a second copy of the viewer's.
+        expect(replays(h, PANE_A)).toEqual(['attached', 'settled']);
+        expect(viewerReplays).toEqual(['attached', 'settled', 'settled']);
+    });
+
+    it('retries ONCE when the snapshot throws, and then stops (#165)', async () => {
+        // The same hole with a different cause. The catch puts `live` back but the queue was
+        // already emptied on the promise that the snapshot supersedes it, and no snapshot was
+        // sent: the client keeps the gesture's own repaint and nothing re-arms. One retry
+        // repairs it, because a snapshot is the authoritative buffer and a later one
+        // reconciles just as well as the one that failed.
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        const failing = deferNextSnapshot(h);
+        h.term.setSnapshot(PANE_A, 'reflowed');
+        h.session.resize(PANE_A, 60, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        failing.fail();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(replays(h, PANE_A)).toEqual(['attached', 'reflowed']);
+    });
+
+    it('does not poll forever when every snapshot throws (#165)', async () => {
+        // The cap on the retry above: a snapshot that keeps failing must not turn the settle
+        // window into a 150 ms poll for the life of the pane. One retry per gesture, and the
+        // next APPLIED grid change is what buys the next one.
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const errors: string[] = [];
+        const service = h.term.service as AsyncTerm;
+        vi.spyOn(service, 'snapshotAsync').mockImplementation(async () => {
+            errors.push('called');
+            throw new Error('snapshot failed');
+        });
+
+        h.session.resize(PANE_A, 60, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+
+        // The settled resync plus its one retry, and nothing after that.
+        expect(errors).toHaveLength(2);
+        expect(replays(h, PANE_A)).toEqual(['attached']);
+    });
+
+    it('renews the retry budget on the NEXT applied grid change (#165)', async () => {
+        // The other half of the cap: one retry PER GESTURE, not one per pane for the life of the
+        // daemon. `noteGeometry` clears the budget when it arms a timer, and without that line
+        // every test above still passes while a pane that ever had a failing snapshot never gets
+        // a retry again.
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const calls: string[] = [];
+        const service = h.term.service as AsyncTerm;
+        vi.spyOn(service, 'snapshotAsync').mockImplementation(async () => {
+            calls.push('called');
+            throw new Error('snapshot failed');
+        });
+
+        h.session.resize(PANE_A, 60, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+        expect(calls).toHaveLength(2); // this gesture's resync plus its retry
+
+        h.session.resize(PANE_A, 40, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+        expect(calls).toHaveLength(4); // a new gesture, a new resync, a new retry
+    });
+
+    it("renews it for a non-owner's local resize too, which changes no server geometry (#165)", async () => {
+        // A viewer that does not own PTY sizing replays through `requestReplay`, which never
+        // reaches `noteGeometry` (the point of it is that the server's grid does NOT move). So
+        // the owner path above is not enough: without the renewal in `requestReplay` a viewer
+        // whose snapshot threw once gets zero retries until an owner happens to resize the pane.
+        const h = harness({ resizeResyncMs: SETTLE });
+        const viewerTransport = recordingTransport();
+        const viewer = h.hub.createSession(viewerTransport);
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        await viewer.attach(PANE_A);
+        const calls: string[] = [];
+        const service = h.term.service as AsyncTerm;
+        vi.spyOn(service, 'snapshotAsync').mockImplementation(async () => {
+            calls.push('called');
+            throw new Error('snapshot failed');
+        });
+
+        viewer.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+        expect(calls).toHaveLength(2); // the viewer's resync plus its retry
+
+        viewer.requestReplay(PANE_A);
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+        expect(calls).toHaveLength(4); // a second local gesture, a second retry
     });
 });

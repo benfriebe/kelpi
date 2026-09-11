@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
+import { FOCUS_DWELL_MS } from './grid/FocusRing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
 
@@ -34,6 +35,11 @@ interface FixtureOptions {
     readonly sync?: boolean;
     /** A running agent in PANE_A, so the delete gate fires. */
     readonly agent?: boolean;
+    /**
+     * PANE_A's status as `setPaneStatus` leaves it: the daemon's answer to the Status submenu,
+     * built by the real reducer rather than a hand-written pane.
+     */
+    readonly status?: 'idle' | 'running' | 'waitingForInput';
     /** A closed pane on the undo stack, so ⇧⌘T has something to pop. */
     readonly closed?: boolean;
     /** A WEB pane in W1, so the menu grows §S43's two shed-control rows. */
@@ -96,6 +102,15 @@ function snapshotState(options: FixtureOptions = {}): JsonObject {
             workspaceID: W1,
             now: NOW,
             event: { type: 'setPaneStatus', status: 'running' }
+        });
+    }
+    if (options.status !== undefined) {
+        store.dispatch({
+            type: 'pane-agent-event',
+            paneID: PANE_A,
+            workspaceID: W1,
+            now: NOW,
+            event: { type: 'setPaneStatus', status: options.status }
         });
     }
     if (options.search !== undefined) {
@@ -237,6 +252,42 @@ describe('pane context menu (TERM-106…TERM-111)', () => {
                 status: 'running'
             });
         });
+    });
+
+    /**
+     * #108. The menu is opened on the pane the user is sitting in, so the daemon's answer flips
+     * the FOCUSED pane's status with no focus event. The 600 ms focus-dwell acknowledgment was
+     * keyed on that status, armed on the flip and sent `clear-pane-status`, which clears exactly
+     * `waitingForInput`: the user's choice came undone with nobody touching anything.
+     */
+    it('keeps Awaiting Input once the daemon applies it: the focus dwell does not acknowledge it', async () => {
+        const h = setup();
+        openPaneMenu();
+        fireEvent.click(screen.getByTestId('context-menu').querySelector('[data-menu-item="status"]') as Element);
+        fireEvent.click(screen.getByTestId('context-submenu').querySelector('[data-menu-item="status-waiting"]') as Element);
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'set-pane-status',
+                pane_id: PANE_A,
+                status: 'waitingForInput'
+            });
+        });
+
+        // Play the daemon: the reply, then the delta every attached client receives.
+        h.reply('set-pane-status', { ok: true, pane_id: PANE_A, workspace_id: W1, status: 'waitingForInput' });
+        const workspace = (snapshotState({ status: 'waitingForInput' }) as unknown as { workspaces: JsonObject[] })
+            .workspaces[0] as JsonObject;
+        act(() => {
+            h.socket().emit({ type: 'delta', seq: 1, events: [{ kind: 'workspace-upserted', id: W1, workspace }] });
+        });
+        const dot = (): string | null => screen.getByTestId(`pane-status-dot-${PANE_A}`).getAttribute('data-status');
+        expect(dot()).toBe('waitingForInput');
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, FOCUS_DWELL_MS + 300));
+        });
+        expect(h.commands().map((command) => command['command'])).not.toContain('clear-pane-status');
+        expect(dot()).toBe('waitingForInput');
     });
 
     it('lists only OTHER workspaces under Move to Workspace, and moves the pane there', async () => {

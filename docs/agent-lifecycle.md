@@ -518,15 +518,19 @@ if pane.status == waitingForInput: pane.status = idle
 The 600 ms delay exists so that briefly clicking through panes doesn't instantly
 swallow "waiting" badges, and so the user visibly sees what they're acknowledging.
 
-Client-side the timer is `useFocusDwell` (`packages/client/src/grid/FocusRing.tsx:64-77`);
+Client-side the timer is `useFocusDwell` (`packages/client/src/grid/FocusRing.tsx:65-84`);
 the mutation is the daemon's `clear-pane-status` verb
 (`packages/daemon/src/ws/sync.ts:705-724`, `packages/core/src/agent/machine.ts:202-215`).
 Two refinements to the triggers above:
 
-- The effect is keyed on the focused pane's `(paneID, status)`, so a focused pane whose
-  status flips to `waitingForInput` starts a fresh 600 ms countdown without any focus
-  event, and the daemon's resulting `idle` tears the timer down. The callback is held in
-  a ref, so a parent re-render cannot restart the countdown.
+- The effect is keyed on the focused pane's id and the activation gate below, **not** on
+  its status, which is only read when the timer is armed. A focused pane whose status
+  flips with no focus event (an agent's `stop` while the user sits in it, or the §5.7
+  override) waits for the next focus or activation, as in the Swift, where
+  `scheduleClearStatus` runs only from those two events. Keying it on status armed the
+  timer on the override itself, so Status ▸ Awaiting Input cleared itself 600 ms later
+  (#108). The callback is held in a ref, so a parent re-render cannot restart the
+  countdown.
 - The timer is **gated on the app being active**: the Electron shell reports window
   focus/blur to the daemon (`packages/shell/src/main.ts:556-570`), the client derives
   `isAppActive` (window active AND document visible,

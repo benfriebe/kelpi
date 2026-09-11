@@ -64,6 +64,27 @@ describe('useFocusDwell', () => {
         expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('b');
     });
 
+    /**
+     * #108: the timer acknowledges a FOCUS, as the Swift's `scheduleClearStatus` does (it runs
+     * only from the pane-focused and did-become-active notifications). Status ▸ Awaiting Input
+     * flips the focused pane's status with no focus event, and arming on that flip cleared the
+     * user's choice 600 ms later.
+     */
+    it('does not arm on a status change of the pane that already has focus', () => {
+        vi.useFakeTimers();
+        const onDwellClear = vi.fn();
+        const view = render(<Dwell paneID="a" status="idle" onDwellClear={onDwellClear} />);
+        view.rerender(<Dwell paneID="a" status="waitingForInput" onDwellClear={onDwellClear} />);
+        act(() => vi.advanceTimersByTime(10 * FOCUS_DWELL_MS));
+        expect(onDwellClear).not.toHaveBeenCalled();
+
+        // The next focus is what acknowledges it.
+        view.rerender(<Dwell paneID="b" status="idle" onDwellClear={onDwellClear} />);
+        view.rerender(<Dwell paneID="a" status="waitingForInput" onDwellClear={onDwellClear} />);
+        act(() => vi.advanceTimersByTime(FOCUS_DWELL_MS));
+        expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('a');
+    });
+
     it('stops when the daemon answers with idle, and does not restart on a callback change', () => {
         vi.useFakeTimers();
         const first = vi.fn();

@@ -4459,7 +4459,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             presets={presets}
                             renaming={rename?.kind === 'workspace' && rename.id === workspace.id}
                             dragging={dragID === workspace.id}
-                            dragHidden={dragCompanions.has(workspace.id)}
+                            // §5.5's companions collapse only once the gesture IS a drag, like
+                            // the gap below. §WS-093's gate measures every rendered row BEFORE
+                            // `dragActive` flips, so a companion collapsed on the bare press is
+                            // an unmeasured row and the drag could never start (kelpi#41). The
+                            // `+N` stays on the press: it is an overlay that moves no geometry,
+                            // and the cursor clone is photographed on the threshold move, before
+                            // the `dragActive` commit lands.
+                            dragHidden={dragActive && dragCompanions.has(workspace.id)}
                             dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
                             // §WS-089: the dragged row previews the nesting it is about to get.
                             nestPreview={dragID === workspace.id && previewGroupID !== null}

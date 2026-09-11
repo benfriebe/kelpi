@@ -318,6 +318,103 @@ describe('multi-row drag', () => {
         expect(onMoveWorkspaces).not.toHaveBeenCalled();
         expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
     });
+
+    /**
+     * kelpi#41, in a box model where a collapsed row measures zero, as it does in the app.
+     *
+     * jsdom measures nothing, so §WS-093's gate short-circuits and the tests above never meet
+     * it. A real layout measures every row, and a companion collapsed on the PRESS measured
+     * zero, which the gate reads as an unmeasured row: the drag never started. So this stacks
+     * the rows in DOM order, 20px each or 0 for a row styled `height: 0`, and drives the
+     * gesture into and out of a group, with a second move that has to resolve against the
+     * list AFTER the companion has closed up. Everything else keeps jsdom's zero box, so
+     * `contentY(clientY) === clientY` and auto-scroll stays out of it.
+     */
+    it('starts and commits against a measured layout (kelpi#41)', () => {
+        const heightOf = (row: Element): number =>
+            Number.parseFloat((row as HTMLElement).style.height) === 0 ? 0 : 20;
+        const original = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function stub(this: HTMLElement): DOMRect {
+            let top = 0;
+            let height = 0;
+            const list = this.closest('[data-testid="sidebar-list"]');
+            if (list !== null && ['workspace-row', 'group-header'].includes(this.dataset['testid'] ?? '')) {
+                top = 4;
+                for (const row of list.querySelectorAll('[data-testid="workspace-row"], [data-testid="group-header"]')) {
+                    if (row === this) break;
+                    top += heightOf(row);
+                }
+                height = heightOf(this);
+            }
+            return {
+                x: 0,
+                y: top,
+                top,
+                left: 0,
+                right: 200,
+                bottom: top + height,
+                width: 200,
+                height,
+                toJSON: () => ({})
+            } as unknown as DOMRect;
+        };
+        const cases = [
+            {
+                // alpha 4–24 · delta 24–44 · header 44–64 · beta 64–84 · gamma 84–104.
+                name: 'into a group',
+                selected: [W1, W4],
+                grab: W1,
+                companion: W4,
+                press: 10,
+                first: 95, // gamma's bottom half: after gamma
+                // delta has closed up and alpha moved in: header 4–24 · beta 24–44 · gamma 44–64.
+                second: 30, // beta's top half: first in the group
+                commit: { workspaceIDs: [W1, W4], groupID: G1, index: 0 }
+            },
+            {
+                name: 'out of a group',
+                selected: [W2, W3],
+                grab: W2,
+                companion: W3,
+                press: 70,
+                first: 8, // alpha's top half: first at top level
+                // beta 4–24 · alpha 24–44 · delta 44–64 · header 64–84 · gamma closed up.
+                second: 50, // delta's top half: second at top level
+                commit: { workspaceIDs: [W2, W3], groupID: null, index: 1 }
+            }
+        ];
+        try {
+            for (const c of cases) {
+                const onMoveWorkspaces = vi.fn();
+                render(
+                    <Sidebar
+                        {...baseProps()}
+                        entries={entries()}
+                        selectedWorkspaceIDs={new Set(c.selected)}
+                        onMoveWorkspaces={onMoveWorkspaces}
+                    />
+                );
+
+                fireEvent.mouseDown(rowFor(c.grab), { clientY: c.press });
+                // A press is not a drag: the companion keeps its height, so the gate can measure it.
+                expect(rowFor(c.companion).dataset['dragHidden'], c.name).toBeUndefined();
+
+                fireEvent.mouseMove(window, { clientY: c.first });
+                expect(screen.getByRole('listbox').dataset['dragActive'], c.name).toBe('true');
+                expect(rowFor(c.companion).dataset['dragHidden'], c.name).toBe('true');
+                // The clone is the only visible picture of the drag, so it has to carry the `+N`.
+                expect(screen.getByTestId('sidebar-drag-ghost').textContent, c.name).toContain('+1');
+
+                fireEvent.mouseMove(window, { clientY: c.second });
+                fireEvent.mouseUp(window);
+                expect(onMoveWorkspaces, c.name).toHaveBeenCalledTimes(1);
+                expect(onMoveWorkspaces, c.name).toHaveBeenCalledWith(c.commit);
+                cleanup();
+            }
+        } finally {
+            Element.prototype.getBoundingClientRect = original;
+        }
+    });
 });
 
 // ── scroll the new entry into view (§15) ────────────────────────────────────────────

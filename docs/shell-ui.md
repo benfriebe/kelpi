@@ -818,7 +818,9 @@ type DropTarget =
   that setting off is a knowing divergence.
 - **Multi-drag:** grabbing a row that belongs to a ≥2 multi-selection drags the whole
   selection: the grabbed row shows a `+N` accent capsule at its trailing edge; the other
-  selected rows collapse to zero height (hidden) for the duration. During the drag only
+  selected rows collapse to zero height (hidden) once the press becomes a drag, never on the
+  press itself (a row collapsed before the measure check above reads as unmeasured, and the
+  drag would never start). During the drag only
   the grabbed row live-applies (single-row gap keeps the target obvious); on release the
   full selection is consolidated **atomically** via a bulk move
   (`moveWorkspacesToGroup(ids, groupID|null, index)`), computed by re-walking zones with

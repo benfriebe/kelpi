@@ -265,6 +265,7 @@ export class KelpiConnection {
 
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    private heartbeatDueAt = 0;
     private lastActivityAt = 0;
     private pingSentAt: number | null = null;
     private pingCounter = 0;
@@ -630,6 +631,7 @@ export class KelpiConnection {
         this.stopHeartbeat();
         const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
         if (interval <= 0) return;
+        this.heartbeatDueAt = this.nowMs() + interval;
         this.heartbeatTimer = setInterval(() => this.heartbeatTick(), interval);
     }
 
@@ -643,16 +645,24 @@ export class KelpiConnection {
     private heartbeatTick(): void {
         if (!this.ready) return;
         const now = this.nowMs();
+        const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
         const timeout = this.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
-        if (this.pingSentAt !== null) {
+        // Issue #71: `pingSentAt` is wall clock, and the only thing that reads it is this timer. A
+        // tick that fires more than a whole interval late (one went missing outright) ran in a
+        // renderer that was throttled or suspended - an occluded window, App Nap - and the `pong`
+        // can be sitting in the queue behind it, so the silence it measured is ours, not the
+        // daemon's. Such a tick does not judge the outstanding ping: it asks again, and the next
+        // tick that fires on time decides.
+        const late = now - this.heartbeatDueAt > interval;
+        this.heartbeatDueAt = now + interval;
+        if (this.pingSentAt !== null && !late) {
             if (now - this.pingSentAt >= timeout) {
                 this.emitError('heartbeat', new Error('daemon did not answer ping'));
                 this.resync('heartbeat timeout');
             }
             return;
         }
-        const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-        if (now - this.lastActivityAt < interval) return;
+        if (this.pingSentAt === null && now - this.lastActivityAt < interval) return;
         this.pingSentAt = now;
         this.pingCounter += 1;
         this.send({ type: 'ping', id: `hb-${this.pingCounter}` });

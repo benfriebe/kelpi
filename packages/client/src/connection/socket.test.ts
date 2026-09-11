@@ -278,4 +278,59 @@ describe('KelpiConnection heartbeat', () => {
         vi.advanceTimersByTime(2000);
         expect(harness.sockets.length).toBeGreaterThan(1);
     });
+
+    // Issue #71: the deadline is wall clock but the check is a timer, and a suspended renderer
+    // runs its overdue tick before the `pong` already sitting in its queue. `now` is driven by
+    // hand so the clock can jump while the timer fires only once.
+    function suspendableConnection() {
+        let clock = 0;
+        const errors: string[] = [];
+        const { connection, harness } = connectionWith({
+            heartbeatIntervalMs: 1000,
+            heartbeatTimeoutMs: 500,
+            now: () => clock
+        });
+        connection.on('error', (error) => errors.push(error.context));
+        connection.connect();
+        completeHandshake(harness.last(), { snapshot: false });
+        const tick = (wallClockMs: number) => {
+            clock += wallClockMs;
+            vi.advanceTimersByTime(1000);
+        };
+        return { harness, errors, tick };
+    }
+
+    it('does not read a tick delayed by a suspended renderer as a dead daemon', () => {
+        const { harness, errors, tick } = suspendableConnection();
+        const socket = harness.last();
+
+        tick(1000);
+        const ping = socket.lastOfType('ping');
+        expect(ping).toBeDefined();
+
+        // The daemon answers at once, but the renderer is suspended before the pong is
+        // dispatched, and on resume the overdue tick runs first with five minutes on the clock.
+        tick(5 * 60_000);
+        expect(errors).toEqual([]);
+        expect(harness.sockets).toHaveLength(1);
+        // It asks again instead of concluding anything.
+        expect(socket.lastOfType('ping')?.['id']).not.toBe(ping?.['id']);
+
+        socket.emit({ type: 'pong', id: String(ping?.['id']) });
+        tick(1000);
+        expect(harness.sockets).toHaveLength(1);
+    });
+
+    it('still gives up on a silent daemon once a tick fires on time again', () => {
+        const { harness, errors, tick } = suspendableConnection();
+
+        tick(1000);
+        tick(5 * 60_000);
+        expect(harness.sockets).toHaveLength(1);
+
+        // The fresh ping gets a whole on-time interval and no answer: that silence is the daemon's.
+        tick(1000);
+        expect(errors).toEqual(['heartbeat']);
+        expect(harness.sockets).toHaveLength(2);
+    });
 });

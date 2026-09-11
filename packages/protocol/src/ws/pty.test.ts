@@ -60,6 +60,31 @@ describe('pty frames', () => {
         expect(decodePtyFrame(frame)).toBeUndefined();
     });
 
+    it('carries the replay grid as its own frame type, readable with the resize codec (#166)', () => {
+        // #166: the snapshot is only meaningful at the width it was serialised at, so the grid
+        // rides ahead of the replay instead of being guessed by the client. Same payload
+        // encoding as `resize` on purpose — one cols/rows codec, both directions.
+        expect(PTY_FRAME_TYPES.replayGrid).not.toBe(PTY_FRAME_TYPES.replay);
+        const frame = encodePtyFrame(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19)) as Uint8Array;
+        const decoded = decodePtyFrame(frame);
+        expect(decoded).toMatchObject({ type: PTY_FRAME_TYPES.replayGrid, paneID: PANE });
+        expect(decodeResizePayload(decoded?.payload as Uint8Array)).toEqual({ cols: 73, rows: 19 });
+    });
+
+    it('keeps the replay grid out of the payload so an OLD client cannot paint it (#166)', () => {
+        // The compatibility claim, stated as a test: a client that predates #166 drops the
+        // geometry frame whole (`decodePtyFrame` answers undefined for a type it does not know),
+        // which is why the grid is a SIBLING frame and not a four-byte header on the replay —
+        // a header would have been written straight into an old engine as four garbage bytes.
+        expect(PTY_FRAME_TYPES.replayGrid).toBe(0x07);
+        const frame = encodePtyFrame(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(73, 19)) as Uint8Array;
+        const olderKnownTypes = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        expect(olderKnownTypes.has(frame[0] as number)).toBe(false);
+        // And the replay frame itself is byte-identical to what it always was: payload only.
+        const replay = encodePtyFrame(PTY_FRAME_TYPES.replay, PANE, new Uint8Array([0x41])) as Uint8Array;
+        expect([...(decodePtyFrame(replay)?.payload ?? [])]).toEqual([0x41]);
+    });
+
     it('keeps un-mirrored input (mouse reports, kitty releases) a distinct frame type (#51)', () => {
         // terminal-surface.md §8.2: the daemon mirrors `input` bytes to sync siblings and must
         // not mirror these, so the two are told apart by frame type, not by sniffing payloads.

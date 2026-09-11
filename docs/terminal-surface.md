@@ -392,13 +392,33 @@ because no client is watching, section 4.1).
 ### 4.1 Attach replay, flow control and renderer mounting
 
 - **Attach contract** (`packages/daemon/src/ws/streams.ts:8-40`, `:351-397`): an attaching
-  client gets exactly one `replay` frame (the serialized server-side VT snapshot, taken through
-  `snapshotAsync` so bytes fed but not yet parsed are included) followed by gapless `output`.
+  client gets exactly one `replayGrid` frame immediately followed by exactly one `replay` frame
+  (the serialized server-side VT snapshot, taken through `snapshotAsync` so bytes fed but not yet
+  parsed are included), and then gapless `output`. The one case with no grid ahead of it is a pane
+  the emulator has already disposed, which snapshots as `{cols: 0, rows: 0}`: the replay goes alone
+  rather than telling a client to resize an engine to nothing.
   The pane is registered as "attaching" first (live bytes for it are ignored while it is), the
   snapshot is taken, and the continuation flips the pane live **synchronously**, so no I/O
   callback can run between the snapshot settling and the first live byte. The pane's VT modes
-  (`pane-modes`, section 10.2) follow right behind the replay. Re-attaching an already-attached
-  pane is a geometry update, not a second replay.
+  (`pane-modes`, section 10.2) follow right behind the replay.
+- **The replay states its own grid** (`replayGrid`, `packages/protocol/src/ws/pty.ts`; issue
+  #166). A serialized screen is not width-independent: `@xterm/addon-serialize` writes a
+  soft-wrapped row and its continuation with no newline between them, because the row's
+  `isWrapped` says a terminal replaying it at the same width will wrap it again at the same
+  column. PTY geometry follows exactly ONE client (section 5.1), so every other attached client
+  is replaying a snapshot taken at somebody else's width and nothing on the wire used to carry
+  the number. The frame is `[cols][rows]` as two uint16 BE — the same payload a `resize` carries,
+  read back with `decodeResizePayload` — and the daemon emits the pair from one synchronous
+  function at all THREE replay sites: the attach, the settled-resize resync (section 5.2) and the
+  flow-control re-seed below. Its bytes are **not** charged to the flow-control window, because a
+  client acks what it feeds its engine and it never feeds this frame to anything. Compatibility
+  runs both ways and needs no version bump (it is additive within protocol generation 2): an older
+  client drops an unknown frame type whole, and a newer client against an older daemon simply
+  receives no grid and keeps its own measurement. A client must never apply a grid that arrives
+  without its replay — resizing an engine that is then not re-seeded leaves it holding a grid it
+  has never been told the contents of — so the grid is held until the replay lands
+  (`packages/client/src/connection/pty.ts`).
+- Re-attaching an already-attached pane is a geometry update, not a second replay.
 - **Flow control** (`PTY_FLOW_CONTROL_WINDOW_BYTES`, 512 KiB,
   `packages/protocol/src/ws/pty.ts:34`): the daemon counts unacked payload bytes per
   (client, pane). Past the window it stops sending to THAT client and queues; past
@@ -494,6 +514,39 @@ follows exactly **one client at a time**, the *size owner*:
   known — sees nothing.
 - A non-owner's `attach-pane` subscribes at the pane's **current** geometry (its measured
   size is cached, not applied), so the replay it receives matches what the owner set.
+- **A non-owner MIRRORS the owner's grid** (issue #166, `packages/client/src/terminal/TerminalPane.tsx`
+  ▸ `ownsSize` / `adoptReplayGrid`). Every replay states the grid it was serialized at (section
+  4.1), and a client that does not own PTY sizing resizes its ENGINE to that grid before applying
+  the bytes, because the bytes are only meaningful at it: the serializer glues a soft-wrapped row
+  to its continuation, and every byte the PTY emits afterwards was composed for the owner's
+  screen. The engine sizes its own canvas from cols×rows, so the result is letterboxed top-left
+  inside the pane where the box is bigger and **clipped** by the pane's `overflow-hidden` where it
+  is smaller. Clipping is the deliberate answer for a viewer narrower than the owner: scaling the
+  canvas would desynchronize the engine's own pointer arithmetic (it resolves cells from client
+  coordinates against an unscaled cell), nothing in the terminal layer pans horizontally, and
+  re-wrapping the owner's rows is the defect. The way out is to take size control, which every
+  form factor can reach: the top bar's chip on a desktop, the overflow menu's "Take size control"
+  on a phone (`packages/client/src/phone/PhoneShell.tsx`), and
+  `kelpi.window.takeSizeControl` for a plugin chrome.
+- **What a mirror does NOT change**: the pane keeps measuring its own box and keeps reporting it,
+  because that report is the daemon's takeover cache and the request for this viewer's own fresh
+  snapshot. It reports a measurement, never the mirrored grid.
+- **The two hand-offs.** Taking size control moves the engine back to this pane's own last
+  measurement at once — not through the pane's measure-and-report path, which idles for a hidden
+  pane and for a zero-sized box, and would leave the engine stranded on the ex-owner's grid — and
+  re-sends that geometry with `force` so the claim reaches the PTY (`resize-pane.force`,
+  `packages/protocol/src/ws/messages.ts`). A pane with no measurement at all keeps the mirror
+  armed until its first real measurement. Losing size control normally needs nothing: the taker's
+  grid change arms the settled-resize resync for every client (section 5.2) and that replay
+  establishes the mirror. The exception is a replay that arrived BEFORE the `size-control`
+  broadcast reached the view, which the client detects by comparing the last replay's stated grid
+  against its engine's, and repairs with one forced `resize-pane` — the daemon treats a forced
+  report from a non-owner as "re-seed me" and replays it. One request per hand-off, never a poll.
+- **DOM contract** (`data-terminal-mirror` on the pane root, `TerminalPane.tsx`): `<cols>x<rows>`
+  while this pane is mirroring another client's grid, absent otherwise. It is the only attribute
+  that describes what is ON THE SCREEN when the pane's box is not what the engine is drawing;
+  `data-terminal-rows` (phone, `terminal/keyboard-inset.ts`) and `data-terminal-cell` keep
+  describing the pane's own MEASUREMENT, so the two disagreeing is the mirror working.
 
 ### 5.2 Applying a resize: VT before PTY, the settled resync, and no column reflow
 

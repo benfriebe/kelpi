@@ -63,6 +63,15 @@ export class FakeRenderer implements TerminalRenderer {
     /** Everything written, decoded, in order. */
     readonly writes: string[] = [];
     readonly resizes: { cols: number; rows: number }[] = [];
+    /**
+     * Every `resize` / `reset` / `write`, interleaved, oldest first (`resize 73x19`, `reset`,
+     * `write`).
+     *
+     * The three lists beside this one cannot express an ORDER between themselves, and #166's
+     * claim is an order claim: the engine is resized to the snapshot's grid BEFORE the snapshot is
+     * applied, because a resize afterwards would re-wrap what was just painted.
+     */
+    readonly screenLog: string[] = [];
     readonly themes: TerminalTheme[] = [];
     /** C1 - every `dispatchKey` the key bar asked for, in order. */
     readonly keys: TerminalKeyInit[] = [];
@@ -165,6 +174,7 @@ export class FakeRenderer implements TerminalRenderer {
     write(data: Uint8Array | string): void {
         if (this.failed) return;
         this.writes.push(asText(data));
+        this.screenLog.push('write');
         // C3: output snaps the viewport back to the live bottom, which is what both engines do
         // and the constraint the plan names (§7's spike: a scrolled-back phone view is lost on
         // the next chunk of output).
@@ -174,6 +184,7 @@ export class FakeRenderer implements TerminalRenderer {
     reset(): void {
         if (this.failed) return;
         this.resets += 1;
+        this.screenLog.push('reset');
     }
 
     onEngineFailure(listener: (error: unknown) => void): () => void {
@@ -289,6 +300,7 @@ export class FakeRenderer implements TerminalRenderer {
         this.cols = cols;
         this.rows = rows;
         this.resizes.push({ cols, rows });
+        this.screenLog.push(`resize ${String(cols)}x${String(rows)}`);
     }
 
     focus(): void {
@@ -439,10 +451,16 @@ export interface FakePaneStream {
     readonly input: string[];
     /** Bytes sent on the un-mirrored `inputDirect` frame: mouse reports, kitty releases (#51). */
     readonly directInput: string[];
-    readonly resizes: { cols: number; rows: number }[];
+    readonly resizes: { cols: number; rows: number; force?: boolean }[];
     unsubscribed: boolean;
-    /** Push a daemon replay frame at the pane. */
-    replay(data: string): void;
+    /**
+     * Push a daemon replay frame at the pane.
+     *
+     * `grid` is the `replayGrid` frame the daemon sends immediately ahead of it (#166) — the
+     * cols/rows the snapshot was serialised at. Omitted models a daemon that predates #166, which
+     * is the compatibility case: no grid, no mirror, the behaviour that shipped.
+     */
+    replay(data: string, grid?: { cols: number; rows: number }): void;
     /** Push live output at the pane. */
     output(data: string): void;
     exit(exitCode: number | null, signal?: string): void;
@@ -469,7 +487,7 @@ export function createFakePtyApi(): FakePtyApi {
         subscribe(paneID: string, subscription: PtySubscription): PtyStreamHandle {
             const input: string[] = [];
             const directInput: string[] = [];
-            const resizes: { cols: number; rows: number }[] = [];
+            const resizes: { cols: number; rows: number; force?: boolean }[] = [];
             const stream: FakePaneStream = {
                 paneID,
                 subscription,
@@ -485,8 +503,11 @@ export function createFakePtyApi(): FakePtyApi {
                     writeDirect(data: Uint8Array | string): void {
                         directInput.push(asText(data));
                     },
-                    resize(cols: number, rows: number): void {
-                        resizes.push({ cols, rows });
+                    resize(cols: number, rows: number, force?: boolean): void {
+                        // #166: `force` is "send it even though the numbers have not changed",
+                        // which is a claim on the PTY rather than a measurement. The fake has no
+                        // short circuit to bypass, so it records the flag instead of acting on it.
+                        resizes.push({ cols, rows, ...(force === true ? { force: true } : {}) });
                     },
                     ack(): void {
                         /* the fake has no flow control */
@@ -498,9 +519,9 @@ export function createFakePtyApi(): FakePtyApi {
                         stream.unsubscribed = true;
                     }
                 },
-                replay(data: string): void {
+                replay(data: string, grid?: { cols: number; rows: number }): void {
                     const bytes = encoder.encode(data);
-                    if (subscription.onReplay !== undefined) subscription.onReplay(bytes);
+                    if (subscription.onReplay !== undefined) subscription.onReplay(bytes, grid);
                     else subscription.onData(bytes);
                 },
                 output(data: string): void {

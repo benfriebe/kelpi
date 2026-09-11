@@ -27,9 +27,11 @@
 import {
     PTY_FLOW_CONTROL_WINDOW_BYTES,
     PTY_FRAME_TYPES,
+    decodeResizePayload,
     encodeAckPayload,
     encodePtyFrame,
     type PtyFrameType,
+    type PtyResize,
     type WsVtModes
 } from '@kelpi/protocol';
 
@@ -44,8 +46,20 @@ export interface PtySubscription {
     readonly exclusive?: boolean | undefined;
     /** Current visible renderer geometry at attach/reconnect; absent means no size claim. */
     readonly getGeometry?: (() => { cols: number; rows: number } | undefined) | undefined;
-    /** Attach replay (the pane's screen as of attach). Falls back to `onData` when absent. */
-    readonly onReplay?: ((data: Uint8Array) => void) | undefined;
+    /**
+     * Attach replay (the pane's screen as of attach). Falls back to `onData` when absent.
+     *
+     * `grid` is the cols/rows the snapshot was SERIALISED at (#166), when the daemon said — an
+     * older daemon sends no `replayGrid` frame and the argument is undefined, which means "keep
+     * doing what you did before", not "80x24". It is the grid the bytes can be parsed at and
+     * nothing else: a subscriber whose engine is at a different one will glue a soft-wrapped row
+     * to its continuation, because `@xterm/addon-serialize` leaves out the newline between them
+     * (`daemon/src/ws/streams.ts` `sendReplayWithGrid` has the full argument).
+     *
+     * The `onData` fallback gets no grid, deliberately: a subscriber that does not distinguish a
+     * replay from live output has no reset to hang a resize off either.
+     */
+    readonly onReplay?: ((data: Uint8Array, grid?: PtyResize | undefined) => void) | undefined;
     readonly onData: (data: Uint8Array) => void;
     readonly onExit?: ((exitCode: number | null, signal?: string) => void) | undefined;
     /** The daemon dropped our backlog and re-seeded us; the next replay is authoritative. */
@@ -79,8 +93,14 @@ export interface PtyStreamHandle {
      * can take the un-mirrored write without inspecting the bytes (#51).
      */
     writeDirect(data: Uint8Array | string): void;
-    /** Client-measured geometry; the daemon resizes the PTY and its server-side VT. */
-    resize(cols: number, rows: number): void;
+    /**
+     * Client-measured geometry; the daemon resizes the PTY and its server-side VT.
+     *
+     * `force` re-sends a grid the daemon has already been told, which the short circuit below
+     * otherwise swallows. One caller, one reason (#166): a pane that has been a cached non-owner
+     * takes size control without its box changing, and the claim has to reach the PTY.
+     */
+    resize(cols: number, rows: number, force?: boolean): void;
     /** Report consumed bytes (only needed with `autoAck: false`). */
     ack(bytes: number): void;
     /** Bytes delivered to this client that the daemon has not seen acked yet. */
@@ -110,6 +130,29 @@ interface PaneEntry {
     ackTimer: ReturnType<typeof setTimeout> | null;
     /** Last `pane-modes` for this pane; replayed to a subscriber that joins later. */
     modes: WsVtModes | null;
+    /**
+     * The grid the NEXT replay for this pane was serialised at (`replayGrid`, #166), or null.
+     *
+     * HELD, NOT APPLIED. The daemon sends the grid frame immediately before the replay it
+     * belongs to, in the same turn, and this entry is what carries it the few microseconds
+     * between the two. Keeping it here rather than telling the renderer straight away is the
+     * safety property: a grid that arrives without its replay (a send that failed, an old
+     * daemon's unrelated frame, a future daemon that reorders) does NOTHING, because resizing an
+     * engine that is then never re-seeded leaves it holding a grid whose contents it has not
+     * been told — the one state §N24's paint hold exists to cover, and it only covers a second.
+     *
+     * Cleared when it is consumed by a replay, and on reconnect: the grid is a statement about a
+     * specific snapshot and the next socket's first replay will make its own.
+     *
+     * A grid whose replay never arrived would therefore be consumed by the NEXT replay, which
+     * would be the wrong grid for those bytes. It is unreachable rather than guarded: the daemon
+     * emits the pair from one synchronous function with nothing between the two sends
+     * (`ws/streams.ts` `sendReplayWithGrid`), a WebSocket delivers in order, and the only way to
+     * lose the second half is a `sendFrame` that throws — which on a real socket means the
+     * connection is going away, and a reconnect clears this. Guarding it would mean a timer per
+     * pane to expire a four-byte fact that is never late.
+     */
+    replayGrid: PtyResize | null;
 }
 
 const encoder = new TextEncoder();
@@ -132,8 +175,18 @@ export class PtyClient {
             connection.on('frame', (frame) => {
                 const entry = this.panes.get(frame.paneID);
                 if (entry === undefined) return;
+                if (frame.type === PTY_FRAME_TYPES.replayGrid) {
+                    // #166: the grid the replay BEHIND this frame was serialised at. Held on the
+                    // entry until that replay lands (see `replayGrid` on `PaneEntry`); a grid
+                    // whose cols/rows do not decode, or are zero, is dropped rather than guessed.
+                    const grid = decodeResizePayload(frame.payload);
+                    entry.replayGrid = grid !== undefined && grid.cols > 0 && grid.rows > 0 ? grid : null;
+                    return;
+                }
                 if (frame.type === PTY_FRAME_TYPES.replay) {
-                    this.deliver(entry, frame.paneID, frame.payload, true);
+                    const grid = entry.replayGrid;
+                    entry.replayGrid = null;
+                    this.deliver(entry, frame.paneID, frame.payload, true, grid ?? undefined);
                     return;
                 }
                 if (frame.type === PTY_FRAME_TYPES.output) {
@@ -205,6 +258,9 @@ export class PtyClient {
                     entry.attached = false;
                     entry.unacked = 0;
                     entry.pendingAck = 0;
+                    // A grid describes one snapshot on one socket (#166); the re-attach brings
+                    // its own.
+                    entry.replayGrid = null;
                     this.clearAckTimer(entry);
                 }
             })
@@ -247,7 +303,8 @@ export class PtyClient {
                 unacked: 0,
                 pendingAck: 0,
                 ackTimer: null,
-                modes: null
+                modes: null,
+                replayGrid: null
             };
             this.panes.set(paneID, entry);
         }
@@ -283,8 +340,8 @@ export class PtyClient {
             writeDirect(data: Uint8Array | string): void {
                 if (active()) client.writeDirect(paneID, data);
             },
-            resize(cols: number, rows: number): void {
-                if (active()) client.resize(paneID, cols, rows);
+            resize(cols: number, rows: number, force?: boolean): void {
+                if (active()) client.resize(paneID, cols, rows, force);
             },
             ack(bytes: number): void {
                 if (active()) client.queueAck(paneID, target, bytes);
@@ -310,7 +367,7 @@ export class PtyClient {
         this.sendFrame(PTY_FRAME_TYPES.inputDirect, paneID, bytes);
     }
 
-    resize(paneID: string, cols: number, rows: number): void {
+    resize(paneID: string, cols: number, rows: number, force = false): void {
         const entry = this.panes.get(paneID);
         // A transient 0×0 measurement pass must never reach the PTY (terminal-surface §15.4);
         // the daemon guards too, but sending it would still stomp the stored geometry.
@@ -319,12 +376,12 @@ export class PtyClient {
         const safeRows = Math.trunc(rows);
         if (safeCols <= 0 || safeRows <= 0) return;
         if (entry !== undefined) {
-            if (entry.geometryReported && entry.cols === safeCols && entry.rows === safeRows) return;
+            if (!force && entry.geometryReported && entry.cols === safeCols && entry.rows === safeRows) return;
             entry.cols = safeCols;
             entry.rows = safeRows;
             entry.geometryReported = true;
         }
-        this.sendResize(paneID, safeCols, safeRows);
+        this.sendResize(paneID, safeCols, safeRows, force);
     }
 
     unsubscribe(paneID: string, subscription: PtySubscription): void {
@@ -372,13 +429,25 @@ export class PtyClient {
         }
     }
 
-    private sendResize(paneID: string, cols: number, rows: number): void {
+    private sendResize(paneID: string, cols: number, rows: number, force = false): void {
         // The JSON form works before the attach settles (the daemon resizes PTY + VT without
         // consulting the stream table), which the binary `resize` frame does not.
-        this.connection.send({ type: 'resize-pane', paneID, cols, rows });
+        //
+        // `force` rides only when it is true, so an ordinary report is the byte-identical message it
+        // has always been. It tells the daemon "act on this even though the numbers have not
+        // changed" (#166): a claim on the PTY from the client that has just taken size control, and
+        // the one "re-seed me" request the protocol has from the client that has just lost it
+        // (`protocol/src/ws/messages.ts` ▸ `WsResizePaneMessage.force`).
+        this.connection.send({ type: 'resize-pane', paneID, cols, rows, ...(force ? { force: true } : {}) });
     }
 
-    private deliver(entry: PaneEntry, paneID: string, payload: Uint8Array, replay: boolean): void {
+    private deliver(
+        entry: PaneEntry,
+        paneID: string,
+        payload: Uint8Array,
+        replay: boolean,
+        grid?: PtyResize | undefined
+    ): void {
         if (replay) {
             // A replay supersedes anything still in flight for this pane.
             entry.unacked = 0;
@@ -390,7 +459,7 @@ export class PtyClient {
         for (const subscription of [...entry.subscriptions]) {
             if (subscription.autoAck !== false) autoAck = true;
             try {
-                if (replay && subscription.onReplay !== undefined) subscription.onReplay(payload);
+                if (replay && subscription.onReplay !== undefined) subscription.onReplay(payload, grid);
                 else subscription.onData(payload);
             } catch (error) {
                 this.report(error, `pty-deliver ${paneID}`);

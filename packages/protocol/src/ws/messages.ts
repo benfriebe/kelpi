@@ -70,6 +70,24 @@ export interface WsResizePaneMessage {
     readonly paneID: string;
     readonly cols: number;
     readonly rows: number;
+    /**
+     * "Act on this even though the numbers have not changed" (#166).
+     *
+     * A geometry report is normally idempotent: the daemon applies the owner's and caches
+     * everybody else's, and a client suppresses a report that repeats the last one it sent, which
+     * is what keeps a drag storm to one message per settled gesture. Two moments need the opposite
+     * and neither involves the box moving at all, because what changed is WHO SIZES THE PTY:
+     *
+     *   - the client that has just TAKEN size control has been reporting the same grid all along
+     *     as a cached non-owner, and this is the report that claims the PTY for it;
+     *   - the client that has just LOST it needs a fresh replay at the new owner's grid, and the
+     *     daemon's only "re-seed me" path is the replay it already sends a non-owner whose
+     *     geometry report CHANGED (`ws/sync.ts`). A forced report takes that path unconditionally.
+     *
+     * Absent means exactly what it always meant. An older daemon ignores the field and a newer one
+     * treats its absence as `false`, so neither direction of the mix needs to know about it.
+     */
+    readonly force?: boolean;
 }
 
 /**

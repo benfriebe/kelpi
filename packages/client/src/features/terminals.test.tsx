@@ -22,7 +22,23 @@ vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; 
     return <button data-testid={`plugin-${props.paneID}`} data-visible={props.terminal.visible} data-focused={props.terminal.focused}
         onClick={() => props.onError(rendererError)}>{props.viewID}</button>;
 } }));
-const runtime = (host: string) => ({ connection: { target: `ws://${host}/ws` } } as KelpiRuntime);
+/**
+ * A store with just the one slice `TerminalFeaturePane` reads: who owns PTY sizing (#166).
+ *
+ * `null` is "unknown, or nobody", which is the answer that makes a pane behave exactly as it did
+ * before #166 — the right default for a file about renderer SELECTION, which is not about sizing.
+ */
+const sizeControlStore = (): KelpiRuntime['store'] => {
+    const state = { daemon: { sizeControlOwnerID: null, clientID: null } };
+    return {
+        getState: () => state,
+        getInitialState: () => state,
+        setState: () => undefined,
+        subscribe: () => () => undefined
+    } as unknown as KelpiRuntime['store'];
+};
+const runtime = (host: string) =>
+    ({ connection: { target: `ws://${host}/ws` }, store: sizeControlStore() } as KelpiRuntime);
 const local = runtime('terminal.test'), remote = runtime('remote-terminal.test');
 const props = { runtime: local, workspaceID: 'W', paneID: 'P', ptyApi: { subscribe: vi.fn() }, focused: true, visible: true };
 beforeEach(() => {

@@ -211,6 +211,22 @@ export function terminalAccessibilityName(displayName?: string | undefined): str
     return trimmed === '' ? 'Terminal' : `Terminal - ${trimmed}`;
 }
 
+/**
+ * `<cols>x<rows>` while this pane is MIRRORING another client's grid (#166); absent otherwise.
+ *
+ * The one attribute that tells the truth about what is on the screen when the pane's own box is
+ * not what the engine is drawing. Its neighbours describe the pane's MEASUREMENT and keep doing
+ * so: `data-terminal-rows` is "the rows this pane last told the daemon" (`keyboard-inset.ts`),
+ * which under a mirror is still exactly what it says and no longer what the canvas shows, and
+ * `data-terminal-cell` is the cell those numbers were computed with. Published imperatively
+ * beside the paint-hold attributes, for the same reason they are: a mirror is established by a
+ * replay, and a React render per replay would be a cost #166 does not justify.
+ *
+ * Absent on every pane that sizes its own PTY, which is every pane in a single-window session —
+ * so a desktop window on its own has the DOM it had before #166, attribute for attribute.
+ */
+export const TERMINAL_MIRROR_ATTRIBUTE = 'data-terminal-mirror';
+
 /** Off-screen but readable by assistive tech — the `aria-describedby` target's style. */
 const VISUALLY_HIDDEN = {
     position: 'absolute',
@@ -310,6 +326,44 @@ export interface TerminalPaneProps {
      * pane header shows (`paneDisplayTitle`). Omitted ⇒ the bare word "Terminal".
      */
     readonly accessibilityName?: string | undefined;
+    /**
+     * Does this client's window OWN the PTY's geometry? Default (omitted) is yes.
+     *
+     * #166. PTY geometry follows exactly one client (`sizeOwnerID`, `daemon/src/ws/sync.ts:1320`;
+     * the claim rules are terminal-surface.md §5.1 and the top bar's `take-size-control` chip is
+     * the user's side of them). A non-owner's measured grid is CACHED and never applied, so the
+     * bytes arriving on its stream were composed for somebody else's screen: the daemon's
+     * emulator wrapped them at the owner's column count, and the replay that re-seeds this engine
+     * was serialised at that count with no newline between a soft-wrapped row and its
+     * continuation (`@xterm/addon-serialize`; `daemon/src/term/service.ts` §NO_REFLOW has the
+     * rest). An engine at any other width glues those halves side by side — the fixed-stride
+     * garble of #166 — and re-glues them on every later replay.
+     *
+     * So a non-owner does not render its own grid: it MIRRORS the owner's. The engine is resized
+     * to the grid each replay states (`adoptReplayGrid`) and the canvas, which the engine sizes
+     * from cols×rows (`vendor/ghostty-web-patched` renderer: `cssWidth = dims.cols *
+     * metrics.width`), sits top-left inside the pane — letterboxed where the box is bigger,
+     * clipped by the pane's own `overflow-hidden` where it is smaller. What the user sees is the
+     * owner's screen, exactly, instead of a scramble of it.
+     *
+     * That holds because NOTHING IN THIS CLIENT ARMS THE ENGINE'S OWN FIT: the vendored bundle
+     * ships `observeResize()` / `fit()`, which measure the container and resize the terminal to
+     * it, and this port never calls either — the pane measures and the pane decides
+     * (`syncGeometry`). Arming the engine's fit would destroy the mirror: the engine would pull
+     * itself back to the box the moment it was resized away from it.
+     *
+     * What this does NOT change: the pane keeps MEASURING its own box and keeps reporting it
+     * (`syncGeometry`), because that report is what the daemon caches for an instant takeover
+     * (`applyCachedSizes`, `sync.ts:1435`) and what asks for the viewer's own fresh snapshot
+     * (`requestReplay`, `sync.ts:1541`). It reports a measurement, never the mirrored grid — a
+     * pane that echoed the grid back would be telling the daemon the owner's window is its own.
+     *
+     * `false` only ever arrives from assembly, which reads it off the runtime's own store
+     * (`features/TerminalFeaturePane.tsx`), so a remote host's panes answer with that daemon's
+     * owner rather than the local one's. Omitted means "nobody has told me otherwise", which is
+     * deliberately the same answer the chip gives: no chip, no mirror.
+     */
+    readonly ownsSize?: boolean | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
     /**
@@ -362,7 +416,19 @@ export function measureMouseSurface(
     host: HTMLElement,
     renderer: TerminalRenderer,
     geometry: TerminalGeometry | null,
-    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined
+    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined,
+    /**
+     * #166 — the SURFACE's extent, when it is not the host box.
+     *
+     * `width`/`height` are what `positionOutOfViewport` reads (`mouse.ts`: "the pointer having
+     * LEFT the terminal"), and a mirrored engine's canvas is not the size of the box it sits in:
+     * narrower and the background beside it is not the terminal at all, wider and it is clipped.
+     * Without this a click in that background was inside the box, so it was not out of viewport,
+     * so it was CLAMPED to the last column and reported as a click the application never
+     * received — a dead zone that types. Passed only while mirroring, so an ordinary pane keeps
+     * the box (including its sub-cell remainder) exactly as it always had it.
+     */
+    extent?: { width: number; height: number } | undefined
 ): (MouseGridMetrics & { originX: number; originY: number }) | null {
     const cell = renderer.cellSize();
     if (!(cell.width > 0) || !(cell.height > 0)) return null;
@@ -376,8 +442,8 @@ export function measureMouseSurface(
         rows: geometry?.rows ?? Math.max(1, Math.floor(box.height / cell.height)),
         cellWidth: cell.width,
         cellHeight: cell.height,
-        width: box.width,
-        height: box.height,
+        width: extent?.width ?? box.width,
+        height: extent?.height ?? box.height,
         originX: rect.left,
         originY: rect.top
     };
@@ -492,6 +558,31 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     const rendererRef = useRef<TerminalRenderer | null>(null);
     const streamRef = useRef<PtyStreamHandle | null>(null);
     const geometryRef = useRef<TerminalGeometry | null>(null);
+    /**
+     * #166 — the grid this engine is MIRRORING, or null when it renders this pane's own box.
+     *
+     * Set by a replay that arrived with a grid while this client did not own PTY sizing, cleared
+     * the moment it does. While it holds a value it, and not the measured box, is what the engine
+     * is at: `syncGeometry` keeps measuring and keeps reporting, and stops resizing the engine.
+     *
+     * A ref rather than state because it is written from a stream callback during a replay and
+     * read by the measurement path; a re-render per replay would cost a paint for a number only
+     * the engine and one `data-` attribute care about.
+     */
+    const mirrorRef = useRef<TerminalGeometry | null>(null);
+    /**
+     * #166 — the grid the LAST replay stated, whoever owned sizing when it arrived.
+     *
+     * Recorded even while this client owns the PTY, and that is the point: the `size-control`
+     * broadcast reaches the store immediately but reaches THIS component's props one React render
+     * later, and a multi-megabyte replay is applied in chunks across several tasks
+     * (`ingest.ts`) — so the snapshot taken at the new owner's grid can be on screen before
+     * `ownsSize` has turned false, with nothing left to trigger a correction: the box has not
+     * moved, and the daemon only replays a non-owner whose grid CHANGED. Comparing this against
+     * the engine's grid at the moment ownership flips is how that race is detected, and one
+     * forced `resize-pane` is how it is repaired (`force`, `protocol/src/ws/messages.ts`).
+     */
+    const replayGridRef = useRef<TerminalGeometry | null>(null);
     const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** When the current run of coalesced resizes started (null = nothing pending). */
     const pendingResizeSince = useRef<number | null>(null);
@@ -571,7 +662,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 const renderer = rendererRef.current;
                 const host = hostRef.current;
                 if (renderer === null || host === null) return null;
-                return measureMouseSurface(host, renderer, geometryRef.current, latest.current.measure);
+                // #166: the grid the ENGINE holds, which under a mirror is the owner's and not
+                // this box's. A mouse report carries cell coordinates the APPLICATION will read
+                // against its own screen, and the application's screen is the PTY's grid — and
+                // the surface those pixels are measured against is the engine's canvas, which
+                // under a mirror is not the size of this box (see `measureMouseSurface`).
+                const mirror = mirrorRef.current;
+                if (mirror === null) return measureMouseSurface(host, renderer, geometryRef.current, latest.current.measure);
+                // The extent is NOT passed on the un-mirrored path above, deliberately: a pane's box
+                // has a sub-cell remainder (80 columns of a 10px cell in an 805px box leaves 5px), a
+                // press there has always been clamped to the last column, and passing the extent
+                // everywhere would silently change that. The mirror suite measures 805 for it.
+                const cell = renderer.cellSize();
+                return measureMouseSurface(host, renderer, mirror, latest.current.measure, {
+                    width: mirror.cols * cell.width,
+                    height: mirror.rows * cell.height
+                });
             },
             // Straight to the PTY, but on the UN-mirrored frame: a report carries cell
             // coordinates measured against THIS pane's grid, and terminal-surface.md §8.2 / §11
@@ -620,8 +726,44 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         resizeTimer.current = null;
     }, []);
 
-    /** Measure → engine → daemon. `force` bypasses the unchanged-geometry short circuit. */
-    const syncGeometry = useCallback((force = false): void => {
+    /**
+     * Publish (or clear) the mirrored-grid attribute on the pane root (#166).
+     *
+     * Imperative, like the paint-hold pair beside it: a mirror is established by a replay, and a
+     * React render per replay is a cost this does not justify.
+     */
+    const publishMirror = useCallback((grid: TerminalGeometry | null): void => {
+        const root = rootRef.current;
+        if (root === null) return;
+        if (grid === null) root.removeAttribute(TERMINAL_MIRROR_ATTRIBUTE);
+        else root.setAttribute(TERMINAL_MIRROR_ATTRIBUTE, `${String(grid.cols)}x${String(grid.rows)}`);
+    }, []);
+
+    /**
+     * Measure → engine → daemon. `force` bypasses the unchanged-geometry short circuit.
+     *
+     * `republish` sends the measurement even when the daemon has already been told these exact
+     * numbers (#166): a hand-off of size control is a claim, not a measurement, and the pane that
+     * makes it has usually been reporting the same grid all along as a cached non-owner, so
+     * `PtyClient.resize`'s unchanged short circuit would swallow it.
+     *
+     * ON THE LOSING SIDE that flag is the only way to ask for a screen, and it is the reason it
+     * exists (see the ownership effect). ON THE TAKING SIDE it is belt and braces and nothing more,
+     * stated plainly because an earlier draft of this comment justified it with something untrue:
+     * the daemon's cache is NOT normally missing this pane. `take-size-control` applies this
+     * client's whole cached layout (`applyCachedSizes`, `ws/sync.ts`) and so does the successor
+     * path on an owner's disconnect, and the cache has an entry for every pane this client ever
+     * attached — `PtyClient.attach` sends `attach-pane` with a geometry always, falling back to
+     * 80x24 when the subscription had none (`connection/pty.ts`), and a re-attach carries one too.
+     * So the PTY has the claim before this message lands and the message costs one more no-op
+     * ioctl per pane. It is kept because the claim is then stated by the client that made it
+     * rather than inferred from a cache, which is one less thing to be wrong about; it buys no
+     * correctness on this side.
+     *
+     * Used by the ownership effect and nothing else; every other caller reports only what changed,
+     * which is what keeps a drag storm to one message per settled gesture.
+     */
+    const syncGeometry = useCallback((force = false, republish = false): void => {
         const renderer = rendererRef.current;
         const host = hostRef.current;
         if (renderer === null || host === null) return;
@@ -629,6 +771,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (!current.visible) return; // idle while hidden; the daemon keeps draining the PTY
         const next = measureGeometry(host, renderer, current.measure);
         if (next === null) return; // zero-size guard
+        /*
+         * #166 — OWNING THE PTY MEANS THE ENGINE FOLLOWS THIS BOX AGAIN, and this is the path for
+         * the pane the ownership effect could not move: one that had no measurement at all when
+         * the hand-off happened (a transient 0x0 layout pass, a pane that has only ever been
+         * zero-boxed). Its mirror is left ARMED there on purpose — the replays still arriving were
+         * serialised at the ex-owner's grid and must still be parsed at it — and the first real
+         * measurement is where it ends. Before the unchanged-geometry short circuit below, because
+         * a mirror that outlived its ownership must not survive on "nothing moved".
+         */
+        let engineMoved = false;
+        if (current.ownsSize !== false && mirrorRef.current !== null) {
+            mirrorRef.current = null;
+            publishMirror(null);
+            renderer.resize(next.cols, next.rows);
+            engineMoved = true;
+        }
         const previous = geometryRef.current;
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
         if (unchanged && !force) return;
@@ -637,8 +795,21 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         setCellHint(
             cell.width > 0 && cell.height > 0 ? `${cell.width.toFixed(2)}x${cell.height.toFixed(2)}` : ''
         );
-        renderer.resize(next.cols, next.rows);
-        streamRef.current?.resize(next.cols, next.rows);
+        /*
+         * #166 — THE ENGINE FOLLOWS THE BOX ONLY WHILE THIS CLIENT SIZES THE PTY.
+         *
+         * With a mirror in force the engine is at the grid the daemon's emulator holds, and the
+         * bytes on this stream were composed for THAT grid: resizing to this box would re-wrap
+         * the owner's rows and glue the next replay's soft-wrapped pairs, which is the defect.
+         * The box still gets measured and still gets reported one line down, because that report
+         * is the daemon's takeover cache and the request for this viewer's own fresh snapshot —
+         * and that snapshot is what re-states the grid and keeps the mirror true.
+         *
+         * With no mirror (an owner, or a non-owner talking to a daemon that predates #166 and
+         * sends no grid) this is the behaviour it always had.
+         */
+        if (!engineMoved && mirrorRef.current === null) renderer.resize(next.cols, next.rows);
+        streamRef.current?.resize(next.cols, next.rows, republish);
         // C2 - counted on the line that sends it, so the attribute reports what the DAEMON was
         // told rather than what the pane looks like afterwards. Published only under the phone
         // form factor, so a desktop pane's DOM is byte-identical to what it was before C2.
@@ -651,7 +822,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             });
         }
         if (!unchanged || force) current.onDimensionsChange?.(current.paneID, next);
-    }, []);
+        // `publishMirror` is the only dependency this callback has ever had; it is identity-stable
+        // (`useCallback(..., [])`), so the list is a formality rather than a re-creation risk.
+    }, [publishMirror]);
 
     /**
      * Trailing debounce with a ceiling: a burst coalesces, but a gesture that never stops still
@@ -796,10 +969,61 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const ingest = createTerminalIngest(renderer);
             if (initial !== null) geometryRef.current = initial;
 
+            /**
+             * #166 — resize the engine to the snapshot's grid BEFORE the snapshot is applied.
+             *
+             * ORDER IS THE WHOLE THING. `ingest.replay` resets the engine and writes the
+             * snapshot; a resize after that would re-wrap what was just painted (the engine
+             * reflows on a column change), and a resize without a replay would leave the engine
+             * holding a grid it has not been told the contents of. Doing it here, one statement
+             * ahead, means the reset lands on an engine that is already the right shape and the
+             * paint hold `renderer.resize` opens (§N24) is ended by that same reset.
+             *
+             * Only for a client that does NOT own PTY sizing (`ownsSize === false`, read through
+             * `latest` so it is this commit's answer). An owner's engine is already at the grid
+             * the daemon just serialised at — it is the client that put it there — and a
+             * transient disagreement (a gesture that moved the box while the daemon's snapshot
+             * was in flight) is repaired by that gesture's own settled resync, which is the
+             * mechanism this would otherwise fight.
+             *
+             * ONE EXCEPTION, and it is the armed mirror (see the ownership effect): a client that
+             * owns sizing but has never measured a box has no grid of its own to render, so the
+             * grid the daemon states is the only one it knows — and it is the right one, because
+             * the geometry the daemon is sizing that PTY from came from this client's own attach
+             * (80x24 when it had nothing to measure, `connection/pty.ts`). Following it turns what
+             * used to be a mis-parsed window — the engine armed at the EX-owner's grid while the
+             * daemon replayed at the attach fallback, visible until the first real measurement
+             * repaired it — into a screen that is simply right from the first replay. The mirror
+             * stays armed, so `data-terminal-mirror` keeps saying the canvas is not this box's,
+             * which while this pane has no box is exactly true.
+             *
+             * `grid` is absent against a daemon that predates #166, and then nothing happens at
+             * all: the engine keeps the box's grid, which is the behaviour that shipped.
+             */
+            const adoptReplayGrid = (grid: { cols: number; rows: number } | undefined): void => {
+                if (grid === undefined || grid.cols <= 0 || grid.rows <= 0) return;
+                if (latest.current.ownsSize !== false && mirrorRef.current === null) return;
+                const current = rendererRef.current;
+                if (current === null) return;
+                mirrorRef.current = { cols: grid.cols, rows: grid.rows };
+                publishMirror(mirrorRef.current);
+                // A no-op when the engine is already at this grid (`renderer.resize` short
+                // circuits, and does not open a paint hold for a grid that did not move).
+                current.resize(grid.cols, grid.rows);
+            };
+
             const subscription: PtySubscription = {
                 // The daemon replays the server-side VT snapshot before going live; ingest keeps
                 // that ordering true across engine load, reconnect and flow-control resync.
-                onReplay: (data) => ingest.replay(data),
+                onReplay: (data, grid) => {
+                    // Recorded whoever owns sizing (see `replayGridRef`): it is what tells the
+                    // ownership effect that a replay was applied at a grid this engine is not at.
+                    if (grid !== undefined && grid.cols > 0 && grid.rows > 0) {
+                        replayGridRef.current = { cols: grid.cols, rows: grid.rows };
+                    }
+                    adoptReplayGrid(grid);
+                    ingest.replay(data);
+                },
                 onData: (data) => ingest.live(data),
                 onResync: () => ingest.expectReplay(),
                 // The daemon's VT modes for this pane: sent once behind the replay, then on
@@ -1004,6 +1228,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 rendererRef.current = null;
                 streamRef.current = null;
                 geometryRef.current = null;
+                // #166: a mirror belongs to an engine and a stream. The next one establishes its
+                // own on its first replay, and until then the pane renders its own box.
+                mirrorRef.current = null;
+                replayGridRef.current = null;
+                publishMirror(null);
             };
         };
 
@@ -1036,7 +1265,74 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // owns the VT, so re-attaching replays the screen (this is the same path a workspace
         // eviction takes). Settings arrive on `welcome`, BEFORE the first snapshot renders a
         // pane, so connecting never costs a rebuild.
-    }, [paneID, ptyApi, clearResizeTimer, syncGeometry, props.fontFamily, props.fontSize]);
+    }, [paneID, ptyApi, clearResizeTimer, syncGeometry, publishMirror, props.fontFamily, props.fontSize]);
+
+    /**
+     * #166 — size control changed hands. Both directions, and neither of them waits for a render
+     * that might not come.
+     *
+     * GAINING it (the `take-size-control` chip, or the owner disconnecting and this client being
+     * the successor) has to act NOW, and it has to act HERE rather than through `syncGeometry`.
+     * That was the first version and it was wrong: `syncGeometry` returns early for a pane that is
+     * not visible and for a transient 0x0 box, so a takeover in either state cleared the mirror
+     * and left the engine on the EX-OWNER's grid with nothing able to move it — `adoptReplayGrid`
+     * no longer adopts (this client owns sizing now), and the hand-off's own resync replay,
+     * serialised at this client's grid, was then written into an engine still at the old one.
+     * That is #166's glue, on the owner's own pane, steady. So the engine is moved from the last
+     * MEASUREMENT (`geometryRef`, taken at mount whether the pane is visible or not), and the
+     * daemon is told in the same breath: it has been caching these numbers as a non-owner's, and
+     * `republish` is what turns one of them into a PTY resize rather than "nothing moved".
+     *
+     * With no measurement at all — a pane that has only ever been zero-boxed — the mirror is left
+     * ARMED instead: the engine is at the ex-owner's grid, the replays already in flight were
+     * serialised at it, and `syncGeometry` clears the mirror and moves the engine on the first real
+     * measurement. Clearing it here would be claiming the engine had moved when it had not.
+     *
+     * An armed mirror keeps FOLLOWING the daemon's stated grid (`adoptReplayGrid`), which is what
+     * makes this branch correct rather than merely safe. The daemon does not stand still while this
+     * pane has no box: `applyCachedSizes` moves the PTY to the geometry this client last reported,
+     * which for a pane that never measured anything is `attach-pane`'s own 80x24 fallback
+     * (`connection/pty.ts`), and the resync that follows is serialised at THAT. Without the
+     * following, the engine sat at the ex-owner's grid parsing an 80x24 snapshot — the #166 glue
+     * again, on this pane, until the first real measurement repaired it (about 150 ms for a pane
+     * about to be shown, indefinitely for one that stays hidden).
+     *
+     * LOSING it normally needs nothing: the taker's grid reaches the daemon's emulator, that is a
+     * grid CHANGE, and a grid change is what arms the settled-resize resync for every attached
+     * client (`noteGeometry` → `resyncPane`, `ws/streams.ts`). The replay it sends carries the new
+     * grid and `adoptReplayGrid` mirrors it — 150 ms after the hand-off, with the screen the owner
+     * is looking at, rather than this instant with a grid nobody has sent the contents of.
+     *
+     * Except when that replay ARRIVED FIRST. The broadcast updates the store at once but reaches
+     * these props one render later, and a big snapshot is applied in chunks across several tasks
+     * (`ingest.ts`), so the new owner's screen can be painted at this engine's grid before
+     * `ownsSize` turns false. Then nothing is left: the box has not moved, so this client sends no
+     * geometry; the daemon replays a non-owner only on a CHANGED grid; and a replay provokes no
+     * replay. `replayGridRef` is how that is detected — the last replay stated a grid this engine
+     * is not at — and ONE forced `resize-pane` is how it is repaired: the daemon's non-owner path
+     * takes a forced report as "re-seed me" (`ws/sync.ts`), and the snapshot that comes back
+     * carries the owner's grid for `adoptReplayGrid` to mirror. One request per transition, never
+     * a poll: this effect runs only when `ownsSize` itself changes.
+     */
+    useEffect(() => {
+        const renderer = rendererRef.current;
+        const measured = geometryRef.current;
+        if (props.ownsSize === false) {
+            const stated = replayGridRef.current;
+            if (stated === null || renderer === null || measured === null) return;
+            if (stated.cols === renderer.cols && stated.rows === renderer.rows) return;
+            streamRef.current?.resize(measured.cols, measured.rows, true);
+            return;
+        }
+        if (mirrorRef.current === null) return;
+        if (measured === null) return;
+        mirrorRef.current = null;
+        publishMirror(null);
+        renderer?.resize(measured.cols, measured.rows);
+        streamRef.current?.resize(measured.cols, measured.rows, true);
+        // …and re-measure, for the pane whose box moved while it was somebody else's mirror.
+        syncGeometry(true);
+    }, [props.ownsSize, publishMirror, syncGeometry]);
 
     // ── late font arrival ───────────────────────────────────────────────────────────
     //

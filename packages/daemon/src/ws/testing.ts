@@ -96,6 +96,14 @@ export interface StubTerm {
     /** What the next `snapshot()` returns for a pane. */
     setSnapshot(paneID: string, data: string): void;
     /**
+     * The grid the next `snapshot()` reports for a pane, without going through `resize()`.
+     *
+     * The resync's replay carries this number (#166), and a viewer's own resize must NOT move
+     * it — so a test needs to be able to put the emulator at the OWNER's grid and then ask what
+     * a non-owner is told.
+     */
+    setGrid(paneID: string, cols: number, rows: number): void;
+    /**
      * A chunk that has REACHED the emulator but has not been parsed yet.
      *
      * This is the difference the flow-control re-seed turns on (N23), and the stub could not
@@ -124,10 +132,20 @@ export function stubTerm(): StubTerm {
         modes: { applicationCursorKeys: false, bracketedPaste: false } as VtModes
     };
 
+    /**
+     * The grid each pane's emulator is at, 80x24 until something resizes it.
+     *
+     * Tracked, not hard-coded, because #166 put the snapshot's grid ON THE WIRE: the real
+     * service answers `snapshot()` with `entry.term.cols`/`rows` (`term/service.ts:809`), so a
+     * stub that always said 80x24 could not tell a replay that carries the daemon's grid from
+     * one that carries a constant.
+     */
+    const grids = new Map<string, { cols: number; rows: number }>();
+
     const read = (paneID: string): { data: Uint8Array; cols: number; rows: number } => ({
         data: bytes(snapshots.get(paneID) ?? ''),
-        cols: 80,
-        rows: 24
+        cols: grids.get(paneID)?.cols ?? 80,
+        rows: grids.get(paneID)?.rows ?? 24
     });
 
     /**
@@ -162,6 +180,7 @@ export function stubTerm(): StubTerm {
         },
         resize(paneID, cols, rows) {
             resizes.push({ paneID, cols, rows });
+            grids.set(paneID, { cols, rows });
         },
         capture: (paneID) => snapshots.get(paneID) ?? '',
         snapshot: read,
@@ -187,6 +206,9 @@ export function stubTerm(): StubTerm {
         setSnapshot(paneID, data) {
             snapshots.set(paneID, data);
         },
+        setGrid(paneID, cols, rows) {
+            grids.set(paneID, { cols, rows });
+        },
         feedMidParse(paneID, data) {
             fed.push({ paneID, data });
             midParse.set(paneID, (midParse.get(paneID) ?? '') + data);
@@ -206,6 +228,15 @@ export function stubTerm(): StubTerm {
 export interface RecordedTransport {
     readonly json: Record<string, unknown>[];
     readonly frames: Uint8Array[];
+    /**
+     * Everything sent, JSON and binary INTERLEAVED, oldest first.
+     *
+     * The two lists above cannot express an order between themselves, and one path's correctness is
+     * an order across both: a flow-control re-seed sends the `pty-resync` notice, then the replay's
+     * grid, then the replay (`ws/streams.ts` `reseed`), and the notice has to lead because a notice
+     * that arrived after the replay would erase the fresh byte credit the replay just granted.
+     */
+    readonly outbound: ({ kind: 'json'; message: Record<string, unknown> } | { kind: 'frame'; frame: Uint8Array })[];
     readonly closes: { code?: number | undefined; reason?: string | undefined }[];
     sendJson(message: Record<string, unknown>): void;
     sendFrame(frame: Uint8Array): void;
@@ -217,16 +248,20 @@ export interface RecordedTransport {
 export function recordingTransport(): RecordedTransport {
     const json: Record<string, unknown>[] = [];
     const frames: Uint8Array[] = [];
+    const outbound: ({ kind: 'json'; message: Record<string, unknown> } | { kind: 'frame'; frame: Uint8Array })[] = [];
     const closes: { code?: number | undefined; reason?: string | undefined }[] = [];
     return {
         json,
         frames,
+        outbound,
         closes,
         sendJson(message) {
             json.push(message);
+            outbound.push({ kind: 'json', message });
         },
         sendFrame(frame) {
             frames.push(frame);
+            outbound.push({ kind: 'frame', frame });
         },
         close(code, reason) {
             closes.push({ code, reason });

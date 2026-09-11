@@ -342,6 +342,28 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
                 const on = workspace.isSyncInputActive;
                 items.push({ id: 'sync-input', label: on ? 'Stop syncing input' : 'Sync input to all panes', onSelect: actions.toggleSyncInput });
             }
+            /*
+             * #166 - the phone's route to size control, and the only one it has.
+             *
+             * PTY geometry follows exactly ONE client (terminal-surface.md §5.1). A phone claims it
+             * on its first `attach-pane`, so it is normally the owner and this row never appears;
+             * when a desktop window takes it back, the phone becomes a MIRROR of that window's grid
+             * (`terminal/TerminalPane.tsx`) - the owner's screen, clipped at the phone's edge,
+             * because a viewer narrower than the owner cannot show every column and re-wrapping the
+             * owner's rows is the defect #166 closed. Clipped is honest and recoverable; clipped
+             * with no way back is not, and the desktop's way back is a top-bar chip the phone shell
+             * replaces. So the verb lives here too, under the same rule as the chip: shown only to a
+             * client that knows another one owns sizing (`features/chrome-source.ts`).
+             */
+            const owner = props.state.daemon.sizeControlOwnerID;
+            const client = props.state.daemon.clientID;
+            if (owner !== null && client !== null && owner !== client) {
+                items.push({
+                    id: 'take-size-control',
+                    label: 'Take size control',
+                    onSelect: () => props.runtime.commands.takeSizeControl()
+                });
+            }
         }
         items.push({ id: 'palette', label: 'Command palette', onSelect: actions.openPalette });
         items.push({ id: 'settings', label: 'Settings', onSelect: actions.openSettings });
@@ -349,7 +371,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 

@@ -225,6 +225,19 @@ describe('retained Workspaces actions', () => {
         expect(h.notifyFailure).toHaveBeenCalledWith('Add repository', 'repository offline');
     });
 
+    it('opens the first pane in the one chosen repository, and at home for none or several (#38)', async () => {
+        const h = setup();
+        h.rpc.createWorkspace.mockResolvedValueOnce({ ok: true, workspace_id: W3 });
+        await act(async () => { h.actions.createWorkspace('solo', G1, { repoPaths: ['/repo/one'] }); });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'solo', path: '/repo/one', group: G1 });
+        // The repo is still associated the same way; `path` only places the first pane.
+        expect(h.rpc.addRepoAssociation).toHaveBeenCalledExactlyOnceWith({ workspaceID: W3, path: '/repo/one' });
+        h.actions.createWorkspace('none', null, { repoPaths: [] });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'none' });
+        h.actions.createWorkspace('pair', null, { repoPaths: ['/repo/one', '/repo/two'] });
+        expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'pair' });
+    });
+
     it('keeps workspace create errors visible and worktree failures inline without activation', async () => {
         const h = setup();
         h.rpc.createWorkspace.mockResolvedValueOnce({ ok: false, error: 'profile not found' });

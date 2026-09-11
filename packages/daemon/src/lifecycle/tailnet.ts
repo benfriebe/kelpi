@@ -229,7 +229,10 @@ export type TailnetUrlResult =
       };
 
 export interface ResolveTailnetOptions {
-    /** The daemon's HTTP port (the run dir's port file — stable across restarts). */
+    /**
+     * The daemon's BOUND HTTP port (the run dir's port file — stable across restarts). Anything
+     * that is not a real port, `0` above all, is refused before tailscale is asked anything.
+     */
     readonly port: number;
     /** The run dir's token; rides the URL exactly as `kelpid url` prints it. */
     readonly token: string;
@@ -243,6 +246,17 @@ export interface ResolveTailnetOptions {
  * port. That config is someone's working service; see the module note.
  */
 export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise<TailnetUrlResult> {
+    // `0` asks the kernel for ANY port. As a serve target it is a proxy to nothing that
+    // tailscale accepts and keeps, so every request 502s from then on (#130): no bound port,
+    // no URL, and serve is left exactly as it was.
+    if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
+        return {
+            kind: 'error',
+            message: `the daemon has no bound HTTP port to front (got ${String(options.port)}), so tailscale serve was left untouched.`,
+            repair: 'Restart the daemon (`kelpid stop` then `kelpid start`) so it records the port it bound, then try again.',
+            steps: ['Restart the daemon (`kelpid stop`, then `kelpid start`) so it records the port it actually bound.']
+        };
+    }
     const run = options.run ?? defaultTailscaleRunner();
     const notes: string[] = [];
 

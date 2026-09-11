@@ -17,7 +17,7 @@ import { WebSocket } from 'ws';
 import { probeControlPing } from '../control/index.js';
 import { createPersistence } from '../db/index.js';
 import { spawnEnvVars } from '../handlers/pane/index.js';
-import { mintDevice, revokeDevice } from '../lifecycle/index.js';
+import { mintDevice, readToken, revokeDevice } from '../lifecycle/index.js';
 import { WS_CLOSE_CODES } from '../ws/sync.js';
 import type { PersistedSnapshot } from '../store/index.js';
 import { createDaemon, type Daemon } from './compose.js';
@@ -535,4 +535,63 @@ describe('createDaemon', () => {
         expect(rejected).toMatchObject({ code: 'unauthorized', reason: 'revoked' });
         expect(await closed).toBe(WS_CLOSE_CODES.unauthorized);
     }, 20_000);
+
+    /*
+     * #130: a listener that asked for port 0 (a first boot with no port file, or the fallback
+     * when the remembered port is taken) must still hand Settings ▸ Remote the port it BOUND.
+     * The loopback pairing URL is the observable: it used to read `http://127.0.0.1:0/...`, and
+     * the tailnet half of the same number ran `tailscale serve --bg 0`.
+     */
+    it('pairs against the port the listener bound, on a first boot and on the bind fallback (#130)', async () => {
+        const paths = scratch();
+        const env = { KELPID_DEVICES_PATH: path.join(paths.root, 'devices.json') };
+        const pairOverWs = async (daemon: Daemon, httpPort: number, name: string): Promise<Record<string, unknown>> => {
+            // The owner's token: remote-pair is owner-only.
+            const token = readToken(daemon.paths) ?? '';
+            const socket = new WebSocket(`ws://127.0.0.1:${String(httpPort)}/ws?token=${token}`);
+            cleanups.push(() => socket.close());
+            const next = (predicate: (m: Record<string, unknown>) => boolean, label: string): Promise<Record<string, unknown>> =>
+                new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 10_000);
+                    const onMessage = (data: unknown): void => {
+                        const message = JSON.parse(String(data)) as Record<string, unknown>;
+                        if (!predicate(message)) return;
+                        clearTimeout(timer);
+                        socket.off('message', onMessage);
+                        resolve(message);
+                    };
+                    socket.on('message', onMessage);
+                });
+            await new Promise<void>((resolve, reject) => {
+                socket.once('open', () => resolve());
+                socket.once('error', reject);
+            });
+            const welcome = next((m) => m['type'] === 'welcome', 'welcome');
+            socket.send(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token }));
+            await welcome;
+            const reply = next((m) => m['type'] === 'command-reply' && m['id'] === 'pair', 'the pair reply');
+            socket.send(
+                JSON.stringify({ type: 'command', id: 'pair', payload: { command: 'remote-pair', name, tailnet: false } })
+            );
+            return (await reply)['reply'] as Record<string, unknown>;
+        };
+        const loopbackURL = (port: number): RegExp => new RegExp(`^http://127\\.0\\.0\\.1:${String(port)}/\\?token=kd_`);
+
+        // A first boot: no port file, so the listener asks for 0.
+        const fresh = daemonFor(paths, { env });
+        const info = await fresh.start();
+        const first = await pairOverWs(fresh, info.httpPort, 'phone');
+        expect(first['ok']).toBe(true);
+        expect(first['url']).toMatch(loopbackURL(info.httpPort));
+        await fresh.stop();
+
+        // The remembered port cannot be bound, so the listener falls back to asking for 0.
+        writePortFile(fresh.paths, 1); // privileged port: bind fails for a normal user
+        const fallback = daemonFor(paths, { env, httpPort: undefined });
+        const fallbackInfo = await fallback.start();
+        expect(fallbackInfo.httpPort).not.toBe(1);
+        const second = await pairOverWs(fallback, fallbackInfo.httpPort, 'tablet');
+        expect(second['ok']).toBe(true);
+        expect(second['url']).toMatch(loopbackURL(fallbackInfo.httpPort));
+    }, 30_000);
 });

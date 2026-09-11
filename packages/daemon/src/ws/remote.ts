@@ -100,7 +100,11 @@ export type RemoteReply =
 
 export interface RemoteChannelOptions {
     readonly env?: NodeJS.ProcessEnv | undefined;
-    /** The daemon's bound HTTP port — what serve fronts and what a pairing URL needs. */
+    /**
+     * The daemon's bound HTTP port — what serve fronts and what a pairing URL needs. `0` is
+     * what a listener ASKS for when any port will do, never one it is on, so it reads as no
+     * port at all (#130).
+     */
     readonly port: () => number | undefined;
     /** Injected for tests; production shells out to the tailscale CLI. */
     readonly tailscale?: TailscaleRunner | undefined;
@@ -117,6 +121,11 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
     const env = options.env ?? process.env;
     const run = options.tailscale ?? defaultTailscaleRunner();
     const devicesFile = (): string => resolveDevicesPath(env);
+    // Both verbs read the port through this one rule (#130).
+    const boundPort = (): number | undefined => {
+        const port = options.port();
+        return port !== undefined && port > 0 ? port : undefined;
+    };
 
     const devices = (): WireDevice[] =>
         loadDevices(devicesFile())
@@ -138,7 +147,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
             } catch (failure) {
                 return { ok: false, error: failure instanceof Error ? failure.message : String(failure) };
             }
-            const port = options.port();
+            const port = boundPort();
             const probe = await run(['status', '--json']);
             if (probe.code === -1 && probe.stderr === 'ENOENT') {
                 return {
@@ -194,7 +203,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
         },
 
         async pair(name: string, tailnet: boolean): Promise<RemoteReply> {
-            const port = options.port();
+            const port = boundPort();
             if (port === undefined) {
                 return { ok: false, error: 'the daemon has no HTTP port to build a URL from' };
             }

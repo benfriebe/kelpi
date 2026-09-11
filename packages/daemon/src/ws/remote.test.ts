@@ -92,6 +92,21 @@ describe('remote-status', () => {
         // A dashboard, never a mutation: no `serve --bg` ran.
         expect(ts.calls.some((call) => call.includes('--bg'))).toBe(false);
     });
+
+    it('never reads a proxy to port 0 as fronting the daemon (#130)', async () => {
+        const file = registryFile();
+        const ts = tailscale({
+            status: { code: 0, stdout: RUNNING },
+            serveStatus: {
+                code: 0,
+                stdout: JSON.stringify({
+                    Web: { 'werk.taila.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:0' } } } }
+                })
+            }
+        });
+        const reply = (await channel(file, ts, 0).status()) as Record<string, unknown>;
+        expect(reply['tailnet']).toMatchObject({ available: true, serving: false });
+    });
 });
 
 describe('remote-pair', () => {
@@ -133,6 +148,22 @@ describe('remote-pair', () => {
         // The repair rides through as ordered steps too - the UI renders them as a checklist.
         expect(reply['repair']).toContain('tailscale up');
         expect(reply['steps']).toEqual([expect.stringContaining('tailscale up')]);
+        expect(loadDevices(file)).toEqual([]);
+    });
+
+    it('refuses to pair on port 0: nothing minted, `serve --bg 0` never run (#130)', async () => {
+        const file = registryFile();
+        const ts = tailscale({
+            status: { code: 0, stdout: RUNNING },
+            serveStatus: { code: 0, stdout: '{}' },
+            serveBg: { code: 0 }
+        });
+        const remote = channel(file, ts, 0);
+        for (const tailnet of [true, false]) {
+            const reply = (await remote.pair('phone', tailnet)) as Record<string, unknown>;
+            expect(reply).toEqual({ ok: false, error: 'the daemon has no HTTP port to build a URL from' });
+        }
+        expect(ts.calls).toEqual([]);
         expect(loadDevices(file)).toEqual([]);
     });
 

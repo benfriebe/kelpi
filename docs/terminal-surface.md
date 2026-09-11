@@ -607,9 +607,11 @@ follows exactly **one client at a time**, the *size owner*:
   for a terminal, `[claimable]` for an editor) never change when a sidebar filter is
   dismissed, so without this a pane focused by ⌘] / ⌘[, a sidebar row, `kelpi pane focus` or
   an agent wore the ring and drew a blinking cursor while the keystrokes went to the field,
-  until the user clicked the pane a second time (the click blurs the field before the pane's
-  own handler runs). The gain is spent only when the claim is actually MADE; losing pane
-  focus disarms it, so an armed claim never outlives the ring that justified it. The engine
+  until the user clicked the pane (a click takes the caret whatever holds it: the engine's
+  canvas `mousedown` listener focuses its textarea, and while an application tracks the mouse
+  the reporter makes the same claim for the pane that wears the ring, section 11). The gain is
+  spent only when the claim is actually MADE; losing pane focus disarms it, so an armed claim
+  never outlives the ring that justified it. The engine
   focusing its own host is not an answer (that is `Terminal.open()`'s auto-focus, which the
   arbiter is about to undo), and a `focusout` is answered one task later, because the caret
   is dropped to `<body>` for the length of a focus move. The web pane has carried the same
@@ -1321,7 +1323,12 @@ and the kitty forms when a pane has negotiated the protocol.
   the DEC protocol has no bit for ⌘, so a ⌘-held press or release is recorded as held and not
   reported, which is what stops a TUI seeing a plain click the user never aimed at it. Ghostty
   captures ⌘ the same way. Neither bypass touches a PLAIN click, which reports exactly as it
-  always did. `mouseTracking: 'none'` resets the reporter.
+  always did. `mouseTracking: 'none'` resets the reporter. Consuming a press also keeps it
+  from the engine's canvas `mousedown → textarea.focus()`, the only thing that re-focuses a
+  pane that is already the focused one, so the reporter makes that claim itself (#158), the
+  way the listener it replaces does: whatever holds the caret, a rename or the sidebar filter
+  mid-edit included (the click is the user's, so section 6's polite rule does not apply), for
+  the pane that wears the ring, and never on a phone.
 - No mouse mirroring to sync groups: every report is written as the un-mirrored
   `inputDirect` PTY frame (section 8.2), never as `input`.
 

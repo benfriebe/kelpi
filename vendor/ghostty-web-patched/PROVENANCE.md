@@ -1,14 +1,22 @@
-# ghostty-web 0.4.0-nex.12 (vendored)
+# ghostty-web 0.4.0-nex.13 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus eleven
+review in the orchestrating session and explicit user authorization to integrate both, plus twelve
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
 `-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
 repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
 every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
-`-nex.12`: a disposed terminal is garbage — the document listener that pinned it is removed).
+`-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
+`-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped).
+
+**`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
+shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
+carries a libghostty-vt patch and therefore a rebuilt wasm. The Zig diff is kept beside this file
+as `ghostty-vt-wrap-linkage.patch` so it can be reapplied, and the exact build recipe, which
+reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
+"`ghostty-vt.wasm`: the Zig half, and how to rebuild it" below.
 
 | Version | What it added |
 |---|---|
@@ -24,6 +32,309 @@ every terminal on its own WASM instance; `-nex.11`: output never moves a scrolle
 | `0.4.0-nex.10` | `createTerminal` instantiates the compiled module per terminal: no two VTs share a heap |
 | `0.4.0-nex.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
 | `0.4.0-nex.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-nex.10`, its WASM instance) can be collected |
+| `0.4.0-nex.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
+
+## Nex adaptation: an erased row forgets it was wrapped (`0.4.0-nex.13`, 2026-09-11)
+
+**This is a WASM change.** `-nex.1` through `-nex.12` were TypeScript-only and shipped upstream's
+`ghostty-vt.wasm` untouched; this one patches libghostty-vt. The Zig diff lives beside this file
+as `ghostty-vt-wrap-linkage.patch`, and the recipe that built it is the next section.
+
+**The defect** (#165). After a pane had been narrow and was widened again, the bottom of a TUI's
+screen came back as rows of fixed-length text fragments separated by blank runs. In the reported
+screenshot every fragment was exactly 17 cells and the stride 26: Claude Code's diff frame as
+drawn at ~26 columns (a 9-cell line-number gutter plus 17 text cells), with about seven of those
+narrow rows glued side by side into each wide row. The green blocks and `73 +|` pieces inside the
+"gaps" were that gutter.
+
+The mechanism, reproduced against this engine in Node with no browser:
+
+1. The pane shrinks: a window drag, a split, the sidebar or inspector opening, another client
+   taking size ownership. Ghostty reflows: each wide row is split into several narrow rows, the
+   tails flagged as wrap continuations.
+2. The TUI answers SIGWINCH the way Ink and ratatui do: erase each row and rewrite the frame in
+   place at the new width. Ink's `eraseLines(n)` (`ansi-escapes`) is `ESC[2K` + `ESC[1A` per row
+   and a final `ESC[2K ESC[G`, so EVERY row on screen is erased with EL 2.
+3. libghostty-vt leaves the wrap flags set on those rows, which now hold unrelated narrow content
+   ending in a newline.
+4. The pane widens. Ghostty reflows again and appends every flagged row to the row above it:
+   `17 chars, 9 blank, 17 chars, 9 blank …` across the full width.
+
+**Why the flag survived.** Ghostty models soft wrap with two flags per row, `wrap` ("continues
+onto the next row") and `wrap_continuation` ("is the continuation of the previous row"), and
+`Terminal.eraseLine` (`src/terminal/Terminal.zig:2102`) handled them like this:
+
+| mode | sequence | what upstream did |
+|---|---|---|
+| `.right` | `ESC[K` / `ESC[0K` | `cursorResetWrap()`, clears the FORWARD half only |
+| `.left` | `ESC[1K` | nothing |
+| `.complete` | `ESC[2K` | **nothing**, under the note *"it seems like complete should reset the soft-wrap state of the line but in xterm it does not"* |
+
+`Screen.cursorResetWrap` (`src/terminal/Screen.zig:1187`) clears `row.wrap` on the cursor row and
+`row.wrap_continuation` on the row below, and clears the trailing spacer head. It never touches
+the cursor row's own `wrap_continuation`, i.e. the link from the row ABOVE into this row. So even
+`ESC[K` at column 0 left the backward half standing, and `ESC[2K` left both.
+
+Both halves matter to `PageList`'s column reflow, which believes the flags over the cells:
+
+- `PageList.ReflowCursor.reflowRow` (`src/terminal/PageList.zig:1028`) continues the PREVIOUS
+  logical line rather than starting a new one for any source row carrying `wrap_continuation`,
+  and copies the flag forward as it goes (`:1101-1104`). That is the glue.
+- the same function drops a BLANK row outright when it is flagged as a continuation
+  (`src/terminal/PageList.zig:1084`, `if (!src_row.wrap_continuation) { self.new_rows += 1; }`),
+  so a single `ESC[2K` in the middle of a wrapped run makes that row vanish on the next widen and
+  shifts everything below it up a line. That is the second, quieter half of #165.
+
+**Why xterm is the parity target, and why upstream's note is wrong for this app.** The note holds
+for xterm(1). It does not hold for the xterm.js lineage, and `@xterm/headless` is the emulator the
+daemon runs as the AUTHORITATIVE screen (`packages/daemon/src/term/service.ts`), so xterm.js is
+what this engine has to agree with or the daemon's buffer and the client's canvas diverge, which
+is exactly what #165 is: `kelpi pane capture` read clean while the client painted garbage.
+xterm.js has only the backward flag, `BufferLine.isWrapped`, and clears it on an erase from column
+zero. From `@xterm/headless@6.0.0`, `lib-headless/xterm-headless.js`:
+
+```js
+eraseInLine(e,t=!1){switch(this._restrictCursor(this._bufferService.cols),e.params[0]){
+  case 0:this._eraseInBufferLine(this._activeBuffer.y,this._activeBuffer.x,this._bufferService.cols,0===this._activeBuffer.x,t);break;
+  case 1:this._eraseInBufferLine(this._activeBuffer.y,0,this._activeBuffer.x+1,!1,t);break;
+  case 2:this._eraseInBufferLine(this._activeBuffer.y,0,this._bufferService.cols,!0,t)}…}
+
+_eraseInBufferLine(e,t,s,i=!1,r=!1){const n=…;n.replaceCells(t,s,…,r),i&&(n.isWrapped=!1)}
+```
+
+`clearWrap` is `(x === 0)` for EL 0, `false` for EL 1, `true` for EL 2, and it is the BACKWARD
+flag it clears. The daemon's emulator additionally never rewraps on a column change at all (its
+`NO_REFLOW` policy), so the two VTs could only ever be reconciled by the settled-resize replay;
+the reporter saw the garbage as a steady state, so that backstop was not enough.
+
+**The fix.** A new `Screen.cursorResetWrapFull` breaks BOTH halves of the cursor row's linkage:
+`cursorResetWrap` for the forward half, then `row.wrap_continuation = false` here and
+`row.wrap = false` on the row above, plus the spacer head that row may carry for a wide character
+split across the boundary. `Terminal.eraseLine` calls it from ONE arm, `.complete` (EL 2). Because
+the backward half returns immediately unless the row actually IS a continuation, the only rows
+this can affect are ones a reflow linked up itself.
+
+**What this deliberately does NOT cover**, and the EL 0 trade-off, which is the important one:
+
+- **EL 0 at column 0 (`CR` + `ESC[K`) keeps upstream's forward-only reset.** xterm.js clears its
+  wrap flag there too (`clearWrap = (x === 0)`), an earlier draft of this patch matched it, and
+  that draft was WRONG, because xterm.js never reflows and this engine does. `CR` + `ESC[K` +
+  rewrite is how a progress bar, a spinner or a status line redraws the tail of a line it has
+  already printed, and when that line has soft-wrapped the row it lands on is a continuation row.
+  Breaking the backward linkage there tears the logical line on the next widen, and keeping EL 0
+  forward-only means this engine still rejoins it. Measured on this wasm: `0123456789ABCDEF` at 10
+  columns, then `CR ESC[K ABCDEF`, then a widen to 30 columns gives `0123456789ABCDEF` here and on
+  upstream, and gave `0123456789` + `ABCDEF` with the EL 0 arm in. Pinned by a real-wasm case in
+  `vendor-engine.test.ts` and a Zig case in the patch.
+
+  **Two things that does NOT mean, because the bullet above reads stronger than the truth.**
+
+  *It is not "the progress-bar case is handled".* The same idiom spelled with EL 2 still tears,
+  and EL 2 ignores the cursor column, so either ordering does it: `CR ESC[2K` and `ESC[2K CR` both
+  come back as `0123456789` + `ABCDEF` after the widen, where upstream rejoined. That spelling is
+  not exotic: it is `ansi-escapes`' `eraseLine`, hence most Node spinners including `ora`. It is
+  also CORRECT on the grounds this whole patch rests on. `@xterm/headless` clears `isWrapped` for
+  EL 2, and `addon-serialize` emits the two halves as two rows, so after this change the client and
+  the authoritative screen finally AGREE about that line; tearing in both is better than tearing in
+  one. Measured on the daemon's own emulator: `isWrapped(row1)` goes `true` to `false`, and the
+  snapshot is `"0123456789\r\nABCDEF"`.
+
+  *And the EL 0 rejoin does not survive a replay.* It is a live-engine-only property. The daemon's
+  emulator clears `isWrapped` for EL 0 at column 0 as well (`clearWrap = (x === 0)`) and serialises
+  the halves as two rows there too, so the next settled-resize replay re-tears the line on the
+  client anyway. So state this non-change for what it is: a knowing divergence from the
+  authoritative screen that happens to match upstream ghostty, costs nothing, and PRE-DATES this
+  patch. It is kept because #165 does not need it (Ink's `eraseLines()` and ratatui/crossterm's
+  `Clear(CurrentLine)` are both `ESC[2K`, so the `.complete` arm alone closes the reported bug) and
+  because taking it would make the live engine worse between replays for no gain.
+- **EL 1 (`ESC[1K`, `.left`) is untouched, and so is `ESC[1J`.** ED `.above` delegates its cursor
+  row to `eraseLine(.left)`, so it does NOT inherit this fix. xterm.js DOES clear the flag for its
+  EL 1 and ED 1, so this is the same kind of divergence, with the same replay caveat as EL 0: an
+  erase that leaves the right-hand side of the row standing has not emptied the row, and the rows
+  below are still its continuation.
+- **`ESC[J` (ED `.below`) gets it only through its bulk clear.** Its cursor row goes through
+  `eraseLine(.right)`, which per the first bullet is forward-only. The rows BELOW the cursor go
+  through `Screen.clearRows`, whose UNPROTECTED branch resets every row flag
+  (`row.* = .{ .cells = cells_offset }`, upstream `src/terminal/Screen.zig:1317`). Its protected
+  branch does not: it restores `row.cells` and leaves the flags alone on purpose
+  (upstream `src/terminal/Screen.zig:1310-1314`, "We need to preserve other row attributes since
+  we only cleared unprotected cells"), so `ESC[?J` leaves wrap linkage standing exactly as before.
+- **DECSEL `ESC[?2K` on protected cells erases nothing and still breaks the linkage.** So the
+  `cursorResetWrapFull` line "a row erased from column 0 keeps nothing of what it held" is not
+  true on that path. It is deliberate xterm.js parity: `_eraseInBufferLine` applies `clearWrap`
+  OUTSIDE its `respectProtect` branch, so xterm.js clears `isWrapped` for `ESC[?2K` as well.
+- **A row that is OVERWRITTEN with no erase at all keeps its stale linkage.** There is no hook for
+  it that is not worse than the defect: the engine tracks no per-row write coverage, and the only
+  cheap signal ("a print landed at column 0 and did not come from `printWrap`") would break
+  legitimate soft wrap for any app that redraws a long wrapped line with a bare `\r`. xterm.js has
+  the same hole (nothing in its print path touches `isWrapped`), so closing it here would reopen
+  the divergence this patch exists to close. The settled-resize replay
+  (`packages/daemon/src/ws/streams.ts`) remains the backstop for that case.
+
+**Verification.** The repro is two scenarios driven straight at the wasm through the public
+`Ghostty` constructor (see #165 for the script). Against `-nex.12`'s wasm
+(`d6f0326f…`), scenario A's widen produced
+
+```
+  |   75 +| xxxxxxxx…xxx   73 +| code line no 73 co                                  ntinues here and
+  |         wraps at seventee   74 +| code line no 74 co                                  ntinues …
+```
+
+and scenario B left an `ESC[2K`'d row blank but still reporting `isRowWrapped` true. Against
+`-nex.13`'s wasm (`7de61fbc…`) scenario A's widen is the frame as painted, one repainted row per
+screen row, and scenario B's erased row reports unwrapped and survives the widen as a blank row
+instead of being swallowed.
+
+Six cases in `packages/client/src/terminal/vendor-engine.test.ts` hold it, in two kinds.
+
+FOUR run the real wasm, the first cases in that file to do so rather than grep the bundle (a
+marker string cannot see inside a 413 KB binary): the `ESC[2K` flag itself, the whole
+shrink/repaint/widen gesture, the previous row's spacer head for a wide character split across the
+boundary, and the `CR ESC[K` tail redraw that must NOT tear.
+
+TWO load no wasm at all: they hash the wasm inlined in each built bundle, and in the installed
+copy, against the one on disk. Those are the ones that guard a re-vendored engine, for the reason
+in the guard section below.
+
+Run against four artifacts to show each is discriminating:
+
+| artifact | what fails |
+|---|---|
+| upstream `d6f0326f…` wasm AND upstream dist (a consistent pre-fix tree) | the three `ESC[2K` behavioural cases: the flag, the gesture, the spacer head |
+| upstream `d6f0326f…` wasm with the NEW dist (wasm swapped alone) | those three PLUS both hash cases, five in all |
+| the EL 0 draft `ac5a47ce…` | the `CR ESC[K` tail-redraw case only |
+| patched wasm behind a STALE dist (the state this change nearly shipped) | both hash cases only, and nothing else |
+| the shipped pair | nothing: 6/6 |
+
+Ghostty's own libghostty-vt suite is the guard on the other side, and the patch adds three cases
+to it (in `Terminal.zig`, carried in the `.patch`) because no upstream test reaches the new code:
+"Terminal: eraseLine resets wrap" erases row 0, which is never a continuation, so
+`cursorResetWrapFull`'s `if (!page_row.wrap_continuation) return;` takes the early exit and the
+`up(1)` arithmetic is never executed. The new cases erase a CONTINUATION row instead, cover the
+wide-char spacer head, and pin the EL 0 non-change. They matter more than they look: the shipped
+artifact is `ReleaseSmall`, which compiles the page integrity assertions out, so this suite (Debug,
+runtime safety on) is the only place that pointer work is checked at all.
+
+`zig build test-lib-vt --summary all` reports `23/23 steps succeeded; 2800/2822 tests passed; 22
+skipped` (was `2794/2816` before the three new cases, which run in each of the two test binaries),
+so no upstream test depended on EL 2 keeping a row's wrap flags. Reverting the `.complete` arm with
+the tests in place fails both new linkage cases (`expected .narrow, found .spacer_head`), so they
+are not null guards. That suite builds for the host, not wasm; it is a correctness check on the
+Zig, not on the shipped artifact.
+
+- **Rebuild sanity**: `ghostty-vt.wasm` is **423,289 bytes**,
+  `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f` (was 423,045 /
+  `d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`), copied to both
+  `ghostty-vt.wasm` at the root and `dist/ghostty-vt.wasm`. **The TypeScript dist had to be
+  rebuilt on top of it** even though nothing in `source/` changed, for the reason in the next
+  section: the bundle INLINES the wasm. `dist/ghostty-web.js` is **709.40 kB** as vite reports it
+  (was 709.08 kB at `-nex.12`, and the whole of that delta is the binary), `ghostty-web.umd.cjs`
+  **649.19 kB** (was 648.86 kB).
+
+## `ghostty-vt.wasm`: the Zig half, and how to rebuild it
+
+Up to `-nex.12` this section did not need to exist: the wasm was byte-identical to the npm
+package and "there is no Zig toolchain here" was the whole story. `-nex.13` changed that, so here
+is the pipeline, verified end to end. Built UNPATCHED first, it reproduces the shipped `0.4.0`
+wasm **byte-identically** (`d6f0326f…`), which is how we know the toolchain, the source pin and
+the flags are the same ones `coder/ghostty-web` published.
+
+The inputs, all three of which matter:
+
+| input | value | where it comes from |
+|---|---|---|
+| `ghostty-web` | tag `v0.4.0` = `9e4e126` | `github.com/coder/ghostty-web` |
+| ghostty | `5714ed07a1012573261b7b7e3ed2add9c1504496` | that tag's `ghostty` submodule pointer (`git ls-tree v0.4.0 ghostty`) |
+| Zig | **0.15.2** | `flake.nix` pins `zigpkgs."0.15.2"`; ghostty's `build.zig.zon` says `.minimum_zig_version = "0.15.2"` |
+
+Use the tag's patch, not `main`'s: `patches/ghostty-wasm-api.patch` grew 202 lines between
+`v0.4.0` and `ghostty-web`'s `main` (#180 among others) while the submodule pointer stayed the
+same, so building with `main`'s patch would NOT reproduce the published `0.4.0` wasm.
+
+```sh
+SCRATCH=/tmp/gvt                                   # anywhere outside this repo
+git clone --depth 50 https://github.com/coder/ghostty-web.git "$SCRATCH/ghostty-web"
+cd "$SCRATCH/ghostty-web" && git checkout v0.4.0
+
+# the submodule, at the commit the tag pins (a full clone is ~1 GB; this is ~100 MB)
+rmdir ghostty && mkdir ghostty && cd ghostty && git init -q .
+git remote add origin https://github.com/ghostty-org/ghostty.git
+git fetch --depth 1 origin 5714ed07a1012573261b7b7e3ed2add9c1504496
+git checkout -q FETCH_HEAD
+
+# ghostty-web's own WASM API patch, then ours. `scripts/build-wasm.sh` does the first one and
+# then reverts it; we apply both by hand so the tree can be rebuilt and diffed.
+git apply ../patches/ghostty-wasm-api.patch        # warns about trailing whitespace; fine
+git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-wrap-linkage.patch
+
+zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall   # ~20 s cold, ~3 s warm
+cp zig-out/bin/ghostty-vt.wasm <repo>/vendor/ghostty-web-patched/ghostty-vt.wasm
+cp zig-out/bin/ghostty-vt.wasm <repo>/vendor/ghostty-web-patched/dist/ghostty-vt.wasm
+
+# NOW REBUILD THE TYPESCRIPT DIST ON TOP OF IT. Not optional: see the warning below.
+# Follow the `source/` recipe with the NEW wasm at the build-tree root, then:
+cd <repo> && pnpm install                          # re-materialises the file: override
+```
+
+### A NEW WASM IS NOT SHIPPED UNTIL THE DIST IS REBUILT ON TOP OF IT
+
+This is the trap that nearly shipped `-nex.13` as a no-op, and it is invisible to every test that
+loads `ghostty-vt.wasm` off disk.
+
+`source/lib/ghostty.ts` resolves the engine with `new URL('../ghostty-vt.wasm', import.meta.url)`.
+Vite, building a LIBRARY, cannot know what URL that will have at runtime, so it inlines the file it
+finds at the build-tree root into the bundle as a `data:application/wasm;base64,…` URI. That is why
+the `source/` recipe says the wasm "must sit at the ROOT". `Ghostty.load()` then walks its candidate
+paths with that data URI FIRST, and the client's own build emits no `.wasm` asset at all, so in the
+app the data URI is the ONLY engine that ever runs. The `ghostty-vt.wasm` beside `dist/` is an
+unreachable fallback.
+
+So: **rebuild the wasm, then rebuild the dist with that wasm at the build-tree root, then
+`pnpm install`.** A dist built before the wasm carries the old engine no matter what is on disk.
+
+Check it, do not assume it:
+
+```sh
+node -e '
+const fs=require("fs"), c=require("crypto");
+const sha=b=>c.createHash("sha256").update(b).digest("hex");
+const disk=sha(fs.readFileSync("vendor/ghostty-web-patched/ghostty-vt.wasm"));
+for (const f of ["vendor/ghostty-web-patched/dist/ghostty-web.js",
+                 "vendor/ghostty-web-patched/dist/ghostty-web.umd.cjs",
+                 "packages/client/node_modules/ghostty-web/dist/ghostty-web.js"]) {
+  const m=/data:application\/wasm;base64,([A-Za-z0-9+\/=]+)/.exec(fs.readFileSync(f,"utf8"));
+  const b=Buffer.from(m[1],"base64");
+  console.log(sha(b)===disk ? "ok  " : "STALE", sha(b), b.length, f);
+}'
+```
+
+Two cases in `packages/client/src/terminal/vendor-engine.test.ts` do exactly this in CI, for both
+bundles and for the installed copy. They are the real refresh guard: with a patched wasm on disk and
+a stale dist, every other case in that file still passes.
+
+Note what they can and cannot be: `dist/` is gitignored (see the `source/` section), so those two
+cases compare two UNTRACKED artifacts against one tracked one. On any machine that has built the
+vendor dir they catch the stale-dist mistake; on a fresh clone that has not, there is no `dist/` to
+hash, and the client cannot run either, so the guard is only as present as the artifact it guards.
+
+The `zig build` line is lifted verbatim from `scripts/build-wasm.sh`: `ReleaseSmall`, not
+`ReleaseFast`, and the target is `wasm32-freestanding`. Do not run `npm run build` in
+`ghostty-web`: it shells out to `bun` and rebuilds both halves.
+
+Notes for the next person:
+
+- **Check the unpatched build first.** `zig build` with only `ghostty-wasm-api.patch` applied must
+  produce `d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`. If it does not,
+  stop: something about the toolchain or the pins has moved, and nothing built after that point
+  can be compared to what shipped.
+- Zig pins tightly. 0.15.2 is what both `flake.nix` and ghostty's `minimum_zig_version` ask for; a
+  different Zig will at best produce a different binary and at worst refuse to build. Download the
+  matching release into a scratch directory rather than moving the system toolchain.
+- `ghostty-vt-wrap-linkage.patch` touches only `src/terminal/Screen.zig` and
+  `src/terminal/Terminal.zig`, neither of which `ghostty-wasm-api.patch` touches, so the two are
+  independent and either order applies.
+- The wasm is the one artifact `source/` does not carry, and it IS in git here, so a refresh can
+  always diff against what is checked in.
 
 ## Nex adaptation: a disposed terminal is garbage (`0.4.0-nex.12`, 2026-09-10)
 
@@ -184,8 +495,12 @@ snapshots, including long history, repeated grow/shrink cycles, and subsequent E
 ## Base
 
 - Upstream: https://github.com/coder/ghostty-web at tag `v0.4.0`
-- `ghostty-vt.wasm`: byte-identical to the npm `ghostty-web@0.4.0` package (the patches are
-  TypeScript-only; no wasm rebuild)
+- `ghostty-vt.wasm`: rebuilt from source at `-nex.13` and NO LONGER byte-identical to the npm
+  `ghostty-web@0.4.0` package. Up to `-nex.12` it was (`d6f0326f…`, the patches were
+  TypeScript-only); `-nex.13` carries a libghostty-vt patch, so the binary is ours
+  (`7de61fbc…`), and the bundle that inlines it is ours with it. The diff is `ghostty-vt-wrap-linkage.patch` beside this file and the build
+  recipe, which reproduces `d6f0326f…` byte-identically when run WITHOUT that patch, is under
+  "`ghostty-vt.wasm`: the Zig half, and how to rebuild it".
 - Built with the repo's own `vite build` (bun unavailable; `pnpm install` + `npx vite build`,
   wasm copied beside/into dist as `build:wasm-copy` does)
 
@@ -933,10 +1248,12 @@ cp -R dist/* <repo>/vendor/ghostty-web-patched/dist/
 cd <repo> && pnpm install && pnpm --filter @nex/client build
 ```
 
-The wasm is the one thing `source/` does not carry (413 KB of binary, byte-identical to npm
-`ghostty-web@0.4.0`); `vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, so the copy
-above can come from there:
-`sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
+The wasm is the one thing `source/` does not carry (413 KB of binary);
+`vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, so the copy above should come from
+there and NOT from npm: `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`.
+Since `-nex.13` it is no longer the npm package's binary. npm's is
+`d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a` and taking it would reopen
+#165. To rebuild the wasm itself rather than copy it, see "`ghostty-vt.wasm`: the Zig half".
 
 Sanity checks on a rebuild: `dist/ghostty-web.js` is ~688 KiB (704.37 kB as vite reports it,
 +0.13 kB over `-nex.7`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
@@ -1003,7 +1320,14 @@ wholesale would:
   a unit test that only runs the client — the call simply lands on nothing — which is why
   `vendor-engine.test.ts` counts the paint sites in the built bundle and the audit's
   `settings-live-apply` step asserts the theme's background is the canvas's *dominant* colour
-  rather than merely present on it.
+  rather than merely present on it; and
+- take the upstream `ghostty-vt.wasm` wholesale, reopening **#165**, and this is the one a
+  wholesale refresh is MOST likely to lose, because every other adaptation lives in TypeScript
+  that a merge would conflict over, while the wasm is a binary that gets overwritten without a
+  word. A pane that has been narrow and is widened again would go back to gluing the rows a TUI
+  repainted while it was narrow into fixed-stride fragments. Re-apply
+  `ghostty-vt-wrap-linkage.patch` and rebuild per the recipe above; the two real-wasm cases in
+  `vendor-engine.test.ts` are what catch it.
 
 The last three are the easy ones to lose. Nothing about transparency is visible on an opaque
 config, which is what almost every developer runs; and a lone terminal blinking a filled block is

@@ -1,0 +1,293 @@
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index ba2af24..b92e94e 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -1211,6 +1211,149 @@ pub fn cursorResetWrap(self: *Screen) void {
+     }
+ }
+ 
++/// Break BOTH halves of the cursor row's soft-wrap linkage: the row no longer
++/// continues onto the row below it (that is `cursorResetWrap`), and it is no
++/// longer the continuation of the row above it either.
++///
++/// NEX (kelpi #165): this is what EL 2 (`ESC[2K`) needs, and `cursorResetWrap`
++/// on its own is not enough for it. `cursorResetWrap` clears the FORWARD flag
++/// (`row.wrap` here, `row.wrap_continuation` on the next row) and leaves the
++/// BACKWARD one (`row.wrap_continuation` here, `row.wrap` on the previous row)
++/// standing. An `ESC[2K`'d row keeps nothing of what it held, so a reader that
++/// still believes it is the tail of the logical line above is reading a link to
++/// content that no longer exists, and PageList's column reflow is exactly such
++/// a reader:
++///
++/// EL 2 is the ONLY caller. The erases that also start at column 0 but leave
++/// part of the row, or the row's meaning, behind are listed under "what EL 0
++/// deliberately does not do" below, and they keep upstream's behaviour.
++///
++///   - `PageList.ReflowCursor.reflowRow` (`src/terminal/PageList.zig:1028`)
++///     continues the PREVIOUS logical line rather than starting a new one for
++///     any source row carrying `wrap_continuation` (it is the flag it copies
++///     forward at `:1101-1104`), so on a *widen* the erased row's later,
++///     unrelated contents are glued horizontally onto the row above it instead
++///     of standing up as their own row. With a TUI that answers SIGWINCH by
++///     erasing every row and repainting in place (Ink's `eraseLines()` is
++///     `ESC[2K` + `ESC[1A` per row, so every row on screen), the whole frame
++///     comes back as fixed-stride fragments separated by blank runs.
++///   - the same function drops a blank row outright when it is flagged as a
++///     continuation (`src/terminal/PageList.zig:1084`,
++///     `if (!src_row.wrap_continuation) { self.new_rows += 1; }`), so an
++///     `ESC[2K` in the middle of a wrapped run makes the blank row vanish on
++///     the next widen and shifts everything below it up a line.
++///
++/// xterm does clear it, which is the behaviour the daemon's own emulator has
++/// and therefore the parity target for this engine: xterm.js models wrap with
++/// a single backward flag, `BufferLine.isWrapped`, and
++/// `InputHandler._eraseInBufferLine(y, start, end, clearWrap, respectProtect)`
++/// ends with `clearWrap && (line.isWrapped = false)`. Its `eraseInLine` passes
++/// `clearWrap = (x === 0)` for EL 0, `false` for EL 1 and `true` for EL 2
++/// (`@xterm/headless` 6.0.0, `lib-headless/xterm-headless.js`:
++/// `eraseInLine(e,t=!1){...case 0:this._eraseInBufferLine(y,x,cols,0===x,t)...
++/// case 2:this._eraseInBufferLine(y,0,cols,!0,t)}`). Upstream ghostty's
++/// `Terminal.eraseLine` carries the opposite note on its `.complete` arm ("it
++/// seems like complete should reset the soft-wrap state of the line but in
++/// xterm it does not"), which holds for xterm(1)'s own line flags but not for
++/// the xterm.js lineage the daemon runs, and it is what leaves the two VTs
++/// disagreeing after a shrink/repaint/widen.
++///
++/// ## WHAT EL 0 DELIBERATELY DOES NOT DO, AND WHAT THAT IS AND IS NOT WORTH
++///
++/// Only `Terminal.eraseLine`'s `.complete` arm (EL 2) calls this. EL 0 with the
++/// cursor at column 0 erases the same cells, and xterm.js clears its flag
++/// there too, and we still do NOT. Be clear about what that buys, because it is
++/// less than it first looks.
++///
++/// `CR` + erase + rewrite is how a progress bar, a spinner or a status line
++/// redraws the tail of a line it has already printed, and when that line has
++/// soft-wrapped the row it lands on is a continuation row. Breaking the
++/// backward linkage there tears the logical line on the next widen. Keeping EL
++/// 0 forward-only means this engine still rejoins it. Measured on this wasm,
++/// `0123456789ABCDEF` at 10 columns then `CR ESC[K ABCDEF` then a widen to 30
++/// gives `0123456789ABCDEF` here and on upstream, and gave `0123456789` +
++/// `ABCDEF` while the EL 0 arm was in.
++///
++/// TWO THINGS THAT DOES NOT MEAN.
++///
++/// 1. It does not mean "the progress-bar case is handled". The same idiom
++///    spelled with EL 2 still tears, and EL 2 ignores the cursor column so
++///    either ordering does it: `CR ESC[2K` and `ESC[2K CR` both come back as
++///    `0123456789` + `ABCDEF` after the widen, where upstream rejoined. That
++///    spelling is not exotic, it is `ansi-escapes`' `eraseLine` and so most
++///    Node spinners including `ora`. It is also CORRECT on the grounds this
++///    whole patch rests on: `@xterm/headless` clears `isWrapped` for EL 2, and
++///    `addon-serialize` emits the two halves as two rows, so after this change
++///    the client and the authoritative screen finally AGREE about that line.
++///    Tearing in both is better than tearing in one.
++/// 2. It does not mean the rejoin survives. It is a live-engine-only property.
++///    The daemon's emulator clears `isWrapped` for EL 0 at column 0 as well
++///    (`clearWrap = (x === 0)`), and its snapshot serialises the halves as two
++///    rows (measured: `"0123456789\r\nABCDEF"`), so the next settled-resize
++///    replay re-tears the line on the client anyway.
++///
++/// So the honest statement of this non-change is: a knowing divergence from the
++/// authoritative screen that happens to match upstream ghostty, costs nothing,
++/// and pre-dates this patch. It is kept because #165 does not need it (Ink's
++/// `eraseLines()` and ratatui/crossterm's `Clear(CurrentLine)` are both
++/// `ESC[2K`, so the `.complete` arm alone closes the reported bug) and because
++/// changing it would make the live engine worse between replays for no gain.
++/// Pinned in `packages/client/src/terminal/vendor-engine.test.ts` and by
++/// "Terminal: eraseLine right leaves a continuation row's backward linkage
++/// alone" below.
++///
++/// EL 1 (`.left`, `ESC[1K`) is likewise untouched, and so therefore is
++/// `ESC[1J` (ED `.above`), which delegates its cursor row to
++/// `eraseLine(.left)`. xterm.js DOES clear the flag for its EL 1 and ED 1, so
++/// that is the same kind of divergence, with the same replay caveat: an erase
++/// that leaves the right-hand side of the row standing has not emptied the row,
++/// and the rows below it are still its continuation.
++///
++/// ## DECSEL
++///
++/// `ESC[?2K` on a row of protected cells erases nothing, and this still breaks
++/// the linkage, so "a row erased from column 0 keeps nothing of what it held"
++/// is not true on that path. It is xterm.js parity and intentional:
++/// `_eraseInBufferLine` applies `clearWrap` OUTSIDE its `respectProtect`
++/// branch, so xterm.js clears `isWrapped` for `ESC[?2K` as well.
++pub fn cursorResetWrapFull(self: *Screen) void {
++    // The forward half, unchanged: pending wrap, this row's `wrap`, the next
++    // row's `wrap_continuation`, and this row's trailing spacer head.
++    self.cursorResetWrap();
++
++    // The backward half. Nothing to do if this row was never a continuation;
++    // in particular this leaves a row that legitimately starts a logical line
++    // completely untouched, so the only rows this can affect are ones reflow
++    // itself linked up.
++    const page_row = self.cursor.page_row;
++    if (!page_row.wrap_continuation) return;
++    page_row.wrap_continuation = false;
++
++    // The row above may live in a different page, so go through the pin the
++    // same way `splitCellBoundary` does when it has to reach the previous row
++    // (see the `wrap_continuation` / `spacer_head` block in that function).
++    const prev = self.cursor.page_pin.up(1) orelse return;
++    const prev_rac = prev.rowAndCell();
++    prev_rac.row.wrap = false;
++
++    // A wide character split across the row boundary leaves a spacer head in
++    // the last cell of the row above. With the linkage gone there is no tail
++    // for it to point at, so clear it exactly as `cursorResetWrap` clears the
++    // spacer head on its own row.
++    const prev_cells = prev.cells(.all);
++    const prev_cols = prev.node.data.size.cols;
++    if (prev_cells[prev_cols - 1].wide == .spacer_head) {
++        self.clearCells(
++            &prev.node.data,
++            prev_rac.row,
++            prev_cells[prev_cols - 1 ..][0..1],
++        );
++    }
++
++    // We may have changed a cell on the row above, so it has to be repainted.
++    prev_rac.row.dirty = true;
++}
++
+ /// Options for scrolling the viewport of the terminal grid. The reason
+ /// we have this in addition to PageList.Scroll is because we have additional
+ /// scroll behaviors that are not part of the PageList.Scroll enum.
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+index 6c9db6a..c3eeb66 100644
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -2116,6 +2116,11 @@ pub fn eraseLine(
+             }
+ 
+             // Reset our row's soft-wrap.
++            //
++            // NEX (kelpi #165): this stays upstream's FORWARD-only reset even
++            // when the erase starts at column 0, deliberately. See the
++            // "what EL 0 deliberately does not do" note on
++            // `Screen.cursorResetWrapFull`.
+             self.screens.active.cursorResetWrap();
+ 
+             break :right .{ x, self.cols };
+@@ -2132,9 +2137,24 @@ pub fn eraseLine(
+             break :left .{ 0, x + 1 };
+         },
+ 
+-        // Note that it seems like complete should reset the soft-wrap
+-        // state of the line but in xterm it does not.
+-        .complete => .{ 0, self.cols },
++        // Upstream's note here read: "Note that it seems like complete should
++        // reset the soft-wrap state of the line but in xterm it does not."
++        //
++        // NEX (kelpi #165): we reset it. The note is true of xterm(1), but the
++        // xterm.js lineage clears its wrap flag on EL 2 unconditionally
++        // (`InputHandler.eraseInLine` case 2:
++        // `this._eraseInBufferLine(y, 0, cols, !0, respectProtect)`), and
++        // `@xterm/headless` is the emulator the daemon runs as the
++        // authoritative screen, so xterm.js is the parity target for this
++        // engine and the disagreement is a live rendering bug: an `ESC[2K`'d
++        // row that keeps its wrap linkage is rejoined to its neighbours by the
++        // next column reflow, which is how a TUI repainting in place at a
++        // narrow width comes back as fixed-stride fragments once the pane is
++        // widened again. See the long note on `Screen.cursorResetWrapFull`.
++        .complete => complete: {
++            self.screens.active.cursorResetWrapFull();
++            break :complete .{ 0, self.cols };
++        },
+ 
+         else => {
+             log.err("unimplemented erase line mode: {}", .{mode});
+@@ -9827,6 +9847,94 @@ test "Terminal: eraseLine resets wrap" {
+     }
+ }
+ 
++test "Terminal: eraseLine complete resets wrap linkage" {
++    // NEX (kelpi #165). Upstream has no test that reaches the BACKWARD half of
++    // the reset: "Terminal: eraseLine resets wrap" above erases row 0, which is
++    // never a continuation, so `cursorResetWrapFull`'s
++    // `if (!page_row.wrap_continuation) return;` takes the early exit and the
++    // `up(1)` arithmetic after it is never executed. These two tests erase a
++    // CONTINUATION row instead. They matter more than they look: the shipped
++    // artifact is built `ReleaseSmall`, which compiles the page integrity
++    // assertions out, so this suite (Debug, runtime safety on) is the only
++    // place the pointer work is checked at all.
++    const alloc = testing.allocator;
++    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
++    defer t.deinit(alloc);
++
++    // "ABCDE123" at 5 columns: row 0 holds ABCDE and soft-wraps into row 1.
++    for ("ABCDE123") |c| try t.print(c);
++    {
++        const row0 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
++        const row1 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 1 } }).?;
++        try testing.expect(row0.row.wrap);
++        try testing.expect(row1.row.wrap_continuation);
++    }
++
++    // EL 2 on the continuation row. Upstream left BOTH flags standing here; we
++    // break both halves, so neither row believes it is part of the other and a
++    // later column reflow cannot glue them back together.
++    t.setCursorPos(2, 1);
++    t.eraseLine(.complete, false);
++    {
++        const row0 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
++        const row1 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 1 } }).?;
++        try testing.expect(!row0.row.wrap);
++        try testing.expect(!row1.row.wrap_continuation);
++    }
++}
++
++test "Terminal: eraseLine complete clears the previous row's spacer head" {
++    // NEX (kelpi #165). The other half of `cursorResetWrapFull`: a wide
++    // character that could not fit in the last column leaves a SPACER HEAD
++    // there and wraps the character itself onto the next row. Once the linkage
++    // is broken that head has no tail to point at, so it has to be cleared,
++    // exactly as `cursorResetWrap` clears the one on its own row.
++    const alloc = testing.allocator;
++    var t = try init(alloc, .{ .rows = 5, .cols = 10 });
++    defer t.deinit(alloc);
++
++    t.setCursorPos(1, 10);
++    try t.print(0x1F600); // Smiley face, two cells wide
++    {
++        const head = t.screens.active.pages.getCell(.{ .active = .{ .x = 9, .y = 0 } }).?;
++        const row1 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 1 } }).?;
++        try testing.expectEqual(Cell.Wide.spacer_head, head.cell.wide);
++        try testing.expect(row1.row.wrap_continuation);
++    }
++
++    t.setCursorPos(2, 1);
++    t.eraseLine(.complete, false);
++    {
++        const head = t.screens.active.pages.getCell(.{ .active = .{ .x = 9, .y = 0 } }).?;
++        const row0 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
++        const row1 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 1 } }).?;
++        try testing.expectEqual(Cell.Wide.narrow, head.cell.wide);
++        try testing.expect(!row0.row.wrap);
++        try testing.expect(!row1.row.wrap_continuation);
++    }
++}
++
++test "Terminal: eraseLine right leaves a continuation row's backward linkage alone" {
++    // NEX (kelpi #165). The deliberate NON-change, pinned so nobody "completes"
++    // the fix by extending it to EL 0. `CR` + `ESC[K` + rewrite is how a
++    // progress bar redraws the tail of a line it already printed; when that
++    // line soft-wrapped, the row it lands on is a continuation row, and
++    // breaking the backward linkage there tears the logical line for good on
++    // the next widen. See the note on `Screen.cursorResetWrapFull`.
++    const alloc = testing.allocator;
++    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
++    defer t.deinit(alloc);
++
++    for ("ABCDE123") |c| try t.print(c);
++    t.setCursorPos(2, 1);
++    t.eraseLine(.right, false);
++    {
++        const row1 = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 1 } }).?;
++        // Still the tail of row 0: the rewrite that follows belongs to that line.
++        try testing.expect(row1.row.wrap_continuation);
++    }
++}
++
+ test "Terminal: eraseLine right preserves background sgr" {
+     const alloc = testing.allocator;
+     var t = try init(alloc, .{ .rows = 5, .cols = 5 });

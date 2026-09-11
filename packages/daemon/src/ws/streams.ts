@@ -230,6 +230,60 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
     const grids = new Map<string, PaneGeometry>();
     /** In-flight settle timers, one per pane: a storm re-arms, it never stacks. */
     const resyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /**
+     * Panes whose snapshot is being awaited right now, and the reconciliations that were due
+     * while it was (kelpi #165).
+     *
+     * `resyncPane` takes every target OFF live BEFORE it awaits the snapshot, so a second
+     * `resyncPane` for the same pane while that await is outstanding finds no live target,
+     * returns with `targets.length === 0`, and is simply gone. Nothing re-arms a settle timer
+     * except another APPLIED geometry change (`noteGeometry`), and the user's last gesture is
+     * the widen, so the resize whose reconciliation was dropped is the one whose geometry the
+     * screen is left showing: a steady state, which is how #165 was reported.
+     *
+     * The await is not short. `snapshotAsync` flushes the emulator's write chain first
+     * (`term/service.ts` `flush`, a wait-for-quiescence loop over `done < issued`), so a pane
+     * that keeps printing (a TUI repainting through a drag, a spinner) holds it open for as
+     * long as it keeps talking, which is exactly the window a resize gesture lands in.
+     *
+     * So the due reconciliation is REMEMBERED rather than dropped, and run once the in-flight
+     * one lands, at the scope it asked for. That scope is what the entry's `all` flag and
+     * `sessions` set carry: a broadcast (an owner resize, so every attached client) must not
+     * be downgraded to one session, and a single session's `requestReplay` (a non-owner's
+     * local resize, which changes no server geometry) must not be upgraded into a replay that
+     * resets every other client's engine for nothing.
+     *
+     * This cannot loop. An owed entry is only ever created by a resync that found one already
+     * in flight, it is consumed once, and the run that consumes it can only be owed again by
+     * yet another timer. There are exactly TWO things that arm a timer, and neither can be armed
+     * by a resync: `noteGeometry`, only on a grid that CHANGED, and `SessionImpl.requestReplay`,
+     * only from a client telling us its own grid moved. A replay provokes neither. It is bytes
+     * into a VT, the client's `resize()` short-circuits on an unchanged grid, so it publishes no
+     * new geometry for `noteGeometry` to see and asks for no new replay through `requestReplay`.
+     * Every arming event is therefore externally driven, and the chain ends.
+     */
+    const resyncInFlight = new Set<string>();
+    const resyncOwed = new Map<string, { all: boolean; sessions: Set<SessionImpl> }>();
+    /**
+     * Panes that have already spent their one post-failure retry for the current gesture.
+     *
+     * A snapshot that THROWS is the same hole with a different cause: `resyncPane` has already
+     * emptied the queue and taken the targets off live on the promise that the snapshot
+     * supersedes them, and its catch puts `live` back without ever sending one. The screen
+     * keeps whatever the gesture left on it and, again, nothing re-arms. One retry repairs it
+     * (a snapshot is the authoritative buffer, so a later one reconciles just as well as the
+     * one that failed); the cap is what keeps a persistently failing snapshot from turning
+     * into a 150 ms poll for the life of the pane. A new gesture gets a new retry, and BOTH
+     * kinds of gesture count: `noteGeometry` for an owner resize, and `requestReplay` for a
+     * non-owner's local one (which changes no server geometry, so it never reaches the former).
+     *
+     * The budget is PANE-scoped, not session-scoped, which is a deliberate simplification with
+     * one visible consequence: a viewer's `requestReplay` landing inside an owner's retry window
+     * renews the budget the owner's gesture had spent, so that pane can see three snapshot
+     * attempts rather than two. Bounded the same way everything else here is, by externally
+     * driven gestures, so it cannot run away; not worth a per-session map to tighten.
+     */
+    const resyncRetried = new Set<string>();
     let closed = false;
 
     const report = (error: unknown, context: string): void => {
@@ -262,6 +316,8 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         if (previous === undefined) return;
         if (previous.cols === cols && previous.rows === rows) return;
         clearResyncTimer(paneID);
+        // A new gesture, so a new post-failure retry is allowed (see `resyncRetried`).
+        resyncRetried.delete(paneID);
         const timer = setTimeout(() => {
             resyncTimers.delete(paneID);
             void resyncPane(paneID);
@@ -271,6 +327,34 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             (timer as { unref: () => void }).unref();
         }
         resyncTimers.set(paneID, timer);
+    };
+
+    /** Remember a reconciliation that is due but cannot be sent yet (see `resyncOwed`). */
+    const oweResync = (paneID: string, onlySession?: SessionImpl): void => {
+        let owed = resyncOwed.get(paneID);
+        if (owed === undefined) {
+            owed = { all: false, sessions: new Set<SessionImpl>() };
+            resyncOwed.set(paneID, owed);
+        }
+        if (onlySession === undefined) {
+            // A broadcast subsumes every session-local request already owed.
+            owed.all = true;
+            owed.sessions.clear();
+            return;
+        }
+        if (!owed.all) owed.sessions.add(onlySession);
+    };
+
+    /** Run whatever was owed while this pane's snapshot was in flight, at its original scope. */
+    const runOwedResync = (paneID: string): void => {
+        const owed = resyncOwed.get(paneID);
+        if (owed === undefined) return;
+        resyncOwed.delete(paneID);
+        if (owed.all) {
+            void resyncPane(paneID);
+            return;
+        }
+        for (const session of owed.sessions) void resyncPane(paneID, session);
     };
 
     /**
@@ -291,6 +375,13 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
      */
     const resyncPane = async (paneID: string, onlySession?: SessionImpl): Promise<void> => {
         if (closed) return;
+        // This pane's snapshot is already being awaited, and every live target went off live
+        // before that await: the loop below would find nothing and return, and nothing would
+        // ever re-arm. Owe it instead (see `resyncOwed`).
+        if (resyncInFlight.has(paneID)) {
+            oweResync(paneID, onlySession);
+            return;
+        }
         // A pane the emulator has already disposed would snapshot EMPTY, and an empty replay
         // is not a reconciliation — it is a client screen wiped by a resize that raced a
         // close. Leave it to the detach that is already on its way.
@@ -314,6 +405,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         }
 
         let snapshot: { data: Uint8Array; cols: number; rows: number };
+        resyncInFlight.add(paneID);
         try {
             snapshot = await snapshotOf(term, paneID);
         } catch (error) {
@@ -321,8 +413,19 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             for (const target of targets) {
                 if (target.session.entryFor(paneID) === target.entry) target.entry.live = true;
             }
+            resyncInFlight.delete(paneID);
+            // The reconciliation this call owed is still owed: the queue is gone and nothing
+            // was sent, so the client is left with whatever the gesture painted. Owe it to
+            // ourselves, once per gesture (see `resyncRetried`). A re-throw lands in this
+            // same catch a microtask later rather than recursing, and the cap stops it there.
+            if (!resyncRetried.has(paneID)) {
+                resyncRetried.add(paneID);
+                oweResync(paneID, onlySession);
+            }
+            runOwedResync(paneID);
             return;
         }
+        resyncInFlight.delete(paneID);
 
         // Nothing below may await — same rule as `attach`.
         for (const target of targets) {
@@ -331,6 +434,10 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             if (target.session.entryFor(paneID) !== target.entry) continue;
             target.session.sendResync(paneID, target.entry, snapshot.data);
         }
+
+        // Anything that came due while the snapshot was in flight was skipped by the guard at
+        // the top of this function and is waiting here. Run it now, at the scope it asked for.
+        runOwedResync(paneID);
     };
 
     class SessionImpl implements PaneStreamSession {
@@ -411,6 +518,12 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             const entry = this.panes.get(paneID);
             if (entry === undefined) return;
             this.clearReplayTimer(paneID);
+            // A new gesture, so a new post-failure retry, exactly as `noteGeometry` does it for
+            // an owner resize. Without this a non-owner NEVER renewed the budget, because its
+            // local resize changes no server geometry and so never reaches `noteGeometry`: one
+            // thrown snapshot and that viewer got no retry again until an owner happened to
+            // resize the pane. See `resyncRetried`.
+            resyncRetried.delete(paneID);
             const timer = setTimeout(() => {
                 this.replayTimers.delete(paneID);
                 if (this.panes.get(paneID) !== entry) return;
@@ -725,6 +838,13 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
         // like it had never been resized.
         clearResyncTimer(paneID);
         grids.delete(paneID);
+        // The same reasoning for the rest of the per-pane resync bookkeeping: a retry budget
+        // and an owed reconciliation for a dead pane are a leak and a pointless replay. NOT
+        // `resyncInFlight`: that one means "a snapshot is being awaited", which is still true
+        // and is cleared by the resync that owns it (clearing it here would let a second
+        // resync start on top of the first).
+        resyncRetried.delete(paneID);
+        resyncOwed.delete(paneID);
         for (const session of sessions) session.paneExited(paneID, exitCode);
     });
 
@@ -753,6 +873,9 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             offExit();
             for (const paneID of [...resyncTimers.keys()]) clearResyncTimer(paneID);
             grids.clear();
+            resyncInFlight.clear();
+            resyncOwed.clear();
+            resyncRetried.clear();
             for (const session of [...sessions]) session.close();
             sessions.clear();
         }

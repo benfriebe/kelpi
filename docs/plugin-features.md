@@ -5,6 +5,9 @@ contracts; it no longer assembles either sidebar's JSX or implements their domai
 The [Sidebar Lab](../examples/plugins/sidebar-lab) example replaces both views using the
 public browser SDK, without native imports, a backend, or access to the host document.
 
+See the [plugin roadmap](plugin-roadmap.md) for overall progress and remaining work, and the
+[development guide](plugin-development.md) for private instances, packages and version switching.
+
 ## Native feature contract
 
 `packages/client/src/features/definitions.ts` contains pure view identities and placement
@@ -88,11 +91,19 @@ independent.
 
 ## Validate locally
 
-Start `node scripts/dev-instance.mjs --state out/plugin-playground` from this worktree, then
-install `examples/plugins/sidebar-lab` through that instance's Settings → Plugins. Its CLI,
+After `pnpm install --frozen-lockfile`, start
+`node scripts/dev-instance.mjs --state out/plugin-playground` from the checkout root. Paste
+the absolute path to `examples/plugins/sidebar-lab` into that instance's Settings → Plugins. Its CLI,
 database, sockets and Electron profile are separate from the installed Kelpi application.
 Select the example's Workspaces and Inspector views in either sidebar placement.
 
-The interaction scenario is `node scripts/scenario.mjs plugin-sidebar-features`. Feature
+Use the development guide's `kelpi_test` helper from the checkout root to run
+`kelpi_test plugin dev examples/plugins/sidebar-lab --trust` while editing. Reload restarts
+installed bytes; dev captures and installs changed revisions. Retained versions are available
+through Settings → Plugins → Versions and the [recovery commands](plugins.md#updates-and-recovery).
+
+The interaction scenario is `node scripts/scenario.mjs plugin-sidebar-features --window hidden`. Feature
 tests live under `packages/client/src/features`; navigation and bridge tests live under
-`packages/client/src/plugins` and `packages/plugin-sdk/tests`.
+`packages/client/src/plugins` and `packages/plugin-sdk/tests`. Use `--window onscreen` to inspect
+screenshots. The [validation record](plugin-validation.md) identifies the revisions tested in
+past runs; it does not certify a later checkout automatically.

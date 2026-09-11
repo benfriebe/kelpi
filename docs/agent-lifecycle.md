@@ -31,8 +31,14 @@ type PaneStatus = "idle" | "running" | "waitingForInput";
 - `waitingForInput` — the agent finished its turn and is waiting for the user
   (also used for the error state — see §5.4).
 
-Status is a **shell-pane-only concept**. Markdown / scratchpad / diff / web panes are
+Status is a **shell-pane-only concept**. Markdown / scratchpad / diff / web / plugin panes are
 always `idle` and must never be flipped (the manual-override path guards on pane type).
+
+Plugin backends use the separate [plugin supervisor lifecycle](plugins.md#backend-and-view-apis).
+They do not acquire agent status or a pane's PTY by rendering a custom view. Terminal
+replacement views attach to Kelpi-owned shell or external-editor sessions through the
+[terminal contract](plugin-terminals.md). Renderer selection leaves the existing shell-agent
+status rules unchanged.
 
 ### 1.2 AgentKind
 

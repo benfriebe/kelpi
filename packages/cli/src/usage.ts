@@ -1,5 +1,5 @@
 /**
- * Every usage block, verbatim from the shipped binary (`nex.swift`'s `print*Usage`).
+ * Usage blocks preserve the legacy CLI's output conventions and include Kelpi extensions.
  *
  * Which STREAM a block goes to is part of the contract and differs per command: help flags
  * print to stdout and exit 0, error paths print the same block to stderr and exit 1 — except
@@ -12,7 +12,9 @@ export type Writer = (text: string) => void;
 export const globalUsage = `Usage:
   kelpi --version
   kelpi document get|watch|edit|save|refresh|mode [--help]
-  kelpi plugin list|contributions|init|install|enable|disable|reload|remove|open|run|settings|logs|watch|services|service-call|service-select [--help]
+  kelpi plugin init|validate|pack|dev [--help]
+  kelpi plugin list|contributions|install|enable|disable|reload|remove|history|rollback|logs [--help]
+  kelpi plugin open|run|settings|watch|services|service-call|service-select [--help]
   kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]
   kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>]
   kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>]

@@ -3,17 +3,21 @@
 Two build-free replacements for the Workspaces and Inspector sidebars. They use only the
 public `window.kelpi` SDK and run without a backend, dependencies, or host DOM access.
 
+Follow the [private development setup](../../../docs/plugin-development.md#start-a-private-instance).
+From the checkout root, use its `kelpi_test` helper:
+
 ```sh
-kelpi plugin install ./examples/plugins/sidebar-lab --trust
+kelpi_test plugin validate ./examples/plugins/sidebar-lab
+kelpi_test plugin install ./examples/plugins/sidebar-lab --trust
 ```
 
-Use the CLI/socket from your isolated development instance. In **Settings → Plugins →
+In that private instance's **Settings → Plugins →
 Workbench views**, choose **Sidebar Lab Workspaces** and **Sidebar Lab Inspector** on either
 side. Both views also support pane placement:
 
 ```sh
-kelpi plugin open example.sidebar-lab example.sidebar-lab.workspaces
-kelpi plugin open example.sidebar-lab example.sidebar-lab.inspector
+kelpi_test plugin open example.sidebar-lab example.sidebar-lab.workspaces
+kelpi_test plugin open example.sidebar-lab example.sidebar-lab.inspector
 ```
 
 Workspaces supports live filtering by host/name/group/label, native or alphabetical order,
@@ -37,8 +41,9 @@ Storage belongs to the plugin on its owning daemon; local and remote preferences
 independent. Hidden views pause refresh work. Errors remain visible so you can correct the
 request or refresh the data; failed mutations are never retried automatically.
 Disabling the plugin restores bundled sidebars; reenabling restores the selected views and
-their preferences. After source edits, install the directory again; reload restarts the
-installed revision.
+their preferences. From the checkout root, run
+`kelpi_test plugin dev examples/plugins/sidebar-lab --trust` while editing. Compatible retained
+revisions are available in Settings → Plugins → Versions; reload restarts only installed bytes.
 
 The UI mounts into `#sidebar-root`, preserving document assets. Form buttons call SDK actions;
 Enter is handled locally for single-line inputs, preserving the iframe's navigation restrictions.
@@ -47,4 +52,7 @@ This example demonstrates replacement features through the public API. Workspace
 drag ordering, full settings, Git recovery flows, authentication, and terminal lifecycle
 ownership continue to use Kelpi's existing controls and protocols.
 
-The real interaction scenario is `node scripts/scenario.mjs plugin-sidebar-features`.
+The interaction scenario is `node scripts/scenario.mjs plugin-sidebar-features --window hidden`;
+use `--window onscreen` for screenshots. See the [feature guide](../../../docs/plugin-features.md)
+for the contracts, the [validation record](../../../docs/plugin-validation.md) for dated runs,
+and the [plugin roadmap](../../../docs/plugin-roadmap.md) for overall progress and remaining work.

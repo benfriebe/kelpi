@@ -42,11 +42,24 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
 
-## Naming
+## Plugins
 
-Custom panes, replaceable workbench views, and daemon backends are documented in the
-[plugin guide](docs/plugins.md), with a working [Agent Board example](examples/plugins/agent-board).
-This generation uses protocol 2 and `kelpi-v2.db`; see the guide's upgrade and rollback notes.
+Trusted plugins can add custom panes, replace sidebars, desktop bars and native pane
+renderers, and use daemon commands, events and services. They can be developed outside the
+repository and installed as local directories or portable `.kelpi-plugin` packages.
+
+The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
+remaining work. Start with the [development guide](docs/plugin-development.md) to create a
+plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
+contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
+The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
+workbench views.
+
+This generation uses protocol 2 and `kelpi-v2.db`; see the
+[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
+[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
+
+## Naming
 
 Everything is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
 packages are `@kelpi/*`, the socket is `/tmp/kelpi.sock`, panes carry `KELPI_PANE_ID` /
@@ -85,9 +98,9 @@ packages/daemon/dist/kelpid.js status
 ```
 kelpid is running (pid 77182)
   version: 0.1.0 (build 1)
-  protocol: 1
+  protocol: 2
   control: /tmp/kelpi.sock
-  discovery: ~/Library/Application Support/kelpid/run/daemon-v1.sock
+  discovery: ~/Library/Application Support/kelpid/run/daemon-v2.sock
   http: http://127.0.0.1:59329
   url: http://127.0.0.1:59329/?token=8f3c…
   run dir: ~/Library/Application Support/kelpid/run

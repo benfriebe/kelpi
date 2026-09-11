@@ -1,5 +1,10 @@
 # Terminal extension validation — 2026-09-10
 
+This is the original phase baseline: 8,066 tests and 49 checks in each Terminal Lab run.
+The later [terminal review fixes](../../plugin-validation.md#terminal-pr-review-fixes-2026-09-10)
+record additional changes and checks. See the [roadmap](../../plugin-roadmap.md) for current
+merged status.
+
 Implemented in `out/worktrees/plugin-terminals`, based on merged main `021e193`.
 The stack separates the public terminal session contract, native feature integration,
 and Terminal Lab with authoring documentation. Testing used private daemons, state,
@@ -16,10 +21,12 @@ sockets, ports, owned repository fixtures and Electron profiles.
 | Existing native scenarios | 48/48 checks pass: workspace focus 14, platform shortcuts 20, Copy/Paste 14. |
 
 The two final Terminal Lab runs used identical SHA-256 manifests for all 14 recorded
-artifacts. Including existing native regressions, 146 live assertions pass. Full local
-logs are in `out/plugin-terminals-validation`; results, manifests and raw diagnostics
-are in `docs/audit/plugin-terminals/live-hidden` and `live-onscreen`. Earlier failing
-iterations remain archived under the local validation directory's `attempts` folder.
+artifacts. Including existing native regressions, 146 live assertions passed at this baseline.
+Only this README and the three screenshots below are retained in the repository. Full logs
+were written under `out/plugin-terminals-validation`; the original untracked results,
+manifests and diagnostics used `docs/audit/plugin-terminals/live-hidden` and `live-onscreen`
+in that worktree. Earlier failing iterations used its local `attempts` folder. Those local
+artifacts are not included here; the counts above are the preserved narrative record.
 
 The scenario compares a real emulator's ANSI/Unicode viewport with the daemon's screen,
 uses actual keyboard, composition, mouse and clipboard input, and checks operating-system

@@ -5,31 +5,37 @@ views. They can also ask the owning Kelpi window to present a quick pick, input 
 dialog or actionable notification. [UI Lab](../examples/plugins/ui-lab) demonstrates both
 contracts without a build step.
 
+The [plugin roadmap](plugin-roadmap.md) tracks overall progress. The
+[development guide](plugin-development.md) covers private testing, templates, packages and rollback.
+
 ## Try UI Lab beside your installed Kelpi
 
-From this worktree, run:
+From the checkout root, after `pnpm install --frozen-lockfile`, run:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-playground
 ```
 
-In that instance, install `examples/plugins/ui-lab` through Settings → Plugins. From one
-of its terminal panes, use its CLI to open the example:
+In that instance, install the absolute path to `examples/plugins/ui-lab` through Settings → Plugins.
+From one of its terminal panes, use its CLI to open the example:
 
 ```sh
 kelpi plugin open example.ui-lab example.ui-lab.panel
 kelpi plugin contributions --json
 ```
 
-An external terminal must use the `KELPI_SOCKET` printed by the development script and
-`node packages/cli/dist/kelpi.js` from this checkout. The instance has separate data, sockets,
+An external terminal must use the `KELPI_SOCKET` printed by the development script,
+`KELPI_REQUIRE_SOCKET=1`, and `node packages/cli/dist/kelpi.js` from this checkout. The development
+guide provides a `kelpi_test` helper. The instance has separate data, sockets,
 configuration and an Electron profile. Ctrl-C stops it; its named state directory persists.
 
 Click a native **UI Lab** item to increment its badge. The example's **Disable actions**
 and **Hide items** controls update native menus, items and its Ctrl+Alt+U shortcut. Settings
 → Plugins exposes Appearance and Behavior groups, including density choices and a counter
 step constrained to 1–10. The example also demonstrates each shared prompt and cancellation.
-Reinstall after editing source files; reload restarts the already installed copy.
+For live editing, run `kelpi_test plugin dev examples/plugins/ui-lab --trust` from the checkout
+root. Reload restarts the installed copy. Settings → Plugins → Versions selects compatible
+retained revisions; each backend restart reseeds this example's volatile counter/contributions.
 
 ## Menus, items and conditions
 
@@ -189,6 +195,7 @@ view when they need an interactive response. No host DOM or native window handle
 ## Automated validation
 
 `pnpm check` covers schema validation, ownership, lifecycle resets, settings races, SDK
-contracts, retained actions and prompt behavior. `node scripts/scenario.mjs plugin-ui-services`
+contracts, retained actions and prompt behavior. `node scripts/scenario.mjs plugin-ui-services --window hidden`
 exercises UI Lab through a private daemon and real Electron window. The
-[validation record](plugin-validation.md) contains the results for this phase.
+[validation record](plugin-validation.md) records past runs and their source revisions. Use
+`--window onscreen` to inspect screenshots; a historical pass does not validate a later checkout.

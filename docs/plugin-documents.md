@@ -9,16 +9,19 @@ and in phone pane/layout views.
 [Document Lab](../examples/plugins/document-lab) demonstrates all three replacements using
 only the public browser SDK. It has no backend or access to the host DOM.
 
+See the [plugin roadmap](plugin-roadmap.md) for current scope and the
+[development guide](plugin-development.md) for templates, live editing and portable packages.
+
 ## Try it beside the installed app
 
-From this worktree:
+From the checkout root, after `pnpm install --frozen-lockfile`:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-documents-playground
 ```
 
-In that instance, install `examples/plugins/document-lab` through Settings → Plugins. Open
-a Markdown file, a Scratchpad or a Diff, then select **Document Lab** in its renderer picker.
+In that instance, paste the absolute path to `examples/plugins/document-lab` into Settings →
+Plugins. Open a Markdown file, a Scratchpad or a Diff, then select **Document Lab** in its renderer picker.
 Settings → Plugins → Workbench views exposes the same choices as `document.markdown`,
 `document.scratchpad` and `document.diff`.
 
@@ -29,8 +32,10 @@ daemon's choices. Disabling/removing a plugin restores native views while retain
 preference for reenabling it. A failed renderer falls back to the native view with Retry.
 
 The development instance owns its database, sockets, configuration and Electron profile.
-For an external terminal, use its printed `KELPI_SOCKET` and this checkout's
-`node packages/cli/dist/kelpi.js`. The installed Kelpi is unaffected.
+For an external terminal, use its printed `KELPI_SOCKET`, `KELPI_REQUIRE_SOCKET=1`, and this
+checkout's `node packages/cli/dist/kelpi.js`. The development guide's `kelpi_test` helper
+keeps these together. Run `kelpi_test plugin dev examples/plugins/document-lab --trust` from
+the checkout root to apply source edits; reload only restarts the installed copy.
 
 ## Declare a renderer
 
@@ -58,8 +63,10 @@ can attach to a native document. The host supplies the actual owning workspace a
 or cancelling while attachment is pending cannot grant a stale lease.
 
 `setState` stores renderer UI preferences separately from document source, keyed by pane and
-view. State versioning uses the existing `stateVersion` contract: the view migrates old state
-when needed. This state currently shares a bounded 256 KiB JSON map per plugin; closed-pane
+view. The view is responsible for reading and migrating older `stateVersion` values. Installing
+or selecting a revision that cannot read saved state is rejected; writing a newer state version
+can therefore prevent rollback. See [updates and recovery](plugins.md#updates-and-recovery).
+This state shares a bounded 256 KiB JSON map per plugin; closed-pane
 entries remain retained. Keep it small (wrap preferences, selections), never use it as the
 source buffer. Native pane descriptors remain native.
 
@@ -177,13 +184,15 @@ retry mutations. `--force` on workspace deletion does not bypass a failed docume
 
 ## Validation
 
-Run `pnpm check` and `node scripts/scenario.mjs plugin-document-features`. The scenario uses
-private primary and remote daemons and real isolated frames. It covers rendering, switching,
+Run `pnpm check` and `node scripts/scenario.mjs plugin-document-features --window hidden`.
+The scenario uses private primary and remote daemons and real isolated frames. It covers rendering, switching,
 rapid input, CLI reads/writes/watch, stale edits, failed disk saves, recovery after view/window
 reload, renderer UI state, remote/phone ownership, daemon restart and plugin lifecycle.
-Hidden runs validate behavior; an onscreen run is required to inspect screenshots.
+Hidden runs validate behavior; an onscreen run is required to inspect screenshots. The
+[validation record](plugin-validation.md) records completed runs and their source revisions.
 
-This phase extracts document bodies and their content lifecycle. Some native keyboard actions
-remain in application assembly. [Terminal extraction](plugin-terminals.md) now also covers
-external editor sessions. Browser feature extraction and plugin distribution/update
-workflows remain later phases.
+Document bodies and their shared content lifecycle are implemented. Some native keyboard
+actions remain in application assembly. [Terminal replacements](plugin-terminals.md) cover
+external editor sessions, and [browser replacements](plugin-browser.md) retain native pages.
+Portable packages, dev watching and compatible revision switching are also implemented; see
+the development guide. The roadmap distinguishes these completed capabilities from remaining work.

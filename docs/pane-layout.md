@@ -899,7 +899,7 @@ shared pane-target resolution errors (unknown/ambiguous target, unknown workspac
 their wire/persistence string values.
 
 ```ts
-type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web";
+type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web" | "plugin";
 
 type PaneStatus = "idle" | "running" | "waitingForInput";
 // Persisted as these exact rawValue strings (note the camelCase "waitingForInput").
@@ -928,7 +928,9 @@ type AgentKind = "claude" | "codex";
 |---|---|---|---|---|
 | `id` | UUID | new UUID | yes (`id`) | Stable pane identity; keys the layout leaf, the PTY surface, CLI `--target`, `KELPI_PANE_ID`. |
 | `label` | string \| null | null | yes (`label`) | User/CLI-assigned name (`kelpi pane name`); resolvable as a `--target` within a workspace scope. |
-| `type` | PaneType | `"shell"` | yes (`type`) | Pane kind; only `shell` panes have terminal surfaces / can sync input / be captured. |
+| `type` | PaneType | `"shell"` | yes (`type`) | Pane kind. Shell panes own normal terminal sessions; documents can temporarily host external-editor PTYs. Custom plugin panes use `plugin`; replacing a native body preserves its native kind and session. |
+| `plugin` | PluginPaneDescriptor \| undefined | absent | yes (`pluginJSON`) | Custom pane's `pluginID`, `viewID`, `stateVersion` and JSON `state`. Preserved through moves, parking, close/reopen and restart. |
+| `unavailable` | `{ type: string; pluginJSON: string \| null }` \| undefined | absent | yes (original `type` and `pluginJSON`) | Retains unknown pane kinds or unsupported/malformed plugin descriptors verbatim while presenting an inert plugin pane. |
 | `title` | string \| null | null | **no** | Live terminal title reported by the terminal (OSC); display-only, reset on restart. |
 | `workingDirectory` | string | user home dir | yes (`workingDirectory`) | Cwd the PTY spawns in; updated on pwd-change events; for markdown/diff panes: the file's parent dir / repo path. |
 | `gitBranch` | string \| null | null | **no** | Branch detected for `workingDirectory`; recomputed live, not stored. |
@@ -952,7 +954,15 @@ Derived: `isUsingExternalEditor = externalEditorCommand != null`.
 The DB pane row additionally carries `workspaceID` (owning workspace) and the web-pane
 columns (`webURL` legacy single-tab URL, `webTabsJSON`, `webActiveTabID`, private-mode
 flag) — those belong to the web-pane subsystem's spec; a layout implementer only needs
-to know they exist and are null for non-web panes.
+to know they exist and are null for non-web panes. Plugin descriptors use `pluginJSON`;
+`pluginParked` marks parked plugin panes for restoration. Native renderer preferences are
+separate from the pane descriptor; see the [persistence schema](persistence.md) and
+[plugin state contract](plugins.md#state-events-focus-and-appearance).
+
+Layout algorithms operate on pane IDs, including custom plugin panes. The
+[plugin guide](plugins.md) defines their view lifecycle and recovery. Replacing a native
+document, terminal or browser body changes its presentation without changing the native
+pane kind or the layout tree's identity.
 
 `pane list` rendering note: the human table's `TYPE` column prints the `PaneType` raw
 string; `SESSION` prints a truncated `agentSessionID` or `-`.

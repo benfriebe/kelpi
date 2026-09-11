@@ -9,13 +9,15 @@ and badges, group settings, and present shared prompts and actionable notificati
 The included [Agent Board](../examples/plugins/agent-board) uses the same HTML view as a pane,
 sidebar, inspector, bottom panel, workspace, toolbar, status bar, or settings view.
 
-This is the first implementation of the [extensibility audit](plugin-extensibility-audit.md).
 The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**.
+The [roadmap and progress](plugin-roadmap.md) distinguish implemented capabilities from
+remaining work; the [extensibility audit](plugin-extensibility-audit.md) records the original
+design. For a practical starting point, use the [development guide](plugin-development.md).
 
 ## Try the example
 
 To test this checkout beside your existing Kelpi, start an isolated instance from the
-worktree root:
+repository root after installing the checkout's dependencies:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-playground
@@ -25,9 +27,11 @@ It builds this tree and uses its own database, sockets, ports, configuration, an
 profile. Ctrl-C stops that instance; the named state directory survives for your next test.
 Install examples through its Settings → Plugins, or run its CLI from one of its terminal
 panes. An external terminal must use the `KELPI_SOCKET` printed by the script and this
-checkout's `node packages/cli/dist/kelpi.js`, so commands reach the test instance.
+checkout's `node packages/cli/dist/kelpi.js`. Set `KELPI_REQUIRE_SOCKET=1` as shown in the
+[private-instance setup](plugin-development.md#start-a-private-instance) so a missing route
+cannot fall back to the installed app.
 
-From a checkout with the new daemon and CLI built and running:
+Run the following from the repository root in a terminal pane of that private instance:
 
 ```sh
 kelpi plugin install ./examples/plugins/agent-board --trust
@@ -39,7 +43,8 @@ kelpi plugin run example.agent-board.history
 You can also install a local directory or `.kelpi-plugin` file in Settings → Plugins. The source must exist on
 the **daemon machine**, including when using Kelpi from another device. Installation requires
 an explicit trust acknowledgement. Paired device credentials can use installed plugins;
-installing, removing, enabling, disabling, or reloading them requires the daemon owner.
+installing, inspecting revision history, switching revisions, removing, enabling, disabling,
+reloading, or selecting service providers requires the daemon owner.
 
 Use **Settings → Plugins → Workbench views** to choose **Workspaces**, **Inspector**, or an
 installed plugin on either side. To put Inspector on the left and Workspaces on the right,
@@ -81,6 +86,12 @@ while preserving their native pane IDs and buffers. The [document guide](plugin-
 covers shared SDK/CLI source APIs, guarded revisions, renderer selection and pending-input
 recovery, including remote and phone views.
 
+[Terminal Lab](../examples/plugins/terminal-lab) attaches a terminal emulator to an existing
+native process; [Browser Lab](../examples/plugins/browser-lab) replaces native browser controls
+while keeping the page and its session. See the [terminal](plugin-terminals.md) and
+[browser](plugin-browser.md) contracts for attachment and ownership. These dedicated native
+placements are separate from Agent Board's general pane and workbench placements.
+
 ## Package format
 
 The [development guide](plugin-development.md) covers templates, live editing, portable
@@ -96,6 +107,11 @@ a daemon:
 kelpi plugin validate ./my-plugin --json
 kelpi plugin pack ./my-plugin --out ./my-plugin.kelpi-plugin --json
 kelpi plugin validate ./my-plugin.kelpi-plugin --json
+```
+
+Install the artifact through the CLI of the intended running daemon:
+
+```sh
 kelpi plugin install ./my-plugin.kelpi-plugin --trust
 ```
 
@@ -108,7 +124,8 @@ its code works.
 The version 1 `.kelpi-plugin` format is gzip-compressed JSON containing canonical, sorted
 paths and base64 file bytes. Packing the same bytes produces the same artifact, independently
 of source timestamps or directory enumeration order. The embedded revision is checked when
-reading it; this detects corruption, but is not a signature or a trust decision. Package output
+reading it; this detects corruption, but is not a signature or a trust decision. Packing
+creates a local artifact; it does not publish, upload, or install it. Package output
 must be outside the source directory and must not already exist. Symlinks, special files,
 path traversal, case/Unicode aliases, and file/directory collisions are rejected. Both directory
 installs and artifact installs use the same validation and content identity.
@@ -160,10 +177,11 @@ IDs use lowercase dot-separated namespaces; contribution IDs start with the plug
 Settings support string, number, or boolean defaults. Declared backend commands must match
 the commands registered during activation.
 
-Supported placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
-`topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`, and
-`document.diff`, `terminal`, and `browser`. A view can support several placements. Document, terminal and browser placements accept isolated
-views, not containers. Workbench chrome placement controls apply to the desktop layout.
+Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
+`topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
+`document.diff`, `terminal`, and `browser`. A view can support several placements or a declared
+custom slot. Document, terminal and browser placements accept isolated views, not containers.
+Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
 Browser controls target the owning daemon; native page display requires its Electron host window.
 Native window controls, layout/focus ownership,
@@ -176,8 +194,10 @@ independent lifetimes. Background work that must outlive a pane belongs in the b
 
 The installer validates the manifest and entries, rejects symlinks, copies the exact package
 bytes, and gives that revision a SHA-256 identity. It skips `.git` and `node_modules`.
-Bundle dependencies into your backend and UI before installing. Limits are 32 MiB and 2,000
-files per package, 100 installed plugins, and 100 contributions per contribution array.
+Bundle dependencies into your backend and UI before installing. Limits are 32 MiB of file
+content, 2,000 files and 2,000 directories per package, 100 installed plugins, and 100
+contributions per contribution array. Archive input and its decompressed JSON envelope are
+each limited to 48 MiB; base64 and metadata count toward that envelope limit.
 Portable paths are limited to 512 UTF-8 bytes in total and 255 bytes per component.
 
 Reinstalling a package first installed by the older directory-only installer may assign a
@@ -188,7 +208,7 @@ To apply edits, build the source directory and **install it again**. Installatio
 the selected revision and refreshes attached views. `kelpi plugin reload <id>` restarts the
 installed copy; it does not copy edits from the original directory. Plugin data and settings
 survive reinstall and removal.
-Reinstalling the same healthy revision is a no-op; use `reload` when you want to restart it.
+Reinstalling the same healthy, enabled revision is a no-op; use `reload` when you want to restart it.
 For continuous development, `kelpi plugin dev <directory> --trust` validates and applies
 stable changed revisions. It keeps watching after invalid edits or failed updates.
 
@@ -213,8 +233,9 @@ selected revision; untracked older directories are not automatically trusted as 
 Before changing a plugin, Kelpi checks contribution ownership, required dependencies and
 enabled dependents, and saved state. A revision that removes a saved view or cannot read its
 saved `stateVersion` is refused. This covers open, parked and recently closed plugin panes,
-and retained state for native document, terminal and browser renderers. Higher state versions
-must be handled by the plugin when its view attaches; Kelpi does not invent state migrations.
+and retained state for native document, terminal and browser renderers. A revision declaring
+a newer `stateVersion` must handle older saved state when its view attaches; Kelpi does not
+invent state migrations.
 After a view writes a newer state version, rolling back to code that declares an older version
 is blocked, with the saved state retained.
 
@@ -236,23 +257,32 @@ external files, processes and services; revision recovery cannot undo those effe
 ## Backend and view APIs
 
 The [SDK declarations](../packages/plugin-sdk/index.d.ts) are standalone and do not import
-Kelpi's internal stores or React types. The SDK package is available in this workspace as
-`@kelpi/plugin-sdk`; it has not been published to a package registry.
+Kelpi's internal stores or React types. The SDK is available in this checkout as
+`@kelpi/plugin-sdk`.
 
-To use it from a project outside this repository, create and install its npm artifact:
+### SDK artifacts
+
+To use the SDK from a project outside this repository, create and install its npm artifact.
+This `.tgz` contains the SDK's public types and helpers; a `.kelpi-plugin` contains an
+installable plugin. Neither packing command publishes to a registry.
 
 ```sh
 # From this checkout; choose an existing destination directory.
-npm pack ./packages/plugin-sdk --pack-destination /tmp
+npm pack ./packages/plugin-sdk --ignore-scripts --pack-destination /tmp
 # From your external plugin project.
 npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz
 ```
+
+Use the actual filename printed by `npm pack`; the filename above corresponds to the
+checkout's SDK version `0.1.0`.
 
 Bundle imported SDK runtime code with your browser assets before packaging. A build-free view
 can use the injected `window.kelpi` without a runtime dependency. Backend types work in a
 Node-only TypeScript project; view types additionally require the DOM library. Run
 `pnpm --filter @kelpi/plugin-sdk test:package` to pack the actual SDK, install it into a temporary
 external project, and verify both type environments and runtime imports without publishing.
+
+### Backend and view entry points
 
 Backends export `activate(api)` from their entry module. Activation may return an async
 cleanup function; alternatively export `deactivate()`. Register handlers before activation
@@ -296,6 +326,7 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
 | `storage.get(key)` / `storage.set(key, value)` | Persistent JSON belonging to this plugin on this daemon. |
 | `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. |
+| `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad and Diff source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
 | `files.read(path)` / `files.write(path, text)` | UTF-8 files on the daemon machine; reads are limited to 256 KiB. |
 | `process.exec(file, args?, {cwd?})` | Run a program on the daemon machine; argv is passed directly, without a shell. Returns stdout/stderr. |
 | `terminal.watch(paneID)` | Subscribe to an existing PTY and receive its initial base64 snapshot and geometry. `terminal.output` events identify the returned subscription. |
@@ -552,13 +583,14 @@ and versioned services. Private functions and arbitrary native OS controls are n
 APIs. Further internal replacements require explicit adapters with their own lifecycle and
 result contracts. Terminal and browser renderers have explicit SDK attachments; transport,
 process/page ownership, authentication and editor save ownership remain native.
-An untrusted runtime, marketplace, signatures, automatic remote distribution, and a published
-SDK remain outside this local-plugin implementation. Local package updates and retained
-revision recovery are supported.
+Local package updates, retained revision recovery, and SDK npm artifacts are supported.
+An untrusted runtime, marketplace, signatures, automatic remote distribution, and an SDK
+registry release workflow remain future work in the [roadmap](plugin-roadmap.md).
 
 ## Database and protocol upgrade
 
-The daemon now defaults to `kelpi-v2.db` in its existing data directory. On first use it
+The daemon defaults to `kelpi-v2.db` in its existing data directory. When upgrading a
+generation-1 installation, on first use it
 copies a sibling `kelpi.db` into the new generation using SQLite `VACUUM INTO`, then applies
 the plugin-pane migration. The snapshot includes committed WAL data; the old database is
 unchanged and usable by the old binary. Subsequent boots never overwrite an existing new
@@ -577,14 +609,28 @@ as it stood at the copy, not the changes subsequently made in generation 2.
 
 ## Validation
 
-`node scripts/scenario.mjs plugin-authoring` creates a plugin outside the repository and
+The [validation guide](plugin-validation.md) records the acceptance checks and their evidence.
+For the authoring workflow, run from the repository root:
+
+```sh
+pnpm check
+pnpm --filter @kelpi/plugin-sdk test:package
+node scripts/scenario.mjs plugin-authoring --window hidden
+node scripts/scenario.mjs plugin-authoring --window onscreen --no-build
+```
+
+The authoring scenario creates a plugin outside the repository and
 checks deterministic packaging, live valid/invalid edits, failed activation recovery,
 Settings rollback, saved-state compatibility and native session preservation.
+Use `--no-build` only when the checkout and generated bundles are unchanged since the
+preceding build. Hidden runs verify behavior; inspect an onscreen run for visual quality.
 
 `pnpm check` covers protocol validation, real child activation/failure/recovery, restart and
 parked-pane persistence, shared command cancellation, client binding, CLI streams, iframe
-isolation, and the existing product tests. `node scripts/verify.mjs --full` additionally runs
-the build/package smokes, full UI audit, and all real-app scenarios.
+isolation, and the existing product tests. The SDK check packs and installs the public npm
+artifact into a temporary external consumer. `node scripts/verify.mjs --full` additionally
+runs build/package smokes, the UI audit, and all registered real-app scenarios; it is broader
+than the targeted authoring checks above.
 
 `node scripts/scenario.mjs plugin-extensions` installs Workbench Lab and its dependency into
 an isolated daemon. It covers nested containers, programmatic slot selection, retained tabs,

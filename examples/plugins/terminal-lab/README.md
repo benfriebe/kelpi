@@ -4,17 +4,23 @@ An SDK-only replacement for existing shell panes and native documents running an
 editor. The example has no backend or private Kelpi imports. It renders the existing process
 with the repository's pinned xterm 6 dependency.
 
-From the worktree root, run:
+From the checkout root, run:
 
 ```sh
+pnpm install --frozen-lockfile
 node scripts/build-terminal-lab.mjs
 node scripts/dev-instance.mjs --state out/plugin-terminals-playground
 ```
 
-In that private instance, install this directory through Settings → Plugins, then choose
+In that private instance, install this directory's absolute path through Settings → Plugins, then choose
 **Terminal Lab** in a terminal's renderer picker. The matching Settings placement is
-`terminal`. Your regular Kelpi installation and its processes remain separate. Rebuild and
-install this directory again to load source changes; plugin reload restarts the installed copy.
+`terminal`. Your regular Kelpi installation and its processes remain separate. With the private
+`kelpi_test` helper from the [development guide](../../../docs/plugin-development.md), run
+`kelpi_test plugin dev examples/plugins/terminal-lab --trust` from the checkout root while
+editing, and rerun `node scripts/build-terminal-lab.mjs` whenever source changes. Dev does
+not build the example for you. Build before validation, packing or installation; plugin reload
+only restarts the installed copy. Settings → Plugins → Versions switches compatible retained
+renderers while keeping the native process alive.
 
 The example consumes acknowledged replay/output frames, resets its parser and screen for each
 authoritative replay, preserves a scroll position separately from the native pane, and handles
@@ -53,3 +59,9 @@ For validation, `globalThis.terminalLab` exposes the real emulator and session, 
 modes, modifiers, and replay/reveal counters. `document.body.dataset.ready` becomes `true` only
 after an authoritative replay has been consumed. This diagnostic object does not substitute
 rendered text or create a second terminal process.
+
+Run `node scripts/scenario.mjs plugin-terminal-features --window hidden` for the native process
+scenario, or `--window onscreen` for screenshots. See the
+[terminal contract](../../../docs/plugin-terminals.md),
+[dated validation record](../../../docs/plugin-validation.md), and
+[plugin roadmap](../../../docs/plugin-roadmap.md) for supported behavior and remaining work.

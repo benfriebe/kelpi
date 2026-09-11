@@ -113,21 +113,21 @@ appears in some `workspace_group.childOrderJSON`; it is top-level iff it appears
 | `id`            | TEXT PK | no   |           | pane UUID |
 | `workspaceID`   | TEXT    | no   |           | FK → `workspace(id)` **ON DELETE CASCADE** |
 | `label`         | TEXT    | yes  |           | user-assigned pane label (used by CLI `--target` name resolution) |
-| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell | markdown | scratchpad | diff | web | plugin`. Unknown nonempty values load as unavailable plugin panes and preserve their original raw type. |
+| `type`          | TEXT    | no   | `'shell'` | `PaneType` raw value: `shell \| markdown \| scratchpad \| diff \| web \| plugin`. Unknown nonempty values load as unavailable plugin panes and preserve their original raw type. |
 | `pluginJSON` | TEXT | yes | | Versioned plugin ID, view ID, and JSON state. Invalid/future descriptors are preserved verbatim for recovery. |
 | `pluginParked` | BOOLEAN | no | `0` | Parked plugin panes survive restart; this flag has no effect on built-in pane types. |
 | `workingDirectory` | TEXT | no   |           | absolute path; new panes default to the user's home directory |
 | `createdAt`     | DOUBLE  | no   |           | epoch seconds |
 | `lastActivityAt`| DOUBLE  | no   |           | epoch seconds |
 | `agentSessionID`| TEXT    | yes  |           | last reported agent session id (Claude/Codex). Named `claudeSessionID` v4→v14, renamed in v15. Drives auto-resume on next launch (§7.3), then is cleared. |
-| `status`        | TEXT    | yes  | `'idle'`  | `PaneStatus` raw value: `idle | running | waitingForInput`. Unknown → `idle` on load. (Loaded but immediately reset to `idle` for all non-idle panes — see §7.2.) |
+| `status`        | TEXT    | yes  | `'idle'`  | `PaneStatus` raw value: `idle \| running \| waitingForInput`. Unknown → `idle` on load. (Loaded but immediately reset to `idle` for all non-idle panes — see §7.2.) |
 | `filePath`      | TEXT    | yes  |           | for `markdown` panes: the previewed file; for `diff` panes: optional path scope of `git diff` |
 | `content`       | TEXT    | yes  |           | scratchpad text body (scratchpad panes only; never written to a file on disk) |
 | `webURL`        | TEXT    | yes  |           | LEGACY single-tab URL for `web` panes. Written on save as a fallback for pre-v13 readers; **ignored on load whenever `webTabsJSON` decodes**. Always NULL for non-web panes and for private web panes. |
 | `webTabsJSON`   | TEXT    | yes  |           | JSON array of `WebTab` objects (§3.3). NULL/empty → blank web pane. NULL for private panes. |
 | `webActiveTabID`| TEXT    | yes  |           | UUID of the active tab; NULL or stale → falls back to first tab. NULL for private panes. |
 | `webIsPrivate`  | BOOLEAN | yes  |           | per-pane private browsing flag. Persisted even though the pane's tabs are not, so a restored private pane comes back BLANK but still private (non-persistent cookie store). NULL → false. |
-| `agentKind`     | TEXT    | yes  |           | `AgentKind` raw value: `claude | codex`. Last-known agent CLI for this pane; picks the resume command (`claude --resume <id>` vs `codex resume <id>`). NULL = never saw an agent (treated as `claude` where a default is needed). Deliberately NOT cleared on load (§7.3). |
+| `agentKind`     | TEXT    | yes  |           | `AgentKind` raw value: `claude \| codex`. Last-known agent CLI for this pane; picks the resume command (`claude --resume <id>` vs `codex resume <id>`). NULL = never saw an agent (treated as `claude` where a default is needed). Deliberately NOT cleared on load (§7.3). |
 | `agentProfileName` | TEXT | yes  |           | Kelpi-only (v19, §4): the profile name the pane's agent session was launched under, so a resume rebuilds the same environment. NULL = unknown. Written and read on every save/load (`packages/daemon/src/db/codec.ts:609`); preserved (not cleared) on load like `agentKind`; cleared together with `agentSessionID` on `session-end` (§7.3). |
 
 ### 2.3 `repo` and `repoAssociation`
@@ -678,6 +678,25 @@ follow a `KELPID_DB_PATH` override; a `:memory:` daemon keeps both in memory onl
   row.
 
 Neither file is part of the SQLite schema, the migration ledger or the save transaction.
+
+### 7.5 Plugin installations and revision recovery
+
+For a file-backed database, plugin packages, installation history, daemon identity,
+namespaced storage and settings live under `<db-path>.plugins/`. They are separate from the
+SQLite clear-and-reinsert pane save. Custom plugin pane descriptors and their state travel
+through the pane snapshot/codec path in `pluginJSON`. Preferences for replacements of native
+document, terminal and browser panes live separately in
+`<db-path>.plugins/data/<plugin-id>/documents.json`, keyed by pane and view ID with a state
+version. The filename is retained as native renderer coverage expands. An unavailable plugin
+does not discard either form of saved state.
+
+Plugin updates retain up to 100 code revisions and guard saved-state compatibility before
+switching. Candidate activation stages plugin-owned storage/settings writes, and a recovery
+journal handles daemon interruption while those writes and the selected revision commit.
+Selecting older code does not rewind data from a successful revision or external effects
+of trusted code. See the [recovery contract](plugins.md#updates-and-recovery) and
+[recovery implementation](../packages/daemon/src/plugins/revisions.ts) for the precise
+ordering, failure behavior and limits.
 
 ---
 

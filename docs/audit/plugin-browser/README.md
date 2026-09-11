@@ -1,14 +1,20 @@
 # Browser replacement review record
 
+This is the pre-review baseline, with the original JSON reports, build manifests and four
+screenshots committed below. Follow-up fixes and their separate results are recorded in
+[Browser PR review fixes](../../plugin-validation.md#browser-pr-review-fixes-2026-09-10).
+See the [roadmap](../../plugin-roadmap.md) for the current merged scope. These artifacts
+do not represent a rerun against those later fixes or current main.
+
 Validated on 2026-09-10 in the isolated `plugin-browser` worktree, based on merged main
 `24b19c9`. The three review layers contain the browser daemon/SDK contract, shared native
 page host and replacement UI, then Browser Lab and its live scenario. The
 [browser guide](../../plugin-browser.md) describes the API and private-instance installation;
 the [validation record](../../plugin-validation.md) records workspace and isolated-layer gates.
 
-The final production build passed **138 live assertions**: Browser Lab 59/59 hidden and
+The baseline production build passed **138 live assertions**: Browser Lab 59/59 hidden and
 59/59 onscreen, native hide/restore 7/7 and native crash recovery 13/13. All 18 recorded
-artifact hashes match across both Browser Lab runs and the final local outputs. These runs
+artifact hashes matched both Browser Lab runs and the outputs used for those runs. These runs
 include the final explicit-tab argument guards, inspector invalidation and hook support.
 
 | Evidence | Result |
@@ -24,7 +30,7 @@ changes; native bounds and popup/modal coverage; real pointer/address/Find inter
 navigation, tabs, favourites, private-mode confirmation, capture, inspection and batch
 updates; remote controls, direct browser/phone availability and native host loss.
 
-The screenshots below are from the final onscreen run and were visually inspected.
+The screenshots below are from that baseline's final onscreen run and were visually inspected.
 Electron's compositor capture includes the native `WebContentsView` in this environment;
 the scenario also saves a separate native-page capture in its local raw artifacts.
 Hidden-window screenshots are diagnostic only. The desktop controls and focus gutter fit
@@ -41,8 +47,9 @@ fits its viewport and reports that its native page is displayed on the owning de
 
 All daemons, sockets, ports, databases and Electron profiles were private. The harness shut
 down after validation. The installed Kelpi and the user's original checkout were preserved.
-Raw logs and target/placement diagnostics remain under
-`out/plugin-browser-validation/{live-hidden,live-onscreen,native-regressions}`.
+Raw logs and target/placement diagnostics were written under
+`out/plugin-browser-validation/{live-hidden,live-onscreen,native-regressions}` in the original
+worktree. Those local outputs are not included here.
 
 Phone coverage uses Chromium emulation. Physical-device software keyboards, OS IME,
 packaged-release validation and the full UI audit were not repeated. The existing single

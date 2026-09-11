@@ -9,6 +9,13 @@ and a web client that owns the sandboxed preview frame, scroll state, find-in-pa
 injected bridge script and clipboard access. Where behavior is user-visible it is described
 as such, so that every attached client renders it the same way.
 
+The rendering and interaction details below describe the bundled content views. The
+[document replacement contract](plugin-documents.md) exposes the same native buffers through
+guarded writes and recoverable drafts, with `features/DocumentPane.tsx` selecting the bundled
+or plugin renderer. Native document types stay `markdown`, `scratchpad` or `diff`; standalone
+[custom plugin panes](plugins.md) use the separate `plugin` kind. External-editor bodies can
+also use a [terminal replacement](plugin-terminals.md) while retaining their native PTY.
+
 Source files this spec describes (TypeScript):
 
 - `packages/daemon/src/content/markdown.ts`: markdown → HTML + CSS, front-matter extraction and rendering, bare-URL autolinking
@@ -40,12 +47,14 @@ Source files this spec describes (TypeScript):
 ### 1.1 Pane fields relevant to content panes
 
 ```ts
-type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web";
+type PaneType = "shell" | "markdown" | "scratchpad" | "diff" | "web" | "plugin";
 
 interface Pane {
   id: string;                       // UUID
   label?: string;                   // user tag; markdown/diff panes get one at creation
   type: PaneType;
+  plugin?: PluginPaneDescriptor;   // custom pane's plugin/view IDs, stateVersion and JSON state
+  unavailable?: { type: string; pluginJSON: string | null }; // preserved unknown/future descriptor
   title?: string;
   workingDirectory: string;         // markdown: file's parent dir; diff: repo path
   gitBranch?: string;               // detected async at open time
@@ -77,6 +86,11 @@ Content-pane relevant columns of `PaneRecord`:
   text lives; it is never written to any file.
 - `type` — the `PaneType` raw string.
 
+Custom plugin pane descriptors use the separate `pluginJSON` column, including preservation
+of unsupported raw descriptors. Native document renderer preferences are stored separately
+from those pane descriptors; see the [persistence schema](persistence.md) and
+[document state contract](plugin-documents.md).
+
 NOT persisted: `isEditing` (recomputed at load: `isEditing = (type == "scratchpad")` —
 markdown panes always restore in view mode, scratchpads always restore in edit mode),
 `externalEditorCommand`, `markdownFontSize` (restores to default 14 on app relaunch),
@@ -92,6 +106,8 @@ interface ClosedPaneSnapshot {
   workingDirectory: string;
   label?: string;
   type: PaneType;
+  plugin?: PluginPaneDescriptor;
+  unavailable?: { type: string; pluginJSON: string | null };
   filePath?: string;
   scratchpadContent?: string;
   agentSessionID?: string;
@@ -106,10 +122,13 @@ interface ClosedPaneSnapshot {
 pane horizontally, and recreates the pane with
 `isEditing = (type == "scratchpad")`. `agentKind`, `agentProfileName` and
 `markdownFontSize` are restored from the snapshot (`agentSessionID` is not; it only
-types the resume command). Markdown/scratchpad/diff/web reopens create no
+types the resume command). Markdown/scratchpad/diff/web/plugin reopens create no
 PTY; only shell reopens spawn a surface (and possibly resume an agent session).
 (`packages/daemon/src/store/reducers/panes.ts`, `snapshotForReopen` / `reopenClosedPane`;
 `ClosedPaneSnapshot` in `packages/daemon/src/store/types.ts`.)
+
+Custom plugin panes also restore their `plugin` descriptor or `unavailable` raw data from
+the close snapshot, preserving view identity and saved state when the plugin is unavailable.
 
 ---
 

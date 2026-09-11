@@ -10,18 +10,25 @@ The same bindings work inside compatible named containers, with one native insta
 SDK. It also renders other plugins' live menu and item contributions, so replacing the bars
 preserves their extension points. No backend or application rebuild is required to install it.
 
+The [plugin roadmap](plugin-roadmap.md) tracks the wider extension work. The
+[development guide](plugin-development.md) covers authoring, packaging and retained versions.
+
 ## Try it beside your installed Kelpi
 
-From this checkout:
+From the checkout root, after `pnpm install --frozen-lockfile`:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-chrome-playground
 ```
 
-Use its Settings → Plugins to install `examples/plugins/chrome-lab`. Choose **Chrome Lab
-toolbar** for `topbar` and **Chrome Lab status** for `statusbar`. The instance has its own
+Use its Settings → Plugins to install the absolute path to `examples/plugins/chrome-lab`.
+Choose **Chrome Lab toolbar** for `topbar` and **Chrome Lab status** for `statusbar`. The instance has its own
 state, configuration, sockets and Electron profile. An external terminal must use the
-`KELPI_SOCKET` printed by the script and this checkout's `node packages/cli/dist/kelpi.js`.
+`KELPI_SOCKET` printed by the script, `KELPI_REQUIRE_SOCKET=1`, and this checkout's
+`node packages/cli/dist/kelpi.js`; the development guide provides a `kelpi_test` helper.
+Run `kelpi_test plugin dev examples/plugins/chrome-lab --trust` from the checkout root for
+live editing. Settings → Plugins → Versions selects compatible retained revisions while
+preserving the workbench's saved placements.
 
 ## Window chrome API
 
@@ -119,7 +126,9 @@ it restores the replacements. Ordinary plugin-view errors retain their local ret
 
 ## Validation
 
-Run `node scripts/scenario.mjs plugin-chrome-features`. It uses private state and daemons to
+Run `node scripts/scenario.mjs plugin-chrome-features --window hidden`. It uses private daemons to
 exercise replacement controls, sidebar swaps, status navigation, Git/system data, other plugin
 contributions, shared menus, multiple clients, remote ownership, reload and native fallback.
-Feature, bridge, SDK, and native assembly tests cover the corresponding contracts.
+Feature, bridge, SDK, and native assembly tests cover the corresponding contracts. Use
+`--window onscreen` for visual inspection; the [validation record](plugin-validation.md)
+records dated runs against specific source revisions.

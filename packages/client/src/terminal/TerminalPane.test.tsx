@@ -1723,7 +1723,7 @@ const esc = (rest: string): string => `\u001B${rest}`;
 /** Mount a pane with 10×20 cells, plus a stand-in for the engine's own canvas listener. */
 async function mouseHarness(
     modes: { mouseTracking?: string; mouseFormat?: string } = {},
-    options: { focused?: boolean } = {}
+    options: { focused?: boolean; formFactorWindow?: FakePhoneWindow } = {}
 ): Promise<{
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
@@ -1742,6 +1742,7 @@ async function mouseHarness(
             visible
             createRenderer={renderers.factory}
             measure={box(800, 480)}
+            formFactorWindow={options.formFactorWindow}
         />
     );
     await settle();
@@ -1919,7 +1920,7 @@ describe('TerminalPane - a reported press and the caret (#158)', () => {
         expect(h.renderers.last().focusCount).toBe(0);
     });
 
-    it('leaves a chrome text field mid-edit its caret', async () => {
+    it('takes it from a chrome text field mid-edit, like the engine listener it stands in for', async () => {
         const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
         const filter = document.createElement('input');
         document.body.appendChild(filter);
@@ -1927,10 +1928,35 @@ describe('TerminalPane - a reported press and the caret (#158)', () => {
         const before = h.renderers.last().focusCount;
 
         fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
-
-        expect(h.renderers.last().focusCount).toBe(before);
-        expect(document.activeElement).toBe(filter);
+        // Before the assertions, so a failure here cannot leave a focused field to the next test.
         filter.remove();
+
+        // The user's own click, so not polite (§6): with tracking off the engine's listener takes
+        // the caret from the field whatever it is, and so must the claim that replaces it. The
+        // fake only counts; the real `focus()` is `textarea.focus()`, which moves the caret even
+        // though the press's default was prevented.
+        expect(h.pty.last().directInput).toHaveLength(1);
+        expect(h.renderers.last().focusCount).toBe(before + 1);
+    });
+
+    /** The claim across one reported press, in a window of the given form factor. */
+    async function claimsOnAReportedPress(win: FakePhoneWindow): Promise<number> {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' }, { formFactorWindow: win });
+        const before = h.renderers.last().focusCount;
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+
+        // Reported either way: the form factor decides whether the caret comes with the press.
+        expect(h.pty.last().directInput).toHaveLength(1);
+        return h.renderers.last().focusCount - before;
+    }
+
+    it('makes no claim on a phone, where the claim would be the software keyboard (C5)', async () => {
+        expect(await claimsOnAReportedPress(createFakePhoneWindow({ coarse: true }))).toBe(0);
+    });
+
+    it('and NOT on desktop: the same window with a fine pointer still claims', async () => {
+        expect(await claimsOnAReportedPress(createFakePhoneWindow({ coarse: false }))).toBe(1);
     });
 });
 

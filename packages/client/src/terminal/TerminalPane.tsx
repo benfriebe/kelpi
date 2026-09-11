@@ -1394,8 +1394,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // effect's deps do not change on that click, so it does not run. Without this a pane
             // running `vim` or `htop` whose textarea had been blurred (a click on a sidebar row,
             // on its own header) wore the ring and took no keystrokes until the user clicked
-            // another pane and came back. Polite and phone-aware, like every other claim.
-            if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) claimCaret();
+            // another pane and came back.
+            //
+            // NOT polite (`shouldGrabFocus`), which is the one way it differs from the other
+            // claims: those are made on the user's behalf (a mount, a resync, the focus effect),
+            // and this is the user's own click, which focuses the pane (§6). The listener it stands
+            // in for takes the caret whatever holds it, so a rename or the sidebar filter mid-edit
+            // gives it up to this click exactly as it does with tracking off. `claimCaret` still
+            // makes it a no-op on a phone.
+            if (latest.current.focused && latest.current.visible) claimCaret();
         };
         const onMove = (event: MouseEvent): void => {
             if (!reporter.active || !inside(event)) return;
@@ -2021,8 +2028,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * deps are `[focused, visible, status]`, none of which change when the field the
              * claim deferred to is finally let go, so a declined claim was dropped outright: the
              * pane wore the ring, drew a blinking cursor (below), and every keystroke went to the
-             * field until the user clicked the pane a second time - the click blurring the field
-             * before the pane's own handler ran is the whole of "clicking again fixes it".
+             * field until the user clicked the pane. A click takes the caret whatever holds it,
+             * which is the whole of "clicking it fixes it": the engine's canvas `mousedown`
+             * listener focuses its textarea, and while an application tracks the mouse the
+             * reporter, which keeps that press from the engine, makes the claim itself for the
+             * pane wearing the ring (#158).
              *
              * `armCaretClaim` is the rule the WEB pane has had since §N30's residual, in the
              * shared module: claim now if the caret is free, otherwise stay armed and re-decide

@@ -1388,6 +1388,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // would otherwise sit highlighted over a TUI that is handling the same drag.
             rendererRef.current?.clearSelection();
             setSelectionLength(0);
+            // #158: and the caret comes with the press. Consuming it also took away the engine's
+            // own canvas `mousedown → textarea.focus()` (`vendor/…/terminal.ts:486-489`), which
+            // is the only thing that re-focuses a pane that is ALREADY the focused one: the focus
+            // effect's deps do not change on that click, so it does not run. Without this a pane
+            // running `vim` or `htop` whose textarea had been blurred (a click on a sidebar row,
+            // on its own header) wore the ring and took no keystrokes until the user clicked
+            // another pane and came back. Polite and phone-aware, like every other claim.
+            if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) claimCaret();
         };
         const onMove = (event: MouseEvent): void => {
             if (!reporter.active || !inside(event)) return;

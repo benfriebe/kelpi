@@ -1722,7 +1722,8 @@ const esc = (rest: string): string => `\u001B${rest}`;
 
 /** Mount a pane with 10×20 cells, plus a stand-in for the engine's own canvas listener. */
 async function mouseHarness(
-    modes: { mouseTracking?: string; mouseFormat?: string } = {}
+    modes: { mouseTracking?: string; mouseFormat?: string } = {},
+    options: { focused?: boolean } = {}
 ): Promise<{
     pty: ReturnType<typeof createFakePtyApi>;
     renderers: ReturnType<typeof createFakeRendererFactory>;
@@ -1737,7 +1738,7 @@ async function mouseHarness(
         <TerminalPane
             paneID="pane-1"
             ptyApi={pty}
-            focused
+            focused={options.focused ?? true}
             visible
             createRenderer={renderers.factory}
             measure={box(800, 480)}
@@ -1857,6 +1858,79 @@ describe('TerminalPane — mouse reporting', () => {
 
         expect(h.pty.last().directInput).toEqual([esc('[<0;5;4M')]);
         expect(h.engineEvents).toEqual(['mousemove']);
+    });
+});
+
+/**
+ * #158 - a press the application is sent still gives the pane the caret.
+ *
+ * Consuming the press is what keeps the engine's selection off a TUI's drag, and it also took
+ * away the engine's canvas `mousedown → textarea.focus()` (`vendor/…/terminal.ts:486-489`). For a
+ * pane that is ALREADY the focused one that listener was the only way back: the click moves no
+ * prop, so the focus effect does not run. A pane running `vim` whose textarea had lost the caret
+ * to a sidebar row wore the ring and took no keystrokes until the user clicked another pane and
+ * came back.
+ */
+describe('TerminalPane - a reported press and the caret (#158)', () => {
+    /** A sidebar row: `tabIndex={-1}` and not editable, so clicking it leaves the caret on it. */
+    function focusSidebarRow(): HTMLElement {
+        const row = document.createElement('div');
+        row.tabIndex = -1;
+        document.body.appendChild(row);
+        row.focus();
+        return row;
+    }
+
+    it.each(['x10', 'vt200', 'drag', 'any'])('the focused pane claims it back under %s tracking', async (mouseTracking) => {
+        const h = await mouseHarness({ mouseTracking, mouseFormat: 'sgr' });
+        const row = focusSidebarRow();
+        const before = h.renderers.last().focusCount;
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+
+        // Still reported and still kept off the engine: the claim replaces the listener the
+        // consume took away, it does not hand the event back.
+        expect(h.pty.last().directInput).toHaveLength(1);
+        expect(h.engineEvents).toEqual([]);
+        expect(h.renderers.last().focusCount).toBe(before + 1);
+        row.remove();
+    });
+
+    it('leaves it to the engine while no application asked for the mouse', async () => {
+        const h = await mouseHarness();
+        const row = focusSidebarRow();
+        const before = h.renderers.last().focusCount;
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+
+        // The engine's own listener sees the press, and focusing its textarea is its job.
+        expect(h.engineEvents).toEqual(['mousedown']);
+        expect(h.renderers.last().focusCount).toBe(before);
+        row.remove();
+    });
+
+    it('makes no claim for a pane that does not wear the ring', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' }, { focused: false });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+
+        // That pane's claim belongs to the focus effect, when the ring arrives.
+        expect(h.engineEvents).toEqual([]);
+        expect(h.renderers.last().focusCount).toBe(0);
+    });
+
+    it('leaves a chrome text field mid-edit its caret', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+        const filter = document.createElement('input');
+        document.body.appendChild(filter);
+        filter.focus();
+        const before = h.renderers.last().focusCount;
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+
+        expect(h.renderers.last().focusCount).toBe(before);
+        expect(document.activeElement).toBe(filter);
+        filter.remove();
     });
 });
 

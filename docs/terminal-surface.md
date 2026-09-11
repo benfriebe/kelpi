@@ -1321,7 +1321,10 @@ and the kitty forms when a pane has negotiated the protocol.
   the DEC protocol has no bit for ⌘, so a ⌘-held press or release is recorded as held and not
   reported, which is what stops a TUI seeing a plain click the user never aimed at it. Ghostty
   captures ⌘ the same way. Neither bypass touches a PLAIN click, which reports exactly as it
-  always did. `mouseTracking: 'none'` resets the reporter.
+  always did. `mouseTracking: 'none'` resets the reporter. Consuming a press also keeps it
+  from the engine's canvas `mousedown → textarea.focus()`, the only thing that re-focuses a
+  pane that is already the focused one, so the reporter makes that claim itself (#158):
+  politely (`shouldGrabFocus`), for the pane that wears the ring, and never on a phone.
 - No mouse mirroring to sync groups: every report is written as the un-mirrored
   `inputDirect` PTY frame (section 8.2), never as `input`.
 

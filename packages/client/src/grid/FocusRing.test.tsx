@@ -85,7 +85,7 @@ describe('useFocusDwell', () => {
         expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('a');
     });
 
-    it('stops when the daemon answers with idle, and does not restart on a callback change', () => {
+    it('fires once at the deadline whatever the status becomes, and does not restart on a callback change', () => {
         vi.useFakeTimers();
         const first = vi.fn();
         const second = vi.fn();

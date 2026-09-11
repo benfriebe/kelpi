@@ -6,7 +6,8 @@
  * shell-ui.md §4.6 / agent-lifecycle.md §5.8: focusing a pane also schedules a 600 ms timer
  * that clears that pane's status back to idle, so an "awaiting input" badge auto-dismisses
  * shortly after the user attends to it. The timer is rescheduled (cancelling the old one) on
- * every focus change and only runs while the focused pane's status is non-idle.
+ * every focus change. It arms only when the focused pane's status is non-idle at that moment,
+ * and a later status change neither cancels nor re-arms it (#108).
  */
 
 import { useEffect, useRef, type ReactElement } from 'react';

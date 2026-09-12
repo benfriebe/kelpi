@@ -78,6 +78,30 @@ describe('extensible workbench', () => {
         expect(plan.nativePaths.size).toBe(1);
         expect(plan.nativePaths.get('kelpi.workspace')).toContain('sample.board.slot-9-0');
     });
+    /**
+     * The Settings window's floor, which is the one that matters most: the bundled panel draws the
+     * section a presenter is switched off from, so it has to be unselectable-away by construction.
+     */
+    it('keeps the bundled panel as a floor for the Settings window', () => {
+        const presenter: PluginInfo = { ...plugin, manifest: decodePluginManifest({ id: 'sample.settings', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.settings.view', title: 'Lab settings', entry: 'ui/index.html', placements: ['settings.window'] }]
+        } }) };
+        expect(DEFAULT_SLOTS['settings.window']).toBe('kelpi.settings.window');
+        const views = viewRegistry([presenter]);
+        expect(resolveSlot(views, 'settings.window', 'sample.settings.view')?.pluginID).toBe('sample.settings');
+        expect(resolveSlot(views, 'settings.window', '')?.id).toBe('kelpi.settings.window');
+        expect(resolveSlot(views, 'settings.window', 'missing.view')?.id).toBe('kelpi.settings.window');
+        expect(selectWorkbenchView(views, {}, 'settings.window', '')).toEqual({});
+        // A missing, disabled or failed plugin falls back while the CHOICE is retained.
+        for (const installed of [[], [{ ...presenter, enabled: false }], [{ ...presenter, status: 'failed' as const }]]) {
+            const selections = { 'settings.window': 'sample.settings.view' };
+            expect(resolveSlot(viewRegistry(installed), 'settings.window', selections['settings.window'])?.id).toBe('kelpi.settings.window');
+            expect(readWorkbenchSelections(selections)).toEqual(selections);
+        }
+        // The plugin-contributed `settings` slot inside the Plugins tab is a different placement.
+        expect(DEFAULT_SLOTS['settings']).toBe('kelpi.settings');
+    });
+
     it('keeps the bundled presenter as a floor for both interaction placements', () => {
         const presenter: PluginInfo = { ...plugin, manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
             views: [{ id: 'sample.present.view', title: 'Presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]

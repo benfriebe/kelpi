@@ -25,7 +25,8 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { tokens } from '../chrome';
 import type { SettingsDraftValue, SettingsFieldDescriptor } from './contract';
-import { ColorField, SegmentedField, SelectField, TextField } from './controls';
+import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
+import { settingsPercentLabel, settingsPixelLabel, settingsWholeLabel } from './sections';
 import { SettingsRow, SettingsToggle } from './ui';
 
 /**
@@ -59,6 +60,42 @@ const TEXT_PRESENTATION: Readonly<
 > = {
     'general.worktreeBasePath': { plain: true },
     'general.tcpPort': { narrow: true, apply: true }
+};
+
+/**
+ * The sliders that are `sliderRow`s, and how each one reads.
+ *
+ * Two shapes of slider ship in this window and the difference is not a value's business, so it is
+ * presentation here rather than a flag in the descriptor:
+ *
+ *   - **L82's `sliderRow`** (`controls.tsx`'s `SliderField`): a 140 px label track, a debounced
+ *     write and a fixed readout - every Appearance slider, because an Appearance drag is a
+ *     config-file rewrite per pointer move.
+ *   - **A raw range input** with the `SettingsRow`'s own label: Workspaces' focus delay, whose
+ *     write has always gone out on every change and whose readout is L82's separate 55 px span.
+ *
+ * `format` is the same function the catalog formats `valueLabel` with (`sections.ts` exports the
+ * three), because a `SliderField` re-formats as the user DRAGS - before anything is committed -
+ * and a readout that disagreed with the frame's would be two spellings of one number.
+ */
+const SLIDER_PRESENTATION: Readonly<
+    Record<
+        string,
+        { readonly format: (value: number) => string; readonly readoutWidth?: number | undefined }
+    >
+> = {
+    'appearance.sidebarColorIntensity': { format: settingsPercentLabel },
+    'appearance.sidebarAvatarFill': { format: settingsPercentLabel },
+    'appearance.sidebarAvatarStroke': { format: settingsPercentLabel },
+    'appearance.sidebarGroupStroke': { format: settingsPercentLabel },
+    'appearance.backgroundOpacity': { format: settingsPercentLabel },
+    'appearance.fontSize': { format: settingsPixelLabel },
+    'appearance.windowPaddingX': { format: settingsPixelLabel },
+    'appearance.windowPaddingY': { format: settingsPixelLabel },
+    // L82's third clause: Graph width is not a `sliderRow` in the Swift - it writes its own
+    // `HStack` and gives the readout `.frame(width: 32)`, because a bare 16…80 needs half the room
+    // a percentage does.
+    'appearance.sparklineWidth': { format: settingsWholeLabel, readoutWidth: 32 }
 };
 
 export interface FieldRendererProps {
@@ -170,6 +207,37 @@ export function FieldRenderer(props: FieldRendererProps): ReactElement {
     }
 
     if (field.kind === 'slider') {
+        const slider = SLIDER_PRESENTATION[field.id];
+        if (slider !== undefined) {
+            /*
+             * `sliderRow`. The control debounces (250 ms) and holds the dragged value itself, so it
+             * is handed the COMMITTED value and a formatter rather than the descriptor's
+             * `valueLabel`: a readout frozen at the last broadcast would not move under the thumb.
+             */
+            return (
+                <>
+                    <Inert on={locked}>
+                        <SliderField
+                            label={field.label}
+                            testID={field.testID}
+                            {...caption(field)}
+                            value={field.value}
+                            min={field.min}
+                            max={field.max}
+                            step={field.step}
+                            format={slider.format}
+                            {...(slider.readoutWidth === undefined
+                                ? {}
+                                : { readoutWidth: slider.readoutWidth })}
+                            onChange={(next) => {
+                                commit(String(next));
+                            }}
+                        />
+                    </Inert>
+                    <FieldError field={field} />
+                </>
+            );
+        }
         return (
             <>
                 <SettingsRow

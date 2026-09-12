@@ -6,6 +6,7 @@ import { decodePluginManifest, type PluginInfo } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { PlacementSettings, WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout } from '../plugins/Workbench';
 import { noteInteractionPresenterFailure, resetInteractionPresenterFailures } from '../interaction/presenter';
+import { noteSettingsPresenterFailure, resetSettingsPresenterFailures } from '../settings/presenter';
 import { INSPECTOR_FEATURE, WORKSPACES_FEATURE, TOOLBAR_FEATURE, STATUSBAR_FEATURE } from './definitions';
 import { featureBindings, type BundledFeatureBinding, type FeatureRenderContext } from './feature';
 
@@ -88,8 +89,8 @@ function selectLeft(viewID: string): void {
     fireEvent.change(screen.getByLabelText('sidebar.primary'), { target: { value: viewID } });
 }
 
-beforeEach(() => { localStorage.clear(); plugins = [extension()]; active.clear(); mounted.clear(); disposed.clear(); resetInteractionPresenterFailures(); });
-afterEach(() => { cleanup(); resetInteractionPresenterFailures(); });
+beforeEach(() => { localStorage.clear(); plugins = [extension()]; active.clear(); mounted.clear(); disposed.clear(); resetInteractionPresenterFailures(); resetSettingsPresenterFailures(); });
+afterEach(() => { cleanup(); resetInteractionPresenterFailures(); resetSettingsPresenterFailures(); });
 
 describe('bundled feature registration in the workbench', () => {
     it('rejects ambiguous native ownership in the feature registry', () => {
@@ -205,6 +206,39 @@ describe('the presented interaction placements in Settings', () => {
         expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Lab presenter');
         // The selection survived the failure and the retry, as it does for every other slot.
         expect((screen.getByLabelText('interaction.prompts') as HTMLSelectElement).value).toBe('sample.present.view');
+    });
+
+    /**
+     * The third presented surface, on the same terms: a select, a status row, an explicit Retry and
+     * a selection that survives both. The difference is where the row LIVES - inside the section it
+     * reports on - which is exactly why Plugins is permanently native.
+     */
+    it('offers the same select, status row and Retry for the Settings window', () => {
+        plugins = [{ manifest: decodePluginManifest({ id: 'sample.settings', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.settings.view', title: 'Lab settings', entry: 'ui/index.html', placements: ['settings.window'] }]
+        } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' }];
+        render(<Harness features={bindings()} />);
+        const select = screen.getByLabelText('settings.window') as HTMLSelectElement;
+        // The bundled panel is the floor: it names itself and there is no "Empty" row to pick.
+        expect([...select.options].map(option => `${option.value}=${option.textContent ?? ''}`)).toEqual([
+            'kelpi.settings.window=Settings (bundled)', 'sample.settings.view=Lab settings'
+        ]);
+        expect(screen.getByTestId('settings-presenter-status-settings.window').textContent).toContain('Bundled');
+
+        fireEvent.change(select, { target: { value: 'sample.settings.view' } });
+        expect(screen.getByTestId('settings-presenter-status-settings.window').textContent).toContain('Lab settings');
+        expect(screen.queryByTestId('settings-presenter-retry-settings.window')).toBeNull();
+
+        act(() => { noteSettingsPresenterFailure('settings.window', 'sample.settings.view:r:i', 'the presenter went away'); });
+        expect(screen.getByTestId('settings-presenter-status-settings.window').textContent).toContain('Failed: the presenter went away');
+        fireEvent.click(screen.getByTestId('settings-presenter-retry-settings.window'));
+        expect(screen.getByTestId('settings-presenter-status-settings.window').textContent).toContain('Lab settings');
+        // The selection survived the failure and the retry, as it does for every other slot.
+        expect((screen.getByLabelText('settings.window') as HTMLSelectElement).value).toBe('sample.settings.view');
+
+        // …and "Restore bundled views" hands it back with everything else.
+        fireEvent.click(screen.getByRole('button', { name: 'Restore bundled views' }));
+        expect((screen.getByLabelText('settings.window') as HTMLSelectElement).value).toBe('kelpi.settings.window');
     });
 
     it('restores the bundled presenters with every other bundled view', () => {

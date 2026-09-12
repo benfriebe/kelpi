@@ -25,6 +25,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SETTINGS_SECTION_IDS, type SettingsTransportStatus } from './contract';
+import { SETTINGS_PLACEMENT, createSettingsPresenterHost } from './presenter';
 import { createSettingsSurface, type SettingsSurface, type SettingsSurfaceSnapshot } from './surface';
 import type { SettingsActions } from './types';
 
@@ -92,8 +93,36 @@ function walk(): { readonly frames: readonly SettingsSurfaceSnapshot[]; readonly
     created.setSection('workspaces');
     created.commitField('workspaces.clipboardWrite', true);
     frames.push(created.getSnapshot());
+    // Appearance is the partly projected section: its plain rows are descriptors and the rest is
+    // hand-built, so the walk has to type into it as well as route through it.
+    created.setSection('appearance');
+    created.setDraft('appearance.fontFamily', 'SF Mono');
+    created.commitField('appearance.fontFamily');
+    created.commitField('appearance.sparklineStyle', 'dots');
+    frames.push(created.getSnapshot());
     return { frames, serialised: JSON.stringify(frames) };
 }
+
+/**
+ * The copy fields, which the shipped tabs have always PRINTED.
+ *
+ * `general.tcpPort`'s caption names a port, the terminal padding rows name ghostty's own
+ * `window-padding-x` / `-y` and the opacity row spells `rgba(background, opacity)` - the Swift
+ * app's captions do the same, because a row that writes a named key in someone else's config file
+ * is more useful when it says which one. Prose is therefore checked differently from structure: a
+ * key may appear INSIDE a sentence, and may never BE one.
+ */
+const COPY_KEYS = ['label', 'detail', 'title', 'hint', 'valueLabel', 'testID', 'rowTestID'];
+
+/**
+ * The half of that copy a reader actually READS.
+ *
+ * The test ids are not in it: they are the tabs' own `data-testid`s, already on the elements of a
+ * panel anything can read, and a few of them ARE key-shaped for that historical reason (`tcp-port`,
+ * `clipboard-write-toggle`). They are exempt here exactly as they have always been - and the
+ * presenter projection drops them outright, which the presenter case below asserts.
+ */
+const PROSE_KEYS = ['label', 'detail', 'title', 'hint', 'valueLabel'];
 
 describe('what a settings projection may carry', () => {
     it('never carries a pairing token, a profile environment value or a device id', () => {
@@ -110,16 +139,37 @@ describe('what a settings projection may carry', () => {
     it('never carries a config key or a verb name', () => {
         const { frames, serialised } = walk();
         /*
-         * The test ids are exempt, and only they: they are the tabs' own `data-testid`s, already
-         * on the elements of a panel anything can read, and they are how a rewired tab keeps the
-         * audit selectors it has always had. A few of them are key-shaped for that historical
-         * reason (`tcp-port`, `clipboard-write-toggle`). Everything else in the frame is checked.
+         * Structure first: with every human-readable string taken out, not one writable key may
+         * appear anywhere in the frame - not as an id, not as a value, not as a property name.
+         * That is the leak that would matter, because it is the one a caller could act on.
+         *
+         * The test ids come out with the copy: they are the tabs' own `data-testid`s, already on
+         * the elements of a panel anything can read, and a few are key-shaped for that historical
+         * reason (`tcp-port`, `clipboard-write-toggle`). The presenter projection drops them
+         * outright, which the presenter test below asserts.
          */
-        const projected = JSON.stringify(frames, (key, value) =>
-            key === 'testID' || key === 'rowTestID' ? undefined : (value as unknown)
-        );
+        const structure: string[] = [];
+        JSON.stringify(frames, (key, value) => {
+            if (COPY_KEYS.includes(key)) return undefined;
+            structure.push(key);
+            if (typeof value === 'string') structure.push(value);
+            return value as unknown;
+        });
+        // Whole tokens, not substrings: `background` is a writable ghostty key AND an English word
+        // that half this tab's ids and captions are built from (`appearance.backgroundOpacity`).
+        // What would matter is the key itself standing somewhere a caller could pick it up.
         for (const key of [...WS_WRITABLE_GENERAL_KEYS, ...WS_WRITABLE_GHOSTTY_KEYS])
-            expect(projected).not.toContain(key);
+            expect(structure).not.toContain(key);
+        // …and no caption, label or card title may BE a key, which is the only way one could reach
+        // a reader through the prose.
+        const copy: string[] = [];
+        JSON.stringify(frames, (key, value) => {
+            if (PROSE_KEYS.includes(key) && typeof value === 'string') copy.push(value);
+            return value as unknown;
+        });
+        expect(copy.length).toBeGreaterThan(0);
+        for (const key of [...WS_WRITABLE_GENERAL_KEYS, ...WS_WRITABLE_GHOSTTY_KEYS])
+            expect(copy).not.toContain(key);
         for (const verb of ['set-general-setting', 'set-ghostty-setting', 'set-profiles', 'set-remote-daemons'])
             expect(serialised).not.toContain(verb);
     });
@@ -159,6 +209,58 @@ describe('what a settings projection may carry', () => {
         expect(serialised).not.toContain('EADDRINUSE');
         expect(serialised).not.toContain('listen ');
         expect(serialised).not.toContain('address already in use');
+    });
+
+    /**
+     * The presenter projection, on the same walk.
+     *
+     * `settingsFieldDescriptor` is the panel's copy and `presenter.ts`'s is the frame's, and the
+     * frame's is the narrower one: the two test ids and the three formatting fields the bundled
+     * panel wants (`default`, `placeholder`, `valueLabel`) are dropped, so what crosses the window
+     * boundary is an id, a kind, a label, a caption, a value and the constraints of the control.
+     */
+    it('hands a presenter less than the panel: no test ids, no defaults, no secrets', () => {
+        const created = surface();
+        const host = createSettingsPresenterHost({
+            surface: created,
+            placement: SETTINGS_PLACEMENT,
+            formFactor: () => 'desktop',
+            visible: () => true,
+            close: vi.fn(),
+            fail: vi.fn()
+        });
+        const frames: unknown[] = [];
+        for (const sectionID of SETTINGS_SECTION_IDS) {
+            created.setSection(sectionID);
+            frames.push(host.getSettingsPresentation());
+        }
+        created.setSection('appearance');
+        created.setDraft('appearance.fontFamily', SECRETS.env);
+        frames.push(host.getSettingsPresentation());
+        const serialised = JSON.stringify(frames);
+
+        // A draft the USER typed is theirs and comes back to them; nothing else does.
+        expect(serialised).toContain(SECRETS.env);
+        expect(serialised).not.toContain(SECRETS.token);
+        expect(serialised).not.toContain(SECRETS.device);
+        expect(serialised).not.toContain('ts.net');
+
+        const keys = new Set<string>();
+        const walkKeys = (value: unknown): void => {
+            if (Array.isArray(value)) {
+                for (const item of value) walkKeys(item);
+                return;
+            }
+            if (typeof value !== 'object' || value === null) return;
+            for (const [key, child] of Object.entries(value)) {
+                keys.add(key);
+                walkKeys(child);
+            }
+        };
+        walkKeys(frames);
+        for (const withheld of ['testID', 'rowTestID', 'default', 'placeholder', 'valueLabel', 'order', 'target'])
+            expect([...keys]).not.toContain(withheld);
+        host.dispose();
     });
 
     it('reports the secret-bearing sections as native, with nothing in them', () => {

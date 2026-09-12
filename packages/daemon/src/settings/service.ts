@@ -155,6 +155,35 @@ export interface SettingsService {
 /** A caller error worth reporting to the client verbatim (bad action name, bad trigger, …). */
 export class SettingsError extends Error {}
 
+/**
+ * A value that cannot forge a config line.
+ *
+ * `setGeneralSetting` and `setGhosttySetting` build `key = value` and `@kelpi/core`'s writers
+ * join the file's lines with "\n" (`config/write.ts`, `config/ghostty-write.ts`). The writable
+ * allowlists above check the KEY and nothing else, so a value carrying a newline would append
+ * lines of the caller's choosing to a file that also holds `command`, `keybind`, `profile` and
+ * `remote-daemon` - one forged line is a program this daemon runs later. A trim does not help:
+ * the break that matters is an interior one.
+ *
+ * Carriage returns and the rest of C0 (and DEL) are refused on the same footing. A lone \r ends
+ * a line for some readers and not others, so a value containing one means two different files
+ * depending on who reads it back, and nothing either allowlist covers - a colour, a number, a
+ * chord, a font name, a path template - has a legitimate control character in it. Tabs are
+ * refused too: this format does not use one as a separator, and `value.trim()` has already
+ * dropped the surrounding whitespace, so an interior tab is only ever an attempt at something.
+ *
+ * This is the daemon's own layer. The client validates a draft and re-validates at commit
+ * (`packages/client/src/settings/contract.ts`); a bug in either of those must not reach the file.
+ */
+const CONFIG_CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+function requireSingleLine(key: string, value: string): string {
+    if (CONFIG_CONTROL_CHARACTER.test(value)) {
+        throw new SettingsError(`'${key}' may not contain a line break or control character`);
+    }
+    return value;
+}
+
 function toError(value: unknown): Error {
     return value instanceof Error ? value : new Error(String(value));
 }
@@ -525,7 +554,10 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 // `theme` lands here on purpose: §1.3 — the app never writes it back.
                 throw new SettingsError(`'${key}' is not a writable general setting`);
             }
-            return commit(setGeneralSetting(contentsOrNull(configPath), name, value.trim()));
+            // Refused before `commit` runs, so a rejected value never reaches the file.
+            return commit(
+                setGeneralSetting(contentsOrNull(configPath), name, requireSingleLine(name, value.trim()))
+            );
         },
 
         setGhosttySetting(key, value) {
@@ -536,7 +568,11 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 throw new SettingsError(`'${key}' is not a writable ghostty setting`);
             }
             return commitGhostty(
-                setGhosttySetting(contentsOrNull(ghosttyPath), name, value === null ? null : value.trim())
+                setGhosttySetting(
+                    contentsOrNull(ghosttyPath),
+                    name,
+                    value === null ? null : requireSingleLine(name, value.trim())
+                )
             );
         },
 
@@ -546,11 +582,17 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 if (typeof profile?.name !== 'string') {
                     throw new SettingsError('set-profiles requires a name on every profile');
                 }
+                requireSingleLine('profile name', profile.name);
                 const env: Record<string, string> = {};
                 for (const [key, value] of Object.entries(profile.env ?? {})) {
                     if (typeof value !== 'string') {
                         throw new SettingsError(`profile '${profile.name}' has a non-string value for '${key}'`);
                     }
+                    // `serializeProfileLines` interpolates the name, key and value straight into
+                    // `profile = <name>:<key>=<value>`, so this is the same injection the two
+                    // single-key writers above refuse, through a different door.
+                    requireSingleLine(`profile '${profile.name}' key`, key);
+                    requireSingleLine(`profile '${profile.name}' value for '${key}'`, value);
                     env[key] = value;
                 }
                 normalized.push({ name: profile.name, env });
@@ -575,6 +617,11 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 if (daemon.name.includes(':')) {
                     throw new SettingsError(`remote daemon names may not contain ':' ('${daemon.name}')`);
                 }
+                // `serializeRemoteDaemonLines` interpolates both halves into one line, and the URL
+                // half carries a credential, so a break in it forges a line AND hides where the
+                // token went.
+                requireSingleLine('remote daemon name', daemon.name.trim());
+                requireSingleLine(`remote daemon '${daemon.name.trim()}' URL`, daemon.url.trim());
                 normalized.push({ name: daemon.name.trim(), url: daemon.url.trim() });
             }
             return commit(writeRemoteDaemons(contentsOrNull(configPath), normalized));

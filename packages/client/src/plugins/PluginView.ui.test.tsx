@@ -9,6 +9,7 @@ import { PluginHostUIContext } from './host-ui';
 import { createUIServices } from './ui-services';
 import type { InteractionPlacement } from '../interaction/contract';
 import type { InteractionPresenterHost, InteractionPresenterSnapshot } from '../interaction/presenter';
+import type { SettingsPresenterHost, SettingsPresenterSnapshot } from '../settings/presenter';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -36,9 +37,37 @@ function fakePresenter(placement: InteractionPlacement = 'interaction.prompts') 
         acknowledged: () => acknowledged, disposed: () => disposed };
 }
 
+/** A Settings host in the shape `PluginView` is granted, without mounting a dialog. */
+function fakeSettingsPresenter() {
+    const listeners = new Set<(value: SettingsPresenterSnapshot) => void>();
+    const calls: Array<{ method: string; args: JsonObject }> = [];
+    let acknowledged = 0, disposed = 0;
+    const snapshot = (sectionID = 'general'): SettingsPresenterSnapshot => ({
+        placement: 'settings.window', formFactor: 'desktop', visible: true,
+        sections: [{ id: 'general', title: 'General', icon: 'gear', native: false },
+            { id: 'plugins', title: 'Plugins', icon: 'square.grid.2x2', native: true }],
+        sectionID, native: sectionID === 'plugins',
+        groups: sectionID === 'plugins' ? [] : [{ id: 'general.window', title: 'Window' }],
+        fields: sectionID === 'plugins' ? [] : [{ id: 'general.confirmQuit', sectionID: 'general', groupID: 'general.window',
+            kind: 'toggle', label: 'Confirm before quitting', detail: 'Ask first.', value: true }],
+        dirty: 0,
+    });
+    const host: SettingsPresenterHost = {
+        placement: 'settings.window',
+        getSettingsPresentation: () => snapshot(),
+        subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
+        call(method, args) { calls.push({ method, args }); },
+        noteAcknowledged() { acknowledged += 1; },
+        refresh() {},
+        dispose() { disposed += 1; },
+    };
+    return { host, calls, publish: (sectionID: string) => { for (const listener of listeners) listener(snapshot(sectionID)); },
+        acknowledged: () => acknowledged, disposed: () => disposed };
+}
+
 async function setup(options: {
     crossRuntime?: boolean; disposedServices?: boolean;
-    presenter?: InteractionPresenterHost; placements?: readonly string[];
+    presenter?: InteractionPresenterHost; settingsPresenter?: SettingsPresenterHost; placements?: readonly string[];
 } = {}) {
     vi.stubGlobal('MessageChannel', MessageChannel);
     const sockets = createFakeSocketFactory();
@@ -57,7 +86,7 @@ async function setup(options: {
     const services = createUIServices();
     if (options.disposedServices) services.dispose();
     const view = render(<PluginHostUIContext.Provider value={{ runtime: options.crossRuntime ? other : runtime, services, request: () => null }}>
-        <PluginView runtime={runtime} pluginID={manifest.id} viewID={manifest.contributes.views[0]!.id} presenter={options.presenter} />
+        <PluginView runtime={runtime} pluginID={manifest.id} viewID={manifest.contributes.views[0]!.id} presenter={options.presenter} settingsPresenter={options.settingsPresenter} />
     </PluginHostUIContext.Provider>);
     await waitFor(() => expect(screen.getByTitle('Prompt View').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
     const frame = screen.getByTitle('Prompt View') as HTMLIFrameElement;
@@ -67,11 +96,13 @@ async function setup(options: {
     const child = (send.mock.calls as unknown as Array<[unknown, unknown, MessagePort[]]>)[0]?.[2][0];
     const replies: Array<{ id: string; result?: unknown; error?: string }> = [];
     const frames: Array<{ type: string; sequence: number; value?: InteractionPresenterSnapshot }> = [];
+    const settingsFrames: Array<{ type: string; sequence: number; value?: SettingsPresenterSnapshot }> = [];
     child?.on('message', message => {
         if (message.type === 'reply') replies.push(message);
         else if (String(message.type).startsWith('interaction')) frames.push(message);
+        else if (String(message.type).startsWith('settings')) settingsFrames.push(message);
     });
-    return { view, services, requests, child, replies, frames, dispose: () => { cleanup(); child?.close(); services.dispose(); runtime.dispose(); other.dispose(); } };
+    return { view, services, requests, child, replies, frames, settingsFrames, dispose: () => { cleanup(); child?.close(); services.dispose(); runtime.dispose(); other.dispose(); } };
 }
 
 describe('shared UI through the isolated view bridge', () => {
@@ -197,6 +228,73 @@ describe('shared UI through the isolated view bridge', () => {
             await waitFor(() => expect(screen.getByText('Presenter crashed')).toBeDefined());
             presenter.publish('after failure');
             expect(h.frames).toHaveLength(2);
+            expect(h.requests.mock.calls.some(([payload]) => payload['action'] === 'api')).toBe(false);
+        } finally { h.dispose(); }
+    });
+
+    it('refuses Settings presenter calls from a view that was granted nothing, without reaching the daemon', async () => {
+        const h = await setup();
+        try {
+            h.child!.postMessage({ type: 'call', id: 'route', method: 'ui.setSettingsSection', args: { id: 'plugins' } });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'route')?.error).toBe('Settings presentation is unavailable for this view.'));
+            // The shared readiness report keeps the interaction refusal an ungranted view already had.
+            h.child!.postMessage({ type: 'call', id: 'ready', method: 'ui.reportPresenterReady', args: {} });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'ready')?.error).toBe('Interaction presentation is unavailable for this view.'));
+            expect(h.settingsFrames).toEqual([]);
+            expect(h.requests.mock.calls.some(([payload]) => payload['action'] === 'api')).toBe(false);
+        } finally { h.dispose(); }
+    });
+
+    it('refuses a granted Settings presenter whose manifest does not declare the placement', async () => {
+        const presenter = fakeSettingsPresenter();
+        const h = await setup({ settingsPresenter: presenter.host });
+        try {
+            h.child!.postMessage({ type: 'call', id: 'draft', method: 'ui.setSettingsDraft', args: { fieldID: 'general.confirmQuit', text: 'false' } });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'draft')?.error).toBe('Settings presentation is unavailable for this view.'));
+            expect(presenter.calls).toEqual([]);
+            expect(h.settingsFrames).toEqual([]);
+        } finally { h.dispose(); }
+    });
+
+    it('feeds, acknowledges and routes the selected Settings presenter, then disposes the feed on a view error', async () => {
+        const presenter = fakeSettingsPresenter();
+        const h = await setup({ settingsPresenter: presenter.host, placements: ['pane', 'settings.window'] });
+        try {
+            await waitFor(() => expect(h.settingsFrames).toHaveLength(1));
+            expect(h.settingsFrames[0]).toMatchObject({ type: 'settings', sequence: 1, value: { placement: 'settings.window', sectionID: 'general', native: false } });
+            h.child!.postMessage({ type: 'call', id: 'read', method: 'ui.getSettingsPresentation', args: {} });
+            await waitFor(() => expect(h.replies.find(reply => reply.id === 'read')?.result).toMatchObject({ placement: 'settings.window', dirty: 0 }));
+            // The shared readiness report belongs to the placement THIS view was granted.
+            h.child!.postMessage({ type: 'call', id: 'ready', method: 'ui.reportPresenterReady', args: {} });
+            h.child!.postMessage({ type: 'call', id: 'commit', method: 'ui.commitSettingsField', args: { fieldID: 'general.confirmQuit' } });
+            h.child!.postMessage({ type: 'call', id: 'close', method: 'ui.closeSettings', args: {} });
+            await waitFor(() => expect(presenter.calls).toEqual([
+                { method: 'ui.reportPresenterReady', args: {} },
+                { method: 'ui.commitSettingsField', args: { fieldID: 'general.confirmQuit' } },
+                { method: 'ui.closeSettings', args: {} },
+            ]));
+            expect(h.replies.find(reply => reply.id === 'commit')).toMatchObject({ result: null });
+            // One outstanding frame: the next waits for this acknowledgement, which is also the
+            // liveness signal the placement watchdog reads.
+            presenter.publish('plugins');
+            expect(h.settingsFrames).toHaveLength(1);
+            h.child!.postMessage({ type: 'settings-ack', sequence: 9 });
+            h.child!.postMessage({ type: 'settings-ack', sequence: '1' });
+            await new Promise(resolve => setTimeout(resolve, 20));
+            expect(presenter.acknowledged()).toBe(0);
+            h.child!.postMessage({ type: 'settings-ack', sequence: 1 });
+            await waitFor(() => expect(presenter.acknowledged()).toBe(1));
+            await waitFor(() => expect(h.settingsFrames).toHaveLength(2));
+            // A native section is projected as a rail entry with nothing to draw.
+            expect(h.settingsFrames[1]).toMatchObject({ type: 'settings', sequence: 2, value: { sectionID: 'plugins', native: true, fields: [], groups: [] } });
+            // The replayed ack belongs to a frame already released.
+            h.child!.postMessage({ type: 'settings-ack', sequence: 1 });
+            await new Promise(resolve => setTimeout(resolve, 20));
+            expect(presenter.acknowledged()).toBe(1);
+            h.child!.postMessage({ type: 'view-error', message: 'Settings presenter crashed' });
+            await waitFor(() => expect(screen.getByText('Settings presenter crashed')).toBeDefined());
+            presenter.publish('general');
+            expect(h.settingsFrames).toHaveLength(2);
             expect(h.requests.mock.calls.some(([payload]) => payload['action'] === 'api')).toBe(false);
         } finally { h.dispose(); }
     });

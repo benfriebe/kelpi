@@ -5,7 +5,7 @@ import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, plugi
 
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
-export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts'] as const;
+export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
 export type PluginPlacement = PluginBuiltinPlacement | `${string}.${string}`;
 export interface PluginContainerSlot {
@@ -281,6 +281,10 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         // An interaction presenter owns its whole overlay. A container there would paint a
         // slot-picker header inside the palette box and put recovery behind a plugin select.
         if (places.includes('interaction.palette') || places.includes('interaction.prompts')) throw new Error('containers cannot present window interaction; an interaction presenter owns its whole overlay');
+        // A Settings presenter owns the whole dialog body, rail included, and Settings is the
+        // route back from a broken presenter. A container there would put that route behind a
+        // slot-picker header inside the dialog.
+        if (places.includes('settings.window')) throw new Error('containers cannot present the Settings window; a Settings presenter owns the whole dialog body');
         const layout = container['layout'];
         if (layout !== 'row' && layout !== 'column' && layout !== 'tabs') throw new Error('container layout must be row, column, or tabs');
         const containerID = contributionID(container['id']);

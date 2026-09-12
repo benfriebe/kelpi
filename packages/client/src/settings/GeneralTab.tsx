@@ -85,6 +85,17 @@ export interface GeneralTabProps {
      * the tab and coming back, and phase 2's presenter draws from the same one.
      */
     readonly surface?: SettingsSurface | undefined;
+    /**
+     * Which half of the tab to draw.
+     *
+     * `all` (the default) is the bundled panel. `native` is the REMAINDER the host keeps drawing
+     * when a `settings.window` presenter has the dialog: the two rows that report an OUTCOME rather
+     * than a value (the failed bind, the CLI-compat note), the pointer at the Workspaces tab and the
+     * footer naming the config file. None of them is a descriptor, so none of them is in the frame -
+     * and the failed-bind line disappearing at the moment a user goes looking for it is exactly the
+     * failure this half exists to prevent.
+     */
+    readonly part?: 'all' | 'native' | undefined;
 }
 
 /**
@@ -210,23 +221,39 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
         );
     }
 
+    const projected = props.part !== 'native';
+    const network = snapshot.groups.find((group) => group.id === 'general-network');
+
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-general">
-            {snapshot.groups.map((group) => (
-                <SettingsSection
-                    key={group.id}
-                    title={group.title}
-                    testID={group.testID}
-                    {...(group.hint === null ? {} : { hint: group.hint })}
-                >
-                    {snapshot.fields
-                        .filter((field) => field.groupID === group.id)
-                        .map((field) => (
-                            <FieldRenderer key={field.id} field={field} onCommit={commit} />
-                        ))}
-                    {group.id === 'general-network' ? networkNotes : null}
+            {projected
+                ? snapshot.groups.map((group) => (
+                      <SettingsSection
+                          key={group.id}
+                          title={group.title}
+                          testID={group.testID}
+                          {...(group.hint === null ? {} : { hint: group.hint })}
+                      >
+                          {snapshot.fields
+                              .filter((field) => field.groupID === group.id)
+                              .map((field) => (
+                                  <FieldRenderer key={field.id} field={field} onCommit={commit} />
+                              ))}
+                          {group.id === 'general-network' ? networkNotes : null}
+                      </SettingsSection>
+                  ))
+                : null}
+
+            {/*
+              * The native half keeps the notes under the section they belong to: "Port 19400 is
+              * unavailable" under Network is where a user goes looking when `KELPI_SOCKET=tcp:…`
+              * stops answering, and a bare line with no heading over it is not that.
+              */}
+            {!projected && networkNotes.length > 0 && network !== undefined ? (
+                <SettingsSection title={network.title} testID={network.testID}>
+                    {networkNotes}
                 </SettingsSection>
-            ))}
+            ) : null}
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                 Focus-follows-mouse and the two confirmation dialogs (workspace delete, quit) are on the

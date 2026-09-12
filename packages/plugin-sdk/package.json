@@ -4,5 +4,5 @@
   "type": "module",
   "scripts": { "test:package": "node ../../scripts/verify-plugin-sdk.mjs" },
   "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
-  "files": ["index.js", "api.js", "index.d.ts", "domain.d.ts", "services.d.ts", "contributions.d.ts", "ui.d.ts", "chrome.d.ts", "interaction.d.ts", "documents.d.ts", "terminal.d.ts", "browser-pane.d.ts", "README.md"]
+  "files": ["index.js", "api.js", "index.d.ts", "domain.d.ts", "services.d.ts", "contributions.d.ts", "ui.d.ts", "chrome.d.ts", "interaction.d.ts", "settings.d.ts", "documents.d.ts", "terminal.d.ts", "browser-pane.d.ts", "README.md"]
 }

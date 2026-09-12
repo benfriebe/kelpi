@@ -25,6 +25,20 @@ export const BROWSER_FEATURE = { id: 'kelpi.web', title: 'Browser', placements: 
 export const INTERACTION_PALETTE_FEATURE = { id: 'kelpi.palette', title: 'Command palette', placements: ['interaction.palette'] } as const satisfies BundledFeatureDefinition;
 export const INTERACTION_PROMPTS_FEATURE = { id: 'kelpi.prompts', title: 'Prompts and notifications', placements: ['interaction.prompts'] } as const satisfies BundledFeatureDefinition;
 
+/**
+ * The third presented surface: the Settings dialog's rail and panel.
+ *
+ * A definition with no binding, for the same reason as the two above: `SettingsOverlay` mounts it
+ * through `settings/presenter-slot.tsx`, never `WorkbenchSlot`, so `host.features.get('kelpi.settings.window')`
+ * is never consulted. Being a definition is what puts it in `DEFAULT_SLOTS`, which is what makes the
+ * bundled panel impossible to select away - and Settings is where a presenter is switched off, so
+ * that floor matters more here than anywhere else.
+ *
+ * Not to be confused with `kelpi.settings` below, which is the plugin-contributed SETTINGS SLOT
+ * inside the Plugins tab. That one is unchanged.
+ */
+export const SETTINGS_WINDOW_FEATURE = { id: 'kelpi.settings.window', title: 'Settings', placements: ['settings.window'] } as const satisfies BundledFeatureDefinition;
+
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
     TERMINAL_FEATURE,
@@ -38,6 +52,7 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     STATUSBAR_FEATURE,
     INTERACTION_PALETTE_FEATURE,
     INTERACTION_PROMPTS_FEATURE,
+    SETTINGS_WINDOW_FEATURE,
     { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
     { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }
 ];

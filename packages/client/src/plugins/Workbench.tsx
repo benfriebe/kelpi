@@ -16,6 +16,7 @@ import type { PluginNavigation } from './navigation';
 import type { UIServiceModel } from './ui-services';
 import { INTERACTION_PLACEMENTS, type InteractionPlacement } from '../interaction/contract';
 import { clearInteractionPresenterFailure, interactionPresenterFailures, subscribeInteractionPresenters } from '../interaction/presenter';
+import { SETTINGS_PLACEMENT, clearSettingsPresenterFailure, settingsPresenterFailures, subscribeSettingsPresenters } from '../settings/presenter';
 
 export type WorkbenchSlotID = Exclude<PluginPlacement, 'pane'>;
 interface WorkbenchLayout {
@@ -43,8 +44,13 @@ const WorkbenchContext = createContext<Workbench | null>(null);
  * `ui.showInput({ password: true })` that no other slot has ever been able to see - so the choice
  * stays the user's, made in Settings, and `ui.selectView` refuses it.
  */
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts'] as const;
-const SELECTABLE_SLOTS: readonly string[] = ROOT_SLOTS.filter(slot => !(INTERACTION_PLACEMENTS as readonly string[]).includes(slot));
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'settings.window'] as const;
+/**
+ * The presented surfaces: the two interaction placements and the Settings window. Discoverable,
+ * never selectable by a plugin, and the only slots whose bundled entry names itself.
+ */
+const PRESENTED_SLOTS: readonly string[] = [...INTERACTION_PLACEMENTS, SETTINGS_PLACEMENT];
+const SELECTABLE_SLOTS: readonly string[] = ROOT_SLOTS.filter(slot => !PRESENTED_SLOTS.includes(slot));
 const INTERACTION_SLOTS: readonly InteractionPlacement[] = INTERACTION_PLACEMENTS;
 const SELECTIONS_CHANGED = 'kelpi-workbench-selections';
 export function useWorkbench(): Workbench {
@@ -312,7 +318,7 @@ export function WorkbenchSidebar(props: {
  * same word). Only these two placements: the rest are not recovery surfaces.
  */
 function optionTitle(slot: string, view: ViewContribution): string {
-    return view.pluginID === undefined && (INTERACTION_SLOTS as readonly string[]).includes(slot)
+    return view.pluginID === undefined && PRESENTED_SLOTS.includes(slot)
         ? `${view.title} (bundled)`
         : view.title;
 }
@@ -320,6 +326,9 @@ function optionTitle(slot: string, view: ViewContribution): string {
 export function PlacementSettings(): ReactElement {
     const host = useWorkbench();
     const failures = useSyncExternalStore(subscribeInteractionPresenters, interactionPresenterFailures, interactionPresenterFailures);
+    const settingsFailures = useSyncExternalStore(subscribeSettingsPresenters, settingsPresenterFailures, settingsPresenterFailures);
+    const settingsFailure = settingsFailures[SETTINGS_PLACEMENT];
+    const settingsSelected = resolveSlot(host.views, SETTINGS_PLACEMENT, host.selections[SETTINGS_PLACEMENT]);
     return <div className="flex flex-col gap-3" data-testid="plugin-placements">
         <strong>Workbench views</strong>
         {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
@@ -345,6 +354,17 @@ export function PlacementSettings(): ReactElement {
                     onClick={() => clearInteractionPresenterFailure(slot)}>Retry presenter</button> : null}
             </div>;
         })}
+        {/*
+          * The Settings window's own row, beside the interaction ones and on the same terms. It is
+          * the row a user reaches for after a presenter has taken the dialog: the section it lives
+          * in is permanently native, so this row is drawn by the HOST whoever is painting, and
+          * Retry is the only thing that clears a latch the window has not already moved past.
+          */}
+        <div className="flex items-center justify-between gap-3 text-xs">
+            <span role="status" data-testid={`settings-presenter-status-${SETTINGS_PLACEMENT}`}>{SETTINGS_PLACEMENT} presenter: {settingsFailure ? `Failed: ${settingsFailure.detail}` : !settingsSelected?.pluginID ? 'Bundled' : settingsSelected.title}</span>
+            {settingsFailure ? <button type="button" className="shrink-0" data-testid={`settings-presenter-retry-${SETTINGS_PLACEMENT}`}
+                onClick={() => clearSettingsPresenterFailure(SETTINGS_PLACEMENT)}>Retry presenter</button> : null}
+        </div>
         <button className="self-start text-xs" onClick={() => { for (const slot of ROOT_SLOTS) host.select(slot, DEFAULT_SLOTS[slot] ?? ''); }}>Restore bundled views</button>
     </div>;
 }

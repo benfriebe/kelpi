@@ -305,6 +305,31 @@ describe('set-general-setting', () => {
         });
         expect(f.read()).toBe(PRESERVED);
     });
+
+    /**
+     * A config-line injection is a user-fixable refusal like any other, not a daemon fault: the
+     * socket answers `{ok:false,error}` and the connection carries on.
+     */
+    it('refuses a value carrying a line break and leaves the file untouched', () => {
+        const f = fixture({ config: PRESERVED });
+        const client = f.connect();
+        expect(
+            client.send({
+                command: 'set-general-setting',
+                key: 'worktree-base-path',
+                value: 'work\ncommand = /tmp/payload.sh'
+            })
+        ).toEqual({ ok: false, error: "'worktree-base-path' may not contain a line break or control character" });
+        expect(
+            client.send({ command: 'set-ghostty-setting', key: 'font-family', value: 'Menlo\nkeybind = super+q=quit' })
+        ).toEqual({ ok: false, error: "'font-family' may not contain a line break or control character" });
+        expect(f.read()).toBe(PRESERVED);
+        // The channel still works afterwards.
+        expect(
+            settingsOf(client.send({ command: 'set-general-setting', key: 'worktree-base-path', value: '<repo>/.wt' }))
+                .general.worktreeBasePath
+        ).toBe('<repo>/.wt');
+    });
 });
 
 describe('the confirm-workspace-delete flag', () => {

@@ -211,3 +211,38 @@ export {
     type SettingsSurfaceConfig,
     type SettingsSurfaceSnapshot
 } from './surface';
+
+// ── the selectable presenter (phase 2) ──────────────────────────────────────────────
+//
+// The host model and the slot that mounts it. `createSettingsPresenterHost` is exported for the
+// tests and for nothing else in the app: the ONE place a presenter is granted the model is
+// `settings/presenter-slot.tsx`, which is the same discipline the terminal and browser grants
+// follow.
+
+export {
+    SETTINGS_PLACEMENT,
+    SETTINGS_PLACEMENTS,
+    SETTINGS_UI_METHODS,
+    clearSettingsPresenterFailure,
+    createSettingsPresenterHost,
+    noteSettingsPresenterFailure,
+    resetSettingsPresenterFailures,
+    settingsPresenterFailures,
+    subscribeSettingsPresenters,
+    type SettingsFieldSnapshot,
+    type SettingsGroupSnapshot,
+    type SettingsPlacement,
+    type SettingsPresenterFailure,
+    type SettingsPresenterHost,
+    type SettingsPresenterHostOptions,
+    type SettingsPresenterSnapshot,
+    type SettingsSectionSummary
+} from './presenter';
+
+export {
+    NO_SETTINGS_CHORDS,
+    SettingsPresenterSlot,
+    settingsPresenterChords,
+    type SettingsPresenterContext,
+    type SettingsPresenterSlotProps
+} from './presenter-slot';

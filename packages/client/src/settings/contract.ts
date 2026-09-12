@@ -59,6 +59,16 @@ export interface SettingsSectionDescriptor {
     /** Rail order, which is `SETTINGS_TABS` order. */
     readonly order: number;
     readonly kind: SettingsSectionKind;
+    /**
+     * A `fields` section that ALSO has hand-built parts the host draws (phase 2's Appearance).
+     *
+     * The section projects its plain value-and-verb rows and the bundled panel draws the rest -
+     * the theme importer, the swatch grid, the share codes, the colour flyover's custom picker -
+     * below them. So it is a third state rather than a second kind: everything that decides
+     * whether a FIELD may be committed still asks `kind`, and everything that decides who PAINTS
+     * asks both (`settingsSectionHasNative`).
+     */
+    readonly remainder?: boolean | undefined;
 }
 
 /**
@@ -247,6 +257,30 @@ export const SETTINGS_LIMITS = Object.freeze({
 // ── validation ──────────────────────────────────────────────────────────────────────
 
 /**
+ * What a text value may NOT contain, and the one rule here that is a security boundary rather than
+ * a nicety.
+ *
+ * `~/.config/kelpi/config` and `~/.config/ghostty/config` are LINE-ORIENTED files, and the writers
+ * join their lines with `\n`. A text value carrying a newline therefore does not write one setting:
+ * it writes the setting, then whatever the rest of the string parses as. `Mono\ncommand = rm -rf ~`
+ * through the font-family row would be a command binding, a `remote-daemon` line, a `profile` block
+ * or a `keybind` - none of which is in `WS_WRITABLE_GENERAL_KEYS`, and all of which would be in the
+ * file. The two text rows (the worktree base path and the terminal font family) are the only ones
+ * whose value is free text, so the refusal lives in both funnels and the daemon repeats it.
+ *
+ * The whole C0 range, DEL, and the two Unicode line separators: a config parser that splits on
+ * `\r\n` or `\u2028` is as exploitable as one that splits on `\n`, and no legitimate base path or
+ * font stack contains a control character.
+ */
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F\u0085\u2028\u2029]/;
+
+function plainText(field: SettingsFieldDescriptor, value: string): string {
+    if (CONTROL_CHARACTERS.test(value))
+        throw new Error(`${field.label} cannot contain line breaks or control characters.`);
+    return value;
+}
+
+/**
  * The draft funnel: what the user is typing, parsed against the field it is being typed into.
  *
  * Throws with a sentence the row can render. The caller KEEPS the draft when this throws - an
@@ -273,7 +307,9 @@ export function validateSettingsDraft(
     if (field.kind === 'text') {
         if (raw.length > field.maxLength)
             throw new Error(`${field.label} must be at most ${String(field.maxLength)} characters.`);
-        return raw;
+        // The draft is KEPT with this error, as every refusal here is: a value on its way somewhere
+        // is not a value to discard under the user's cursor. It is simply never written.
+        return plainText(field, raw);
     }
     if (field.kind === 'number') {
         /*
@@ -324,7 +360,10 @@ export function validateSettingsWrite(
             if (typeof value !== 'string') throw new Error(`${field.label} takes text.`);
             if (value.length > Math.min(field.maxLength, SETTINGS_LIMITS.valueChars))
                 throw new Error(`${field.label} must be at most ${String(field.maxLength)} characters.`);
-            return value;
+            // Twice, independently: a value that reached this funnel without going through the
+            // draft one - a caller with a parsed value in hand - must not be able to write a line
+            // break into a line-oriented file either.
+            return plainText(field, value);
         case 'number':
         case 'slider':
             if (typeof value !== 'number') throw new Error(`${field.label} takes a number.`);
@@ -347,6 +386,24 @@ function bounded(
     if (!Number.isFinite(value)) throw new Error('Enter a valid number.');
     if (value < field.min || value > field.max)
         throw new Error(`${field.label} must be between ${String(field.min)} and ${String(field.max)}.`);
+    /*
+     * The step grid, because the frame PUBLISHES it as a constraint.
+     *
+     * A presenter is told `min`, `max` and `step`; a value off that grid is one it was told not to
+     * send, and the bundled controls cannot produce one either (a range input snaps). Without this
+     * the constraint would be advisory in exactly the direction that matters - `0.37` into a 0.05
+     * opacity grid, `19` into the 2 px sparkline grid - and the row would then read back a value
+     * its own control cannot represent.
+     *
+     * An EPSILON, not an equality: 0.05 has no exact binary representation, so `(0.85 - 0.1) / 0.05`
+     * is 14.999999999999998 and a strict test would refuse the value the slider itself just sent.
+     */
+    const step = field.step;
+    if (step !== undefined && step > 0) {
+        const steps = (value - field.min) / step;
+        if (Math.abs(steps - Math.round(steps)) > 1e-6)
+            throw new Error(`${field.label} must be in steps of ${String(step)}.`);
+    }
     return value;
 }
 
@@ -430,7 +487,8 @@ export function settingsSectionDescriptor(section: SettingsSectionDescriptor): S
         title: section.title,
         icon: section.icon,
         order: section.order,
-        kind: section.kind
+        kind: section.kind,
+        ...(section.remainder === undefined ? {} : { remainder: section.remainder })
     });
 }
 

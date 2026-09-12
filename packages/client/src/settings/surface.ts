@@ -69,6 +69,7 @@ import {
     settingsFieldDefinition,
     settingsFieldsInSection,
     settingsGroupsInSection,
+    settingsSectionHasNative,
     settingsTransportCaption,
     type SettingsFieldDefinition
 } from './sections';
@@ -113,7 +114,12 @@ export interface SettingsSurfaceSnapshot {
     /** Every section, including the native ones: the rail comes from the host, never the presenter. */
     readonly sections: readonly SettingsSectionDescriptor[];
     readonly sectionID: SettingsSectionID;
-    /** True => the bundled panel is drawing this section and `fields` is empty. */
+    /**
+     * True => the bundled panel draws this section, or the hand-built remainder of it.
+     *
+     * A fully native section carries `native: true` with no fields and no groups; a partly
+     * projected one (Appearance) carries `native: true` BESIDE its projected fields.
+     */
     readonly native: boolean;
     readonly groups: readonly SettingsGroupDescriptor[];
     /** Only for the routed section, and only when it is a fields section. */
@@ -139,7 +145,12 @@ export interface SettingsSurface {
      * and the field's held draft is what commits.
      */
     commitField(fieldID: string, raw?: SettingsDraftValue): void;
-    /** Discard the draft and its error. It does NOT write the shipped default. */
+    /**
+     * Discard the draft and its error. It does NOT write the shipped default.
+     *
+     * Re-resolved against a fresh catalog read like the two writers, so an unknown, native,
+     * off-screen or disabled id is refused rather than silently accepted.
+     */
     resetField(fieldID: string): void;
     /** The `settings-changed` hook: reconcile drafts and pending writes against the new snapshot. */
     settingsChanged(): void;
@@ -379,20 +390,28 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
     // ── the snapshot ────────────────────────────────────────────────────────────────
 
     const build = (settings: WsSettingsSnapshot, sectionID: SettingsSectionID): SettingsSurfaceSnapshot => {
-        const native = isNativeSettingsSection(sectionID);
-        const fields = native
-            ? []
-            : settingsFieldsInSection(sectionID, settings)
+        /*
+         * Two questions, two answers, and Appearance is where they differ.
+         *
+         * `projected` is the WRITE question - has this section descriptors at all - and it is what
+         * decides whether there are fields and cards to publish. `native` is the PAINT question:
+         * true when the bundled panel draws the section, or the hand-built remainder of it, which
+         * is what a presenter has to know so it leaves room rather than drawing over it.
+         */
+        const projected = !isNativeSettingsSection(sectionID);
+        const fields = projected
+            ? settingsFieldsInSection(sectionID, settings)
                   .slice(0, SETTINGS_LIMITS.fieldsPerSection)
                   // Two projections, deliberately: `describe` assembles, `settingsFieldDescriptor`
                   // copies named fields only. The second is the one that cannot be widened by
                   // accident, and it is what `redaction.test.ts` walks.
-                  .map((definition) => settingsFieldDescriptor(describe(definition, settings)));
+                  .map((definition) => settingsFieldDescriptor(describe(definition, settings)))
+            : [];
         return Object.freeze({
             sections: SETTINGS_SECTIONS,
             sectionID,
-            native,
-            groups: native ? [] : settingsGroupsInSection(sectionID),
+            native: settingsSectionHasNative(sectionID),
+            groups: projected ? settingsGroupsInSection(sectionID) : [],
             fields: Object.freeze(fields),
             dirty: state.drafts.size
         });
@@ -512,6 +531,11 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
 
         resetField(fieldID: string): void {
             if (state.disposed) return;
+            // Through the same door as every other mutator: unknown, native-section, off-screen and
+            // disabled all THROW rather than quietly clearing state for a field the caller has no
+            // business naming. Discarding a draft is a smaller act than writing one, but the id is
+            // the same id and the authority over it is the same authority.
+            resolve(fieldID, fresh());
             state.drafts.delete(fieldID);
             state.errors.delete(fieldID);
             state.edits.set(fieldID, (state.serial += 1));

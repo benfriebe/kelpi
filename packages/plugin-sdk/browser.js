@@ -93,6 +93,7 @@
     const navigationFeed = createWindowSubscription('navigation', 'ui.getNavigation');
     const chromeFeed = createWindowSubscription('chrome', 'ui.getChrome');
     const interactionFeed = createWindowSubscription('interaction', 'ui.getInteraction');
+    const settingsFeed = createWindowSubscription('settings', 'ui.getSettingsPresentation');
     const request = (method, args = {}, cancelled, cancellationMessage = 'Terminal session is disposed.') => {
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
@@ -434,6 +435,7 @@
             else if (data.type === 'navigation' || data.type === 'navigation-error') await navigationFeed.receive(data);
             else if (data.type === 'chrome' || data.type === 'chrome-error') await chromeFeed.receive(data);
             else if (data.type === 'interaction' || data.type === 'interaction-error') await interactionFeed.receive(data);
+            else if (data.type === 'settings' || data.type === 'settings-error') await settingsFeed.receive(data);
             else if (data.type === 'terminal-frame') await receiveTerminalFrame(data);
             else if (data.type === 'terminal-action') await receiveTerminalAction(data);
             else if (data.type === 'browser-presentation') await receiveBrowserPresentation(data);
@@ -490,6 +492,13 @@
             activatePaletteItem: async (sessionID, itemID) => { await base.call('ui.activatePaletteItem', { sessionID, itemID }); },
             dismissPalette: async sessionID => { await base.call('ui.dismissPalette', { sessionID }); },
             respondInteraction: async (requestID, value) => { await base.call('ui.respondInteraction', { requestID, value }); },
+            getSettingsPresentation: () => base.call('ui.getSettingsPresentation'),
+            onSettingsPresentation: settingsFeed.subscribe,
+            setSettingsSection: async id => { await base.call('ui.setSettingsSection', { id }); },
+            setSettingsDraft: async (fieldID, text) => { await base.call('ui.setSettingsDraft', { fieldID, text }); },
+            commitSettingsField: async fieldID => { await base.call('ui.commitSettingsField', { fieldID }); },
+            resetSettingsField: async fieldID => { await base.call('ui.resetSettingsField', { fieldID }); },
+            closeSettings: async () => { await base.call('ui.closeSettings'); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),
@@ -500,7 +509,7 @@
     addEventListener('error', event => reportError(event.message ?? 'Plugin resource failed to load'), true);
     addEventListener('unhandledrejection', event => reportError(event.reason?.message ?? event.reason));
     addEventListener('pagehide', () => {
-        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose();
+        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose(); settingsFeed.dispose();
         terminalDisposed = true; terminalSession?.dispose();
         browserDisposed = true; browserSession?.dispose();
     });

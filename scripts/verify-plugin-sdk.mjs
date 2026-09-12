@@ -31,7 +31,7 @@ export function activate(api: BackendAPI) {
     api.browser.attach({});
     return () => { void state; };
 }`,
-        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
+        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type SettingsPresenterSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
 const api: ViewAPI = getKelpi();
 let mirror: TerminalGrid | null = null;
 async function mount(element: HTMLElement) {
@@ -56,6 +56,17 @@ async function mount(element: HTMLElement) {
     if (interaction.prompt?.kind === 'quickPick') await api.ui.respondInteraction(interaction.prompt.requestID, interaction.prompt.options.items[0]!.id);
     // @ts-expect-error An owner is a display name and an opaque ref, never a plugin identity.
     void interaction.prompt?.owner.pluginID;
+    // A Settings presenter routes the host's dialog and edits only the fields it was given.
+    const settings: SettingsPresenterSnapshot = await api.ui.getSettingsPresentation();
+    await api.ui.setSettingsSection(settings.sections[0]!.id);
+    if (!settings.native) for (const row of settings.fields) {
+        if (row.kind !== 'text') continue;
+        await api.ui.setSettingsDraft(row.id, row.value.slice(0, row.maxLength));
+        await api.ui.commitSettingsField(row.id);
+    }
+    await api.ui.closeSettings();
+    // @ts-expect-error A field carries no write target: the presenter sends an id, the host owns the key.
+    void settings.fields[0]?.configKey;
     browser.dispose(); terminal.dispose();
 }
 void mount;

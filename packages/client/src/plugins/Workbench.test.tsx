@@ -45,6 +45,42 @@ function Harness(props: { sidebar?: boolean }): React.JSX.Element {
 beforeEach(() => { localStorage.clear(); daemonID = 'composition-daemon'; plugins = [plugin()]; bridge = null; });
 afterEach(cleanup);
 
+describe('the presented interaction placements', () => {
+    function presenter(): PluginInfo {
+        return { manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+        } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' };
+    }
+
+    it('is discoverable but never selectable by a plugin: the choice is the user’s, in Settings', () => {
+        plugins = [presenter()];
+        render(<Harness />);
+        // Discovery, so a presenter can find out whether it is the one drawing.
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'interaction.palette', title: 'interaction.palette', viewID: 'kelpi.palette' },
+            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'kelpi.prompts' }
+        ]) });
+        /*
+         * Selection, though, is refused for BOTH - the one place `ui.selectView` departs from every
+         * other root slot. A plugin that could select itself as the prompts presenter would be
+         * rendering other plugins' requests, `ui.showInput({ password: true })` included, on its own
+         * say-so. A topbar it selects itself into replaces only its own chrome.
+         */
+        for (const slot of ['interaction.palette', 'interaction.prompts']) {
+            expect(() => requestHostUI(bridge, runtime, 'ui.selectView', { slot, viewID: 'sample.present.view' })).toThrow('Workbench slot is not registered.');
+            expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+                { id: slot, title: slot, viewID: slot === 'interaction.palette' ? 'kelpi.palette' : 'kelpi.prompts' }
+            ]) });
+        }
+
+        // The Settings select is the route that does work, and it is a user gesture.
+        act(() => { fireEvent.change(screen.getByLabelText('interaction.prompts'), { target: { value: 'sample.present.view' } }); });
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'sample.present.view' }
+        ]) });
+    });
+});
+
 describe('workbench composition', () => {
     it('scopes plugin UI requests to their daemon and rejects invalid selections explicitly', () => {
         render(<Harness />);

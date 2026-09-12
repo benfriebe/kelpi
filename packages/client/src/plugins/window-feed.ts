@@ -1,6 +1,11 @@
 /** One outstanding message plus its latest replacement. Shared by window-owned feeds. */
 export interface WindowFeed {
-    ack(sequence: unknown): void;
+    /**
+     * True only when `sequence` matched the one outstanding frame. A stale, duplicate or
+     * malformed acknowledgement returns false, so a caller may treat a true result as this
+     * consumer's liveness signal without a wedged view keeping itself alive by replaying an ack.
+     */
+    ack(sequence: unknown): boolean;
     dispose(): void;
 }
 export function createWindowFeed<T>(
@@ -25,5 +30,5 @@ export function createWindowFeed<T>(
     const offer = (delivery: Delivery): void => { if (!disposed) { latest = delivery; flush(); } };
     stop = subscribe(value => offer({ value }), error => offer({ error }));
     if (disposed) stop();
-    return { ack(value) { if (!disposed && outstanding !== null && value === outstanding) { outstanding = null; flush(); } }, dispose };
+    return { ack(value) { if (disposed || outstanding === null || value !== outstanding) return false; outstanding = null; flush(); return true; }, dispose };
 }

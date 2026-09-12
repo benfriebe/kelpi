@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Selectable interaction presenters](#selectable-interaction-presenters-2026-09-12).
 - [Shared interaction contracts](#shared-interaction-contracts-2026-09-12).
 - [Terminal SDK geometry parity](#terminal-sdk-geometry-parity-2026-09-12).
 - [Documentation baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
@@ -42,6 +43,23 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Selectable interaction presenters (2026-09-12)
+
+Step 2 of the palette and shared-prompt phase, implemented on
+`feature/plugin-interaction-presenters` (based on the contracts branch at `a0fd497`).
+Tested revision: **`c841f3a`**. Same bootstrapped worktree as step 1; private sandboxes only.
+
+| Check | Result at `c841f3a` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,684 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suites: `interaction/presenter.test.ts`, the presenter cases in `InteractionHost.test.tsx`, `PaletteHost.test.tsx`, `surface.test.ts`, `Workbench.test.tsx` (the `ui.selectView` refusal), `registry.test.ts`, `registration.test.tsx`, `PluginView.ui.test.tsx` (grant, refusal, feed, matched acknowledgement), `plugin-sdk/tests/interaction.test.ts`, `protocol/src/plugins.test.ts`. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` and `node scripts/verify-plugin-sdk.mjs` pass; the external fixture reads a snapshot, reports readiness, sets a palette query, answers a quick pick, and proves `owner.pluginID` does not exist on the published types. |
+| Scenario gates, hidden, built | `plugin-ui-services` 30/30, `confirm-dialog-keys` 10/10, `plugin-workbench` 22/22, `plugin-preview-shortcuts` 6/6, `plugin-remote` 12/12, `recover-interface-keeps-web-panes` 8/8, `workspace-switch-keeps-the-caret` 14/14, `web-pane-comes-back-after-hide` 7/7, `sidebar-swap` 11/11, `plugin-extensions` 23/23, `plugin-authoring` 25/25 (`docs/audit/scenarios/2026-09-12T04-37-58-568Z`, local artifact); `plugin-chrome-features` **34/34** alone. |
+| Independent review | One adversarial Opus review of the working tree. Applied before `c841f3a`: an undeliverable frame now fails the presenter outright instead of arming a watchdog the acknowledgement cleared; notifications stay bundled in this release (the corner geometry had no page parking and no definite height); Escape dismisses a presenter-drawn palette host-side; palette focus containment yields to Settings and other native modal peers; acknowledgements count only for the outstanding frame; the `ui.selectView` refusal and the slot listing are asserted; a non-failure fallback reports that the bundled presenter draws. |
+
+No plugin presenter is exercised live in this step: the Interaction Lab example and its
+scenario are step 3, and the full verification battery, packaged smoke and onscreen
+inspection for this branch are scheduled with it. Phone keeps the bundled presenters.
 
 ## Shared interaction contracts (2026-09-12)
 

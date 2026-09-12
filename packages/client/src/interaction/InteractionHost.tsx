@@ -21,6 +21,24 @@
  * `InteractionPaletteSlot` is the palette's mount, separate because the palette is NOT in the body
  * portal: UI-FIDELITY M53 hangs it off the content row so the title bar and the status footer stay
  * live behind it.
+ *
+ * ── Who draws (§2.3) ────────────────────────────────────────────────────────────────
+ *
+ * Both surfaces go through `InteractionPresenterSlot`, which resolves the user's workbench
+ * selection and mounts a plugin view in place of the bundled presenter when there is one. What does
+ * NOT move with it: the single modal registration, the visibility gate, the focus capture and
+ * release, and the Escape policy. The presenter changes who PAINTS, never who registers - so a
+ * presenter cannot fail to park a native web pane, cannot fail to release the caret, and cannot
+ * swallow Escape.
+ *
+ * Two carve-outs, both deliberate. An `ui.showInput({ password: true })` prompt is presented by the
+ * BUNDLED presenter whatever is selected: the selected view stays mounted and hidden for it
+ * (`withheld`), and the projection reports `prompt: null` with `queued` still counting it, so a
+ * replaceable surface never renders - or answers - another plugin's credential prompt. And the
+ * NOTIFICATION stack stays bundled outright in this release: a presenter presents the three modal
+ * kinds, so the stack is rendered outside the slot, keeps its own rect registration (§2.6) and is
+ * never projected. A toast is not modal - there is no honest geometry to hand a frame for one - and
+ * answering a notification action settles a request like any other.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactElement } from 'react';
@@ -30,6 +48,7 @@ import { modalPresenceCount, useModalPresence, useModalPresenceCount } from '../
 import type { ChromeBucket } from '../chrome/theme';
 import { ModalRequest, Notifications } from './BundledPrompts';
 import { PaletteHost } from './PaletteHost';
+import { InteractionPresenterSlot, NO_CHORDS } from './presenter-slot';
 import type { InteractionSurface } from './surface';
 
 /**
@@ -75,7 +94,13 @@ function canRestoreFocus(target: HTMLElement): boolean {
     return true;
 }
 
-export function InteractionHost({ surface }: { readonly surface: InteractionSurface }): ReactElement | null {
+export function InteractionHost({ surface, presenters = false, chords = NO_CHORDS }: {
+    readonly surface: InteractionSurface;
+    /** Whether a plugin presenter may be selected here at all (`App`: `!phoneActive`). */
+    readonly presenters?: boolean | undefined;
+    /** The small relayed set from `interactionPresenterChords`, never `allViewChords`. */
+    readonly chords?: readonly string[] | undefined;
+}): ReactElement | null {
     const snapshot = useSyncExternalStore(surface.subscribe, surface.getSnapshot, surface.getSnapshot);
     // Read so a native modal peer arriving or leaving re-renders this host: `visibleSurface()`
     // subtracts our own registration from that same count.
@@ -158,8 +183,23 @@ export function InteractionHost({ surface }: { readonly surface: InteractionSurf
     }, [visible, surface]);
 
     if (typeof document === 'undefined') return null;
+    /*
+     * The password carve-out. Checked on the request the surface says is active, so it holds for a
+     * native verb's prompt as much as a plugin's, and it keeps the presenter mounted rather than
+     * unmounting it: a credential prompt must not cost the window a reattachment.
+     */
+    const withheld = snapshot.activeModal?.kind === 'input' && snapshot.activeModal.options.password === true;
+    /*
+     * One geometry, because this placement presents one kind of thing: a MODAL request, which owns
+     * the viewport for as long as it is up. The notification stack is a sibling, not a child of the
+     * slot, so it keeps drawing (and keeps registering its rect) whoever presents the prompts.
+     */
+    const modal = visible && !withheld;
     return createPortal(<>
-        {snapshot.activeModal && <ModalRequest key={snapshot.activeModal.id} request={snapshot.activeModal} visible={visible} answer={surface.answer} captureFocus={captureFocus} />}
+        <InteractionPresenterSlot surface={surface} placement="interaction.prompts" enabled={presenters}
+            visible={modal} withheld={withheld} chords={chords} captureFocus={captureFocus} className="fixed inset-0 z-50">
+            {snapshot.activeModal && <ModalRequest key={snapshot.activeModal.id} request={snapshot.activeModal} visible={visible} answer={surface.answer} captureFocus={captureFocus} />}
+        </InteractionPresenterSlot>
         <Notifications requests={snapshot.notifications} answer={surface.answer} />
     </>, document.body);
 }
@@ -168,10 +208,12 @@ export function InteractionHost({ surface }: { readonly surface: InteractionSurf
  * The palette's mount. Always rendered: `CommandPalette` stays on screen for H19's 150 ms exit
  * animation after the session closes, so unmounting it on dismissal would pop it off instead.
  */
-export function InteractionPaletteSlot({ surface, bucket, formFactorWindow }: {
+export function InteractionPaletteSlot({ surface, bucket, formFactorWindow, presenters = false, chords = NO_CHORDS }: {
     readonly surface: InteractionSurface;
     readonly bucket?: ChromeBucket | undefined;
     readonly formFactorWindow?: FormFactorWindow | undefined;
+    readonly presenters?: boolean | undefined;
+    readonly chords?: readonly string[] | undefined;
 }): ReactElement {
-    return <PaletteHost surface={surface} bucket={bucket} formFactorWindow={formFactorWindow} />;
+    return <PaletteHost surface={surface} bucket={bucket} formFactorWindow={formFactorWindow} presenters={presenters} chords={chords} />;
 }

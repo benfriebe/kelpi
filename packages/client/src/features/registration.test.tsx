@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, type PluginInfo } from '@kelpi/protocol';
 
 import type { KelpiRuntime } from '../state';
 import { PlacementSettings, WorkbenchProvider, WorkbenchSidebar, WorkbenchSlot, useWorkbenchLayout } from '../plugins/Workbench';
+import { noteInteractionPresenterFailure, resetInteractionPresenterFailures } from '../interaction/presenter';
 import { INSPECTOR_FEATURE, WORKSPACES_FEATURE, TOOLBAR_FEATURE, STATUSBAR_FEATURE } from './definitions';
 import { featureBindings, type BundledFeatureBinding, type FeatureRenderContext } from './feature';
 
@@ -87,8 +88,8 @@ function selectLeft(viewID: string): void {
     fireEvent.change(screen.getByLabelText('sidebar.primary'), { target: { value: viewID } });
 }
 
-beforeEach(() => { localStorage.clear(); plugins = [extension()]; active.clear(); mounted.clear(); disposed.clear(); });
-afterEach(cleanup);
+beforeEach(() => { localStorage.clear(); plugins = [extension()]; active.clear(); mounted.clear(); disposed.clear(); resetInteractionPresenterFailures(); });
+afterEach(() => { cleanup(); resetInteractionPresenterFailures(); });
 
 describe('bundled feature registration in the workbench', () => {
     it('rejects ambiguous native ownership in the feature registry', () => {
@@ -172,6 +173,49 @@ describe('bundled feature registration in the workbench', () => {
     });
 });
 
+
+describe('the presented interaction placements in Settings', () => {
+    function presenter(): PluginInfo {
+        return { manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+        } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' };
+    }
+
+    it('offers a select per placement, reports who is drawing, and recovers through Retry', () => {
+        plugins = [presenter()];
+        render(<Harness features={bindings()} />);
+        // Selection is a Settings gesture: the two selects are the only way in.
+        for (const placement of ['interaction.palette', 'interaction.prompts']) {
+            const select = screen.getByLabelText(placement) as HTMLSelectElement;
+            expect([...select.options].map(option => option.value)).toEqual([placement === 'interaction.palette' ? 'kelpi.palette' : 'kelpi.prompts', 'sample.present.view']);
+            // The bundled presenter is the floor: no "Empty" row to select it away with.
+            expect([...select.options].some(option => option.value === '')).toBe(false);
+        }
+        expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Bundled');
+
+        fireEvent.change(screen.getByLabelText('interaction.prompts'), { target: { value: 'sample.present.view' } });
+        expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Lab presenter');
+        expect(screen.queryByTestId('interaction-presenter-retry-interaction.prompts')).toBeNull();
+
+        // A prompt has no persistent chrome to report a failure on, so the row does it here.
+        act(() => { noteInteractionPresenterFailure('interaction.prompts', 'sample.present.view:r:i', 'the presenter went away'); });
+        expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Failed: the presenter went away');
+        expect(screen.getByTestId('interaction-presenter-status-interaction.palette').textContent).toContain('Bundled');
+        fireEvent.click(screen.getByTestId('interaction-presenter-retry-interaction.prompts'));
+        expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Lab presenter');
+        // The selection survived the failure and the retry, as it does for every other slot.
+        expect((screen.getByLabelText('interaction.prompts') as HTMLSelectElement).value).toBe('sample.present.view');
+    });
+
+    it('restores the bundled presenters with every other bundled view', () => {
+        plugins = [presenter()];
+        render(<Harness features={bindings()} />);
+        fireEvent.change(screen.getByLabelText('interaction.palette'), { target: { value: 'sample.present.view' } });
+        expect((screen.getByLabelText('interaction.palette') as HTMLSelectElement).value).toBe('sample.present.view');
+        fireEvent.click(screen.getByRole('button', { name: 'Restore bundled views' }));
+        expect((screen.getByLabelText('interaction.palette') as HTMLSelectElement).value).toBe('kelpi.palette');
+    });
+});
 
 describe('registered toolbar and status hosts', () => {
     it('resolves root bindings, retains hidden native tabs, bounds ownership and restores missing providers', () => {

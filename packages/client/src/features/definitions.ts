@@ -15,6 +15,16 @@ export const DIFF_FEATURE = { id: 'kelpi.diff', title: 'Diff', placements: ['pan
 export const TERMINAL_FEATURE = { id: 'kelpi.shell', title: 'Terminal', placements: ['pane', 'terminal'] } as const satisfies BundledFeatureDefinition;
 export const BROWSER_FEATURE = { id: 'kelpi.web', title: 'Browser', placements: ['pane', 'browser'] } as const satisfies BundledFeatureDefinition;
 
+/**
+ * The two presented surfaces. They are definitions with no `BundledFeatureBinding`, deliberately:
+ * `InteractionHost` mounts them (§2.3), not `WorkbenchSlot`, so `host.features.get(...)` is never
+ * consulted for either id. Being definitions is what puts them in `DEFAULT_SLOTS`, which is what
+ * makes the bundled presenter impossible to select away (`registry.ts` - `resolveSlot` falls back
+ * to `slotDefault`, and the empty-selection escape hatch is closed for a populated slot).
+ */
+export const INTERACTION_PALETTE_FEATURE = { id: 'kelpi.palette', title: 'Command palette', placements: ['interaction.palette'] } as const satisfies BundledFeatureDefinition;
+export const INTERACTION_PROMPTS_FEATURE = { id: 'kelpi.prompts', title: 'Prompts and notifications', placements: ['interaction.prompts'] } as const satisfies BundledFeatureDefinition;
+
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
     TERMINAL_FEATURE,
@@ -26,6 +36,8 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     INSPECTOR_FEATURE,
     TOOLBAR_FEATURE,
     STATUSBAR_FEATURE,
+    INTERACTION_PALETTE_FEATURE,
+    INTERACTION_PROMPTS_FEATURE,
     { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
     { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }
 ];

@@ -342,12 +342,12 @@ describe('presenter failure', () => {
         const answer = scope.request('ui.showInput', { title: 'Still mine' });
         const before = surface.getSnapshot().activeModal!.id;
 
-        surface.presenterFailed('the presenter went away');
+        surface.presenterFailed('interaction.palette', 'the presenter went away');
         expect(surface.getSnapshot().palette.open).toBe(false);
         expect(execute).not.toHaveBeenCalled();
         // Re-presented, not re-raised: the same id, the same unsettled promise.
         expect(surface.getSnapshot().activeModal!.id).toBe(before);
-        expect(surface.usesBundledPresenter()).toBe(true);
+        expect(surface.usesBundledPresenter('interaction.palette')).toBe(true);
         // The fallback pane handoff still runs.
         vi.advanceTimersByTime(200);
         expect(focus.paneHandoff).toHaveBeenCalledWith('pane-focused');
@@ -358,6 +358,78 @@ describe('presenter failure', () => {
         expect(settled).toBe(false);
         surface.answer(before, 'typed');
         await expect(answer).resolves.toBe('typed');
+    });
+
+    it('never dismisses the palette for the OTHER placement’s failure', async () => {
+        const reportFailure = vi.fn();
+        const { source, execute } = feed([row('cmd:a')]);
+        const surface = make({ palette: source, reportFailure }), scope = surface.createScope(owner('view'));
+        const session = surface.palette.open(nativeOwner())!;
+        const answer = scope.request('ui.showInput', { title: 'Still mine' });
+        const before = surface.getSnapshot().activeModal!.id;
+
+        surface.presenterFailed('interaction.prompts', 'the prompts view crashed');
+        // The user is still reading the list: a prompts presenter is not the palette's business.
+        expect(surface.getSnapshot().palette).toMatchObject({ open: true, sessionID: session });
+        expect(surface.getSnapshot().activeModal!.id).toBe(before);
+        expect(execute).not.toHaveBeenCalled();
+        expect(reportFailure).toHaveBeenCalledWith('Interaction presenter', 'the prompts view crashed');
+        surface.answer(before, 'typed');
+        await expect(answer).resolves.toBe('typed');
+    });
+
+    it('reports the failure per placement, and readiness clears only the one that reported it', () => {
+        const surface = make();
+        expect(surface.presenterState()).toEqual({
+            'interaction.palette': { failed: false, detail: null },
+            'interaction.prompts': { failed: false, detail: null }
+        });
+        // Bundled until a presenter says it has painted: nothing else is drawing yet.
+        expect(surface.usesBundledPresenter('interaction.prompts')).toBe(true);
+        surface.presenterReady('interaction.prompts');
+        expect(surface.usesBundledPresenter('interaction.prompts')).toBe(false);
+        expect(surface.usesBundledPresenter('interaction.palette')).toBe(true);
+
+        surface.presenterFailed('interaction.prompts', 'no acknowledgement');
+        expect(surface.presenterState()).toEqual({
+            'interaction.palette': { failed: false, detail: null },
+            'interaction.prompts': { failed: true, detail: 'no acknowledgement' }
+        });
+        expect(surface.usesBundledPresenter('interaction.prompts')).toBe(true);
+        // Cached against the state it describes, so a subscriber cannot spin on it.
+        expect(surface.presenterState()).toBe(surface.presenterState());
+
+        // Retry: the same placement reports ready again and owns its surface once more.
+        surface.presenterReady('interaction.prompts');
+        expect(surface.presenterState()['interaction.prompts']).toEqual({ failed: false, detail: null });
+        expect(surface.usesBundledPresenter('interaction.prompts')).toBe(false);
+
+        // Standing down is the OTHER way back to bundled, and it is not a failure: a phone, an empty
+        // selection, a disabled plugin, a dropped connection. The read model has to say so anyway.
+        surface.presenterStoodDown('interaction.prompts');
+        expect(surface.usesBundledPresenter('interaction.prompts')).toBe(true);
+        expect(surface.presenterState()['interaction.prompts']).toEqual({ failed: false, detail: null });
+    });
+
+    it('mints one opaque owner ref per owner, stable across requests and never the owner’s identity', async () => {
+        const surface = make();
+        const view = surface.createScope(owner('view-nonce-1'));
+        const other = surface.createScope(nativeOwner('native:menu'));
+        const first = view.request('ui.showInput', { title: 'One' });
+        const second = view.request('ui.showInput', { title: 'Two' });
+        const third = other.request('ui.showInput', { title: 'Three' });
+
+        const ref = surface.ownerRef('view-nonce-1');
+        expect(surface.ownerRef('view-nonce-1')).toBe(ref);
+        expect(surface.ownerRef('native:menu')).not.toBe(ref);
+        // Nothing about the owner is recoverable from it.
+        expect(ref).not.toBe('view-nonce-1');
+        expect(ref).not.toBe('example.test');
+        expect(ref).not.toBe('Test Plugin');
+        expect(ref).toMatch(/^owner-\d+$/);
+
+        surface.dispose();
+        await expect(Promise.all([first, second, third])).resolves.toEqual([null, null, null]);
     });
 });
 

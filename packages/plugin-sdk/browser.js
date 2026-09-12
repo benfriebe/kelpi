@@ -92,6 +92,7 @@
     };
     const navigationFeed = createWindowSubscription('navigation', 'ui.getNavigation');
     const chromeFeed = createWindowSubscription('chrome', 'ui.getChrome');
+    const interactionFeed = createWindowSubscription('interaction', 'ui.getInteraction');
     const request = (method, args = {}, cancelled, cancellationMessage = 'Terminal session is disposed.') => {
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
@@ -432,6 +433,7 @@
             } else if (data.type === 'context') { live = { ...live, ...data.value }; applyTheme(); notifyContext(); browserSession?.measure(); }
             else if (data.type === 'navigation' || data.type === 'navigation-error') await navigationFeed.receive(data);
             else if (data.type === 'chrome' || data.type === 'chrome-error') await chromeFeed.receive(data);
+            else if (data.type === 'interaction' || data.type === 'interaction-error') await interactionFeed.receive(data);
             else if (data.type === 'terminal-frame') await receiveTerminalFrame(data);
             else if (data.type === 'terminal-action') await receiveTerminalAction(data);
             else if (data.type === 'browser-presentation') await receiveBrowserPresentation(data);
@@ -480,6 +482,14 @@
             getChrome: () => base.call('ui.getChrome'),
             onChrome: chromeFeed.subscribe,
             executeChromeCommand: async (id, target = {}) => { await base.call('ui.executeChromeCommand', { id, target }); },
+            getInteraction: () => base.call('ui.getInteraction'),
+            onInteraction: interactionFeed.subscribe,
+            reportPresenterReady: async () => { await base.call('ui.reportPresenterReady'); },
+            setPaletteQuery: async (sessionID, text) => { await base.call('ui.setPaletteQuery', { sessionID, text }); },
+            setPaletteSelection: async (sessionID, itemID) => { await base.call('ui.setPaletteSelection', { sessionID, itemID }); },
+            activatePaletteItem: async (sessionID, itemID) => { await base.call('ui.activatePaletteItem', { sessionID, itemID }); },
+            dismissPalette: async sessionID => { await base.call('ui.dismissPalette', { sessionID }); },
+            respondInteraction: async (requestID, value) => { await base.call('ui.respondInteraction', { requestID, value }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),
@@ -490,7 +500,7 @@
     addEventListener('error', event => reportError(event.message ?? 'Plugin resource failed to load'), true);
     addEventListener('unhandledrejection', event => reportError(event.reason?.message ?? event.reason));
     addEventListener('pagehide', () => {
-        navigationFeed.dispose(); chromeFeed.dispose();
+        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose();
         terminalDisposed = true; terminalSession?.dispose();
         browserDisposed = true; browserSession?.dispose();
     });

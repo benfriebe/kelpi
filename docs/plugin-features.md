@@ -40,7 +40,12 @@ registered bindings and a shared document host; see the [document guide](plugin-
 Terminal panes also use a registered binding and a shared feature host, with an acknowledged
 SDK renderer stream; see the [terminal guide](plugin-terminals.md). Browser panes use a
 registered binding and shared native page surface, with replaceable chrome and a browser
-SDK; see the [browser guide](plugin-browser.md).
+SDK; see the [browser guide](plugin-browser.md). The command palette and the shared prompts
+are registered the same way, as the bundled `kelpi.palette` and `kelpi.prompts` features behind
+the `interaction.palette` and `interaction.prompts` placements; the window interaction host
+mounts them, so the single modal registration, focus authority and Escape policy stay host-side
+whoever draws. A selected prompts presenter draws modal requests only: the notification stack
+stays bundled in this release. See [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
 ## Window navigation for plugins
 

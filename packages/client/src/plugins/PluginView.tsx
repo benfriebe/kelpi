@@ -1,7 +1,7 @@
 import { createWindowFeed, type WindowFeed } from './window-feed';
 import { armCaretClaim, mayClaimPaneCaret } from '../app/pane-focus';
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
-import { PluginEventBuffer, type PluginEvent, pluginObject, pluginRecord, type JsonObject, type PluginPaneDescriptor } from '@kelpi/protocol';
+import { PluginEventBuffer, type PluginEvent, pluginJSON, pluginObject, pluginRecord, type JsonObject, type PluginPaneDescriptor } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
 import { tokens } from '../chrome/tokens';
 import { pluginRequest, usePlugins } from './client';
@@ -16,6 +16,7 @@ import { notifyTerminalPanes } from '../terminal/pane-registry';
 import type { TerminalPaneProps } from '../terminal/TerminalPane';
 import type { KeyEventLike } from '../chrome/keys';
 import { createBrowserScope, type BrowserScope, type BrowserSurfaceState } from './browser';
+import { INTERACTION_UI_METHODS, type InteractionPresenterHost } from '../interaction/presenter';
 import { browserFrameBounds, browserPresentation, PluginBrowserSurface, type BrowserViewHost } from './browser-pane';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from '../webpane/priority';
 import { isOkReply, replyError } from '../connection';
@@ -38,6 +39,8 @@ export interface PluginViewProps {
     /** Grants placement of this pane's existing native page inside the selected view. */
     readonly browser?: BrowserViewHost | undefined;
     readonly onBrowserKey?: ((event: KeyEventLike) => boolean) | undefined;
+    /** Granted only by the window interaction host for the selected presenter of one placement. */
+    readonly presenter?: InteractionPresenterHost | undefined;
 }
 const themeVariables = ['--kelpi-bg', '--kelpi-fg', '--kelpi-fg-secondary', '--kelpi-fg-tertiary', '--kelpi-surface', '--kelpi-border', '--kelpi-accent'];
 export function readPluginTheme(): Record<string, string> {
@@ -57,6 +60,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const browser = useRef<BrowserScope | null>(null);
     const browserUserFocus = useRef(false);
     const hasBrowser = props.browser !== undefined;
+    const hasPresenter = props.presenter !== undefined;
     const [browserSurface, setBrowserSurface] = useState<BrowserSurfaceState | null>(null);
     const latest = useRef(props); latest.current = props;
     const hostUI = useContext(PluginHostUIContext);
@@ -76,6 +80,10 @@ export function PluginView(props: PluginViewProps): ReactElement {
         let disposed = false, failed = false, lease = '', outstanding = 0, sending = false;
         let readinessTimer: ReturnType<typeof setTimeout> | undefined;
         let chromeFeed: WindowFeed | undefined;
+        let interactionFeed: WindowFeed | undefined;
+        // Set at attach, from the manifest, so an ungranted view's presenter calls are refused
+        // by the same rule the terminal and browser grants use.
+        let presenterHost: InteractionPresenterHost | undefined;
         let navigationFeed: PluginNavigationFeed | undefined;
         let uiScope: UIServiceScope | undefined;
         let terminalScope: TerminalScope | undefined;
@@ -92,7 +100,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         const fail = (error: unknown): void => {
             if (disposed || failed) return;
             failed = true; clearTimeout(readinessTimer); port.current?.close(); port.current = null;
-            navigationFeed?.dispose(); chromeFeed?.dispose();
+            navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose();
             uiScope?.dispose();
             terminalScope?.dispose(); terminal.current = null; releaseTerminal();
             browserScope?.dispose(); browser.current = null;
@@ -141,6 +149,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
                         send: message => { if (!disposed && !failed) channel.port1.postMessage(message); }, fail });
                     browser.current = browserScope;
                 }
+                const presenter = latest.current.presenter;
+                if (presenter && plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(presenter.placement))) presenterHost = presenter;
             } catch (error) { channel.port2.close(); fail(error); return; }
             channel.port1.onmessage = ({ data }) => {
                 if (disposed || failed || !pluginRecord(data)) return;
@@ -161,6 +171,9 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 }
                 if (data['type'] === 'event-ack') { sending = false; drain(); return; }
                 if (data['type'] === 'chrome-ack') { chromeFeed?.ack(data['sequence']); return; }
+                // Only the ack of the OUTSTANDING frame is liveness: a stale or replayed one
+                // must not clear the placement's acknowledgement watchdog.
+                if (data['type'] === 'interaction-ack') { if (interactionFeed?.ack(data['sequence']) === true) presenterHost?.noteAcknowledged(); return; }
                 if (data['type'] === 'navigation-ack') { navigationFeed?.ack(data['sequence']); return; }
                 if (data['type'] === 'focus') {
                     if (latest.current.visible !== false && paneID && workspaceID) {
@@ -242,6 +255,11 @@ export function PluginView(props: PluginViewProps): ReactElement {
                         return runDocumentEdit(runtime, String(args['paneID'] ?? paneID), args['text'], args['revision'], viewID,
                             () => pluginRequest(runtime, 'api', { lease, method: 'documents.edit', args }));
                     }
+                    if ((INTERACTION_UI_METHODS as readonly string[]).includes(String(data['method']))) {
+                        if (!presenterHost) throw new Error('Interaction presentation is unavailable for this view.');
+                        if (data['method'] === 'ui.getInteraction') return pluginJSON(presenterHost.getInteraction());
+                        return Promise.resolve(presenterHost.call(String(data['method']), args)).then(() => null);
+                    }
                     return pluginRequest(runtime, 'api', { lease, method: String(data['method']), args });
                 })().then(result => respond(result), error => respond(null, error.message)).finally(() => { outstanding -= 1; });
             };
@@ -249,6 +267,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
             frame.current!.contentWindow!.postMessage({ type: 'kelpi-plugin-connect', nonce }, '*', [channel.port2]);
             contextUpdate(); drain();
             if (chrome) chromeFeed = createWindowFeed('chrome', (listener, onError) => chrome.subscribe(listener, onError), message => channel.port1.postMessage(message));
+            const granted = presenterHost;
+            if (granted) interactionFeed = createWindowFeed('interaction', (listener, onError) => granted.subscribe(listener, onError), message => channel.port1.postMessage(message));
             if (navigation) navigationFeed = createPluginNavigationFeed(navigation, message => channel.port1.postMessage(message));
         };
         ownerWindow.addEventListener('message', handleReady);
@@ -263,8 +283,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
             setDocumentHTML(pluginDocument(String(attached['html']), url.href, String(attached['entry']), { nonce, context: attached['context']!, state: attached['state']!, stateVersion: attached['stateVersion']!, theme: readPluginTheme(), visible: latest.current.visible ?? true, chords: latest.current.visible === false ? [] : [...latest.current.claimedChords ?? []] }));
             readinessTimer = setTimeout(() => fail(new Error('Plugin view did not connect. Retry to reload it.')), 10_000);
         }).catch(fail);
-        return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); browserScope?.dispose(); browser.current = null; navigationFeed?.dispose(); chromeFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
-    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome, hasTerminal, hasBrowser]);
+        return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); browserScope?.dispose(); browser.current = null; navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
+    }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome, hasTerminal, hasBrowser, hasPresenter]);
     useEffect(() => {
         if (props.terminal) { terminal.current?.update(terminalPresentation(props.terminal)); notifyTerminalPanes(); }
     }, [props.terminal]);

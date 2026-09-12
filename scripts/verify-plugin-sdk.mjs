@@ -31,7 +31,7 @@ export function activate(api: BackendAPI) {
     api.browser.attach({});
     return () => { void state; };
 }`,
-        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
+        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
 const api: ViewAPI = getKelpi();
 let mirror: TerminalGrid | null = null;
 async function mount(element: HTMLElement) {
@@ -49,6 +49,13 @@ async function mount(element: HTMLElement) {
         terminal.resize(80, 24);
     } });
     await api.ui.showNotification({ message: 'External plugin ready' });
+    // A selected presenter reads one placement's projection and answers a visible request.
+    const interaction: InteractionSnapshot = await api.ui.getInteraction();
+    await api.ui.reportPresenterReady();
+    if (interaction.palette !== null) await api.ui.setPaletteQuery(interaction.palette.sessionID, 'settings');
+    if (interaction.prompt?.kind === 'quickPick') await api.ui.respondInteraction(interaction.prompt.requestID, interaction.prompt.options.items[0]!.id);
+    // @ts-expect-error An owner is a display name and an opaque ref, never a plugin identity.
+    void interaction.prompt?.owner.pluginID;
     browser.dispose(); terminal.dispose();
 }
 void mount;

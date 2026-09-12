@@ -62,8 +62,19 @@ change in this phase.
 | Scenario gates, hidden | `plugin-ui-services` 30/30, `plugin-workbench` 22/22, `plugin-interaction-presenters` 34/34, `plugin-authoring` 25/25, `plugin-chrome-features` 34/34 alone; `plugin-extensions` 23/23 alone and after `plugin-authoring` on this tree and on the base tree (one earlier five-scenario run had it at 4/5 on the new-workspace sheet, not reproduced in three reruns). |
 | Independent review | One Opus review of the working tree. Applied before `bc73a3d`: the tabs now commit through the surface only (the first draft had a second write path in the renderer), the renderer draws held drafts and errors, reconciliation runs from the settings broadcast rather than a render, the TCP caption is composed from a structured status so no OS error text is projected, the snapshot cache key includes the disabled state, number drafts keep the old parseInt leniency, and the rail-versus-panel guard test. The review confirmed the copied captions are byte-identical to the originals. |
 
-Not established here: the full verification battery and packaged smoke for this branch
-(scheduled with phase 2), physical devices. Phase 2 (a selectable `settings.window` presenter)
+### Full verification battery at `bc73a3d`
+
+`node scripts/verify.mjs --full` on the Settings contracts branch passed in 25.1 minutes:
+typecheck, root tests, shell tests and bundle build passed; the scenario lane passed on the
+battery's isolated retry (`plugin-document-features`, `plugin-terminal-features` and
+`workspace-switch-keeps-the-caret` red under the battery, green alone, the known
+load-sensitive set); the full UI audit completed with **132 steps, 1,653 assertions, 5 failed,
+4 step errors, 113 need eyes**, the same pre-existing `web-batch-pickup`, `appearance-system-stats`,
+`agent-start`, `agent-lifecycle`, `footer-git-stats`, `sidebar-remaining` and `workspace-edges`
+findings recorded for the earlier branches and every `settings-*` and `phone-settings-sheet`
+step green; the packaged smoke repackaged and passed **61 checks**.
+
+Not established here: physical devices. Phase 2 (a selectable `settings.window` presenter)
 and phase 3 (Settings Lab) are not started.
 
 ## Interaction Lab and live acceptance (2026-09-12)

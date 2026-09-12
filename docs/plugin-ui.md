@@ -230,6 +230,14 @@ Two placements are selected independently in Settings → Plugins → Workbench 
 
 Both placements appear in `ui.getWorkbench().slots` for discovery, and `ui.selectView` refuses
 both: a prompts presenter renders other plugins' requests, so the choice stays the user's.
+
+[Interaction Lab](../examples/plugins/interaction-lab) is the reference presenter for both
+placements: plain JavaScript, no backend, no build. Install its directory in a private instance,
+select it for either placement, and open the palette or raise a prompt from another plugin such
+as UI Lab. Its README lists the diagnostics and the deliberate crash and stall hooks the live
+scenario uses to prove the fallback. A listener that throws is caught by the SDK and its frame
+is still acknowledged; only an uncaught view error, a missing readiness report, an
+unacknowledged live frame, an undeliverable frame or a call budget breach fails a presenter.
 A container cannot declare either placement, because a presenter owns its whole overlay.
 Presenters are desktop-only in this release; a phone window keeps the bundled ones, and the
 snapshot reports `formFactor` so a view can say why.
@@ -319,6 +327,10 @@ later scope.
 
 `pnpm check` covers schema validation, ownership, lifecycle resets, settings races, SDK
 contracts, retained actions and prompt behavior. `node scripts/scenario.mjs plugin-ui-services --window hidden`
-exercises UI Lab through a private daemon and real Electron window. The
+exercises UI Lab through a private daemon and real Electron window, and
+`node scripts/scenario.mjs plugin-interaction-presenters --window hidden` drives Interaction Lab
+as the selected palette and prompts presenter, including a second plugin's prompts, presenter
+crash and watchdog fallback with the live request intact, disable and reload, and the phone form
+factor keeping the bundled presenters. The
 [validation record](plugin-validation.md) records past runs and their source revisions. Use
 `--window onscreen` to inspect screenshots; a historical pass does not validate a later checkout.

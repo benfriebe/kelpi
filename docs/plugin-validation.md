@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Interaction Lab and live acceptance](#interaction-lab-and-live-acceptance-2026-09-12).
 - [Selectable interaction presenters](#selectable-interaction-presenters-2026-09-12).
 - [Shared interaction contracts](#shared-interaction-contracts-2026-09-12).
 - [Terminal SDK geometry parity](#terminal-sdk-geometry-parity-2026-09-12).
@@ -43,6 +44,27 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Interaction Lab and live acceptance (2026-09-12)
+
+Step 3 of the palette and shared-prompt phase, implemented on `feature/plugin-interaction-lab`
+(based on the presenters branch at `b292d53`). Tested revision: **`54ef523`**. Same bootstrapped
+worktree; private sandboxes only. Retained onscreen screenshots are in
+[the interaction evidence directory](audit/plugin-interaction/README.md).
+
+| Check | Result at `54ef523` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,702 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suite `features/interaction-lab.test.ts` (15 tests) drives the shipped views through the real presenter host and surface. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` and `node scripts/verify-plugin-sdk.mjs` pass. |
+| `plugin-interaction-presenters`, hidden, built | **34/34** in the twelve-scenario gate run (`docs/audit/scenarios/2026-09-12T06-06-43-007Z`, local artifact), and 34/34 in two solo hidden runs and two paired runs with `plugin-remote` after the cleanup fix below. |
+| `plugin-interaction-presenters`, onscreen | **34/34** (`2026-09-12T06-19-25-771Z`); all five screenshots inspected, four retained. |
+| Regression gates, hidden | `plugin-ui-services` 30/30, `confirm-dialog-keys` 10/10, `plugin-workbench` 22/22, `plugin-preview-shortcuts` 6/6, `recover-interface-keeps-web-panes` 8/8, `workspace-switch-keeps-the-caret` 14/14, `web-pane-comes-back-after-hide` 7/7, `sidebar-swap` 11/11, `plugin-extensions` 23/23, `plugin-authoring` 25/25; `plugin-chrome-features` 34/34 alone; `plugin-remote` **12/12** alone and after the presenter scenario (`2026-09-12T06-18-11-971Z`, `2026-09-12T06-18-39-966Z`). The gate run before the cleanup fix had `plugin-remote` at 10/12 after the presenter scenario, because that scenario left the phone's remembered place set; its cleanup now returns the phone shell to its landing page, restores the bundled views for both placements, clears emulation and returns to the starting workspace. |
+| Independent review | One Opus review of the working tree. Applied before `54ef523`: the failure screenshot note and gating, the stall arm asserting the acknowledgement watchdog message, the live "(bundled)" label check, an aim-checked notification click, wider `covers`, quick-pick arrow navigation matching the bundled presenter, and stale comments about toast modal presence. |
+
+Recorded limits: daemon disconnect and reconnect is not pressed by the scenario (the runner
+exposes no primary-daemon handle); phone checks use emulation; physical devices are not
+covered; selectable notification presentation is not part of this phase. The full verification
+battery for the interaction branches is recorded below when available.
 
 ## Selectable interaction presenters (2026-09-12)
 

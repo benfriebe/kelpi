@@ -95,6 +95,12 @@ window chrome state and the shared command registry. It preserves other plugins'
 contributions. See the [chrome feature guide](plugin-chrome.md) for commands, status data,
 ownership and the isolated development workflow.
 
+[Interaction Lab](../examples/plugins/interaction-lab) presents the command palette and the
+shared modal prompts from the public interaction feed, with no backend and no build. It is
+selected per placement in Settings → Plugins → Workbench views; see the
+[UI guide](plugin-ui.md#selectable-interaction-presenters) for what a presenter receives, what
+is withheld, and how a failed presenter falls back to the bundled one.
+
 [Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
 while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
 covers shared SDK/CLI source APIs, guarded revisions, renderer selection and pending-input

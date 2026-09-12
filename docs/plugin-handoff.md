@@ -101,14 +101,15 @@ renderers. Follow with the presenter work below once this parity gap is validate
 ## Following phase: palette and shared prompts
 
 The [roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts)
-has its first two steps implemented on `feature/plugin-interaction-contracts`: the window
+is implemented on three stacked branches (`feature/plugin-interaction-contracts`,
+`feature/plugin-interaction-presenters`, `feature/plugin-interaction-lab`): the window
 interaction surface owns the palette session and shared prompts, and a plugin view declaring
 `interaction.palette` or `interaction.prompts` can be selected as that placement's presenter in
 Settings → Plugins → Workbench views. Request authority, cancellation and result validation stay
 in Kelpi; the bundled presenters are the recovery floor and cannot be selected away. Selection is
 Settings-only, and neither password inputs nor notifications are handed to a plugin presenter: a
-prompts presenter draws modal requests only, and selectable notification presentation is part of
-the remaining step. See
+prompts presenter draws modal requests only, and selectable notification presentation is later
+scope. See
 [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
 | Concern | Source entrypoints |
@@ -121,7 +122,8 @@ the remaining step. See
 | Presenter selection, projection and watchdogs | [presenter host](../packages/client/src/interaction/presenter.ts), [presenter slot](../packages/client/src/interaction/presenter-slot.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js) |
 | Focus/modal coordination and Settings | [Modal presence](../packages/client/src/chrome/modal-presence.ts), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
 
-The remaining step is an external Interaction Lab and real-instance acceptance. Preserve
+The Interaction Lab example and its live acceptance are implemented on
+`feature/plugin-interaction-lab`; see the validation record for the tested revision. Preserve
 keyboard/IME behavior, cancellation on caller/presenter disposal, window/daemon ownership,
 native browser parking, modal queueing and focus restoration. Retain a reachable way to open
 plugin recovery when a replacement fails.
@@ -129,10 +131,10 @@ plugin recovery when a replacement fails.
 Existing regression scenarios include `plugin-ui-services`, `plugin-preview-shortcuts`,
 `confirm-dialog-keys`, `plugin-workbench`, `plugin-remote`, `plugin-authoring`,
 `plugin-browser-features` and `plugin-terminal-features`. They cover existing behavior;
-a dedicated Interaction Lab scenario must prove the new presenter contracts, including a second
-plugin's prompt, presenter crash and fallback with the live request intact, reload, disable,
-disconnect, and the phone form factor keeping the bundled presenters. That step also owns
-selectable notification presentation, which step 2 leaves bundled.
+`plugin-interaction-presenters` proves the presenter contracts with Interaction Lab, including
+a second plugin's prompt, presenter crash and watchdog fallback with the live request intact,
+reload, disable, and the phone form factor keeping the bundled presenters. Selectable
+notification presentation remains open scope; the notification stack stays bundled.
 
 ## Setup and validation for the next agent
 

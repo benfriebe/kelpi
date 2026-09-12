@@ -9,6 +9,7 @@ import { usePluginChrome } from './plugins/use-chrome';
 import { createPaletteFeatureSource, type PaletteFeatureHost } from './features/palette-source';
 import { InteractionHost, InteractionPaletteSlot } from './interaction/InteractionHost';
 import { interactionPresenterChords } from './interaction/presenter-slot';
+import { settingsPresenterChords } from './settings/presenter-slot';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
@@ -2846,6 +2847,12 @@ function Shell(props: AppProps): ReactElement {
      * the full map would let a presenter claim chords it has no business consuming.
      */
     const presenterChords = useMemo(() => interactionPresenterChords(bindings), [bindings]);
+    /*
+     * The Settings dialog's own relay. The same two gestures, computed from the same bindings, and
+     * a separate list on purpose: the two placements are granted independently, so a change to what
+     * one relays must not silently change the other.
+     */
+    const settingsChords = useMemo(() => settingsPresenterChords(bindings), [bindings]);
 
     // A plugin shortcut must reserve every native binding, including the copy/paste and
     // text-editing chords intentionally omitted from the sandboxed content-frame relay.
@@ -3925,6 +3932,26 @@ function Shell(props: AppProps): ReactElement {
                 initialTab={settingsTab ?? DEFAULT_SETTINGS_TAB}
                 /* Routing, validated against the catalog; the modal's own behaviour stays in the overlay. */
                 surface={settingsSurface}
+                /*
+                 * Whether the user's selected `settings.window` view may draw the rail and the
+                 * panel. Desktop only, like the two interaction presenters: the phone sheet's
+                 * two-screen push navigation and its software-keyboard inset are not things a frame
+                 * can read. A failure is reported as a toast here and latched in Settings ▸ Plugins,
+                 * where the Retry row is.
+                 */
+                presenters={!phoneActive}
+                presenterChords={settingsChords}
+                /*
+                 * The one modal presence this assembly registers while Settings is open (the
+                 * `useModalPresence` above covers Settings, Help and the create sheet, and only one
+                 * of the three is ever the reason this dialog is up). Anything above it is a peer -
+                 * the palette opened over Settings, a prompt, the quit dialog - which owns the caret
+                 * and its own Escape, so the presenter stands down rather than fighting it.
+                 */
+                modalPresence={1}
+                onPresenterFailure={(detail) => {
+                    notifyFailure('Settings presenter', detail);
+                }}
                 settings={settings}
                 domain={{
                     labelPresets: daemon.state.labelPresets,

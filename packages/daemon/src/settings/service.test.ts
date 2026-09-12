@@ -432,6 +432,35 @@ describe('createSettingsService (write-through)', () => {
         expect(f.read()).toBe(PRESERVED);
     });
 
+    /**
+     * The allowlist checks the KEY. The writers join lines with "\n", so a value carrying one
+     * would append `command`, `keybind`, `profile` or `remote-daemon` lines of the caller's
+     * choosing: a config-line injection that ends in a program this daemon runs. The file must be
+     * byte-identical afterwards, because a partial write is the hole.
+     */
+    it('refuses a value carrying a line break or control character, and writes nothing', () => {
+        const f = fixture({ config: PRESERVED });
+        const injections = [
+            'work\ncommand = /tmp/payload.sh',
+            'work\r\nkeybind = super+q=quit',
+            'work\rprofile = evil:PATH=/tmp',
+            'work\u0000command = /tmp/payload.sh',
+            'work\tremote-daemon = evil:https://attacker.example'
+        ];
+        for (const value of injections) {
+            expect(() => f.service.setGeneralSetting('worktree-base-path', value)).toThrow(SettingsError);
+            expect(() => f.service.setGeneralSetting('worktree-base-path', value)).toThrow(/line break or control character/);
+            expect(f.read()).toBe(PRESERVED);
+        }
+        // The snapshot never moved either, and the legitimate value still writes.
+        expect(f.service.snapshot.general.worktreeBasePath).not.toContain('payload');
+        expect(f.service.setGeneralSetting('worktree-base-path', '<repo>/.worktrees').general.worktreeBasePath)
+            .toBe('<repo>/.worktrees');
+        // A trailing newline is whitespace the trim already dropped, not an injection.
+        expect(f.service.setGeneralSetting('worktree-base-path', '  <repo>/.wt\n').general.worktreeBasePath)
+            .toBe('<repo>/.wt');
+    });
+
     it('refuses an unknown action and an unparseable trigger without touching the file', () => {
         const f = fixture({ config: PRESERVED });
         expect(() => f.service.setKeybinding('not_an_action', 'ctrl+alt+t')).toThrow(/unknown action/);
@@ -525,6 +554,17 @@ describe('setGhosttySetting', () => {
         expect(readGhostty(f)).toBe(GHOSTTY);
     });
 
+    /** The ghostty file's twin of the config-line injection above, including its own `keybind`. */
+    it('refuses a value carrying a line break or control character, and writes nothing', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        for (const value of ['Menlo\nkeybind = super+q=quit', 'Menlo\r\nbackground = #000000', 'Menlo\u0007']) {
+            expect(() => f.service.setGhosttySetting('font-family', value)).toThrow(/line break or control character/);
+            expect(readGhostty(f)).toBe(GHOSTTY);
+        }
+        // Deleting a key passes no value at all, so it is unaffected.
+        expect(f.service.setGhosttySetting('theme', null).appearance.theme).toBeNull();
+    });
+
     it('writes window-padding and reads it back into the snapshot', () => {
         const f = fixture({ ghostty: GHOSTTY });
         const next = f.service.setGhosttySetting('window-padding-y', '4');
@@ -607,5 +647,32 @@ describe('setRemoteDaemons (§1.7)', () => {
         expect(() => f.service.setRemoteDaemons([{ name: ' ', url: 'https://x/' }])).toThrow(SettingsError);
         expect(() => f.service.setRemoteDaemons([{ name: 'a', url: ' ' }])).toThrow(SettingsError);
         expect(() => f.service.setRemoteDaemons([{ name: 'a:b', url: 'https://x/' }])).toThrow(SettingsError);
+    });
+
+    /**
+     * `serializeProfileLines` and `serializeRemoteDaemonLines` interpolate their halves into one
+     * line each, so the whole-set writers are the same config-line injection the two single-key
+     * writers refuse, through a different door. The remote URL is the worst of them: it carries
+     * the pairing token, so a break in it forges a line AND hides where the credential went.
+     */
+    it('refuses a line break in a profile or a remote daemon, and writes nothing', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(() => f.service.setProfiles([{ name: 'work', env: { TOKEN: 'a\ncommand = /tmp/payload.sh' } }]))
+            .toThrow(/line break or control character/);
+        expect(() => f.service.setProfiles([{ name: 'work\nprofile = evil:X=1', env: {} }]))
+            .toThrow(/line break or control character/);
+        expect(() => f.service.setProfiles([{ name: 'work', env: { 'A\nB': 'x' } }]))
+            .toThrow(/line break or control character/);
+        expect(() =>
+            f.service.setRemoteDaemons([{ name: 'werk', url: 'https://w.example/?token=k\ncommand = /tmp/x' }])
+        ).toThrow(/line break or control character/);
+        expect(() => f.service.setRemoteDaemons([{ name: 'we\nrk', url: 'https://w.example/' }]))
+            .toThrow(/line break or control character/);
+        expect(f.read()).toBe(PRESERVED);
+        // The legitimate whole-set writes still land.
+        expect(f.service.setProfiles([{ name: 'work', env: { TOKEN: 'abc' } }]).profiles)
+            .toEqual([{ name: 'work', env: { TOKEN: 'abc' } }]);
+        expect(f.service.setRemoteDaemons([{ name: 'werk', url: 'https://w.example/?token=k' }]).remoteDaemons)
+            .toEqual([{ name: 'werk', url: 'https://w.example/?token=k' }]);
     });
 });

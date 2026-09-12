@@ -33,6 +33,8 @@ import {
     settingsFieldDefinition,
     settingsFieldsInSection,
     settingsGroupsInSection,
+    settingsSection,
+    settingsSectionHasNative,
     settingsTransportCaption
 } from './sections';
 
@@ -55,15 +57,38 @@ describe('the section catalog', () => {
         expect(SETTINGS_SECTIONS.length).toBeLessThanOrEqual(SETTINGS_LIMITS.sections);
     });
 
-    // Phase 1's scope, stated as an assertion: the two value-and-verb tabs are projected and every
-    // hand-built one stays native, including the three the plan calls permanently native.
-    it('projects General and Workspaces, and draws every other section natively', () => {
+    /*
+     * Phase 2's scope, stated as an assertion.
+     *
+     * General and Workspaces are projected whole. Appearance is the PARTLY projected one: its plain
+     * value-and-verb rows are descriptors and the theme importer, the swatch grid, the share codes,
+     * the chrome colour map and every Reset stay hand-built, so it is a `fields` section carrying a
+     * remainder - which is the one section where "may a field be committed" and "does the bundled
+     * panel paint here" have different answers. Every other section is native in full, the
+     * permanently native ones included.
+     */
+    it('projects General, Workspaces and Appearance, and draws every other section natively', () => {
         expect(SETTINGS_SECTIONS.filter((section) => section.kind === 'fields').map((section) => section.id)).toEqual([
             'general',
+            'appearance',
             'workspaces'
         ]);
-        for (const id of ['appearance', 'plugins', 'remote', 'profiles', 'keybindings', 'labels', 'web'] as const)
+        /*
+         * All three carry a remainder, and that is the point of the flag: a projected section is
+         * still not a section a presenter draws ALL of. Appearance keeps its gallery, colour map,
+         * theme picker and resets; General keeps the failed-bind line, the CLI-compat note, the
+         * pointer at Workspaces and the config-file footer; Workspaces keeps its own footer and
+         * pointer. None of those is a value, so none of them has a descriptor to be projected as.
+         */
+        for (const id of ['general', 'workspaces', 'appearance'] as const) {
+            expect(settingsSection(id)?.remainder).toBe(true);
+            expect(isNativeSettingsSection(id)).toBe(false);
+            expect(settingsSectionHasNative(id)).toBe(true);
+        }
+        for (const id of ['plugins', 'remote', 'profiles', 'keybindings', 'labels', 'web'] as const) {
             expect(isNativeSettingsSection(id)).toBe(true);
+            expect(settingsSectionHasNative(id)).toBe(true);
+        }
     });
 
     it('gives every card a section that exists and a test id that does not repeat', () => {
@@ -147,7 +172,51 @@ describe('the field table', () => {
             'focus-delay-slider',
             'clipboard-write-toggle'
         ]);
-        expect(settingsFieldsInSection('appearance', snapshot())).toEqual([]);
+        /*
+         * Appearance's projected half, in the tab's own order. The hand-built rows are the gaps:
+         * the preset gallery and the share codes before Chrome, the chrome colour map and the agent
+         * dots between Chrome and Sidebar, the group-band FILL between the two avatar sliders and
+         * the border, the theme picker and the background swatch above the opacity, the resolved
+         * appearance readout, the search preview, the per-metric stat toggles and the adaptive
+         * sparkline colour.
+         */
+        expect(
+            settingsFieldsInSection('appearance', snapshot()).map((definition) => definition.testID)
+        ).toEqual([
+            'chrome-appearance',
+            'sidebar-intensity',
+            'sidebar-avatar-fill',
+            'sidebar-avatar-stroke',
+            'sidebar-group-stroke',
+            'terminal-opacity',
+            'terminal-font-family',
+            'terminal-font-size',
+            'terminal-padding-x',
+            'terminal-padding-y',
+            'search-match-color',
+            'search-match-text-color',
+            'search-match-current-color',
+            'search-match-current-text-color',
+            'stats-master-toggle',
+            'stats-graphs-toggle',
+            'sparkline-style',
+            'sparkline-width'
+        ]);
+    });
+
+    /*
+     * The three graph rows live inside the master toggle's block (SET-042/043), so they are ABSENT
+     * while it is off rather than disabled - and `commitField` re-reads that against a fresh
+     * snapshot, so a presenter holding one of their ids cannot write to a row nobody can see.
+     */
+    it('hides the graph rows while system stats are off', () => {
+        const off = settingsFieldsInSection('appearance', {
+            ...DEFAULT_WS_SETTINGS,
+            chrome: { ...DEFAULT_WS_SETTINGS.chrome, showSystemStats: false }
+        }).map((one) => one.id);
+        expect(off).toContain('appearance.showSystemStats');
+        for (const id of ['appearance.showSystemStatGraphs', 'appearance.sparklineStyle', 'appearance.sparklineWidth'])
+            expect(off).not.toContain(id);
     });
 
     // The two conditional rows the tabs render with a ternary. A hidden row is not projected, and

@@ -46,9 +46,13 @@ import {
     type ChromeStyleTheme,
     type OverridableChromeKey
 } from '../chrome';
-import { TERMINAL_EDGE_PADDING, TERMINAL_EDGE_PADDING_TOP } from '../terminal';
-import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
+import type { SettingsDraftValue, SettingsFieldDescriptor } from './contract';
+import { ColorField, SelectField, SliderField } from './controls';
+import { FieldRenderer } from './FieldRenderer';
+import { settingsGroupsInSection, settingsPercentLabel } from './sections';
+import type { SettingsSurface } from './surface';
 import type { SettingsActions, SettingsPaths } from './types';
+import { useSectionSurface, useSettingsSnapshot } from './use-settings';
 import {
     KeyChip,
     SettingsButton,
@@ -66,6 +70,22 @@ export interface AppearanceTabProps {
     readonly actions: SettingsActions;
     /** Which override bucket the colour pickers edit — the scheme currently resolved. */
     readonly bucket?: ChromeBucket | undefined;
+    /**
+     * The window's settings surface, when the host has one; otherwise the tab builds its own,
+     * pinned to this section. One funnel either way: see `GeneralTab`'s note.
+     */
+    readonly surface?: SettingsSurface | undefined;
+    /**
+     * Which half of the tab to draw.
+     *
+     * `all` (the default) is the bundled panel: the projected rows and the hand-built parts, in
+     * source order, exactly as this tab has always drawn them. `native` is the REMAINDER the host
+     * keeps drawing when a `settings.window` presenter has the dialog - the preset gallery, the
+     * share codes, the chrome colour map, the terminal theme picker, the group-band fill, the
+     * adaptive sparkline colour, the per-metric stat set and every Reset - with the projected rows
+     * left to the presenter. A card whose every row is projected is absent from that half.
+     */
+    readonly part?: 'all' | 'native' | undefined;
 }
 
 /** `ChromeColorKey.displayName`, verbatim. */
@@ -100,9 +120,13 @@ function isAgentStatusKey(key: OverridableChromeKey): boolean {
  */
 export { BUILT_IN_TERMINAL_THEMES };
 
-function percentLabel(value: number): string {
-    return `${String(Math.round(value * 100))}%`;
-}
+/**
+ * The percent readout, from the catalog.
+ *
+ * The same function the projected sliders format `valueLabel` with (`sections.ts`), so the one
+ * hand-built slider left on this tab - the group-band fill - reads exactly like the four beside it.
+ */
+const percentLabel = settingsPercentLabel;
 
 /**
  * A compact mock of the chrome — sidebar strip, header bar, three agent dots — painted in a
@@ -262,6 +286,45 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
     const actions = props.actions;
     const [status, setStatus] = useState<string | null>(null);
     const importRef = useRef<HTMLInputElement | null>(null);
+
+    /*
+     * The plain rows are DESCRIPTORS now.
+     *
+     * One surface, one write path (`GeneralTab`'s note applies verbatim): a value-and-verb row is
+     * declared in `sections.ts` with its write target PRIVATE to that module, `FieldRenderer` draws
+     * it with the same `controls.tsx` primitives this tab has always used, and the surface is the
+     * only thing that turns a field id into a config key. Nothing that is not a plain value moved:
+     * the preset gallery, the share codes, the chrome colour map, the theme picker, the group-band
+     * fill, the adaptive sparkline colour, the stat set and every Reset are still written by hand
+     * below, because none of them is a row a list of descriptors could express.
+     */
+    const surface = useSectionSurface({
+        sectionID: 'appearance',
+        ...(props.surface === undefined ? {} : { surface: props.surface }),
+        config: { settings: () => props.settings, actions: () => props.actions }
+    });
+    const snapshot = useSettingsSnapshot(surface);
+    const projected = props.part !== 'native';
+    const commitField = (field: SettingsFieldDescriptor, value: SettingsDraftValue): void => {
+        try {
+            // A draft first, so a refusal leaves the text on screen with the reason under it.
+            surface.setDraft(field.id, value);
+            surface.commitField(field.id, value);
+        } catch {
+            // The field is gone, native, or the host is refusing it. The surface is the authority.
+        }
+    };
+    /** One projected row, or nothing at all in the native half. */
+    const row = (id: string): ReactElement | null => {
+        if (!projected) return null;
+        const field = snapshot.fields.find((one) => one.id === id);
+        return field === undefined ? null : <FieldRenderer field={field} onCommit={commitField} />;
+    };
+    /** A projected card's title and hint, from the catalog the presenter is given. */
+    const card = (id: string): { readonly title: string; readonly hint: string } => {
+        const group = settingsGroupsInSection('appearance').find((one) => one.id === id);
+        return { title: group?.title ?? '', hint: group?.hint ?? '' };
+    };
 
     // Which bucket the colour pickers write into. The caller passes the scheme this window is
     // actually resolved at; without one, fall back to the ghostty background's own verdict —
@@ -482,25 +545,16 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 </p>
             </SettingsSection>
 
-            <SettingsSection
-                title="Chrome"
-                hint="Themes the Kelpi window chrome (sidebar, title bar, status bar). Independent of the terminal theme below."
-                testID="appearance-chrome"
-            >
-                <SegmentedField
-                    label="Appearance"
-                    testID="chrome-appearance"
-                    value={chrome.appearance}
-                    options={[
-                        { value: 'system', label: 'System' },
-                        { value: 'light', label: 'Light' },
-                        { value: 'dark', label: 'Dark' }
-                    ]}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('chrome-appearance', next);
-                    }}
-                />
-            </SettingsSection>
+            {/* Nothing in this card is hand-built, so the native half has no reason to draw it. */}
+            {projected ? (
+                <SettingsSection
+                    title={card('appearance-chrome').title}
+                    hint={card('appearance-chrome').hint}
+                    testID="appearance-chrome"
+                >
+                    {row('appearance.chromeAppearance')}
+                </SettingsSection>
+            ) : null}
 
             <SettingsSection title="Chrome colours" testID="appearance-colors">
                 {OVERRIDABLE_CHROME_KEYS.filter((key) => !isAgentStatusKey(key)).map((key) => (
@@ -558,56 +612,33 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
              * them into one section under a single hint, which put five sliders in a row with
              * nothing marking the change of subject.
              */}
-            <SettingsSection
-                title="Sidebar"
-                hint="Scales how vivid the group bands and workspace avatars are."
-                testID="appearance-sidebar"
-            >
-                <SliderField
-                    label="Colour intensity"
-                    testID="sidebar-intensity"
-                    value={chrome.sidebarColorIntensity}
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('sidebar-color-intensity', next.toFixed(2));
-                    }}
-                />
-            </SettingsSection>
+            {projected ? (
+                <SettingsSection
+                    title={card('appearance-sidebar').title}
+                    hint={card('appearance-sidebar').hint}
+                    testID="appearance-sidebar"
+                >
+                    {row('appearance.sidebarColorIntensity')}
+                </SettingsSection>
+            ) : null}
 
             <SettingsSection
-                title="Sidebar fill & stroke"
-                hint="Fill = colour wash, border = outline. The intensity above multiplies these."
+                title={card('appearance-sidebar-style').title}
+                hint={card('appearance-sidebar-style').hint}
                 testID="appearance-sidebar-style"
             >
-                <SliderField
-                    label="Avatar fill"
-                    testID="sidebar-avatar-fill"
-                    value={chrome.sidebarAvatarFill}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('sidebar-avatar-fill', next.toFixed(2));
-                    }}
-                />
-                <SliderField
-                    label="Avatar border"
-                    testID="sidebar-avatar-stroke"
-                    value={chrome.sidebarAvatarStroke}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('sidebar-avatar-stroke', next.toFixed(2));
-                    }}
-                />
+                {row('appearance.sidebarAvatarFill')}
+                {row('appearance.sidebarAvatarStroke')}
+                {/*
+                 * Hand-built, and staying that way: -1 is the sentinel for "use the appearance
+                 * preset", so what this row SHOWS is the preset's opacity rather than the stored
+                 * value, and its caption changes with it. A descriptor carries a value the daemon
+                 * sent; this row carries a value the chrome theme computes, which is not the same
+                 * kind of thing and is not one a presenter can be handed without the preset too.
+                 */}
                 <SliderField
                     label="Group band fill"
                     testID="sidebar-group-fill"
-                    // -1 means "use the appearance preset"; the slider shows the preset value it
-                    // stands for rather than an impossible negative percentage.
                     detail={chrome.sidebarGroupFill < 0 ? 'Following the appearance preset.' : undefined}
                     value={chrome.sidebarGroupFill < 0 ? preset.groupBandOpacity : chrome.sidebarGroupFill}
                     min={0}
@@ -617,24 +648,19 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                         actions.setGeneralSetting('sidebar-group-fill', next.toFixed(2));
                     }}
                 />
-                <SliderField
-                    label="Group band border"
-                    testID="sidebar-group-stroke"
-                    value={chrome.sidebarGroupStroke}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('sidebar-group-stroke', next.toFixed(2));
-                    }}
-                />
+                {row('appearance.sidebarGroupStroke')}
             </SettingsSection>
 
             <SettingsSection
-                title="Terminal"
-                hint="These four keys belong to ghostty and are written to its config file; every other line in it is preserved exactly."
+                title={card('appearance-terminal').title}
+                hint={card('appearance-terminal').hint}
                 testID="appearance-terminal"
             >
+                {/*
+                 * The theme picker is hand-built: one gesture writes TWO ghostty keys (the theme,
+                 * and a null that drops any explicit `background`, which would otherwise silently
+                 * outrank it). A descriptor names one target, so this row is not one.
+                 */}
                 <SelectField
                     label="Theme"
                     testID="terminal-theme"
@@ -694,70 +720,12 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                     </SettingsRow>
                 )}
 
-                <SliderField
-                    label="Background opacity"
-                    testID="terminal-opacity"
-                    // APP-012 / SET-049: panes follow the value immediately; the WINDOW's own
-                    // transparency is fixed when Electron creates it, so crossing 1.0 takes a
-                    // relaunch. Said here rather than discovered.
-                    detail="Blended into every pane fill as rgba(background, opacity). Below 1 the window itself becomes transparent on the next launch."
-                    value={appearance.backgroundOpacity}
-                    min={0.1}
-                    max={1}
-                    step={0.05}
-                    onChange={(next) => {
-                        actions.setGhosttySetting('background-opacity', next.toFixed(2));
-                    }}
-                />
+                {row('appearance.backgroundOpacity')}
 
-                <TextField
-                    label="Font family"
-                    testID="terminal-font-family"
-                    detail="Blank means the renderer's own default."
-                    placeholder="default"
-                    value={appearance.fontFamily ?? ''}
-                    onCommit={(next) => {
-                        actions.setGhosttySetting('font-family', next.trim() === '' ? null : next.trim());
-                    }}
-                />
-                <SliderField
-                    label="Font size"
-                    testID="terminal-font-size"
-                    value={appearance.fontSize ?? 13}
-                    min={8}
-                    max={32}
-                    step={1}
-                    format={(value) => `${String(Math.round(value))}px`}
-                    onChange={(next) => {
-                        actions.setGhosttySetting('font-size', String(Math.round(next)));
-                    }}
-                />
-                <SliderField
-                    label="Padding (horizontal)"
-                    testID="terminal-padding-x"
-                    detail="Pixels kept clear at the pane's left and right edges - ghostty's window-padding-x."
-                    value={appearance.windowPaddingX ?? TERMINAL_EDGE_PADDING}
-                    min={0}
-                    max={32}
-                    step={1}
-                    format={(value) => `${String(Math.round(value))}px`}
-                    onChange={(next) => {
-                        actions.setGhosttySetting('window-padding-x', String(Math.round(next)));
-                    }}
-                />
-                <SliderField
-                    label="Padding (vertical)"
-                    testID="terminal-padding-y"
-                    detail="Pixels between the pane's top edge and row 1 - ghostty's window-padding-y. The bottom edge keeps the sub-cell remainder."
-                    value={appearance.windowPaddingY ?? TERMINAL_EDGE_PADDING_TOP}
-                    min={0}
-                    max={32}
-                    step={1}
-                    format={(value) => `${String(Math.round(value))}px`}
-                    onChange={(next) => {
-                        actions.setGhosttySetting('window-padding-y', String(Math.round(next)));
-                    }}
-                />
+                {row('appearance.fontFamily')}
+                {row('appearance.fontSize')}
+                {row('appearance.windowPaddingX')}
+                {row('appearance.windowPaddingY')}
 
                 <SettingsRow
                     label="Resolved appearance"
@@ -769,44 +737,14 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
             </SettingsSection>
 
             <SettingsSection
-                title="Search highlight"
-                hint="What a search match is painted with - the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Kelpi ships the Swift app's colours; these override them."
+                title={card('appearance-search').title}
+                hint={card('appearance-search').hint}
                 testID="appearance-search"
             >
-                <ColorField
-                    label="Match"
-                    testID="search-match-color"
-                    detail="Every match that is not the current one."
-                    value={chrome.searchMatchColor}
-                    onChange={(hex) => {
-                        writeSearchColor('search-match-color', hex);
-                    }}
-                />
-                <ColorField
-                    label="Match text"
-                    testID="search-match-text-color"
-                    value={chrome.searchMatchTextColor}
-                    onChange={(hex) => {
-                        writeSearchColor('search-match-text-color', hex);
-                    }}
-                />
-                <ColorField
-                    label="Current match"
-                    testID="search-match-current-color"
-                    detail="The one Return jumps to."
-                    value={chrome.searchMatchCurrentColor}
-                    onChange={(hex) => {
-                        writeSearchColor('search-match-current-color', hex);
-                    }}
-                />
-                <ColorField
-                    label="Current match text"
-                    testID="search-match-current-text-color"
-                    value={chrome.searchMatchCurrentTextColor}
-                    onChange={(hex) => {
-                        writeSearchColor('search-match-current-text-color', hex);
-                    }}
-                />
+                {row('appearance.searchMatchColor')}
+                {row('appearance.searchMatchTextColor')}
+                {row('appearance.searchMatchCurrentColor')}
+                {row('appearance.searchMatchCurrentTextColor')}
                 <SettingsRow
                     label="Preview"
                     detail="A line of text with one ordinary match and the current one, in the colours above."
@@ -854,20 +792,11 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
             </SettingsSection>
 
             <SettingsSection
-                title="Status bar"
-                hint="Live system metrics on the right of the bottom status bar. Hover any metric for a detail graph over time."
+                title={card('appearance-status-bar').title}
+                hint={card('appearance-status-bar').hint}
                 testID="appearance-status-bar"
             >
-                <SettingsRow label="Show system stats" testID="stats-master-row">
-                    <SettingsToggle
-                        testID="stats-master-toggle"
-                        label="Show system stats"
-                        checked={chrome.showSystemStats}
-                        onChange={(next) => {
-                            actions.setGeneralSetting('show-system-stats', next ? 'true' : 'false');
-                        }}
-                    />
-                </SettingsRow>
+                {row('appearance.showSystemStats')}
 
                 {chrome.showSystemStats ? (
                     <>
@@ -905,31 +834,8 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                                 Mini graphs
                             </summary>
                             <div className="mt-1.5 flex flex-col gap-1.5">
-                                <SettingsRow label="Show mini graphs" testID="stats-graphs-row">
-                                    <SettingsToggle
-                                        testID="stats-graphs-toggle"
-                                        label="Show mini graphs"
-                                        checked={chrome.showSystemStatGraphs}
-                                        onChange={(next) => {
-                                            actions.setGeneralSetting(
-                                                'show-system-stat-graphs',
-                                                next ? 'true' : 'false'
-                                            );
-                                        }}
-                                    />
-                                </SettingsRow>
-                                <SegmentedField
-                                    label="Graph style"
-                                    testID="sparkline-style"
-                                    value={chrome.sparklineStyle}
-                                    options={[
-                                        { value: 'line', label: 'Line' },
-                                        { value: 'dots', label: 'Stacked dots' }
-                                    ]}
-                                    onChange={(next) => {
-                                        actions.setGeneralSetting('sparkline-style', next);
-                                    }}
-                                />
+                                {row('appearance.showSystemStatGraphs')}
+                                {row('appearance.sparklineStyle')}
                                 <ColorField
                                     label="Graph colour"
                                     testID="sparkline-color"
@@ -943,23 +849,11 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                                         actions.setGeneralSetting('sparkline-color', normalized.toLowerCase());
                                     }}
                                 />
-                                <SliderField
-                                    label="Graph width"
-                                    testID="sparkline-width"
-                                    // L82: this row is not a `sliderRow` in the Swift — it writes
-                                    // its own `HStack` and gives the readout `.frame(width: 32)`
-                                    // (`SettingsView.swift:472-474`), because a bare 16…80 does
-                                    // not need a percentage's column.
-                                    readoutWidth={32}
-                                    value={chrome.sparklineWidth}
-                                    min={16}
-                                    max={80}
-                                    step={2}
-                                    format={(value) => String(Math.round(value))}
-                                    onChange={(next) => {
-                                        actions.setGeneralSetting('sparkline-width', String(Math.round(next)));
-                                    }}
-                                />
+                                {/*
+                                  * L82's narrow readout lives in `FieldRenderer`'s slider
+                                  * presentation table now, keyed by this field's id.
+                                  */}
+                                {row('appearance.sparklineWidth')}
                                 <div className="flex justify-end">
                                     <SettingsButton
                                         testID="sparkline-color-reset"

@@ -82,7 +82,8 @@ import {
 } from './glyphs';
 import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
-import { isNativeSettingsSection } from './sections';
+import { NO_SETTINGS_CHORDS, SettingsPresenterSlot } from './presenter-slot';
+import { settingsSectionHasNative } from './sections';
 import type { SettingsSurface } from './surface';
 import {
     DEFAULT_SETTINGS_PATHS,
@@ -160,6 +161,34 @@ export interface SettingsOverlayProps {
      * is exactly what it did before the surface existed.
      */
     readonly surface?: SettingsSurface | undefined;
+    /**
+     * Whether a selected plugin view may draw the rail and the panel (`App`: `!phoneActive`).
+     *
+     * Desktop only, and only with a `surface`: the routing, the drafts and the write queue a
+     * presenter acts through are the surface's, and the phone sheet is a two-screen push navigation
+     * over a software keyboard a frame cannot read. False - or absent - is the bundled panel,
+     * always, which is what every fixture and every existing test gets.
+     */
+    readonly presenters?: boolean | undefined;
+    /** The small relayed set from `settingsPresenterChords`, never `allViewChords`. */
+    readonly presenterChords?: readonly string[] | undefined;
+    /**
+     * How many modal registrations the ASSEMBLY holds while this dialog is open.
+     *
+     * `App` registers one presence covering Settings, Help and the create sheet, so it passes 1;
+     * anything above that number is a peer surface raised over the dialog (a palette, a prompt, the
+     * quit dialog), which owns the caret and its own Escape for as long as it is up. A dialog
+     * rendered on its own registers nothing, which is the default.
+     */
+    readonly modalPresence?: number | undefined;
+    /**
+     * The native report of a failed presenter (a toast), raised once per failing generation.
+     *
+     * The dialog does not draw its own: Settings is a surface you can be looking at when it fails,
+     * and the window's toast stack is where every other failure in this client is reported. The
+     * standing state lives in Settings ▸ Plugins beside the Retry row.
+     */
+    readonly onPresenterFailure?: ((detail: string) => void) | undefined;
 }
 
 const EMPTY_REPOSITORIES: readonly RepositoryEntry[] = [];
@@ -368,13 +397,20 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
      * markup it always was; "no tab content changes" (B5) is enforced by there being exactly one
      * copy of this block rather than by a promise.
      */
-    const tabContent = !isNativeSettingsSection(tab) ? (
-        /*
-         * A FIELDS section: a list of descriptors from `sections.ts`, drawn one control per
-         * descriptor by `FieldRenderer`. The two tabs below are that list plus the prose around it
-         * (a footer naming the config file, a pointer at the other tab); nothing here reads a
-         * config key, and nothing here is hand-written per row any more.
-         */
+    /*
+     * One tab's content, drawn by the component that has always drawn it.
+     *
+     * `nativeOnly` is the half: the whole tab for the bundled panel, and the hand-built REMAINDER
+     * when a presenter has the dialog. Three tabs take that half as a prop because three tabs have
+     * a remainder - General's failed-bind line and footer, Workspaces' footer, Appearance's gallery,
+     * colour map, theme picker and resets - and the other six are native in full, so the remainder
+     * IS the tab.
+     *
+     * One list rather than two arms: which tab is a list of descriptors is `sections.ts`'s business
+     * and changes as rows move onto the shared model, and a branch here that had to agree with it
+     * was a second place for that fact to live.
+     */
+    const tabContent = (nativeOnly: boolean): ReactNode => (
         <>
             {tab === 'general' ? (
                 <GeneralTab
@@ -383,6 +419,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     paths={paths}
                     transport={props.transport ?? null}
                     {...(surface === null ? {} : { surface })}
+                    {...(nativeOnly ? { part: 'native' as const } : {})}
                 />
             ) : null}
             {tab === 'workspaces' ? (
@@ -391,17 +428,9 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     actions={props.actions}
                     paths={paths}
                     {...(surface === null ? {} : { surface })}
+                    {...(nativeOnly ? { part: 'native' as const } : {})}
                 />
             ) : null}
-        </>
-    ) : (
-        /*
-         * A NATIVE section: drawn by the component that has always drawn it. These are the
-         * surfaces a list of values cannot express - a key recorder, a hand-rolled colour picker,
-         * a pairing card that shows a token once - plus Plugins, which is the route back to a
-         * working window and so can never be replaceable.
-         */
-        <>
             {tab === 'plugins' ? <div data-testid="settings-tab-plugins">{props.pluginContent ?? <p>Plugin management is unavailable.</p>}</div> : null}
             {tab === 'repositories' ? (
                 <RepositoriesTab
@@ -428,6 +457,8 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     paths={paths}
                     actions={props.actions}
                     bucket={props.bucket}
+                    {...(surface === null ? {} : { surface })}
+                    {...(nativeOnly ? { part: 'native' as const } : {})}
                 />
             ) : null}
             {tab === 'labels' ? (
@@ -459,6 +490,105 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
             ) : null}
         </>
     );
+
+    /*
+     * The rail and the panel, as ONE node.
+     *
+     * It is the bundled half of `SettingsPresenterSlot` on a desktop, and the whole dialog body on
+     * a phone or without a surface, so there is exactly one copy of this markup whoever draws
+     * around it. Nothing in it moved: same nodes, same classes, same test ids.
+     */
+    const panelRow = (
+        <div className="flex min-h-0 flex-1">
+            <div
+                role="tablist"
+                aria-label="Settings sections"
+                aria-orientation="vertical"
+                data-testid="settings-tabs"
+                /*
+                 * S59: `gap-1`. The rail rows are the port's intended 28.8 px now that S1
+                 * layered the reset, but `gap-0.5` left a 2 px row gap — a 30.8 px pitch,
+                 * eight rows reading as a paragraph of lines rather than a list of tabs.
+                 * 4 px puts the pitch at 32.8, still far denser than the Swift's
+                 * icon-over-title `.tabItem`s (~50 × 40 pt).
+                 */
+                className="flex w-44 shrink-0 flex-col gap-1 border-r p-2"
+                style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
+                onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        moveTab(1);
+                        return;
+                    }
+                    if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+                        event.preventDefault();
+                        moveTab(-1);
+                        return;
+                    }
+                    if (event.key === 'Home') {
+                        event.preventDefault();
+                        moveTab(0, 'first');
+                        return;
+                    }
+                    if (event.key === 'End') {
+                        event.preventDefault();
+                        moveTab(0, 'last');
+                    }
+                }}
+            >
+                {SETTINGS_TABS.map((entry) => (
+                    <RailTab
+                        key={entry.id}
+                        id={entry.id}
+                        label={entry.label}
+                        icon={entry.icon}
+                        selected={entry.id === tab}
+                        registerRef={(node) => {
+                            if (node === null) tabRefs.current.delete(entry.id);
+                            else tabRefs.current.set(entry.id, node);
+                        }}
+                        onSelect={() => {
+                            setTab(entry.id);
+                        }}
+                    />
+                ))}
+            </div>
+
+            <div
+                role="tabpanel"
+                id={`settings-panel-${tab}`}
+                aria-labelledby={`settings-tab-${tab}`}
+                data-testid="settings-panel"
+                className="min-w-0 flex-1 overflow-y-auto p-4"
+            >
+                {tabContent(false)}
+            </div>
+        </div>
+    );
+
+    /*
+     * What the HOST keeps drawing when a presenter has the dialog.
+     *
+     * A section the bundled panel owns whatever is selected - Plugins in full, Remote, Profiles,
+     * Repositories, Labels, Keybindings and its two recorders, Web - is drawn here, below the
+     * frame, with the presenter still painting the rail beside it. That is what keeps the route to
+     * "Restore bundled views" and "Retry presenter" in the same place whoever is painting, and it
+     * is the same node either way: `tabContent` has exactly one copy.
+     *
+     * A partly projected section (projected fields plus a hand-built remainder) lands here too: the
+     * frame draws the fields and this draws the rest.
+     */
+    const nativeRemainder = settingsSectionHasNative(tab) ? (
+        <div
+            role="group"
+            aria-label={currentLabel}
+            data-testid="settings-native-remainder"
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto border-t p-4"
+            style={{ borderColor: tokens.divider }}
+        >
+            {tabContent(true)}
+        </div>
+    ) : null;
 
     if (phone) {
         return (
@@ -560,7 +690,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             data-testid="settings-panel"
                             className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4"
                         >
-                            {tabContent}
+                            {tabContent(false)}
                         </div>
                     ) : (
                         <div
@@ -658,71 +788,33 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     </span>
                 </div>
 
-                <div className="flex min-h-0 flex-1">
-                <div
-                    role="tablist"
-                    aria-label="Settings sections"
-                    aria-orientation="vertical"
-                    data-testid="settings-tabs"
-                    /*
-                     * S59: `gap-1`. The rail rows are the port's intended 28.8 px now that S1
-                     * layered the reset, but `gap-0.5` left a 2 px row gap — a 30.8 px pitch,
-                     * eight rows reading as a paragraph of lines rather than a list of tabs.
-                     * 4 px puts the pitch at 32.8, still far denser than the Swift's
-                     * icon-over-title `.tabItem`s (~50 × 40 pt).
-                     */
-                    className="flex w-44 shrink-0 flex-col gap-1 border-r p-2"
-                    style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
-                    onKeyDown={(event) => {
-                        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                            event.preventDefault();
-                            moveTab(1);
-                            return;
-                        }
-                        if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                            event.preventDefault();
-                            moveTab(-1);
-                            return;
-                        }
-                        if (event.key === 'Home') {
-                            event.preventDefault();
-                            moveTab(0, 'first');
-                            return;
-                        }
-                        if (event.key === 'End') {
-                            event.preventDefault();
-                            moveTab(0, 'last');
-                        }
-                    }}
-                >
-                    {SETTINGS_TABS.map((entry) => (
-                        <RailTab
-                            key={entry.id}
-                            id={entry.id}
-                            label={entry.label}
-                            icon={entry.icon}
-                            selected={entry.id === tab}
-                            registerRef={(node) => {
-                                if (node === null) tabRefs.current.delete(entry.id);
-                                else tabRefs.current.set(entry.id, node);
-                            }}
-                            onSelect={() => {
-                                setTab(entry.id);
-                            }}
-                        />
-                    ))}
-                </div>
-
-                <div
-                    role="tabpanel"
-                    id={`settings-panel-${tab}`}
-                    aria-labelledby={`settings-tab-${tab}`}
-                    data-testid="settings-panel"
-                    className="min-w-0 flex-1 overflow-y-auto p-4"
-                >
-                    {tabContent}
-                </div>
-                </div>
+                {/*
+                  * Who draws the rail and the panel.
+                  *
+                  * The slot is the ONE decision point: with no surface, on a phone, with nothing
+                  * selected, with the connection down or with this generation latched, it renders
+                  * `panelRow` inside a `display: contents` wrapper - so the bundled dialog is the
+                  * markup it has always been, node for node. With a presenter painting, the frame
+                  * takes the row's box and the host draws the native remainder below it.
+                  */}
+                {surface === null ? (
+                    panelRow
+                ) : (
+                    <SettingsPresenterSlot
+                        surface={surface}
+                        enabled={props.presenters === true}
+                        visible
+                        chords={props.presenterChords ?? NO_SETTINGS_CHORDS}
+                        ownModals={props.modalPresence ?? 0}
+                        className="flex min-h-0 flex-1"
+                        onClose={props.onClose}
+                        {...(props.onPresenterFailure === undefined
+                            ? {}
+                            : { onFailure: props.onPresenterFailure })}
+                    >
+                        {({ presented }) => (presented ? nativeRemainder : panelRow)}
+                    </SettingsPresenterSlot>
+                )}
             </div>
         </div>
     );

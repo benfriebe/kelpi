@@ -138,6 +138,13 @@ never route through a plugin. A palette or prompts presenter is selected in the 
 views list and falls back to bundled the same way; see
 [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
+The Settings presenter shares that floor and adds one rule of its own: the Plugins section is
+native, so **Restore bundled views** and **Retry presenter** are drawn by the bundled panel
+whatever is selected, and a failed Settings presenter cannot hide the route back to itself.
+`⌘,` and the native Settings menu command open the dialog without routing through a plugin, and
+the drafts a failed presenter was holding are still in the fields the bundled panel redraws. See
+[selectable Settings presenter](plugin-ui.md#selectable-settings-presenter).
+
 ## Validation
 
 Run `node scripts/scenario.mjs plugin-chrome-features --window hidden`. It uses private daemons to

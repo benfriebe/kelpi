@@ -4,6 +4,7 @@ import { getKelpi, type BackendAPI, type BuiltinProviderMethods, type NativeGitS
 import './tests/service-fixtures.js';
 import './ui.typecheck.js';
 import './interaction.typecheck.js';
+import './settings.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
 

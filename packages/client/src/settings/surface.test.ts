@@ -103,8 +103,15 @@ describe('routing', () => {
         const snapshotted = surface.getSnapshot();
         expect(snapshotted.sections.map((section) => section.id)).toContain('plugins');
         expect(snapshotted.sectionID).toBe('general');
-        expect(snapshotted.native).toBe(false);
         expect(snapshotted.fields.length).toBeGreaterThan(0);
+        /*
+         * `native` is the PAINT question, and General's answer is yes: its two outcome rows (the
+         * failed bind, the CLI-compat note), its pointer at the Workspaces tab and its config-file
+         * footer are not values and have no descriptors, so the bundled panel draws them below
+         * whatever is presenting the fields.
+         */
+        expect(snapshotted.native).toBe(true);
+        expect(snapshotted.sections.find((section) => section.id === 'general')?.kind).toBe('fields');
     });
 
     it('projects nothing for a native section, and still names it', () => {
@@ -167,6 +174,54 @@ describe('drafts', () => {
         expect(field('general.tcpPort').error).toBeUndefined();
         expect(writes).toEqual([]);
         expect(surface.getSnapshot().dirty).toBe(0);
+    });
+
+    /**
+     * The line-break refusal, at the surface: the funnel is what stands between a text row and a
+     * line-oriented config file, so a newline never becomes a `command`, `keybind`, `profile` or
+     * `remote-daemon` line however the value arrived.
+     */
+    it('holds a text draft carrying a line break, and never writes one', () => {
+        const { surface, writes, field } = harness();
+        for (const [fieldID, text] of [
+            ['general.worktreeBasePath', '~/work\ncommand = rm -rf ~'],
+            ['general.worktreeBasePath', '~/work\r\nkeybind = super+q=quit'],
+            ['general.worktreeBasePath', '~/work\u0085profile = evil']
+        ] as const) {
+            surface.setDraft(fieldID, text);
+            expect(field(fieldID)).toMatchObject({ draft: text });
+            expect(field(fieldID).error).toContain('cannot contain line breaks or control characters');
+            surface.commitField(fieldID);
+            expect(field(fieldID).error).toContain('cannot contain line breaks or control characters');
+            expect(writes).toEqual([]);
+        }
+        // The ghostty half of the same hole: a font stack is free text in somebody else's file.
+        surface.setSection('appearance');
+        surface.setDraft('appearance.fontFamily', 'Mono\nbackground = 000000');
+        surface.commitField('appearance.fontFamily');
+        expect(writes).toEqual([]);
+        // A plain value still goes out, so the rule is a refusal and not a freeze.
+        surface.setDraft('appearance.fontFamily', 'SF Mono');
+        surface.commitField('appearance.fontFamily');
+        expect(writes).toEqual([{ key: 'font-family', value: 'SF Mono' }]);
+    });
+
+    it('refuses a reset for an id the catalog will not resolve', () => {
+        const { surface, disabled } = harness({ tcpPort: 0 });
+        // The same door every other mutator goes through: unknown, native, off screen, disabled.
+        expect(() => {
+            surface.resetField('general.nonesuch');
+        }).toThrow('Unknown settings field');
+        expect(() => {
+            surface.resetField('profiles.env');
+        }).toThrow('Unknown settings field');
+        expect(() => {
+            surface.resetField('general.tcpPort');
+        }).toThrow('not on screen');
+        disabled.add('general.autoDetectRepos');
+        expect(() => {
+            surface.resetField('general.autoDetectRepos');
+        }).toThrow('cannot be changed right now');
     });
 
     it('refuses a draft for a field that is not there to type into', () => {

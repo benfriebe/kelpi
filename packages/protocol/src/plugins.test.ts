@@ -34,6 +34,16 @@ describe('public plugin protocol', () => {
         const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['interaction.prompts'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
         expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/interaction/);
     });
+    it('accepts the Settings window placement and refuses a container in it', () => {
+        const placements = ['settings.window'];
+        const views = [{ ...manifest.contributes.views[0], placements }];
+        expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views[0]?.placements).toEqual(placements);
+        const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['settings.window'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
+        expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/Settings window/);
+        // The existing `settings` slot inside Plugins is a different placement and still hosts a container.
+        expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements: ['settings'] }],
+            containers: [{ id: 'sample.board.stack', title: 'Stack', placements: ['settings'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }] } }).contributes.containers).toHaveLength(1);
+    });
     it.each([
         { apiVersion: 9 }, { trust: 'sandbox' }, { id: 'kelpi.board' }, { id: '../escape' },
         { backend: '../code.js' }, { backend: 'ui/code.js' },

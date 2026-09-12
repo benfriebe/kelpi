@@ -55,6 +55,13 @@ export interface WorkspacesTabProps {
      * pinned to this section. One funnel either way: see `GeneralTab`'s note.
      */
     readonly surface?: SettingsSurface | undefined;
+    /**
+     * Which half of the tab to draw: `all` (the bundled panel) or the `native` REMAINDER the host
+     * keeps drawing when a presenter has the dialog. This tab's remainder is prose - the pointer at
+     * the General tab and the footer naming the config file - which is not a descriptor and would
+     * otherwise vanish behind a presenter. `GeneralTab`'s note applies verbatim.
+     */
+    readonly part?: 'all' | 'native' | undefined;
 }
 
 /**
@@ -88,17 +95,21 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
         }
     };
 
+    const projected = props.part !== 'native';
+
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-workspaces">
-            {snapshot.groups.map((group) => (
-                <SettingsSection key={group.id} title={group.title} testID={group.testID}>
-                    {snapshot.fields
-                        .filter((field) => field.groupID === group.id)
-                        .map((field) => (
-                            <FieldRenderer key={field.id} field={field} onCommit={commit} />
-                        ))}
-                </SettingsSection>
-            ))}
+            {projected
+                ? snapshot.groups.map((group) => (
+                      <SettingsSection key={group.id} title={group.title} testID={group.testID}>
+                          {snapshot.fields
+                              .filter((field) => field.groupID === group.id)
+                              .map((field) => (
+                                  <FieldRenderer key={field.id} field={field} onCommit={commit} />
+                              ))}
+                      </SettingsSection>
+                  ))
+                : null}
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                 Worktree paths, repository auto-detection and sidebar placement are on the General tab.

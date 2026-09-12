@@ -109,6 +109,45 @@ describe('the presented interaction placements', () => {
     });
 });
 
+/**
+ * The Settings window, on the same terms as the two interaction placements and for a sharper
+ * reason: Settings is where a presenter is switched off, so a plugin that could select itself into
+ * `settings.window` could take the route to its own removal with it. Discovery is free; selection
+ * is the user's, in Settings.
+ */
+describe('the presented Settings window', () => {
+    function settingsPresenter(): PluginInfo {
+        return { manifest: decodePluginManifest({ id: 'sample.settings', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.settings.view', title: 'Lab settings', entry: 'ui/index.html', placements: ['settings.window'] }]
+        } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' };
+    }
+
+    it('is discoverable, never selectable by a plugin, and names its bundled floor', () => {
+        plugins = [settingsPresenter()];
+        render(<Harness />);
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'settings.window', title: 'settings.window', viewID: 'kelpi.settings.window' }
+        ]) });
+        expect(() => requestHostUI(bridge, runtime, 'ui.selectView', { slot: 'settings.window', viewID: 'sample.settings.view' })).toThrow('Workbench slot is not registered.');
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'settings.window', title: 'settings.window', viewID: 'kelpi.settings.window' }
+        ]) });
+        // The plugin-contributed `settings` SLOT inside the Plugins tab is a different thing and is
+        // selectable as it always was.
+        expect(() => requestHostUI(bridge, runtime, 'ui.selectView', { slot: 'settings', viewID: 'sample.settings.view' })).toThrow('View is unavailable, incompatible with this slot, or would create a layout cycle.');
+
+        const options = [...(screen.getByLabelText('settings.window') as HTMLSelectElement).options]
+            .map(option => `${option.value}=${option.textContent ?? ''}`);
+        expect(options).toEqual(['kelpi.settings.window=Settings (bundled)', 'sample.settings.view=Lab settings']);
+
+        // The Settings select is the route that does work, and it is a user gesture.
+        act(() => { fireEvent.change(screen.getByLabelText('settings.window'), { target: { value: 'sample.settings.view' } }); });
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'settings.window', title: 'settings.window', viewID: 'sample.settings.view' }
+        ]) });
+    });
+});
+
 describe('workbench composition', () => {
     it('scopes plugin UI requests to their daemon and rejects invalid selections explicitly', () => {
         render(<Harness />);

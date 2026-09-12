@@ -136,6 +136,19 @@ a second plugin's prompt, presenter crash and watchdog fallback with the live re
 reload, disable, and the phone form factor keeping the bundled presenters. Selectable
 notification presentation remains open scope; the notification stack stays bundled.
 
+## Following phase: full Settings presentation
+
+Phase 1 (shared settings contracts) is implemented on `feature/plugin-settings-contracts`,
+based on the Interaction Lab branch. `packages/client/src/settings/contract.ts`,
+`sections.ts` and `surface.ts` are the vocabulary and authority; `FieldRenderer.tsx` draws a
+descriptor with the existing controls; `SettingsOverlay` routes through the surface. General
+and Workspaces render from descriptors; Appearance's plain rows are the next candidates.
+Phase 2 adds the `settings.window` placement, Settings-only selection and bundled recovery
+following the interaction presenter precedent; phase 3 adds a Settings Lab and its scenario.
+The decisions taken by precedent (what stays native, repository paths not projected,
+plugin-contributed settings sharing the draft model) are listed in the roadmap row and are
+reversible before phase 2 exposes an API.
+
 ## Setup and validation for the next agent
 
 1. Check `git status`, fetch main, and inspect the current head and PR #164 state. Read any

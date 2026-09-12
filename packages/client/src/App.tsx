@@ -179,6 +179,8 @@ import {
     DEFAULT_SETTINGS_TAB,
     SettingsOverlay,
     globalHotkeyErrorFrom,
+    settingsTransportStatus,
+    useSettingsSurface,
     type SettingsActions,
     type SettingsTabID
 } from './settings';
@@ -2355,6 +2357,47 @@ function Shell(props: AppProps): ReactElement {
         handBackPaneCaret(selectFocusedPaneID(store.getState()));
     }, [handBackPaneCaret, store]);
 
+    /**
+     * The window's one settings surface (`settings/surface.ts`).
+     *
+     * Created ONCE and read through an indirection, like the interaction surface above it, because
+     * everything it holds - the routed section, the drafts, the write queue's fences - has to
+     * outlive a re-render that changed a callback's identity.
+     *
+     * `settingsTab` stays this component's state and this component's alone: the surface's routing
+     * arm READS it and writes through `openSettings`, so every deep link (⌘,, the ••• menu, the
+     * palette, "Manage labels…", Help's keybindings link, "Manage favourites…") still lands on the
+     * same one function, and the surface is what refuses a section the catalog does not have.
+     *
+     * The `transport` arm answers §SET-021's one caption the settings snapshot cannot: what the
+     * daemon's TCP listener actually DID. It hands over three STATES, never prose and never
+     * `tcp.error`, so the raw OS bind message cannot reach a caption a replaceable presenter will
+     * be handed in phase 2; the verbatim error keeps its own native line inside the section.
+     */
+    const settingsSurface = useSettingsSurface({
+        settings: () => settings,
+        actions: () => settingsActions,
+        section: {
+            get: () => settingsTab,
+            set: (id) => {
+                openSettings(id);
+            }
+        },
+        transport: () => settingsTransportStatus(daemon.transport)
+    });
+
+    /*
+     * The daemon's `settings-changed` hook, at the one place this window learns about one: the
+     * settings snapshot in the store changed.
+     *
+     * Reconciliation settles the writes a broadcast acknowledges and drops the drafts it makes
+     * stale, and it must not be render-driven - a window with Settings CLOSED still has in-flight
+     * writes to settle, and nothing would be reading a projection to trigger it.
+     */
+    useEffect(() => {
+        settingsSurface.settingsChanged();
+    }, [settingsSurface, settings]);
+
     // ── favicon / tab badge ─────────────────────────────────────────────────────────
 
     const faviconRef = useRef<FaviconController | null>(null);
@@ -3347,7 +3390,16 @@ function Shell(props: AppProps): ReactElement {
                             batch={webUI.batches[paneID] ?? null}
                             batchDestinations={batchDestinations(panes, paneID)}
                             favourites={webUI.favourites}
-                            onManageFavourites={() => setSettingsTab('web')}
+                            /*
+                             * Every route into Settings is ONE function (the shared settings
+                             * contracts' routing rule). This one used to call `setSettingsTab`
+                             * directly, which meant the web pane's "Manage favourites…" bypassed
+                             * whatever `openSettings` does on the way in - today the tab, next
+                             * phase the surface's section routing.
+                             */
+                            onManageFavourites={() => {
+                                openSettings('web');
+                            }}
                         />
                     );
                 },
@@ -3871,6 +3923,8 @@ function Shell(props: AppProps): ReactElement {
                 pluginContent={<PluginsTab runtime={runtime} />}
                 open={settingsTab !== null}
                 initialTab={settingsTab ?? DEFAULT_SETTINGS_TAB}
+                /* Routing, validated against the catalog; the modal's own behaviour stays in the overlay. */
+                surface={settingsSurface}
                 settings={settings}
                 domain={{
                     labelPresets: daemon.state.labelPresets,

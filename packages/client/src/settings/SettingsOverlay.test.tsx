@@ -1,8 +1,11 @@
 import { DEFAULT_WS_SETTINGS } from '@kelpi/protocol';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createFakePhoneWindow } from '../phone/testing';
 import { SettingsOverlay } from './SettingsOverlay';
+import { SETTINGS_TABS, type SettingsTabID } from './catalog';
+import { createSettingsSurface, type SettingsSurface } from './surface';
 import type { SettingsActions } from './types';
 
 const NOOP_ACTIONS: SettingsActions = {
@@ -257,4 +260,139 @@ describe('the Settings window', () => {
         view.rerender(<SettingsOverlay open initialTab="labels" {...props} />);
         expect(document.activeElement).toBe(screen.getByTestId('settings-tab-button-labels'));
     });
+});
+
+/*
+ * ── routing through the surface ─────────────────────────────────────────────────────
+ *
+ * Assembly hands the window a `SettingsSurface` whose section arm reads and writes `App`'s own
+ * `settingsTab`, so every route into Settings stays one function and the catalog is what refuses a
+ * section that does not exist. What must NOT move onto it is the modal's own behaviour: Escape,
+ * the focus trap, the rail's roving tabindex and PR #181's `initialTab` rule are this component's,
+ * and the cases above pin them with no surface at all.
+ */
+describe('the Settings window, routed by a surface', () => {
+    function routed(start: SettingsTabID = 'general'): {
+        readonly surface: SettingsSurface;
+        readonly section: () => SettingsTabID;
+    } {
+        let section: SettingsTabID = start;
+        const surface = createSettingsSurface({
+            settings: () => DEFAULT_WS_SETTINGS,
+            actions: () => NOOP_ACTIONS,
+            section: {
+                get: () => section,
+                set: (id) => {
+                    section = id;
+                }
+            }
+        });
+        return { surface, section: () => section };
+    }
+
+    it('asks the surface to route, and shows whatever the surface answers', () => {
+        const { surface, section } = routed();
+        render(
+            <SettingsOverlay
+                open
+                surface={surface}
+                settings={DEFAULT_WS_SETTINGS}
+                domain={{ labelPresets: [], workspaces: [] }}
+                actions={NOOP_ACTIONS}
+                onClose={vi.fn()}
+            />
+        );
+        expect(screen.getByTestId('settings-tab-general')).toBeDefined();
+
+        fireEvent.click(screen.getByTestId('settings-tab-button-profiles'));
+        expect(section()).toBe('profiles');
+        expect(screen.getByTestId('settings-tab-profiles')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-button-profiles').getAttribute('aria-selected')).toBe('true');
+
+        // …and a route the HOST takes (a deep link, the palette, a chrome command) moves the panel
+        // without the rail having been touched.
+        act(() => {
+            surface.setSection('labels');
+        });
+        expect(screen.getByTestId('settings-tab-labels')).toBeDefined();
+    });
+
+    it('still traps Tab and still closes on Escape', () => {
+        const onClose = vi.fn();
+        const { surface } = routed();
+        render(
+            <SettingsOverlay
+                open
+                surface={surface}
+                settings={DEFAULT_WS_SETTINGS}
+                domain={{ labelPresets: [], workspaces: [] }}
+                actions={NOOP_ACTIONS}
+                onClose={onClose}
+            />
+        );
+        const dialog = screen.getByTestId('settings-window');
+        const focusable = dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])');
+        focusable[focusable.length - 1]?.focus();
+        fireEvent.keyDown(dialog, { key: 'Tab' });
+        expect(document.activeElement).toBe(focusable[0]);
+        fireEvent.keyDown(dialog, { key: 'Escape' });
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    /*
+     * B5's push navigation, with a surface in the way.
+     *
+     * Routing through the surface means `App`'s `settingsTab` - and therefore the `initialTab`
+     * prop - changes on every plain tap, which the phone's "is this a deep link" rule used to read
+     * as a re-derivation signal. Tapping General would have pushed the screen and then immediately
+     * popped it back to the list.
+     */
+    it('keeps a tapped tab pushed on a phone, General included', () => {
+        const { surface, section } = routed();
+        render(
+            <SettingsOverlay
+                open
+                surface={surface}
+                formFactorWindow={createFakePhoneWindow()}
+                settings={DEFAULT_WS_SETTINGS}
+                domain={{ labelPresets: [], workspaces: [] }}
+                actions={NOOP_ACTIONS}
+                onClose={vi.fn()}
+            />
+        );
+        expect(screen.getByTestId('settings-phone-list')).toBeDefined();
+        fireEvent.click(screen.getByTestId('settings-tab-button-general'));
+        expect(section()).toBe('general');
+        expect(screen.getByTestId('settings-tab-general')).toBeDefined();
+        expect(screen.getByTestId('settings-phone-back')).toBeDefined();
+
+        // …and Back still returns to the list.
+        fireEvent.click(screen.getByTestId('settings-phone-back'));
+        expect(screen.getByTestId('settings-phone-list')).toBeDefined();
+    });
+});
+
+/*
+ * ── the rail cannot outrun the panel ────────────────────────────────────────────────
+ *
+ * `tabContent` is a two-branch decision now: a FIELDS section is drawn from the catalog's
+ * descriptors, a NATIVE one by the component that has always drawn it, and `sections.ts` is the
+ * single answer to which is which. A section that fell out of both branches - a new tab in
+ * `SETTINGS_TABS`, a section reclassified in the catalog, a tab quietly dropped from one of the
+ * two fragments - would leave a rail entry that selects an EMPTY panel, which no existing case
+ * would catch: each of them names one tab.
+ *
+ * So this walks the rail itself. Every entry the rail offers must render its own
+ * `settings-tab-<id>` root, whichever branch draws it.
+ */
+describe('every tab in the rail draws a panel', () => {
+    for (const entry of SETTINGS_TABS) {
+        it(`renders content for ${entry.id}`, () => {
+            setup({ initialTab: entry.id });
+            const panel = screen.getByTestId('settings-panel');
+            const content = screen.getByTestId(`settings-tab-${entry.id}`);
+            expect(panel.contains(content)).toBe(true);
+            expect((content.textContent ?? '').length).toBeGreaterThan(0);
+        });
+    }
 });

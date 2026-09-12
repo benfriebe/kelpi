@@ -173,6 +173,13 @@ export const CATALOGUED_ACTIONS: readonly KelpiAction[] = KELPI_ACTIONS;
  * rather than inserted — an addition at the bottom of the rail cannot displace any of the
  * seven, where slotting it beside General (the tab that points at it) would have.
  *
+ * **This table is also the SECTION vocabulary.** `contract.ts` derives `SETTINGS_SECTION_IDS`
+ * from it, and `sections.ts` derives `SETTINGS_SECTIONS` (title, icon, order, and whether a
+ * section is a list of fields or is drawn natively) from it too, rather than restating the list:
+ * a section that existed only in the shared model would be a section with no way in, and a rail
+ * entry that existed only here would be a route with nothing behind it. The rail keeps reading
+ * `SETTINGS_TABS` in both form factors, so no test and no audit selector moves.
+ *
  * **Each entry names its glyph** (L88). Every `.tabItem` in `SettingsView.swift:20-59` is a
  * `Label(name, systemImage:)`, and the port's rail had the names alone. The `icon` key is the SF
  * Symbol's name, which `SettingsOverlay` maps to the hand-rolled drawing in `./glyphs.tsx` — the

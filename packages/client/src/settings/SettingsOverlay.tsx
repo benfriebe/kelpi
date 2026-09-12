@@ -82,6 +82,8 @@ import {
 } from './glyphs';
 import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
+import { isNativeSettingsSection } from './sections';
+import type { SettingsSurface } from './surface';
 import {
     DEFAULT_SETTINGS_PATHS,
     type SettingsActions,
@@ -89,6 +91,7 @@ import {
     type SettingsPaths
 } from './types';
 import { SettingsButton, hoverBackground, useHover } from './ui';
+import { useSettingsSection } from './use-settings';
 
 export interface SettingsOverlayProps {
     readonly pluginContent?: import('react').ReactNode;
@@ -144,6 +147,19 @@ export interface SettingsOverlayProps {
      * `matchMedia` at all, so a real window there always answers `desktop`.
      */
     readonly formFactorWindow?: FormFactorWindow | undefined;
+    /**
+     * The window's settings surface (`settings/surface.ts`), when assembly has one.
+     *
+     * What it owns here is ROUTING: which section is showing, validated against the catalog. The
+     * rail, the Escape, the focus trap, the phone rule and PR #181's `initialTab` re-application
+     * all stay in this component, because they are the modal's behaviour rather than the settings
+     * model's - and because a replaceable presenter must never be able to route the user away
+     * from the section that would let them switch it off.
+     *
+     * Absent (a fixture, a unit test, an embedder) the overlay holds the selection itself, which
+     * is exactly what it did before the surface existed.
+     */
+    readonly surface?: SettingsSurface | undefined;
 }
 
 const EMPTY_REPOSITORIES: readonly RepositoryEntry[] = [];
@@ -185,7 +201,29 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     // H13: `SettingsView.swift:13` opens on `.general`. Nothing here picks a "most useful" tab
     // of its own — the shipped app's landing tab is the landing tab.
     const initial = props.initialTab ?? DEFAULT_SETTINGS_TAB;
-    const [tab, setTab] = useState<SettingsTabID>(initial);
+    const surface = props.surface ?? null;
+    /*
+     * Where the selection lives.
+     *
+     * With a surface it is the surface's (which, in the app, is `App`'s own `settingsTab` behind
+     * a validator - so every deep link, the palette, the menu and ⌘, keep routing exactly as they
+     * did). Without one this component holds it, which is what every fixture and every unit test
+     * below relies on. `setTab` is the one writer either way, so the rail, the arrow keys and the
+     * phone's list rows are untouched by which of the two is in force.
+     */
+    const [heldTab, setHeldTab] = useState<SettingsTabID>(initial);
+    const routed = useSettingsSection(surface);
+    const tab = routed ?? heldTab;
+    const setTab = useCallback(
+        (id: SettingsTabID): void => {
+            if (surface === null) {
+                setHeldTab(id);
+                return;
+            }
+            surface.setSection(id);
+        },
+        [surface]
+    );
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const tabRefs = useRef(new Map<SettingsTabID, HTMLButtonElement>());
     const backRef = useRef<HTMLButtonElement | null>(null);
@@ -208,18 +246,37 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
      * rule lands each of them on its tab, with the back button, and lands every plain open on the
      * list. General stays one tap away, which is where a landing tab belongs on a phone anyway.
      */
-    const [pushed, setPushed] = useState(initial !== DEFAULT_SETTINGS_TAB);
+    const [pushed, setPushed] = useState((routed ?? initial) !== DEFAULT_SETTINGS_TAB);
+
+    /*
+     * The section the sheet LANDS on, kept in a ref so the open-edge effect below can read it
+     * without taking it as a dependency. With a surface it is the routed section (which is what
+     * the deep link set); without one it is `initialTab`, as it always was.
+     */
+    const landingRef = useRef(routed ?? initial);
+    landingRef.current = routed ?? initial;
 
     // Re-opening always lands on the requested tab: a deep link ("Manage labels…") must not be
-    // overridden by wherever the user happened to be last time.
+    // overridden by wherever the user happened to be last time. Only the HELD selection needs
+    // resetting - a surface is routed by the host, which is what changed `initialTab` in the first
+    // place, so re-applying it here would be this component telling the host what it just said.
     useEffect(() => {
-        if (props.open) setTab(initial);
+        if (props.open) setHeldTab(initial);
     }, [props.open, initial]);
 
-    // …and the phone's screen is re-derived on the same edge, for the same reason.
+    /*
+     * …and the phone's screen is re-derived on the same edge, for the same reason.
+     *
+     * The second dependency is the SIGNAL to re-derive, not the value derived. Without a surface it
+     * is `initialTab`, because that is the only way a deep link can arrive while the sheet is open.
+     * With one it is a constant, because every plain navigation changes the routed section (and
+     * therefore `initialTab`) too: keeping `initial` there would re-run this on every tap and
+     * un-push the user the moment they opened the General row.
+     */
+    const pushSignal = surface === null ? initial : DEFAULT_SETTINGS_TAB;
     useEffect(() => {
-        if (props.open) setPushed(initial !== DEFAULT_SETTINGS_TAB);
-    }, [props.open, initial]);
+        if (props.open) setPushed(landingRef.current !== DEFAULT_SETTINGS_TAB);
+    }, [props.open, pushSignal]);
 
     useEffect(() => {
         if (!props.open) return;
@@ -272,7 +329,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
             setTab(id);
             tabRefs.current.get(id)?.focus();
         },
-        [tab]
+        [tab, setTab]
     );
 
     if (!props.open) return null;
@@ -311,17 +368,41 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
      * markup it always was; "no tab content changes" (B5) is enforced by there being exactly one
      * copy of this block rather than by a promise.
      */
-    const tabContent = (
+    const tabContent = !isNativeSettingsSection(tab) ? (
+        /*
+         * A FIELDS section: a list of descriptors from `sections.ts`, drawn one control per
+         * descriptor by `FieldRenderer`. The two tabs below are that list plus the prose around it
+         * (a footer naming the config file, a pointer at the other tab); nothing here reads a
+         * config key, and nothing here is hand-written per row any more.
+         */
         <>
-            {tab === 'plugins' ? <div data-testid="settings-tab-plugins">{props.pluginContent ?? <p>Plugin management is unavailable.</p>}</div> : null}
             {tab === 'general' ? (
                 <GeneralTab
                     settings={props.settings}
                     actions={props.actions}
                     paths={paths}
                     transport={props.transport ?? null}
+                    {...(surface === null ? {} : { surface })}
                 />
             ) : null}
+            {tab === 'workspaces' ? (
+                <WorkspacesTab
+                    settings={props.settings}
+                    actions={props.actions}
+                    paths={paths}
+                    {...(surface === null ? {} : { surface })}
+                />
+            ) : null}
+        </>
+    ) : (
+        /*
+         * A NATIVE section: drawn by the component that has always drawn it. These are the
+         * surfaces a list of values cannot express - a key recorder, a hand-rolled colour picker,
+         * a pairing card that shows a token once - plus Plugins, which is the route back to a
+         * working window and so can never be replaceable.
+         */
+        <>
+            {tab === 'plugins' ? <div data-testid="settings-tab-plugins">{props.pluginContent ?? <p>Plugin management is unavailable.</p>}</div> : null}
             {tab === 'repositories' ? (
                 <RepositoriesTab
                     repos={props.domain.repos ?? EMPTY_REPOSITORIES}
@@ -359,9 +440,6 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
             ) : null}
             {tab === 'profiles' ? (
                 <ProfilesTab profiles={props.settings.profiles} actions={props.actions} paths={paths} />
-            ) : null}
-            {tab === 'workspaces' ? (
-                <WorkspacesTab settings={props.settings} actions={props.actions} paths={paths} />
             ) : null}
             {tab === 'web' ? (
                 <WebTab

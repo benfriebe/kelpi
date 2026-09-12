@@ -7,6 +7,22 @@
  * the daemon reads each one through the settings service on every command rather than at boot,
  * and the write is the same `set-general-setting` verb the rest of Settings uses.
  *
+ * ── The rows are DESCRIPTORS now ────────────────────────────────────────────────────
+ *
+ * The markup, the order and the test ids are unchanged; what moved is where a row is *declared*.
+ * `sections.ts` holds the cards and the fields as data (with each field's write target PRIVATE to
+ * that module), `FieldRenderer` turns one field into one control, and the surface is the only
+ * thing that turns a field id into a config key. Three consequences:
+ *
+ *   - a presenter can be handed the descriptors without being handed a verb, a key or a closure;
+ *   - the daemon's allowlist (`WS_WRITABLE_GENERAL_KEYS`) has exactly one client-side counterpart
+ *     to be checked against, rather than a key spelled inline beside each control;
+ *   - the tab still renders from a fixture with nothing but `settings` + `actions`, which is what
+ *     every test here does.
+ *
+ * What is NOT a descriptor is what is not a value: the failed-bind line and the compat note report
+ * an OUTCOME the daemon sent, and the pointer at the Workspaces tab is prose.
+ *
  * One row reports an outcome rather than a value:
  *
  *   - **TCP port**: writing the key re-binds the listener LIVE (config-keybindings.md §12):
@@ -16,15 +32,17 @@
  *     connected CLI. SET-022's Swift order was stop → start → *then* write, so a failed bind
  *     wrote nothing; here the key is written regardless and the failed bind lands on the
  *     listener status instead. The "takes effect on the next daemon start" wording survives
- *     only in `tcpListenerDetail`'s last branch, for a daemon that reports no TCP listener at
+ *     only in `settingsTransportCaption`'s last branch, for a daemon that reports no TCP listener at
  *     all (issue #58 retired the header's claim that a live socket could not be re-bound).
  *
  *     What it no longer does is *guess the outcome*. §SET-021 asked for "Port N is unavailable"
  *     under the Network section, and the daemon now reports what its listener actually did
  *     (`welcome.transport`, backed by `daemon/src/control/server.ts`'s `tcpStatus`), so the row
- *     reads "Listening on 127.0.0.1:19400" or "Port 19400 unavailable: …" — the failed-bind
+ *     reads "Listening on 127.0.0.1:19400" or "Port 19400 is unavailable" - the failed-bind
  *     case that used to be a daemon log line nobody saw while every `KELPI_SOCKET=tcp:…` client
- *     timed out against nothing.
+ *     timed out against nothing. It is the one caption the catalog cannot carry on its own, so
+ *     the tab hands the surface a `SettingsTransportStatus` (three states, no room for an OS
+ *     message) and the surface composes the sentence.
  *
  * Panes ▸ focus-follows-mouse and the two confirmation suppressions (workspace delete, quit)
  * live on the Workspaces tab, where this port put them before General existed; the note at the
@@ -36,9 +54,17 @@ import type { WsSettingsSnapshot, WsTransportStatus } from '@kelpi/protocol';
 import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
-import { SelectField, TextField } from './controls';
+import type {
+    SettingsDraftValue,
+    SettingsFieldDescriptor,
+    SettingsTransportStatus
+} from './contract';
+import { FieldRenderer, SETTINGS_DESTRUCTIVE_TONE } from './FieldRenderer';
+import { SETTINGS_DEFAULT_TCP_PORT } from './sections';
+import type { SettingsSurface } from './surface';
 import type { SettingsActions, SettingsPaths } from './types';
-import { SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import { SettingsFooterNote, SettingsSection } from './ui';
+import { useSectionSurface, useSettingsSnapshot } from './use-settings';
 
 export interface GeneralTabProps {
     readonly settings: WsSettingsSnapshot;
@@ -50,48 +76,49 @@ export interface GeneralTabProps {
      * start" wording rather than claiming a bind either way.
      */
     readonly transport?: WsTransportStatus | null | undefined;
+    /**
+     * The window's settings surface, when the host has one.
+     *
+     * Absent (every test below, a fixture, an embedder) the tab builds its own, pinned to this
+     * section, so the draft store, the validation funnel and the write queue are the same code on
+     * both paths. What the host's surface adds is CONTINUITY: a draft typed here survives leaving
+     * the tab and coming back, and phase 2's presenter draws from the same one.
+     */
+    readonly surface?: SettingsSurface | undefined;
 }
 
 /**
- * §SET-021's Network detail line: the config's port is what was ASKED for, `transport` is what
- * happened. Exported so the copy can be asserted directly rather than through a DOM crawl.
+ * §SET-021's Network row, mapped down to the three states a caption may know about.
+ *
+ * `welcome.transport` carries `tcp.error` - the raw `listen EADDRINUSE: address already in use
+ * 127.0.0.1:19400` the bind threw - and a caption is PROJECTED: in phase 2 it reaches a
+ * replaceable presenter. So the host maps its status down to `SettingsTransportStatus`, which has
+ * nowhere to put an OS message, and the surface writes the sentence from that
+ * (`settingsTransportCaption`). The verbatim error keeps its own home: `tcpBindError` below, drawn
+ * natively under the section, which no projection copies.
+ *
+ * `null` is "the daemon has not said" - an older daemon, or not connected yet - which is a
+ * different sentence again from "it has no listener".
  */
-export function tcpListenerDetail(
-    configuredPort: number,
+export function settingsTransportStatus(
     transport: WsTransportStatus | null | undefined
-): string {
-    const tcp = transport?.tcp;
-    // What the listener DID outranks what the file asks for, in both directions: a daemon
-    // started with `KELPID_TCP_PORT` (a dev container, the audit sandbox) is genuinely listening
-    // even though this config file says nothing, and saying "Disabled" there would be false.
-    if (tcp !== null && tcp !== undefined && tcp.bound !== null) {
-        // When the file did not ask for it, say where the port came from — otherwise the switch
-        // below (which reflects the FILE, i.e. what happens next start) reads as being out of
-        // step with a listener that is plainly up.
-        return configuredPort > 0
-            ? `Listening on ${tcp.host}:${String(tcp.bound)}.`
-            : `Listening on ${tcp.host}:${String(tcp.bound)} - this daemon was started with an explicit port, not from this config file.`;
-    }
-    if (tcp !== null && tcp !== undefined) {
-        return `Port ${String(tcp.requested)} unavailable: ${tcp.error ?? 'the listener did not bind'}. Unix-socket clients are unaffected.`;
-    }
-    if (configuredPort <= 0) return 'Disabled - the Unix control socket is the only transport.';
-    if (transport === null || transport === undefined) {
-        return `Listening on 127.0.0.1:${String(configuredPort)} (as of daemon start).`;
-    }
-    // The daemon spoke and has no TCP listener at all: the config changed after it started.
-    return `Port ${String(configuredPort)} takes effect on the next daemon start - this daemon started with no TCP listener.`;
+): SettingsTransportStatus | null {
+    if (transport === null || transport === undefined) return null;
+    const tcp = transport.tcp;
+    if (tcp === null || tcp === undefined) return { state: 'none' };
+    return tcp.bound === null
+        ? { state: 'failed', host: tcp.host, port: tcp.requested }
+        : { state: 'listening', host: tcp.host, port: tcp.bound };
 }
 
-/** The port the Swift Network toggle seeds when it is switched on (SET-019). */
-export const DEFAULT_TCP_PORT = 19400;
-
 /**
- * §SET-021's "in red". The same literal the sidebar's destructive Delete uses
- * (`chrome/Sidebar.tsx`) — there is no chrome token for it, and inventing one here would put
- * two spellings of "destructive" in the palette.
+ * The port the Swift Network toggle seeds when it is switched on (SET-019).
+ *
+ * The catalog's `SETTINGS_DEFAULT_TCP_PORT` is the same number (it is the one the switch's
+ * `encode` writes), and `sections.test.ts` asserts the two cannot drift. This name stays because
+ * the tab's own tests and `index.ts` export it.
  */
-const DESTRUCTIVE_TONE = '#E0655C';
+export const DEFAULT_TCP_PORT = SETTINGS_DEFAULT_TCP_PORT;
 
 /** The failed-bind line, or null when there is nothing to warn about. */
 export function tcpBindError(
@@ -106,174 +133,100 @@ export function tcpBindError(
     return `Port ${String(tcp.requested)} is unavailable${tcp.error === null ? '' : ` - ${tcp.error}`}`;
 }
 
-const PLACEMENT_OPTIONS = [
-    { value: 'near-selection' as const, label: 'Next to selection' },
-    { value: 'end-of-list' as const, label: 'End of list' }
-];
-
 export function GeneralTab(props: GeneralTabProps): ReactElement {
     const general = props.settings.general;
-    const actions = props.actions;
     const bindError = tcpBindError(general.tcpPort, props.transport);
+    /*
+     * One surface, one write path.
+     *
+     * The rows, their order, their captions and their visibility all come from the projection
+     * (`sections.ts` is the data, the surface is the authority that folds the daemon's snapshot,
+     * the drafts and the errors into it), and a change leaves as a field ID. Nothing in this file
+     * names a config key any more, and nothing in it validates a value: both belong to the funnel
+     * every writer shares.
+     */
+    const surface = useSectionSurface({
+        sectionID: 'general',
+        ...(props.surface === undefined ? {} : { surface: props.surface }),
+        config: {
+            settings: () => props.settings,
+            actions: () => props.actions,
+            transport: () => settingsTransportStatus(props.transport)
+        }
+    });
+    const snapshot = useSettingsSnapshot(surface);
+    const commit = (field: SettingsFieldDescriptor, value: SettingsDraftValue): void => {
+        try {
+            // Hand it over as a draft first: if the write is refused the text stays on screen with
+            // the reason under it, rather than snapping back to the value the daemon last sent.
+            surface.setDraft(field.id, value);
+            surface.commitField(field.id, value);
+        } catch {
+            // The field is gone, native, or the host is refusing it. The surface is the authority
+            // on that and it has already declined; there is nothing for the tab to add.
+        }
+    };
+
+    /*
+     * The two rows of the Network section that are not values.
+     *
+     * An ARRAY rather than a fragment, because `SettingsSection` wraps each child in a padded,
+     * hairlined band and counts a fragment as one child: an empty fragment would draw an empty
+     * band under the port field on every daemon whose listener bound.
+     */
+    const networkNotes: ReactElement[] = [];
+    if (bindError !== null) {
+        networkNotes.push(
+            /*
+             * §SET-021: the failed bind, in the destructive tone, under the Network section, the
+             * one place a user goes looking when `KELPI_SOCKET=tcp:…` stops answering.
+             */
+            <p
+                key="tcp-bind-error"
+                data-testid="tcp-bind-error"
+                className="text-[11px]"
+                style={{ color: SETTINGS_DESTRUCTIVE_TONE }}
+            >
+                {bindError}
+            </p>
+        );
+    }
+    if (props.transport?.compat != null) {
+        networkNotes.push(
+            /*
+             * The routing fix's coexistence state: another Kelpi (the Swift app) owns the shared
+             * CLI-compat socket. Not destructive-toned — panes are unaffected (their KELPI_SOCKET
+             * is injected at spawn), but the one place a user goes looking when plain-terminal
+             * `kelpi` commands answer as the wrong app.
+             */
+            <p
+                key="compat-degraded-note"
+                data-testid="compat-degraded-note"
+                className="text-[11px]"
+                style={{ color: tokens.textTertiary }}
+            >
+                {`Another Kelpi owns ${props.transport.compat.path}, so plain-terminal kelpi commands reach that app. Panes are unaffected - they route here automatically.`}
+            </p>
+        );
+    }
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-general">
-            <SettingsSection
-                title="Worktrees"
-                hint="Worktrees are created at <base path>/<name>. Use <repo> in the base path to substitute the repository: at the start it resolves to the full repo path (e.g. <repo>/.claude/worktrees), elsewhere it resolves to the repository's directory name (e.g. ~/kelpi/worktrees/<repo>)."
-                testID="general-worktrees"
-            >
-                <TextField
-                    label="Base path"
-                    testID="worktree-base-path"
-                    // L83: `.textFieldStyle(.plain)`, no frame — the field takes the rest of the
-                    // row, so a long `<repo>`-substituted path is readable rather than clipped at
-                    // 180 px.
-                    plain
-                    value={general.worktreeBasePath}
-                    placeholder="~/kelpi/worktrees/<repo>"
-                    onCommit={(next) => {
-                        // A blank field means "the default"; the parser treats an empty value
-                        // that way too, so the two ends agree without a special case here.
-                        actions.setGeneralSetting('worktree-base-path', next.trim());
-                    }}
-                />
-            </SettingsSection>
-
-            <SettingsSection title="Repositories" testID="general-repositories">
-                <SettingsRow
-                    label="Auto-detect from pane directories"
-                    detail="When a pane's working directory is inside a Git repository, associate that repo (or worktree) with the workspace. Removed a few seconds after no pane remains in it; manually added repos are never auto-removed."
-                    testID="auto-detect-repos-row"
+            {snapshot.groups.map((group) => (
+                <SettingsSection
+                    key={group.id}
+                    title={group.title}
+                    testID={group.testID}
+                    {...(group.hint === null ? {} : { hint: group.hint })}
                 >
-                    <SettingsToggle
-                        testID="auto-detect-repos-toggle"
-                        label="Auto-detect from pane directories"
-                        checked={general.autoDetectRepos}
-                        onChange={(next) => {
-                            actions.setGeneralSetting('auto-detect-repos', next ? 'true' : 'false');
-                        }}
-                    />
-                </SettingsRow>
-            </SettingsSection>
-
-            <SettingsSection title="Workspaces" testID="general-workspaces">
-                {/* SET-011. A CLIENT-side rule: ⌘N and the sidebar's New Workspace form read
-                    it, the wire verb does not, so `kelpi workspace create` is unaffected. */}
-                <SettingsRow
-                    label="Inherit group when creating a new workspace"
-                    detail="When the active workspace belongs to a group, new workspaces are created inside that same group. Disable to always create at the top level."
-                    testID="inherit-group-row"
-                >
-                    <SettingsToggle
-                        testID="inherit-group-toggle"
-                        label="Inherit group when creating a new workspace"
-                        checked={general.inheritGroupOnNewWorkspace}
-                        onChange={(next) => {
-                            actions.setGeneralSetting('inherit-group-on-new-workspace', next ? 'true' : 'false');
-                        }}
-                    />
-                </SettingsRow>
-                {/*
-                 * M52: pop-up menus, not segmented controls. `SettingsView.swift:167-187` builds
-                 * both of these with a bare `Picker(_:selection:)`, which macOS renders as a
-                 * pop-up; the ONE `.pickerStyle(.segmented)` in the whole Settings scene is
-                 * Appearance ▸ Chrome (`:345`). A segmented control reads as a stronger, more
-                 * immediate control than a pop-up, so rendering these two that way made them the
-                 * loudest thing in the Workspaces section.
-                 */}
-                <SelectField
-                    label="New workspace placement"
-                    testID="new-workspace-placement"
-                    detail="Where a newly created workspace is inserted. “Next to selection” places it immediately after the active workspace's slot; “End of list” always appends."
-                    value={general.newWorkspacePlacement}
-                    options={PLACEMENT_OPTIONS}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('new-workspace-placement', next);
-                    }}
-                />
-                <SelectField
-                    label="New group placement"
-                    testID="new-group-placement"
-                    detail="The same choice for a newly created group."
-                    value={general.newGroupPlacement}
-                    options={PLACEMENT_OPTIONS}
-                    onChange={(next) => {
-                        actions.setGeneralSetting('new-group-placement', next);
-                    }}
-                />
-            </SettingsSection>
-
-            <SettingsSection
-                title="Network"
-                hint="The control socket's optional TCP listener on 127.0.0.1, for dev containers and SSH tunnels. A change here re-binds the listener straight away; the Unix socket and its clients are unaffected."
-                testID="general-network"
-            >
-                <SettingsRow
-                    label="TCP listener"
-                    detail={tcpListenerDetail(general.tcpPort, props.transport)}
-                    testID="tcp-listener-row"
-                >
-                    <SettingsToggle
-                        testID="tcp-listener-toggle"
-                        label="TCP listener"
-                        checked={general.tcpPort > 0}
-                        onChange={(next) => {
-                            actions.setGeneralSetting('tcp-port', next ? String(DEFAULT_TCP_PORT) : '0');
-                        }}
-                    />
-                </SettingsRow>
-                {general.tcpPort > 0 ? (
-                    <TextField
-                        label="Port"
-                        testID="tcp-port"
-                        // SET-020: the Swift field is 80 pt and right-aligned, with an Apply
-                        // button that appears only while the typed text differs from the live
-                        // port. Both reproduced; blur/Enter still commit.
-                        narrow
-                        apply
-                        value={String(general.tcpPort)}
-                        onCommit={(next) => {
-                            const parsed = Number.parseInt(next.trim(), 10);
-                            // SET-020: a non-numeric entry falls back to the default port
-                            // rather than writing a value the parser will silently ignore.
-                            const port =
-                                Number.isFinite(parsed) && parsed >= 1 && parsed <= 65535
-                                    ? parsed
-                                    : DEFAULT_TCP_PORT;
-                            actions.setGeneralSetting('tcp-port', String(port));
-                        }}
-                    />
-                ) : null}
-                {/*
-                 * §SET-021: the failed bind, in the destructive tone, under the Network section
-                 *, the one place a user goes looking when `KELPI_SOCKET=tcp:…` stops answering.
-                 */}
-                {bindError === null ? null : (
-                    <p
-                        data-testid="tcp-bind-error"
-                        className="text-[11px]"
-                        style={{ color: DESTRUCTIVE_TONE }}
-                    >
-                        {bindError}
-                    </p>
-                )}
-                {/*
-                 * The routing fix's coexistence state: another Kelpi (the Swift app) owns the
-                 * shared CLI-compat socket. Not destructive-toned — panes are unaffected
-                 * (their KELPI_SOCKET is injected at spawn), but the one place a user goes
-                 * looking when plain-terminal `kelpi` commands answer as the wrong app.
-                 */}
-                {props.transport?.compat == null ? null : (
-                    <p
-                        data-testid="compat-degraded-note"
-                        className="text-[11px]"
-                        style={{ color: tokens.textTertiary }}
-                    >
-                        {`Another Kelpi owns ${props.transport.compat.path}, so plain-terminal kelpi commands reach that app. Panes are unaffected - they route here automatically.`}
-                    </p>
-                )}
-            </SettingsSection>
+                    {snapshot.fields
+                        .filter((field) => field.groupID === group.id)
+                        .map((field) => (
+                            <FieldRenderer key={field.id} field={field} onCommit={commit} />
+                        ))}
+                    {group.id === 'general-network' ? networkNotes : null}
+                </SettingsSection>
+            ))}
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                 Focus-follows-mouse and the two confirmation dialogs (workspace delete, quit) are on the

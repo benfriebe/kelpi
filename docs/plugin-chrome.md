@@ -131,6 +131,13 @@ Plugins remain accessible through keyboard commands even if a replacement fails.
 or removing the plugin restores native bars while retaining preferred selections; reenabling
 it restores the replacements. Ordinary plugin-view errors retain their local retry control.
 
+That recovery floor is shared with the interaction presenters: `kelpi.window.openPalette`,
+`openSettings`, `openPlugins`, `openHelp` and `restartUI` stay enabled whatever is selected for
+the toolbar, the status bar, the palette or the prompts, and the native menu and their shortcuts
+never route through a plugin. A palette or prompts presenter is selected in the same Workbench
+views list and falls back to bundled the same way; see
+[selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
+
 ## Validation
 
 Run `node scripts/scenario.mjs plugin-chrome-features --window hidden`. It uses private daemons to

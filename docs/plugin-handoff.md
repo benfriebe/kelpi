@@ -101,11 +101,15 @@ renderers. Follow with the presenter work below once this parity gap is validate
 ## Following phase: palette and shared prompts
 
 The [roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts)
-has its first step implemented on `feature/plugin-interaction-contracts`: the window interaction
-surface owns the palette session and shared prompts, and the bundled presenters render it.
-Plugins can contribute commands and request prompts; they cannot yet replace the palette or
-prompt presenters. Keep request authority, cancellation and result validation in Kelpi while
-making presentation selectable.
+has its first two steps implemented on `feature/plugin-interaction-contracts`: the window
+interaction surface owns the palette session and shared prompts, and a plugin view declaring
+`interaction.palette` or `interaction.prompts` can be selected as that placement's presenter in
+Settings → Plugins → Workbench views. Request authority, cancellation and result validation stay
+in Kelpi; the bundled presenters are the recovery floor and cannot be selected away. Selection is
+Settings-only, and neither password inputs nor notifications are handed to a plugin presenter: a
+prompts presenter draws modal requests only, and selectable notification presentation is part of
+the remaining step. See
+[selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
 | Concern | Source entrypoints |
 | --- | --- |
@@ -114,10 +118,10 @@ making presentation selectable.
 | Plugin-facing prompt adapter and public types | [UI service adapter](../packages/client/src/plugins/ui-services.ts), [public UI types](../packages/plugin-sdk/ui.d.ts) |
 | View/request lifetime and host boundary | [PluginView](../packages/client/src/plugins/PluginView.tsx), [host UI](../packages/client/src/plugins/host-ui.ts) |
 | Registration and fallback precedents | [Registry](../packages/client/src/plugins/registry.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
+| Presenter selection, projection and watchdogs | [presenter host](../packages/client/src/interaction/presenter.ts), [presenter slot](../packages/client/src/interaction/presenter-slot.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js) |
 | Focus/modal coordination and Settings | [Modal presence](../packages/client/src/chrome/modal-presence.ts), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
 
-The remaining steps are selectable presenters with bundled recovery, then an external
-Interaction Lab and real-instance acceptance. Preserve
+The remaining step is an external Interaction Lab and real-instance acceptance. Preserve
 keyboard/IME behavior, cancellation on caller/presenter disposal, window/daemon ownership,
 native browser parking, modal queueing and focus restoration. Retain a reachable way to open
 plugin recovery when a replacement fails.
@@ -125,7 +129,10 @@ plugin recovery when a replacement fails.
 Existing regression scenarios include `plugin-ui-services`, `plugin-preview-shortcuts`,
 `confirm-dialog-keys`, `plugin-workbench`, `plugin-remote`, `plugin-authoring`,
 `plugin-browser-features` and `plugin-terminal-features`. They cover existing behavior;
-a dedicated Interaction Lab scenario must prove the new presenter contracts.
+a dedicated Interaction Lab scenario must prove the new presenter contracts, including a second
+plugin's prompt, presenter crash and fallback with the live request intact, reload, disable,
+disconnect, and the phone form factor keeping the bundled presenters. That step also owns
+selectable notification presentation, which step 2 leaves bundled.
 
 ## Setup and validation for the next agent
 

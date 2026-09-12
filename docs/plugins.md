@@ -73,6 +73,19 @@ view. The preferred selection remains saved, so enabling the plugin restores it.
 management controls and “Restore bundled views” remain reachable through Settings and the
 command palette even when a custom view replaces the workspace or top bar.
 
+The command palette and the shared prompts are two further placements in that list,
+`interaction.palette` and `interaction.prompts`, selected independently of each other. They are
+Settings-only: both appear in a plugin's `ui.getWorkbench().slots`, but `ui.selectView` refuses
+them, because a prompts presenter renders other plugins' requests. A container cannot declare
+either one. A prompts presenter draws modal quick picks, inputs and dialogs; the notification
+stack stays native in this release. When a selected presenter fails, the bundled palette or
+prompts takes the placement
+back for the rest of the window session, the live request keeps its ID and is re-presented, a
+failure toast is raised, and **Retry presenter** appears beside the selection; the saved
+selection is retained as it is for every other slot. Password inputs and native destructive
+confirmations are always drawn by the bundled presenter, and phone windows keep the bundled
+presenters. See [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
+
 Plugin panes participate in normal splits, moves, zoom, parking, and close/reopen. They retain
 their descriptor and JSON state when the plugin is missing, disabled, updated, or removed.
 Parked plugin panes also survive daemon restarts. A missing plugin never spawns a terminal.

@@ -215,9 +215,105 @@ What the surface guarantees, independently of who renders:
 | Native pages | A visible modal request or an open palette parks native pages through the existing whole-window modal presence, registered once for the surface; notifications keep the finer overlay rectangle. |
 
 The destructive sidebar and agent confirmations, the quit confirmation, phone sheets and the
-native toast stack remain native and are not routed through the surface. Selecting a plugin
-presenter for the palette or prompts is the [next roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts);
-this phase changes no public contract.
+native toast stack remain native and are not routed through the surface. A plugin view can be
+selected to present the palette or the shared prompts; see
+[selectable interaction presenters](#selectable-interaction-presenters).
+
+## Selectable interaction presenters
+
+Two placements are selected independently in Settings → Plugins → Workbench views:
+
+| Placement | What it draws |
+| --- | --- |
+| `interaction.palette` | The command palette, inside the content row box, with the title bar and status footer live behind it. |
+| `interaction.prompts` | Modal quick picks, inputs and dialogs, in the window's modal portal. Notifications stay bundled in this release. |
+
+Both placements appear in `ui.getWorkbench().slots` for discovery, and `ui.selectView` refuses
+both: a prompts presenter renders other plugins' requests, so the choice stays the user's.
+A container cannot declare either placement, because a presenter owns its whole overlay.
+Presenters are desktop-only in this release; a phone window keeps the bundled ones, and the
+snapshot reports `formFactor` so a view can say why.
+
+A selected view reads its placement's projection and acts through `kelpi.ui`:
+
+```js
+const stop = kelpi.ui.onInteraction(async snapshot => {
+  render(snapshot);                       // snapshot.placement names this surface
+  await kelpi.ui.reportPresenterReady();  // required within 5 seconds of the first frame
+}, error => reportError(error.message));
+
+// interaction.palette: the host owns the session, its query and its selection.
+await kelpi.ui.setPaletteQuery(sessionID, 'tests');
+await kelpi.ui.setPaletteSelection(sessionID, itemID);
+await kelpi.ui.activatePaletteItem(sessionID, itemID);
+await kelpi.ui.dismissPalette(sessionID);
+
+// interaction.prompts: one visible request at a time. Null cancels it.
+await kelpi.ui.respondInteraction(requestID, itemID);
+addEventListener('pagehide', stop, { once: true });
+```
+
+`getInteraction()` reads the same projection once. Every call is checked against the placement
+the view was selected into: the palette methods belong to `interaction.palette` and
+`respondInteraction` to `interaction.prompts`, and a call from the other placement is refused. See
+the [public types](../packages/plugin-sdk/interaction.d.ts) for every field.
+
+Each placement receives only its own half of the surface:
+
+| Snapshot field | `interaction.palette` | `interaction.prompts` |
+| --- | --- | --- |
+| `palette` | The open session: query, scope, the whole item universe, `selectedID`, `remoteWorkspaceSelected`. Null while closed. | Always null. |
+| `paletteOpen` | Both placements. The palette outranks a queued prompt. | Both placements. |
+| `prompt` | Always null. | The visible modal request: `requestID`, `owner`, `kind` (`quickPick`, `input` or `dialog`) and its validated options. |
+| `queued` | Always zero. | Modal requests waiting behind `prompt`. |
+| `notifications` | Always empty. | Always empty in this release: reserved, and the bundled stack draws notifications. |
+| `visible`, `formFactor` | Both placements. `visible: false` means present nothing. | Both placements. |
+
+Withheld from both: command handlers and `run` closures (rows are descriptors, activation goes
+back through the host), the `pluginID` of any owner (a presenter renders `displayName` and an
+opaque window-local `ref`), the other placement's half, opening the palette (a presenter may
+only dismiss it), focus authority, and every connection URL, credential, foreign client ID and
+other plugin's storage. Native owners get a minted ref like any other owner. Palette rows do
+carry contributed command IDs and plugin display names, which is not new exposure: a view's
+`ui.getWorkbench().views` already lists every contributed view and its plugin ID.
+
+Escape and the rebindable Close chord still reach the host: a presenter is granted that small
+chord set only, and everything else (typing, arrows, Enter, filtering, the focus trap) belongs
+to the view. Composing keystrokes never activate or cancel.
+
+Presenter limits:
+
+| Rule | Limit |
+| --- | --- |
+| Readiness | `reportPresenterReady()` within 5 seconds of the first frame. |
+| Acknowledgement | Each frame carrying a new prompt or palette session is acknowledged within 5 seconds. |
+| Calls | 240 presenter calls per rolling second. A breach fails the presenter. |
+| Payload | 256 KiB per frame; a palette query of at most 1,024 characters. |
+
+An acknowledgement proves the frame reached the view's sandbox, not that the view drew or
+understood it, and only the outstanding frame's acknowledgement counts. Recovery therefore never
+depends on the presenter agreeing: **Retry presenter** in Settings, the palette chord and the
+native menu are the routes back.
+
+The bundled presenter is the recovery floor and cannot be selected away. A view error, a failed
+connection, a missed readiness or acknowledgement deadline, an oversized or non-JSON frame, and
+an exhausted call budget are all failures. On failure the placement latches to bundled for the
+rest of the window session, a native failure toast is raised, the live request keeps its ID and
+is re-presented by the bundled presenter, and the palette placement additionally dismisses its
+session with reason `presenter-failed`. A failure never settles a request and never produces an
+answer. A missing, disabled or failed plugin, and a disconnected daemon, resolve to bundled the
+same way, and the saved selection is retained throughout. The latch clears on plugin reload or
+rollback, on a selection change, and on **Retry presenter** in Settings → Plugins → Workbench
+views. `kelpi.window.openPalette`, `openSettings`, `openPlugins`, `openHelp` and `restartUI`
+stay enabled whatever is selected, and the native menu and their shortcuts never route through
+a presenter.
+
+A `ui.showInput({ password: true })` request is always presented by the bundled presenter and
+never reaches a plugin presenter: the snapshot reports `prompt: null` while such a request is
+visible, and `queued` still counts it. Destructive native confirmations are carved out the same
+way. Notifications are carved out too in this release: `showNotification` results are drawn by
+the native stack, `notifications` is always empty, and selectable notification presentation is
+later scope.
 
 ## Automated validation
 

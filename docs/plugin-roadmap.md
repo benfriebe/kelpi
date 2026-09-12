@@ -83,14 +83,18 @@ The SDK gained two additive fields; plugin API version and wire protocol generat
 
 ## Following phase: replaceable palette and shared prompts
 
-**Status: step 1 implemented on `feature/plugin-interaction-contracts` (based on the terminal
-geometry branch), awaiting review; steps 2 and 3 not started.** The palette session and shared
+**Status: steps 1 and 2 implemented on `feature/plugin-interaction-contracts` (based on the
+terminal geometry branch), awaiting review; step 3 not started.** The palette session and shared
 prompts are owned by one window interaction surface
 ([contracts](../packages/client/src/interaction/contract.ts), [host](../packages/client/src/interaction/InteractionHost.tsx)),
-with the bundled presenters rendering it and the native palette commands supplied by a
-[feature source](../packages/client/src/features/palette-source.ts). Plugins can contribute
-commands and request prompts, but cannot yet select a replacement presenter; see
-[shared interaction contracts](plugin-ui.md#shared-interaction-contracts).
+with the native palette commands supplied by a
+[feature source](../packages/client/src/features/palette-source.ts). A plugin view declaring
+`interaction.palette` or `interaction.prompts` can now be selected as that placement's presenter
+in Settings → Plugins → Workbench views, reading a per-placement projection through
+[public types](../packages/plugin-sdk/interaction.d.ts) and a
+[presenter host](../packages/client/src/interaction/presenter.ts); the bundled presenters are the
+recovery floor and cannot be selected away. See
+[selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
 The review sequence is:
 
@@ -103,7 +107,15 @@ The review sequence is:
    native browser parking and a reachable bundled recovery path when a presenter fails.
 3. **Interaction Lab and validation.** Add an external example that replaces the palette and
    shared prompts, including requests from a second plugin. Exercise selection, caller and
-   presenter reload/disable, disconnect, cancellation and fallback in real instances.
+   presenter reload/disable, disconnect, cancellation and fallback in real instances. Selectable
+   notification presentation belongs to this step: step 2 keeps the notification stack bundled.
+
+Steps 1 and 2 are implemented and tested on the branch; the phase is marked merged only once
+its PRs merge. The two presenter placements are additive, so plugin API version and wire
+protocol generation are unchanged. Selection is Settings-only: both placements are discoverable
+in `ui.getWorkbench().slots` and refused by `ui.selectView`. Password inputs and the notification
+stack stay with the bundled presenter whatever is selected; a selected prompts presenter draws
+modal quick picks, inputs and dialogs only.
 
 Acceptance requires retained terminal/browser sessions and no duplicated command execution,
 stale prompt answers or stranded focus. Cover desktop, browser/phone layout and remote-owner

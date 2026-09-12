@@ -336,7 +336,11 @@ capture and release, the reopen focus rule and the native sections.
 
 The placement appears in `ui.getWorkbench().slots` for discovery and `ui.selectView` refuses it:
 Settings is where a broken presenter is recovered from, so the choice stays the user's. A
-container cannot declare it, because a presenter owns the whole dialog body. Presenters are
+container cannot declare it, because a presenter owns the whole dialog body.
+[Settings Lab](../examples/plugins/settings-lab) is the reference presenter: plain JavaScript, no
+backend, no build. Install its directory in a private instance, select it for `settings.window`,
+and open Settings; its README lists the diagnostics and the crash and stall hooks that
+`node scripts/scenario.mjs plugin-settings-presenter --window hidden` uses to prove the fallback. Presenters are
 desktop-only in this release: a phone window keeps the bundled sheet and never selects one, so a
 frame a presenter receives always reports `formFactor: 'desktop'`.
 

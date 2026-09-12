@@ -583,8 +583,21 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
             role="group"
             aria-label={currentLabel}
             data-testid="settings-native-remainder"
-            className="min-h-0 min-w-0 flex-1 overflow-y-auto border-t p-4"
-            style={{ borderColor: tokens.divider }}
+            className="min-w-0 overflow-y-auto border-t p-4"
+            /*
+             * Sized to its CONTENT, not to half the dialog.
+             *
+             * Both boxes were `flex-1` at first, which reads as "share the body" - and a flex item
+             * with a zero basis shares it evenly whatever is in it. General's remainder is two
+             * sentences and a footer; it took half the height while the presenter's panel was
+             * clipped mid-row. So: `flex: none` (a content-sized item that neither grows nor
+             * shrinks), the presenter's frame keeps `flex: 1 1 0` beside it and takes the rest, and
+             * a ceiling of 45% with the scroller this box already had stops Appearance's long
+             * remainder - the preset gallery, the colour map, the share codes - from pushing the
+             * frame out of the dialog. Inline rather than a class because it is a rule about this
+             * box's relationship to its sibling, and because it is what the test can read back.
+             */
+            style={{ borderColor: tokens.divider, flex: 'none', maxHeight: '45%' }}
         >
             {tabContent(true)}
         </div>
@@ -806,6 +819,9 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                         visible
                         chords={props.presenterChords ?? NO_SETTINGS_CHORDS}
                         ownModals={props.modalPresence ?? 0}
+                        /* `flex: 1 1 0` with `min-height: 0`: the frame takes whatever the
+                         * content-sized remainder below it leaves, and may be shrunk to nothing
+                         * rather than overflowing the dialog. */
                         className="flex min-h-0 flex-1"
                         onClose={props.onClose}
                         {...(props.onPresenterFailure === undefined

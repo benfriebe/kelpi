@@ -171,8 +171,9 @@ fully native, as do both key recorders and every destructive confirmation. Draft
 surface, so a presenter failure changes only who paints. Public types are in
 `packages/plugin-sdk/settings.d.ts`, with the runtime feed topic `settings` in `browser.js`.
 
-Phase 3 adds a Settings Lab example, `scripts/scenarios/plugin-settings-presenter.mjs`, audit
-steps and a validation record entry. The decisions taken by precedent (what stays native,
+Phase 3 (`feature/plugin-settings-lab`) adds the Settings Lab example and
+`scripts/scenarios/plugin-settings-presenter.mjs`, the live acceptance recorded in the validation
+record. The decisions taken by precedent (what stays native,
 repository paths not projected, plugin-contributed settings keeping their own draft session)
 are listed in the roadmap row.
 

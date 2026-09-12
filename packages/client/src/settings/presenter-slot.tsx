@@ -80,6 +80,7 @@ import {
     type SettingsPresenterHost
 } from './presenter';
 import type { SettingsSurface } from './surface';
+import { useSettingsSection } from './use-settings';
 
 /** No chords at all - what a slot with no grant passes. */
 export const NO_SETTINGS_CHORDS: readonly string[] = [];
@@ -301,10 +302,20 @@ export function SettingsPresenterSlot(props: SettingsPresenterSlotProps): ReactE
         };
     }, []);
 
-    // The host's own paint decision is not the surface's, so the model has to be told when it moves.
+    /*
+     * The two facts the model reads that the SURFACE's own subscription does not cover, so the two
+     * it has to be told about: whether this presenter is painting, and which section is routed.
+     *
+     * The section is the host's when a host arm is installed (`App` holds `settingsTab`), so a deep
+     * link, the ••• menu, ⌘, or the palette moves it with no call into the surface at all and
+     * therefore no notification. `useSettingsSection` re-reads on every render, which is exactly
+     * when that state has landed, and this is what turns it into a frame. Without it a presenter
+     * kept drawing the previous section until something unrelated changed.
+     */
+    const routedSection = useSettingsSection(surface);
     useEffect(() => {
         host?.refresh();
-    }, [host, painted]);
+    }, [host, painted, routedSection]);
 
     // A latch belongs to one generation. A reload, a rollback or a different selection supersedes
     // it, so the Settings row must stop reporting a failure the window has already moved past.

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Settings Lab</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<!--
+  No backdrop and no dialog role: this view is mounted INSIDE the host's Settings dialog, which
+  keeps the frame, the backdrop, the modal presence, Escape, Close and the Tab trap. All that is
+  drawn here is the rail and the panel body.
+
+  Every `data-testid` below is set by `settings.js` while the placement is painted and removed when
+  it is not, so the presence of `lab-settings` is the signal that this presenter is drawing.
+-->
+<div id="root" class="shell" hidden>
+  <nav id="rail" class="rail" aria-label="Settings Lab sections"></nav>
+  <div class="body">
+    <header class="head">
+      <span class="brand">SETTINGS LAB</span>
+      <h1 id="section-title" class="title"></h1>
+      <span class="spacer"></span>
+      <span id="dirty" class="badge"></span>
+      <button id="close" type="button" class="close">Close</button>
+    </header>
+    <div id="panel" class="panel"></div>
+    <p id="native-note" class="note" hidden></p>
+    <p id="error" class="foot" role="alert" hidden></p>
+  </div>
+</div>
+<script type="module" src="settings.js"></script>
+</body></html>

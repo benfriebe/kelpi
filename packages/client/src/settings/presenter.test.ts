@@ -10,7 +10,7 @@
 import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SETTINGS_LIMITS } from './contract';
+import { SETTINGS_LIMITS, type SettingsSectionID } from './contract';
 import {
     SETTINGS_PLACEMENT,
     SETTINGS_UI_METHODS,
@@ -44,20 +44,47 @@ function actions(): SettingsActions {
 
 function make(
     overrides: Partial<WsSettingsSnapshot['general']> = {},
-    options: { disabled?: (fieldID: string) => boolean } = {}
+    options: { disabled?: (fieldID: string) => boolean; hostRouting?: boolean } = {}
 ) {
     const verbs = actions();
     const settings: WsSettingsSnapshot = {
         ...DEFAULT_WS_SETTINGS,
         general: { ...DEFAULT_WS_SETTINGS.general, ...overrides }
     };
+    /*
+     * The host's routing arm, as `App` really has it: `get` reads React state and `set` schedules a
+     * write to it, so the arm keeps answering the OLD section until a render commits. `commit()` is
+     * that render. A surface built without the arm holds the section itself, which is what every
+     * other test here wants.
+     */
+    let committed: SettingsSectionID = 'general';
+    let requested: SettingsSectionID = 'general';
     const surface = createSettingsSurface({
         settings: () => settings,
         actions: () => verbs,
+        ...(options.hostRouting === true
+            ? {
+                  section: {
+                      get: () => committed,
+                      set: (id) => {
+                          requested = id;
+                      }
+                  }
+              }
+            : {}),
         ...(options.disabled === undefined ? {} : { disabled: options.disabled })
     });
     surfaces.push(surface);
-    return { surface, verbs, settings };
+    return {
+        surface,
+        verbs,
+        settings,
+        /** The render that lands `openSettings`'s state write. */
+        commit: (): void => {
+            committed = requested;
+        },
+        held: (): SettingsSectionID => committed
+    };
 }
 
 interface Harness {
@@ -211,6 +238,71 @@ describe('the projection', () => {
         expect(port?.error).toContain('between 1 and 65535');
         expect(frame?.dirty).toBe(1);
         expect(verbs.setGeneralSetting).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Routing, through a host arm that answers late. The Lab found this one live.
+     *
+     * `App` holds `settingsTab` and the surface's arm writes it with `openSettings`, so between a
+     * presenter's `setSettingsSection` and the render that lands it, `get()` still answers the old
+     * section. The frame is built one microtask after the call: it read the stale answer, came out
+     * identical to the last one, and the dedup dropped it - so the presenter went on drawing the
+     * section it had just navigated away from while `ui.getSettingsPresentation()` answered the new
+     * one, and no route could ever arm the acknowledgement watchdog.
+     */
+    it('publishes the section it was just asked for, before the host has committed it', async () => {
+        const { surface, commit, held } = make({}, { hostRouting: true });
+        const harness = mount(surface);
+        await flush();
+        harness.frames.length = 0;
+        harness.awaited.length = 0;
+
+        harness.host.call('ui.setSettingsSection', { id: 'plugins' });
+        // The host has NOT caught up: this is exactly the window the defect lived in.
+        expect(held()).toBe('general');
+        await flush();
+        expect(harness.frames).toHaveLength(1);
+        expect(harness.frames[0]).toMatchObject({ sectionID: 'plugins', native: true });
+        expect(harness.frames[0]?.fields).toEqual([]);
+        // …and a route is a frame the user is waiting to see redrawn.
+        expect(harness.awaited).toEqual([true]);
+
+        // The render that lands `openSettings` is not a second frame: it says what we already said.
+        commit();
+        surface.settingsChanged();
+        await flush();
+        expect(harness.frames).toHaveLength(1);
+
+        // Back again, with the new section's fields, and still one frame per route.
+        harness.host.call('ui.setSettingsSection', { id: 'general' });
+        await flush();
+        expect(harness.frames).toHaveLength(2);
+        expect(harness.frames[1]?.sectionID).toBe('general');
+        expect(harness.frames[1]?.fields.length).toBeGreaterThan(0);
+        expect(harness.awaited).toEqual([true, true]);
+
+        // Asking for the section already routed publishes nothing: it is not a move.
+        harness.host.call('ui.setSettingsSection', { id: 'general' });
+        await flush();
+        expect(harness.frames).toHaveLength(2);
+        expect(harness.awaited).toEqual([true, true]);
+    });
+
+    /** The host's own routes - a deep link, the menu, the palette - are followed, not fought. */
+    it('follows the host when it routes on its own', async () => {
+        const { surface, commit } = make({}, { hostRouting: true });
+        const harness = mount(surface);
+        await flush();
+        harness.host.call('ui.setSettingsSection', { id: 'plugins' });
+        await flush();
+        expect(surface.getSection()).toBe('plugins');
+
+        // "Manage labels…" opens Settings on a section nobody asked this surface for.
+        surface.setSection('labels');
+        commit();
+        expect(surface.getSection()).toBe('labels');
+        await flush();
+        expect(harness.frames.at(-1)?.sectionID).toBe('labels');
     });
 
     it('waits for an acknowledgement when the user is moved to another section', async () => {

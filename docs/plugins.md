@@ -117,6 +117,14 @@ selected per placement in Settings → Plugins → Workbench views; see the
 [UI guide](plugin-ui.md#selectable-interaction-presenters) for what a presenter receives, what
 is withheld, and how a failed presenter falls back to the bundled one.
 
+[Settings Lab](../examples/plugins/settings-lab) presents the Settings dialog from the public
+settings feed, with no backend and no build: the rail from the projected section list, a panel for
+every projected field kind, and a note where the host draws a native remainder. It is selected
+for `settings.window` in Settings → Plugins → Workbench views; see the
+[UI guide](plugin-ui.md#selectable-settings-presenter) for the native sections and the recovery
+path, and its README for the diagnostics and the deliberate crash and stall hooks the live
+scenario uses.
+
 [Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
 while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
 covers shared SDK/CLI source APIs, guarded revisions, renderer selection and pending-input

@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Settings Lab and live acceptance](#settings-lab-and-live-acceptance-2026-09-12).
 - [Selectable Settings presenter](#selectable-settings-presenter-2026-09-12).
 - [Shared settings contracts](#shared-settings-contracts-2026-09-12).
 - [Interaction Lab and live acceptance](#interaction-lab-and-live-acceptance-2026-09-12).
@@ -46,6 +47,43 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Settings Lab and live acceptance (2026-09-12)
+
+Phase 3 of full Settings presentation, implemented on `feature/plugin-settings-lab` (based on
+the presenter branch at `39ab84b`). Tested revision: **`c4001f3`**. Same bootstrapped worktree;
+private sandboxes only. Retained onscreen screenshots are in
+[the Settings evidence directory](audit/plugin-settings/README.md).
+
+| Check | Result at `c4001f3` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,904 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suite `features/settings-lab.test.ts` (25 tests) drives the shipped views through the real presenter host and surface; the host fixes below carry regression tests proven against the pre-fix code. The fidelity suites and the `SettingsOverlay` snapshots pass unmodified. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` and `node scripts/verify-plugin-sdk.mjs` pass. |
+| `plugin-settings-presenter`, hidden, built | **30/30** (`docs/audit/scenarios/2026-09-12T13-38-49-704Z`, local artifact); 30/30 again in the four-scenario gate run after the final host and example fixes. |
+| `plugin-settings-presenter`, onscreen | **30/30** (`2026-09-12T13-39-35-869Z`); all four screenshots inspected and retained. |
+| Paired with `plugin-remote` | **30/30 + 12/12** twice (`2026-09-12T13-40-35-296Z`, `2026-09-12T13-41-20-494Z`), proving no residual sandbox state. |
+| Settings audit steps, hidden | The fourteen `settings-*`, `keybinding-record` and `phone-settings-sheet` steps: **15 steps, 98 assertions, 0 failed, 0 step errors**. |
+| Regression gates, hidden | `plugin-ui-services` 30/30, `plugin-workbench` 22/22, `plugin-interaction-presenters` 34/34. |
+| Host defects found by acceptance | A section a presenter routed to was never published back to it: the frame was rebuilt in a microtask that read the pre-commit window state and was dropped as unchanged, so the presenter kept drawing the previous section and a route could never arm the acknowledgement watchdog. Fixed by letting the surface own the requested section and refreshing the host on a routed change, with presenter and overlay tests that fail on the pre-fix code. The presenter frame and the native remainder also split the dialog evenly whatever they held; the remainder now sizes to its content. |
+| Independent review | One Opus review of the example. Applied before `c4001f3`: accessible names on switches, commits and resets; clamped or snapped drafts reflected back into the control on change and blur; local refusal notes pruned per frame; per-frame control attributes; coalesced slider and number drafts; the README's crash claim corrected in both labs. Its tests were verified with negative controls. |
+
+### Full verification battery at `c4001f3`
+
+`node scripts/verify.mjs --full` on the Settings Lab branch (which contains the contracts and
+presenter phases) passed in 27.1 minutes: typecheck, root tests, shell tests and bundle build
+passed; the scenario lane passed on the battery's isolated retry (`dock-bounce-stop-only`,
+`plugin-chrome-features`, `plugin-document-features`, `plugin-terminal-features` and
+`workspace-switch-keeps-the-caret` red under the battery, green alone; `plugin-settings-presenter`
+and `plugin-interaction-presenters` passed in the battery's own run); the full UI audit completed
+with **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes**, the pre-existing
+`web-batch-pickup`, `appearance-system-stats`, `agent-start`, `agent-lifecycle`,
+`footer-git-stats`, `sidebar-remaining` and `workspace-edges` findings tracked as issues #192 to
+#205, with every `settings-*` and `phone-settings-sheet` step green; the packaged smoke
+repackaged and passed **61 checks**.
+
+Recorded limits: daemon disconnect and reconnect is not pressed by the scenario; the call
+budget breach is covered by unit tests only; phone checks use emulation; physical devices are
+not covered.
 
 ## Selectable Settings presenter (2026-09-12)
 

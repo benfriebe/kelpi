@@ -57,7 +57,7 @@ a message channel:
 
 | Hook | Effect |
 | --- | --- |
-| `interactionLab.crash()` | The next `onInteraction` callback throws. The arming is cleared by that frame, so exactly one frame is affected: nothing at all is drawn for it, and the frame after it renders normally. The SDK catches a listener error, so the host still receives that frame's acknowledgement and sees no failure. Armed before the FIRST frame it is a real failure: the view never reports readiness, and the 5 second readiness watchdog takes the placement back. |
+| `interactionLab.crash()` | The next `onInteraction` callback throws. The arming is cleared by that frame, so exactly one frame is affected: nothing at all is drawn for it, and the frame after it renders normally. The SDK catches a listener error, so the host still receives that frame's acknowledgement and sees no failure. Armed before the FIRST frame, that frame reports no readiness either, because readiness is claimed by the render it never reached. The frame after it renders and reports readiness as usual, so the 5 second readiness watchdog only takes the placement back if no further frame arrives first. |
 | `interactionLab.crash('uncaught')` | The same one frame, and the error is also rethrown where nothing catches it, which the SDK reports as a view error and the host fails on immediately, whichever frame it was. |
 | `interactionLab.stall()` | Every frame from the next one on returns a promise that never settles, so nothing is acknowledged and the 5 second acknowledgement watchdog takes the placement back. |
 

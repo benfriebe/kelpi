@@ -177,7 +177,27 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
         revision: 0,
         disposed: false,
         seen: null as WsSettingsSnapshot | null,
+        /**
+         * The routed section, as THIS module understands it.
+         *
+         * Held even when a host arm is installed, which is the fix for a defect the Lab found: the
+         * arm's `set` is React state (`App`'s `openSettings`), so between `setSection` and the
+         * commit that follows it `get()` still answers the OLD section. A frame built in that window
+         * - and the presenter's is, one microtask later - would repeat the section the presenter
+         * had just navigated away from, the dedup would drop it as unchanged, and the presenter
+         * would keep drawing the previous section until something unrelated moved.
+         */
         section: DEFAULT_SETTINGS_TAB as SettingsSectionID,
+        /**
+         * The last section the HOST arm reported, so a change it makes on its own can be told apart
+         * from the echo of one we asked for.
+         *
+         * A deep link (⌘, , "Manage labels…", Help's keybindings link) routes through the host, not
+         * through `setSection`, so the surface has to follow it. The test is "the arm's answer
+         * MOVED", not "the arm disagrees with us": the arm disagreeing is the ordinary state of
+         * affairs for one render after a presenter routes.
+         */
+        hostSection: null as SettingsSectionID | null,
         values: new Map<string, SettingsFieldValue>(),
         drafts: new Map<string, string>(),
         errors: new Map<string, string>(),
@@ -381,10 +401,30 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
 
     // ── routing ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Which section is routed, reconciling the host's answer with our own.
+     *
+     * Ours wins for one render after `setSection`, because ours is what the caller was told the
+     * answer would be; the host's wins the moment it MOVES, because that is a deep link or a menu
+     * and the surface follows the window. A read reconciles rather than notifying: it runs inside a
+     * React render (`getSnapshot`), where `reconcile` already folds a new daemon snapshot in the
+     * same way, and it leaves the cached snapshot stable because the second call in a render finds
+     * the two already agreeing.
+     */
     const currentSection = (): SettingsSectionID => {
-        const held = config.section?.get() ?? null;
-        if (held !== null && isSettingsSectionID(held)) return held;
-        return config.section === undefined ? state.section : DEFAULT_SETTINGS_TAB;
+        const arm = config.section;
+        if (arm === undefined) return state.section;
+        const held = arm.get();
+        if (held === null || !isSettingsSectionID(held)) {
+            // The window is closed (or says something the catalog does not have). Nothing to follow.
+            state.hostSection = null;
+            return DEFAULT_SETTINGS_TAB;
+        }
+        if (held !== state.hostSection) {
+            state.hostSection = held;
+            state.section = held;
+        }
+        return state.section;
     };
 
     // ── the snapshot ────────────────────────────────────────────────────────────────
@@ -456,8 +496,17 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
         setSection(id: string): void {
             if (!isSettingsSectionID(id)) throw new Error(`Unknown settings section: ${id}`);
             if (state.disposed) return;
-            if (config.section === undefined) state.section = id;
-            else config.section.set(id);
+            /*
+             * Recorded HERE first, and then handed to the host.
+             *
+             * The host arm is a sync-back, not the authority: `App`'s is `openSettings`, which is a
+             * React state write, so the frame every subscriber builds on the microtask after this
+             * call would otherwise still read the section the user has just left. The surface is
+             * the thing both the presenter and the panel ask, so the surface is where the answer
+             * has to change immediately.
+             */
+            state.section = id;
+            config.section?.set(id);
             touch();
             notify();
         },

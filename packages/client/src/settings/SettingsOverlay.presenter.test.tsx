@@ -21,8 +21,8 @@
 
 import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import { DEFAULT_WS_SETTINGS, decodePluginManifest } from '@kelpi/protocol';
-import { act, cleanup, render, screen } from '@testing-library/react';
-import { useEffect, type ReactElement, type ReactNode } from 'react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerModal } from '../chrome/modal-presence';
@@ -41,7 +41,9 @@ import {
 } from './presenter';
 import { settingsPresenterChords } from './presenter-slot';
 import { createSettingsSurface, type SettingsSurface } from './surface';
+import type { SettingsTabID } from './catalog';
 import type { SettingsActions } from './types';
+import { useSettingsSurface } from './use-settings';
 
 interface MountedPresenter {
     viewID: string;
@@ -248,6 +250,63 @@ describe('a selected Settings presenter', () => {
     });
 
     /**
+     * A route the SURFACE never heard about.
+     *
+     * `App` holds `settingsTab`, so ⌘, , the ••• menu, the palette and every deep link ("Manage
+     * labels…", Help's keybindings link, "Manage favourites…") move the section through React state
+     * with no call into the surface at all - and therefore no notification for the model to hear.
+     * The slot reads the routed section on every render, which is exactly when that state has
+     * landed, and refreshes the model the way it does for its own paint decision.
+     */
+    it('publishes a frame when the host routes through its own state', async () => {
+        const verbs = actions();
+        function Routed(): ReactElement {
+            const [tab, setTab] = useState<SettingsTabID>('general');
+            const surface = useSettingsSurface({
+                settings: () => DEFAULT_WS_SETTINGS,
+                actions: () => verbs,
+                section: { get: () => tab, set: (id) => setTab(id) }
+            });
+            return (
+                <Selected>
+                    <SettingsOverlay
+                        open
+                        settings={DEFAULT_WS_SETTINGS}
+                        domain={{ labelPresets: [], workspaces: [] }}
+                        actions={verbs}
+                        surface={surface}
+                        presenters
+                        onClose={vi.fn()}
+                        pluginContent={<div data-testid="plugins-settings">Plugins</div>}
+                    />
+                    {/* Somebody else's route: the menu, the palette, a deep link. */}
+                    <button
+                        type="button"
+                        data-testid="deep-link"
+                        onClick={() => {
+                            setTab('labels');
+                        }}
+                    />
+                </Selected>
+            );
+        }
+        render(<Routed />);
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(presenter().frames.at(-1)?.sectionID).toBe('general');
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('deep-link'));
+            await Promise.resolve();
+        });
+        expect(presenter().frames.at(-1)).toMatchObject({ sectionID: 'labels', native: true });
+        expect(presenter().frames.at(-1)?.fields).toEqual([]);
+        // …and the host is drawing it, below the frame, as it does for every native section.
+        expect(screen.getByTestId('settings-native-remainder').textContent).toContain('Label');
+    });
+
+    /**
      * The recovery floor, and the reason Plugins is permanently native: the section that carries
      * "Restore bundled views" and "Retry presenter" is drawn by the HOST, below the frame, so a
      * presenter cannot hide the route to its own removal.
@@ -415,6 +474,37 @@ describe('a selected Settings presenter', () => {
         expect(() => host.call('ui.closeSettings', {})).toThrow('not presented right now');
         expect(host.getSettingsPresentation().visible).toBe(false);
         expect(surface.getSection()).toBe('general');
+    });
+
+    /**
+     * The two boxes do not split the dialog.
+     *
+     * Both were `flex-1` at first, so they took half the body each whatever they held: General's
+     * remainder is two sentences and a footer, and it pushed the presenter's panel into half a
+     * dialog it then scrolled inside. The remainder is content-sized with a ceiling; the frame takes
+     * the rest.
+     */
+    it('sizes the remainder to its content and gives the frame the rest', async () => {
+        const { surface } = setup();
+        act(() => {
+            surface.setSection('general');
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+        const remainder = screen.getByTestId('settings-native-remainder');
+        // `flex: none`, as the engine spells it back: no grow, no shrink, a content basis.
+        expect(remainder.style.flexGrow).toBe('0');
+        expect(remainder.style.flexShrink).toBe('0');
+        expect(remainder.style.flexBasis).toBe('auto');
+        expect(remainder.style.maxHeight).toBe('45%');
+        expect(remainder.className).not.toContain('flex-1');
+        // It keeps its own scroller, which is what the ceiling is for.
+        expect(remainder.className).toContain('overflow-y-auto');
+        // …and the frame is the one that grows, with a floor of nothing rather than an overflow.
+        const frame = screen.getByTestId('settings-presenter');
+        expect(frame.className).toContain('flex-1');
+        expect(frame.className).toContain('min-h-0');
     });
 
     it('closes the dialog through the host, by call and by relayed Escape', () => {

@@ -54,7 +54,7 @@ remaining SDK parity gap described below. Subsequent main fixes through
 
 ## Current task: terminal SDK geometry parity
 
-**Status: implemented on `feature/plugin-terminal-geometry`, awaiting review and merge.** The
+**Status: implemented on `feature/plugin-terminal-geometry`, [PR #187](https://github.com/benfriebe/kelpi/pull/187) (draft, stacked on PR #164), awaiting review and merge.** The
 native PTY subscription carries
 the grid on which a replay was serialized, and the bundled terminal mirrors the size owner's
 grid. The plugin bridge now states that grid on every SDK replay frame (`grid`, `null` when the

@@ -77,9 +77,29 @@ while the local pane does not. The PTY proof reads the fixture's `stdout.columns
 `tput cols`, and the remote and local halves are asserted in sequence; the scenario header
 records both.
 
-Not established here: packaged-app smoke, the complete UI audit, phone emulation beyond the
-existing `plugin-terminal-features` phone section, and physical devices. The full verification
-battery result at this revision is recorded separately below when available.
+### Full verification battery at `fe671ed`
+
+`node scripts/verify.mjs --full` ran for 25.7 minutes. Its per-component results:
+
+| Component | Result |
+| --- | --- |
+| Typecheck, root tests, shell tests, bundle build | Passed. |
+| Scenarios (all, hidden) | The lane failed twice by the battery's own rule. Five scenarios failed under the battery and were retried alone: `plugin-document-features`, `plugin-remote`, `plugin-terminal-features` and `workspace-switch-keeps-the-caret` passed on that retry; `plugin-chrome-features` failed once more (a Settings tab button not found in time) and then passed **34/34** when rerun alone afterwards. The battery ran while two implementation agents executed test suites in a sibling worktree, which is the load these focus- and timing-sensitive checks are known to fail under. No failed check is on the terminal renderer or plugin bridge surface. |
+| Full UI audit (hidden) | Completed: **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes**. The failures sit in `web-batch-pickup`, `appearance-system-stats`, `agent-start`, `agent-lifecycle`, `footer-git-stats`, `sidebar-remaining` and `workspace-edges`, the same pane-header, agent-status and sidebar steps the [initial full-audit findings](#initial-full-audit-findings) already record as full-run failures that pass in isolation. |
+| Packaged smoke | Repackaged and passed **61 checks**. |
+
+An isolated repeat of those seven audit steps (`--only`, hidden: 8 steps, 130 assertions)
+left two failures, both repeated onscreen: `web-batch-pickup` "a web pane exists", which is
+a `--only` provisioning artifact (the step expects an earlier step's web pane) rather than the
+full run's assertion; and `agent-lifecycle` "with the app active, the 600 ms dwell clears the
+focused pane", which fails because [PR #182](https://github.com/benfriebe/kelpi/pull/182) moved
+the dwell to arm on focus rather than on a status change and did not update this step, which
+raises a status on an already focused pane. That mismatch is on `main` and is unrelated to this
+branch; it needs either an audit-step update or a product decision. Hidden-window screenshots
+were not used as visual evidence.
+
+Not established here: physical devices, and phone emulation beyond the existing
+`plugin-terminal-features` phone section and the audit's phone steps.
 
 ## Documentation and handoff refresh (2026-09-12)
 

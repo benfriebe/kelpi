@@ -14,7 +14,7 @@ each completed phase and its merged PRs, from #125 through #162.
 
 The broader replacement goal is **not complete**. Terminal SDK geometry parity (replay grid and
 size ownership for plugin renderers) is implemented and validated on
-`feature/plugin-terminal-geometry`, pending review and merge. After that, implement
+`feature/plugin-terminal-geometry` as [PR #187](https://github.com/benfriebe/kelpi/pull/187), a draft stacked on PR #164, pending review and merge. After that, implement
 selectable command-palette and shared-prompt presenters, then the full Settings presenter and
 remaining composition surfaces. Public registry/distribution and untrusted execution are
 separate future scopes. Plugin API version remains **1**; wire protocol generation remains **2**.
@@ -24,7 +24,7 @@ separate future scopes. Plugin API version remains **1**; wire protocol generati
 | Product baseline | `origin/main` at `ab9be92`, including PR #185. |
 | Documentation review | [PR #164](https://github.com/benfriebe/kelpi/pull/164), open draft against `main`; this handoff belongs to that PR and is not yet merged. Recheck its state before continuing. |
 | Documentation branch/worktree | `docs/plugin-roadmap` in `out/worktrees/plugin-docs`, rebased onto the product baseline above. |
-| Feature branch | `feature/plugin-terminal-geometry`, stacked on `docs/plugin-roadmap`, in the worktree Kelpi created for the "Plugin roadmap" workspace. Rebase onto `main` once PR #164 merges. |
+| Feature branch | `feature/plugin-terminal-geometry`, stacked on `docs/plugin-roadmap`, in the worktree Kelpi created for the "Plugin roadmap" workspace; published as draft [PR #187](https://github.com/benfriebe/kelpi/pull/187). Rebase onto `main` once PR #164 merges. The following presenter phase is being implemented on `feature/plugin-interaction-contracts`, based on this branch. |
 | Running application | No application or daemon was launched for this handoff. Existing user instances and other worktrees remain owned by their current tasks. |
 
 In the current local environment, the repository root is `/Users/ben/code/kelpi`. Its main

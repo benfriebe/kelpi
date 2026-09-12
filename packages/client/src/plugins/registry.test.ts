@@ -78,6 +78,28 @@ describe('extensible workbench', () => {
         expect(plan.nativePaths.size).toBe(1);
         expect(plan.nativePaths.get('kelpi.workspace')).toContain('sample.board.slot-9-0');
     });
+    it('keeps the bundled presenter as a floor for both interaction placements', () => {
+        const presenter: PluginInfo = { ...plugin, manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
+            views: [{ id: 'sample.present.view', title: 'Presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+        } }) };
+        expect(DEFAULT_SLOTS['interaction.palette']).toBe('kelpi.palette');
+        expect(DEFAULT_SLOTS['interaction.prompts']).toBe('kelpi.prompts');
+        for (const placement of ['interaction.palette', 'interaction.prompts'] as const) {
+            const views = viewRegistry([presenter]);
+            expect(resolveSlot(views, placement, 'sample.present.view')?.pluginID).toBe('sample.present');
+            // The recovery floor cannot be selected away, and an unknown selection lands on it.
+            expect(resolveSlot(views, placement, '')?.id).toBe(DEFAULT_SLOTS[placement]);
+            expect(resolveSlot(views, placement, 'missing.view')?.id).toBe(DEFAULT_SLOTS[placement]);
+            expect(selectWorkbenchView(views, {}, placement, '')).toEqual({});
+            // A missing, disabled or failed plugin falls back while the CHOICE is retained.
+            for (const plugins of [[], [{ ...presenter, enabled: false }], [{ ...presenter, status: 'failed' as const }]]) {
+                const selections = { [placement]: 'sample.present.view' };
+                expect(resolveSlot(viewRegistry(plugins), placement, selections[placement])?.id).toBe(DEFAULT_SLOTS[placement]);
+                expect(readWorkbenchSelections(selections)).toEqual(selections);
+            }
+        }
+    });
+
     it('retains namespaced selections across plugin removal and rejects malformed persisted keys', () => {
         expect(readWorkbenchSelections({ 'sample.board.metrics': 'sample.board.view', 'sidebar.primary': 'kelpi.inspector', pane: 'kelpi.shell', 'not a slot': 'bad', 'kelpi.internal': 'bad', topbar: 17 })).toEqual({ 'sample.board.metrics': 'sample.board.view', 'sidebar.primary': 'kelpi.inspector' });
     });

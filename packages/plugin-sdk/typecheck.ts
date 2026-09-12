@@ -3,6 +3,7 @@ import { getKelpi, type BackendAPI, type BuiltinProviderMethods, type NativeGitS
 // This import also checks every runtime contract fixture against the published declarations.
 import './tests/service-fixtures.js';
 import './ui.typecheck.js';
+import './interaction.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
 

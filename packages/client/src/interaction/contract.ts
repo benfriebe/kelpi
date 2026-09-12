@@ -36,6 +36,20 @@ export const INTERACTION_PROMPT_METHODS = [
     'ui.showNotification'
 ] as const;
 
+/**
+ * The two placements a plugin view may be SELECTED into, one per presented surface.
+ *
+ * Two rather than one, because the palette and the prompts are selected independently and are
+ * mounted in different places (the palette on the content row for UI-FIDELITY M53, the prompts in
+ * the `document.body` portal), exactly as `sidebar.primary`/`sidebar.secondary` and
+ * `topbar`/`statusbar` are two placements resolved by the one `resolveSlot`.
+ *
+ * The strings are also `PLUGIN_PLACEMENTS` entries, so a manifest can declare them.
+ */
+export const INTERACTION_PLACEMENTS = ['interaction.palette', 'interaction.prompts'] as const;
+
+export type InteractionPlacement = (typeof INTERACTION_PLACEMENTS)[number];
+
 export const INTERACTION_LIMITS = Object.freeze({
     scopes: 128,
     scopePending: 8,
@@ -45,7 +59,20 @@ export const INTERACTION_LIMITS = Object.freeze({
     items: 200,
     actions: 8,
     input: 16_384,
-    payloadBytes: 256 * 1024
+    payloadBytes: 256 * 1024,
+    /*
+     * The presenter half. Every number is new in phase 2 and chosen by analogy with
+     * `TERMINAL_SCOPE_LIMITS.actionTimeoutMs` (`plugins/terminal.ts`), which is the other place a
+     * replaceable renderer is given a deadline to answer in.
+     *
+     * A budget breach FAILS the presenter rather than only rejecting the call: a call loop is a
+     * broken presenter, and the bundled surface has to be able to take the window back.
+     */
+    presenterCalls: 240,
+    presenterCallWindowMs: 1_000,
+    presenterQueryChars: 1_024,
+    presenterReadyMs: 5_000,
+    presenterAckMs: 5_000
 });
 
 /**

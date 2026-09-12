@@ -1,6 +1,6 @@
 import type { PluginChrome } from './chrome';
 import { featureBindings, type BundledFeatureBinding } from '../features/feature';
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { isPluginID, isPluginPlacement, type JsonObject, type JsonValue, type PluginPlacement } from '@kelpi/protocol';
 import type { KelpiRuntime } from '../state';
@@ -14,6 +14,8 @@ import { renderRegisteredView, type ViewRenderContext, type ViewRenderers } from
 import { PluginHostUIContext } from './host-ui';
 import type { PluginNavigation } from './navigation';
 import type { UIServiceModel } from './ui-services';
+import { INTERACTION_PLACEMENTS, type InteractionPlacement } from '../interaction/contract';
+import { clearInteractionPresenterFailure, interactionPresenterFailures, subscribeInteractionPresenters } from '../interaction/presenter';
 
 export type WorkbenchSlotID = Exclude<PluginPlacement, 'pane'>;
 interface WorkbenchLayout {
@@ -31,10 +33,32 @@ interface Workbench extends WorkbenchLayout {
     chords: readonly string[];
 }
 const WorkbenchContext = createContext<Workbench | null>(null);
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser'] as const;
+/**
+ * Every root slot a plugin may DISCOVER through `ui.getWorkbench().slots`, the two presented
+ * interaction surfaces included, and every one it may SELECT itself into. The two lists differ by
+ * exactly those surfaces.
+ *
+ * Any plugin can already put itself in the topbar programmatically, and that is fine: it replaces
+ * its own chrome. A prompts presenter renders OTHER plugins' requests - including an
+ * `ui.showInput({ password: true })` that no other slot has ever been able to see - so the choice
+ * stays the user's, made in Settings, and `ui.selectView` refuses it.
+ */
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts'] as const;
+const SELECTABLE_SLOTS: readonly string[] = ROOT_SLOTS.filter(slot => !(INTERACTION_PLACEMENTS as readonly string[]).includes(slot));
+const INTERACTION_SLOTS: readonly InteractionPlacement[] = INTERACTION_PLACEMENTS;
 const SELECTIONS_CHANGED = 'kelpi-workbench-selections';
 export function useWorkbench(): Workbench {
     const value = useContext(WorkbenchContext); if (!value) throw new Error('WorkbenchProvider is required'); return value;
+}
+/**
+ * The same read for a host that must work WITHOUT a provider.
+ *
+ * `interaction/presenter-slot.tsx` is mounted by `InteractionHost`, which stands alone in its own
+ * tests and in a window that has not built its workbench yet. No provider has to mean "the bundled
+ * presenter draws", never a crash - the recovery floor cannot depend on the layout being up.
+ */
+export function useOptionalWorkbench(): Workbench | null {
+    return useContext(WorkbenchContext);
 }
 export function useWorkbenchLayout(runtime: KelpiRuntime): WorkbenchLayout {
     const { plugins, daemonID } = usePlugins(runtime);
@@ -85,7 +109,7 @@ export function WorkbenchProvider(props: { layout: WorkbenchLayout; features?: r
         };
         if (method === 'ui.selectView') {
             const slot = args['slot'], viewID = args['viewID'];
-            if (!isPluginPlacement(slot) || slot === 'pane' || (!(ROOT_SLOTS as readonly string[]).includes(slot) && !custom.some(item => item.id === slot))) throw new Error('Workbench slot is not registered.');
+            if (!isPluginPlacement(slot) || slot === 'pane' || (!SELECTABLE_SLOTS.includes(slot) && !custom.some(item => item.id === slot))) throw new Error('Workbench slot is not registered.');
             if (typeof viewID !== 'string' || viewID.length > 160 || selectWorkbenchView(value.views, value.selections, slot, viewID) === value.selections) throw new Error('View is unavailable, incompatible with this slot, or would create a layout cycle.');
             flushSync(() => value.select(slot, viewID));
             return null;
@@ -277,6 +301,7 @@ export function WorkbenchSidebar(props: {
 
 export function PlacementSettings(): ReactElement {
     const host = useWorkbench();
+    const failures = useSyncExternalStore(subscribeInteractionPresenters, interactionPresenterFailures, interactionPresenterFailures);
     return <div className="flex flex-col gap-3" data-testid="plugin-placements">
         <strong>Workbench views</strong>
         {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
@@ -286,6 +311,22 @@ export function PlacementSettings(): ReactElement {
         {contributedSlots(host.views).map(slot => <label key={slot.id} className="flex items-center justify-between gap-3 text-xs">{slot.title}<select aria-label={slot.id} value={resolveSlot(host.views, slot.id, host.selections[slot.id])?.id ?? ''} onChange={event => host.select(slot.id, event.target.value)}>
             <option value="">Empty</option>{slotViews(host.views, slot.id).map(view => <option key={view.id} value={view.id}>{view.title}</option>)}
         </select></label>)}
+        {/*
+          * The presented surfaces get a status row as well as a select: a prompt has no persistent
+          * chrome to hang one on, so the report of a failure and the explicit Retry live where the
+          * selection lives. Same shape as the terminal renderer's picker-plus-retry row
+          * (`features/TerminalFeaturePane.tsx`), relocated.
+          */}
+        {INTERACTION_SLOTS.map(slot => {
+            const failure = failures[slot as keyof typeof failures];
+            const selected = resolveSlot(host.views, slot, host.selections[slot]);
+            const status = failure ? `Failed: ${failure.detail}` : !selected?.pluginID ? 'Bundled' : selected.title;
+            return <div key={`presenter-${slot}`} className="flex items-center justify-between gap-3 text-xs">
+                <span role="status" data-testid={`interaction-presenter-status-${slot}`}>{slot} presenter: {status}</span>
+                {failure ? <button type="button" className="shrink-0" data-testid={`interaction-presenter-retry-${slot}`}
+                    onClick={() => clearInteractionPresenterFailure(slot)}>Retry presenter</button> : null}
+            </div>;
+        })}
         <button className="self-start text-xs" onClick={() => { for (const slot of ROOT_SLOTS) host.select(slot, DEFAULT_SLOTS[slot] ?? ''); }}>Restore bundled views</button>
     </div>;
 }

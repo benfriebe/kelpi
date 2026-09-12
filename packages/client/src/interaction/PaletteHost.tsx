@@ -28,6 +28,10 @@
  * play §H19's 150 ms exit animation and to honour a pending timer. Returning null from here when
  * the session is closed would unmount it and POP the palette off the screen instead of playing it
  * out, the regression H19 fixed. So it is rendered unconditionally, with `open` false.
+ *
+ * The exit window and the `lastItems` hold below are BUNDLED-ONLY, and that is not an oversight: a
+ * presenter owns its own transition, so the host drops its `visible` on the tick the session closes
+ * rather than keeping a plugin frame painted over the grid for 150 ms it knows nothing about.
  */
 
 import { useRef, useSyncExternalStore, type ReactElement } from 'react';
@@ -37,6 +41,7 @@ import type { FormFactorWindow } from '../chrome/form-factor';
 import type { PaletteItem } from '../chrome/palette';
 import type { ChromeBucket } from '../chrome/theme';
 import type { InteractionPaletteItem } from './contract';
+import { InteractionPresenterSlot, NO_CHORDS } from './presenter-slot';
 import type { InteractionSurface } from './surface';
 
 export interface PaletteHostProps {
@@ -45,6 +50,10 @@ export interface PaletteHostProps {
     readonly bucket?: ChromeBucket | undefined;
     /** B5: the window the form factor and the software-keyboard inset are read from. */
     readonly formFactorWindow?: FormFactorWindow | undefined;
+    /** Whether a plugin presenter may be selected for this placement (`App`: `!phoneActive`). */
+    readonly presenters?: boolean | undefined;
+    /** The small relayed chord set from `interactionPresenterChords`. */
+    readonly chords?: readonly string[] | undefined;
 }
 
 const EMPTY: readonly InteractionPaletteItem[] = [];
@@ -67,6 +76,24 @@ export function PaletteHost(props: PaletteHostProps): ReactElement | null {
     const sessionID = snapshot.sessionID;
 
     return (
+        <InteractionPresenterSlot
+            surface={props.surface}
+            placement="interaction.palette"
+            enabled={props.presenters ?? false}
+            visible={snapshot.open}
+            chords={props.chords ?? NO_CHORDS}
+            /*
+             * §2.5's cancel, for the presenter case only. `CommandPalette` answers Escape inside its
+             * own card, so unlike a prompt the palette has no host-side listener to fall back on; a
+             * presenter drawing it would otherwise be uncloseable by keyboard.
+             */
+            onEscape={() => { if (sessionID !== null) session.dismiss(sessionID, 'user'); }}
+            /*
+             * §M53's box: the content row, not the window, so the title bar and the status footer
+             * stay live behind a presenter exactly as they do behind the bundled card.
+             */
+            className="absolute inset-0 z-40"
+        >
         <CommandPalette
             open={snapshot.open}
             query={snapshot.query}
@@ -87,5 +114,6 @@ export function PaletteHost(props: PaletteHostProps): ReactElement | null {
             bucket={props.bucket}
             formFactorWindow={props.formFactorWindow}
         />
+        </InteractionPresenterSlot>
     );
 }

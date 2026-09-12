@@ -3,6 +3,7 @@ import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, Buil
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
+import type { WindowInteractionAPI } from './interaction.js';
 import type { DocumentsAPI, ViewDocumentsAPI } from './documents.js';
 import type { ViewTerminalAPI } from './terminal.js';
 import type { BrowserAPI, ViewBrowserAPI } from './browser-pane.js';
@@ -11,6 +12,7 @@ export * from './services.js';
 export * from './contributions.js';
 export * from './ui.js';
 export * from './chrome.js';
+export * from './interaction.js';
 export * from './documents.js';
 export * from './terminal.js';
 export * from './browser-pane.js';
@@ -94,7 +96,7 @@ export interface ViewAPI extends KelpiAPI {
     /** Runs after ready, then on context/theme/visibility/state updates. Disposal also cancels queued deliveries. */
     onContext(listener: (value: ViewEnvironment) => void | Promise<void>): Dispose;
     setState(state: Data): Promise<void>;
-    ui: KelpiAPI['ui'] & WindowUIServices & WindowChromeAPI & {
+    ui: KelpiAPI['ui'] & WindowUIServices & WindowChromeAPI & WindowInteractionAPI & {
         activateWorkspace(workspaceID: string): Promise<void>;
         focusPane(workspaceID: string, paneID: string): Promise<void>;
         notify(message: string): Promise<void>;

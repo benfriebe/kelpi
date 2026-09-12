@@ -38,10 +38,12 @@ describe('window chrome snapshots and commands', () => {
         const stop = vi.spyOn(model, 'subscribe');
         const feed = createWindowFeed('chrome', (listener, error) => model.subscribe(listener, error), sent);
         model.update(source('two')); await Promise.resolve(); model.update(source('three')); await Promise.resolve();
-        expect(sent).toHaveBeenCalledOnce(); feed.ack(2); feed.ack('1'); expect(sent).toHaveBeenCalledOnce();
-        feed.ack(1); expect(sent).toHaveBeenLastCalledWith({ type: 'chrome', sequence: 2, value: chromeSnapshot('three') });
+        expect(sent).toHaveBeenCalledOnce(); expect(feed.ack(2)).toBe(false); expect(feed.ack('1')).toBe(false); expect(sent).toHaveBeenCalledOnce();
+        expect(feed.ack(1)).toBe(true); expect(sent).toHaveBeenLastCalledWith({ type: 'chrome', sequence: 2, value: chromeSnapshot('three') });
+        // A replayed acknowledgement is not a second one: the caller reads the result as liveness.
+        expect(feed.ack(1)).toBe(false);
         expect(stop).toHaveBeenCalledOnce(); feed.dispose(); model.update(source('four')); await Promise.resolve();
-        feed.ack(2); expect(sent).toHaveBeenCalledTimes(2); model.dispose();
+        expect(feed.ack(2)).toBe(false); expect(sent).toHaveBeenCalledTimes(2); model.dispose();
     });
     it('validates targets before dispatch and prevents calls after window disposal', async () => {
         const execute = vi.fn(); const model = createPluginChrome({ snapshot: () => chromeSnapshot(), execute });

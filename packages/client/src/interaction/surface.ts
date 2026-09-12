@@ -22,12 +22,15 @@
  *
  * Two things a reader should not mistake for dead code:
  *
- *   1. `presenterReady`, `presenterFailed`, `usesBundledPresenter`, `palette.setSelection` and the
- *      snapshot's `selectedID` are PHASE-2 SEAMS with no production caller yet. The bundled
- *      presenters keep their own selection state and never fail, so phase 1 only asserts these in
- *      `surface.test.ts`. They are here rather than later because the rules they encode (a
- *      presenter failure never settles a request, a selection is the host's to publish) have to be
- *      true of the bundled path too, or phase 2 is a redesign instead of a registration.
+ *   1. The presenter reports - `presenterReady`, `presenterStoodDown`, `presenterFailed` - are PER
+ *      PLACEMENT and are all driven by one caller, `interaction/presenter-slot.tsx`. The surface
+ *      does not know what is selected and must not: what it knows is what the mount told it, which
+ *      is why `usesBundledPresenter` and `presenterState` are read models over those reports rather
+ *      than answers derived from the workbench. The palette arm of a failure additionally dismisses
+ *      the session (§2.7); the prompts arm must NOT, or a prompts presenter failing would close a
+ *      palette the user is still reading. `palette.setSelection` and the snapshot's `selectedID`
+ *      stay host-held so a replaceable presenter never owns the selection, which is as true of the
+ *      bundled path - it simply never fails.
  *   2. `palette.open` returning null is SILENT on purpose. A palette raised over a visible prompt
  *      is refused (the prompt owns the window), and the gesture that raised it - a chord the
  *      dispatcher was already standing down for, a menu row, a chrome command - is not a failure
@@ -39,6 +42,7 @@ import { parsePaletteQuery } from '../chrome/palette';
 import {
     INTERACTION_HANDOFF_MS,
     INTERACTION_LIMITS,
+    INTERACTION_PLACEMENTS,
     interactionPaletteItem,
     normalizeInteractionOwner,
     validateInteractionAnswer,
@@ -49,6 +53,7 @@ import {
     type InteractionOwner,
     type InteractionOwnerInput,
     type InteractionPaletteItem,
+    type InteractionPlacement,
     type InteractionPaletteSnapshot,
     type InteractionPaletteSource,
     type InteractionRequest,
@@ -115,6 +120,11 @@ export interface InteractionPaletteSession {
     setSource(source: InteractionPaletteSource | null): void;
 }
 
+export interface InteractionPresenterStatus {
+    readonly failed: boolean;
+    readonly detail: string | null;
+}
+
 export interface InteractionSurface {
     createScope(owner: InteractionOwnerInput): InteractionScope;
     getSnapshot(): InteractionSnapshot;
@@ -134,9 +144,43 @@ export interface InteractionSurface {
     /** Close the palette; failing that, cancel the active prompt. */
     dismissTopmost(): boolean;
 
-    presenterReady(): void;
-    presenterFailed(detail?: string): void;
-    usesBundledPresenter(): boolean;
+    /** The selected presenter for this placement has painted; it owns the surface from now on. */
+    presenterReady(placement: InteractionPlacement): void;
+    /**
+     * This placement's presenter is broken. The live request is never settled and never gets a
+     * non-null result: it keeps its id and the bundled presenter re-presents it.
+     */
+    presenterFailed(placement: InteractionPlacement, detail?: string): void;
+    /**
+     * This placement fell back to the bundled surface for a reason that is NOT a failure: the phone,
+     * no selection, a missing/disabled/failed plugin, a dropped connection. Reported so the read
+     * model below is honest about who is drawing even when nothing went wrong.
+     */
+    presenterStoodDown(placement: InteractionPlacement): void;
+    /**
+     * Is the bundled surface the one drawing this placement right now?
+     *
+     * A read model over what the mount REPORTED, not over the selection: the surface deliberately
+     * knows nothing about the workbench, so `interaction/presenter-slot.tsx` is what tells it a
+     * presenter has painted, stood down or failed.
+     */
+    usesBundledPresenter(placement: InteractionPlacement): boolean;
+    /**
+     * Does a modal peer (Settings, Help, the create sheet, a context menu) hold the window besides
+     * this window's own interaction host? The palette arm needs it: a palette may be opened OVER a
+     * peer - that is its recovery route - so a presenter drawing it must not then trap the caret
+     * inside its own frame and away from the page that peer is showing.
+     */
+    hasModalPeer(): boolean;
+    /** Test, Settings and diagnostics seam: which placement is failed, and why. */
+    presenterState(): Readonly<Record<InteractionPlacement, InteractionPresenterStatus>>;
+    /**
+     * The opaque, window-local identity of one owner, minted lazily and stable for the window's
+     * life. Never derived from a plugin id, a display name or the view nonce - that nonce is the
+     * value in this view's `kelpi-plugin-connect` handshake, so a presenter holding it could
+     * correlate a prompt's owner with a `postMessage` it observes.
+     */
+    ownerRef(ownerID: string): string;
 
     hasPendingPaneHandoff(): boolean;
     cancelPaneHandoff(): void;
@@ -188,7 +232,22 @@ export function createInteractionSurface(config: InteractionSurfaceConfig = {}):
     let sessionID: string | null = null;
     let selectedID: string | null = null;
     let hostHoldsModal = false;
-    let presenterBroken = false;
+    /**
+     * Per placement, because the two are selected independently: a prompts presenter failing must
+     * not dismiss a palette session the user is still reading.
+     */
+    const presenters = new Map<InteractionPlacement, { ready: boolean; failed: boolean; detail: string | null }>(
+        INTERACTION_PLACEMENTS.map((placement) => [placement, { ready: false, failed: false, detail: null }])
+    );
+    let presenterStatus: Readonly<Record<InteractionPlacement, InteractionPresenterStatus>> | null = null;
+    /**
+     * Owner refs. Minted lazily and kept, so two prompts from one view can be badged together.
+     * Pruned only when the map has grown past every plausible live owner (a view that is attached
+     * and detached repeatedly mints a fresh scope id each time), and then only for owners that are
+     * neither an attached scope nor holding a pending request.
+     */
+    const ownerRefs = new Map<string, string>();
+    let ownerSequence = 0;
     let handoff: { timer: ReturnType<typeof setTimeout>; paneID: string | null } | null = null;
     /**
      * One-shot: the close chord released the caret itself, so the host's release precedence (c),
@@ -558,21 +617,68 @@ export function createInteractionSurface(config: InteractionSurfaceConfig = {}):
             return false;
         },
 
-        presenterReady() {
-            if (!presenterBroken) return;
-            presenterBroken = false;
+        presenterReady(placement) {
+            const state = presenters.get(placement);
+            if (state === undefined || (state.ready && !state.failed)) return;
+            state.ready = true;
+            state.failed = false;
+            state.detail = null;
+            presenterStatus = null;
             publish();
         },
-        presenterFailed(detail) {
-            presenterBroken = true;
+        presenterFailed(placement, detail) {
+            const state = presenters.get(placement);
+            if (state !== undefined) {
+                state.ready = false;
+                state.failed = true;
+                state.detail = detail ?? null;
+                presenterStatus = null;
+            }
             // A presenter failure never produces a non-null result and never settles a prompt:
             // the request keeps its id and is re-presented by the bundled presenter.
-            const id = currentSessionID();
+            //
+            // §2.7: only the PALETTE arm dismisses the session. Activating nothing is the point -
+            // a broken presenter must not be able to run a row on its way out - and the fallback
+            // pane handoff still runs, so the window is never left without a caret.
+            const id = placement === 'interaction.palette' ? currentSessionID() : null;
             if (id !== null) dismissPalette(id, 'presenter-failed');
             else publish();
             if (detail !== undefined) config.reportFailure?.('Interaction presenter', detail);
         },
-        usesBundledPresenter: () => true,
+        presenterStoodDown(placement) {
+            const state = presenters.get(placement);
+            if (state === undefined || !state.ready) return;
+            state.ready = false;
+            presenterStatus = null;
+            publish();
+        },
+        // The bundled surface draws until a presenter says it has painted, and again from the
+        // moment one fails or stands down.
+        usesBundledPresenter: (placement) => !(presenters.get(placement)?.ready ?? false),
+        hasModalPeer: () => externalModalCount() > 0,
+        presenterState() {
+            presenterStatus ??= Object.freeze(
+                Object.fromEntries(
+                    INTERACTION_PLACEMENTS.map((placement) => {
+                        const state = presenters.get(placement);
+                        return [placement, Object.freeze({ failed: state?.failed ?? false, detail: state?.detail ?? null })];
+                    })
+                )
+            ) as Readonly<Record<InteractionPlacement, InteractionPresenterStatus>>;
+            return presenterStatus;
+        },
+        ownerRef(ownerID) {
+            const existing = ownerRefs.get(ownerID);
+            if (existing !== undefined) return existing;
+            if (ownerRefs.size >= INTERACTION_LIMITS.scopes * 8) {
+                const live = new Set([...scopes.keys(), ...[...pending.values()].map((entry) => entry.request.owner.id)]);
+                for (const id of [...ownerRefs.keys()]) if (!live.has(id)) ownerRefs.delete(id);
+            }
+            ownerSequence += 1;
+            const ref = `owner-${String(ownerSequence)}`;
+            ownerRefs.set(ownerID, ref);
+            return ref;
+        },
 
         hasPendingPaneHandoff: () => handoff !== null,
         cancelPaneHandoff,
@@ -595,6 +701,7 @@ export function createInteractionSurface(config: InteractionSurfaceConfig = {}):
             sourceItems = EMPTY_ITEMS;
             for (const id of [...pending.keys()]) finish(id, null);
             scopes.clear();
+            ownerRefs.clear();
             if (paletteState.isOpen()) closeSession();
             sessionID = null;
             selectedID = null;

@@ -27,6 +27,13 @@ describe('public plugin protocol', () => {
         const views = [{ ...manifest.contributes.views[0], placements: ['browser'], stateVersion: 3 }];
         expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views).toMatchObject([{ placements: ['browser'], stateVersion: 3 }]);
     });
+    it('accepts interaction presenter placements with no dependency and refuses a container in them', () => {
+        const placements = ['interaction.palette', 'interaction.prompts'];
+        const views = [{ ...manifest.contributes.views[0], placements }];
+        expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views[0]?.placements).toEqual(placements);
+        const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['interaction.prompts'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
+        expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/interaction/);
+    });
     it.each([
         { apiVersion: 9 }, { trust: 'sandbox' }, { id: 'kelpi.board' }, { id: '../escape' },
         { backend: '../code.js' }, { backend: 'ui/code.js' },

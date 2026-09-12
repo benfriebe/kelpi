@@ -8,6 +8,7 @@ import { bindStatusbarFeature, statusbarModel, useStatusbarActions } from './fea
 import { usePluginChrome } from './plugins/use-chrome';
 import { createPaletteFeatureSource, type PaletteFeatureHost } from './features/palette-source';
 import { InteractionHost, InteractionPaletteSlot } from './interaction/InteractionHost';
+import { interactionPresenterChords } from './interaction/presenter-slot';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
@@ -2790,6 +2791,17 @@ function Shell(props: AppProps): ReactElement {
         [bindings]
     );
 
+    /**
+     * What a selected interaction presenter is allowed to relay - and it is NOT `allViewChords`.
+     *
+     * An Escape pressed inside an iframe never reaches this document, so the three gestures the
+     * window guarantees whoever is drawing (cancel, the rebindable close chord, Recover Interface)
+     * have to come back through `claimedChords`. Everything else a presenter needs - arrows, Enter,
+     * typing, filtering, its own Tab trap - is its own business inside the frame, and granting it
+     * the full map would let a presenter claim chords it has no business consuming.
+     */
+    const presenterChords = useMemo(() => interactionPresenterChords(bindings), [bindings]);
+
     // A plugin shortcut must reserve every native binding, including the copy/paste and
     // text-editing chords intentionally omitted from the sandboxed content-frame relay.
     const reservedPluginChords = useMemo(() => {
@@ -3423,7 +3435,7 @@ function Shell(props: AppProps): ReactElement {
      * the window's session (`interaction/PaletteHost.tsx`); the two props left here are window
      * facts the surface does not hold: the theme bucket, and B5's form-factor window.
      */
-    const palette = <InteractionPaletteSlot surface={surface} bucket={bucket} formFactorWindow={props.formFactorWindow} />;
+    const palette = <InteractionPaletteSlot surface={surface} bucket={bucket} formFactorWindow={props.formFactorWindow} presenters={!phoneActive} chords={presenterChords} />;
     const target = props.target ?? { url: undefined, token: undefined, fromQuery: false };
     const selectWorkbench = (slot: WorkbenchSlotID, id: string): void => {
         workbench.select(slot, id);
@@ -3903,7 +3915,7 @@ function Shell(props: AppProps): ReactElement {
              * one, so a browser tab (which no shell will ever call into) draws nothing.
              */}
             <QuitGate />
-            <InteractionHost surface={surface} />
+            <InteractionHost surface={surface} presenters={!phoneActive} chords={presenterChords} />
 
             {helpOpen ? (
                 <HelpOverlay

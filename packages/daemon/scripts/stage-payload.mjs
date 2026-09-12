@@ -12,6 +12,7 @@
  *     ├─ kelpid.js                                    the esbuild bundle (mode 0755)
  *     ├─ kelpid.js.map                                its sourcemap (stack traces from a shipped app)
  *     ├─ payload.json                               manifest: what was staged, and from where
+ *     ├─ package.json                               `{"type":"module"}`: kelpid.js is ESM (below)
  *     └─ node_modules/
  *        └─ node-pty/
  *           ├─ package.json                         `main: ./lib/index.js`
@@ -37,6 +38,17 @@
  * Only the target platform+arch prebuild is staged: the published package carries four
  * (darwin-arm64, darwin-x64, win32-arm64, win32-x64) plus C++ sources and vendored deps, ~62 MB
  * in total, of which ~130 KB is actually loaded at runtime.
+ *
+ * ## Why a package.json rides along
+ *
+ * `kelpid.js` is an ES module with a `.js` name, so Node takes its module type from the nearest
+ * `package.json` above it. In the workspace that is `packages/daemon/package.json`, which says
+ * `"type": "module"`; the payload leaves it behind. Without a declaration of its own the lookup
+ * climbs out of the app bundle: a Kelpi.app under `packages/shell/out/` reaches the shell's
+ * `package.json`, which has no `type`, so Node parses the bundle as CommonJS, fails, reparses it
+ * as ESM and prints `MODULE_TYPELESS_PACKAGE_JSON` on every start. The `package.json` here ends
+ * the lookup beside the bundle and changes nothing else: `node_modules/node-pty` has its own
+ * `package.json` (CommonJS) and `runner.mjs` is ESM by its extension.
  *
  * ## Usage
  *
@@ -65,6 +77,9 @@ export const BUNDLE_NAME = 'kelpid.js';
 export const SOURCEMAP_NAME = 'kelpid.js.map';
 /** Written next to the payload so a packaged app can be inspected without guessing. */
 export const MANIFEST_NAME = 'payload.json';
+/** Declares the bundle an ES module wherever the payload lands (see "Why a package.json"). */
+export const PACKAGE_SCOPE_NAME = 'package.json';
+export const PACKAGE_SCOPE = `${JSON.stringify({ type: 'module' })}\n`;
 
 /**
  * The subset of the node-pty package that is reachable at runtime. Everything else it publishes
@@ -190,6 +205,7 @@ export function stageDaemonPayload({
     cpSync(bundle, path.join(target, BUNDLE_NAME), { dereference: true });
     cpSync(path.join(distDir, 'runner.mjs'), path.join(target, 'runner.mjs'));
     chmodSync(path.join(target, BUNDLE_NAME), 0o755);
+    writeFileSync(path.join(target, PACKAGE_SCOPE_NAME), PACKAGE_SCOPE);
     const sourcemap = copyFileIfPresent(path.join(distDir, SOURCEMAP_NAME), path.join(target, SOURCEMAP_NAME));
 
     const nodePty = stageNodePty({ outDir: target, platform, arch });

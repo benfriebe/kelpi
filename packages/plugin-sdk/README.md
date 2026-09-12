@@ -119,6 +119,12 @@ presentation and host actions such as live selection and phone keys. See the
 [Terminal Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/terminal-lab). Existing terminal commands and watches
 remain available to backend and ordinary pane plugins.
 
+Replay frames currently contain bytes without the native replay grid, and terminal
+presentation does not expose size ownership. A replacement therefore cannot yet reproduce
+the bundled renderer's owner-grid mirroring through this API. Terminal Lab fits its own
+measured box; see the [geometry limitation](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-terminals.md#replay-geometry-limitation)
+and the planned SDK follow-up.
+
 ## Browser renderers
 
 `kelpi.browser` exposes the owning daemon's native tabs, navigation, Find, favourites,

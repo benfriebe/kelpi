@@ -143,6 +143,9 @@ The [plugin guide](docs/plugins.md) specifies these contracts and their limits.
 
 The command palette, shared prompt/notification presenters and application Settings shell
 still use bundled presentation. Their replacement work is tracked as proposed in the roadmap.
+The bundled terminal now mirrors its size owner's replay grid; the public terminal SDK still
+omits that geometry and ownership presentation. The
+[terminal guide](docs/plugin-terminals.md#replay-geometry-limitation) documents this remaining gap.
 
 ## Repo layout (pnpm workspace)
 

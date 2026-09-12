@@ -4,13 +4,29 @@ Plugins are self-contained packages installed on the daemon machine. You can aut
 outside this repository and test it beside your installed Kelpi.
 The [plugin reference](plugins.md) describes the API and package contract;
 the [roadmap](plugin-roadmap.md) tracks delivered capabilities and remaining work.
+For work on Kelpi itself, the [agent handoff](plugin-handoff.md) records the current baseline
+and the next implementation task.
+
+## Prepare a source checkout
+
+Use Node.js 24 or newer and pnpm. A fresh clone or worktree needs the vendored terminal
+engine's ignored `dist/` before the app can build. Follow the
+[vendor rebuild recipe](../vendor/ghostty-web-patched/PROVENANCE.md#rebuild-the-javascript-bundle)
+from the checkout root. It copies this checkout's tracked TypeScript and patched WASM into a
+unique temporary directory, builds the bundle, then runs `pnpm install --frozen-lockfile` in
+the checkout. Run the recipe's embedded-WASM verification afterward.
+
+At main `ab9be92` the override is `ghostty-web 0.4.0-nex.13`. Its JavaScript inlines the WASM,
+so installing dependencies or copying the standalone WASM alone cannot repair an older
+bundle. Repeat the recipe after vendor source/WASM changes. An existing checkout with a
+verified matching bundle only needs `pnpm install --frozen-lockfile` for workspace dependencies.
+The app launcher does not perform the vendor rebuild.
 
 ## Start a private instance
 
-Use Node.js 24 or newer, as required by this repository. From the repository checkout:
+After preparing the checkout, run from its root:
 
 ~~~sh
-pnpm install --frozen-lockfile
 node scripts/dev-instance.mjs --state out/plugin-playground
 ~~~
 

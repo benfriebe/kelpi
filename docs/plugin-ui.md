@@ -10,7 +10,8 @@ The [plugin roadmap](plugin-roadmap.md) tracks overall progress. The
 
 ## Try UI Lab beside your installed Kelpi
 
-From the checkout root, after `pnpm install --frozen-lockfile`, run:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout).
+Then run from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-playground

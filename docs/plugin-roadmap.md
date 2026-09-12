@@ -1,9 +1,11 @@
 # Plugin roadmap and progress
 
-Last reviewed: **2026-09-11**, against merged main `0fe093d`. This is the current plan for
+Last reviewed: **2026-09-12**, against merged main `ab9be92`. This is the current plan for
 Kelpi extensibility. The [architecture audit](plugin-extensibility-audit.md) preserves the
 original design; the [plugin guide](plugins.md) defines the implemented API; the
 [validation record](plugin-validation.md) records what was checked at each revision.
+The [agent handoff](plugin-handoff.md) records the current branch/PR, setup requirements,
+source entrypoints and recommended next task.
 
 ## Goal and boundaries
 
@@ -44,7 +46,38 @@ Related terminal fixes [#132](https://github.com/benfriebe/kelpi/pull/132) and
 [#153](https://github.com/benfriebe/kelpi/pull/153) establish one WASM instance per terminal
 and release disposed engines. They are merged runtime fixes, not additional plugin APIs.
 
-## Next proposed phase: replaceable palette and shared prompts
+Since the authoring phase, [#167](https://github.com/benfriebe/kelpi/pull/167) fixes terminal
+wrap linkage in the vendored WASM engine, and [#168](https://github.com/benfriebe/kelpi/pull/168)
+adds replay geometry and owner-grid mirroring to the bundled renderer. The latter exposed a
+remaining SDK parity gap described below. Subsequent main fixes through
+[#185](https://github.com/benfriebe/kelpi/pull/185) are recorded in the handoff.
+
+## Next recommended task: terminal SDK geometry parity
+
+**Status: identified from source; not implemented.** The native PTY subscription now carries
+the grid on which a replay was serialized. The bundled terminal uses it to mirror the size
+owner's grid. The plugin bridge still emits data-only replay frames, and the public
+terminal presentation has no size-ownership field. Terminal Lab fits its own box, so it cannot
+reproduce the bundled behavior using the current SDK.
+
+Complete this bounded follow-up before the broader presenter phase:
+
+1. Define public replay geometry and size-ownership presentation, preserving compatibility
+   with daemons that supply no grid. Keep measured pane geometry separate from the grid being
+   rendered, and preserve the actual owning runtime for embedded remote panes.
+2. Carry those values through the acknowledged plugin bridge and SDK, then update Terminal Lab
+   to mirror a non-owner grid and recover on ownership changes. Preserve output credit,
+   replay ordering, parser replies, hidden-view rules and existing PTY ownership.
+3. Test differing window/font sizes, resize, take-control, reconnect, hidden/revealed panes,
+   remote ownership and renderer swaps. Assert native process identity and input coordinates.
+   The existing `terminal-mirrors-owner-grid` scenario is bundled coverage; add explicit plugin
+   acceptance and inspect onscreen output.
+
+See the [terminal limitation](plugin-terminals.md#replay-geometry-limitation) and
+[handoff implementation pointers](plugin-handoff.md#first-implementation-task).
+No new SDK field or wire version is being declared by this plan.
+
+## Following proposed phase: replaceable palette and shared prompts
 
 **Status: proposed; implementation has not started.** The command palette is still mounted
 directly by [App](../packages/client/src/App.tsx), and
@@ -81,19 +114,24 @@ Phone emulation and physical-device checks must be identified separately in the 
 | Additional domain access | Typed services and command/event access cover the implemented domains; backend-only, primary-window and native-host requirements are explicit. | Add missing operations with documented ownership, cancellation and failure semantics when real plugins need them. |
 
 These are follow-up scopes, not currently running branches or promised release dates. The
-next phase above is the recommended order; later work can be reprioritized without marking
-unimplemented contracts complete.
+terminal parity task and then presenter phase above are the recommended order; later work
+can be reprioritized without marking unimplemented contracts complete.
+
+Progress is tracked by delivered capabilities and explicit remaining scopes. There is no
+calibrated percentage of remaining engineering effort: full UI composition, public distribution
+and untrusted execution have different boundaries and should not be counted as equally sized tasks.
 
 ## Validation status
 
-The latest merged authoring review records **8,369 passing tests**, all workspace typechecks,
-one existing optional database skip and **70/70 hidden live checks**. The earlier authoring
+The latest merged authoring review at `0fe093d` records **8,369 passing tests**, all workspace
+typechecks, one existing optional database skip and **70/70 hidden live checks**. The earlier authoring
 baseline records 66 hidden and 66 onscreen checks plus inspected screenshots. Its committed
-JSON and screenshots describe that baseline, not the later reviewed source.
+JSON and screenshots describe that baseline, not the later reviewed source. These counts also
+predate the native fixes now on `ab9be92`; no combined product run at that revision is claimed here.
 
 The [validation record](plugin-validation.md) distinguishes these revisions, earlier full
 UI-audit findings, packaged smoke coverage and physical-device limits. This documentation
-refresh does not constitute a fresh product test run. Some old logs existed only under an
+refresh does not constitute a fresh full product test run. Some old logs existed only under an
 implementation worktree's `out/` directory; the record labels those paths as local artifacts
 instead of presenting them as downloadable evidence.
 
@@ -102,6 +140,7 @@ instead of presenting them as downloadable evidence.
 | Need | Start here |
 | --- | --- |
 | Overall goal, delivered phases and next work | This roadmap |
+| Resume implementation in another session | [Agent handoff](plugin-handoff.md) |
 | Installation, API, trust, packages and recovery | [Plugin guide](plugins.md) |
 | Create a project and test beside an installed Kelpi | [Development guide](plugin-development.md) |
 | Standalone types and SDK consumption | [SDK guide](../packages/plugin-sdk/README.md) |

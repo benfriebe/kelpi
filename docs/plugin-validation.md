@@ -1,6 +1,8 @@
 # Plugin implementation validation
 
 Phase-by-phase record for **2026-09-08 through 2026-09-11**, including merged main `0fe093d`.
+Documentation and current-state reconciliation were updated on **2026-09-12** against
+`ab9be92`; that review is not a new full product test run.
 The [roadmap](plugin-roadmap.md) tracks overall status and PRs; the
 [plugin guide](plugins.md) defines the supported API. Work used isolated implementation
 checkouts and private daemons, databases, sockets, ports and Electron profiles on macOS
@@ -12,7 +14,8 @@ Each section records its own tested revision and scope. The latest
 [authoring review](#package-and-recovery-review-fixes-2026-09-11) reports all typechecks,
 **8,369 passing tests** and **70/70 hidden live checks**. The preceding authoring table and
 committed screenshots/JSON are the pre-review baseline. Older results are not new validation
-of the latest merged tree, and this documentation refresh did not rerun product tests.
+of the latest merged tree. The documentation refresh's focused setup checks are recorded
+separately below; it did not repeat full product validation.
 
 Durable evidence is checked into [document](audit/plugin-documents/README.md),
 [terminal](audit/plugin-terminals/README.md), [browser](audit/plugin-browser/README.md) and
@@ -28,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Current baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
 - [Packages, recovery and authoring](#plugin-packages-recovery-and-authoring-2026-09-10), including [merged review fixes](#package-and-recovery-review-fixes-2026-09-11).
 - [Browser replacement](#browser-pane-replacement-2026-09-10).
 - [Terminal replacement](#terminal-renderer-replacement-2026-09-10).
@@ -36,6 +40,41 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Documentation and handoff refresh (2026-09-12)
+
+The documentation branch `docs/plugin-roadmap` was rebased onto merged main `ab9be92`
+for [PR #164](https://github.com/benfriebe/kelpi/pull/164). The [handoff](plugin-handoff.md)
+records the current worktree/PR, newer native fixes, source entrypoints, setup and acceptance
+for the next agent. Source review found that native replay geometry still stops at the plugin
+bridge; the terminal guides now describe this limitation and the roadmap prioritizes it.
+Palette/prompt presentation remains proposed and unimplemented.
+
+Focused validation on the rebased worktree used Node 24.15.0 and pnpm 10.28.1:
+
+| Check | Result and scope |
+| --- | --- |
+| Fresh worktree bootstrap | Rebuilt the ignored Ghostty bundle from tracked source and WASM in a unique temporary directory, then installed the checkout with the frozen lockfile. No other worktree's generated bundle or `node_modules` was reused. |
+| Embedded engine identity | Both vendor bundles and the installed client's embedded WASM match the tracked 423,289-byte binary, SHA-256 `7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`. |
+| Vendor regression checks | `pnpm exec vitest run packages/client/src/terminal/vendor-engine.test.ts`: **20/20 pass**. |
+| Application builds | Daemon, CLI, client and shell builds pass from that worktree. No app was launched or installed over the user's current Kelpi. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` passes: packed public files, external browser and Node-only type consumers, and runtime imports. No registry publication. |
+| Documentation | **437 local links**, **20 repository links/anchors** mapped to the checkout, and **79 Markdown tables** checked across **41 documents**. Setup shell syntax passes; the built CLI's global help includes all plugin command groups. |
+
+The vendor build emitted the four previously documented Bun/`fs/promises` declaration
+diagnostics and completed successfully; that is not a clean upstream typecheck claim.
+Initial installation warned about daemon CLI links before its bundle existed, and the client
+build reported chunk-size warnings. Subsequent app builds and the focused vendor checks passed.
+
+Logs remain local in the docs worktree: `out/handoff-vendor-bootstrap.log`,
+`out/handoff-vendor-hash-check.log`, `out/handoff-vendor-tests.log`,
+`out/handoff-{daemon,cli,client,shell}-build.log`, `out/handoff-sdk-package.log` and
+`out/documentation-link-check.json`. These are not committed evidence artifacts.
+
+The previously reported **8,369 tests** and **70 hidden checks** belong to the authoring review
+through `0fe093d`. The newer main changes through PR #185 have their own PR histories; no
+aggregate full-suite, live-scenario, packaged-app or physical-device result for `ab9be92`
+is established by this documentation update. Existing evidence files retain their revisions.
 
 ## Plugin packages, recovery and authoring (2026-09-10)
 
@@ -475,6 +514,9 @@ and the two fixture corrections. The baseline comparison (local artifact: `out/p
 preserves the exact assertion names and step errors for review.
 
 ## Reproduce
+
+First [prepare the checkout](plugin-development.md#prepare-a-source-checkout), including
+the vendored engine and installed-copy hash verification.
 
 ```sh
 pnpm check

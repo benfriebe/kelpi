@@ -15,7 +15,8 @@ The [plugin roadmap](plugin-roadmap.md) tracks the wider extension work. The
 
 ## Try it beside your installed Kelpi
 
-From the checkout root, after `pnpm install --frozen-lockfile`:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout).
+Then run from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-chrome-playground
@@ -95,6 +96,12 @@ workspace-scoped actions. The host validates current state again when invoked.
 | `kelpi.window.installCLI`, `kelpi.window.checkUpdates` | Discoverable only when a desktop shell is attached. |
 | `kelpi.window.restartSocket`, `kelpi.window.restartUI` | Existing socket-server restart and renderer reload. Restart UI preserves daemon-owned panes and sessions. |
 | `menu:<menu-id>`, `item:<placement>:<item-id>` | Opaque IDs returned in discovery; invoke the current contributed entry and recheck its visibility/enablement before dispatch. Pass the displayed `workspaceID` when one exists. |
+
+Replacement desktop chrome should expose the enabled `kelpi.window.takeSizeControl` command
+when `sizeControl === 'other-window'`. The bundled terminal may clip a larger owner's grid;
+this gives the user a way to fit their window again. Observe the subsequent ownership update
+before treating the request as effective. Native desktop and phone controls provide this
+route; the desktop chrome API remains unavailable on phone.
 
 Layout/input requests await their daemon command reply and reject failures; they never retry
 a mutation. Other commands retain native dispatch semantics: a successful call does not mean

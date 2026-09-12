@@ -91,7 +91,7 @@ independent.
 
 ## Validate locally
 
-After `pnpm install --frozen-lockfile`, start
+After [preparing the source checkout](plugin-development.md#prepare-a-source-checkout), start
 `node scripts/dev-instance.mjs --state out/plugin-playground` from the checkout root. Paste
 the absolute path to `examples/plugins/sidebar-lab` into that instance's Settings → Plugins. Its CLI,
 database, sockets and Electron profile are separate from the installed Kelpi application.

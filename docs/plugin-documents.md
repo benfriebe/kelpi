@@ -14,7 +14,8 @@ See the [plugin roadmap](plugin-roadmap.md) for current scope and the
 
 ## Try it beside the installed app
 
-From the checkout root, after `pnpm install --frozen-lockfile`:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout).
+Then run from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-documents-playground

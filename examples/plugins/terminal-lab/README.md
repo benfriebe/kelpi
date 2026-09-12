@@ -4,10 +4,10 @@ An SDK-only replacement for existing shell panes and native documents running an
 editor. The example has no backend or private Kelpi imports. It renders the existing process
 with the repository's pinned xterm 6 dependency.
 
-From the checkout root, run:
+First [prepare the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout),
+including the vendored engine. Then, from the checkout root, run:
 
 ```sh
-pnpm install --frozen-lockfile
 node scripts/build-terminal-lab.mjs
 node scripts/dev-instance.mjs --state out/plugin-terminals-playground
 ```
@@ -26,6 +26,11 @@ The example consumes acknowledged replay/output frames, resets its parser and sc
 authoritative replay, preserves a scroll position separately from the native pane, and handles
 host selection, paste, focus, search and phone keyboard actions. Hidden views remain attached
 without resizing the process. Showing the phone keyboard requires the explicit keyboard action.
+
+The public SDK currently omits replay geometry and size-ownership presentation. Terminal Lab
+fits its own measured box even when another window owns the PTY size; it does not yet mirror
+the owner's grid like the bundled renderer. See the
+[contract limitation and planned follow-up](../../../docs/plugin-terminals.md#replay-geometry-limitation).
 
 `ui/helpers.js` contains the input, geometry and replay rules. `ui/renderer.js` implements the
 public Kelpi terminal contract, and `ui/xterm-adapter.js` restores authoritative input modes.

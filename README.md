@@ -53,7 +53,8 @@ remaining work. Start with the [development guide](docs/plugin-development.md) t
 plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
 contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
 The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
-workbench views.
+workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
+integration baseline, validation limits and the next implementation task.
 
 This generation uses protocol 2 and `kelpi-v2.db`; see the
 [database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
@@ -83,8 +84,12 @@ and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hoo
 
 Requires Node 24 and pnpm.
 
+For a fresh clone or worktree, first [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout),
+including the vendored terminal engine. To run beside an installed Kelpi, use the
+[private-instance launcher](docs/plugin-development.md#start-a-private-instance).
+
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --filter @kelpi/daemon build        # esbuild → packages/daemon/dist/kelpid.js
 ```
 
@@ -274,9 +279,13 @@ names the table, id and reason, and `warnings` covers every fallback taken.
 The daemon is the only thing you strictly need — a browser is a complete client. The Electron
 shell adds the native chrome (tray, dock badge, global hotkey, native notifications, web panes).
 
+First [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout);
+the commands below assume the vendored engine has been built and verified.
+
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --filter @kelpi/daemon build     # esbuild → packages/daemon/dist/kelpid.js
+pnpm --filter @kelpi/cli build        # esbuild → packages/cli/dist/kelpi.js
 pnpm --filter @kelpi/client build     # vite    → packages/client/dist
 pnpm --filter @kelpi/shell build      # esbuild → packages/shell/dist/main.js
 
@@ -290,11 +299,11 @@ running when you quit). To use the browser instead, start the daemon yourself an
 ### As an app (`pnpm dist`)
 
 ```bash
-pnpm dist                                          # client + daemon + shell, then electron-forge make
+pnpm dist                                          # daemon + client + CLI + shell, then electron-forge make
 open packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
 ```
 
-`pnpm dist` builds all three bundles and produces, in `packages/shell/out/`:
+`pnpm dist` builds all four bundles and produces, in `packages/shell/out/`:
 
 | artifact | what it is |
 |----------|------------|
@@ -428,7 +437,7 @@ packages/
 ```bash
 pnpm check          # typecheck + the full test suite   (the gate — must stay green)
 pnpm test           # vitest across every package
-pnpm typecheck      # tsc -b protocol core daemon cli, then client + shell
+pnpm typecheck      # tsc -b protocol core daemon cli, then SDK + client + shell
 pnpm --filter @kelpi/daemon watch    # rebuild the bundle on change
 ```
 

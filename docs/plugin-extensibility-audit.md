@@ -7,7 +7,7 @@ that audit. They are retained to explain the decisions; current implementation t
 precedence where it differs.
 
 The [roadmap and progress tracker](plugin-roadmap.md) is the current overall plan, last
-reviewed against merged main `0fe093d` on 2026-09-11. The [plugin guide](plugins.md) defines
+reviewed against merged main `ab9be92` on 2026-09-12. The [plugin guide](plugins.md) defines
 the implemented API, installation and recovery; the [validation record](plugin-validation.md)
 tracks completed phases and their evidence.
 
@@ -16,7 +16,8 @@ The subsequent [feature](plugin-features.md), [chrome](plugin-chrome.md),
 [browser](plugin-browser.md) guides describe the implemented replacement contracts.
 Local package distribution, version history/rollback, failed-update recovery, templates and
 live development are also implemented; see the [development guide](plugin-development.md).
-Selectable palette/prompt presentation is the next proposed phase. Public SDK releases,
+The [handoff](plugin-handoff.md) recommends closing the terminal SDK replay-geometry gap,
+then implementing selectable palette/prompt presentation. Public SDK releases,
 automatic remote distribution and an untrusted runtime remain follow-up work.
 
 **Recommendation.** Build a small application kernel with bundled feature plugins and

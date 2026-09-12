@@ -3,10 +3,10 @@
 A build-free, UI-only replacement toolbar and status bar. Both use `window.kelpi.ui` and
 receive their state from `onChrome`; there are no native imports or backend processes.
 
-Start an isolated instance from the repository root:
+First [prepare the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout),
+then start an isolated instance from its root:
 
 ```sh
-pnpm install --frozen-lockfile
 node scripts/dev-instance.mjs --state out/plugin-chrome-playground
 ```
 

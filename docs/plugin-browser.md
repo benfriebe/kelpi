@@ -10,7 +10,8 @@ See the [plugin roadmap](plugin-roadmap.md) for overall scope and the
 
 ## Try Browser Lab alongside your installed Kelpi
 
-From this checkout, after `pnpm install --frozen-lockfile`:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout).
+Then run from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/browser-plugin-playground

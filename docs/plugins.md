@@ -17,7 +17,8 @@ design. For a practical starting point, use the [development guide](plugin-devel
 ## Try the example
 
 To test this checkout beside your existing Kelpi, start an isolated instance from the
-repository root after installing the checkout's dependencies:
+repository root after [preparing the checkout](plugin-development.md#prepare-a-source-checkout),
+including its vendored engine and dependencies:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-playground

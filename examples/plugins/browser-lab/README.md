@@ -2,10 +2,10 @@
 
 An SDK-only replacement for a native Kelpi browser pane. The plugin supplies its own tabs, address bar, navigation, Find, bookmarks, page tools and private-mode confirmation. Kelpi continues to own the native page, its storage session, geometry, focus and crash recovery. There is no plugin backend or build step.
 
-To try it without replacing your installed Kelpi, run a private development instance from the checkout root:
+First [prepare the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout).
+To try it beside your installed Kelpi, run a private development instance from the checkout root:
 
 ```sh
-pnpm install --frozen-lockfile
 node scripts/dev-instance.mjs --state out/browser-plugin-playground
 ```
 

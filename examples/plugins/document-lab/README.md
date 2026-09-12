@@ -3,7 +3,7 @@
 An SDK-only renderer for existing Markdown, Scratchpad and Diff panes. No backend, build,
 native imports or host DOM access is required.
 
-After `pnpm install --frozen-lockfile`, start
+After [preparing the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout), start
 `node scripts/dev-instance.mjs --state out/plugin-documents-playground` from the checkout
 root. In that private instance, install this directory's absolute path through Settings → Plugins, open a
 document, and choose **Document Lab** in its renderer picker. Settings exposes the same choices

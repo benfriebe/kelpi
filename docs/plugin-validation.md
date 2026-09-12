@@ -63,8 +63,22 @@ worktree; private sandboxes only. Retained onscreen screenshots are in
 
 Recorded limits: daemon disconnect and reconnect is not pressed by the scenario (the runner
 exposes no primary-daemon handle); phone checks use emulation; physical devices are not
-covered; selectable notification presentation is not part of this phase. The full verification
-battery for the interaction branches is recorded below when available.
+covered; selectable notification presentation is not part of this phase.
+
+### Full verification battery at `54ef523`
+
+`node scripts/verify.mjs --full` on the Interaction Lab branch (which contains the contracts and
+presenters steps) passed in 25.7 minutes:
+
+| Component | Result |
+| --- | --- |
+| Typecheck, root tests, shell tests, bundle build | Passed. |
+| Scenarios (all, hidden) | Passed on the battery's isolated retry. Four scenarios were red under the battery and green alone: `plugin-chrome-features`, `plugin-document-features`, `plugin-terminal-features`, `workspace-switch-keeps-the-caret`, the same load-sensitive set recorded for the geometry branch. `plugin-interaction-presenters` and `plugin-remote` passed in the battery's own run. |
+| Full UI audit (hidden) | Completed: **132 steps, 1,653 assertions, 5 failed, 4 step errors, 113 need eyes**. The failures and step errors are the pre-existing `web-batch-pickup`, `appearance-system-stats`, `agent-start`, `agent-lifecycle`, `footer-git-stats`, `sidebar-remaining` and `workspace-edges` findings already recorded for the geometry branch; the Settings, palette, prompt, phone and web steps passed. |
+| Packaged smoke | Repackaged and passed **61 checks**. |
+
+The battery's scenario lane ran with only a read-only planning agent active on the machine;
+its audit ran while two implementation agents executed unit suites in a sibling worktree.
 
 ## Selectable interaction presenters (2026-09-12)
 

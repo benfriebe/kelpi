@@ -80,14 +80,19 @@ watch/send/capture/search/sync APIs remain available to all plugins. Renderer at
 is a view-only API granted by the terminal feature host.
 
 ```js
+let ownsSize = true;
 const session = await kelpi.terminal.attach({
   cols: measuredColumns,
   rows: measuredRows,
   async onFrame(frame) {
-    if (frame.type === 'replay') await renderer.replace(frame.data);
+    if (frame.type === 'replay') {
+      // Mirror the stated grid first: these bytes are only parseable at it.
+      if (!ownsSize && frame.grid) renderer.resize(frame.grid.cols, frame.grid.rows);
+      await renderer.replace(frame.data);
+    }
     else if (frame.type === 'output') await renderer.write(frame.data);
     else if (frame.type === 'modes') renderer.setModes(frame.modes);
-    else if (frame.type === 'presentation') renderer.present(frame.value);
+    else if (frame.type === 'presentation') { ownsSize = frame.value.ownsSize; renderer.present(frame.value); }
     else if (frame.type === 'resync') renderer.expectReplay();
     else if (frame.type === 'exit') renderer.showExit(frame.exitCode);
   },
@@ -110,7 +115,7 @@ then acknowledges that exact delivery. A thrown/rejected callback fails the view
 | `write(stringOrBytes)` | Keyboard and paste bytes, including the pane's input-sync siblings. |
 | `writeDirect(stringOrBytes)` | Pane-local mouse reports and key releases. |
 | `writeDirect(stringOrBytes, { response: true })` | Parser replies to the data frame currently being consumed, including while hidden. |
-| `resize(cols, rows)` | Report measured geometry through this window's native size-control path. |
+| `resize(cols, rows)` | Report the grid measured for this renderer's own box through this window's native size-control path. A mirroring renderer reports its measurement, never the grid it mirrors. |
 | `setCellHeight(height)` | Supply the phone keyboard inset's minimum line height in CSS pixels. |
 | `dispose()` | Detach this renderer, retaining the process and pane. Later writes reject. |
 
@@ -128,8 +133,9 @@ This exception does not permit background keyboard or mouse input, replies from 
 callback, or replies from an obsolete replay. Track input origin
 in the emulator adapter rather than guessing from an escape-sequence prefix.
 
-Presentation includes focus, visibility, terminal colors/font/padding, accessibility name
-and search reveal coordinates anchored from the bottom of the buffer. A reveal's `seq`
+Presentation includes focus, visibility, size ownership (`ownsSize`, see below), terminal
+colors/font/padding, accessibility name and search reveal coordinates anchored from the bottom
+of the buffer. A reveal's `seq`
 distinguishes repeated requests for the same match. Logical pane focus is not permission
 to steal the caret from a palette or dialog; use the explicit host focus action.
 
@@ -182,26 +188,53 @@ omits geometry when hidden; becoming visible resumes measured resizing. The daem
 decides whether this window owns process dimensions. Remote replacements use the remote
 runtime's transport and storage.
 
-## Replay geometry limitation
+## Replay geometry and size ownership
 
-As of merged main `ab9be92`, the bundled renderer mirrors another size owner's grid before
-consuming a replay, letterboxing or clipping it when necessary. The public terminal SDK does
-not yet carry that replay grid or size-ownership presentation: replay frames contain bytes
-only. Terminal Lab continues fitting its own measured box, so its multi-window geometry
-behavior does not yet match the bundled renderer.
+PTY geometry follows exactly one client per daemon (terminal-surface.md section 5.1), so a
+window that does not own it renders bytes composed for somebody else's grid. The SDK states
+both facts.
 
-The native `PtySubscription.onReplay(data, grid)` callback supplies geometry, but
-[the plugin bridge](../packages/client/src/plugins/terminal.ts) currently drops its second
-argument. [TerminalFrame and TerminalPresentation](../packages/plugin-sdk/terminal.d.ts)
-therefore cannot convey it. This is a source-confirmed contract gap; the existing plugin
-scenario does not validate owner-grid mirroring. Completing that path and testing Terminal
-Lab are the [next recommended task](plugin-roadmap.md#next-recommended-task-terminal-sdk-geometry-parity).
+`TerminalPresentation.ownsSize` is whether this window's native connection sizes the process.
+It is true when no owner is known, which is what a single-window session reports forever, so a
+renderer that ignores the field behaves exactly as it did before it existed. Replay frames carry
+`grid`: the `TerminalGrid` the snapshot was serialised at, or `null` when the daemon stated none
+(an older daemon), which means keep the emulator at its current grid rather than guessing one.
+
+A renderer with `ownsSize: false` must mirror the stated grid:
+
+| Obligation | Why |
+| --- | --- |
+| Resize the emulator to `frame.grid` BEFORE writing the replay's bytes. | The reset then lands on an engine that is already the right shape. A resize afterwards re-wraps what was just painted. |
+| Parse at that grid, never at the measured box. | The serializer writes a soft-wrapped row and its continuation with no newline between them, so any other width glues the halves onto one row, and every later replay repeats it. |
+| Anchor the canvas top-left, clip the overflow, do not scale or scroll. | Letterboxed where the box is bigger, clipped where it is smaller. Scaling desynchronizes cell arithmetic, so mouse coordinates stop matching rendered cells. |
+| Keep measuring your own box and keep reporting it through `resize`. | That report is the daemon's takeover cache and the request for this viewer's own fresh snapshot. Reporting the mirrored grid would tell the daemon the owner's window is this one. |
+| `grid: null`: change nothing. | The daemon stated no grid, which is not a statement that the grid is 80x24. |
+| `ownsSize: true`: drop any mirror and return the emulator to the last measurement. | An owner's engine belongs on its own box, and the grid the daemon serialises at is that box. |
+
+Size control changing hands is the host's repair, not the renderer's. On gaining it the host
+sends one forced `resize-pane` so the claim reaches the PTY even though the box did not move; a
+hidden view cannot claim geometry, so that claim waits for the first reveal and rides its
+resize. On losing it the host normally sends nothing, because the taker's grid change arms a
+resync whose replay states the new grid; the exception is a replay that arrived before the
+ownership change reached the view, detected as a last stated grid this renderer is not at and
+repaired with one forced report, which the daemon reads from a non-owner as a re-seed request.
+One request per hand-off, never a poll. A renderer must not send extra `resize` calls of its own
+in response to `ownsSize` changing.
+
+The grid rides the replay frame's own acknowledged delivery and costs no additional output
+credit: an acknowledged replay still credits exactly its byte count. Hidden renderers still
+cannot claim geometry, and a hidden view that receives a replay may mirror it but must report
+nothing.
+
+Terminal Lab implements this contract; its README documents the diagnostics it exposes for it.
 
 ## Validation and remaining scope
 
-Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features --window hidden`. The live scenario
-uses private daemons and a persistent terminal fixture to check process identity, replay,
-input and renderer recovery. See the [validation record](plugin-validation.md) for actual
+Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features plugin-terminal-geometry --window hidden`.
+The first live scenario uses private daemons and a persistent terminal fixture to check process
+identity, replay, input and renderer recovery. The second proves owner-grid mirroring through
+the public contract: letterbox, clip, mouse cells under a mirror, hidden/revealed and renderer
+swaps, take-control, owner disconnect and an embedded remote owner. See the [validation record](plugin-validation.md) for actual
 dated results and the distinction between emulated phone checks and physical-device testing.
 Use `--window onscreen` to inspect screenshots.
 

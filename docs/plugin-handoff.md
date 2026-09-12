@@ -12,8 +12,9 @@ authoring. Custom panes, both swappable sidebars, toolbar/status, document, term
 renderers, shared UI requests and selected native services are implemented. The roadmap links
 each completed phase and its merged PRs, from #125 through #162.
 
-The broader replacement goal is **not complete**. The next recommended task is to expose
-native replay geometry and size ownership to terminal renderers. After that, implement
+The broader replacement goal is **not complete**. Terminal SDK geometry parity (replay grid and
+size ownership for plugin renderers) is implemented and validated on
+`feature/plugin-terminal-geometry` as [PR #187](https://github.com/benfriebe/kelpi/pull/187), a draft stacked on PR #164, pending review and merge. After that, implement
 selectable command-palette and shared-prompt presenters, then the full Settings presenter and
 remaining composition surfaces. Public registry/distribution and untrusted execution are
 separate future scopes. Plugin API version remains **1**; wire protocol generation remains **2**.
@@ -23,7 +24,7 @@ separate future scopes. Plugin API version remains **1**; wire protocol generati
 | Product baseline | `origin/main` at `ab9be92`, including PR #185. |
 | Documentation review | [PR #164](https://github.com/benfriebe/kelpi/pull/164), open draft against `main`; this handoff belongs to that PR and is not yet merged. Recheck its state before continuing. |
 | Documentation branch/worktree | `docs/plugin-roadmap` in `out/worktrees/plugin-docs`, rebased onto the product baseline above. |
-| Next feature branch | Not started in this session. Create an isolated branch/worktree from then-current main after checking the documentation PR. |
+| Feature branch | `feature/plugin-terminal-geometry`, stacked on `docs/plugin-roadmap`, in the worktree Kelpi created for the "Plugin roadmap" workspace; published as draft [PR #187](https://github.com/benfriebe/kelpi/pull/187). Rebase onto `main` once PR #164 merges. The following presenter phase is being implemented on `feature/plugin-interaction-contracts`, based on this branch. |
 | Running application | No application or daemon was launched for this handoff. Existing user instances and other worktrees remain owned by their current tasks. |
 
 In the current local environment, the repository root is `/Users/ben/code/kelpi`. Its main
@@ -57,12 +58,13 @@ matter when continuing work:
 
 ## First implementation task
 
-Close the [terminal SDK geometry gap](plugin-terminals.md#replay-geometry-limitation).
-The native connection supplies `onReplay(data, grid)`, but the plugin bridge reads only
-`data`. SDK replay frames contain only bytes, and terminal presentation omits size ownership.
-Terminal Lab fits its own box even when another window owns process sizing. This gap was
-established by source inspection; a live Terminal Lab geometry failure was not reproduced
-during the documentation audit.
+Close the terminal SDK geometry gap. The native connection supplies `onReplay(data, grid)`;
+the plugin bridge now states that grid on each SDK replay frame and size ownership on each
+presentation frame ([contract](plugin-terminals.md#replay-geometry-and-size-ownership)).
+Before this branch, replay frames contained only bytes and Terminal Lab fitted its own box
+even when another window owned process sizing. Terminal Lab now mirrors from the public fields,
+and `scripts/scenarios/plugin-terminal-geometry.mjs` is the live plugin acceptance; the
+[validation record](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12) has the counts.
 
 | Concern | Source entrypoints |
 | --- | --- |

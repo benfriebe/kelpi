@@ -9,10 +9,32 @@ export interface TerminalModes {
     readonly kittyKeyboardFlags: number;
 }
 
+/** Columns and rows of a terminal grid. Both are integers from 1 through 65535. */
+export interface TerminalGrid {
+    readonly cols: number;
+    readonly rows: number;
+}
+
 /** Current presentation of this pane in its hosting window. */
 export interface TerminalPresentation {
     readonly focused: boolean;
     readonly visible: boolean;
+    /**
+     * Whether this window's native connection sizes the process. True also when no owner is
+     * known (a single-window session), which is what a renderer that ignores this field keeps
+     * getting.
+     *
+     * False means another client owns PTY geometry: the bytes on this stream were composed for
+     * that client's grid, so a soft-wrapped row and its continuation arrive with no newline
+     * between them. Mirror each replay's `grid` instead of fitting your own box, and keep
+     * reporting your own measured grid through `resize`: the host does not report for you, and
+     * a mirrored grid reported back would tell the daemon the owner's window is this one.
+     *
+     * The host repairs the two hand-offs itself with one forced PTY report each, so a renderer
+     * never has to poll or re-report on a change of this field. That repair assumes the emulator
+     * sits at the last grid reported through `resize` whenever this field is true.
+     */
+    readonly ownsSize: boolean;
     readonly theme?: Readonly<Record<string, string>>;
     readonly fontFamily?: string;
     readonly fontSize?: number;
@@ -25,8 +47,19 @@ export interface TerminalPresentation {
 }
 
 export type TerminalFrame =
-    /** Replay replaces the renderer's screen; output appends bytes to its parser. */
-    | { readonly type: 'replay' | 'output'; readonly data: Uint8Array }
+    /** Output appends bytes to the renderer's parser. */
+    | { readonly type: 'output'; readonly data: Uint8Array }
+    /**
+     * Replay replaces the renderer's screen and parser state.
+     *
+     * `grid` is the size the snapshot was serialised at. While `ownsSize` is false, resize the
+     * emulator to it BEFORE writing the bytes: the reset then lands on an engine that is already
+     * the right shape, and a resize afterwards would re-wrap what was just painted. `null` means
+     * the daemon stated no grid (an older daemon): keep the emulator at its current grid rather
+     * than guessing one. While `ownsSize` is true the emulator is already at its own measured
+     * grid, which is the grid the daemon serialised at, so this field needs no action.
+     */
+    | { readonly type: 'replay'; readonly data: Uint8Array; readonly grid: TerminalGrid | null }
     /** The next replay is authoritative. Reset parser state before consuming it. */
     | { readonly type: 'resync'; readonly reason: string }
     | { readonly type: 'modes'; readonly modes: TerminalModes }
@@ -85,7 +118,13 @@ export interface TerminalSession {
      * Never mark keyboard, paste or mouse input as a response. At most 128 KiB per call.
      */
     writeDirect(data: string | Uint8Array, options?: { readonly response?: boolean }): void;
-    /** Set the measured grid; the host retains native PTY size ownership. */
+    /**
+     * Report the grid this renderer MEASURED for its own box; the host retains native PTY size
+     * ownership. A mirroring renderer (`ownsSize` false) still reports its measurement and never
+     * the mirrored grid: the report is the daemon's takeover cache and the request for this
+     * viewer's own fresh snapshot. Hidden renderers cannot claim geometry, so this is ignored
+     * while the pane is not visible.
+     */
     resize(cols: number, rows: number): void;
     /** Report the rendered cell height in CSS pixels (finite, greater than zero, at most 512). */
     setCellHeight(height: number): void;

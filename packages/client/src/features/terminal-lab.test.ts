@@ -169,7 +169,7 @@ describe('Terminal Lab input and replay rules', () => {
 const cleanups: (() => void)[] = [];
 afterEach(() => {
     for (const cleanup of cleanups.splice(0).reverse()) cleanup();
-    vi.unstubAllGlobals(); document.body.innerHTML = ''; delete document.body.dataset.ready;
+    vi.unstubAllGlobals(); document.body.innerHTML = ''; delete document.body.dataset.ready; delete document.body.dataset.mirror;
 });
 
 async function fixture(phone = false, visible = true, engineCapture: boolean | 'xterm' = false) {
@@ -179,7 +179,7 @@ async function fixture(phone = false, visible = true, engineCapture: boolean | '
     const root = document.createElement('main'); root.tabIndex = -1; document.body.append(root);
     vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({ width: 800, height: 480 } as DOMRect);
     const area = document.createElement('textarea');
-    let onData = (_data: string) => {}, onUserInput = () => {}, onContext = (_value: { visible: boolean }) => {};
+    let onData = (_data: string) => {}, onUserInput = () => {}, onContext = (_value: { visible: boolean }) => {}, onScroll = () => {};
     const disposable = { dispose: vi.fn() }, writes: Uint8Array[] = [];
     const terminal = {
         cols: 80, rows: 24, textarea: area, options: {} as Record<string, unknown>,
@@ -211,7 +211,8 @@ async function fixture(phone = false, visible = true, engineCapture: boolean | '
                 event.preventDefault();
             }, true);
         },
-        onData: (fn: (data: string) => void) => { onData = fn; return disposable; }, onBinary: () => disposable, onScroll: () => disposable,
+        onData: (fn: (data: string) => void) => { onData = fn; return disposable; }, onBinary: () => disposable,
+        onScroll: (fn: () => void) => { onScroll = fn; return disposable; },
         write: (data: Uint8Array, callback: () => void) => { writes.push(data); callback(); }, reset: vi.fn(),
         resize: vi.fn((cols: number, rows: number) => { terminal.cols = cols; terminal.rows = rows; }),
         focus: vi.fn(() => area.focus()), blur: vi.fn(() => area.blur()), getSelection: vi.fn(() => 'selected text'),
@@ -231,7 +232,8 @@ async function fixture(phone = false, visible = true, engineCapture: boolean | '
     const diagnostics = await mountTerminalLab(terminal, api, root);
     cleanups.push(diagnostics.dispose);
     return { terminal, session, root, area, api, diagnostics, callbacks: callbacks!, observe, disconnect, writes,
-        protocol: (data: string) => onData(data), userInput: (data: string) => { onUserInput(); onData(data); }, context: (value: { visible: boolean }) => onContext(value) };
+        protocol: (data: string) => onData(data), userInput: (data: string) => { onUserInput(); onData(data); }, context: (value: { visible: boolean }) => onContext(value),
+        scroll: () => onScroll() };
 }
 
 describe('Terminal Lab presentation and public SDK actions', () => {
@@ -421,5 +423,177 @@ describe('Terminal Lab presentation and public SDK actions', () => {
         const count = h.session.write.mock.calls.length;
         h.area.dispatchEvent(new InputEvent('beforeinput', { data: 'c', inputType: 'insertText', bubbles: true, cancelable: true }));
         expect(h.session.write).toHaveBeenCalledTimes(count);
+    });
+});
+
+/**
+ * Owner-grid mirroring. A client that does not size the process receives bytes composed for
+ * somebody else's grid, including a replay the serializer wrote with no newline between a
+ * soft-wrapped row and its continuation. The measured box is 800x480 with an 8x16 cell and a
+ * 14-pixel scrollbar gutter, so this view's OWN grid is 98x30 throughout.
+ */
+describe('Terminal Lab owner-grid mirroring', () => {
+    const owner = (visible = true) => ({ focused: true, visible, ownsSize: false });
+
+    it('resizes the emulator to the stated grid before the replay bytes are written', async () => {
+        const h = await fixture();
+        const order: string[] = [];
+        h.terminal.resize.mockImplementation((cols: number, rows: number) => { order.push(`resize ${String(cols)}x${String(rows)}`); h.terminal.cols = cols; h.terminal.rows = rows; });
+        h.terminal.reset.mockImplementation(() => order.push('reset'));
+        h.terminal.write = (data: Uint8Array, callback: () => void) => { order.push(`write ${String(data.length)}`); callback(); };
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65, 66]), grid: { cols: 40, rows: 12 } });
+        // The in-band cancel/reset must land on an emulator that is already the owner's shape.
+        expect(order).toEqual(['resize 40x12', 'write 3', 'reset', 'write 2']);
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        expect(document.body.dataset.mirror).toBe('40x12');
+        expect(h.diagnostics.mirror).toEqual({ cols: 40, rows: 12 });
+    });
+
+    it('ignores a stated grid for sizing while this view owns the process size', async () => {
+        const h = await fixture();
+        for (const value of [{ focused: true, visible: true, ownsSize: true }, { focused: true, visible: true }]) {
+            await h.callbacks.onFrame({ type: 'presentation', value });
+            const resizes = h.terminal.resize.mock.calls.length;
+            await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+            expect(h.terminal.resize).toHaveBeenCalledTimes(resizes);
+            expect([h.terminal.cols, h.terminal.rows]).toEqual([98, 30]);
+            expect(document.body.dataset.mirror).toBeUndefined();
+            expect(h.diagnostics.mirror).toBeNull();
+        }
+    });
+
+    it('leaves the emulator alone when a non-owner replay states no grid', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        const resizes = h.terminal.resize.mock.calls.length;
+        // `null` is a daemon that states none, and an absent field is a host that predates it.
+        for (const frame of [{ type: 'replay', data: new Uint8Array([65]), grid: null }, { type: 'replay', data: new Uint8Array([65]) }]) {
+            await h.callbacks.onFrame(frame);
+            expect(h.terminal.resize).toHaveBeenCalledTimes(resizes);
+            expect([h.terminal.cols, h.terminal.rows]).toEqual([98, 30]);
+            expect(document.body.dataset.mirror).toBeUndefined();
+            expect(h.diagnostics.mirror).toBeNull();
+        }
+    });
+
+    it('keeps measuring and reporting its own box while mirroring, never the mirrored grid', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        h.session.resize.mockClear();
+        vi.spyOn(h.root, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 240 } as DOMRect);
+        h.diagnostics.fit();
+        expect(h.session.resize.mock.calls).toEqual([[48, 15]]);
+        expect(h.diagnostics.measured).toMatchObject({ cols: 48, rows: 15 });
+        // The emulator stays at the owner's grid: the report is a measurement, not the mirror.
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        expect(document.body.dataset.mirror).toBe('40x12');
+    });
+
+    it('returns the emulator to its own measurement when size control comes back, without reporting again', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        expect(h.terminal.cols).toBe(40);
+        h.session.resize.mockClear();
+        await h.callbacks.onFrame({ type: 'presentation', value: { focused: true, visible: true, ownsSize: true } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([98, 30]);
+        expect(document.body.dataset.mirror).toBeUndefined();
+        expect(h.diagnostics.mirror).toBeNull();
+        // The host issues the forced size claim for this transition; the renderer must not spam.
+        expect(h.session.resize).not.toHaveBeenCalled();
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([98, 30]);
+    });
+
+    it('keeps the mirror when the box is remeasured mid-replay, and still reports the new measurement', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        h.session.resize.mockClear();
+        const release: (() => void)[] = [];
+        h.terminal.write = (_data: Uint8Array, callback: () => void) => { release.push(callback); };
+        const replay = h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([66]), grid: { cols: 52, rows: 18 } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([52, 18]);
+        // The observer fires between the replay's awaits: a drag, or the window settling.
+        vi.spyOn(h.root, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 240 } as DOMRect);
+        h.diagnostics.fit();
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([52, 18]);
+        expect(h.session.resize.mock.calls).toEqual([[48, 15]]);
+        release.shift()!(); await Promise.resolve(); release.shift()!(); await replay;
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([52, 18]);
+        expect(document.body.dataset.mirror).toBe('52x18');
+        expect(h.diagnostics.measured).toMatchObject({ cols: 48, rows: 15 });
+    });
+
+    it('un-mirrors a view that attached hidden and has no measurement to go back to', async () => {
+        const h = await fixture(false, false);
+        await h.callbacks.onFrame({ type: 'presentation', value: owner(false) });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        await h.callbacks.onFrame({ type: 'presentation', value: { focused: false, visible: false, ownsSize: true } });
+        expect(h.diagnostics.mirror).toBeNull();
+        expect(document.body.dataset.mirror).toBeUndefined();
+        // Nothing to move the emulator to, and a hidden view still reports nothing. It renders the
+        // owner's replay at its attach grid until its first real measurement.
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        expect(h.session.resize).not.toHaveBeenCalled();
+        await h.callbacks.onFrame({ type: 'presentation', value: { focused: false, visible: true, ownsSize: true } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([98, 30]);
+        expect(h.session.resize.mock.calls).toEqual([[98, 30]]);
+    });
+
+    it('reads the scroll position before the mirror resize moves the buffer', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        // Ten lines above the bottom when the replay arrives.
+        h.terminal.buffer.active.viewportY = 116;
+        // A real emulator reflows on a grid change, so the resize moves the base line under us.
+        h.terminal.resize.mockImplementation((cols: number, rows: number) => {
+            h.terminal.cols = cols; h.terminal.rows = rows; h.terminal.buffer.active.baseY = 130;
+        });
+        h.terminal.scrollToLine.mockClear();
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        // 130 - 10: the offset is the one measured BEFORE the resize, applied to the new base.
+        expect(h.terminal.scrollToLine).toHaveBeenCalledWith(120);
+    });
+
+    it('does not save a scroll position armed by the mirror resize itself', async () => {
+        const h = await fixture();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        h.api.setState.mockClear();
+        // A real emulator moves its viewport when the row count changes, which fires onScroll.
+        h.terminal.resize.mockImplementation((cols: number, rows: number) => {
+            h.terminal.cols = cols; h.terminal.rows = rows; h.scroll();
+        });
+        vi.useFakeTimers();
+        try {
+            await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+            vi.advanceTimersByTime(400);
+            // The position belongs to the screen being replaced, so it must never be persisted.
+            expect(h.api.setState).not.toHaveBeenCalled();
+            // A scroll of the new screen still saves, so the guard is the replay and not the mirror.
+            h.scroll(); vi.advanceTimersByTime(400);
+            expect(h.api.setState).toHaveBeenCalledTimes(1);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('mirrors a replay that reaches a hidden view without ever reporting a grid', async () => {
+        const h = await fixture(false, false);
+        expect(h.session.resize).not.toHaveBeenCalled();
+        await h.callbacks.onFrame({ type: 'presentation', value: owner(false) });
+        await h.callbacks.onFrame({ type: 'replay', data: new Uint8Array([65]), grid: { cols: 40, rows: 12 } });
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        expect(document.body.dataset.mirror).toBe('40x12');
+        expect(h.session.resize).not.toHaveBeenCalled();
+        expect(h.session.setCellHeight).not.toHaveBeenCalled();
+        // Revealed while still a non-owner: the measurement is reported, the mirror stands.
+        await h.callbacks.onFrame({ type: 'presentation', value: owner() });
+        expect(h.session.resize.mock.calls).toEqual([[98, 30]]);
+        expect(h.session.setCellHeight).toHaveBeenCalledWith(16);
+        expect([h.terminal.cols, h.terminal.rows]).toEqual([40, 12]);
+        expect(h.diagnostics.mirror).toEqual({ cols: 40, rows: 12 });
     });
 });

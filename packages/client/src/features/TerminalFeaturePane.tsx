@@ -57,8 +57,9 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
     const choices = slotViews(layout.views, 'terminal').filter(view => !view.container);
     const replacement = selected?.pluginID && !failed;
     // #166 rides with the rest of the pane's props, so a replacement renderer is told the same
-    // thing the bundled one is. What a plugin renderer DOES with it is its own business: the
-    // mirror is the native engine's, and the SDK's replay frame does not carry the grid yet.
+    // thing the bundled one is: the bridge forwards it as `presentation.ownsSize` and states
+    // each replay's grid on the frame (`plugins/terminal-pane.ts`, `plugins/terminal.ts`), so a
+    // plugin renderer can mirror an owner's grid exactly as the bundled engine does.
     const paneProps: TerminalPaneProps = { ...props, ownsSize };
     return <div data-terminal-pane={paneID} data-terminal-renderer={replacement ? viewID : TERMINAL_FEATURE.id} className="flex h-full min-h-0 flex-col">
         {choices.length > 1 || failed ? <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[11px]" style={{ borderColor: tokens.divider }}>

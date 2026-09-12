@@ -548,9 +548,13 @@ follows exactly **one client at a time**, the *size owner*:
   `data-terminal-rows` (phone, `terminal/keyboard-inset.ts`) and `data-terminal-cell` keep
   describing the pane's own MEASUREMENT, so the two disagreeing is the mirror working.
 
-The owner-grid mirror above is implemented by the bundled terminal. The public plugin SDK
-currently omits replay geometry and size-ownership presentation; see the
-[terminal replacement limitation](plugin-terminals.md#replay-geometry-limitation).
+The plugin bridge carries both facts to a replacement renderer as well: every SDK replay frame
+states this grid (`grid`, null when the daemon stated none) and presentation states ownership
+(`ownsSize`), with the host issuing the two hand-offs' forced reports itself, so a plugin
+renderer mirrors the grid exactly as the bundled one does. One difference is deliberate: the
+bridge withholds a hidden view's hand-off report until its reveal, where the bundled pane's
+ownership effect reports at once (`packages/client/src/plugins/terminal.ts`;
+[replay geometry and size ownership](plugin-terminals.md#replay-geometry-and-size-ownership)).
 
 ### 5.2 Applying a resize: VT before PTY, the settled resync, and no column reflow
 

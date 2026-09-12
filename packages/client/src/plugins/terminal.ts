@@ -78,6 +78,17 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
     let session: string | undefined;
     let stream: PtyStreamHandle | undefined;
     let geometry = { cols: 80, rows: 24 };
+    /**
+     * #166: the grid the LAST replay stated, or null when no replay has stated one.
+     *
+     * Only a positive grid overwrites it, exactly as the bundled pane's `replayGridRef` does: a
+     * daemon that states nothing (pre-#166) says "keep doing what you did before", not "forget
+     * what the last snapshot was serialised at". It exists for one question, asked once per
+     * ownership change: did a replay land at a grid this renderer is not at?
+     */
+    let lastReplayGrid: { cols: number; rows: number } | null = null;
+    /** Size control was gained while hidden; the first reveal's resize carries the claim. */
+    let pendingClaim = false;
     let cellHeight = 16;
     let modes: TerminalModes | undefined;
     let generation = 1, sequence = 0, nextAction = 0;
@@ -98,6 +109,8 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
         frameTimer = undefined;
         stream?.unsubscribe();
         stream = undefined;
+        lastReplayGrid = null;
+        pendingClaim = false;
         for (const entry of actions.values()) { clearTimeout(entry.timer); entry.reject(new Error('Terminal renderer attachment ended.')); }
         actions.clear();
         cellHeight = 16;
@@ -190,13 +203,19 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
                     cols: geometry.cols,
                     rows: geometry.rows,
                     getGeometry: () => presentation.visible ? geometry : undefined,
-                    onReplay(data) {
+                    onReplay(data, grid) {
                         if (disposed || session !== id) return;
                         supersede();
                         if (resyncReason !== undefined) enqueue({ type: 'resync', reason: resyncReason });
                         resyncReason = undefined;
                         awaitingReplay = false;
-                        enqueue({ type: 'replay', data: data.slice() }, data.byteLength);
+                        // #166: the grid the daemon serialised this snapshot at rides ON the
+                        // replay frame, so the renderer cannot apply one to the wrong bytes.
+                        // It is metadata: no output credit is charged for it, and the frame's
+                        // acknowledgement still grants exactly the byte count below.
+                        const stated = grid !== undefined && count(grid.cols) && count(grid.rows) ? { cols: grid.cols, rows: grid.rows } : null;
+                        if (stated !== null) lastReplayGrid = stated;
+                        enqueue({ type: 'replay', data: data.slice(), grid: stated }, data.byteLength);
                         // Snapshot supersession can discard an undelivered mode update.
                         // Reapply the latest authoritative state after the parser resets.
                         if (modes) enqueue({ type: 'modes', modes });
@@ -277,14 +296,45 @@ export function createTerminalScope(options: TerminalScopeOptions): TerminalScop
             }
             return true;
         },
+        /**
+         * #166: size control changing hands is the host's repair, not the renderer's.
+         *
+         * A renderer is told (`presentation.ownsSize`) and mirrors what it is sent; the one
+         * forced PTY report each hand-off needs is issued here, from the transition itself, so
+         * it happens once and cannot become a poll. `force` re-sends a grid the daemon already
+         * has, which its short circuit would otherwise swallow.
+         *
+         * GAINED: the claim has to reach the PTY even though this box has not moved. Hidden, it
+         * cannot: a hidden view claims no geometry, so the claim waits for the first reveal,
+         * whose ordinary resize carries it.
+         *
+         * LOST: normally nothing. The taker's grid change arms a settled-resize resync whose
+         * replay states the new grid. The exception is a replay that arrived BEFORE this
+         * presentation: the last stated grid is then one this renderer is not at, nothing else
+         * will move it, and one forced report asks the daemon (which reads a forced report from
+         * a non-owner as "re-seed me") for the snapshot that re-states the grid. A hidden view
+         * needs neither: it reports nothing, and its reveal resizes anyway.
+         */
         update(next) {
             if (disposed) return;
             const key = JSON.stringify(next);
             if (key === presentationKey) return;
             const becameVisible = !presentation.visible && next.visible;
+            const owned = presentation.ownsSize !== false, owns = next.ownsSize !== false;
             presentation = next; presentationKey = key;
             enqueue({ type: 'presentation', value: presentation });
-            if (becameVisible) stream?.resize(geometry.cols, geometry.rows);
+            if (owns !== owned) {
+                pendingClaim = false;
+                // A reveal in the same update carries the claim on its own resize below,
+                // so a hand-off never costs two reports.
+                if (owns && (!next.visible || becameVisible)) pendingClaim = true;
+                else if (owns) stream?.resize(geometry.cols, geometry.rows, true);
+                else if (next.visible && lastReplayGrid !== null &&
+                    (lastReplayGrid.cols !== geometry.cols || lastReplayGrid.rows !== geometry.rows)) {
+                    stream?.resize(geometry.cols, geometry.rows, true);
+                }
+            }
+            if (becameVisible) { const claim = pendingClaim; pendingClaim = false; stream?.resize(geometry.cols, geometry.rows, claim); }
         },
         action(action) {
             if (disposed || !session) return Promise.reject(new Error('Terminal renderer is not attached.'));

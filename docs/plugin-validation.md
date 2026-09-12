@@ -31,7 +31,8 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
-- [Current baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
+- [Terminal SDK geometry parity](#terminal-sdk-geometry-parity-2026-09-12).
+- [Documentation baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
 - [Packages, recovery and authoring](#plugin-packages-recovery-and-authoring-2026-09-10), including [merged review fixes](#package-and-recovery-review-fixes-2026-09-11).
 - [Browser replacement](#browser-pane-replacement-2026-09-10).
 - [Terminal replacement](#terminal-renderer-replacement-2026-09-10).
@@ -40,6 +41,65 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Terminal SDK geometry parity (2026-09-12)
+
+Implemented on `feature/plugin-terminal-geometry`, stacked on `docs/plugin-roadmap` (`03192d1`,
+which is main `ab9be92` plus the documentation review). Tested revision: **`fe671ed`**
+(`888b116` contract and bridge, `fe671ed` Terminal Lab and live acceptance). The worktree was
+bootstrapped fresh: the vendored engine bundle rebuilt from tracked source and the tracked WASM
+(SHA-256 `7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`), frozen-lockfile
+install, and `vendor-engine.test.ts` **20/20** before any change. Node 24.15.0, pnpm 10.28.1,
+macOS arm64. Private sandboxes only; the installed Kelpi was not touched.
+
+| Check | Result at `fe671ed` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,601 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. |
+| Focused suites | `packages/client/src/plugins`, `packages/plugin-sdk/tests`, `packages/client/src/features`: 548 tests pass, including the new bridge transition, SDK validation, per-runtime ownership and Terminal Lab mirror tests. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` and `node scripts/verify-plugin-sdk.mjs` pass; the external fixture type-checks `TerminalGrid`, replay `grid`, presentation `ownsSize`, and rejects `grid` on an output frame. |
+| `plugin-terminal-geometry`, hidden, built | **30/30** in 5.4 s (`docs/audit/scenarios/2026-09-12T02-03-24-527Z`, local artifact). |
+| `plugin-terminal-geometry`, onscreen | **30/30** in 6.7 s (`2026-09-12T02-04-01-214Z`). All five screenshots inspected; three retained in [the terminal evidence directory](audit/plugin-terminals/README.md#replay-geometry-and-size-ownership-2026-09-12) with the owner-width capture. |
+| `terminal-mirrors-owner-grid`, hidden | **15/15**: the bundled renderer's behaviour is unchanged. |
+| `plugin-terminal-features`, hidden | **58/58** in 17.3 s run alone (`2026-09-12T02-04-44-478Z`). A first run concurrent with the full `pnpm check` scored 56/58: the two platform Copy and paste chord checks, which need window focus, failed while the shell tests were launching Electron beside it. Nothing in this branch touches those paths. |
+| Independent review | Two Opus reviews (contract/bridge; Terminal Lab/scenario) found no behavioural defects. Their test-gap, vacuous-check, `covers`, `overflow: clip` and wording findings were applied before `fe671ed`. |
+
+The geometry scenario proves, through the public contract only: an owning renderer fits its
+measured box; a 40x12 owner letterboxes the emulator top-left with the long line wrapped at
+the owner's 40th column on three rows and equal to `kelpi pane capture`; a mirroring renderer
+keeps reporting its measurement while the PTY stays at the owner's grid; a 120x30 owner in a
+900px window is clipped with `overflow: clip` on both axes and no re-wrap; a click inside the
+letterbox reports the mirrored grid's cell (`ESC[<0;5;3M`) to the process; hidden/revealed and
+bundled/SDK renderer swaps keep the same process and re-establish the mirror; taking size
+control clears the mirror and the PTY follows the window's measurement; owner disconnect hands
+sizing to the window without the chip and a fresh owner mirrors again; a disposed session
+refuses to resize or write; and an embedded remote workspace mirrors its own daemon's owner
+while the local pane does not. The PTY proof reads the fixture's `stdout.columns` rather than
+`tput cols`, and the remote and local halves are asserted in sequence; the scenario header
+records both.
+
+### Full verification battery at `fe671ed`
+
+`node scripts/verify.mjs --full` ran for 25.7 minutes. Its per-component results:
+
+| Component | Result |
+| --- | --- |
+| Typecheck, root tests, shell tests, bundle build | Passed. |
+| Scenarios (all, hidden) | The lane failed twice by the battery's own rule. Five scenarios failed under the battery and were retried alone: `plugin-document-features`, `plugin-remote`, `plugin-terminal-features` and `workspace-switch-keeps-the-caret` passed on that retry; `plugin-chrome-features` failed once more (a Settings tab button not found in time) and then passed **34/34** when rerun alone afterwards. The battery ran while two implementation agents executed test suites in a sibling worktree, which is the load these focus- and timing-sensitive checks are known to fail under. No failed check is on the terminal renderer or plugin bridge surface. |
+| Full UI audit (hidden) | Completed: **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes**. The failures sit in `web-batch-pickup`, `appearance-system-stats`, `agent-start`, `agent-lifecycle`, `footer-git-stats`, `sidebar-remaining` and `workspace-edges`, the same pane-header, agent-status and sidebar steps the [initial full-audit findings](#initial-full-audit-findings) already record as full-run failures that pass in isolation. |
+| Packaged smoke | Repackaged and passed **61 checks**. |
+
+An isolated repeat of those seven audit steps (`--only`, hidden: 8 steps, 130 assertions)
+left two failures, both repeated onscreen: `web-batch-pickup` "a web pane exists", which is
+a `--only` provisioning artifact (the step expects an earlier step's web pane) rather than the
+full run's assertion; and `agent-lifecycle` "with the app active, the 600 ms dwell clears the
+focused pane", which fails because [PR #182](https://github.com/benfriebe/kelpi/pull/182) moved
+the dwell to arm on focus rather than on a status change and did not update this step, which
+raises a status on an already focused pane. That mismatch is on `main` and is unrelated to this
+branch; it needs either an audit-step update or a product decision. Hidden-window screenshots
+were not used as visual evidence.
+
+Not established here: physical devices, and phone emulation beyond the existing
+`plugin-terminal-features` phone section and the audit's phone steps.
 
 ## Documentation and handoff refresh (2026-09-12)
 

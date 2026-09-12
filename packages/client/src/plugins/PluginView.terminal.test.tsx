@@ -1,7 +1,7 @@
 import { MessageChannel, type MessagePort } from 'node:worker_threads';
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decodePluginManifest, decodePtyFrame, encodePtyFrame, PTY_FRAME_TYPES, type JsonObject, type PluginInfo } from '@kelpi/protocol';
+import { decodePluginManifest, decodePtyFrame, encodePtyFrame, encodeResizePayload, PTY_FRAME_TYPES, type JsonObject, type PluginInfo } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { createKelpiRuntime, createKelpiStore } from '../state';
 import { completeHandshake, createFakeSocketFactory } from '../connection/testing';
@@ -159,6 +159,34 @@ describe('selected terminal renderer through its private view port', () => {
             expect(paneHandle(PANE)).toBeNull();
             expect(h.sockets.last().lastOfType('detach-pane')).toMatchObject({ paneID: PANE });
             expect(h.requests.mock.calls.some(([payload]) => payload['action'] === 'release')).toBe(true);
+        } finally { h.dispose(); }
+    });
+    it('carries the replay grid and size ownership across the view port', async () => {
+        const h = await setup();
+        try {
+            await h.attach();
+            await waitFor(() => expect(h.received.some(item => item.frame?.type === 'presentation')).toBe(true));
+            const first = h.received.find(item => item.frame?.type === 'presentation')!;
+            // #166: a window with no known owner sizes its own PTY, so a renderer that ignores
+            // the field behaves exactly as it did before this existed.
+            expect(first.frame.value).toMatchObject({ focused: true, visible: true, ownsSize: true });
+            h.ack(first);
+            act(() => {
+                h.sockets.last().emitBinary(encodePtyFrame(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(40, 12))!);
+                h.sockets.last().emitBinary(encodePtyFrame(PTY_FRAME_TYPES.replay, PANE, new TextEncoder().encode('screen'))!);
+            });
+            await waitFor(() => {
+                for (const message of h.received.filter(item => item.frame?.type === 'presentation')) h.ack(message);
+                expect(h.received.some(item => item.frame?.type === 'replay')).toBe(true);
+            });
+            const replay = h.received.find(item => item.frame?.type === 'replay')!;
+            expect(replay.frame.grid).toEqual({ cols: 40, rows: 12 });
+            h.ack(replay);
+            // Losing size control reaches the renderer as presentation, and asks the daemon to
+            // re-seed once, because the last replay stated a grid this renderer is not at.
+            h.view.rerender(<PluginView {...h.props} terminal={{ ...h.props.terminal!, ownsSize: false }} />);
+            await waitFor(() => expect(h.received.some(item => item.frame?.type === 'presentation' && item.frame.value.ownsSize === false)).toBe(true));
+            expect(h.sockets.last().lastOfType('resize-pane')).toMatchObject({ paneID: PANE, cols: 100, rows: 30, force: true });
         } finally { h.dispose(); }
     });
 });

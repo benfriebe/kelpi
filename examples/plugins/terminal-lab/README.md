@@ -27,10 +27,25 @@ authoritative replay, preserves a scroll position separately from the native pan
 host selection, paste, focus, search and phone keyboard actions. Hidden views remain attached
 without resizing the process. Showing the phone keyboard requires the explicit keyboard action.
 
-The public SDK currently omits replay geometry and size-ownership presentation. Terminal Lab
-fits its own measured box even when another window owns the PTY size; it does not yet mirror
-the owner's grid like the bundled renderer. See the
-[contract limitation and planned follow-up](../../../docs/plugin-terminals.md#replay-geometry-limitation).
+When presentation reports `ownsSize: false`, another client sizes the process and every byte on
+this stream was composed for that client's grid. Terminal Lab then MIRRORS: each replay frame
+states the grid it was serialised at, and the emulator is resized to that grid before the bytes
+are written, so the in-band reset lands on an emulator that is already the right shape. A replay
+whose `grid` is `null` comes from a daemon that states none, and the emulator is left where it is
+rather than guessed at. The screen stays anchored top-left and unscaled: a mirrored grid smaller
+than the view letterboxes, a larger one is clipped by the container's `overflow: hidden`. Taking
+size control clears the mirror and returns the emulator to this view's last measurement at once;
+the host issues the forced size claim, so the renderer does not report again for the transition.
+
+A mirror never changes what this renderer REPORTS. It keeps measuring its own box and keeps
+reporting that measurement through `session.resize`, because that report is the daemon's takeover
+cache and the request for this viewer's own fresh snapshot. It never reports the mirrored grid.
+Hidden views still mirror an arriving replay and still report nothing.
+
+One deliberate divergence from the bundled renderer: a view that attached while hidden has no
+measurement of its own, and Terminal Lab still drops the mirror when `ownsSize` turns true, so it
+renders an owner's replay at its 80x24 attach grid until its first real measurement. The bundled
+pane keeps following the stated grid in that state.
 
 `ui/helpers.js` contains the input, geometry and replay rules. `ui/renderer.js` implements the
 public Kelpi terminal contract, and `ui/xterm-adapter.js` restores authoritative input modes.
@@ -50,8 +65,11 @@ at the synchronous emulator call, including when native browser dispatch runs mi
 between DOM listeners. It restores ordinary routing as soon as that call returns. Parser
 responses and mouse reports use `writeDirect`, while keyboard/paste text uses `write`.
 Input is never classified by
-matching escape-sequence strings. Fitting reserves a 14-pixel scrollbar gutter. These xterm
-details must be reviewed when upgrading the dependency.
+matching escape-sequence strings. Fitting reserves a 14-pixel scrollbar gutter. The letterbox
+relies on xterm sizing `.xterm-screen` from cols by rows, and on its scrolling viewport being
+positioned against the emulator root, which is why `body[data-mirror]` lets that root wrap the
+mirrored screen instead of the view. These xterm details must be reviewed when upgrading the
+dependency.
 
 The emulator supports its own DEC keyboard/mouse modes, bracketed paste, composition and
 selection. It supports legacy, SGR and SGR-pixel mouse encodings. UTF-8 and urxvt mouse
@@ -61,12 +79,16 @@ keyboard encoder or Ghostty-specific rendering features. Advanced terminal behav
 renderer choice; the bundled renderer is available in the same picker.
 
 For validation, `globalThis.terminalLab` exposes the real emulator and session, presentation,
-modes, modifiers, and replay/reveal counters. `document.body.dataset.ready` becomes `true` only
-after an authoritative replay has been consumed. This diagnostic object does not substitute
-rendered text or create a second terminal process.
+modes, modifiers, replay/reveal counters, `mirror` (the grid being mirrored, or `null`) and
+`measured` (this view's last measured grid, which is what was reported). `document.body.dataset.ready`
+becomes `true` only after an authoritative replay has been consumed, and `document.body.dataset.mirror`
+is `<cols>x<rows>` while mirroring and absent otherwise, the plugin analogue of the bundled pane's
+`data-terminal-mirror`. This diagnostic object does not substitute rendered text or create a second
+terminal process.
 
 Run `node scripts/scenario.mjs plugin-terminal-features --window hidden` for the native process
-scenario, or `--window onscreen` for screenshots. See the
+scenario and `node scripts/scenario.mjs plugin-terminal-geometry --window hidden` for the
+owner-grid mirror, or `--window onscreen` for screenshots. See the
 [terminal contract](../../../docs/plugin-terminals.md),
 [dated validation record](../../../docs/plugin-validation.md), and
 [plugin roadmap](../../../docs/plugin-roadmap.md) for supported behavior and remaining work.

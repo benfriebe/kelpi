@@ -6,7 +6,11 @@ import type { TerminalPresentation, TerminalScope } from './terminal';
 /** Only presentation crosses the frame boundary; native callbacks and transport stay here. */
 export function terminalPresentation(props: TerminalPaneProps): TerminalPresentation {
     return Object.fromEntries(Object.entries({
-        focused: props.focused, visible: props.visible, theme: props.theme ?? resolveTerminalTheme(document.documentElement),
+        focused: props.focused, visible: props.visible,
+        // #166: omitted means yes, the same answer the bundled pane and the take-size-control
+        // chip give: no known owner is a single-window session, which sizes its own PTY.
+        ownsSize: props.ownsSize !== false,
+        theme: props.theme ?? resolveTerminalTheme(document.documentElement),
         fontFamily: props.fontFamily, fontSize: props.fontSize, paddingX: props.paddingX,
         paddingY: props.paddingY, background: props.background, allowTransparency: props.allowTransparency,
         accessibilityName: props.accessibilityName, reveal: props.reveal ?? null

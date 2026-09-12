@@ -311,6 +311,23 @@ function bundlePhase() {
     const entry = path.join(daemonDir, 'kelpid.js');
     check('the daemon bundle is staged outside the asar', fs.existsSync(entry), entry);
     check('its sourcemap came too', fs.existsSync(`${entry}.map`));
+    // kelpid.js is ESM with a `.js` name, so Node takes its module type from the nearest
+    // package.json. This app sits under packages/shell/out/, below the shell's own package.json
+    // (no `type`), which is exactly where a missing daemon/package.json made the daemon print
+    // MODULE_TYPELESS_PACKAGE_JSON on every start. `status` against an empty run dir loads the
+    // whole bundle and touches nothing.
+    const statusScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-scope-'));
+    const status = spawnSync(path.join(resourcesPath, 'node'), [entry, 'status'], {
+        encoding: 'utf8',
+        env: { PATH: '/usr/bin:/bin', HOME: statusScratch, KELPID_RUN_DIR: path.join(statusScratch, 'run') }
+    });
+    fs.rmSync(statusScratch, { recursive: true, force: true });
+    const statusOutput = `${status.stdout ?? ''}${status.stderr ?? ''}`;
+    check(
+        'the daemon bundle loads as an ES module without a module-type warning',
+        /kelpid is not running/.test(statusOutput) && !statusOutput.includes('MODULE_TYPELESS_PACKAGE_JSON'),
+        statusOutput.trim().split('\n')[0] ?? ''
+    );
 
     const manifestFile = path.join(daemonDir, 'payload.json');
     let manifest;
@@ -391,6 +408,14 @@ function bundlePhase() {
             'the bundled CLI runs through a symlink with no Node on PATH',
             version.status === 0 && /^kelpi \S+/.test((version.stdout ?? '').trim()),
             (version.stdout ?? '').trim() || (version.stderr ?? '').trim()
+        );
+        // That run is `<Resources>/node <Resources>/cli/kelpi.js --version`, and the bundle is ESM
+        // with a `.js` name: without cli/package.json, Node took its module type from the shell's
+        // package.json above this app (no `type`) and printed MODULE_TYPELESS_PACKAGE_JSON first.
+        check(
+            'the bundled CLI loads as an ES module without a module-type warning',
+            version.status === 0 && !(version.stderr ?? '').includes('MODULE_TYPELESS_PACKAGE_JSON'),
+            (version.stderr ?? '').trim().split('\n')[0] ?? ''
         );
         check(
             'the kelpi-agentic skill rides along in the CLI payload',

@@ -10,13 +10,15 @@
  * │  ├─ kelpid.js              …a detached `node` process has to execute this file, and
  * │  ├─ kelpid.js.map           node-pty has to dlopen a .node from a real directory; neither
  * │  ├─ payload.json          works from inside an archive. (packages/daemon/scripts/
- * │  └─ node_modules/node-pty stage-payload.mjs owns everything under here.)
+ * │  ├─ package.json          stage-payload.mjs owns everything under here; package.json
+ * │  └─ node_modules/node-pty only declares kelpid.js an ES module.)
  * ├─ client/                 the built web UI, handed to the daemon as KELPID_CLIENT_DIR
  * │  └─ index.html
  * ├─ cli/                    the `kelpi` CLI, so the app can install it (`./cli-install.ts`)
  * │  ├─ kelpi                  …a POSIX-sh launcher: it is what `/usr/local/bin/kelpi` points at,
  * │  ├─ kelpi.js                and it execs the bundle under the app's own `node`, so a machine
- * │  └─ kelpi.js.map            with no Node on PATH still gets a working CLI.
+ * │  ├─ kelpi.js.map            with no Node on PATH still gets a working CLI. `package.json`
+ * │  └─ package.json            declares the bundle an ES module: see `ESM_SCOPE_PACKAGE_JSON`.
  * └─ node                    a Node 24 runtime for the daemon (NOT Electron — stack.md's
  *                            "do not use ELECTRON_RUN_AS_NODE")
  * ```

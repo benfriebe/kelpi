@@ -145,7 +145,7 @@ export function stageNode({ stagingDir, arch, binary = process.env['KELPI_NODE_B
  * `src/cli-install.ts`.
  */
 export function stageCli({ stagingDir, cliDist = CLI_DIST, version }) {
-    const { cliLauncherScript } = helpers();
+    const { cliLauncherScript, ESM_SCOPE_PACKAGE_JSON } = helpers();
     const bundle = path.join(cliDist, 'kelpi.js');
     if (!existsSync(bundle)) {
         throw new Error(
@@ -159,6 +159,9 @@ export function stageCli({ stagingDir, cliDist = CLI_DIST, version }) {
     cpSync(bundle, path.join(outDir, 'kelpi.js'), { dereference: true });
     const map = `${bundle}.map`;
     if (existsSync(map)) cpSync(map, path.join(outDir, 'kelpi.js.map'), { dereference: true });
+    // The bundle is ESM, and `packages/cli/package.json`, which says so, stayed behind: give it
+    // its own declaration (`ESM_SCOPE_PACKAGE_JSON` explains the warning it prevents).
+    writeFileSync(path.join(outDir, 'package.json'), ESM_SCOPE_PACKAGE_JSON, 'utf8');
     const launcher = path.join(outDir, 'kelpi');
     writeFileSync(launcher, cliLauncherScript(version === undefined ? {} : { version }), 'utf8');
     chmodSync(launcher, 0o755);

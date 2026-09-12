@@ -108,6 +108,21 @@ exec node "$bundle" "$@"
 `;
 }
 
+/**
+ * The `package.json` staged beside the CLI bundle, as `Contents/Resources/cli/package.json`.
+ *
+ * `kelpi.js` is an ES module with a `.js` name, so Node takes its module type from the nearest
+ * `package.json` above it. Staging copies the bundle away from `packages/cli/package.json`, which
+ * declares `"type": "module"`, and without a declaration of its own the lookup climbs out of the
+ * app: from `packages/shell/out/Kelpi-darwin-arm64/Kelpi.app` it reaches this package's
+ * `package.json`, which has no `type` (and must not gain one: `dist/main.js` is CommonJS). Node
+ * then parses the bundle as CommonJS, fails, reparses it as ESM, and prints
+ * `MODULE_TYPELESS_PACKAGE_JSON` ahead of every command's output. This file ends the lookup
+ * beside the bundle. The daemon payload carries the same declaration for `kelpid.js`
+ * (`packages/daemon/scripts/stage-payload.mjs`).
+ */
+export const ESM_SCOPE_PACKAGE_JSON = `${JSON.stringify({ type: 'module' })}\n`;
+
 // ── the macOS fuse set ──────────────────────────────────────────────────────────────
 
 /**

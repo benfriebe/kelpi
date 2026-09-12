@@ -1,10 +1,17 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
     APP_ICON_TILE_SPAN,
+    ESM_SCOPE_PACKAGE_JSON,
     ICNS_VARIANTS,
     MINIMUM_NODE_MAJOR,
     PACKAGED_APP_FILES,
+    RESOURCE_NAMES,
     STAGED_RESOURCE_NAMES,
     adhocSignCommands,
     adhocSignRequired,
@@ -17,6 +24,7 @@ import {
     nodeRuntimeIssues,
     packagedAppIgnore
 } from './packaging.js';
+import { CLI_BUNDLE_NAME } from './resources.js';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -276,5 +284,39 @@ describe('the post-package ad-hoc signature (N22)', () => {
             // that still fails --strict would ship the same defect.
             ['codesign', '--verify', '--strict', '/out/Kelpi.app']
         ]);
+    });
+});
+
+describe('ESM_SCOPE_PACKAGE_JSON', () => {
+    it('declares an ES module scope and nothing else', () => {
+        expect(JSON.parse(ESM_SCOPE_PACKAGE_JSON)).toEqual({ type: 'module' });
+    });
+
+    // The layout the promoted app runs from: the bundle deep inside `out/…/Kelpi.app`, and above
+    // the app the shell's own package.json, which has no `type`. Staged without this file, every
+    // packaged `kelpi` command printed MODULE_TYPELESS_PACKAGE_JSON before its output.
+    it('stops Node warning about a staged ESM bundle under a typeless package.json', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-esm-scope-'));
+        try {
+            fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@kelpi/shell', main: 'dist/main.js' }));
+            const cliDir = path.join(root, 'out', 'Kelpi-darwin-arm64', 'Kelpi.app', 'Contents', 'Resources', RESOURCE_NAMES.cli);
+            fs.mkdirSync(cliDir, { recursive: true });
+            const bundle = path.join(cliDir, CLI_BUNDLE_NAME);
+            // Module syntax, as esbuild emits it: parsing this as CommonJS fails on the import.
+            fs.writeFileSync(bundle, "import path from 'node:path';\nprocess.stdout.write(`ok ${path.sep}\\n`);\n");
+            // A bare environment, so no inherited NODE_OPTIONS can add or hide a warning.
+            const run = () => spawnSync(process.execPath, [bundle], { encoding: 'utf8', env: {} });
+
+            // Without the scope file: the defect, which also proves this Node still reports it.
+            expect(run().stderr).toContain('MODULE_TYPELESS_PACKAGE_JSON');
+
+            fs.writeFileSync(path.join(cliDir, 'package.json'), ESM_SCOPE_PACKAGE_JSON);
+            const scoped = run();
+            expect(scoped.stderr).toBe('');
+            expect(scoped.stdout).toBe(`ok ${path.sep}\n`);
+            expect(scoped.status).toBe(0);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 });

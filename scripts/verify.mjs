@@ -690,7 +690,7 @@ if (full) {
         // it is read with `compare-runs` against the previous one. Re-running it would cost 15
         // minutes to learn nothing the report has not already written down.
         plainComponent('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest', { env: SANDBOX_GUARD }),
-        retryWholeComponent('packaged smoke (repackages + 61 checks)', 'pnpm run smoke:packaged', {
+        retryWholeComponent('packaged smoke (repackages + 69 checks)', 'pnpm run smoke:packaged', {
             cwd: shellPackage,
             env: SANDBOX_GUARD
         })

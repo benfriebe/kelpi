@@ -239,6 +239,9 @@ module.exports = {
                 const required = [
                     path.join(resources, 'app.asar'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'kelpid.js'),
+                    // Both bundles are ESM `.js` files (here and cli/ below). Without these, Node
+                    // takes their module type from whatever package.json sits above the app, and warns.
+                    path.join(resources, RESOURCE_NAMES.daemon, 'package.json'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'node_modules', 'node-pty', 'package.json'),
                     path.join(resources, RESOURCE_NAMES.client, 'index.html'),
                     // The tab icons the served document links; a client build without them
@@ -249,6 +252,7 @@ module.exports = {
                     path.join(resources, RESOURCE_NAMES.client, 'apple-touch-icon.png'),
                     path.join(resources, RESOURCE_NAMES.cli, 'kelpi'),
                     path.join(resources, RESOURCE_NAMES.cli, 'kelpi.js'),
+                    path.join(resources, RESOURCE_NAMES.cli, 'package.json'),
                     path.join(resources, RESOURCE_NAMES.cli, 'nex'),
                     path.join(resources, RESOURCE_NAMES.node)
                 ];

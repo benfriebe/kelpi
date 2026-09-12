@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Shared settings contracts](#shared-settings-contracts-2026-09-12).
 - [Interaction Lab and live acceptance](#interaction-lab-and-live-acceptance-2026-09-12).
 - [Selectable interaction presenters](#selectable-interaction-presenters-2026-09-12).
 - [Shared interaction contracts](#shared-interaction-contracts-2026-09-12).
@@ -44,6 +45,37 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Shared settings contracts (2026-09-12)
+
+Phase 1 of full Settings presentation, implemented on `feature/plugin-settings-contracts`
+(based on the Interaction Lab branch at `900627e`). Tested revision: **`bc73a3d`**. The worktree
+was bootstrapped from the verified vendor bundle at the same revision (`vendor-engine.test.ts`
+20/20) with a frozen-lockfile install; private sandboxes only. No plugin API and no protocol
+change in this phase.
+
+| Check | Result at `bc73a3d` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,815 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suites: `settings/contract`, `sections`, `surface`, `redaction`, `FieldRenderer` tests, plus surface-routed cases in `SettingsOverlay.test.tsx` and a guard that every rail tab draws a panel. `settings-parity`, `settings-density`, `settings-low-fidelity`, `roundtrip`, `tabs` and the byte-identical `SettingsOverlay.phone` snapshots pass unmodified. |
+| Settings audit steps, hidden | `settings-open`, `settings-tab-general`, `-appearance`, `-labels`, `-profiles`, `-keybindings`, `-web`, `-workspaces`, `keybinding-record`, `settings-close`, `settings-tcp-state`, `settings-repositories`, `settings-live-apply`, `phone-settings-sheet`: **15 steps, 98 assertions, 0 failed, 0 step errors** (`--only`, local artifact). |
+| Settings audit steps, onscreen | `settings-open`, `settings-tab-general`, `settings-tab-workspaces`, `settings-tcp-state`, `settings-close`: **6 steps, 32 assertions, 0 failed**; the General and Workspaces screenshots were inspected and match the previous rendering. |
+| Scenario gates, hidden | `plugin-ui-services` 30/30, `plugin-workbench` 22/22, `plugin-interaction-presenters` 34/34, `plugin-authoring` 25/25, `plugin-chrome-features` 34/34 alone; `plugin-extensions` 23/23 alone and after `plugin-authoring` on this tree and on the base tree (one earlier five-scenario run had it at 4/5 on the new-workspace sheet, not reproduced in three reruns). |
+| Independent review | One Opus review of the working tree. Applied before `bc73a3d`: the tabs now commit through the surface only (the first draft had a second write path in the renderer), the renderer draws held drafts and errors, reconciliation runs from the settings broadcast rather than a render, the TCP caption is composed from a structured status so no OS error text is projected, the snapshot cache key includes the disabled state, number drafts keep the old parseInt leniency, and the rail-versus-panel guard test. The review confirmed the copied captions are byte-identical to the originals. |
+
+### Full verification battery at `bc73a3d`
+
+`node scripts/verify.mjs --full` on the Settings contracts branch passed in 25.1 minutes:
+typecheck, root tests, shell tests and bundle build passed; the scenario lane passed on the
+battery's isolated retry (`plugin-document-features`, `plugin-terminal-features` and
+`workspace-switch-keeps-the-caret` red under the battery, green alone, the known
+load-sensitive set); the full UI audit completed with **132 steps, 1,653 assertions, 5 failed,
+4 step errors, 113 need eyes**, the same pre-existing `web-batch-pickup`, `appearance-system-stats`,
+`agent-start`, `agent-lifecycle`, `footer-git-stats`, `sidebar-remaining` and `workspace-edges`
+findings recorded for the earlier branches and every `settings-*` and `phone-settings-sheet`
+step green; the packaged smoke repackaged and passed **61 checks**.
+
+Not established here: physical devices. Phase 2 (a selectable `settings.window` presenter)
+and phase 3 (Settings Lab) are not started.
 
 ## Interaction Lab and live acceptance (2026-09-12)
 

@@ -15,13 +15,22 @@
  *   `WorkspacesTab.tsx`   — the writable general settings (`set-general-setting`)
  *   `controls.tsx`        — the WRITING controls (debounced colour/slider, segmented, select)
  *   `catalog.ts` / `model.ts` / `recorder.ts` — the pure rules the tabs render
+ *   `contract.ts`         — what a section and a field ARE, plus the two validation funnels
+ *   `sections.ts`         — the catalog as data: every section, and every field of the two
+ *                           value-and-verb ones, each with a PRIVATE write target
+ *   `surface.ts`          — the single authority: routing, drafts, the write queue, reconciliation
  *
  * Nothing here reads the store or opens a socket: state arrives as props (the daemon's settings
  * snapshot plus two mirror slices) and intent leaves through `SettingsActions`.
  */
 
 export { SettingsOverlay, type SettingsOverlayProps } from './SettingsOverlay';
-export { GeneralTab, DEFAULT_TCP_PORT, type GeneralTabProps } from './GeneralTab';
+export {
+    GeneralTab,
+    DEFAULT_TCP_PORT,
+    settingsTransportStatus,
+    type GeneralTabProps
+} from './GeneralTab';
 export { KeybindingsTab, type KeybindingsTabProps } from './KeybindingsTab';
 export {
     FAILURE_COLOR,
@@ -68,7 +77,21 @@ export {
     type RepositoriesTabProps,
     type RepositoryEntry
 } from './RepositoriesTab';
-export { WorkspacesTab, FOCUS_DELAY_MAX, FOCUS_DELAY_STEP, type WorkspacesTabProps } from './WorkspacesTab';
+export {
+    WorkspacesTab,
+    FOCUS_DELAY_MAX,
+    FOCUS_DELAY_STEP,
+    type WorkspacesTabProps
+} from './WorkspacesTab';
+
+/** The descriptor-to-control seam, and the React seam over the surface (phase 1's B half). */
+export { FieldRenderer, SETTINGS_DESTRUCTIVE_TONE, type FieldRendererProps } from './FieldRenderer';
+export {
+    useSectionSurface,
+    useSettingsSection,
+    useSettingsSnapshot,
+    useSettingsSurface
+} from './use-settings';
 
 export {
     ACTION_CATALOG,
@@ -131,3 +154,60 @@ export {
     hoverBackground,
     useHover
 } from './ui';
+
+// ── the shared settings model (phase 1) ─────────────────────────────────────────────
+//
+// What is NOT re-exported is the point: `SETTINGS_FIELD_DEFINITIONS`, `settingsFieldDefinition`
+// and `encodeSettingsFieldValue` carry the write targets, so they stay inside `sections.ts` and
+// reach only `surface.ts` and the tests. Assembly gets descriptors and a surface; the mapping from
+// a field id to a config key is not a thing a renderer can hold.
+
+export {
+    SETTINGS_CONTROL_KINDS,
+    SETTINGS_LIMITS,
+    SETTINGS_SECTION_IDS,
+    isSettingsSectionID,
+    settingsFieldDescriptor,
+    settingsGroupDescriptor,
+    settingsSectionDescriptor,
+    validateSettingsDraft,
+    validateSettingsWrite,
+    type SettingsChoice,
+    type SettingsColorFieldDescriptor,
+    type SettingsControlKind,
+    type SettingsDraftValue,
+    type SettingsFieldDescriptor,
+    type SettingsFieldValue,
+    type SettingsGroupDescriptor,
+    type SettingsNumberFieldDescriptor,
+    type SettingsSectionDescriptor,
+    type SettingsSectionID,
+    type SettingsSectionKind,
+    type SettingsSegmentedFieldDescriptor,
+    type SettingsSelectFieldDescriptor,
+    type SettingsSliderFieldDescriptor,
+    type SettingsTextFieldDescriptor,
+    type SettingsToggleFieldDescriptor,
+    type SettingsTransportStatus
+} from './contract';
+
+export {
+    SETTINGS_DEFAULT_TCP_PORT,
+    SETTINGS_FOCUS_DELAY_MAX,
+    SETTINGS_FOCUS_DELAY_STEP,
+    SETTINGS_GROUPS,
+    SETTINGS_SECTIONS,
+    isNativeSettingsSection,
+    settingsGroupsInSection,
+    settingsSection,
+    settingsTransportCaption,
+    type SettingsFieldState
+} from './sections';
+
+export {
+    createSettingsSurface,
+    type SettingsSectionRouting,
+    type SettingsSurface,
+    type SettingsSurfaceConfig,
+    type SettingsSurfaceSnapshot
+} from './surface';

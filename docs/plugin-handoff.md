@@ -12,9 +12,9 @@ authoring. Custom panes, both swappable sidebars, toolbar/status, document, term
 renderers, shared UI requests and selected native services are implemented. The roadmap links
 each completed phase and its merged PRs, from #125 through #162.
 
-The broader replacement goal is **not complete**. The current task exposes native replay
-geometry and size ownership to terminal renderers; its contract and bridge are implemented on
-`feature/plugin-terminal-geometry` and its Terminal Lab acceptance follows. After that, implement
+The broader replacement goal is **not complete**. Terminal SDK geometry parity (replay grid and
+size ownership for plugin renderers) is implemented and validated on
+`feature/plugin-terminal-geometry`, pending review and merge. After that, implement
 selectable command-palette and shared-prompt presenters, then the full Settings presenter and
 remaining composition surfaces. Public registry/distribution and untrusted execution are
 separate future scopes. Plugin API version remains **1**; wire protocol generation remains **2**.
@@ -62,8 +62,9 @@ Close the terminal SDK geometry gap. The native connection supplies `onReplay(da
 the plugin bridge now states that grid on each SDK replay frame and size ownership on each
 presentation frame ([contract](plugin-terminals.md#replay-geometry-and-size-ownership)).
 Before this branch, replay frames contained only bytes and Terminal Lab fitted its own box
-even when another window owned process sizing. The remaining half is Terminal Lab mirroring
-and its live plugin acceptance.
+even when another window owned process sizing. Terminal Lab now mirrors from the public fields,
+and `scripts/scenarios/plugin-terminal-geometry.mjs` is the live plugin acceptance; the
+[validation record](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12) has the counts.
 
 | Concern | Source entrypoints |
 | --- | --- |

@@ -230,9 +230,11 @@ Terminal Lab implements this contract; its README documents the diagnostics it e
 
 ## Validation and remaining scope
 
-Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features --window hidden`. The live scenario
-uses private daemons and a persistent terminal fixture to check process identity, replay,
-input and renderer recovery. See the [validation record](plugin-validation.md) for actual
+Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features plugin-terminal-geometry --window hidden`.
+The first live scenario uses private daemons and a persistent terminal fixture to check process
+identity, replay, input and renderer recovery. The second proves owner-grid mirroring through
+the public contract: letterbox, clip, mouse cells under a mirror, hidden/revealed and renderer
+swaps, take-control, owner disconnect and an embedded remote owner. See the [validation record](plugin-validation.md) for actual
 dated results and the distinction between emulated phone checks and physical-device testing.
 Use `--window onscreen` to inspect screenshots.
 

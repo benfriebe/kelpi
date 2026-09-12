@@ -54,13 +54,15 @@ remaining SDK parity gap described below. Subsequent main fixes through
 
 ## Current task: terminal SDK geometry parity
 
-**Status: contract and bridge implemented on `feature/plugin-terminal-geometry`; Terminal Lab
-mirroring and live acceptance follow in the same branch.** The native PTY subscription carries
+**Status: implemented on `feature/plugin-terminal-geometry`, awaiting review and merge.** The
+native PTY subscription carries
 the grid on which a replay was serialized, and the bundled terminal mirrors the size owner's
 grid. The plugin bridge now states that grid on every SDK replay frame (`grid`, `null` when the
 daemon states none) and size ownership on every presentation frame (`ownsSize`), and issues the
-one forced PTY report each ownership hand-off needs. See
-[replay geometry and size ownership](plugin-terminals.md#replay-geometry-and-size-ownership).
+one forced PTY report each ownership hand-off needs. Terminal Lab mirrors from those two fields
+alone, and `plugin-terminal-geometry` proves it live, including the embedded remote case. See
+[replay geometry and size ownership](plugin-terminals.md#replay-geometry-and-size-ownership)
+and the [validation record](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12).
 
 The bounded follow-up, in order:
 
@@ -75,10 +77,9 @@ The bounded follow-up, in order:
    The existing `terminal-mirrors-owner-grid` scenario is bundled coverage; add explicit plugin
    acceptance and inspect onscreen output.
 
-Step 1 and the bridge half of step 2 are implemented and unit/integration tested; the
-Terminal Lab half of step 2 and the plugin acceptance in step 3 are in progress. See the
-[handoff implementation pointers](plugin-handoff.md#first-implementation-task). The SDK gained
-two additive fields; plugin API version and wire protocol generation are unchanged.
+All three steps are implemented and tested on the branch; the phase is marked merged only
+once its PRs merge. See the [handoff implementation pointers](plugin-handoff.md#first-implementation-task).
+The SDK gained two additive fields; plugin API version and wire protocol generation are unchanged.
 
 ## Following proposed phase: replaceable palette and shared prompts
 

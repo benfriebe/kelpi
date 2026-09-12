@@ -6,6 +6,8 @@ export async function mountTerminalLab(terminal, api, root) {
     let session, disposed = false, replaying = false, ingesting = false, ready = false, sent = 0, saveTimer;
     let presentation = { focused: false, visible: true }, modes = {}, modifiers = { ctrl: false, alt: false };
     let composing = false, lastReveal, lastGrid, observed = false, frameCount = 0, replayCount = 0, revealCount = 0;
+    // The grid this emulator is MIRRORING, or null when it renders this view's own measured box.
+    let mirror = null;
     let resolveInitial;
     const initialGrid = new Promise(resolve => { resolveInitial = resolve; });
     const pendingWrites = [], disposables = [], listeners = [];
@@ -84,6 +86,43 @@ export async function mountTerminalLab(terminal, api, root) {
         // Preserve the original text if xterm has no encoding for this modified key.
         if (dispatchKey(key)) { event.preventDefault(); event.stopImmediatePropagation(); }
     });
+    // `ownsSize` absent means this window sizes the process: an older host states nothing, and the
+    // host's own default for an omitted prop is the same answer. Only an explicit false mirrors.
+    const owns = () => presentation.ownsSize !== false;
+    const setMirror = value => {
+        mirror = value;
+        if (value) document.body.dataset.mirror = `${value.cols}x${value.rows}`;
+        else delete document.body.dataset.mirror;
+    };
+    /**
+     * Regaining ownership: the emulator follows this view's own box again, at once.
+     *
+     * Not through the measure path alone, which idles while hidden and for a zero-sized box and
+     * would leave the emulator stranded on the ex-owner's grid. Reporting is left to `fit()`: the
+     * host issues the forced PTY claim for this transition, so a report from here would be spam.
+     */
+    const unmirror = () => {
+        if (mirror === null) return false;
+        setMirror(null);
+        if (lastGrid && (terminal.cols !== lastGrid.cols || terminal.rows !== lastGrid.rows)) terminal.resize(lastGrid.cols, lastGrid.rows);
+        return true;
+    };
+    /**
+     * A replay is a screen composed for the grid it was serialised at. While another client owns
+     * the process size, those bytes are only meaningful at that grid: the serialiser writes a
+     * soft-wrapped row and its continuation with no newline between them, so an emulator at any
+     * other width lays the halves side by side and re-glues them on every later replay.
+     *
+     * A stated grid is therefore adopted BEFORE the bytes are written, so the in-band reset in
+     * `consumeTerminalFrame` lands on an emulator that is already the right shape. `null` is an
+     * older daemon stating nothing: keep the emulator where it is rather than guessing.
+     */
+    const adoptReplayGrid = grid => {
+        if (owns()) { if (unmirror()) fit(); return; }
+        if (!grid || !(grid.cols > 0) || !(grid.rows > 0)) return;
+        setMirror({ cols: grid.cols, rows: grid.rows });
+        if (terminal.cols !== grid.cols || terminal.rows !== grid.rows) terminal.resize(grid.cols, grid.rows);
+    };
     const fit = () => {
         if (disposed || !presentation.visible) return null;
         const cell = core._renderService.dimensions?.css?.cell;
@@ -91,7 +130,11 @@ export async function mountTerminalLab(terminal, api, root) {
         const style = window.getComputedStyle(root);
         const grid = gridFromMetrics(bounds.width, bounds.height, cell, presentation.paddingX ?? (parseFloat(style.paddingLeft) || 0), presentation.paddingY ?? (parseFloat(style.paddingTop) || 0));
         if (!grid) return null;
-        if (terminal.cols !== grid.cols || terminal.rows !== grid.rows) terminal.resize(grid.cols, grid.rows);
+        // The emulator follows this box only while this window sizes the process. Under a mirror it
+        // stays at the owner's grid; the MEASUREMENT below is still taken and still reported,
+        // because that report is the daemon's takeover cache and this viewer's own snapshot
+        // request. It is a measurement, never the mirrored grid.
+        if (mirror === null && (terminal.cols !== grid.cols || terminal.rows !== grid.rows)) terminal.resize(grid.cols, grid.rows);
         if (session && (lastGrid?.cols !== grid.cols || lastGrid?.rows !== grid.rows)) session.resize(grid.cols, grid.rows);
         if (session && lastGrid?.cellHeight !== grid.cellHeight) session.setCellHeight(grid.cellHeight);
         lastGrid = grid; resolveInitial?.(grid); resolveInitial = undefined; return grid;
@@ -117,6 +160,9 @@ export async function mountTerminalLab(terminal, api, root) {
         area.setAttribute('aria-label', value.accessibilityName ?? 'Terminal');
         if (value.visible && !observed) { observer.observe(root); observed = true; }
         if (!value.visible && observed) { observer.disconnect(); observed = false; }
+        // Regaining the process size un-mirrors now; losing it needs nothing, because the next
+        // replay states the new owner's grid and establishes the mirror from it.
+        if (owns()) unmirror();
         if (!value.visible || !value.focused) terminal.blur();
         // Logical focus is distinct from caret ownership: only explicit actions may focus.
         fit(); reveal(value.reveal);
@@ -130,7 +176,11 @@ export async function mountTerminalLab(terminal, api, root) {
         if (frame.type === 'resync') { document.body.dataset.resync = frame.reason; return; }
         if (frame.type === 'exit') { document.body.dataset.exit = String(frame.exitCode); return; }
         const scroll = ready ? terminal.buffer.active.baseY - terminal.buffer.active.viewportY : Number(api.state?.linesAboveBottom) || 0;
+        // `replaying` before the mirror resize, not after: a row-count change moves the viewport and
+        // fires onScroll, which would otherwise arm the scroll-position save with the pre-replay
+        // offset and persist a position for a screen that is about to be replaced.
         replaying = frame.type === 'replay'; ingesting = true;
+        if (replaying) adoptReplayGrid(frame.grid);
         try { await consumeTerminalFrame(terminal, frame, write, () => applyXtermModes(terminal, modes)); }
         finally { replaying = false; ingesting = false; }
         if (frame.type === 'replay') {
@@ -193,7 +243,7 @@ export async function mountTerminalLab(terminal, api, root) {
         lastGrid = undefined; fit();
         for (const entry of pendingWrites.splice(0)) if (entry.direct) session.writeDirect(entry.data); else session.write(entry.data);
         pendingBytes = 0;
-        const diagnostics = { terminal, session, dispose, fit, get presentation() { return presentation; }, get modes() { return modes; }, get modifiers() { return modifiers; }, get frameCount() { return frameCount; }, get replayCount() { return replayCount; }, get revealCount() { return revealCount; } };
+        const diagnostics = { terminal, session, dispose, fit, get presentation() { return presentation; }, get modes() { return modes; }, get modifiers() { return modifiers; }, get frameCount() { return frameCount; }, get replayCount() { return replayCount; }, get revealCount() { return revealCount; }, get mirror() { return mirror; }, get measured() { return lastGrid ?? null; } };
         globalThis.terminalLab = diagnostics;
         document.body.dataset.ready = String(ready);
         return diagnostics;

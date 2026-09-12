@@ -57,6 +57,25 @@ not used as visual evidence.
 
 ![Terminal Lab in an emulated phone remote workspace](phone.png)
 
+## Replay geometry and size ownership (2026-09-12)
+
+The SDK geometry parity phase on `feature/plugin-terminal-geometry` added
+`scripts/scenarios/plugin-terminal-geometry.mjs`, which re-runs the bundled
+`terminal-mirrors-owner-grid` shape against Terminal Lab through the public contract only.
+Its onscreen screenshots were inspected; three are retained here with the daemon capture
+the letterboxed screen was compared against. The dated
+[validation record](../../plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12)
+carries the exact revision, commands and counts.
+
+![Terminal Lab mirroring a 40x12 owner inside a wider window: the long line wraps at the owner's 40th column on three rows, background to the right and below](geometry-letterboxed-mirror.png)
+
+![Terminal Lab clipped at a 900px window while a 120-column owner sizes the process: one row runs past the right edge, and the pane badge still reports the pane's own measurement](geometry-clipped-narrow-viewer.png)
+
+![An embedded remote workspace whose remote daemon has another size owner: the remote pane letterboxes at 40 columns while the local pane keeps its own grid](geometry-remote-mirror.png)
+
+`geometry-owner-width-capture.txt` is `kelpi pane capture` of the same pane at the owner's
+width, which the letterboxed screenshot must match row for row.
+
 ## Limits
 
 Phone checks use a 390×844 viewport with touch emulation. Physical mobile keyboards,

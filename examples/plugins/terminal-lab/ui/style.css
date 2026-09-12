@@ -1,6 +1,24 @@
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body { color: #ddd; font: 13px ui-monospace, monospace; }
-#terminal { box-sizing: border-box; width: 100%; height: 100%; padding: 4px 6px; outline: none; }
+/*
+ * Letterbox and clip, never scale. While another client owns the process size this emulator is at
+ * the OWNER'S grid, and xterm sizes `.xterm-screen` from cols x rows rather than from the box it
+ * was opened in: a smaller mirrored grid leaves empty background to the right and below, a larger
+ * one overflows and is clipped here. Both keep the screen anchored top-left and unscaled, which is
+ * what keeps mouse reports honest: xterm resolves a cell from client coordinates against the
+ * screen element's own rect and the unscaled cell, so a transform or a pan would move the cells
+ * out from under the pointer. `clip` rather than `hidden`: both paint away what does not fit, but
+ * a hidden box is still a scroll container, so script, a wheel gesture and a `focus()` without
+ * `preventScroll` can all pan it, sliding the emulator's own pixels under the host's chrome.
+ */
+#terminal { box-sizing: border-box; width: 100%; height: 100%; padding: 4px 6px; outline: none; overflow: clip; }
 #terminal .xterm { height: 100%; }
+/*
+ * While mirroring, the emulator root wraps the mirrored screen instead of the view. xterm's
+ * scrolling viewport is absolutely positioned to this element, so stretching it would give the
+ * letterbox a full-height scrollbar and a scroll gesture over background the emulator is not
+ * drawing on. `data-mirror` is set by the renderer for exactly the frames where that is true.
+ */
+body[data-mirror] #terminal .xterm { height: auto; }
 #problem { position: absolute; inset: auto 8px 8px; padding: 8px 12px; color: #fff; background: #733; border-radius: 4px; }
 #problem[hidden] { display: none; }

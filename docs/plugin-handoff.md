@@ -100,21 +100,24 @@ renderers. Follow with the presenter work below once this parity gap is validate
 
 ## Following phase: palette and shared prompts
 
-The [roadmap proposal](plugin-roadmap.md#following-proposed-phase-replaceable-palette-and-shared-prompts)
-is unstarted. Plugins can contribute commands and request prompts; they cannot replace the
-palette or prompt presenters. Keep request authority, cancellation and result validation in
-Kelpi while making presentation selectable.
+The [roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts)
+has its first step implemented on `feature/plugin-interaction-contracts`: the window interaction
+surface owns the palette session and shared prompts, and the bundled presenters render it.
+Plugins can contribute commands and request prompts; they cannot yet replace the palette or
+prompt presenters. Keep request authority, cancellation and result validation in Kelpi while
+making presentation selectable.
 
 | Concern | Source entrypoints |
 | --- | --- |
-| Palette mount, shortcuts and window targeting | [App](../packages/client/src/App.tsx), [CommandPalette](../packages/client/src/chrome/CommandPalette.tsx), [palette model](../packages/client/src/chrome/palette.ts) |
-| Existing bounded queues, validation and presenter | [UI service model](../packages/client/src/plugins/ui-services.ts), [UIServiceHost](../packages/client/src/plugins/UIServiceHost.tsx), [public UI types](../packages/plugin-sdk/ui.d.ts) |
+| Window interaction surface | [contracts](../packages/client/src/interaction/contract.ts), [surface](../packages/client/src/interaction/surface.ts), [host](../packages/client/src/interaction/InteractionHost.tsx), [bundled prompts](../packages/client/src/interaction/BundledPrompts.tsx), [palette adapter](../packages/client/src/interaction/PaletteHost.tsx) |
+| Palette mount, shortcuts and window targeting | [App](../packages/client/src/App.tsx), [palette source](../packages/client/src/features/palette-source.ts), [CommandPalette](../packages/client/src/chrome/CommandPalette.tsx), [palette model](../packages/client/src/chrome/palette.ts) |
+| Plugin-facing prompt adapter and public types | [UI service adapter](../packages/client/src/plugins/ui-services.ts), [public UI types](../packages/plugin-sdk/ui.d.ts) |
 | View/request lifetime and host boundary | [PluginView](../packages/client/src/plugins/PluginView.tsx), [host UI](../packages/client/src/plugins/host-ui.ts) |
 | Registration and fallback precedents | [Registry](../packages/client/src/plugins/registry.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
 | Focus/modal coordination and Settings | [Modal presence](../packages/client/src/chrome/modal-presence.ts), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
 
-Use the proposed three phases: shared interaction contracts, selectable presenters with
-bundled recovery, then an external Interaction Lab and real-instance acceptance. Preserve
+The remaining steps are selectable presenters with bundled recovery, then an external
+Interaction Lab and real-instance acceptance. Preserve
 keyboard/IME behavior, cancellation on caller/presenter disposal, window/daemon ownership,
 native browser parking, modal queueing and focus restoration. Retain a reachable way to open
 plugin recovery when a replacement fails.

@@ -193,6 +193,32 @@ pane receives an explicit unavailable error; a window connected directly to that
 daemon can present its prompts normally. Backends use events/commands to coordinate with a
 view when they need an interactive response. No host DOM or native window handle is exposed.
 
+## Shared interaction contracts
+
+The palette session and the shared prompts above are owned by one window interaction surface
+(`packages/client/src/interaction/`), created for the window's primary workbench runtime. The
+bundled presenters render it; they no longer hold request authority. Plugins see no new API in
+this phase: `kelpi.ui.show*` and command contributions behave as documented above, and the
+plugin-facing model in `packages/client/src/plugins/ui-services.ts` is now an adapter over the
+surface with its previous shapes.
+
+What the surface guarantees, independently of who renders:
+
+| Rule | Behaviour |
+| --- | --- |
+| Ownership | Every request has an owner: a plugin view scope, or a stable native id such as `native:shortcut`. A request from an embedded remote runtime is refused with the existing unavailable error. Native owners bypass the per-view limit, never the per-window limit. |
+| Palette activation | Items are descriptors only; no command handler crosses into the session snapshot. Activation re-resolves the item against a fresh read of contributions and the daemon mirror, refuses disabled, stale-session or vanished workspace/pane targets, and executes at most once. |
+| Queueing | One visible modal request at a time; the rest wait. A prompt raised while the palette is open stays hidden until the palette dismisses; opening the palette over a visible prompt is refused; both wait behind an existing native modal such as Settings. |
+| Cancellation | Owner disposal (reload, disable, disconnect, unmount, view failure) cancels its requests with null. Presenter failure never answers a request and never produces a non-null result. |
+| Focus | The surface records the focus origin before a *prompt* presenter takes focus (a palette session captures no origin: nothing in it claims the caret from the window), and releases in one order: a pending palette pane hand-off wins, else the origin is restored when it is still focusable, else the caret goes to the fallback pane. A pane hand-off is cancelled when a queued prompt becomes visible, so the caret cannot land behind a prompt. |
+| Keyboard | Escape and the rebindable Close chord cancel the visible request or dismiss the palette. Composing keystrokes (IME) never activate or cancel. Window shortcuts, plugin shortcuts, Settings and Help chords and native menu commands stand down while a request is *active* - at the front of the queue, painted or still waiting behind a native modal - with the recovery command and web-page chord relays exempt. |
+| Native pages | A visible modal request or an open palette parks native pages through the existing whole-window modal presence, registered once for the surface; notifications keep the finer overlay rectangle. |
+
+The destructive sidebar and agent confirmations, the quit confirmation, phone sheets and the
+native toast stack remain native and are not routed through the surface. Selecting a plugin
+presenter for the palette or prompts is the [next roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts);
+this phase changes no public contract.
+
 ## Automated validation
 
 `pnpm check` covers schema validation, ownership, lifecycle resets, settings races, SDK

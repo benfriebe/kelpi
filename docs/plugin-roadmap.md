@@ -81,15 +81,18 @@ All three steps are implemented and tested on the branch; the phase is marked me
 once its PRs merge. See the [handoff implementation pointers](plugin-handoff.md#first-implementation-task).
 The SDK gained two additive fields; plugin API version and wire protocol generation are unchanged.
 
-## Following proposed phase: replaceable palette and shared prompts
+## Following phase: replaceable palette and shared prompts
 
-**Status: proposed; implementation has not started.** The command palette is still mounted
-directly by [App](../packages/client/src/App.tsx), and
-[UIServiceHost](../packages/client/src/plugins/UIServiceHost.tsx) renders shared prompts and
-notifications. Plugins can contribute commands and request prompts, but cannot select a
-replacement for those presenters.
+**Status: step 1 implemented on `feature/plugin-interaction-contracts` (based on the terminal
+geometry branch), awaiting review; steps 2 and 3 not started.** The palette session and shared
+prompts are owned by one window interaction surface
+([contracts](../packages/client/src/interaction/contract.ts), [host](../packages/client/src/interaction/InteractionHost.tsx)),
+with the bundled presenters rendering it and the native palette commands supplied by a
+[feature source](../packages/client/src/features/palette-source.ts). Plugins can contribute
+commands and request prompts, but cannot yet select a replacement presenter; see
+[shared interaction contracts](plugin-ui.md#shared-interaction-contracts).
 
-The proposed review sequence is:
+The review sequence is:
 
 1. **Shared window interaction contracts.** Extract palette query/items/selection and
    quick-pick/input/dialog/notification presentation from their bundled components. Route

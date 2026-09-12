@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Shared interaction contracts](#shared-interaction-contracts-2026-09-12).
 - [Terminal SDK geometry parity](#terminal-sdk-geometry-parity-2026-09-12).
 - [Documentation baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
 - [Packages, recovery and authoring](#plugin-packages-recovery-and-authoring-2026-09-10), including [merged review fixes](#package-and-recovery-review-fixes-2026-09-11).
@@ -41,6 +42,25 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Shared interaction contracts (2026-09-12)
+
+Step 1 of the palette and shared-prompt phase, implemented on
+`feature/plugin-interaction-contracts` (based on the terminal geometry branch at `44292eb`).
+Tested revision: **`cacbdae`**. The worktree was bootstrapped from the geometry worktree's
+verified vendor bundle at the same revision (`vendor-engine.test.ts` 20/20) with a
+frozen-lockfile install. Private sandboxes only.
+
+| Check | Result at `cacbdae` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,640 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suites: `packages/client/src/interaction` (60 tests), `features/palette-source.test.ts` (8), the moved UI service and host tests, and `App.palette-jump` "runs a confirmed command exactly once" unchanged. |
+| Scenario gates, hidden, built | `plugin-ui-services` 30/30, `confirm-dialog-keys` 10/10, `plugin-preview-shortcuts` 6/6, `plugin-workbench` 22/22, `plugin-remote` 12/12, `recover-interface-keeps-web-panes` 8/8, `workspace-switch-keeps-the-caret` 14/14, `web-pane-comes-back-after-hide` 7/7, `sidebar-swap` 11/11, `plugin-extensions` 23/23, `plugin-authoring` 25/25 (`docs/audit/scenarios/2026-09-12T03-23-58-989Z`, local artifact). |
+| `plugin-chrome-features` | **34/34** alone and after `confirm-dialog-keys`; **33/34** when it follows `plugin-ui-services` in the same sandbox ("clicking a contributed status item executes its declared command"). The base tree `44292eb` fails that check in the same order, so it is a pre-existing interaction between the two scenarios' UI Lab state, not a change on this branch. It is recorded here for the next agent rather than fixed. |
+| Independent review | One Opus review of the working tree. Its findings were applied before `cacbdae`: palette rows now republish on plugin contribution changes while open (a liveness regression in the first draft), focus restore refuses the document body, the unused store toggle was removed, and dead exports and stale references were cleaned up. |
+
+Not established here: the full verification battery, the packaged smoke and onscreen
+inspection for this branch, scheduled with step 2 (selectable presenters); phone emulation
+beyond the existing scenarios; physical devices.
 
 ## Terminal SDK geometry parity (2026-09-12)
 

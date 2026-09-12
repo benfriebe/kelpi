@@ -73,7 +73,14 @@ export interface CommandPaletteProps {
     readonly items: readonly PaletteItem[];
     readonly onConfirm: (item: PaletteItem) => void;
     readonly onDismiss: () => void;
-    /** Called `handoffDelayMs` after any close, with the pane focus should land on. */
+    /**
+     * Called `handoffDelayMs` after any close, with the pane focus should land on.
+     *
+     * Assembly deliberately does NOT pass it any more: §10.4's hand-off is scheduled by the window
+     * interaction surface, which is also the only thing that can cancel it when a queued prompt
+     * becomes visible in the same tick. The prop stays because this component's own tests drive the
+     * timer through it, and `scheduleHandoff` is inert without a handler.
+     */
     readonly onFocusHandoff?: ((paneID: string | null) => void) | undefined;
     /** The active workspace's focused pane — the handoff target for dismiss paths. */
     readonly fallbackPaneID?: string | null | undefined;
@@ -258,16 +265,21 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
             return;
         }
         /*
-         * The palette runs the item — and it is the ONLY thing that runs it. `App.tsx`'s
-         * `onPaletteConfirm` used to call `item.run?.()` a second time for every
+         * The palette REPORTS the confirmed row; it does not run it.
+         *
+         * Both halves of that used to live here: the item carried its own `run` closure and this
+         * called it, while `App.tsx`'s `onPaletteConfirm` called the same closure AGAIN for every
          * `kind === 'command'`, so one ⌘P → Enter fired every palette command TWICE: two panes
          * from "New Scratchpad" (measured live in the audit's `scratchpad-create` step —
          * `1 → 3, 2 scratchpad(s)`), two splits from "Split Right", and a silent no-op from any
          * toggle, whose second call undid the first. Present since the client's first commit
          * (`1628def`) and invisible to the tests on both sides: this one passes a mock
          * `onConfirm`, and the App's palette tests never assert an effect count.
+         *
+         * Execution belongs to `features/palette-source.ts` now, reached through the window
+         * interaction surface's `activate`, which re-resolves the row against a fresh read before
+         * anything runs. One confirm, one activation, and this component stays presentational.
          */
-        item.run?.();
         props.onConfirm(item);
         scheduleHandoff(item.paneID ?? props.fallbackPaneID ?? null);
     };
@@ -290,7 +302,27 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
      * button, or at the card's own chrome, and it runs before the field would have. Everything it
      * does not name (typing, ⌘A, the caret keys) falls through to the field untouched.
      */
-    const handleKey = (event: { key: string; preventDefault: () => void; stopPropagation: () => void }): void => {
+    const handleKey = (event: {
+        key: string;
+        keyCode?: number | undefined;
+        isComposing?: boolean | undefined;
+        nativeEvent?: { isComposing?: boolean } | undefined;
+        preventDefault: () => void;
+        stopPropagation: () => void;
+    }): void => {
+        /*
+         * A keystroke that COMMITS an IME composition is not a palette gesture.
+         *
+         * Enter while a Japanese, Chinese or Korean composition is open means "accept this
+         * candidate": the browser sends a keydown with `isComposing` true, the field takes the
+         * text, and a second Enter follows if the user actually meant to confirm. Without this
+         * guard the first one confirmed the selected row, so typing a pane name in kana ran
+         * whatever command sat under the cursor. The prompt host has had the guard since it
+         * shipped (formerly `plugins/UIServiceHost.tsx`) and so has the plugin shortcut dispatcher
+         * (`plugins/commands.ts`, which also reads the legacy `keyCode === 229` that Safari and
+         * older Chromium send in its place); the palette was the one surface without it.
+         */
+        if (event.isComposing === true || event.nativeEvent?.isComposing === true || event.keyCode === 229) return;
         if (event.key === 'ArrowDown') {
             event.preventDefault();
             scrollOnSelectRef.current = true;

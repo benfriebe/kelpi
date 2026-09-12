@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export const covers = [
-    'packages/client/src/App.tsx', 'packages/client/src/plugins/commands.ts',
+    'packages/client/src/App.tsx', 'packages/client/src/plugins/commands.ts', 'packages/client/src/interaction/',
     'packages/client/src/content/ContentFrame.tsx', 'packages/client/src/content/bridge.ts',
 ];
 

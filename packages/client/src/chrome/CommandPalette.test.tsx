@@ -369,9 +369,15 @@ describe('confirm and dismiss', () => {
         expect(props.onConfirm).toHaveBeenCalledWith(expect.objectContaining({ id: `pane:${P1}` }));
     });
 
-    it('clicking a row confirms it and runs a command item', () => {
+    /**
+     * A row is REPORTED, never executed here. The item used to carry a `run` closure that this
+     * component invoked, which is what made the presenter the executor; dispatch is the window
+     * interaction surface's `activate` now, over `features/palette-source.ts`'s descriptors, and
+     * the execution count is pinned there (`interaction/surface.test.ts`) and at the wire
+     * (`App.palette-jump.test.tsx`, "runs a confirmed command exactly once").
+     */
+    it('clicking a row reports the confirmed item and never executes it itself', () => {
         const props = baseProps();
-        const run = vi.fn();
         const command: PaletteItem = {
             id: 'cmd:split',
             kind: 'command',
@@ -381,13 +387,33 @@ describe('confirm and dismiss', () => {
             workspaceID: null,
             workspaceName: '',
             paneID: null,
-            workspaceColor: null,
-            run
+            workspaceColor: null
         };
         render(<CommandPalette {...props} items={[...ITEMS, command]} query="split" />);
         fireEvent.click(screen.getByTestId('palette-row'));
-        expect(run).toHaveBeenCalledOnce();
-        expect(props.onConfirm).toHaveBeenCalledWith(expect.objectContaining({ id: 'cmd:split' }));
+        expect(props.onConfirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'cmd:split' }));
+        // Nothing in the descriptor is callable, so there is nothing here that could have run.
+        expect(Object.values(command).some((value) => typeof value === 'function')).toBe(false);
+    });
+
+    /**
+     * An Enter that COMMITS an IME composition accepts a candidate; it is not a confirm. The
+     * prompt host and the plugin shortcut dispatcher have always stood down for one; the palette
+     * did not, so typing a pane name in kana ran whatever command sat under the cursor.
+     */
+    it('an Enter that commits an IME composition neither confirms nor dismisses', () => {
+        const props = baseProps();
+        render(<CommandPalette {...props} />);
+        const field = screen.getByLabelText('Jump to workspace or pane');
+        fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
+        fireEvent.keyDown(field, { key: 'Escape', isComposing: true });
+        // Safari and older Chromium report the composition with the legacy keyCode instead.
+        fireEvent.keyDown(field, { key: 'Enter', keyCode: 229 });
+        expect(props.onConfirm).not.toHaveBeenCalled();
+        expect(props.onDismiss).not.toHaveBeenCalled();
+        // The composition ends, and the very next Enter is a real confirm again.
+        fireEvent.keyDown(field, { key: 'Enter' });
+        expect(props.onConfirm).toHaveBeenCalledOnce();
     });
 
     it('Escape and a backdrop click dismiss', () => {

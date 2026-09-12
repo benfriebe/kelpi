@@ -288,8 +288,14 @@ export interface KelpiActions {
     /** §AGNT-056: a relayed `shell-activation` for this window. */
     setAppActive(active: boolean): void;
 
+    /**
+      * `ui.palette` is the command palette's storage, and `interaction/surface.ts` is its ONLY
+      * writer: the session id, the refusal over a visible prompt, the single modal registration
+      * and §10.4's focus hand-off all hang off going through the surface. A `togglePalette` action
+      * used to sit beside these two and was exactly the bypass that made that untrue, so it is
+      * gone; `surface.palette.toggle(owner)` is the verb now.
+      */
     setPaletteOpen(open: boolean): void;
-    togglePalette(): void;
     setPaletteQuery(query: string): void;
     setSidebarFilter(filter: string): void;
 
@@ -804,12 +810,6 @@ export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
         setPaletteOpen(open) {
             const ui = get().ui;
             if (ui.palette.open === open) return;
-            set({ ui: { ...ui, palette: { open, query: open ? ui.palette.query : '' } } });
-        },
-
-        togglePalette() {
-            const ui = get().ui;
-            const open = !ui.palette.open;
             set({ ui: { ...ui, palette: { open, query: open ? ui.palette.query : '' } } });
         },
 

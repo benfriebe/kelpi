@@ -6,7 +6,10 @@ import { createChromeFeatureSource } from './features/chrome-source';
 import { bindToolbarFeature, createToolbarActions } from './features/toolbar';
 import { bindStatusbarFeature, statusbarModel, useStatusbarActions } from './features/statusbar';
 import { usePluginChrome } from './plugins/use-chrome';
-import { UIServiceHost, useUIServices } from './plugins/UIServiceHost';
+import { createPaletteFeatureSource, type PaletteFeatureHost } from './features/palette-source';
+import { InteractionHost, InteractionPaletteSlot } from './interaction/InteractionHost';
+import { useInteractionSurface } from './interaction/use-interaction';
+import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
 import { bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
@@ -87,7 +90,6 @@ import {
 } from './app/open-file';
 import {
     ChromeIcon,
-    CommandPalette,
     ContextMenu,
     HelpOverlay,
     INSPECTOR_WIDTH_PX,
@@ -99,7 +101,6 @@ import {
     resetGestures,
     storeSidebarWidth,
     actionForTrigger,
-    buildPaletteItems,
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
@@ -127,7 +128,6 @@ import {
     type FaviconController,
     type KeyActionRegistry,
     type MenuItemSpec,
-    type PaletteItem,
     type SidebarPhase,
 } from './chrome';
 import {
@@ -472,7 +472,61 @@ function Shell(props: AppProps): ReactElement {
         },
         [runtime]
     );
-    const uiServices = useUIServices();
+    /*
+     * The window's one interaction surface (`interaction/surface.ts`), and the palette feed it
+     * dispatches through.
+     *
+     * Both are built HERE, at the top of the body, because the surface is what `WorkbenchProvider`
+     * hands the plugin host, while half of what they read (the contribution registry, the action
+     * table, the binding hints, `handBackPaneCaret`) is only assembled a thousand lines further
+     * down. Every accessor below is therefore a closure the surface calls back into AFTER the
+     * render that installed it, and `paletteHostRef` is the same indirection for the feed: one
+     * source for the window's life, reading the latest render's host.
+     */
+    const paletteHostRef = useRef<PaletteFeatureHost | null>(null);
+    /*
+     * Why the palette feed needs a second wake-up channel.
+     *
+     * The source's own `subscribe` watches the DAEMON mirror, deliberately narrowly, so a terminal
+     * writing a byte does not republish the universe. Plugin contributions are not in that store at
+     * all: `usePluginCommands` derives them from React state, so a `when`/`enablement` flip, a
+     * plugin disabled or reloaded, or a new `palette` menu changes the rows with no store tick to
+     * notice. Left alone, an OPEN palette would keep painting the list it was opened with. So the
+     * assembly relays it: a ref-held listener set (stable across renders, because the source
+     * subscribes once) fired from an effect keyed on the contributions themselves.
+     */
+    const paletteContributionListeners = useRef(new Set<() => void>());
+    const paletteSource = useMemo(() => createPaletteFeatureSource(() => paletteHostRef.current), []);
+    const surface = useInteractionSurface({
+        palette: paletteSource,
+        // §7: `ui.palette` stays the storage; the surface becomes its only writer.
+        paletteState: {
+            isOpen: () => store.getState().ui.palette.open,
+            getQuery: () => store.getState().ui.palette.query,
+            setOpen: (open) => store.getState().setPaletteOpen(open),
+            setQuery: (query) => store.getState().setPaletteQuery(query)
+        },
+        focus: {
+            fallbackPaneID: () => selectFocusedPaneID(store.getState()),
+            handBackCaret: (paneID) => handBackPaneCaret(paneID),
+            /*
+             * §10.4's delayed hand-off, with N19's rule intact: the target was captured 200 ms
+             * ago, and a verb the palette ran may have MOVED focus since ("New Scratchpad" creates
+             * a pane and focuses it), so the client's own focused pane is the authority and the
+             * captured id is only the fallback for a window that has not answered yet.
+             */
+            paneHandoff: (paneID) => {
+                if (paneID === null) return;
+                const target = selectFocusedPaneID(store.getState()) ?? paneID;
+                act.focusPane(target);
+                handBackPaneCaret(target);
+            }
+        },
+        remoteWorkspaceSelected: () => remoteSelectionRef.current !== null,
+        reportFailure: (label, detail) => notifyFailureRef.current(label, detail)
+    });
+    /** The plugin host's older vocabulary over the same surface (`plugins/ui-services.ts`). */
+    const uiServices = useMemo(() => createUIServiceAdapter(surface), [surface]);
     const pluginNavigation = usePluginNavigation({
         runtime, remotes: remoteDaemonRuntimes, selection: remoteSelection,
         activateLocalWorkspace: activateWorkspaceAndReveal, selectRemoteWorkspace: setRemoteSelection
@@ -1718,7 +1772,9 @@ function Shell(props: AppProps): ReactElement {
             },
 
             togglePalette(): boolean {
-                store.getState().togglePalette();
+                // §3.3: the palette is a REQUEST now, owned by whoever raised it: here the
+                // window's own keymap (⌘P) and the native menu row that shares this verb.
+                surface.palette.toggle({ id: 'native:shortcut', kind: 'native', displayName: 'Command Palette' });
                 return true;
             },
 
@@ -2478,15 +2534,14 @@ function Shell(props: AppProps): ReactElement {
         };
         // Consumed, not closed — see the two cases in the header.
         if (createSheetOpenRef.current || settingsOpenRef.current) return true;
-        if (store.getState().ui.palette.open) {
-            store.getState().setPaletteOpen(false);
-            handOff();
+        // The palette outranks Help, which outranks a prompt: one order, three surfaces, and the
+        // interaction surface answers for two of them (it hands the caret back itself).
+        if (surface.getSnapshot().palette.open) {
+            surface.dismissTopmost();
         } else if (helpOpenRef.current) {
             setHelpOpen(false);
             handOff();
-        } else if (uiServices.getSnapshot().active) {
-            uiServices.answer(uiServices.getSnapshot().active!.id, null);
-        } else {
+        } else if (!surface.dismissTopmost()) {
             return false; // no overlay after all (a state change raced the keystroke)
         }
         /*
@@ -2496,7 +2551,7 @@ function Shell(props: AppProps): ReactElement {
          */
         shellClose.noteKeyboardClose();
         return true;
-    }, [handBackPaneCaret, store, shellClose, uiServices]);
+    }, [handBackPaneCaret, store, shellClose, surface]);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@kelpi/core/config` resolves the same overrides the daemon parsed, and the
@@ -2512,10 +2567,10 @@ function Shell(props: AppProps): ReactElement {
             // modal overlay is up every keystroke belongs to IT — a ⌘D behind the sheet must not
             // split a pane, and the key recorder needs to see combos the map would have eaten.
             isPaletteOpen: () =>
-                store.getState().ui.palette.open ||
+                surface.blocksWindowInput() ||
                 settingsOpenRef.current ||
                 helpOpenRef.current ||
-                createSheetOpenRef.current || uiServices.getSnapshot().active !== null,
+                createSheetOpenRef.current,
             // N14's residual: the one chord that guard does NOT hand to the overlay's text field.
             onCloseChordWhileModal: closeModalOverlay,
             // §1.7: while a REMOTE workspace fills the area, the local pane keymap stands
@@ -2545,7 +2600,7 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines, closeModalOverlay, uiServices]);
+    }, [store, keybindLines, closeModalOverlay, surface]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
@@ -2558,7 +2613,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
+            if (surface.hasActiveModal()) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             // Both halves, like `createKeyDispatcher`'s `consume`: `preventDefault` alone stops
@@ -2571,7 +2626,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines, uiServices]);
+    }, [keybindLines, surface]);
 
     /**
      * ⌘? / ⌘/ opens Help (APP-027). Same reasoning as ⌘, above: `HelpCommands` in the Swift app
@@ -2587,7 +2642,7 @@ function Shell(props: AppProps): ReactElement {
         const bindings = clientKeyBindings(keybindLines);
         const onKeyDown = (event: KeyboardEvent): void => {
             if (event.code !== 'Slash' || !event.metaKey || event.ctrlKey || event.altKey) return;
-            if (uiServices.getSnapshot().active) { event.preventDefault(); event.stopPropagation(); return; }
+            if (surface.hasActiveModal()) { event.preventDefault(); event.stopPropagation(); return; }
             const trigger = triggerFromEvent(event);
             if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
             event.preventDefault();
@@ -2596,7 +2651,7 @@ function Shell(props: AppProps): ReactElement {
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [keybindLines, uiServices]);
+    }, [keybindLines, surface]);
 
     /**
      * The shell's native menu bar, arriving the long way round: shell → daemon → every client,
@@ -2611,7 +2666,7 @@ function Shell(props: AppProps): ReactElement {
             if (typeof windowID === 'string' && windowID !== shellWindowID) return;
             const command = message['command'];
             // Native menu gestures obey the same prompt ownership as in-window shortcuts.
-            if (uiServices.getSnapshot().active && command !== RECOVER_INTERFACE_COMMAND && !(typeof command === 'string' && command.startsWith('web-chord:'))) return;
+            if (surface.hasActiveModal() && command !== RECOVER_INTERFACE_COMMAND && !(typeof command === 'string' && command.startsWith('web-chord:'))) return;
             if (command === 'help') setHelpOpen(true);
             else if (command === 'open-file') actRef.current.openFile();
             else if (command === 'settings') setSettingsTab((current) => current ?? DEFAULT_SETTINGS_TAB);
@@ -2701,7 +2756,7 @@ function Shell(props: AppProps): ReactElement {
             else if (typeof command === 'string') replayChordCommand(command);
         });
         return off;
-    }, [runtime, shellWindowID, uiServices]);
+    }, [runtime, shellWindowID, surface]);
 
     // ── palette ─────────────────────────────────────────────────────────────────────
 
@@ -2745,11 +2800,13 @@ function Shell(props: AppProps): ReactElement {
             ...(globalTrigger ? chordKeysForTrigger(canonicalTriggerForPlatform(globalTrigger, /Mac|iPhone|iPad/.test(navigator.platform))) : [])
         ])].sort();
     }, [bindings, contentPaneChords, settings.general.globalHotkey]);
-    // Publish the assembly-owned surfaces so shared plugin prompts wait for their turn.
-    useModalPresence(settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen);
+    // Publish the assembly-owned surfaces so shared plugin prompts wait for their turn. The
+    // palette is NOT one of them any more: `InteractionHost` holds the single registration that
+    // covers the palette and a painted prompt alike (§2.3).
+    useModalPresence(settingsTab !== null || helpOpen || createSheetOpen);
     const anyModalMounted = useAnyModalOpen();
     const pluginCommands = usePluginCommands(runtime, reservedPluginChords, () =>
-        store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current ||
+        surface.blocksWindowInput() || settingsOpenRef.current || helpOpenRef.current ||
         createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
     const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
@@ -2758,157 +2815,49 @@ function Shell(props: AppProps): ReactElement {
             execute={(_command, target, itemID) => { if (itemID) pluginCommands.runItem(placement, itemID, target); }} /> : null;
     };
 
-    const paletteCommands = useMemo<PaletteItem[]>(
-        () => [
-            ...pluginCommands.menu('palette').map(command => ({ ...paletteCommand(command.id, 'rectangle.stack', command.title, command.pluginName, () => command.run(), command.shortcut), disabled: !command.enabled })),
-            paletteCommand('cmd:plugins', 'gearshape', 'Plugins…', 'Install plugins and choose workbench views', () => openSettings('plugins')),
-            paletteCommand(
-                'cmd:new-pane',
-                'terminal',
-                'New Pane',
-                'split the focused pane right',
-                () => act.splitFocused('horizontal'),
-                hint('split_right')
-            ),
-            paletteCommand(
-                'cmd:split-down',
-                'terminal',
-                'Split Down',
-                'split the focused pane down',
-                () => act.splitFocused('vertical'),
-                hint('split_down')
-            ),
-            paletteCommand(
-                'cmd:close-pane',
-                'terminal',
-                'Close Pane',
-                'close the focused pane',
-                () => act.closeFocused(),
-                hint('close_pane')
-            ),
-            paletteCommand(
-                'cmd:reopen-closed-pane',
-                'terminal',
-                'Reopen Closed Pane',
-                'restore the last pane closed in this workspace',
-                () => act.reopenClosedPane(),
-                hint('reopen_closed_pane')
-            ),
-            paletteCommand(
-                'cmd:new-scratchpad',
-                'note',
-                'New Scratchpad',
-                'an unsaved note pane, split off the focused one',
-                () => act.createScratchpad(),
-                hint('create_scratchpad')
-            ),
-            paletteCommand(
-                'cmd:search-pane',
-                'terminal',
-                'Find in Pane…',
-                'search the focused pane’s scrollback',
-                () => act.toggleSearch(),
-                hint('toggle_search')
-            ),
-            paletteCommand(
-                'cmd:toggle-zoom',
-                'rectangle.stack',
-                'Toggle Zoom',
-                'zoom the focused pane',
-                () => act.toggleZoomFocused(),
-                hint('toggle_zoom')
-            ),
-            paletteCommand(
-                'cmd:cycle-layout',
-                'rectangle.stack',
-                'Cycle Layout',
-                'next predefined layout',
-                () => act.cycleLayout(),
-                hint('cycle_layout')
-            ),
-            paletteCommand(
-                'cmd:sync-input',
-                'terminal',
-                'Toggle Synchronise Input',
-                'mirror typing across panes',
-                () => act.toggleSyncInput(),
-                hint('toggle_sync_input')
-            ),
-            paletteCommand(
-                'cmd:new-workspace',
-                'rectangle.stack',
-                'New Workspace',
-                'create an empty workspace',
-                () => act.newWorkspace(),
-                hint('new_workspace')
-            ),
-            // ⌘, is not a bindable action (see the listener above), so the hint is literal.
-            paletteCommand(
-                'cmd:settings',
-                'gearshape',
-                'Settings…',
-                'keybindings, appearance, labels, profiles',
-                () => {
-                    openSettings();
-                },
-                '⌘,'
-            )
-        ],
-        [act, hint, openSettings, pluginCommands.commands]
+    /**
+     * The palette's universe and its dispatch, in one registry outside the assembly.
+     *
+     * `features/palette-source.ts` holds the native verbs, the plugin `palette` menu and every
+     * `run` closure, and emits DESCRIPTORS (strings, booleans and nulls, nothing a presenter could
+     * not be handed). Activation goes the other way: the surface hands an ID back and the source
+     * re-resolves it against a FRESH read, so a row cannot execute a verb whose enablement, plugin
+     * or target went away while the list was on screen. `onPaletteConfirm` (which ran a command a
+     * second time after the component had already run it) and `onFocusHandoff` (§10.4's timer) are
+     * both gone: the source owns dispatch, the surface owns the hand-off.
+     *
+     * Assigned on every render rather than memoised: `paletteSource` reads it lazily, so the feed
+     * always sees the current registry without being rebuilt.
+     */
+    paletteHostRef.current = {
+        runtime,
+        plugins: pluginCommands,
+        actions: act,
+        shortcut: hint,
+        openSettings,
+        // §8.5 / §APP-037: activation comes first, and it is the call that also leaves remote mode
+        // and queues the sidebar's scroll target.
+        activateWorkspace: activateWorkspaceAndReveal,
+        focusPane: runtime.focusPane,
+        subscribeContributions: (listener) => {
+            const listeners = paletteContributionListeners.current;
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        }
+    };
+    /**
+     * The contributions the palette shows, as a value an effect can compare. `run` is a closure and
+     * drops out of `JSON.stringify`, which is what we want: only the id, title, hint and enablement
+     * a row RENDERS should wake the session.
+     */
+    const paletteContributionKey = JSON.stringify(
+        pluginCommands.menu('palette').map((item) => [item.id, item.title, item.pluginName, item.enabled, item.shortcut])
     );
-
-    const paletteItems = useMemo(
-        () => buildPaletteItems(daemon.state.workspaces, { commands: paletteCommands }),
-        [daemon.state.workspaces, paletteCommands]
-    );
-
-    const onPaletteConfirm = useCallback(
-        (item: PaletteItem): void => {
-            store.getState().setPaletteOpen(false);
-            /*
-             * A command item has ALREADY run by the time this is called — `CommandPalette`'s
-             * own `confirm` invokes `item.run?.()` and its unit test pins that. This branch
-             * used to call it a second time, so a single ⌘P → Enter fired every palette
-             * command twice: "New Scratchpad" made two panes (measured live in the audit's
-             * `scratchpad-create` step — `1 → 3, 2 scratchpad(s)`), "Split Right" split twice,
-             * and any toggle looked inert because the second call undid the first. It survived
-             * since `1628def` because neither side's tests count effects: the component's pass
-             * a mock `onConfirm`, and the App's palette tests assert routing, not repetition.
-             */
-            if (item.kind === 'command') return;
-            if (item.workspaceID === null) return;
-            // §8.5 ordering: activate the workspace, then focus the pane.
-            //
-            // §APP-037 / §WS-100: activation queues the sidebar's scroll target, so a workspace
-            // that was off-screen (or inside a collapsed group) scrolls into view rather than
-            // being activated somewhere the user cannot see.
-            activateWorkspaceAndReveal(item.workspaceID);
-            if (item.paneID !== null) runtime.focusPane(item.workspaceID, item.paneID);
-        },
-        [activateWorkspaceAndReveal, runtime, store]
-    );
-
-    const onFocusHandoff = useCallback(
-        (paneID: string | null): void => {
-            if (paneID === null) return;
-            /*
-             * §10.4 hands the caret back to THE focused pane. For Escape, a backdrop click and
-             * a jump the confirm has already performed, that is `paneID` — the target the
-             * palette captured when it closed.
-             *
-             * N19: it is not `paneID` when the command the palette ran MOVED focus. "New
-             * Scratchpad" creates a pane and focuses it, and the target was captured 200 ms
-             * earlier — before the new pane existed — so the handoff would take the caret out
-             * of the fresh scratchpad and put it back in the terminal it was split from. The
-             * client's own focused pane is the authority; the captured id is only the
-             * fallback for the window that has not answered yet.
-             */
-            const target = selectFocusedPaneID(store.getState()) ?? paneID;
-            act.focusPane(target);
-            handBackPaneCaret(target);
-        },
-        [act, handBackPaneCaret, store]
-    );
+    useEffect(() => {
+        for (const listener of [...paletteContributionListeners.current]) listener();
+    }, [paletteContributionKey]);
 
     const primarySelected = useCallback(() => remoteSelectionRef.current === null, []);
     const statusActions = useStatusbarActions({ runtime, activateWorkspace: activateWorkspaceAndReveal, handBackCaret: handBackPaneCaret, isPrimarySelected: primarySelected });
@@ -3151,7 +3100,7 @@ function Shell(props: AppProps): ReactElement {
      * later cannot be forgotten here.
      */
     const modalOpen =
-        settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen || anyModalMounted;
+        settingsTab !== null || helpOpen || createSheetOpen || anyModalMounted;
 
     /**
      * C9 - the content row, for the phone's one key bar (`terminal/PhoneKeyBar.tsx`).
@@ -3469,23 +3418,12 @@ function Shell(props: AppProps): ReactElement {
     const ready = daemon.hasSnapshot;
 
     /**
-     * The palette, built once and mounted by whichever tree is on screen: the desktop's content
-     * row (§M53) or the phone shell's content box. Same element, same props, one place.
+     * The palette's mount, built once for whichever tree is on screen: the desktop's content row
+     * (§M53) or the phone shell's content box. `InteractionPaletteSlot` renders the presenter over
+     * the window's session (`interaction/PaletteHost.tsx`); the two props left here are window
+     * facts the surface does not hold: the theme bucket, and B5's form-factor window.
      */
-    const palette = (
-        <CommandPalette
-            open={ui.palette.open}
-            query={ui.palette.query}
-            onQueryChange={(query) => store.getState().setPaletteQuery(query)}
-            items={paletteItems}
-            onConfirm={onPaletteConfirm}
-            onDismiss={() => store.getState().setPaletteOpen(false)}
-            onFocusHandoff={onFocusHandoff}
-            fallbackPaneID={focusedPaneID}
-            bucket={bucket}
-            formFactorWindow={props.formFactorWindow}
-        />
-    );
+    const palette = <InteractionPaletteSlot surface={surface} bucket={bucket} formFactorWindow={props.formFactorWindow} />;
     const target = props.target ?? { url: undefined, token: undefined, fromQuery: false };
     const selectWorkbench = (slot: WorkbenchSlotID, id: string): void => {
         workbench.select(slot, id);
@@ -3501,7 +3439,8 @@ function Shell(props: AppProps): ReactElement {
         remoteWorkspaceSelected: () => remoteSelectionRef.current !== null, shellAvailable: shellWindowID !== null,
         associations: { workspaceID: workspace?.id ?? null, values: inspectorData.associations }, plugins: pluginCommands,
         toggleSidebar: act.toggleSidebar, toggleInspector: act.toggleInspector,
-        openSettings, openHelp: () => setHelpOpen(true), openPalette: () => store.getState().setPaletteOpen(true),
+        openSettings, openHelp: () => setHelpOpen(true),
+        openPalette: () => { surface.palette.open({ id: 'native:chrome-command', kind: 'native', displayName: 'Command Palette' }); },
         shellAction: act.shellAction, restartControlServer: act.restartControlServer, restartUI, selectPane: statusActions.selectPane
     });
     const chromeModel = chromeSource.snapshot();
@@ -3514,7 +3453,7 @@ function Shell(props: AppProps): ReactElement {
 
     return (
         <TerminalShortcutContext.Provider value={{ bindings, windowChords: terminalWindowChords(bindings),
-            blocked: () => store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current || createSheetOpenRef.current || uiServices.getSnapshot().active !== null,
+            blocked: () => surface.blocksWindowInput() || settingsOpenRef.current || helpOpenRef.current || createSheetOpenRef.current,
             globalHotkey: terminalGlobalHotkey ? canonicalTriggerForPlatform(terminalGlobalHotkey, /Mac|iPhone|iPad/.test(navigator.platform)) : null,
             onError: notifyFailure }}>
         <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices} chrome={phoneActive ? null : pluginChrome}
@@ -3615,7 +3554,7 @@ function Shell(props: AppProps): ReactElement {
                         renamePane: act.renamePane,
                         createPane: act.createPane,
                         toggleSyncInput: act.toggleSyncInput,
-                        openPalette: () => store.getState().setPaletteOpen(true),
+                        openPalette: () => { surface.palette.open({ id: 'native:phone-menu', kind: 'native', displayName: 'Command Palette' }); },
                         openSettings: () => openSettings()
                     }}
                     palette={palette}
@@ -3964,7 +3903,7 @@ function Shell(props: AppProps): ReactElement {
              * one, so a browser tab (which no shell will ever call into) draws nothing.
              */}
             <QuitGate />
-            {uiServices ? <UIServiceHost services={uiServices} /> : null}
+            <InteractionHost surface={surface} />
 
             {helpOpen ? (
                 <HelpOverlay
@@ -4309,29 +4248,6 @@ function webCommandLabel(payload: JsonObject): string {
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
     return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function paletteCommand(
-    id: string,
-    icon: string,
-    title: string,
-    subtitle: string,
-    action: () => void,
-    shortcut?: string | undefined
-): PaletteItem {
-    return {
-        id,
-        kind: 'command',
-        icon,
-        title,
-        subtitle,
-        workspaceID: null,
-        workspaceName: '',
-        paneID: null,
-        workspaceColor: null,
-        run: action,
-        ...(shortcut === undefined ? {} : { shortcut })
-    };
 }
 
 /*

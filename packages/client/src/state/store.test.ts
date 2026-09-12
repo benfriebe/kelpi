@@ -242,9 +242,10 @@ describe('ui slice', () => {
         expect(state().connectionError).toBeNull();
 
         client.getState().setPaletteQuery('w:alpha');
-        client.getState().togglePalette();
+        client.getState().setPaletteOpen(true);
         expect(state().palette).toEqual({ open: true, query: 'w:alpha' });
-        client.getState().togglePalette();
+        // Closing clears the query; the surface owns the session that decides when to close.
+        client.getState().setPaletteOpen(false);
         expect(state().palette).toEqual({ open: false, query: '' });
 
         client.getState().setSidebarFilter('graft');

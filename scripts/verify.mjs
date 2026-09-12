@@ -231,6 +231,20 @@ const SURFACES = [
         tests: ['packages/client/src/phone', 'packages/client/src/settings', 'packages/client/src/chrome'],
         steps: ['phone-form-factor', 'phone-settings-sheet', 'phone-palette-sheet', 'phone-shell', 'phone-view-toggle', 'phone-landing']
     },
+    /*
+     * The window interaction surface (palette session + shared prompt requests). It is a shared
+     * surface - every plugin `ui.show*` call and every palette gesture crosses it - but it is a
+     * CONTRACT module, not an unmapped area: its own unit suite covers the request model, and the
+     * two suites it replaced (`chrome/` for the palette, `plugins/` for the prompts) are what pin
+     * that the bundled presenters still behave. The steps are the five gestures that reach it
+     * through a real window: the phone's palette and settings sheets, a palette command with a
+     * countable effect, and the two native modal peers it has to queue behind.
+     */
+    {
+        prefix: 'packages/client/src/interaction/',
+        tests: ['packages/client/src/interaction', 'packages/client/src/chrome', 'packages/client/src/plugins'],
+        steps: ['phone-palette-sheet', 'phone-settings-sheet', 'scratchpad-create', 'help-overlay', 'titlebar-menu']
+    },
     {
         prefix: 'packages/client/src/pwa/',
         tests: ['packages/client/src/pwa'],

@@ -32,7 +32,6 @@ function command(id: string, title: string, shortcut?: string): PaletteItem {
         workspaceName: '',
         paneID: null,
         workspaceColor: null,
-        run: () => {},
         ...(shortcut === undefined ? {} : { shortcut })
     };
 }

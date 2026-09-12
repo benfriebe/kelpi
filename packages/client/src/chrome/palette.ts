@@ -37,8 +37,16 @@ export interface PaletteItem {
     readonly workspaceName: string;
     readonly paneID: string | null;
     readonly workspaceColor: WorkspaceColor | null;
-    /** Command items only. */
-    readonly run?: (() => void) | undefined;
+    /**
+     * Command items only.
+     *
+     * A `PaletteItem` is a pure DTO: every field is a string, a boolean or null, so the whole
+     * universe survives `JSON.stringify` and can be handed to a presenter that is not this
+     * window's own code. It used to carry a `run: () => void` closure, which made whoever
+     * RENDERED a row the thing that ran it - no re-validation at activation, and nothing that
+     * could cross a plugin boundary. Dispatch belongs to `features/palette-source.ts` now: it
+     * keeps its closures private and re-resolves this `id` against a fresh read.
+     */
     readonly disabled?: boolean | undefined;
     /**
      * A `keyTriggerDisplayString` hint (`⌘P`). Command items whose action the binding map

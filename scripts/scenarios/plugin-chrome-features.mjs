@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = ['examples/plugins/chrome-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
-    'packages/client/src/plugins/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/'];
+    'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pluginID = 'example.chrome-lab', packagePath = path.join(repoRoot, 'examples/plugins/chrome-lab');
 const toolbar = '[data-workbench-slot="topbar"] iframe', status = '[data-workbench-slot="statusbar"] iframe';

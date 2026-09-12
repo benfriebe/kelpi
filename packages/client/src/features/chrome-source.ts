@@ -23,6 +23,12 @@ export interface ChromeFeatureHost {
     readonly toggleInspector: () => void;
     readonly openSettings: (section?: 'plugins') => void;
     readonly openHelp: () => void;
+    /**
+     * Opens the palette through the window's interaction surface with the `native:chrome-command`
+     * owner, not by writing `ui.palette.open`. The surface is what refuses a palette raised over
+     * a visible modal prompt, holds the single modal registration, and parks the window's native
+     * pages while the session is painted.
+     */
     readonly openPalette: () => void;
     readonly shellAction: (action: 'install-cli' | 'check-for-updates') => void;
     readonly restartControlServer: () => void;
@@ -50,6 +56,8 @@ export function createChromeFeatureSource(host: ChromeFeatureHost): ChromeSource
             { id: 'kelpi.sidebar.right', title: `${sidebar('right').visible ? 'Hide' : 'Show'} ${sidebar('right').title}`, enabled: true, group: 'window' },
             { id: 'kelpi.window.takeSizeControl', title: 'Take Size Control', enabled: ready(), group: 'window' },
             { id: 'kelpi.pane.focus', title: 'Focus Pane', enabled: ready(), group: 'window' },
+            // Recovery floor: id, title and the unconditional `enabled` are the route back to the
+            // palette while a presenter is failed, so none of the three is state-dependent.
             { id: 'kelpi.window.openPalette', title: 'Command Palette', enabled: true, group: 'window' },
             ...host.plugins.menu('workspace').map((item): ChromeCommand => ({ id: `menu:${item.id}`, title: item.title, enabled: windowEnabled && item.enabled, group: 'menu', section: `plugins:${item.group ?? ''}` })),
             { id: 'kelpi.window.openPlugins', title: 'Plugins…', enabled: true, group: 'menu', section: 'primary' },

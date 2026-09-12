@@ -15,11 +15,11 @@ vi.mock('../plugins/client', () => ({
 }));
 vi.mock('../terminal/TerminalPane', () => ({ TerminalPane: (props: TerminalPaneProps) => {
     useEffect(() => { mounted(props.paneID, 'native'); return () => { released(props.paneID, 'native'); }; }, [props.paneID]);
-    return <div data-testid={`native-${props.paneID}`} data-visible={props.visible} data-focused={props.focused} />;
+    return <div data-testid={`native-${props.paneID}`} data-visible={props.visible} data-focused={props.focused} data-owns={props.ownsSize !== false} />;
 } }));
 vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; viewID: string; terminal: TerminalPaneProps; onError(message: string): void }) => {
     useEffect(() => { mounted(props.paneID, props.viewID); return () => { released(props.paneID, props.viewID); }; }, [props.paneID, props.viewID]);
-    return <button data-testid={`plugin-${props.paneID}`} data-visible={props.terminal.visible} data-focused={props.terminal.focused}
+    return <button data-testid={`plugin-${props.paneID}`} data-visible={props.terminal.visible} data-focused={props.terminal.focused} data-owns={props.terminal.ownsSize !== false}
         onClick={() => props.onError(rendererError)}>{props.viewID}</button>;
 } }));
 /**
@@ -28,8 +28,8 @@ vi.mock('../plugins/PluginView', () => ({ PluginView: (props: { paneID: string; 
  * `null` is "unknown, or nobody", which is the answer that makes a pane behave exactly as it did
  * before #166 — the right default for a file about renderer SELECTION, which is not about sizing.
  */
-const sizeControlStore = (): KelpiRuntime['store'] => {
-    const state = { daemon: { sizeControlOwnerID: null, clientID: null } };
+const sizeControlStore = (sizeControlOwnerID: string | null = null, clientID: string | null = null): KelpiRuntime['store'] => {
+    const state = { daemon: { sizeControlOwnerID, clientID } };
     return {
         getState: () => state,
         getInitialState: () => state,
@@ -37,8 +37,8 @@ const sizeControlStore = (): KelpiRuntime['store'] => {
         subscribe: () => () => undefined
     } as unknown as KelpiRuntime['store'];
 };
-const runtime = (host: string) =>
-    ({ connection: { target: `ws://${host}/ws` }, store: sizeControlStore() } as KelpiRuntime);
+const runtime = (host: string, owner: string | null = null, client: string | null = null) =>
+    ({ connection: { target: `ws://${host}/ws` }, store: sizeControlStore(owner, client) } as KelpiRuntime);
 const local = runtime('terminal.test'), remote = runtime('remote-terminal.test');
 const props = { runtime: local, workspaceID: 'W', paneID: 'P', ptyApi: { subscribe: vi.fn() }, focused: true, visible: true };
 beforeEach(() => {
@@ -98,5 +98,18 @@ describe('replaceable terminal feature', () => {
         choose('sample.terminal.body');
         await waitFor(() => expect(screen.getByTestId('plugin-P2')).toBeDefined());
         expect(screen.getByTestId('native-R')).toBeDefined();
+    });
+
+    it('answers size ownership from each runtime own store, for bundled and plugin renderers', async () => {
+        // #166 is per daemon: an embedded remote pane asks the store that actually feeds it, so
+        // one window can own its local PTYs while mirroring a remote one.
+        const mirroring = runtime('mirrored-terminal.test', 'other-window', 'this-window');
+        render(<><TerminalFeaturePane {...props} /><TerminalFeaturePane {...props} runtime={mirroring} paneID="R" /></>);
+        expect(screen.getByTestId('native-P').dataset.owns).toBe('true');
+        expect(screen.getByTestId('native-R').dataset.owns).toBe('false');
+        choose('sample.terminal.body');
+        await waitFor(() => expect(screen.getByTestId('plugin-P').dataset.owns).toBe('true'));
+        fireEvent.change(screen.getAllByLabelText('Terminal renderer')[1]!, { target: { value: 'sample.terminal.body' } });
+        await waitFor(() => expect(screen.getByTestId('plugin-R').dataset.owns).toBe('false'));
     });
 });

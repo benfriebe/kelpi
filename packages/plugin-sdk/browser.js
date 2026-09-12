@@ -273,6 +273,19 @@
         if (![cols, rows].every(value => Number.isSafeInteger(value) && value > 0 && value <= 65535)) throw new Error('Terminal dimensions must be integers from 1 through 65535.');
     };
     const isTerminalBytes = data => ArrayBuffer.isView(data) && Object.prototype.toString.call(data) === '[object Uint8Array]';
+    // A replay's stated grid, normalised to the documented `TerminalGrid | null`. `undefined`
+    // becomes null, the same "keep your current grid" answer a daemon without a replay grid
+    // produces; anything else malformed returns the INVALID marker, because a wrong grid
+    // silently mis-parses every later replay. This runtime is inlined by the host itself, so
+    // the fill is defence against a malformed host message, not against version skew.
+    const INVALID_GRID = Symbol('invalid-grid');
+    const terminalGrid = value => {
+        if (value === null || value === undefined) return null;
+        if (typeof value !== 'object' || Array.isArray(value)) return INVALID_GRID;
+        const { cols, rows } = value;
+        if (![cols, rows].every(size => Number.isSafeInteger(size) && size > 0 && size <= 65535)) return INVALID_GRID;
+        return { cols, rows };
+    };
     const terminalBytes = data => {
         if (typeof data !== 'string' && !isTerminalBytes(data)) throw new Error('Terminal input must be a string or Uint8Array.');
         // Check before cloning, including a cheap UTF-16 lower bound before UTF-8 encoding.
@@ -350,9 +363,23 @@
         const frame = data.frame;
         if (!frame || !['replay', 'output', 'resync', 'modes', 'exit', 'presentation'].includes(frame.type)
             || (['replay', 'output'].includes(frame.type) && !isTerminalBytes(frame.data))) return terminalError(entry, 'Invalid terminal frame.');
+        // The two geometry fields are completed here rather than in the renderer, so a plugin
+        // always reads the documented shape: a replay carries `grid` (null when unstated) and
+        // a presentation carries `ownsSize` (true, the answer a single-window session gives,
+        // when the message omits it).
+        let delivered = frame;
+        if (frame.type === 'replay') {
+            const grid = terminalGrid(frame.grid);
+            if (grid === INVALID_GRID) return terminalError(entry, 'Invalid terminal replay grid.');
+            if (grid !== frame.grid) delivered = { ...frame, grid };
+        } else if (frame.type === 'presentation') {
+            const value = frame.value;
+            if (!value || typeof value !== 'object' || Array.isArray(value) || !['boolean', 'undefined'].includes(typeof value.ownsSize)) return terminalError(entry, 'Invalid terminal presentation.');
+            if (value.ownsSize === undefined) delivered = { ...frame, value: { ...value, ownsSize: true } };
+        }
         entry.generation = data.generation; entry.sequence = data.sequence; entry.processing = true;
         entry.activeFrame = { type: frame.type, generation: data.generation, sequence: data.sequence };
-        const delivery = Promise.resolve().then(() => { if (!entry.disposed) return entry.onFrame(frame); });
+        const delivery = Promise.resolve().then(() => { if (!entry.disposed) return entry.onFrame(delivered); });
         let consumed = false;
         try {
             await Promise.race([delivery, entry.cancelled]);

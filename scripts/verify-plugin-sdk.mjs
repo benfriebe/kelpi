@@ -31,12 +31,23 @@ export function activate(api: BackendAPI) {
     api.browser.attach({});
     return () => { void state; };
 }`,
-        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type TerminalSession } from '@kelpi/plugin-sdk';
+        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
 const api: ViewAPI = getKelpi();
+let mirror: TerminalGrid | null = null;
 async function mount(element: HTMLElement) {
     await api.ready;
     const browser: BrowserSurface = await api.browser.attach({ element, onPresentation() {} });
-    const terminal: TerminalSession = await api.terminal.attach({ cols: 80, rows: 24, onFrame() {} });
+    // Replay geometry and size ownership are part of the published surface: only a replay
+    // states a grid, and every presentation states ownership.
+    const terminal: TerminalSession = await api.terminal.attach({ cols: 80, rows: 24, onFrame(frame) {
+        if (frame.type === 'replay') mirror = frame.grid;
+        else if (frame.type === 'presentation' && frame.value.ownsSize) mirror = null;
+        // @ts-expect-error Only a replay frame states the grid it was serialised at.
+        else if (frame.type === 'output') void frame.grid;
+        // A mirror sizes the EMULATOR; resize() still reports the measured box, never the mirror.
+        if (mirror !== null) void mirror.cols;
+        terminal.resize(80, 24);
+    } });
     await api.ui.showNotification({ message: 'External plugin ready' });
     browser.dispose(); terminal.dispose();
 }

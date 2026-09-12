@@ -64,7 +64,7 @@ function harness(lateResyncNotice = false) {
 
     const frames: RendererFrame[] = [];
     const scope = createTerminalScope({
-        paneID: PANE_A, pty: client, presentation: { focused: true, visible: true }, fail,
+        paneID: PANE_A, pty: client, presentation: { focused: true, visible: true, ownsSize: true }, fail,
         send(message) { if (message.type === 'terminal-frame') frames.push(message); },
     });
     disposals.push(() => { scope.dispose(); client.dispose(); connection.close(); hub.close(); });
@@ -91,7 +91,7 @@ function harness(lateResyncNotice = false) {
         throw new Error('Renderer did not finish consuming its frames');
     };
     return {
-        daemon, client, process, fail, frames, consume, drain,
+        daemon, client, process, term, fail, frames, consume, drain,
         get screen() { return screen; },
         get next() { return frames[consumed]; },
         async attach() {
@@ -136,7 +136,7 @@ describe('daemon stream through the selected terminal renderer', () => {
         await settle();
         expect(h.consume().frame).toEqual({ type: 'resync', reason: 'flow-control-drop' });
         await settle();
-        expect(h.next?.frame).toEqual({ type: 'replay', data: bytes('bootaaaabbbbcccc') });
+        expect(h.next?.frame).toEqual({ type: 'replay', data: bytes('bootaaaabbbbcccc'), grid: { cols: 80, rows: 24 } });
         expect(h.screen).toBe('bootaaaa');
         expect(h.credits()).toEqual([4, 4]);
         expect(h.daemon.stats(PANE_A)).toMatchObject({ unacked: 16, paused: true, resyncPending: false });
@@ -170,6 +170,27 @@ describe('daemon stream through the selected terminal renderer', () => {
         h.output('tail'); await h.drain();
         expect(h.screen).toBe('bootaaaa');
         expect(h.daemon.stats(PANE_A)?.queuedBytes).toBe(4);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+    it('states the daemon snapshot grid on each replay without charging it any credit', async () => {
+        const h = harness();
+        await h.attach();
+        expect(h.frames.find(message => message.frame.type === 'replay')?.frame)
+            .toEqual({ type: 'replay', data: bytes('boot'), grid: { cols: 80, rows: 24 } });
+
+        // Another client owns sizing: the daemon serialises at ITS grid, and the renderer is
+        // told which one, because these bytes are only parseable at it.
+        h.term.setGrid(PANE_A, 40, 12);
+        h.output('aaaa'); h.output('bbbb'); h.output('cccc');
+        await h.drain();
+        const replays = h.frames.flatMap(message => message.frame.type === 'replay' ? [message.frame] : []);
+        expect(replays.map(frame => frame.grid)).toEqual([{ cols: 80, rows: 24 }, { cols: 40, rows: 12 }]);
+        expect(h.screen).toBe('bootaaaabbbbcccc');
+        // The grid rode the replay's own acknowledged delivery: credit is still bytes only.
+        const delivered = h.frames.reduce((total, message) =>
+            total + (message.frame.type === 'replay' || message.frame.type === 'output' ? message.frame.data.byteLength : 0), 0);
+        expect(h.credits().reduce((total, credit) => total + (credit ?? 0), 0)).toBe(delivered);
+        expect(h.client.stats(PANE_A)).toMatchObject({ unacked: 0, pendingAck: 0 });
         expect(h.fail).not.toHaveBeenCalled();
     });
 });

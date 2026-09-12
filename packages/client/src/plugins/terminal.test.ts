@@ -1,9 +1,11 @@
-import { PTY_FRAME_TYPES, decodeAckPayload, decodePtyFrame, encodePtyFrame, type PtyFrameType } from '@kelpi/protocol';
+import { PTY_FRAME_TYPES, decodeAckPayload, decodePtyFrame, encodePtyFrame, encodeResizePayload, type PtyFrameType } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PtyClient } from '../connection/pty';
 import { KelpiConnection } from '../connection/socket';
 import { completeHandshake, createFakeSocketFactory } from '../connection/testing';
+import type { TerminalPaneProps } from '../terminal/TerminalPane';
 import { createTerminalScope, TERMINAL_SCOPE_LIMITS, type TerminalHostMessage, type TerminalPresentation } from './terminal';
+import { terminalPresentation } from './terminal-pane';
 
 const PANE = '11111111-2222-4333-8444-555555555555';
 const encoder = new TextEncoder();
@@ -12,7 +14,10 @@ const disposals: (() => void)[] = [];
 type FrameMessage = Extract<TerminalHostMessage, { type: 'terminal-frame' }>;
 const tick = async (): Promise<void> => { await Promise.resolve(); };
 
-function harness(presentation: TerminalPresentation = { focused: true, visible: true }) {
+function harness(presentation: Partial<TerminalPresentation> = {}) {
+    // #166 defaults: a visible renderer whose window sizes the PTY, which is what a
+    // single-window session reports forever. Tests name only what they change.
+    let view: TerminalPresentation = { focused: true, visible: true, ownsSize: true, ...presentation };
     const sockets = createFakeSocketFactory();
     const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws', token: 'test', socketFactory: sockets.factory,
@@ -24,7 +29,7 @@ function harness(presentation: TerminalPresentation = { focused: true, visible: 
     const fail = vi.fn();
     const onResize = vi.fn();
     const scope = createTerminalScope({
-        paneID: PANE, pty, presentation, send: message => messages.push(message), fail, onResize,
+        paneID: PANE, pty, presentation: view, send: message => messages.push(message), fail, onResize,
         frameTimeoutMs: 1000, actionTimeoutMs: 500,
     });
     disposals.push(() => { scope.dispose(); pty.dispose(); connection.close(); });
@@ -35,7 +40,14 @@ function harness(presentation: TerminalPresentation = { focused: true, visible: 
     return {
         scope, pty, connection, sockets, messages, fail, frames, lastFrame, onResize, ack, wireFrames,
         attach(session = 'renderer-1') { return scope.attach({ session, cols: 120, rows: 40 }); },
+        /** Change part of the presentation, as assembly does when one prop moves. */
+        present(changes: Partial<TerminalPresentation>) { view = { ...view, ...changes }; scope.update(view); },
+        resizes() { return sockets.last().messages().filter(message => message['type'] === 'resize-pane'); },
         json(type: string) { return sockets.last().messages().filter(message => message['type'] === type); },
+        /** The daemon's `replayGrid` frame: the grid the replay BEHIND it was serialised at. */
+        grid(cols: number, rows: number) {
+            sockets.last().emitBinary(encodePtyFrame(PTY_FRAME_TYPES.replayGrid, PANE, encodeResizePayload(cols, rows))!);
+        },
         output(type: PtyFrameType, data: string | Uint8Array) {
             sockets.last().emitBinary(encodePtyFrame(type, PANE, typeof data === 'string' ? encoder.encode(data) : data)!);
         },
@@ -157,11 +169,11 @@ describe('selected terminal renderer transport', () => {
         expect(h.json('resize-pane')).toEqual([]);
         h.sockets.last().serverClose(); vi.advanceTimersByTime(10); completeHandshake(h.sockets.last());
         expect(h.json('attach-pane')).toEqual([{ type: 'attach-pane', paneID: PANE }]);
-        h.scope.update({ focused: true, visible: true });
+        h.present({ focused: true, visible: true });
         expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40 }]);
         await h.drain();
         const count = h.messages.length;
-        h.scope.update({ focused: true, visible: true }); await tick();
+        h.present({ focused: true, visible: true }); await tick();
         expect(h.messages).toHaveLength(count);
     });
 
@@ -319,9 +331,11 @@ describe('selected terminal renderer transport', () => {
         expect(() => h.attach()).toThrow('Invalid');
         h.attach('second');
         h.scope.receive({ type: 'terminal-input', session: 'renderer-1', data: encoder.encode('stale'), direct: false });
+        h.scope.receive({ type: 'terminal-resize', session: 'renderer-1', cols: 10, rows: 5 });
         h.scope.receive({ type: 'terminal-detach', session: 'renderer-1' });
         expect(h.scope.attached).toBe(true);
         expect(h.wireFrames()).toEqual([]);
+        expect(h.json('resize-pane')).toEqual([]);
         await h.drain();
     });
 
@@ -401,7 +415,7 @@ describe('selected terminal renderer transport', () => {
         h.ack(held);
         await h.drain();
         expect(h.frames().slice(-2).map(({ frame }) => frame.type === 'replay' ? { ...frame, data: decoder.decode(frame.data) } : frame)).toEqual([
-            { type: 'replay', data: 'new screen' }, { type: 'modes', modes }
+            { type: 'replay', data: 'new screen', grid: null }, { type: 'modes', modes }
         ]);
         expect(h.credits()).toEqual([10, 10]);
         expect(h.fail).not.toHaveBeenCalled();
@@ -467,5 +481,139 @@ describe('selected terminal renderer transport', () => {
         expect(h.json('resize-pane')).toEqual([]);
         expect(h.fail).not.toHaveBeenCalled();
         native.unsubscribe();
+    });
+    it('states the daemon grid on the replay frame it belongs to, at no extra credit', async () => {
+        const h = harness(); h.attach();
+        h.grid(40, 12);
+        h.output(PTY_FRAME_TYPES.replay, 'screen');
+        await tick(); h.ack(); await tick();
+        expect(h.lastFrame().frame).toEqual({ type: 'replay', data: expect.any(Uint8Array), grid: { cols: 40, rows: 12 } });
+        expect(decoder.decode((h.lastFrame().frame as { data: Uint8Array }).data)).toBe('screen');
+        expect(h.credits()).toEqual([]);
+        h.ack(); await tick();
+        // The grid rode that one delivery: its acknowledgement credits the bytes and nothing else.
+        expect(h.credits()).toEqual([6]);
+        // A daemon that states no grid says "keep the grid you are at", not 80x24.
+        h.output(PTY_FRAME_TYPES.replay, 'older daemon');
+        await tick(); h.ack(); await tick();
+        expect(h.lastFrame().frame).toEqual({ type: 'replay', data: expect.any(Uint8Array), grid: null });
+        h.ack(); await tick();
+        expect(h.credits()).toEqual([6, 12]);
+        expect(h.pty.stats(PANE)?.unacked).toBe(0);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('forces one PTY report when a visible view takes size control', async () => {
+        const h = harness({ ownsSize: false }); h.attach();
+        h.grid(40, 12); h.output(PTY_FRAME_TYPES.replay, 'owner screen'); await h.drain();
+        expect(h.json('resize-pane')).toEqual([]);
+        h.present({ ownsSize: true });
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }]);
+        // Neither later presentation churn nor a later replay is another claim.
+        h.present({ focused: false });
+        h.output(PTY_FRAME_TYPES.replay, 'own screen'); await h.drain();
+        expect(h.json('resize-pane')).toHaveLength(1);
+        expect(h.frames().at(-1)?.frame).toMatchObject({ type: 'replay', grid: null });
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('holds a claim taken while hidden until the first reveal carries it', async () => {
+        const h = harness({ focused: false, visible: false, ownsSize: false }); h.attach();
+        expect(h.json('attach-pane')).toEqual([{ type: 'attach-pane', paneID: PANE }]);
+        h.present({ ownsSize: true });
+        expect(h.json('resize-pane')).toEqual([]);
+        h.present({ focused: true, visible: true });
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }]);
+        // The claim is spent: an ordinary hide/reveal cycle repeats nothing.
+        h.present({ visible: false }); h.present({ visible: true });
+        expect(h.json('resize-pane')).toHaveLength(1);
+        await h.drain();
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('asks for one re-seed only when a replay landed at a grid this renderer is not at', async () => {
+        const stale = harness(); stale.attach();
+        stale.grid(40, 12); stale.output(PTY_FRAME_TYPES.replay, 'early'); await stale.drain();
+        stale.present({ ownsSize: false });
+        expect(stale.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }]);
+        stale.present({ focused: false });
+        expect(stale.json('resize-pane')).toHaveLength(1);
+
+        const matching = harness(); matching.attach();
+        matching.grid(120, 40); matching.output(PTY_FRAME_TYPES.replay, 'own'); await matching.drain();
+        matching.present({ ownsSize: false });
+        expect(matching.json('resize-pane')).toEqual([]);
+
+        const silent = harness(); silent.attach();
+        silent.output(PTY_FRAME_TYPES.replay, 'own'); await silent.drain();
+        silent.present({ ownsSize: false });
+        expect(silent.json('resize-pane')).toEqual([]);
+        for (const h of [stale, matching, silent]) expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('keeps a hidden view from reporting geometry through either hand-off', async () => {
+        const h = harness({ focused: false, visible: false }); h.attach();
+        h.grid(40, 12); h.output(PTY_FRAME_TYPES.replay, 'owner screen'); await h.drain();
+        for (const ownsSize of [false, true, false]) { h.present({ ownsSize }); await h.drain(); }
+        expect(h.json('resize-pane')).toEqual([]);
+        // Every hand-off still reaches the renderer; only the PTY report is withheld.
+        expect(h.frames().filter(message => message.frame.type === 'presentation')
+            .map(message => (message.frame as { value: { ownsSize: boolean } }).value.ownsSize).slice(-3)).toEqual([false, true, false]);
+        // Revealed as a non-owner: the measurement is still reported, without the spent claim.
+        h.present({ focused: true, visible: true });
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40 }]);
+        await h.drain();
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('spends one forced report when size control and a reveal arrive in the same update', async () => {
+        const h = harness({ focused: false, visible: false, ownsSize: false }); h.attach();
+        h.grid(40, 12); h.output(PTY_FRAME_TYPES.replay, 'owner screen'); await h.drain();
+        h.present({ focused: true, visible: true, ownsSize: true });
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }]);
+        h.present({ visible: false }); h.present({ visible: true });
+        expect(h.json('resize-pane')).toHaveLength(1);
+        await h.drain();
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('keeps the last stated grid across an unstated replay and forgets it with the attachment', async () => {
+        const h = harness(); h.attach();
+        h.grid(40, 12); h.output(PTY_FRAME_TYPES.replay, 'stated'); await h.drain();
+        // A daemon that states nothing does not erase what the last snapshot was serialised at.
+        h.output(PTY_FRAME_TYPES.replay, 'unstated'); await h.drain();
+        h.present({ ownsSize: false });
+        expect(h.json('resize-pane')).toEqual([{ type: 'resize-pane', paneID: PANE, cols: 120, rows: 40, force: true }]);
+        // Detach clears both the stated grid and any pending claim: a new attachment starts clean.
+        h.present({ ownsSize: true, visible: false });
+        h.scope.receive({ type: 'terminal-detach', session: 'renderer-1' });
+        h.scope.attach({ session: 'renderer-2', cols: 120, rows: 40 });
+        h.present({ visible: true });
+        expect(h.json('resize-pane').at(-1)).not.toHaveProperty('force');
+        h.present({ ownsSize: false });
+        expect(h.json('resize-pane').filter(message => message['force'] === true)).toHaveLength(1);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+
+    it('never reports geometry for an unattached or disposed renderer', () => {
+        const h = harness({ ownsSize: false });
+        h.present({ ownsSize: true });
+        expect(h.json('resize-pane')).toEqual([]);
+        h.attach(); h.scope.dispose();
+        h.present({ ownsSize: false });
+        expect(h.json('resize-pane')).toEqual([]);
+        expect(h.fail).not.toHaveBeenCalled();
+    });
+});
+
+describe('terminal presentation crossing the view boundary', () => {
+    const pane = { paneID: PANE, ptyApi: { subscribe: vi.fn() } as unknown as TerminalPaneProps['ptyApi'], focused: true, visible: false };
+    it('forwards size ownership, defaulting an omitted owner to this window', () => {
+        expect(terminalPresentation(pane)).toMatchObject({ focused: true, visible: false, ownsSize: true, reveal: null });
+        expect(terminalPresentation({ ...pane, ownsSize: false }).ownsSize).toBe(false);
+        expect(terminalPresentation({ ...pane, ownsSize: true }).ownsSize).toBe(true);
+        // Absent optional fields stay absent; ownsSize is always stated.
+        expect(Object.keys(terminalPresentation(pane))).toContain('ownsSize');
+        expect(Object.keys(terminalPresentation(pane))).not.toContain('fontSize');
     });
 });

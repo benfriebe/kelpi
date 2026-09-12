@@ -119,11 +119,12 @@ presentation and host actions such as live selection and phone keys. See the
 [Terminal Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/terminal-lab). Existing terminal commands and watches
 remain available to backend and ordinary pane plugins.
 
-Replay frames currently contain bytes without the native replay grid, and terminal
-presentation does not expose size ownership. A replacement therefore cannot yet reproduce
-the bundled renderer's owner-grid mirroring through this API. Terminal Lab fits its own
-measured box; see the [geometry limitation](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-terminals.md#replay-geometry-limitation)
-and the planned SDK follow-up.
+Replay frames state the grid the snapshot was serialised at (`grid`, null when the daemon
+stated none) and presentation states whether this window sizes the process (`ownsSize`). A
+replacement therefore reproduces the bundled renderer's owner-grid mirroring: resize the
+emulator to a replay's grid before writing its bytes while `ownsSize` is false, keep reporting
+your own measured box through `resize`, and leave the two size-control hand-offs to the host.
+See [replay geometry and size ownership](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-terminals.md#replay-geometry-and-size-ownership).
 
 ## Browser renderers
 

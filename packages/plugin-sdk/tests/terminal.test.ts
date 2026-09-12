@@ -98,7 +98,7 @@ describe('browser terminal renderer sessions', () => {
         h.connect(); await tick();
         const call = h.sent('call')[0];
         expect(call).toMatchObject({ method: 'terminal.attach', args: { session: expect.any(String), cols: 96, rows: 30 } });
-        const replay: TerminalFrame = { type: 'replay', data: new Uint8Array([27, 91, 50, 74]) };
+        const replay: TerminalFrame = { type: 'replay', data: new Uint8Array([27, 91, 50, 74]), grid: null };
         await h.frame(call.args.session, 1, replay);
         expect(consumed).toHaveBeenCalledExactlyOnceWith(replay);
         expect(h.sent('terminal-ack')).toEqual([{ type: 'terminal-ack', session: call.args.session, generation: 1, sequence: 1 }]);
@@ -125,7 +125,7 @@ describe('browser terminal renderer sessions', () => {
         h.port.postMessage.mockImplementation(message => {
             if (message.type === 'terminal-ack' && message.sequence === 1) nextDelivery = h.frame(session.id, 2, { type: 'output', data: new Uint8Array([10]) });
         });
-        const firstDelivery = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([27]) });
+        const firstDelivery = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([27]), grid: null });
         await tick();
         expect(consumed).toEqual(['replay']); expect(h.sent('terminal-ack')).toEqual([]);
         held.resolve(); await firstDelivery; await nextDelivery;
@@ -138,14 +138,14 @@ describe('browser terminal renderer sessions', () => {
         const h = harness(); h.connect(); const consumed = vi.fn();
         const session = await h.attach({ onFrame: consumed });
         const frames: TerminalFrame[] = [
-            { type: 'replay', data: new Uint8Array([27, 91]) },
+            { type: 'replay', data: new Uint8Array([27, 91]), grid: { cols: 80, rows: 24 } },
             { type: 'output', data: new Uint8Array([51, 49, 109, 240, 159]) },
             { type: 'output', data: new Uint8Array([140, 138]) },
             { type: 'resync', reason: 'renderer fell behind' },
-            { type: 'replay', data: new Uint8Array([27, 99]) },
+            { type: 'replay', data: new Uint8Array([27, 99]), grid: null },
             { type: 'modes', modes: { applicationCursorKeys: true, bracketedPaste: true, mouseTracking: 'drag', mouseFormat: 'sgr', kittyKeyboardFlags: 3 } },
             { type: 'exit', exitCode: null, signal: 'SIGTERM' },
-            { type: 'presentation', value: { focused: true, visible: false, theme: { foreground: '#fff' }, fontSize: 14, reveal: null } },
+            { type: 'presentation', value: { focused: true, visible: false, ownsSize: false, theme: { foreground: '#fff' }, fontSize: 14, reveal: null } },
         ];
         for (const [index, frame] of frames.entries()) await h.frame(session.id, index + 1, frame, index < 3 ? 1 : 2);
         await h.frame(session.id, 8, frames[0]!, 2); // Duplicate already consumed.
@@ -202,7 +202,7 @@ describe('browser terminal renderer sessions', () => {
             expect(vi.getTimerCount()).toBe(1);
             h.pagehide(); expect(await failure).toMatchObject({ message: expect.stringContaining('disposed') });
             expect(vi.getTimerCount()).toBe(0);
-            await h.reply(call); await h.frame(call.args.session, 1, { type: 'replay', data: new Uint8Array([1]) });
+            await h.reply(call); await h.frame(call.args.session, 1, { type: 'replay', data: new Uint8Array([1]), grid: null });
             expect(h.sent('terminal-detach')).toHaveLength(1); expect(h.sent('terminal-ack')).toEqual([]);
         } finally { vi.useRealTimers(); }
     });
@@ -212,7 +212,7 @@ describe('browser terminal renderer sessions', () => {
         const held = deferred(), selected = deferred<string>();
         const frames = vi.fn(() => held.promise), actions = vi.fn(() => selected.promise);
         const session = await h.attach({ onFrame: frames, onAction: actions });
-        const delivery = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([1]) });
+        const delivery = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([1]), grid: null });
         const selection = h.action(session.id, 'selection', { type: 'selection' });
         await tick(); expect(frames).toHaveBeenCalledOnce(); expect(actions).toHaveBeenCalledOnce();
         h.pagehide(); await Promise.all([delivery, selection]);
@@ -234,7 +234,7 @@ describe('browser terminal renderer sessions', () => {
     it('rejects an overlapping host frame instead of growing an independent output queue', async () => {
         const h = harness(); h.connect(); const consumed = vi.fn(() => new Promise<void>(() => {}));
         const session = await h.attach({ onFrame: consumed });
-        const first = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([1]) }); await tick();
+        const first = h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([1]), grid: null }); await tick();
         await h.frame(session.id, 2, { type: 'resync', reason: 'superseded' }, 2); await first; await tick();
         expect(consumed).toHaveBeenCalledOnce(); expect(h.sent('terminal-ack')).toEqual([]);
         expect(h.sent('view-error')).toEqual([{ type: 'view-error', message: expect.stringContaining('previous frame was consumed') }]);
@@ -274,8 +274,8 @@ describe('browser terminal renderer sessions', () => {
         } });
         expect(() => session.writeDirect('\x1b[0n', { response: true })).toThrow('active replay or output callback');
         for (const options of [null, true, [], { response: 'true' }]) expect(() => session.writeDirect('x', options as any)).toThrow('must be a boolean');
-        await h.frame(session.id, 1, { type: 'presentation', value: { focused: false, visible: false } });
-        const replay = h.frame(session.id, 2, { type: 'replay', data: new Uint8Array([27, 91, 53, 110]) });
+        await h.frame(session.id, 1, { type: 'presentation', value: { focused: false, visible: false, ownsSize: true } });
+        const replay = h.frame(session.id, 2, { type: 'replay', data: new Uint8Array([27, 91, 53, 110]), grid: null });
         await tick();
         expect(h.sent('terminal-input')).toEqual([{ type: 'terminal-input', session: session.id, data: new TextEncoder().encode('\x1b[0n'), direct: true, response: true, generation: 1, sequence: 2 }]);
         expect(h.sent('terminal-ack').map(message => message.sequence)).toEqual([1]);
@@ -376,7 +376,7 @@ describe('browser terminal renderer sessions', () => {
         let respondToHiddenQuery: (() => void) | undefined;
         const native = { paneID: 'pane', write: vi.fn(), writeDirect: vi.fn(), resize: vi.fn(), ack: vi.fn(), unacked: 0, unsubscribe: vi.fn() };
         const scope = createTerminalScope({
-            paneID: 'pane', presentation: { focused: true, visible: true }, fail: failed,
+            paneID: 'pane', presentation: { focused: true, visible: true, ownsSize: true }, fail: failed,
             pty: { subscribe: (_paneID, value) => {
                 subscription = value;
                 value.onReplay?.(new Uint8Array([27, 91, 50, 74]));
@@ -419,7 +419,7 @@ describe('browser terminal renderer sessions', () => {
             expect([...native.write.mock.calls[0]![0]]).toEqual([65, 66]);
             expect([...native.writeDirect.mock.calls[0]![0]]).toEqual([...new TextEncoder().encode('\x1b[0n')]);
             expect(native.resize).toHaveBeenCalledWith(100, 30); expect(scope.cellHeight).toBe(17.5);
-            scope.update({ focused: false, visible: false });
+            scope.update({ focused: false, visible: false, ownsSize: true });
             session.write('hidden'); session.resize(140, 40);
             expect(native.write).toHaveBeenCalledOnce(); expect(native.resize).toHaveBeenCalledOnce();
             respondToHiddenQuery = () => {
@@ -437,8 +437,35 @@ describe('browser terminal renderer sessions', () => {
         } finally { scope.dispose(); h.pagehide(); held.resolve(); }
     });
 
+    it('completes replay geometry and size ownership for the renderer', async () => {
+        const h = harness(); h.connect(); const consumed: TerminalFrame[] = [];
+        const session = await h.attach({ onFrame: frame => { consumed.push(frame); } });
+        await h.frame(session.id, 1, { type: 'replay', data: new Uint8Array([27]), grid: { cols: 40, rows: 12 } });
+        // The runtime is inlined by the host, so a message without either field is a malformed
+        // host message rather than version skew; the documented shape is still completed here.
+        await h.receive({ type: 'terminal-frame', session: session.id, generation: 1, sequence: 2,
+            frame: { type: 'replay', data: new Uint8Array([28]) } });
+        await h.receive({ type: 'terminal-frame', session: session.id, generation: 1, sequence: 3,
+            frame: { type: 'presentation', value: { focused: true, visible: true } } });
+        await h.frame(session.id, 4, { type: 'presentation', value: { focused: true, visible: true, ownsSize: false } });
+        expect(consumed).toEqual([
+            { type: 'replay', data: new Uint8Array([27]), grid: { cols: 40, rows: 12 } },
+            { type: 'replay', data: new Uint8Array([28]), grid: null },
+            { type: 'presentation', value: { focused: true, visible: true, ownsSize: true } },
+            { type: 'presentation', value: { focused: true, visible: true, ownsSize: false } },
+        ]);
+        expect(h.sent('terminal-ack').map(message => message.sequence)).toEqual([1, 2, 3, 4]);
+        session.dispose();
+    });
+
     it.each([
         { generation: 0, sequence: 1, frame: { type: 'resync', reason: 'x' } },
+        { generation: 1, sequence: 1, frame: { type: 'replay', data: new Uint8Array([27]), grid: { cols: 0, rows: 24 } } },
+        { generation: 1, sequence: 1, frame: { type: 'replay', data: new Uint8Array([27]), grid: { cols: 80 } } },
+        { generation: 1, sequence: 1, frame: { type: 'replay', data: new Uint8Array([27]), grid: { cols: 80.5, rows: 24 } } },
+        { generation: 1, sequence: 1, frame: { type: 'replay', data: new Uint8Array([27]), grid: [80, 24] } },
+        { generation: 1, sequence: 1, frame: { type: 'presentation', value: { focused: true, visible: true, ownsSize: 'yes' } } },
+        { generation: 1, sequence: 1, frame: { type: 'presentation', value: null } },
         { generation: 1, sequence: Infinity, frame: { type: 'resync', reason: 'x' } },
         { generation: 1, sequence: 1, frame: { type: 'output', data: [1] } },
         { generation: 1, sequence: 1, frame: { type: 'unknown' } },

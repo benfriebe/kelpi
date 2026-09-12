@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Interaction Lab palette</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="palette">
+<div id="backdrop" class="backdrop" hidden>
+  <!-- `data-testid` is set only while a session is drawn, so its presence is the signal. -->
+  <section id="panel" class="panel" role="dialog" aria-label="Interaction Lab palette">
+    <div class="head">
+      <span class="brand">INTERACTION LAB</span>
+      <span id="scope" class="meta"></span>
+      <span class="spacer"></span>
+      <span id="remote" class="badge" hidden>Remote workspace selected</span>
+    </div>
+    <!-- maxlength is the presenter's query limit: a longer one would be refused by the host. -->
+    <input id="query" data-testid="lab-palette-input" type="text" maxlength="1024" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Interaction Lab palette query" placeholder="Search workspaces, panes and commands">
+    <ul id="rows" class="rows" role="listbox" aria-label="Interaction Lab palette results"></ul>
+    <p id="empty" class="text" hidden>No results</p>
+    <div class="foot"><span id="count"></span><span class="spacer"></span><span id="error" role="alert" hidden></span></div>
+  </section>
+</div>
+<script type="module" src="palette.js"></script>
+</body></html>

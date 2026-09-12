@@ -118,9 +118,10 @@ function setup(): Harness {
     /**
      * The issue is about a drop while the app is IDLE, and an idle client has no command in
      * flight. A command that is still outstanding when the socket goes rejects, and a rejected
-     * command raises a toast - which registers as a modal surface (H1) and legitimately parks
-     * every web pane's view for six seconds. That park is correct behaviour and would mask the
-     * defect entirely, so the harness settles the handshake's commands first.
+     * command raises a toast - which registers a floating surface (N26) that jsdom cannot
+     * measure, and an unmeasured box legitimately parks every web pane's view for six seconds.
+     * That park is correct behaviour and would mask the defect entirely, so the harness settles
+     * the handshake's commands first.
      */
     const settle = (): void => {
         const socket = sockets.last();

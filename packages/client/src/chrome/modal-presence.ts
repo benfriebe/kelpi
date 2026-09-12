@@ -88,8 +88,11 @@ function subscribe(listener: () => void): () => void {
 /**
  * Declare "this component is an app-modal surface" for as long as it is mounted.
  *
- * `active` exists for the surfaces whose MOUNT is unconditional but whose paint is not —
- * `ToastStack` is always in the tree and draws only while it holds a toast.
+ * `active` exists for the surfaces whose MOUNT is unconditional but whose paint is not — `App`'s
+ * create sheet, `interaction/InteractionHost.tsx` and `phone/ui.tsx` are each always in the tree
+ * and own the window only while they are actually drawing something. (`ToastStack` was the
+ * original example and has since moved to `useOverlayPresence` below: a corner box parks the panes
+ * it covers, and a window modal is also what a shared prompt stands down for — §N26.)
  *
  * A LAYOUT effect, not a passive one (§N26): the registration has to land before the browser
  * paints the frame the surface first appears in, or that frame is guaranteed to show the dialog

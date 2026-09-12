@@ -113,6 +113,24 @@ describe('shared UI through the isolated view bridge', () => {
         } finally { h.dispose(); }
     });
 
+    /**
+     * A presenter is an overlay, not a pane body. The wrapper's surface fill would paint the window
+     * out behind the palette card or the prompt - the frame's own backdrop would sit on a solid
+     * sheet - so a granted view gets no fill. A pane view keeps it, or the grid shows through while
+     * the view loads.
+     */
+    it('paints no surface behind a granted presenter, and still paints one behind a pane view', async () => {
+        const presenter = fakePresenter();
+        const granted = await setup({ presenter: presenter.host, placements: ['pane', 'interaction.prompts'] });
+        try {
+            expect(screen.getByTestId('plugin-view-sample.prompts.view').style.background).toBe('');
+        } finally { granted.dispose(); }
+        const pane = await setup();
+        try {
+            expect(screen.getByTestId('plugin-view-sample.prompts.view').style.background).not.toBe('');
+        } finally { pane.dispose(); }
+    });
+
     it('refuses presenter calls from a view that was granted nothing, without reaching the daemon', async () => {
         const h = await setup();
         try {

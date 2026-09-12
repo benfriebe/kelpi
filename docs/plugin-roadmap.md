@@ -83,8 +83,7 @@ The SDK gained two additive fields; plugin API version and wire protocol generat
 
 ## Following phase: replaceable palette and shared prompts
 
-**Status: steps 1 and 2 implemented on `feature/plugin-interaction-contracts` (based on the
-terminal geometry branch), awaiting review; step 3 not started.** The palette session and shared
+**Status: all three steps implemented on stacked branches (`feature/plugin-interaction-contracts`, `feature/plugin-interaction-presenters`, `feature/plugin-interaction-lab`), awaiting review and merge.** The palette session and shared
 prompts are owned by one window interaction surface
 ([contracts](../packages/client/src/interaction/contract.ts), [host](../packages/client/src/interaction/InteractionHost.tsx)),
 with the native palette commands supplied by a
@@ -107,11 +106,12 @@ The review sequence is:
    native browser parking and a reachable bundled recovery path when a presenter fails.
 3. **Interaction Lab and validation.** Add an external example that replaces the palette and
    shared prompts, including requests from a second plugin. Exercise selection, caller and
-   presenter reload/disable, disconnect, cancellation and fallback in real instances. Selectable
-   notification presentation belongs to this step: step 2 keeps the notification stack bundled.
+   presenter reload/disable, disconnect, cancellation and fallback in real instances.
 
-Steps 1 and 2 are implemented and tested on the branch; the phase is marked merged only once
-its PRs merge. The two presenter placements are additive, so plugin API version and wire
+All three steps are implemented and tested on stacked branches; the phase is marked merged only
+once its PRs merge. Selectable notification presentation is not part of this phase: the
+notification stack stays bundled, recorded as remaining scope below. The two presenter
+placements are additive, so plugin API version and wire
 protocol generation are unchanged. Selection is Settings-only: both placements are discoverable
 in `ui.getWorkbench().slots` and refused by `ui.selectView`. Password inputs and the notification
 stack stay with the bundled presenter whatever is selected; a selected prompts presenter draws
@@ -126,6 +126,7 @@ Phone emulation and physical-device checks must be identified separately in the 
 
 | Work | Current state | Intended next result |
 | --- | --- | --- |
+| Selectable notification presentation | Plugin notifications and native toasts render in two bundled stacks; a prompts presenter receives an always-empty `notifications` field. | A presenter-declared box size and overlay rect for a corner stack, or a merged notification model, before a plugin can draw notifications. |
 | Full Settings presentation | Plugins have schema-driven settings and a `settings` view slot inside Plugins; the application Settings shell remains native. | A shared settings model and selectable presentation, preserving validation, routing, drafts and access to plugin recovery. |
 | Remaining UI composition | Native feature replacements, named containers and menu/item contributions exist. Arbitrary root layout, pane chrome, search/help and phone shell replacement are not a blanket supported API. | Audit each remaining surface against a concrete replacement example and introduce explicit contracts where needed. |
 | Public SDK and remote distribution | The SDK can be packed and consumed externally; plugin archives can be shared and installed locally on the daemon. Neither a registry release nor automatic downloads/updates is implemented. | Define release/version compatibility, publishing ownership, source metadata and explicit update/trust behavior before adding remote install/update flows. |

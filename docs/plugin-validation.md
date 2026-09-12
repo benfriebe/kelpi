@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Selectable Settings presenter](#selectable-settings-presenter-2026-09-12).
 - [Shared settings contracts](#shared-settings-contracts-2026-09-12).
 - [Interaction Lab and live acceptance](#interaction-lab-and-live-acceptance-2026-09-12).
 - [Selectable interaction presenters](#selectable-interaction-presenters-2026-09-12).
@@ -45,6 +46,25 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Selectable Settings presenter (2026-09-12)
+
+Phase 2 of full Settings presentation, implemented on `feature/plugin-settings-presenter`
+(based on main `49efde6`). Tested revision: **`d52f6c2`**. Same bootstrapped worktree; private
+sandboxes only. The placement is additive; plugin API version and wire protocol are unchanged.
+
+| Check | Result at `d52f6c2` |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,875 passed, 1 skipped** (the existing optional database skip); shell **868 passed**. New suites: `settings/presenter.test.ts`, `SettingsOverlay.presenter.test.tsx`, `AppearanceTab.projected.test.tsx`, `plugin-sdk/tests/settings.test.ts`, `settings.typecheck.ts`, plus new cases in `PluginView.ui.test.tsx`, `Workbench.test.tsx`, `registry.test.ts`, `registration.test.tsx`, `redaction.test.ts`, `sections.test.ts`, `surface.test.ts`, `protocol/src/plugins.test.ts`, and daemon `settings/service.test.ts` and `ws.test.ts`. The fidelity suites and the `SettingsOverlay` snapshots pass unmodified. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` and `node scripts/verify-plugin-sdk.mjs` pass; the external fixture reads a projection, routes, drafts, commits and closes, and proves no write target exists on the published types. |
+| Settings audit steps, hidden | The fourteen `settings-*`, `keybinding-record` and `phone-settings-sheet` steps: **15 steps, 98 assertions, 0 failed, 0 step errors** (`--only`, local artifact). |
+| Settings audit steps, onscreen | `settings-open`, `settings-tab-general`, `settings-tab-appearance`, `settings-tab-workspaces`, `settings-close`: **6 steps, 28 assertions, 0 failed**; the General, Appearance and Workspaces screenshots were inspected and match the previous rendering. |
+| Scenario gates, hidden | `plugin-ui-services` 30/30, `plugin-workbench` 22/22, `plugin-interaction-presenters` 34/34, `plugin-authoring` 25/25, `plugin-extensions` 23/23 alone (it fails in a five-scenario sequence after `plugin-workbench`, tracked as issue #201 on main), `plugin-chrome-features` 34/34 alone. |
+| Independent review | One adversarial Opus review of the working tree. Applied before `d52f6c2`: a config-line injection through a newline in a projected text field (refused in both client funnels and in the daemon for general, ghostty, profile and remote-daemon values, with tests that the file stays byte-identical); General and Workspaces declared as sections with host-drawn remainders so the bind-error and compatibility notes and footers survive a presenter; `resetField` routed through resolution; slider `step` enforced; the presenter slot's painted flag and modal-peer baseline made structural; disabled-field, undeliverable-frame, bundled-DOM-equality and Appearance behaviour tests; watchdog wording aligned with the field-set rule. |
+
+No plugin Settings presenter is exercised live in this phase: the Settings Lab example and its
+scenario are phase 3, and the full verification battery and packaged smoke for this branch are
+scheduled with it. Physical devices are not covered.
 
 ## Shared settings contracts (2026-09-12)
 

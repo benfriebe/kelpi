@@ -46,6 +46,11 @@ the `interaction.palette` and `interaction.prompts` placements; the window inter
 mounts them, so the single modal registration, focus authority and Escape policy stay host-side
 whoever draws. A selected prompts presenter draws modal requests only: the notification stack
 stays bundled in this release. See [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
+The Settings dialog is registered the same way, as the bundled `kelpi.settings.window` feature
+behind the `settings.window` placement; the Settings host mounts it, so the dialog frame, modal
+presence, Escape, the Tab trap, focus and the native sections stay host-side whoever draws. The
+existing `kelpi.settings` view inside the Plugins section is a different, unchanged slot. See
+[selectable Settings presenter](plugin-ui.md#selectable-settings-presenter).
 
 ## Window navigation for plugins
 

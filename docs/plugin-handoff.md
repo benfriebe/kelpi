@@ -14,9 +14,10 @@ each completed phase and its merged PRs, from #125 through #162.
 
 The broader replacement goal is **not complete**. Terminal SDK geometry parity (replay grid and
 size ownership for plugin renderers) is implemented and validated on
-`feature/plugin-terminal-geometry` as [PR #187](https://github.com/benfriebe/kelpi/pull/187), a draft stacked on PR #164, pending review and merge. After that, implement
-selectable command-palette and shared-prompt presenters, then the full Settings presenter and
-remaining composition surfaces. Public registry/distribution and untrusted execution are
+`feature/plugin-terminal-geometry` as [PR #187](https://github.com/benfriebe/kelpi/pull/187), a draft stacked on PR #164, pending review and merge. The selectable
+command-palette and shared-prompt presenters and the first two Settings phases are implemented
+on the stacked branches recorded below; the Settings Lab and the remaining composition surfaces
+are still open. Public registry/distribution and untrusted execution are
 separate future scopes. Plugin API version remains **1**; wire protocol generation remains **2**.
 
 | Item | State at this handoff |
@@ -122,6 +123,15 @@ scope. See
 | Presenter selection, projection and watchdogs | [presenter host](../packages/client/src/interaction/presenter.ts), [presenter slot](../packages/client/src/interaction/presenter-slot.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js) |
 | Focus/modal coordination and Settings | [Modal presence](../packages/client/src/chrome/modal-presence.ts), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
 
+Settings presenter entrypoints, for the phase below:
+
+| Concern | Source entrypoints |
+| --- | --- |
+| Settings model and authority | [contract](../packages/client/src/settings/contract.ts), [sections](../packages/client/src/settings/sections.ts), [surface](../packages/client/src/settings/surface.ts), [field renderer](../packages/client/src/settings/FieldRenderer.tsx) |
+| Presenter projection, slot and dialog | [presenter host](../packages/client/src/settings/presenter.ts), [presenter slot](../packages/client/src/settings/presenter-slot.tsx), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
+| Placement, selection and recovery rows | [protocol placements](../packages/protocol/src/plugins.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
+| Public contract and bridge | [public settings types](../packages/plugin-sdk/settings.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js), [PluginView](../packages/client/src/plugins/PluginView.tsx) |
+
 The Interaction Lab example and its live acceptance are implemented on
 `feature/plugin-interaction-lab`; see the validation record for the tested revision. Preserve
 keyboard/IME behavior, cancellation on caller/presenter disposal, window/daemon ownership,
@@ -141,13 +151,30 @@ notification presentation remains open scope; the notification stack stays bundl
 Phase 1 (shared settings contracts) is implemented on `feature/plugin-settings-contracts`,
 based on the Interaction Lab branch. `packages/client/src/settings/contract.ts`,
 `sections.ts` and `surface.ts` are the vocabulary and authority; `FieldRenderer.tsx` draws a
-descriptor with the existing controls; `SettingsOverlay` routes through the surface. General
-and Workspaces render from descriptors; Appearance's plain rows are the next candidates.
-Phase 2 adds the `settings.window` placement, Settings-only selection and bundled recovery
-following the interaction presenter precedent; phase 3 adds a Settings Lab and its scenario.
-The decisions taken by precedent (what stays native, repository paths not projected,
-plugin-contributed settings sharing the draft model) are listed in the roadmap row and are
-reversible before phase 2 exposes an API.
+descriptor with the existing controls; `SettingsOverlay` routes through the surface.
+
+Phase 2 (the selectable presenter) is implemented on `feature/plugin-settings-presenter`,
+stacked on phase 1. `settings.window` is a `PLUGIN_PLACEMENTS` entry that containers are
+refused; `settings/presenter.ts` builds the field-by-field projection and owns the call table;
+`settings/presenter-slot.tsx` owns the latch, the two watchdogs and the bundled floor;
+`features/definitions.ts` registers the bundled `kelpi.settings.window`. Selection is
+Settings-only: the placement is listed in `ui.getWorkbench().slots` and refused by
+`ui.selectView`. General, Workspaces and Appearance's plain rows are projected, and each of those
+three sections also has a `part: 'native'` remainder the host keeps drawing below the projected
+fields: General's failed TCP bind line, CLI compatibility note and config-file footer; Workspaces'
+cross-reference and footer; and Appearance's preset theme gallery, importer and share codes, chrome
+colour map and agent-status colours, terminal theme picker with its background swatch and
+resolved-appearance readout, group-band fill slider, per-metric stat toggles, adaptive sparkline
+colour, search highlight preview and every Reset. All three therefore report `native: true`
+alongside their fields. Plugins, Remote, Profiles, Keybindings, Labels, Repositories and Web stay
+fully native, as do both key recorders and every destructive confirmation. Drafts live in the
+surface, so a presenter failure changes only who paints. Public types are in
+`packages/plugin-sdk/settings.d.ts`, with the runtime feed topic `settings` in `browser.js`.
+
+Phase 3 adds a Settings Lab example, `scripts/scenarios/plugin-settings-presenter.mjs`, audit
+steps and a validation record entry. The decisions taken by precedent (what stays native,
+repository paths not projected, plugin-contributed settings keeping their own draft session)
+are listed in the roadmap row.
 
 ## Setup and validation for the next agent
 

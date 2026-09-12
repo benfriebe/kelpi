@@ -86,6 +86,22 @@ selection is retained as it is for every other slot. Password inputs and native 
 confirmations are always drawn by the bundled presenter, and phone windows keep the bundled
 presenters. See [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
+The Settings dialog is a fourth, `settings.window`. A selected view draws the rail and the panel
+inside the host's dialog; the host keeps the frame, backdrop, modal presence, Escape, Close and
+focus. It is Settings-only in the same way, and a container cannot declare it. General,
+Workspaces and Appearance are projected as closure-free field descriptors, each alongside a
+host-drawn remainder the presenter never sees: General's failed TCP bind line, CLI compatibility
+note and config-file footer; Workspaces' cross-reference and footer; and Appearance's preset theme
+gallery, importer and share codes, chrome colour map and agent-status colours, terminal theme
+picker with its background swatch and resolved-appearance readout, group-band fill slider,
+per-metric stat toggles, adaptive sparkline colour, search highlight preview and every Reset.
+Plugins, Remote, Profiles, Keybindings, Labels, Repositories and Web are drawn by the bundled
+panel whatever is selected, and so are both key recorders and every destructive confirmation. A presenter routes and edits; config keys, verbs, file paths, pairing
+tokens and profile environment values are never projected. On failure the bundled panel takes the
+placement back with every draft intact, **Retry presenter** appears beside the selection, and
+phone windows keep the bundled sheet. See
+[selectable Settings presenter](plugin-ui.md#selectable-settings-presenter).
+
 Plugin panes participate in normal splits, moves, zoom, parking, and close/reopen. They retain
 their descriptor and JSON state when the plugin is missing, disabled, updated, or removed.
 Parked plugin panes also survive daemon restarts. A missing plugin never spawns a terminal.
@@ -199,8 +215,11 @@ the commands registered during activation.
 
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
-`document.diff`, `terminal`, and `browser`. A view can support several placements or a declared
+`document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`, and
+`settings.window`. A view can support several placements or a declared
 custom slot. Document, terminal and browser placements accept isolated views, not containers.
+Neither do the palette, prompts and Settings presenter placements: a presenter owns its whole
+surface.
 Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
 Browser controls target the owning daemon; native page display requires its Electron host window.

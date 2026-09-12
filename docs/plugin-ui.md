@@ -149,6 +149,10 @@ Concurrent edits and incoming settings events do not let an old reply replace a 
 An invalid saved value after a plugin upgrade falls back to the declared default without
 silently rewriting the saved file.
 
+These fields keep their own draft session and are drawn by the bundled panel inside the native
+Plugins section, whoever is selected for
+[the Settings presenter](#selectable-settings-presenter).
+
 ## Shared prompts and notifications
 
 These methods are browser-only, on `kelpi.ui`:
@@ -322,6 +326,102 @@ visible, and `queued` still counts it. Destructive native confirmations are carv
 way. Notifications are carved out too in this release: `showNotification` results are drawn by
 the native stack, `notifications` is always empty, and selectable notification presentation is
 later scope.
+
+## Selectable Settings presenter
+
+One further placement, `settings.window`, is selected in the same Settings → Plugins → Workbench
+views list. A selected view draws the rail and the panel inside the host's Settings dialog. The
+host keeps the dialog frame and backdrop, modal presence, Escape and Close, the Tab trap, focus
+capture and release, the reopen focus rule and the native sections.
+
+The placement appears in `ui.getWorkbench().slots` for discovery and `ui.selectView` refuses it:
+Settings is where a broken presenter is recovered from, so the choice stays the user's. A
+container cannot declare it, because a presenter owns the whole dialog body. Presenters are
+desktop-only in this release: a phone window keeps the bundled sheet and never selects one, so a
+frame a presenter receives always reports `formFactor: 'desktop'`.
+
+A selected view reads the projection and acts through `kelpi.ui`:
+
+```js
+const stop = kelpi.ui.onSettingsPresentation(async frame => {
+  render(frame);                          // frame.sections is the rail, frame.sectionID the route
+  await kelpi.ui.reportPresenterReady();  // required within 5 seconds of the first frame
+}, error => reportError(error.message));
+
+await kelpi.ui.setSettingsSection('appearance');
+await kelpi.ui.setSettingsDraft(fieldID, '19400');  // holds a value; writes nothing
+await kelpi.ui.commitSettingsField(fieldID);        // re-resolved and re-validated host-side
+await kelpi.ui.resetSettingsField(fieldID);         // drops the draft, keeps the committed value
+await kelpi.ui.closeSettings();                     // the dialog's own Close
+addEventListener('pagehide', stop, { once: true });
+```
+
+`getSettingsPresentation()` reads the same projection once. `reportPresenterReady` is shared with
+the interaction presenters. See the
+[public types](../packages/plugin-sdk/settings.d.ts) for every field.
+
+Each frame carries the whole rail and only the current section's contents:
+
+| Frame field | What it holds |
+| --- | --- |
+| `sections` | Every rail entry in order: `id`, `title`, `icon` and `native`. A presenter routes the rail; it cannot add to or remove from it. |
+| `sectionID`, `native` | Where the host is routed, and whether the bundled panel is drawing that section or the remainder of it. |
+| `groups` | The current section's cards: `id`, `title` and an optional `detail`. Empty when the section is fully native. |
+| `fields` | The current section's projected fields: `id`, `sectionID`, `groupID`, `kind`, `label`, `detail`, `value`, and per kind `choices`, `min`, `max`, `step` or `maxLength`, plus `draft`, `error`, `busy` and `disabled`. Empty when the section is fully native. |
+| `dirty` | Fields with an uncommitted draft. |
+| `visible`, `formFactor` | `visible: false` means present nothing. `formFactor` is always `desktop` in a frame a presenter receives. |
+
+Withheld: every config key, verb name, file path and write closure (a presenter sends a field id
+and the host owns the mapping, so a leaked key cannot bypass the daemon's writable-key
+allowlist), the audit `testID` of any row, the pairing URL and its token, paired device ids,
+profile environment values, repository paths, raw transport and global hotkey errors, and every
+other plugin's id, storage and connection URL. Destructive actions are native buttons the host
+draws and a presenter cannot invoke.
+
+These sections are drawn by the bundled panel whatever is selected, and a frame routed to one of
+them reports `native: true` with no groups and no fields:
+
+| Section | Why it stays native |
+| --- | --- |
+| Plugins | The whole section: Versions and rollback, **Restore bundled views**, **Retry presenter**, enable and disable, providers, shortcuts and plugin schema fields. A replaceable surface that could hide the route back to a working window is not a recovery floor. |
+| Remote | Pairing, the once-shown URL, the QR and revoke: it holds credentials. |
+| Profiles | Profile environment values are arbitrary secrets. |
+| Keybindings | Both key recorders capture raw keystrokes in the capture phase. |
+| Labels, Repositories, Web | Hand-built editors: the colour picker, filesystem paths, and drag reordering. |
+
+General, Workspaces and Appearance are the projected sections. Each of them also carries a
+host-drawn remainder, so all three report `native: true` alongside their fields and the host draws
+the remainder below them. A section is fully native only when it publishes no fields at all.
+
+| Projected section | Host-drawn remainder |
+| --- | --- |
+| General | The two rows that report an outcome rather than a value, the failed TCP bind line and the CLI compatibility note, plus the pointer at Workspaces and the footer naming the config file. |
+| Workspaces | The pointer at General and the footer naming the config file. |
+| Appearance | The preset theme gallery, the theme importer and the share codes, the chrome colour map and the agent-status colours, the terminal theme picker with its background swatch and its resolved-appearance readout, the group-band fill slider, the per-metric stat toggles, the adaptive sparkline colour, the search highlight preview, and every Reset. |
+
+None of those is a value-and-verb row, so none of them is a descriptor a frame could carry. A
+presenter draws the projected fields of the current section and leaves the space below them to the
+host.
+
+Presenter limits are the interaction presenters' limits, and mean the same things:
+
+| Rule | Limit |
+| --- | --- |
+| Readiness | `reportPresenterReady()` within 5 seconds of the first frame. |
+| Acknowledgement | A frame that routes to a different section, changes the set of projected fields (a row appearing or disappearing), or is the first frame after the dialog opens, is acknowledged within 5 seconds. A frame that only restates the same fields (a new value, draft, error or busy flag) arms nothing. |
+| Calls | 240 presenter calls per rolling second. A breach fails the presenter. |
+| Payload | 256 KiB per frame. |
+
+Drafts live in the host, keyed to the field, so who paints is the only thing a failure changes.
+A view error, a failed connection, a missed readiness or acknowledgement deadline, an oversized
+or non-JSON frame and an exhausted call budget all fail the presenter. On failure the placement
+latches to the bundled panel for the rest of the window session, a native failure toast is
+raised, the dialog stays open on the same section, and every draft and error is still there. A
+failure never commits a field. A missing, disabled or failed plugin and a disconnected daemon
+resolve to bundled the same way, and the saved selection is retained throughout. The latch clears
+on plugin reload or rollback, on a selection change, and on **Retry presenter** in Settings →
+Plugins → Workbench views. `kelpi.window.openSettings`, `openPlugins`, `openPalette`, `openHelp`
+and `restartUI`, `⌘,`, the native menu and the palette never route through a presenter.
 
 ## Automated validation
 

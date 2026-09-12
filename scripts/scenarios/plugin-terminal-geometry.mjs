@@ -46,6 +46,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { buildTerminalLab } from '../build-terminal-lab.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
@@ -577,6 +578,15 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         fs.writeFileSync(sandbox.configPath, originalConfig);
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
         await page.send('Page.navigate', { url: originalURL }).catch(() => {});
+        // The workbench slots this scenario chose are the WINDOW's and outlive `plugin remove`,
+        // so they go back to their bundled views before the plugin does (#205, #201).
+        try {
+            const restored = await restoreBundledSlots(page, d, { terminal: 'kelpi.shell' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the workbench placements were not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        } catch (error) {
+            rec.note(`cleanup: the workbench placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
+        }
         await cli.run(['plugin', 'remove', pluginID]);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initialWorkspaces.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
         if (remoteDaemon) await remoteDaemon.stop();

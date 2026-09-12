@@ -56,71 +56,97 @@ export default async function ({ page, harness, cli, shell, rec, d, sleep }) {
         return;
     }
 
-    const opened = await cli.ok(['web', 'open', 'about:blank']);
-    const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1];
-    rec.check('a web pane opened', typeof paneID === 'string', opened.trim());
-    if (paneID === undefined) return;
-    await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${paneID}"]')`, { ceilingMs: 10_000 });
-
-    const placed = await d.settle(() => trail(shell, paneID).at(-1)?.owner === 'main', {
-        ceilingMs: 20_000,
-        intervalMs: 50
-    });
-    rec.check('its view is in the shell window to begin with', placed, JSON.stringify(trail(shell, paneID).at(-1)));
-    if (!placed) return;
-    // Against a STILL layout, which is the precondition of the bug: a layout that moves repairs
-    // itself by accident, and then the scenario would pass on a broken build.
-    await sleep(1500);
-    const before = trail(shell, paneID).at(-1);
-    const mark = shell.lines.length;
-
-    const clicked = await harness.menuClick({ path: ['View', 'Recover Interface'] });
-    rec.note(`menuClick(View > Recover Interface): ${JSON.stringify(clicked)}`);
-
-    const since = () => trail(shell, paneID, mark);
-    const parkedAt = () => since().findIndex((entry) => entry.owner === 'holder' && entry.reason === 'recover-interface');
-    const back = () => {
-        const at = parkedAt();
-        return at < 0 ? undefined : since().slice(at + 1).find((entry) => entry.owner === 'main');
-    };
-    await d.settle(() => back() !== undefined, { ceilingMs: 10_000, intervalMs: 25 });
-
-    rec.check('the chord takes the page off screen (owner=holder, recover-interface)', parkedAt() >= 0, JSON.stringify(since()));
-    rec.check(
-        'and puts it straight back, with no user action (#96)',
-        back() !== undefined,
-        back() === undefined ? 'ISSUE #96: the page is still in the off-screen holder' : JSON.stringify(back())
-    );
-    rec.check('it comes back in the box it left', back()?.bounds === before?.bounds, `${String(before?.bounds)} -> ${String(back()?.bounds)}`);
-    // `attached`, not `moved`: the view was really out of the window, and what put it back was
-    // the client re-stating its geometry rather than the shell replaying its own books.
-    rec.check('as an attach, i.e. re-derived from the client', back()?.reason === 'attached', `reason=${String(back()?.reason)}`);
-
     /*
-     * The guard rail, and the one way this fix could be worse than the bug: a pane the CLIENT
-     * parked is not the shell's to put back, and the chord must not resurrect it. This passes on
-     * a broken build too, which is what stops the scenario being a restatement of the fix.
+     * What this scenario is about to add to a sandbox it shares with every scenario after it: one
+     * web pane, and one workspace to prove a park the CLIENT asked for is not the chord's to undo.
+     * Both are taken back in the `finally` below. A leftover web pane is not inert: it draws a URL
+     * field that takes the caret, and its pane is NOT an engine, so
+     * `workspace-switch-keeps-the-caret` used to wait 112 s for an engine count that could never
+     * be reached and then find the ring on this pane (#205).
      */
-    await cli.ok(['workspace', 'create', '--name', 'elsewhere']);
-    const parkedOnPurpose = await d.settle(() => trail(shell, paneID).at(-1)?.owner === 'holder', {
-        ceilingMs: 15_000,
-        intervalMs: 50
-    });
-    rec.check('switching workspace still parks the page', parkedOnPurpose, JSON.stringify(trail(shell, paneID).at(-1)));
-    const guardMark = shell.lines.length;
-    await harness.menuClick({ path: ['View', 'Recover Interface'] });
-    await sleep(4000);
-    rec.check(
-        'a page parked on purpose is NOT put back by the chord',
-        trail(shell, paneID, guardMark).every((entry) => entry.owner !== 'main'),
-        JSON.stringify(trail(shell, paneID, guardMark))
-    );
+    const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
+    const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
+    const initial = new Set(startingWorkspaces.map((workspace) => workspace.id));
+    let openedPane = null;
+    try {
+        const opened = await cli.ok(['web', 'open', 'about:blank']);
+        const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1];
+        rec.check('a web pane opened', typeof paneID === 'string', opened.trim());
+        openedPane = paneID ?? null;
+        if (paneID === undefined) return;
+        await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${paneID}"]')`, { ceilingMs: 10_000 });
 
-    // The whole trail, in the results file: a failure here is a statement about a sequence, and
-    // the sequence is unreadable from a single "still in the holder".
-    for (const line of shell.lines.filter((line) =>
-        /web pane .* view owner=|web host (park|restor|ignor|asking|recovery|dropped|:)|menu: Recover Interface/.test(line)
-    )) {
-        rec.note(line.trim());
+        const placed = await d.settle(() => trail(shell, paneID).at(-1)?.owner === 'main', {
+            ceilingMs: 20_000,
+            intervalMs: 50
+        });
+        rec.check('its view is in the shell window to begin with', placed, JSON.stringify(trail(shell, paneID).at(-1)));
+        if (!placed) return;
+        // Against a STILL layout, which is the precondition of the bug: a layout that moves repairs
+        // itself by accident, and then the scenario would pass on a broken build.
+        await sleep(1500);
+        const before = trail(shell, paneID).at(-1);
+        const mark = shell.lines.length;
+
+        const clicked = await harness.menuClick({ path: ['View', 'Recover Interface'] });
+        rec.note(`menuClick(View > Recover Interface): ${JSON.stringify(clicked)}`);
+
+        const since = () => trail(shell, paneID, mark);
+        const parkedAt = () => since().findIndex((entry) => entry.owner === 'holder' && entry.reason === 'recover-interface');
+        const back = () => {
+            const at = parkedAt();
+            return at < 0 ? undefined : since().slice(at + 1).find((entry) => entry.owner === 'main');
+        };
+        await d.settle(() => back() !== undefined, { ceilingMs: 10_000, intervalMs: 25 });
+
+        rec.check('the chord takes the page off screen (owner=holder, recover-interface)', parkedAt() >= 0, JSON.stringify(since()));
+        rec.check(
+            'and puts it straight back, with no user action (#96)',
+            back() !== undefined,
+            back() === undefined ? 'ISSUE #96: the page is still in the off-screen holder' : JSON.stringify(back())
+        );
+        rec.check('it comes back in the box it left', back()?.bounds === before?.bounds, `${String(before?.bounds)} -> ${String(back()?.bounds)}`);
+        // `attached`, not `moved`: the view was really out of the window, and what put it back was
+        // the client re-stating its geometry rather than the shell replaying its own books.
+        rec.check('as an attach, i.e. re-derived from the client', back()?.reason === 'attached', `reason=${String(back()?.reason)}`);
+
+        /*
+         * The guard rail, and the one way this fix could be worse than the bug: a pane the CLIENT
+         * parked is not the shell's to put back, and the chord must not resurrect it. This passes on
+         * a broken build too, which is what stops the scenario being a restatement of the fix.
+         */
+        await cli.ok(['workspace', 'create', '--name', 'elsewhere']);
+        const parkedOnPurpose = await d.settle(() => trail(shell, paneID).at(-1)?.owner === 'holder', {
+            ceilingMs: 15_000,
+            intervalMs: 50
+        });
+        rec.check('switching workspace still parks the page', parkedOnPurpose, JSON.stringify(trail(shell, paneID).at(-1)));
+        const guardMark = shell.lines.length;
+        await harness.menuClick({ path: ['View', 'Recover Interface'] });
+        await sleep(4000);
+        rec.check(
+            'a page parked on purpose is NOT put back by the chord',
+            trail(shell, paneID, guardMark).every((entry) => entry.owner !== 'main'),
+            JSON.stringify(trail(shell, paneID, guardMark))
+        );
+
+        // The whole trail, in the results file: a failure here is a statement about a sequence, and
+        // the sequence is unreadable from a single "still in the holder".
+        for (const line of shell.lines.filter((line) =>
+            /web pane .* view owner=|web host (park|restor|ignor|asking|recovery|dropped|:)|menu: Recover Interface/.test(line)
+        )) {
+            rec.note(line.trim());
+        }
+    } finally {
+        if (openedPane !== null) await cli.run(['pane', 'close', '--target', openedPane]);
+        for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
+            if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
+        }
+        // The window follows `workspace create`, so it is looking at the workspace just deleted:
+        // put it back on the one this scenario found it on.
+        if (startingWorkspace !== null) {
+            const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
+            if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
+        }
     }
 }

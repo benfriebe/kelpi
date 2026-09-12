@@ -43,10 +43,16 @@ export default async function ({ page, cli, harness, rec, d }) {
         server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}/` }));
     });
 
+    // The web pane below is opened in whatever workspace the window is on, which in a battery is
+    // the Default every other scenario also uses. It is closed again in the `finally`: a leftover
+    // web pane draws a URL field that takes the caret and is NOT a terminal engine, which is what
+    // `workspace-switch-keeps-the-caret` was waiting for and finding the ring on (#205).
+    let openedPane = null;
     try {
         const opened = await cli.run(['web', 'open', site.url], { timeoutMs: 60_000 });
         const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened.stdout) ?? [])[1];
         rec.check('`kelpi web open` opened a web pane', paneID !== undefined, opened.stdout || opened.stderr);
+        openedPane = paneID ?? null;
         if (paneID === undefined) return;
 
         const card = `[data-testid="web-crashed-${paneID}"]`;
@@ -137,6 +143,7 @@ export default async function ({ page, cli, harness, rec, d }) {
         );
         await rec.shot(page, 'card-cleared');
     } finally {
+        if (openedPane !== null) await cli.run(['pane', 'close', '--target', openedPane]);
         try {
             site.server.close();
         } catch {

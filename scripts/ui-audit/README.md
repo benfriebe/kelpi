@@ -115,6 +115,31 @@ Each run already gets its own run dir, socket, database and ephemeral ports, so 
 
 **Safe for**: everything a scenario asserts, which is DOM state, CDP input, the CLI, the harness channel's menu / accelerators / dialogs / dock counters / notification records, and the app's own activity signalling. **Not safe for**: anything that measures pixels. Under `hidden` a screenshot comes back blank white (`Page.captureScreenshot` composites the window's alpha), under `offscreen` it comes back at half resolution with sub-pixel geometry quantised differently. `rec.shot` writes that caveat into the note it records, and `results.json` carries the placement, so a picture is never silently worth less than it looks. Pixel checks belong in the audit.
 
+### A scenario can declare the placement it needs (`windowPlacement`)
+
+Two of the lane's properties fight each other. `hidden` is the same window at zero opacity, which is what gives the machine's owner their screen back — and AppKit counts a zero-opacity frame as visible **only while nothing is in front of it**. Put the owner's own window over the lane's rectangle and the frame is occluded. Nothing in the DOM notices; two things do:
+
+- a scenario that drives a real native page. Chromium treats the window's `WebContentsView`s as hidden, throttles them and **drops the CDP input dispatched to them**. `plugin-browser-features`, measured on 2026-09-13 on one tree minutes apart: `hidden` 37/44 and an abort in 86 s, with `clicks: 0` and `cookies: ""` in the fixture page's own state; `offscreen` 65/66 in 20 s. That is almost certainly the unexplained cause in issue #206, "a click that never reached the page", where a concurrent visible audit window is recorded as a possible factor.
+- a scenario whose precondition is the app going inactive. `dock-bounce-stop-only` behind `confirm-dialog-keys`: `hidden` 5/7 (the page still reads `visible` 8 s after `harness.hide()`), `offscreen` 7/7 in 1.8 s, run for run. Issue #109 filed the same scenario as "a scenario whose occlusion precondition the environment could not meet" and it cost a promote.
+
+So a scenario may declare the weakest placement it can be trusted at:
+
+```js
+export const windowPlacement = 'offscreen';
+```
+
+`scripts/scenario.mjs` honours it by giving that scenario an instance of its own at the declared placement, because a placement is fixed when the shell builds its window and "raise it" can only mean a second instance. The rule is a **floor, never a ceiling** (`lib/placement.mjs`, unit-tested in `lib/placement.test.mjs`):
+
+| the run | the declaration | what runs |
+| --- | --- | --- |
+| `--window hidden` | none | the lane's window |
+| `--window hidden` | `offscreen` | its own `offscreen` instance |
+| `--window onscreen` | `offscreen` | the lane's window (never lowered) |
+| no `--window` | `offscreen` | the shipped window, untouched, with a warning |
+| any | not a placement | the lane's window, with a warning |
+
+The placement each scenario ran at is printed beside its name (`▶ name  [window offscreen, its own instance]`) and written into `results.json`. A scenario on its own instance cannot leak into the shared sandbox, so the runner records its post-condition as `leaked: null` rather than as an empty list. Declare it only from a measurement: the cost is a 20 s boot, and `offscreen` also halves the screenshots' resolution.
+
 ### What was measured
 
 One second of each, per placement, blurred as well as focused, because `dock-bounce-stop-only` blurs the window on purpose (`BrowserWindow.blur()` is `orderBack:` on macOS):
@@ -246,6 +271,8 @@ Its machine-readable evidence lands in `docs/audit/verify-latest/battery/` (the 
   about such a chord asserts the two ends: the row exists with that accelerator, and the page
   left the key un-prevented (`terminal-leaves-platform-chords.mjs`).
 - The functional lane is scenarios only. The AUDIT is still one visible window per run: 107 of its 118 steps are `needs-eyes`, so a placement that costs the pictures costs it its product (`audit-window.ts` has that table; offscreen reproduced 113 of 118 steps and turned two green assertions red).
+- A scenario that opens an external editor must write its fixture at the shared path `<sandbox.root>/scenario-external-editor` before it presses "Open in $EDITOR". The daemon resolves `$VISUAL`/`$EDITOR` through a login shell and caches the answer for its whole lifetime (`daemon/src/content/external-editor.ts`, CONT-086), so in one sandbox the FIRST scenario to open an editor decides the command string every later one gets. `plugin-authoring` used to name a script inside the temp directory it deleted on the way out, and `plugin-terminal-features`' press then ran a file that no longer existed — its third lane failure, red in every full lane and green alone (#205). Sharing the path makes the cached command run whichever scenario is running.
+- A multi-scenario run checks a short post-condition after every scenario and NAMES the one that broke it: the active workspace, the phone's remembered place (`kelpi.phone.last-place`), any workbench slot still holding a plugin view, stray web panes and workspaces, an open Settings overlay, a lingering modal, whether the page still believes it is focused, the viewport, and the URL. It is a warning, never a failure — `⚠ scenario <name> leaked: <what>` in the log, per-scenario `leaked` and a top-level `leaks` array in `results.json`. It exists because three deterministic ordering failures were filed as load-sensitive flakes and laundered into passes by the battery's isolated retry for a fortnight (issue #205): a phone left on a shut-down remote host, an engine count leftover web panes could never reach, and a ⌘C that could not run because an earlier scenario had told the page it was not focused. A scenario on its own instance (`windowPlacement`) records `leaked: null`: its sandbox went with it, so there was nothing to check.
 - Nothing enforces the lane's caveat. A scenario can still take a screenshot under `--window hidden` and assert on it; the note says the pixels are worthless, and no code stops you.
 - A scenario that needs an INACTIVE app has to drive the window there; no placement grants it. `harness.hide()` is the gesture (`app.hide()`, i.e. ⌘H), and a scenario that uses it restores the window before it returns because the battery runs every scenario in one sandbox. `dock-bounce-stop-only` is the worked example, and it now passes at all three placements (issue #109); before it, that scenario read the screen's weather and called it a product verdict.
 - The channel sees the notifications the SHELL posts. The browser client's own `Notification` (`client/src/state/notifications.ts`) is a different presenter on the other side of CDP, and §7.5's two halves withdraw on different triggers; a scenario that wants the client's toast asserts on the page.

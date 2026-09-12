@@ -20,8 +20,20 @@ export default async function ({ page, cli, rec, d }) {
         await page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, modifiers: 4 });
     };
     const modal = '[data-testid="plugin-ui-dialog"]';
+    /*
+     * The settings this scenario is about to move, as the daemon holds them BEFORE it moves them.
+     *
+     * `kelpi plugin remove` KEEPS a plugin's persisted setting overrides, so removing UI Lab in
+     * the cleanup below does not undo the `step = 3` and `density = compact` written further down:
+     * the next scenario to install UI Lab in the same sandbox inherits both. That is #198 exactly -
+     * one click on the counter added 3, and `plugin-chrome-features` read a badge of `3` where it
+     * expected `1`. Read here and written back in the `finally`, so the sandbox's UI Lab is the one
+     * its manifest describes whichever scenario looks at it next.
+     */
+    let originalSettings = null;
     try {
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
+        originalSettings = await json(['plugin', 'settings', id]);
         const pane = await json(['plugin', 'open', id, `${id}.panel`, '--workspace', workspaceID]);
         const frame = `[data-testid="plugin-view-${pane.paneID}"] iframe`;
         const inFrame = expression => page.evalInFrame(frame, expression);
@@ -122,6 +134,12 @@ export default async function ({ page, cli, rec, d }) {
         await rec.shot(page, 'ui-lab-ready');
     } catch (error) { await rec.shot(page, 'failure-live'); throw error; }
     finally {
+        // The settings BEFORE the plugin goes, because a write to a removed plugin is refused and
+        // the overrides would outlive it. Best effort per key: a settings write that fails must
+        // not stop the workspace from being deleted.
+        for (const [key, value] of Object.entries(originalSettings ?? {})) {
+            await cli.run(['plugin', 'settings', id, '--key', key, '--value', JSON.stringify(value)]);
+        }
         await cli.run(['plugin', 'remove', id]);
         await cli.run(['workspace', 'delete', workspaceID, '--force']);
     }

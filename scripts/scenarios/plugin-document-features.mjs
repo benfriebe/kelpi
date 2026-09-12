@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/document-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/content/', 'packages/client/src/app/RemoteWorkspaceView.tsx',
@@ -181,6 +182,8 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('phone single-pane view mounts the same remote document renderer', await ready(remotePane.id) && await check(remotePane.id, `document.getElementById('editor').value === ${JSON.stringify('# Changed on the remote\n')}`));
         rec.check('document controls fit the phone viewport', await check(remotePane.id, `document.documentElement.scrollWidth <= document.documentElement.clientWidth`));
         await rec.shot(page, 'document-phone-ready');
+        // Back to the landing page BEFORE the window widens again, while the shell is still mounted.
+        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         const beforeRestart = JSON.parse(await remoteCLI.ok(['document', 'get', remotePane.id]));
         await remoteDaemon.stop(); remoteDaemon = startDaemon(remote, { repoRoot }); await waitForHealthz(remote.base);
@@ -200,7 +203,17 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         watcher?.kill('SIGTERM');
         fs.writeFileSync(sandbox.configPath, config);
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+        try { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); } catch { /* the window may be mid-navigation */ }
         await page.send('Page.navigate', { url: originalURL }).catch(() => {});
+        await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 }).catch(() => {});
+        // The three document slots are the WINDOW's and outlive `plugin remove` (#205, #201).
+        try {
+            const restored = await restoreBundledSlots(page, d, { 'document.markdown': 'kelpi.markdown', 'document.scratchpad': 'kelpi.scratchpad', 'document.diff': 'kelpi.diff' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the document placements were not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        } catch (error) {
+            rec.note(`cleanup: the document placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
+        }
         await cli.run(['plugin', 'remove', pluginID]);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
         if (remoteDaemon) await remoteDaemon.stop(); remote?.cleanup();

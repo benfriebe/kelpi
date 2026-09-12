@@ -119,6 +119,23 @@ export default async function ({ page, cli, sandbox, harness, rec, d }) {
         rec.check('backend reload restores nested view leases and preserves slot storage', await frameReady(dashboard) && await frameReady(notes) && await page.evalInFrame(notes, `document.getElementById('notes').value === 'Retain this note'`));
     } finally {
         if (await page.eval(`Boolean(document.querySelector('[data-testid="settings-close"]'))`)) await page.click('[data-testid="settings-close"]');
+        /*
+         * The `workspace` slot still names Workbench Lab's layout, and the plugin's own
+         * `notes-slot` still names its notes view. Neither goes with `kelpi plugin remove`: a
+         * workbench selection is the WINDOW's, saved in `localStorage` under
+         * `kelpi.workbench.v1:<daemon>`, so it outlives the plugin and hands the next scenario a
+         * window whose pane grid is drawn by a view that no longer exists (#205 ▸ cleanup
+         * discipline). `kelpi.workspace` is the bundled pane grid; the contributed slot goes with
+         * its plugin, so emptying it is what "back to nothing" means there.
+         */
+        try {
+            await settings();
+            await select('workspace', 'kelpi.workspace');
+            await select(`${lab}.notes-slot`, '').catch(() => {});
+            await page.click('[data-testid="settings-close"]');
+        } catch (error) {
+            rec.note(`cleanup: the workbench placements go back to bundled — ${error instanceof Error ? error.message : String(error)}`);
+        }
         await cli.run(['plugin', 'service-select', 'kelpi.files', 'default']);
         await cli.run(['plugin', 'remove', lab]);
         await cli.run(['plugin', 'remove', dependency]);

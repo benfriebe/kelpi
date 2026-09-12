@@ -50,69 +50,96 @@ export const covers = [
     'packages/daemon/src/handlers/app/events.ts'
 ];
 
+/**
+ * The weakest window placement this scenario can be trusted at (#206, #109).
+ *
+ * This file's whole precondition is the app going INACTIVE: `harness.hide()` is `app.hide()`, and
+ * the two checks below read `document.visibilityState === 'hidden'` and the dock bounce that only
+ * happens while the app is inactive. At the lane's `hidden` placement the window is already a
+ * zero-opacity frame, and whether AppKit then reports the hide at all depends on what else is on
+ * the screen (`ui-audit/README.md` ▸ The placements). Measured on 2026-09-13: behind
+ * `confirm-dialog-keys` at `hidden` it is 5/7 - the page still reads `visible` 8 s after the hide -
+ * and at `offscreen` it is 7/7 in 1.8 s, run for run. #109 recorded this scenario as "a scenario
+ * whose occlusion precondition the environment could not meet" and it cost a promote; declaring the
+ * placement is what makes that precondition the runner's job rather than the weather's.
+ */
+export const windowPlacement = 'offscreen';
+
 export default async function ({ page, harness, cli, rec, d, sleep }) {
-    const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));
-    const paneID = created.pane_id;
-    rec.check('created a pane to play the agent in', typeof paneID === 'string' && paneID.length > 0, JSON.stringify(created));
-    const env = { KELPI_PANE_ID: paneID };
-    await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${paneID}"]')`, { ceilingMs: 5_000 });
-
-    await harness.blur();
-    const win = await harness.window();
-    rec.check('the window is unfocused, so the SHELL would allow a bounce', win.focused === false, JSON.stringify(win));
-
     /*
-     * The other half, and the one that actually decides whether a bounce is ever requested.
-     *
-     * Driven, not waited for: `hide` is `app.hide()` on macOS, the same call ⌘H makes, and it
-     * takes the window out of AppKit's visible set with nothing needing to cover it. Every
-     * placement reaches this state the same way, which is what makes the check below a reading
-     * of the product rather than of the screen.
+     * This scenario blurs AND hides the app on purpose, and both are the next scenario's problem
+     * if they are left standing. In the lane `harness.blur()` means "make the page believe it is
+     * not focused": it turns CDP focus emulation off (driver.mjs ▸ setPageFocusEmulation), because
+     * the lane's window is never the key window, and a page that believes it is unfocused takes
+     * every later chord and every `navigator.clipboard` call with it. The restore-and-focus pair
+     * used to be the last lines of the happy path, so any throw above them leaked both; they are a
+     * `finally` now, beside the agent pane (#205).
      */
-    const hidden = await harness.hide();
-    rec.note(`hide: ${JSON.stringify(hidden)}`);
-    const wentHidden = await d.settle(async () => (await page.eval(`document.visibilityState === 'hidden'`)) === true, {
-        ceilingMs: 8_000,
-        intervalMs: 100
-    });
-    rec.check(
-        'the page reports itself hidden, so the DAEMON will call the app inactive',
-        wentHidden,
-        wentHidden
-            ? JSON.stringify(hidden)
-            : `the app was hidden through the harness (${JSON.stringify(hidden)}) and document.visibilityState still ` +
-              'reads "visible" 8 s later, so the renderer is not reporting the hide: the daemon will suppress ' +
-              'attention-request and no stop can bounce the dock.'
-    );
+    let agentPane = null;
+    try {
+        const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));
+        const paneID = created.pane_id;
+        rec.check('created a pane to play the agent in', typeof paneID === 'string' && paneID.length > 0, JSON.stringify(created));
+        agentPane = typeof paneID === 'string' ? paneID : null;
+        const env = { KELPI_PANE_ID: paneID };
+        await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${paneID}"]')`, { ceilingMs: 5_000 });
 
-    const start = await harness.counters();
-    rec.note(`counters before: ${JSON.stringify(start)}`);
+        await harness.blur();
+        const win = await harness.window();
+        rec.check('the window is unfocused, so the SHELL would allow a bounce', win.focused === false, JSON.stringify(win));
 
-    // A notification moves the pane to waitingForInput (§7.1) but is NOT the stop path.
-    const session = await cli.run(['event', 'session-start'], { env });
-    rec.note(`session-start: exit ${String(session.code)} ${session.stderr.trim()}`);
-    const notified = await cli.run(['event', 'notification', '--title', 'needs you', '--body', 'a question'], { env });
-    rec.check('event notification was accepted', notified.code === 0, notified.stderr || notified.stdout);
-    await sleep(1_200);
-    const afterNotification = await harness.counters();
-    rec.check('a notification does NOT bounce the dock', afterNotification.dockBounces === start.dockBounces, `${String(start.dockBounces)} -> ${String(afterNotification.dockBounces)}`);
+        /*
+         * The other half, and the one that actually decides whether a bounce is ever requested.
+         *
+         * Driven, not waited for: `hide` is `app.hide()` on macOS, the same call ⌘H makes, and it
+         * takes the window out of AppKit's visible set with nothing needing to cover it. Every
+         * placement reaches this state the same way, which is what makes the check below a reading
+         * of the product rather than of the screen.
+         */
+        const hidden = await harness.hide();
+        rec.note(`hide: ${JSON.stringify(hidden)}`);
+        const wentHidden = await d.settle(async () => (await page.eval(`document.visibilityState === 'hidden'`)) === true, {
+            ceilingMs: 8_000,
+            intervalMs: 100
+        });
+        rec.check(
+            'the page reports itself hidden, so the DAEMON will call the app inactive',
+            wentHidden,
+            wentHidden
+                ? JSON.stringify(hidden)
+                : `the app was hidden through the harness (${JSON.stringify(hidden)}) and document.visibilityState still ` +
+                  'reads "visible" 8 s later, so the renderer is not reporting the hide: the daemon will suppress ' +
+                  'attention-request and no stop can bounce the dock.'
+        );
 
-    // The stop path: the daemon broadcasts attention-request and the shell bounces once.
-    const stopped = await cli.run(['event', 'stop'], { env });
-    rec.check('event stop was accepted', stopped.code === 0, stopped.stderr || stopped.stdout);
-    const bounced = await d.settle(async () => (await harness.counters()).dockBounces === afterNotification.dockBounces + 1, { ceilingMs: 5_000, intervalMs: 100 });
-    const afterStop = await harness.counters();
-    rec.check('a stop bounces the dock exactly once', bounced && afterStop.dockBounces === afterNotification.dockBounces + 1, `${String(afterNotification.dockBounces)} -> ${String(afterStop.dockBounces)}`);
-    rec.note(`counters after: ${JSON.stringify(afterStop)}`);
+        const start = await harness.counters();
+        rec.note(`counters before: ${JSON.stringify(start)}`);
 
-    // Put it back: the battery runs every scenario in ONE sandbox, and a run that left the app
-    // hidden would hand the next scenario a window it cannot click. `restore` before `focus`
-    // because `focus` is `show()` + `focus()` on the WINDOW, which does not undo `app.hide()`.
-    await harness.restore();
-    await harness.focus();
-    await d.settle(async () => (await page.eval(`document.visibilityState === 'visible'`)) === true, {
-        ceilingMs: 5_000,
-        intervalMs: 100
-    });
-    await rec.shot(page, 'after-stop');
+        // A notification moves the pane to waitingForInput (§7.1) but is NOT the stop path.
+        const session = await cli.run(['event', 'session-start'], { env });
+        rec.note(`session-start: exit ${String(session.code)} ${session.stderr.trim()}`);
+        const notified = await cli.run(['event', 'notification', '--title', 'needs you', '--body', 'a question'], { env });
+        rec.check('event notification was accepted', notified.code === 0, notified.stderr || notified.stdout);
+        await sleep(1_200);
+        const afterNotification = await harness.counters();
+        rec.check('a notification does NOT bounce the dock', afterNotification.dockBounces === start.dockBounces, `${String(start.dockBounces)} -> ${String(afterNotification.dockBounces)}`);
+
+        // The stop path: the daemon broadcasts attention-request and the shell bounces once.
+        const stopped = await cli.run(['event', 'stop'], { env });
+        rec.check('event stop was accepted', stopped.code === 0, stopped.stderr || stopped.stdout);
+        const bounced = await d.settle(async () => (await harness.counters()).dockBounces === afterNotification.dockBounces + 1, { ceilingMs: 5_000, intervalMs: 100 });
+        const afterStop = await harness.counters();
+        rec.check('a stop bounces the dock exactly once', bounced && afterStop.dockBounces === afterNotification.dockBounces + 1, `${String(afterNotification.dockBounces)} -> ${String(afterStop.dockBounces)}`);
+        rec.note(`counters after: ${JSON.stringify(afterStop)}`);
+
+        await rec.shot(page, 'after-stop');
+    } finally {
+        // `restore` before `focus`, because `focus` is `show()` + `focus()` on the WINDOW and does
+        // not undo `app.hide()`; and both before anything else, because a hidden app is a window
+        // the next scenario cannot click and an unfocused page is one it cannot type into.
+        await harness.restore();
+        await harness.focus();
+        await d.settle(async () => (await page.eval(`document.visibilityState === 'visible'`)) === true, { ceilingMs: 5_000, intervalMs: 100 });
+        if (agentPane !== null) await cli.run(['pane', 'close', '--target', agentPane]);
+    }
 }

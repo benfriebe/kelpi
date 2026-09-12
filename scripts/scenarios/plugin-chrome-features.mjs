@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { daemonIDFromSandbox, openPlacementSettings, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/chrome-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/interaction/', 'packages/client/src/App.tsx', 'packages/client/src/chrome/'];
@@ -27,10 +28,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const outer = await page.box(selector); await page.clickAt(outer.x + inner.x, outer.y + inner.y);
     };
     const chooseViews = async () => {
-        await page.key('Comma', { modifiers: 4, key: ',' });
-        await d.settleDom(page, `document.querySelector('[data-testid="settings-tab-button-plugins"]')`);
-        await page.click('[data-testid="settings-tab-button-plugins"]');
-        await d.settleDom(page, `document.querySelector('[data-testid="plugin-placements"]')`);
+        if (!await openPlacementSettings(page, d)) throw new Error('Settings did not open on its Plugins tab');
         for (const [slot, view] of [['topbar', 'toolbar'], ['statusbar', 'status']]) await page.eval(`(() => {
             const select = document.querySelector('select[aria-label="${slot}"]'); select.value = '${pluginID}.${view}'; select.dispatchEvent(new Event('change', {bubbles:true}));
         })()`);
@@ -105,9 +103,19 @@ export default async function ({ page, cli, sandbox, rec, d }) {
 
         await cli.ok(['plugin', 'install', path.join(repoRoot, 'examples/plugins/ui-lab'), '--trust']);
         const toggle = async (field, value) => cli.ok(['plugin', 'run', 'example.ui-lab.toggle', '--args', JSON.stringify({ field, value })]);
+        /*
+         * How far one click moves the badge is UI Lab's OWN `step` setting, so it is read rather
+         * than assumed to be the manifest default. `kelpi plugin remove` keeps a plugin's
+         * persisted setting overrides, so a sandbox where `plugin-ui-services` has already run
+         * hands this install a step of 3 and the badge goes 0 → 3 (#198). What this check is about
+         * is that the click REACHED the declared command through the replacement status bar, which
+         * is the same statement at either step.
+         */
+        const step = Number((await json(['plugin', 'settings', 'example.ui-lab'])).step ?? 1);
+        rec.note(`UI Lab's counter step in this sandbox is ${String(step)}`);
         rec.check('other plugins retain their status contributions inside the replacement', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.textContent.endsWith('0')`));
         await click(status, '[data-id="example.ui-lab.counter"]');
-        rec.check('clicking a contributed status item executes its declared command', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.textContent.endsWith('1')`));
+        rec.check('clicking a contributed status item executes its declared command', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.textContent.endsWith('${String(step)}')`), `one click should add the configured step of ${String(step)}`);
         await toggle('enabled', false); rec.check('live enablement disables replacement contribution controls', await check(status, `document.querySelector('[data-id="example.ui-lab.counter"]')?.disabled === true`));
         await toggle('visible', false); rec.check('live visibility removes replacement contribution controls', await check(status, `!document.querySelector('[data-id="example.ui-lab.counter"]')`));
         await toggle('enabled', true); await toggle('visible', true);
@@ -158,6 +166,9 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await d.settleDom(page, `document.querySelector('[data-testid="phone-pane-show-${remotePane.paneID}"]')`);
         await page.click(`[data-testid="phone-pane-show-${remotePane.paneID}"]`);
         rec.check('phone panes report desktop chrome unavailable instead of exposing hidden sidebar controls', await check(remoteFrame, `kelpi.ui.getChrome().then(() => false, error => error.message.includes('unavailable'))`));
+        // Back to the landing page BEFORE the window widens again, while the shell is still
+        // mounted: it is the one tap that forgets where this scenario took the phone.
+        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: originalURL }); await ready();
@@ -173,11 +184,37 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await rec.shot(page, 'chrome-lab-ready');
     } catch (error) { await rec.shot(page, 'failure-live'); throw error; }
     finally {
+        /*
+         * The sandbox, its daemon AND its window outlive this scenario, so every step below is an
+         * undo and none of them is allowed to skip the rest: a throw in the middle of the run
+         * leaves the phone on a remote workspace, both workbench slots naming views that are about
+         * to be removed, and the window on a page this daemon does not serve (#205).
+         */
+        const safely = async (what, step) => {
+            try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
+        };
         observer?.close();
-        fs.writeFileSync(sandbox.configPath, config);
-        await page.send('Emulation.clearDeviceMetricsOverride');
-        await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
-        await page.send('Page.navigate', { url: originalURL }).catch(() => {});
+        // The app settings this scenario wrote (`show-system-stats`) live in the config file, so
+        // putting the file back is what reverts them; the daemon watches it (§1.4).
+        await safely('the config file goes back', () => fs.writeFileSync(sandbox.configPath, config));
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); });
+        await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
+        await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
+        await safely('the window returns to the shell this runner launched', async () => {
+            await page.send('Page.navigate', { url: originalURL });
+            await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 });
+        });
+        // Both slots go back to the BUNDLED views rather than being left naming views that are
+        // about to be removed, and after the navigation above so the selection is made in the
+        // window that keeps it.
+        await safely('both workbench placements go back to bundled', async () => {
+            const restored = await restoreBundledSlots(page, d, { topbar: 'kelpi.topbar', statusbar: 'kelpi.statusbar' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the workbench placements were not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        });
+        await safely('the Settings overlay is closed', async () => {
+            if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
+        });
         await cli.run(['plugin', 'remove', pluginID]); await cli.run(['plugin', 'remove', 'example.ui-lab']);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
         if (remoteDaemon) await remoteDaemon.stop();

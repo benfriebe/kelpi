@@ -94,6 +94,9 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
      * the time the settle returns, and it starts with exactly one full-width pane, which is what
      * the letterbox measurement below needs.
      */
+    const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
+    const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
+    const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
     const created = JSON.parse(await cli.ok(['workspace', 'create', '--name', `Mirror-${TAG}`, '--json']));
     const workspaceID = created.workspace_id ?? created.id;
     rec.check('a workspace of its own', typeof workspaceID === 'string', JSON.stringify(created));
@@ -302,5 +305,18 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     } finally {
         observer.close();
         await sleep(200);
+        /*
+         * The workspace this scenario opened for itself goes when this scenario does. In a battery
+         * every scenario shares one sandbox, and a workspace left behind changes what `Default`
+         * holds, moves every later workspace's ⌘-digit ordinal, and leaves the window looking
+         * somewhere its successor did not choose (#205 ▸ cleanup discipline).
+         */
+        for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
+            if (!initialWorkspaceIDs.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
+        }
+        if (startingWorkspace !== null) {
+            const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;
+            if (await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 8_000 })) await page.click(row);
+        }
     }
 }

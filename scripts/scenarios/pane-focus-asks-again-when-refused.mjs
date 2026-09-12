@@ -136,6 +136,17 @@ export default async function ({ page, cli, rec, d, sleep }) {
 
     // Nothing has clicked a pane at any point in this scenario: this is the keystroke the report
     // says is lost, arriving at the real PTY.
+    /*
+     * ⌃U first, which is readline's kill-to-start. The pane the daemon chose is whichever one
+     * earlier scenarios left in Default, and its input line is not guaranteed to be empty: a
+     * single stray character in front of the marker turns `echo refocus-ok` into a command that
+     * does not exist, `refocus-ok` is never echoed, and the check reads as "the keystroke never
+     * arrived" about a keystroke that arrived perfectly. Measured in two full lanes: the capture
+     * came back `sh-3.2$ secho refocus-ok | sh: secho: command not found` (#205). The kill is not
+     * the assertion - the marker still has to reach the real PTY below - it just makes the line
+     * this types on this scenario's own.
+     */
+    await page.key('KeyU', { modifiers: d.MOD.ctrl, key: 'u', keyCode: 85 });
     await page.type('echo refocus-ok');
     await page.key('Enter');
     let capture = '';

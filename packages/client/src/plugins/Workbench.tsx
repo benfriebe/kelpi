@@ -299,6 +299,24 @@ export function WorkbenchSidebar(props: {
     </div>;
 }
 
+/**
+ * The route BACK to the bundled presenter, said out loud.
+ *
+ * Every root slot's select has always listed the bundled view for the slot - `kelpi.palette` and
+ * `kelpi.prompts` are in `BUNDLED_FEATURE_DEFINITIONS` and in `slotViews`, and selecting one
+ * really does hand the placement back. What the two presented surfaces lack is any OTHER route: a
+ * sidebar or a toolbar shows you which view is drawing, so "Toolbar" in a list reads as the
+ * original, while a palette you replaced looks the same as a palette you did not, and "Command
+ * palette" beside "Interaction Lab palette" does not say which one is the floor. Recovery must
+ * never depend on a guess, so the bundled entry names itself here (the status row below prints the
+ * same word). Only these two placements: the rest are not recovery surfaces.
+ */
+function optionTitle(slot: string, view: ViewContribution): string {
+    return view.pluginID === undefined && (INTERACTION_SLOTS as readonly string[]).includes(slot)
+        ? `${view.title} (bundled)`
+        : view.title;
+}
+
 export function PlacementSettings(): ReactElement {
     const host = useWorkbench();
     const failures = useSyncExternalStore(subscribeInteractionPresenters, interactionPresenterFailures, interactionPresenterFailures);
@@ -306,7 +324,7 @@ export function PlacementSettings(): ReactElement {
         <strong>Workbench views</strong>
         {ROOT_SLOTS.map(slot => <label key={slot} className="flex items-center justify-between gap-3 text-xs">{slot}<select aria-label={slot} value={slot === 'sidebar.primary' || slot === 'sidebar.secondary' ? host.sidebars[slot].id : resolveSlot(host.views, slot, host.selections[slot])?.id ?? ''} onChange={event => host.select(slot, event.target.value)}>
             {slot === 'panel.bottom' ? <option value="">Hidden</option> : null}
-            {host.views.filter(view => view.placements.includes(slot)).map(view => <option key={view.id} value={view.id}>{view.title}</option>)}
+            {host.views.filter(view => view.placements.includes(slot)).map(view => <option key={view.id} value={view.id}>{optionTitle(slot, view)}</option>)}
         </select></label>)}
         {contributedSlots(host.views).map(slot => <label key={slot.id} className="flex items-center justify-between gap-3 text-xs">{slot.title}<select aria-label={slot.id} value={resolveSlot(host.views, slot.id, host.selections[slot.id])?.id ?? ''} onChange={event => host.select(slot.id, event.target.value)}>
             <option value="">Empty</option>{slotViews(host.views, slot.id).map(view => <option key={view.id} value={view.id}>{view.title}</option>)}

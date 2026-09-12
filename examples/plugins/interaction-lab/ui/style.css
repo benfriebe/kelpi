@@ -1,0 +1,41 @@
+/*
+ * Both roots are EXPLICITLY transparent, and that is the load-bearing line in this file.
+ * `color-scheme: dark` makes the UA paint the document's canvas its own opaque dark colour, and a
+ * frame with an opaque canvas composites opaque over the window: the 42% backdrop below then sat
+ * on top of a black sheet and the whole window went dark behind the panel. An author background
+ * wins over the UA's, so the frame is see-through again and the backdrop is the only wash.
+ */
+:root { color-scheme: dark light; font: 13px system-ui, sans-serif; color: var(--kelpi-fg); background: transparent; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; overflow: hidden; background: transparent; }
+[hidden] { display: none !important; }
+/* The bundled prompt backdrop's own wash (`interaction/BundledPrompts.tsx`: rgba(0,0,0,0.4)):
+   the window stays readable behind the panel rather than being blacked out. */
+.backdrop { position: fixed; inset: 0; display: flex; justify-content: center; background: rgb(0 0 0 / 42%); }
+body[data-view="palette"] .backdrop { align-items: flex-start; padding: 12vh 16px 16px; }
+body[data-view="prompts"] .backdrop { align-items: center; padding: 16px; }
+.panel { display: flex; min-height: 0; flex-direction: column; gap: 8px; width: min(620px, 100%); max-height: 100%; padding: 12px; border: 1px solid var(--kelpi-border); border-radius: 10px; background: var(--kelpi-bg); box-shadow: 0 18px 48px rgb(0 0 0 / 45%); }
+.head { display: flex; align-items: center; gap: 8px; }
+.brand { color: var(--kelpi-accent); font-size: 9px; font-weight: 750; letter-spacing: .08em; white-space: nowrap; }
+.spacer { flex: 1; }
+.badge { padding: 1px 6px; border: 1px solid var(--kelpi-border); border-radius: 999px; color: var(--kelpi-fg-secondary); font-size: 10px; white-space: nowrap; }
+.title { margin: 0; font-size: 14px; font-weight: 650; }
+.text { margin: 0; color: var(--kelpi-fg-secondary); font-size: 12px; overflow-wrap: anywhere; }
+input { width: 100%; padding: 6px 8px; border: 1px solid var(--kelpi-border); border-radius: 6px; background: var(--kelpi-surface); color: inherit; font: inherit; }
+input:focus-visible, button:focus-visible, li:focus-visible { outline: 2px solid var(--kelpi-accent); outline-offset: -1px; }
+.rows { display: flex; min-height: 0; flex-direction: column; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.rows li { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.rows li[aria-selected="true"] { background: var(--kelpi-surface); }
+.rows li[aria-disabled="true"] { cursor: default; opacity: .45; }
+/* Every cell is `flex: none` or `min-width: 0` with its own clip: a flex item will not shrink
+   below its content, so one long string used to paint straight over its neighbour. */
+.icon { overflow: hidden; flex: 0 0 16px; width: 16px; color: var(--kelpi-fg-tertiary); font-size: 12px; line-height: 1; text-align: center; }
+.label { min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sub { min-width: 0; flex: 0 1 auto; overflow: hidden; color: var(--kelpi-fg-secondary); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.meta { flex: none; max-width: 40%; overflow: hidden; color: var(--kelpi-fg-tertiary); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.foot { display: flex; align-items: center; gap: 8px; color: var(--kelpi-fg-tertiary); font-size: 10px; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+button { padding: 4px 10px; border: 1px solid var(--kelpi-border); border-radius: 6px; background: var(--kelpi-surface); color: inherit; cursor: pointer; font: inherit; }
+button[data-kind="primary"] { border-color: var(--kelpi-accent); color: var(--kelpi-accent); }
+button[data-kind="danger"] { border-color: #d98282; color: #d98282; }
+#error { color: #e68b89; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { StrictMode, useEffect, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { modalPresenceCount, overlayPresenceCount, registerModal } from '../chrome/modal-presence';
+import { modalPresenceCount, overlayPresenceCount, registerModal, registerOverlay } from '../chrome/modal-presence';
 import { decodePluginManifest } from '@kelpi/protocol';
 import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import type { KelpiRuntime } from '../state';
@@ -188,6 +188,28 @@ describe('shared window prompts', () => {
             await expect(answer).resolves.toBe('preserve me');
             expect(modalPresenceCount()).toBe(0);
         } finally { release(); }
+    });
+
+    /**
+     * The other half of that rule, and the one the presenter failure toast broke: a floating
+     * surface that registers its RECT is not a modal peer, so it never stands a prompt down.
+     * `App.tsx`'s `ToastStack` registers exactly this way (§N26); while it registered a window
+     * modal instead, a toast raised over a live request hid the surface presenting it for the
+     * toast's whole six seconds - the failure toast hiding the dialog that had just taken the
+     * request back being the worst case of it.
+     */
+    it('leaves a visible prompt painted and clickable while a corner overlay such as the toast stack is up', async () => {
+        const { scope } = setup(); let answer!: Promise<unknown>;
+        act(() => { answer = scope.request('ui.showDialog', { title: 'Deploy', message: 'Ship it?', actions: [{ id: 'ship', label: 'Ship' }] }); });
+        const toast = registerOverlay();
+        try {
+            expect(overlayPresenceCount()).toBe(1);
+            // One modal is the prompt's own registration; the toast added none.
+            expect(modalPresenceCount()).toBe(1);
+            expect(screen.getByTestId('plugin-ui-backdrop').style.display).toBe('flex');
+            fireEvent.click(screen.getByRole('button', { name: 'Ship' }));
+            await expect(answer).resolves.toBe('ship');
+        } finally { toast.release(); }
     });
 
     it('keeps notifications actionable without taking focus or registering a window modal', async () => {

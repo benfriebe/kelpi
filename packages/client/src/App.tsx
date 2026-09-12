@@ -123,6 +123,7 @@ import {
     useChromeTheme,
     useHoverKey,
     useModalPresence,
+    useOverlayPresence,
     withAlpha,
     workspaceSwitchHandlers,
     type ChromeAppearance,
@@ -946,7 +947,8 @@ function Shell(props: AppProps): ReactElement {
      * menu that lands over it, and its refusals are its contract: each one means "park the way
      * you always did", which is behaviour the user already knows and must not also read as an
      * error. Toasting it would put a "Poster" card on screen on every right-click — and park the
-     * pane a second time on the way, since a toast is itself a modal surface (§H1).
+     * pane a second time on the way, since a toast registers as a floating surface of its own
+     * (§N26) and parks every pane its box covers.
      *
      * The rejection guard stays for them: `run` was also what kept a dropped socket from
      * surfacing as an unhandled rejection, and a silent verb still must not.
@@ -3110,6 +3112,11 @@ function Shell(props: AppProps): ReactElement {
      * component's state; everything it cannot see (a dialog the SHELL opens, a prompt rendered
      * inside the inspector, a portal menu) registers instead, which is also why a surface added
      * later cannot be forgotten here.
+     *
+     * The toast stack in that list has since moved to the finer registration (§N26): it parks the
+     * panes its corner box covers by registering its RECT, because a window modal is also what a
+     * shared prompt stands down for. It parks the same panes here, where nothing is measurable,
+     * and hides nothing that is up.
      */
     const modalOpen =
         settingsTab !== null || helpOpen || createSheetOpen || anyModalMounted;
@@ -4201,17 +4208,27 @@ interface ToastStackProps {
 
 /** The in-app fallback for a notification the browser would not (or could not) show. */
 function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null {
+    const root = useRef<HTMLDivElement | null>(null);
     /*
      * H1 — a toast is DOM and a web pane's page is a native view drawn over it, so an unparked
      * page simply eats the notification: the one message that says why a gesture did nothing
      * would be painted underneath the thing the user is looking at. `active` rather than an
      * unconditional call because this component is always mounted and paints only when it holds
      * something; the page is handed back the moment the last toast is dismissed or expires.
+     *
+     * §N26 — its RECT, not the window. This was `useModalPresence`, and a window modal is also
+     * what `interaction/surface.ts` stands a PROMPT down for (§2.3): a toast raised while a
+     * request was up hid the surface presenting it for the toast's whole six seconds. The
+     * presenter failure toast is where that showed — the bundled dialog re-presenting the live
+     * request was invisible for exactly as long as the toast explaining the failure was up. A
+     * corner box has no business owning the window: the notification stack beside it registers
+     * its rect for the same reason (`interaction/BundledPrompts.tsx`'s `Notifications`), and an
+     * unmeasured rect still parks every pane, so H1's guarantee above is unchanged.
      */
-    useModalPresence(toasts.length > 0);
+    useOverlayPresence(root, toasts.length > 0);
     if (toasts.length === 0) return null;
     return (
-        <div data-testid="toast-stack" className="absolute bottom-8 right-3 z-40 flex flex-col gap-2">
+        <div ref={root} data-testid="toast-stack" className="absolute bottom-8 right-3 z-40 flex flex-col gap-2">
             {toasts.map((toast) => (
                 <button
                     key={toast.id}

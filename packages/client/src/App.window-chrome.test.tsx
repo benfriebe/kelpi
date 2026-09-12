@@ -14,6 +14,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
+import { modalPresenceCount, overlayPresenceCount } from './chrome/modal-presence';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
@@ -167,12 +168,22 @@ describe('modals park a live web pane (§H1)', () => {
         });
         expect(screen.getByTestId('toast-stack')).toBeTruthy();
         expect(pageVisible()).toBe('false');
+        /*
+         * §N26 — it parks by registering WHERE it is, not by owning the window. jsdom measures
+         * nothing, and an unmeasured rect covers everything, so the park above is the same park
+         * H1 promised. What it must NOT be is a modal peer: `interaction/surface.ts` stands a
+         * prompt down for one of those, so a toast that registered as a modal hid any request
+         * that was up for its whole six seconds.
+         */
+        expect(overlayPresenceCount()).toBeGreaterThan(0);
+        expect(modalPresenceCount()).toBe(0);
 
         act(() => {
             fireEvent.click(screen.getByTestId('toast-stack').querySelector('button') as Element);
         });
         expect(screen.queryByTestId('toast-stack')).toBeNull();
         expect(pageVisible()).toBe('true');
+        expect(overlayPresenceCount()).toBe(0);
     });
 
     it('the command palette still parks it (the four the assembly always knew about)', () => {
@@ -367,8 +378,8 @@ describe('the active-agents delete gate (§H18)', () => {
  * see this at all: they inject a fake command set and never touch the wrapper.
  *
  * The stakes are not one stray card. A poster is asked for on EVERY right-click over a page, and
- * a toast is itself a modal surface (§H1) — so a toasted refusal would park every pane in the
- * window a second time, for the error about the parking.
+ * a toast registers a floating surface of its own (§N26) — so a toasted refusal would park every
+ * pane its box covers a second time, for the error about the parking.
  */
 describe('the poster refuses silently (issue #12)', () => {
     /** `embedded` is what makes a pane ask for a frame, and it is read off the URL. */

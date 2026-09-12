@@ -326,7 +326,19 @@ export function PluginView(props: PluginViewProps): ReactElement {
         });
     }, [props.focused, props.visible, documentHTML, terminalAttachment, props.browser?.available]);
     const problem = unavailable ?? error;
-    return <div ref={root} data-testid={`plugin-view-${paneID ?? viewID}`} className="relative flex h-full min-h-0 w-full flex-col" style={{ color: tokens.textPrimary, background: tokens.surfaceBackground }}>
+    /*
+     * A pane body paints its surface colour so the grid never shows through a loading view. An
+     * interaction PRESENTER is not a body: it is an overlay over the whole content row (the
+     * palette) or the modal portal (the prompts), and an opaque wrapper there paints the window
+     * out - the palette's card and its backdrop end up floating on a solid sheet with the window
+     * gone behind it, which is not what either bundled presenter looks like. The frame itself is
+     * transparent when the view's own root is (`examples/plugins/interaction-lab/ui/style.css`), so
+     * dropping the wrapper's fill is what lets a presenter's backdrop be a backdrop. `problem` is
+     * unreachable here in practice: `interaction/presenter-slot.tsx` mounts a presenter only while
+     * the plugin is present, enabled and connected, and falls back to bundled otherwise.
+     */
+    return <div ref={root} data-testid={`plugin-view-${paneID ?? viewID}`} className="relative flex h-full min-h-0 w-full flex-col"
+        style={{ color: tokens.textPrimary, ...(hasPresenter ? {} : { background: tokens.surfaceBackground }) }}>
         {problem ? <div role="status" className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs"><strong>{plugin?.manifest.name ?? pluginID}</strong><span>{problem}</span><span>Your pane and its state are preserved.</span><button onClick={() => { if (plugin?.enabled && plugin.status === 'failed') void pluginRequest(runtime, 'reload', { pluginID }).catch(error => setError(error.message)); else setAttempt(value => value + 1); }}>Retry</button></div> : null}
         {!problem && !documentHTML ? <div role="status" className="p-4 text-xs">{connection === 'connected' ? 'Loading plugin…' : 'Connecting to daemon…'}</div> : null}
         {documentHTML && !problem ? <iframe ref={frame} data-pane-surface={paneID} title={plugin?.manifest.contributes.views.find(view => view.id === viewID)?.title ?? viewID} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={documentHTML} className="h-full min-h-0 w-full flex-1 border-0" /> : <iframe ref={frame} title="Plugin loading" hidden />}

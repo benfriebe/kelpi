@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Interaction Lab prompts</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="prompts">
+<div id="backdrop" class="backdrop" hidden>
+  <!-- `data-testid` is set only while a request is drawn, so its presence is the signal. -->
+  <section id="panel" class="panel" role="dialog" aria-labelledby="title">
+    <div class="head">
+      <span class="brand">INTERACTION LAB</span>
+      <span id="owner" class="badge" data-testid="lab-prompt-owner"></span>
+      <span class="spacer"></span>
+      <span id="queued" class="meta" data-testid="lab-prompt-queued"></span>
+    </div>
+    <h1 id="title" class="title"></h1>
+    <p id="message" class="text" hidden></p>
+    <p id="detail" class="text" hidden></p>
+    <input id="field" data-testid="lab-prompt-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" hidden>
+    <ul id="items" class="rows" role="listbox" aria-label="Interaction Lab prompt items" hidden></ul>
+    <div id="actions" class="actions"></div>
+    <div class="foot"><span id="error" role="alert" hidden></span></div>
+  </section>
+</div>
+<script type="module" src="prompts.js"></script>
+</body></html>

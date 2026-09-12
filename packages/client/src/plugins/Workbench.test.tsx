@@ -79,6 +79,34 @@ describe('the presented interaction placements', () => {
             { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'sample.present.view' }
         ]) });
     });
+
+    /**
+     * The way BACK, per placement, without touching the other one and without "Restore bundled
+     * views". The bundled presenter is the recovery floor, so its entry is in the list, it says
+     * which one it is, and choosing it hands that placement back on its own.
+     */
+    it('offers the bundled presenter by name in each select, and selecting it hands one placement back', () => {
+        plugins = [presenter()];
+        render(<Harness />);
+        const options = (slot: string): string[] =>
+            [...(screen.getByLabelText(slot) as HTMLSelectElement).options].map(option => `${option.value}=${option.textContent ?? ''}`);
+        expect(options('interaction.palette')).toEqual(['kelpi.palette=Command palette (bundled)', 'sample.present.view=Lab presenter']);
+        expect(options('interaction.prompts')).toEqual(['kelpi.prompts=Prompts and notifications (bundled)', 'sample.present.view=Lab presenter']);
+        // Every other slot keeps its plain titles: these two are the recovery surfaces.
+        expect(options('topbar')).toEqual(['kelpi.topbar=Toolbar']);
+
+        for (const slot of ['interaction.palette', 'interaction.prompts']) {
+            act(() => { fireEvent.change(screen.getByLabelText(slot), { target: { value: 'sample.present.view' } }); });
+        }
+        act(() => { fireEvent.change(screen.getByLabelText('interaction.palette'), { target: { value: 'kelpi.palette' } }); });
+        expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
+            { id: 'interaction.palette', title: 'interaction.palette', viewID: 'kelpi.palette' },
+            // The other placement is untouched: they are selected independently.
+            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'sample.present.view' }
+        ]) });
+        expect((screen.getByLabelText('interaction.palette') as HTMLSelectElement).value).toBe('kelpi.palette');
+        expect(screen.getByTestId('interaction-presenter-status-interaction.palette').textContent).toContain('Bundled');
+    });
 });
 
 describe('workbench composition', () => {

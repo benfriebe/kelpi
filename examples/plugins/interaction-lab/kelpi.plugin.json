@@ -1,0 +1,13 @@
+{
+  "id": "example.interaction-lab",
+  "name": "Interaction Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.interaction-lab.palette", "title": "Interaction Lab palette", "entry": "ui/palette.html", "placements": ["interaction.palette"], "stateVersion": 1 },
+      { "id": "example.interaction-lab.prompts", "title": "Interaction Lab prompts", "entry": "ui/prompts.html", "placements": ["interaction.prompts"], "stateVersion": 1 }
+    ]
+  }
+}

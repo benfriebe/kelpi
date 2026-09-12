@@ -42,11 +42,25 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
 
-## Naming
+## Plugins
 
-Custom panes, replaceable workbench views, and daemon backends are documented in the
-[plugin guide](docs/plugins.md), with a working [Agent Board example](examples/plugins/agent-board).
-This generation uses protocol 2 and `kelpi-v2.db`; see the guide's upgrade and rollback notes.
+Trusted plugins can add custom panes, replace sidebars, desktop bars and native pane
+renderers, and use daemon commands, events and services. They can be developed outside the
+repository and installed as local directories or portable `.kelpi-plugin` packages.
+
+The [plugin roadmap](docs/plugin-roadmap.md) tracks the overall plan, merged phases and
+remaining work. Start with the [development guide](docs/plugin-development.md) to create a
+plugin and test it beside an installed Kelpi; use the [API guide](docs/plugins.md) for supported
+contracts and the [validation record](docs/plugin-validation.md) for results and evidence.
+The [Agent Board example](examples/plugins/agent-board) demonstrates a custom pane and
+workbench views. The [agent handoff](docs/plugin-handoff.md) records the current branch/PR,
+integration baseline, validation limits and the next implementation task.
+
+This generation uses protocol 2 and `kelpi-v2.db`; see the
+[database upgrade notes](docs/plugins.md#database-and-protocol-upgrade) and the separate
+[plugin revision recovery contract](docs/plugins.md#updates-and-recovery).
+
+## Naming
 
 Everything is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
 packages are `@kelpi/*`, the socket is `/tmp/kelpi.sock`, panes carry `KELPI_PANE_ID` /
@@ -70,8 +84,12 @@ and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hoo
 
 Requires Node 24 and pnpm.
 
+For a fresh clone or worktree, first [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout),
+including the vendored terminal engine. To run beside an installed Kelpi, use the
+[private-instance launcher](docs/plugin-development.md#start-a-private-instance).
+
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --filter @kelpi/daemon build        # esbuild → packages/daemon/dist/kelpid.js
 ```
 
@@ -85,9 +103,9 @@ packages/daemon/dist/kelpid.js status
 ```
 kelpid is running (pid 77182)
   version: 0.1.0 (build 1)
-  protocol: 1
+  protocol: 2
   control: /tmp/kelpi.sock
-  discovery: ~/Library/Application Support/kelpid/run/daemon-v1.sock
+  discovery: ~/Library/Application Support/kelpid/run/daemon-v2.sock
   http: http://127.0.0.1:59329
   url: http://127.0.0.1:59329/?token=8f3c…
   run dir: ~/Library/Application Support/kelpid/run
@@ -261,9 +279,13 @@ names the table, id and reason, and `warnings` covers every fallback taken.
 The daemon is the only thing you strictly need — a browser is a complete client. The Electron
 shell adds the native chrome (tray, dock badge, global hotkey, native notifications, web panes).
 
+First [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout);
+the commands below assume the vendored engine has been built and verified.
+
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --filter @kelpi/daemon build     # esbuild → packages/daemon/dist/kelpid.js
+pnpm --filter @kelpi/cli build        # esbuild → packages/cli/dist/kelpi.js
 pnpm --filter @kelpi/client build     # vite    → packages/client/dist
 pnpm --filter @kelpi/shell build      # esbuild → packages/shell/dist/main.js
 
@@ -277,11 +299,11 @@ running when you quit). To use the browser instead, start the daemon yourself an
 ### As an app (`pnpm dist`)
 
 ```bash
-pnpm dist                                          # client + daemon + shell, then electron-forge make
+pnpm dist                                          # daemon + client + CLI + shell, then electron-forge make
 open packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
 ```
 
-`pnpm dist` builds all three bundles and produces, in `packages/shell/out/`:
+`pnpm dist` builds all four bundles and produces, in `packages/shell/out/`:
 
 | artifact | what it is |
 |----------|------------|
@@ -415,7 +437,7 @@ packages/
 ```bash
 pnpm check          # typecheck + the full test suite   (the gate — must stay green)
 pnpm test           # vitest across every package
-pnpm typecheck      # tsc -b protocol core daemon cli, then client + shell
+pnpm typecheck      # tsc -b protocol core daemon cli, then SDK + client + shell
 pnpm --filter @kelpi/daemon watch    # rebuild the bundle on change
 ```
 

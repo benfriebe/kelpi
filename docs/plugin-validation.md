@@ -1,18 +1,80 @@
 # Plugin implementation validation
 
-Validation record for 2026-09-08 and 2026-09-09 in the isolated
-`plugin-extensibility` worktree, based on `084a2bb`. The original implementation was
-validated before it was organized into commits; the native-service follow-up builds on
-`de3fc89` and was also validated before being committed in logical phases. The review stack
-is `feature/plugin-extensibility` → `feature/plugin-native-runtime` →
-`feature/plugin-native-integration` → `feature/plugin-native-sdk`. Environment: macOS arm64, Node 24.15.0,
-pnpm 10.28.1. Tests used private daemons, databases, sockets, ports, home directories, and
-Electron profiles.
+Phase-by-phase record for **2026-09-08 through 2026-09-11**, including merged main `0fe093d`.
+Documentation and current-state reconciliation were updated on **2026-09-12** against
+`ab9be92`; that review is not a new full product test run.
+The [roadmap](plugin-roadmap.md) tracks overall status and PRs; the
+[plugin guide](plugins.md) defines the supported API. Work used isolated implementation
+checkouts and private daemons, databases, sockets, ports and Electron profiles on macOS
+arm64 with Node 24.15.0 and pnpm 10.28.1.
 
-The [plugin guide](plugins.md) describes the implemented API and upgrade requirements.
-The [original audit](plugin-extensibility-audit.md) distinguishes the longer-term design
-from this implementation. This version supports explicitly trusted local plugins; it does
-not implement a marketplace or an untrusted execution runtime.
+## Reading the evidence
+
+Each section records its own tested revision and scope. The latest
+[authoring review](#package-and-recovery-review-fixes-2026-09-11) reports all typechecks,
+**8,369 passing tests** and **70/70 hidden live checks**. The preceding authoring table and
+committed screenshots/JSON are the pre-review baseline. Older results are not new validation
+of the latest merged tree. The documentation refresh's focused setup checks are recorded
+separately below; it did not repeat full product validation.
+
+Durable evidence is checked into [document](audit/plugin-documents/README.md),
+[terminal](audit/plugin-terminals/README.md), [browser](audit/plugin-browser/README.md) and
+[authoring](audit/plugin-authoring/README.md) audit directories. Their READMEs identify which
+reports and images were retained. Other logs and reports were generated only in the named
+implementation worktree; references shown as `out/...` or unlinked `docs/audit/...` paths
+are historical local artifact locations and may no longer exist. A recorded result without
+a committed report remains a narrative record, not a downloadable report.
+
+The sections below preserve failed full-audit assertions, successful focused repeats and
+gates that were not rerun. A completed verification process does not itself establish that
+every UI-audit assertion passed. Phone emulation is distinct from physical-device testing.
+
+## Phase index
+
+- [Current baseline and handoff checks](#documentation-and-handoff-refresh-2026-09-12).
+- [Packages, recovery and authoring](#plugin-packages-recovery-and-authoring-2026-09-10), including [merged review fixes](#package-and-recovery-review-fixes-2026-09-11).
+- [Browser replacement](#browser-pane-replacement-2026-09-10).
+- [Terminal replacement](#terminal-renderer-replacement-2026-09-10).
+- [Toolbar and status](#window-chrome-features-2026-09-10).
+- [Native service providers](#native-service-replacement-2026-09-09).
+- [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
+- [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
+- [Reproduction commands](#reproduce).
+
+## Documentation and handoff refresh (2026-09-12)
+
+The documentation branch `docs/plugin-roadmap` was rebased onto merged main `ab9be92`
+for [PR #164](https://github.com/benfriebe/kelpi/pull/164). The [handoff](plugin-handoff.md)
+records the current worktree/PR, newer native fixes, source entrypoints, setup and acceptance
+for the next agent. Source review found that native replay geometry still stops at the plugin
+bridge; the terminal guides now describe this limitation and the roadmap prioritizes it.
+Palette/prompt presentation remains proposed and unimplemented.
+
+Focused validation on the rebased worktree used Node 24.15.0 and pnpm 10.28.1:
+
+| Check | Result and scope |
+| --- | --- |
+| Fresh worktree bootstrap | Rebuilt the ignored Ghostty bundle from tracked source and WASM in a unique temporary directory, then installed the checkout with the frozen lockfile. No other worktree's generated bundle or `node_modules` was reused. |
+| Embedded engine identity | Both vendor bundles and the installed client's embedded WASM match the tracked 423,289-byte binary, SHA-256 `7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`. |
+| Vendor regression checks | `pnpm exec vitest run packages/client/src/terminal/vendor-engine.test.ts`: **20/20 pass**. |
+| Application builds | Daemon, CLI, client and shell builds pass from that worktree. No app was launched or installed over the user's current Kelpi. |
+| SDK artifact | `pnpm --filter @kelpi/plugin-sdk test:package` passes: packed public files, external browser and Node-only type consumers, and runtime imports. No registry publication. |
+| Documentation | **437 local links**, **20 repository links/anchors** mapped to the checkout, and **79 Markdown tables** checked across **41 documents**. Setup shell syntax passes; the built CLI's global help includes all plugin command groups. |
+
+The vendor build emitted the four previously documented Bun/`fs/promises` declaration
+diagnostics and completed successfully; that is not a clean upstream typecheck claim.
+Initial installation warned about daemon CLI links before its bundle existed, and the client
+build reported chunk-size warnings. Subsequent app builds and the focused vendor checks passed.
+
+Logs remain local in the docs worktree: `out/handoff-vendor-bootstrap.log`,
+`out/handoff-vendor-hash-check.log`, `out/handoff-vendor-tests.log`,
+`out/handoff-{daemon,cli,client,shell}-build.log`, `out/handoff-sdk-package.log` and
+`out/documentation-link-check.json`. These are not committed evidence artifacts.
+
+The previously reported **8,369 tests** and **70 hidden checks** belong to the authoring review
+through `0fe093d`. The newer main changes through PR #185 have their own PR histories; no
+aggregate full-suite, live-scenario, packaged-app or physical-device result for `ab9be92`
+is established by this documentation update. Existing evidence files retain their revisions.
 
 ## Plugin packages, recovery and authoring (2026-09-10)
 
@@ -74,9 +136,9 @@ documents shared operations, local surface attachment, ownership and private ins
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Complete workspace checks | All typechecks pass; 7,357 root tests and 868 shell tests pass (**8,225 total**). One existing optional database test is skipped. | [Check log](../out/plugin-browser-validation/check.log) |
-| Contract PR in isolation | All typechecks and **491 tests** pass in an export containing only the 27 foundational files. | [Typechecks](../out/plugin-browser-validation/contract-typecheck.log), [Tests](../out/plugin-browser-validation/contract-tests.log) |
-| UI PR in isolation | All typechecks and **663 tests** pass in a second export without Browser Lab. The 19 UI files match the export byte-for-byte. | [Typechecks](../out/plugin-browser-validation/features-typecheck.log), [Tests](../out/plugin-browser-validation/features-tests.log) |
+| Complete workspace checks | All typechecks pass; 7,357 root tests and 868 shell tests pass (**8,225 total**). One existing optional database test is skipped. | Check log (local artifact: `out/plugin-browser-validation/check.log`) |
+| Contract PR in isolation | All typechecks and **491 tests** pass in an export containing only the 27 foundational files. | Typechecks (local artifact: `out/plugin-browser-validation/contract-typecheck.log`), Tests (local artifact: `out/plugin-browser-validation/contract-tests.log`) |
+| UI PR in isolation | All typechecks and **663 tests** pass in a second export without Browser Lab. The 19 UI files match the export byte-for-byte. | Typechecks (local artifact: `out/plugin-browser-validation/features-typecheck.log`), Tests (local artifact: `out/plugin-browser-validation/features-tests.log`) |
 | Production outputs | Daemon, CLI, client and shell builds pass. All **18 artifact hashes** match across both final live runs and current outputs. | [Build hashes](audit/plugin-browser/live-hidden/build-manifest.json) |
 | Browser Lab hidden | **59/59** pass against owned loopback pages, including native page identity, navigation, shortcuts, private mode, inspection/batch watches, remote controls and host loss. | [Results](audit/plugin-browser/live-hidden/results.json) |
 | Browser Lab onscreen | **59/59** pass on the same build. Desktop, Tools, Settings coverage and the 390px phone UI were visually inspected. | [Results](audit/plugin-browser/live-onscreen/results.json), [Visual review](audit/plugin-browser/README.md) |
@@ -146,13 +208,13 @@ owning pane/runtime, and the phone bar clears modifiers when its renderer change
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Complete workspace checks | All typechecks pass; 7,198 root tests and 868 shell tests pass (**8,066 total**). One existing optional database test is skipped. | [Check log](../out/plugin-terminals-validation/check.log) |
-| First PR in isolation | All typechecks and 247 focused contract tests pass in an export containing only the foundational layer. | [Typechecks](../out/plugin-terminals-validation/contract-typecheck.log), [Tests](../out/plugin-terminals-validation/contract-tests.log) |
-| Second PR in isolation | All typechecks and 35 focused integration tests pass without Terminal Lab. Its 20 UI files match the validated export byte-for-byte. | [Typechecks](../out/plugin-terminals-validation/features-typecheck.log), [Tests](../out/plugin-terminals-validation/features-tests.log) |
-| Production outputs | Daemon, CLI, client and shell builds pass; cached outputs are checked against their source hashes. The example builds from pinned local dependencies. | [Coherent build/run log](../out/plugin-terminals-validation/final-coherent-build.log), [Artifact hashes](audit/plugin-terminals/live-hidden/build-manifest.json) |
-| Terminal Lab in a hidden instance | 49/49 checks pass, including three four-MiB bursts, resync, renderer handoff/fallback, live search, external-editor save/return, remote clipboard ownership, retained hidden sessions, phone modifiers, direct mouse input and PTY size ownership. | [Results](audit/plugin-terminals/live-hidden/results.json), [Resync evidence](audit/plugin-terminals/live-hidden/recovered-resync-diagnostics.json) |
-| Terminal Lab in an onscreen instance | 49/49 checks pass against the same 14 artifact hashes. Desktop, external-editor and phone screenshots were inspected; terminal backgrounds and the complete phone key bar fit their hosts. | [Results](audit/plugin-terminals/live-onscreen/results.json), [Run log](../out/plugin-terminals-validation/live-onscreen.log), [Visual record](audit/plugin-terminals/README.md) |
-| Existing native regressions | All 48 checks pass: workspace focus 14/14, platform shortcuts 20/20, Copy/Paste 14/14. | [Focus/shortcuts](../out/plugin-terminals-validation/native-regressions/results.json), [Clipboard](../out/plugin-terminals-validation/native-clipboard/results.json) |
+| Complete workspace checks | All typechecks pass; 7,198 root tests and 868 shell tests pass (**8,066 total**). One existing optional database test is skipped. | Check log (local artifact: `out/plugin-terminals-validation/check.log`) |
+| First PR in isolation | All typechecks and 247 focused contract tests pass in an export containing only the foundational layer. | Typechecks (local artifact: `out/plugin-terminals-validation/contract-typecheck.log`), Tests (local artifact: `out/plugin-terminals-validation/contract-tests.log`) |
+| Second PR in isolation | All typechecks and 35 focused integration tests pass without Terminal Lab. Its 20 UI files match the validated export byte-for-byte. | Typechecks (local artifact: `out/plugin-terminals-validation/features-typecheck.log`), Tests (local artifact: `out/plugin-terminals-validation/features-tests.log`) |
+| Production outputs | Daemon, CLI, client and shell builds pass; cached outputs are checked against their source hashes. The example builds from pinned local dependencies. | Coherent build/run log (local artifact: `out/plugin-terminals-validation/final-coherent-build.log`), Artifact hashes (local artifact: `docs/audit/plugin-terminals/live-hidden/build-manifest.json`) |
+| Terminal Lab in a hidden instance | 49/49 checks pass, including three four-MiB bursts, resync, renderer handoff/fallback, live search, external-editor save/return, remote clipboard ownership, retained hidden sessions, phone modifiers, direct mouse input and PTY size ownership. | Results (local artifact: `docs/audit/plugin-terminals/live-hidden/results.json`), Resync evidence (local artifact: `docs/audit/plugin-terminals/live-hidden/recovered-resync-diagnostics.json`) |
+| Terminal Lab in an onscreen instance | 49/49 checks pass against the same 14 artifact hashes. Desktop, external-editor and phone screenshots were inspected; terminal backgrounds and the complete phone key bar fit their hosts. | Results (local artifact: `docs/audit/plugin-terminals/live-onscreen/results.json`), Run log (local artifact: `out/plugin-terminals-validation/live-onscreen.log`), [Visual record](audit/plugin-terminals/README.md) |
+| Existing native regressions | All 48 checks pass: workspace focus 14/14, platform shortcuts 20/20, Copy/Paste 14/14. | Focus/shortcuts (local artifact: `out/plugin-terminals-validation/native-regressions/results.json`), Clipboard (local artifact: `out/plugin-terminals-validation/native-clipboard/results.json`) |
 
 Local workspace/zoom eviction and remote phone mode changes retain their native detach/reattach
 behavior; the same pane/process is replayed on return. Remote desktop zoom retains an actual
@@ -178,9 +240,9 @@ checkouts, and the retained-query change also received an independent review.
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Complete workspace checks | All typechecks pass; 7,233 root tests and 868 shell tests pass (**8,101 total**). One existing optional database test is skipped. | [Check log](../out/plugin-terminal-review-validation/check.log) |
-| Terminal Lab live regressions | **58/58** checks pass in a private background instance. New checks exercise queued queries across resize, delayed attachment caret ownership, empty error recovery, four phone modifier combinations, and exactly one Ctrl+C byte through a browser emulating Linux. | [Results](../out/plugin-terminal-review-validation/live-terminal-final/results.json), [Build hashes](../out/plugin-terminal-review-validation/live-terminal-final/build-manifest.json) |
-| Existing native regressions | **41/41** checks pass: deferred pane focus 7/7, Copy/Paste 14/14, and platform shortcuts 20/20. | [Combined results](../out/plugin-terminal-review-validation/live/results.json) |
+| Complete workspace checks | All typechecks pass; 7,233 root tests and 868 shell tests pass (**8,101 total**). One existing optional database test is skipped. | Check log (local artifact: `out/plugin-terminal-review-validation/check.log`) |
+| Terminal Lab live regressions | **58/58** checks pass in a private background instance. New checks exercise queued queries across resize, delayed attachment caret ownership, empty error recovery, four phone modifier combinations, and exactly one Ctrl+C byte through a browser emulating Linux. | Results (local artifact: `out/plugin-terminal-review-validation/live-terminal-final/results.json`), Build hashes (local artifact: `out/plugin-terminal-review-validation/live-terminal-final/build-manifest.json`) |
+| Existing native regressions | **41/41** checks pass: deferred pane focus 7/7, Copy/Paste 14/14, and platform shortcuts 20/20. | Combined results (local artifact: `out/plugin-terminal-review-validation/live/results.json`) |
 
 The first live run passed every new regression but exposed a timing assumption in the old
 slow-parser test: it waited for the renderer's resync callback before removing its parser
@@ -205,18 +267,18 @@ bounded subscriptions, primary/remote ownership, desktop-only availability and r
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Final typechecks and automated tests | All workspace typechecks pass; 6,967 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | [Final log](../out/plugin-chrome-validation/final-check.log) |
-| Production builds | Daemon, client, CLI and shell build successfully. The isolated Electron runs below use those outputs. | [Final client build](../out/plugin-chrome-validation/build-client.log) |
-| Chrome Lab live scenario | 33/33 checks pass onscreen and 33/33 in a separate background instance. | [Onscreen](../out/plugin-chrome-validation/chrome-live/results.json), [Background](../out/plugin-chrome-validation/chrome-hidden/results.json) |
-| Existing UI regressions | 79 checks pass across UI services, sidebar swaps, confirmation keys, preview shortcuts and workbench replacement. Nested extensions pass all 23 checks in a fresh instance; the combined-run limitation is recorded below. | [Combined run](../out/plugin-chrome-validation/regression/results.json), [Isolated extensions](../out/plugin-chrome-validation/extensions-isolated/results.json) |
-| Contract and feature checks | 50 focused contract tests and 1,619 feature/plugin/App/chrome tests pass. These are also covered by the final full test suite. | [Contracts](../out/plugin-chrome-validation/contracts-tests.log), [Features](../out/plugin-chrome-validation/features-tests.log) |
+| Final typechecks and automated tests | All workspace typechecks pass; 6,967 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | Final log (local artifact: `out/plugin-chrome-validation/final-check.log`) |
+| Production builds | Daemon, client, CLI and shell build successfully. The isolated Electron runs below use those outputs. | Final client build (local artifact: `out/plugin-chrome-validation/build-client.log`) |
+| Chrome Lab live scenario | 33/33 checks pass onscreen and 33/33 in a separate background instance. | Onscreen (local artifact: `out/plugin-chrome-validation/chrome-live/results.json`), Background (local artifact: `out/plugin-chrome-validation/chrome-hidden/results.json`) |
+| Existing UI regressions | 79 checks pass across UI services, sidebar swaps, confirmation keys, preview shortcuts and workbench replacement. Nested extensions pass all 23 checks in a fresh instance; the combined-run limitation is recorded below. | Combined run (local artifact: `out/plugin-chrome-validation/regression/results.json`), Isolated extensions (local artifact: `out/plugin-chrome-validation/extensions-isolated/results.json`) |
+| Contract and feature checks | 50 focused contract tests and 1,619 feature/plugin/App/chrome tests pass. These are also covered by the final full test suite. | Contracts (local artifact: `out/plugin-chrome-validation/contracts-tests.log`), Features (local artifact: `out/plugin-chrome-validation/features-tests.log`) |
 | Diff hygiene | `git diff --check` passes before committing the validated implementation in logical phases. | Git history |
 
 The live scenario exercises real sidebar swaps, layout/input commands, stale target rejection,
 cross-workspace agent navigation, Git changes, daemon metric samples, live contribution
 conditions, shared menus, two clients competing for size control, secondary-daemon isolation,
 direct browser attachment, phone panes, view/window reload, Restart UI and native fallback.
-The [onscreen result](../out/plugin-chrome-validation/chrome-live/plugin-chrome-features-01-chrome-lab-ready.png)
+The onscreen result (local artifact: `out/plugin-chrome-validation/chrome-live/plugin-chrome-features-01-chrome-lab-ready.png`)
 was visually inspected: replacement bars fit their hosts, preserve the native window controls,
 and show other plugins' contributions. Hidden screenshots are not used as visual evidence.
 
@@ -229,7 +291,8 @@ temporary paths, Git/metric setup and touch emulation before both final 33-check
 All testing used private daemons, state, sockets and Electron profiles. The installed Kelpi
 was not replaced. This phase did not rerun the full UI audit or packaged application smoke;
 the records below describe those gates for the preceding phases. Native document-pane
-extraction and plugin distribution remain separate follow-up work.
+extraction and local plugin packaging/recovery were implemented in later phases; see the
+[current roadmap](plugin-roadmap.md).
 
 ### PR #142 review follow-up
 
@@ -239,13 +302,13 @@ workspace/pane targets, cancellation and view disposal retain their existing beh
 
 The 10 new integration tests pass against the fixed example; the same tests fail in nine
 cases against the original PR assets. They exercise the real window UI validator and
-check that every paginated entry remains reachable. See the [fixed results](../out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-fixed.log)
-and [original results](../out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-baseline.log).
+check that every paginated entry remains reachable. See the fixed results (local artifact: `out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-fixed.log`)
+and original results (local artifact: `out/plugin-chrome-review-validation/kelpi-pr142-chrome-lab-baseline.log`).
 
-The complete [workspace check](../out/plugin-chrome-review-validation/check.log) passes all
+The complete workspace check (local artifact: `out/plugin-chrome-review-validation/check.log`) passes all
 typechecks and 7,845 tests (6,977 root and 868 shell); one existing optional test is skipped.
-All four [production builds](../out/plugin-chrome-review-validation/build.log) pass. The updated
-[Chrome Lab scenario](../out/plugin-chrome-review-validation/live/results.json) passes 34/34
+All four production builds (local artifact: `out/plugin-chrome-review-validation/build.log`) pass. The updated
+Chrome Lab scenario (local artifact: `out/plugin-chrome-review-validation/live/results.json`) passes 34/34
 checks in a private hidden instance, including a long agent label and exact pane selection.
 
 ## Native service replacement (2026-09-09)
@@ -267,28 +330,28 @@ the original branch/HEAD, and an unrelated pre-existing stash.
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Typechecks and automated tests | All workspace typechecks pass; 6,661 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | [Verification log](../out/plugin-native-full-verification.log) |
-| Live native-service scenario | 22/22 checks pass onscreen and in two separate concurrent background instances. Includes actual CLI worktree creation, Inspector-opened diffs, graft/restore/removal, native previews, process execution, reload/fallback, and saved text. | [Onscreen](../out/plugin-native-services-live/results.json), [Background](../out/plugin-native-services-hidden/results.json), [Background repeat](../out/plugin-native-services-hidden-repeat/results.json) |
-| Full scenario lane | All 264 checks across 20 scenarios pass on the first attempt against the final source. | [Results](audit/verify-latest/battery/scenarios/results.json) |
-| Full verification battery | All components completed in 21.6 minutes, without component retries. The full audit findings are recorded below; its exit status does not mean every assertion passed. | [Battery report](audit/verify-latest/verify-report.json) |
-| Packaged application smoke | 67/67 checks pass against the rebuilt application. | [Verification log](../out/plugin-native-full-verification.log) |
-| Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children using the rebuilt application's bundled payload and Node. Includes files/processes, CLI routing, restart, and browser/phone clients. | [Results](../out/plugin-native-packaged-validation/results.json) |
-| Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every failing/errored step from the full audit, plus its web-pane prerequisite and console check. | [Report](../out/plugin-native-audit-followup/index.md) |
-| Shutdown ownership | The real-daemon regression confirms provider restoration completes before backend deactivation. | [Focused log](../out/plugin-native-shutdown-tests.log) |
-| Concurrent status completion | The original failure was reproduced deterministically; 76 focused Git/watcher/WS repository tests pass after the fix. | [Reproduction](../out/plugin-status-refresh-red.log), [Tests](../out/plugin-status-refresh-tests.log) |
-| Source and diff hygiene | The validated product, SDK, example, and test sources match the SHA-256 manifest captured before the final battery. Only this validation record changed afterward. `git diff --check` passes. | [Source verification](../out/plugin-native-source-verification.json) |
+| Typechecks and automated tests | All workspace typechecks pass; 6,661 root tests and 868 shell tests pass. One existing optional real-Swift-database test remains skipped. | Verification log (local artifact: `out/plugin-native-full-verification.log`) |
+| Live native-service scenario | 22/22 checks pass onscreen and in two separate concurrent background instances. Includes actual CLI worktree creation, Inspector-opened diffs, graft/restore/removal, native previews, process execution, reload/fallback, and saved text. | Onscreen (local artifact: `out/plugin-native-services-live/results.json`), Background (local artifact: `out/plugin-native-services-hidden/results.json`), Background repeat (local artifact: `out/plugin-native-services-hidden-repeat/results.json`) |
+| Full scenario lane | All 264 checks across 20 scenarios pass on the first attempt against the final source. | Results (local artifact: `docs/audit/verify-latest/battery/scenarios/results.json`) |
+| Full verification battery | All components completed in 21.6 minutes, without component retries. The full audit findings are recorded below; its exit status does not mean every assertion passed. | Battery report (local artifact: `docs/audit/verify-latest/verify-report.json`) |
+| Packaged application smoke | 67/67 checks pass against the rebuilt application. | Verification log (local artifact: `out/plugin-native-full-verification.log`) |
+| Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children using the rebuilt application's bundled payload and Node. Includes files/processes, CLI routing, restart, and browser/phone clients. | Results (local artifact: `out/plugin-native-packaged-validation/results.json`) |
+| Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every failing/errored step from the full audit, plus its web-pane prerequisite and console check. | Report (local artifact: `out/plugin-native-audit-followup/index.md`) |
+| Shutdown ownership | The real-daemon regression confirms provider restoration completes before backend deactivation. | Focused log (local artifact: `out/plugin-native-shutdown-tests.log`) |
+| Concurrent status completion | The original failure was reproduced deterministically; 76 focused Git/watcher/WS repository tests pass after the fix. | Reproduction (local artifact: `out/plugin-status-refresh-red.log`), Tests (local artifact: `out/plugin-status-refresh-tests.log`) |
+| Source and diff hygiene | The validated product, SDK, example, and test sources match the SHA-256 manifest captured before the final battery. Only this validation record changed afterward. `git diff --check` passes. | Source verification (local artifact: `out/plugin-native-source-verification.json`) |
 
 The full UI audit ran **131 steps / 1,636 assertions**, with **4 failed assertions and
 4 step errors**. Every finding matches the preserved pre-native-service baseline, including
 error messages after normalizing ephemeral pane IDs. There are no new failed assertions or
-error steps. The [comparison](../out/plugin-native-baseline-comparison.json) records the exact
+error steps. The comparison (local artifact: `out/plugin-native-baseline-comparison.json`) records the exact
 findings; the full audit is not reported as globally green.
 
 All seven affected steps pass in the fresh-instance **146-assertion follow-up**, without
 application or audit-fixture changes after the full battery. Both reports are retained so the
 isolated results do not hide the long-run findings.
 
-The final [onscreen provider preview](../out/plugin-native-services-live/plugin-native-services-01-native-inspector-markdown-and-diff-providers.png)
+The final onscreen provider preview (local artifact: `out/plugin-native-services-live/plugin-native-services-01-native-inspector-markdown-and-diff-providers.png`)
 was visually inspected. It shows the custom renderer in native Markdown and Diff panes and
 provider-supplied status in Inspector/footer, with the native Workspaces filter unchanged.
 The [service guide](plugin-services.md) records supported contracts and the remaining native
@@ -310,13 +373,13 @@ provider. The implementation boundaries and failure semantics are in the current
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Typechecks and automated tests | All workspace typechecks pass; 6,583 root tests and 868 shell tests pass. The existing optional real-Swift-database test remains skipped. | [Full verification log](../out/plugin-extension-full-verification.log) |
-| Full scenario lane | 242 checks across 19 scenarios pass after the corrected extension scenario is retried in isolation. | [Initial lane](../out/plugin-before-native-verification/battery/scenarios/results.json), [Corrected retry](../out/plugin-before-native-verification/battery/scenario-retry-plugin-extensions/results.json) |
-| Extension scenario | 23/23 checks pass in both onscreen and hidden modes. | [Onscreen](../out/plugin-extension-final-live/results.json), [Hidden](../out/plugin-extension-final-hidden/results.json) |
-| Full verification battery | All components completed in 21.7 minutes. The UI audit findings are recorded below; its exit status does not mean every assertion passed. | [Battery report](../out/plugin-before-native-verification/verify-report.json) |
-| Packaged application smoke | 67/67 checks pass against the rebuilt application. | [Full verification log](../out/plugin-extension-full-verification.log) |
-| Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children running from the new application's bundled payload and Node. | [Results](../out/plugin-extension-packaged-validation/results.json) |
-| Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every step that failed in the full audit, plus its web-pane prerequisite and console check. | [Report](../out/plugin-extension-audit-followup/index.md) |
+| Typechecks and automated tests | All workspace typechecks pass; 6,583 root tests and 868 shell tests pass. The existing optional real-Swift-database test remains skipped. | Full verification log (local artifact: `out/plugin-extension-full-verification.log`) |
+| Full scenario lane | 242 checks across 19 scenarios pass after the corrected extension scenario is retried in isolation. | Initial lane (local artifact: `out/plugin-before-native-verification/battery/scenarios/results.json`), Corrected retry (local artifact: `out/plugin-before-native-verification/battery/scenario-retry-plugin-extensions/results.json`) |
+| Extension scenario | 23/23 checks pass in both onscreen and hidden modes. | Onscreen (local artifact: `out/plugin-extension-final-live/results.json`), Hidden (local artifact: `out/plugin-extension-final-hidden/results.json`) |
+| Full verification battery | All components completed in 21.7 minutes. The UI audit findings are recorded below; its exit status does not mean every assertion passed. | Battery report (local artifact: `out/plugin-before-native-verification/verify-report.json`) |
+| Packaged application smoke | 67/67 checks pass against the rebuilt application. | Full verification log (local artifact: `out/plugin-extension-full-verification.log`) |
+| Packaged plugin runtime | 12/12 checks pass with the remote daemon and plugin children running from the new application's bundled payload and Node. | Results (local artifact: `out/plugin-extension-packaged-validation/results.json`) |
+| Audit follow-up | All 9 steps / 146 assertions pass, with zero step errors or renderer warnings. Covers every step that failed in the full audit, plus its web-pane prerequisite and console check. | Report (local artifact: `out/plugin-extension-audit-followup/index.md`) |
 | Diff hygiene | `git diff --check` passed before committing. The commit series preserves the validated implementation; this record's commit-status wording was updated afterward. | Git history |
 
 The shortcut scenario initially appended its replacement text because its macOS CDP key event
@@ -325,7 +388,7 @@ clicks the actual Save button, and checks the stored override, normalized input,
 state before exercising the new shortcut. No application change was needed for this fixture
 correction. Both modes pass with the corrected input sequence.
 
-The [onscreen composition](../out/plugin-extension-final-live/plugin-extensions-01-nested-workbench-and-plugin-pane.png)
+The onscreen composition (local artifact: `out/plugin-extension-final-live/plugin-extensions-01-nested-workbench-and-plugin-pane.png`)
 was visually inspected: the native terminal grid and custom pane render beside the contributed
 tab container, and Workspaces retains its full-width filter. The preceding live run also
 passed all 22 workbench checks and all 11 native sidebar-swap checks with this same product
@@ -336,7 +399,7 @@ That full UI audit ran **131 steps / 1,636 assertions**, with **4 failed asserti
 no new assertion failures, error steps, or changed error messages (ignoring ephemeral pane
 IDs). The baseline had 5 failed assertions and the same 4 errors. The earlier `sidebar-spring`
 and `phone-settings-sheet` fixture corrections pass in this full run.
-The [comparison](../out/plugin-extension-baseline-comparison.json) preserves the exact findings;
+The comparison (local artifact: `out/plugin-extension-baseline-comparison.json`) preserves the exact findings;
 the full audit is not reported as globally green.
 
 All seven failing/errored steps pass in the **146-assertion isolated follow-up**, without
@@ -349,17 +412,17 @@ validation documentation.
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Plugin implementation `pnpm check` | Typechecks pass; 6,483 root tests + 868 shell tests pass. One existing optional real-Swift-database test is skipped. | [Log](../out/plugin-final-check.log) |
-| Plugin workbench scenario | 15/15 checks: installation, real iframe, host DOM isolation, commands, fresh bridges on reload, state, shortcuts, sidebar replacement, view-error recovery, disable/enable. | [Results](../out/plugin-final-scenarios/results.json) |
-| Plugin remote scenario | 12/12 checks: two real daemons, files/processes/CLI routing, local-state isolation, daemon process restart, state/identity, browser client, phone single-pane view. | [Results](../out/plugin-final-scenarios/results.json) |
-| Packaged plugin scenario | 12/12 checks with the remote daemon and plugin children running from the packaged application's payload and bundled Node. | [Results](../out/plugin-packaged-validation/results.json) |
-| Packaged application smoke | 67/67 checks, including real PTYs, daemon persistence after app quit, and served client assets. | [Full battery log](../out/plugin-full-validation.log) |
-| Full verification battery | Completed all components in 21.3 minutes; all original scenario checks passed. The audit report has the caveats below. | [Preserved battery report](../out/plugin-extension-previous-audit/verify-report.json) |
-| Audit follow-up | 11 steps, 195 assertions, zero failed assertions or step errors. Covers every step that failed or errored in the full run. | [Report](../out/plugin-audit-followup/index.md) |
+| Plugin implementation `pnpm check` | Typechecks pass; 6,483 root tests + 868 shell tests pass. One existing optional real-Swift-database test is skipped. | Log (local artifact: `out/plugin-final-check.log`) |
+| Plugin workbench scenario | 15/15 checks: installation, real iframe, host DOM isolation, commands, fresh bridges on reload, state, shortcuts, sidebar replacement, view-error recovery, disable/enable. | Results (local artifact: `out/plugin-final-scenarios/results.json`) |
+| Plugin remote scenario | 12/12 checks: two real daemons, files/processes/CLI routing, local-state isolation, daemon process restart, state/identity, browser client, phone single-pane view. | Results (local artifact: `out/plugin-final-scenarios/results.json`) |
+| Packaged plugin scenario | 12/12 checks with the remote daemon and plugin children running from the packaged application's payload and bundled Node. | Results (local artifact: `out/plugin-packaged-validation/results.json`) |
+| Packaged application smoke | 67/67 checks, including real PTYs, daemon persistence after app quit, and served client assets. | Full battery log (local artifact: `out/plugin-full-validation.log`) |
+| Full verification battery | Completed all components in 21.3 minutes; all original scenario checks passed. The audit report has the caveats below. | Preserved battery report (local artifact: `out/plugin-extension-previous-audit/verify-report.json`) |
+| Audit follow-up | 11 steps, 195 assertions, zero failed assertions or step errors. Covers every step that failed or errored in the full run. | Report (local artifact: `out/plugin-audit-followup/index.md`) |
 | Diff hygiene | `git diff --check` passes. | Git working tree |
-| Sidebar picker follow-up | Client typecheck passes; 216 focused client tests and 22/22 live workbench checks pass. | [Tests](../out/plugin-sidebar-tests.log), [Scenario](../out/plugin-sidebar-validation/results.json) |
-| Native sidebar placement follow-up | Client typecheck and all 3,221 client tests pass. 45/45 onscreen checks; 33/33 background checks. | [Tests](../out/plugin-sidebar-swap-tests.log), [Onscreen](../out/plugin-sidebar-swap-validation/results.json), [Background](../out/plugin-sidebar-swap-hidden/results.json) |
-| Workspaces filter cleanup | Client typecheck, 219 focused client tests, and 33/33 onscreen checks pass. | [Tests](../out/plugin-filter-cleanup-tests.log), [Scenarios](../out/plugin-filter-cleanup-validation/results.json) |
+| Sidebar picker follow-up | Client typecheck passes; 216 focused client tests and 22/22 live workbench checks pass. | Tests (local artifact: `out/plugin-sidebar-tests.log`), Scenario (local artifact: `out/plugin-sidebar-validation/results.json`) |
+| Native sidebar placement follow-up | Client typecheck and all 3,221 client tests pass. 45/45 onscreen checks; 33/33 background checks. | Tests (local artifact: `out/plugin-sidebar-swap-tests.log`), Onscreen (local artifact: `out/plugin-sidebar-swap-validation/results.json`), Background (local artifact: `out/plugin-sidebar-swap-hidden/results.json`) |
+| Workspaces filter cleanup | Client typecheck, 219 focused client tests, and 33/33 onscreen checks pass. | Tests (local artifact: `out/plugin-filter-cleanup-tests.log`), Scenarios (local artifact: `out/plugin-filter-cleanup-validation/results.json`) |
 
 The final CLI subprocess-routing fix was made during the long audit. Afterward, the complete
 `pnpm check` suite and both plugin scenarios were rerun against the final daemon build.
@@ -400,7 +463,7 @@ The picker menu is clamped inside the viewport so the right Workspaces picker st
 Validation covers all 3,221 client tests, the 22-check plugin workbench scenario, a new 11-check
 native sidebar scenario, and 12 resize-recovery checks. The native scenario verifies filtering,
 resizing, close/reopen, New Workspace, persisted placement/width after reload, and swapping back
-from either picker. Its [onscreen screenshot](../out/plugin-sidebar-swap-validation/sidebar-swap-01-inspector-left-workspaces-right.png)
+from either picker. Its onscreen screenshot (local artifact: `out/plugin-sidebar-swap-validation/sidebar-swap-01-inspector-left-workspaces-right.png`)
 was visually inspected. Both sidebar scenarios also pass in the background mode used by the
 verification runner; screenshots from that mode are not used as visual evidence.
 
@@ -418,7 +481,7 @@ on either side. Placement controls remain in Settings → Plugins → Workbench 
 Inspector/plugin headers. The existing scenarios now use the Settings selects to replace
 Workspaces; they dispatch native select change events and still use pointer input for header
 menus. Both scenarios pass, including saved placement, native swaps, filtering, resizing,
-and plugin recovery. The [updated screenshot](../out/plugin-filter-cleanup-validation/sidebar-swap-01-inspector-left-workspaces-right.png)
+and plugin recovery. The updated screenshot (local artifact: `out/plugin-filter-cleanup-validation/sidebar-swap-01-inspector-left-workspaces-right.png`)
 was visually inspected with Inspector on the left and the full-width Workspaces filter on the
 right. Client typechecking and 219 focused tests pass. The full battery was not repeated for
 this control removal.
@@ -447,10 +510,13 @@ The two additional findings were:
 All those cases passed in the **195-assertion follow-up**, with no application changes to
 the existing sidebar, agent, or workspace behavior. The full audit is therefore not recorded
 as globally green: its baseline failures remain visible, alongside the successful follow-up
-and the two fixture corrections. The [baseline comparison](../out/plugin-baseline-comparison.json)
+and the two fixture corrections. The baseline comparison (local artifact: `out/plugin-baseline-comparison.json`)
 preserves the exact assertion names and step errors for review.
 
 ## Reproduce
+
+First [prepare the checkout](plugin-development.md#prepare-a-source-checkout), including
+the vendored engine and installed-copy hash verification.
 
 ```sh
 pnpm check
@@ -461,10 +527,12 @@ node scripts/scenario.mjs plugin-workbench sidebar-swap stuck-drag-teardown --wi
 KELPI_PLUGIN_PACKAGED=1 node scripts/scenario.mjs plugin-remote --no-build
 ```
 
-The last command requires an existing packaged app. The fresh worktree initially lacked
+The last command requires a packaged app built from the revision being tested. The original
+implementation worktree initially lacked
 the vendored Ghostty engine's ignored `dist/`; validation built it from the checked-in
 vendor source and refreshed the local file dependency. No tracked vendor runtime source
-was changed. Report artifacts under `out/` and `docs/audit/` are local and ignored by Git.
+was changed. `out/` is local output. `docs/audit/` is ignored by default, but selected evidence
+has been explicitly committed; see [Reading the evidence](#reading-the-evidence).
 
 ## Bundled sidebar features and window navigation (2026-09-09)
 
@@ -476,15 +544,15 @@ both sidebars. The [feature guide](plugin-features.md) documents ownership and l
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Full typechecks and tests | `pnpm check` passes: 6,781 root tests and 868 shell tests, 7,649 total. One existing optional real-Swift-database test is skipped. | [Check log](../out/sidebar-feature-validation/check.log) |
-| Development builds | Daemon, client, CLI and shell builds pass in the isolated worktree. | [Build log](../out/sidebar-feature-validation/build.log) |
-| Replacement Sidebar Lab | 30/30 live checks pass with real pointer clicks, text entry and Enter submission. Covers repository errors/status/refresh/diff, terminal create/split/send/capture, workspace create/rename/select, persisted preferences, both placements, reload, disable/fallback/re-enable, remote navigation and separate owner storage. Computed styles and overflow are checked. | [Results](../out/sidebar-feature-validation/sidebar-lab/results.json) |
-| Native sidebar regression | 11/11 checks pass for swapped views, filter, resizing, picker controls and restoration. | [Results](../out/sidebar-feature-swap/results.json) |
-| Existing plugin workbench | 22/22 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-workbench/results.json) |
-| Existing remote plugins | 12/12 checks pass against the final build. | [Results](../out/sidebar-feature-regression/plugin-remote/results.json) |
-| Source consistency | Built client/SDK source remained unchanged through final scenarios. The example script matches the final live run after its pointer interaction fix. Whitespace and JavaScript syntax checks pass. | [Verification](../out/sidebar-feature-validation/source-verification.json), [Hashes](../out/sidebar-feature-validation/source-hashes.json) |
+| Full typechecks and tests | `pnpm check` passes: 6,781 root tests and 868 shell tests, 7,649 total. One existing optional real-Swift-database test is skipped. | Check log (local artifact: `out/sidebar-feature-validation/check.log`) |
+| Development builds | Daemon, client, CLI and shell builds pass in the isolated worktree. | Build log (local artifact: `out/sidebar-feature-validation/build.log`) |
+| Replacement Sidebar Lab | 30/30 live checks pass with real pointer clicks, text entry and Enter submission. Covers repository errors/status/refresh/diff, terminal create/split/send/capture, workspace create/rename/select, persisted preferences, both placements, reload, disable/fallback/re-enable, remote navigation and separate owner storage. Computed styles and overflow are checked. | Results (local artifact: `out/sidebar-feature-validation/sidebar-lab/results.json`) |
+| Native sidebar regression | 11/11 checks pass for swapped views, filter, resizing, picker controls and restoration. | Results (local artifact: `out/sidebar-feature-swap/results.json`) |
+| Existing plugin workbench | 22/22 checks pass against the final build. | Results (local artifact: `out/sidebar-feature-regression/plugin-workbench/results.json`) |
+| Existing remote plugins | 12/12 checks pass against the final build. | Results (local artifact: `out/sidebar-feature-regression/plugin-remote/results.json`) |
+| Source consistency | Built client/SDK source remained unchanged through final scenarios. The example script matches the final live run after its pointer interaction fix. Whitespace and JavaScript syntax checks pass. | Verification (local artifact: `out/sidebar-feature-validation/source-verification.json`), Hashes (local artifact: `out/sidebar-feature-validation/source-hashes.json`) |
 
-The final [onscreen screenshot](../out/sidebar-feature-validation/sidebar-lab/plugin-sidebar-features-01-sidebar-lab-inspector-left-workspaces-right.png)
+The final onscreen screenshot (local artifact: `out/sidebar-feature-validation/sidebar-lab/plugin-sidebar-features-01-sidebar-lab-inspector-left-workspaces-right.png`)
 was visually inspected: Inspector is on the left, Workspaces on the right, with styled controls
 and repository/terminal content in the native pane grid. The other three scenarios use hidden
 private instances; their screenshots are not used as visual evidence. All scenario instances
@@ -510,16 +578,16 @@ The [UI guide](plugin-ui.md) documents conditions, validation, runtime scope and
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Full typechecks and tests | `pnpm check` passes: 6,915 root tests and 868 shell tests, **7,783 total**. One existing optional real-Swift-database test is skipped. | [Final check](../out/plugin-ui-validation/check-complete.log) |
-| Development builds | Daemon, client, CLI and shell builds pass against the final source. | [Build log](../out/plugin-ui-validation/build.log) |
-| UI Lab live scenario | 30/30 checks pass onscreen. Covers real item clicks and caller context, live badges/visibility/enablement, iframe shortcuts, disabled palette rows, grouped settings/ranges, every shared prompt, native shortcut protection, Settings queueing, reload cancellation, reset and recovery. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
-| Preview shortcuts | 6/6 checks pass onscreen against the final build: Markdown/diff iframe focus, exactly one invocation and correct pane/workspace context. | [Final live results](../out/plugin-ui-validation/verified-live/results.json) |
-| Existing UI regressions | Workbench 22/22, remote plugins 12/12, swapped sidebars 11/11 and native confirmation dialogs 10/10 pass in a private background instance. | [Regression results](../out/plugin-ui-validation/regression/results.json) |
-| Actual example backend | 6/6 checks pass through a real PluginService child: activation, concurrent increments, settings, context/item updates, settings events without a mounted view, and reload/persistence. | [Backend results](../out/ui-lab-backend-validation.json) |
-| Source consistency | The committed product, SDK, examples and validation sources match the final hash manifest. Whitespace checks pass. | [Verification](../out/plugin-ui-validation/source-verification.json), [Hashes](../out/plugin-ui-validation/source-hashes.json) |
+| Full typechecks and tests | `pnpm check` passes: 6,915 root tests and 868 shell tests, **7,783 total**. One existing optional real-Swift-database test is skipped. | Final check (local artifact: `out/plugin-ui-validation/check-complete.log`) |
+| Development builds | Daemon, client, CLI and shell builds pass against the final source. | Build log (local artifact: `out/plugin-ui-validation/build.log`) |
+| UI Lab live scenario | 30/30 checks pass onscreen. Covers real item clicks and caller context, live badges/visibility/enablement, iframe shortcuts, disabled palette rows, grouped settings/ranges, every shared prompt, native shortcut protection, Settings queueing, reload cancellation, reset and recovery. | Final live results (local artifact: `out/plugin-ui-validation/verified-live/results.json`) |
+| Preview shortcuts | 6/6 checks pass onscreen against the final build: Markdown/diff iframe focus, exactly one invocation and correct pane/workspace context. | Final live results (local artifact: `out/plugin-ui-validation/verified-live/results.json`) |
+| Existing UI regressions | Workbench 22/22, remote plugins 12/12, swapped sidebars 11/11 and native confirmation dialogs 10/10 pass in a private background instance. | Regression results (local artifact: `out/plugin-ui-validation/regression/results.json`) |
+| Actual example backend | 6/6 checks pass through a real PluginService child: activation, concurrent increments, settings, context/item updates, settings events without a mounted view, and reload/persistence. | Backend results (local artifact: `out/ui-lab-backend-validation.json`) |
+| Source consistency | The committed product, SDK, examples and validation sources match the final hash manifest. Whitespace checks pass. | Verification (local artifact: `out/plugin-ui-validation/source-verification.json`), Hashes (local artifact: `out/plugin-ui-validation/source-hashes.json`) |
 
-The final [dialog screenshot](../out/plugin-ui-validation/verified-live/plugin-ui-services-01-shared-dialog-and-native-contributions.png)
-and [restored UI Lab](../out/plugin-ui-validation/verified-live/plugin-ui-services-02-ui-lab-ready.png)
+The final dialog screenshot (local artifact: `out/plugin-ui-validation/verified-live/plugin-ui-services-01-shared-dialog-and-native-contributions.png`)
+and restored UI Lab (local artifact: `out/plugin-ui-validation/verified-live/plugin-ui-services-02-ui-lab-ready.png`)
 were visually inspected. Native header/footer items fit beside the existing controls, and the
 shared dialog remains legible over the themed example. Hidden-instance screenshots are not
 used as visual evidence. All instances use private state and were stopped afterward.
@@ -533,7 +601,7 @@ settings races, cancellation, queue limits and notification timers.
 The initial UI Lab run passed 23/26 checks. Its three failures were scenario assumptions:
 numeric drafts use a text input, and broad button selectors clicked the dialog/notification
 dismiss control. Corrected selectors and four additional modal checks produce the final
-30/30 run. The original [run](../out/plugin-ui-validation/live/results.json) is retained.
+30/30 run. The original run (local artifact: `out/plugin-ui-validation/live/results.json`) is retained.
 
 The first full check caught an incomplete phone test runtime fixture and unnecessary enabled
 palette-row markup. Both were corrected. A later full check exposed an existing terminal
@@ -561,10 +629,10 @@ artifact, and the terminal vendor guard passes in the complete suite.
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| Full typechecks and tests | `pnpm check` passes: 6,916 root tests and 868 shell tests, **7,784 total**. One existing optional database test is skipped. | [Check log](../out/plugin-pr-validation/check.log) |
-| Development builds | Daemon, client, CLI and shell builds pass. | [Build log](../out/plugin-pr-validation/build.log) |
-| Onscreen scenarios | UI Lab 30/30, replacement Sidebar Lab 30/30, Markdown/diff preview shortcuts 6/6. | [Live results](../out/plugin-pr-validation/live/results.json) |
-| Background regressions | Plugin workbench 22/22, remote plugins 12/12, swapped sidebars 11/11, native confirmation dialogs 10/10. | [Regression results](../out/plugin-pr-validation/regression/results.json) |
+| Full typechecks and tests | `pnpm check` passes: 6,916 root tests and 868 shell tests, **7,784 total**. One existing optional database test is skipped. | Check log (local artifact: `out/plugin-pr-validation/check.log`) |
+| Development builds | Daemon, client, CLI and shell builds pass. | Build log (local artifact: `out/plugin-pr-validation/build.log`) |
+| Onscreen scenarios | UI Lab 30/30, replacement Sidebar Lab 30/30, Markdown/diff preview shortcuts 6/6. | Live results (local artifact: `out/plugin-pr-validation/live/results.json`) |
+| Background regressions | Plugin workbench 22/22, remote plugins 12/12, swapped sidebars 11/11, native confirmation dialogs 10/10. | Regression results (local artifact: `out/plugin-pr-validation/regression/results.json`) |
 | User smoke test | The user ran the isolated development instance and reported the features working. | Session feedback |
 
 All **121 live checks** passed on the first post-rebase run. This validates the integrated

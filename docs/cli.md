@@ -32,13 +32,14 @@ executable), symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by
    call it on every Stop/Start/Notification/SessionStart/SessionEnd fire. These must be
    silent, fast, and never fail (exit 0 even when the app is not running).
 2. **Scripting/orchestration surface**: everything else (`pane`, `workspace`, `group`,
-   `layout`, `open`, `md`, `diff`, `graft`, `web`, `doctor`, `install-hooks`). These are used
+   `layout`, `open`, `md`, `diff`, `document`, `graft`, `web`, `plugin`, `doctor`, `install-hooks`). These are used
    by humans and by orchestrator agents (the `kelpi-agentic` skill), and mostly follow
    request/response semantics with meaningful exit codes.
 
-The CLI has no local state. Everything is one process invocation: parse args, maybe read
-stdin, open a socket, write one newline-terminated JSON object, optionally read the reply,
-print, exit.
+The CLI is not a daemon. Most commands parse arguments, optionally read stdin, send one
+socket request, print a result and exit. Offline plugin authoring commands create or inspect
+local files. `plugin dev` maintains a watch loop and temporary snapshots for its process
+lifetime; its accepted installations and history belong to the daemon.
 
 ### 1.1 Build/packaging (current)
 
@@ -66,7 +67,7 @@ print, exit.
   JSON line and then closes the connection. The client reads until EOF and parses the
   accumulated bytes as one JSON object. Success replies are `{"ok": true, ...}`; failures
   are `{"ok": false, "error": "<message>", ...extra fields...}`.
-- Streaming (only `web-console` with `"follow": true`): after the first reply line the
+- Streaming (including `web-console` with `"follow": true`, `plugin watch` and `document watch`): after the first reply line the
   server keeps the connection open and writes one JSON object per line per event until the
   client closes or the server ends the stream.
 
@@ -97,7 +98,8 @@ kelpi <subcommand> [args...]
 ```
 
 Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, `md`,
-`diff`, `graft`, `web`, `doctor`, `install-hooks` (section 17), plus the pseudo-subcommands
+`diff`, `document`, `graft`, `web`, `plugin` ([plugin commands](#plugin-commands)), `doctor`,
+`install-hooks` (section 17), plus the pseudo-subcommands
 `--version`/`version` (`packages/cli/src/cli.ts:43`) and `--help`/`-h`/`help`
 (`packages/cli/src/cli.ts:47`, via `isHelpToken`, `packages/cli/src/args.ts:103`).
 
@@ -131,7 +133,7 @@ reply.
 | `KELPI_SILENT` | fire-and-forget failure path | If set (to anything), fully suppress the transport-failure `Warning:` stderr lines on fire-and-forget commands. Exit code is unchanged (0). |
 | `KELPI_VERBOSE_HOOKS` | `kelpi event ...` only | `kelpi event` auto-suppresses fire-and-forget warnings (hooks fire constantly and would spam terminals when Kelpi is closed). Setting `KELPI_VERBOSE_HOOKS` (to anything) re-enables the warnings for event commands. |
 | `HOME` | table rendering, doctor | Used to render `~`-relative cwd in `pane list`, and to resolve `~/.claude` / `~/.codex` in doctor's hooks checks (falls back to the passwd-database home directory when `HOME` is unset). |
-| `KELPI_REQUIRE_SOCKET` | transport selection | The sandbox-harness guard. If set (to anything), the silent unix fallback above becomes a refusal to dial at all: any invocation whose `KELPI_SOCKET` does not name a well-formed `tcp:` route fails with `requiredSocketUnmet` (request/response commands exit 1; fire-and-forget commands keep their exit-0 warning contract) and `/tmp/kelpi.sock` is never touched. Set by sandboxed harnesses (ui-audit, smokes, verify.mjs) so a stale or missing route env can never silently address the live daemon. Not for normal interactive use. |
+| `KELPI_REQUIRE_SOCKET` | transport selection | If set (to anything), the silent Unix fallback above becomes a refusal to dial: a `KELPI_SOCKET` without a well-formed `tcp:` route fails with `requiredSocketUnmet` (request/response commands exit 1; fire-and-forget commands keep their exit-0 warning contract), and `/tmp/kelpi.sock` is never touched. Used by isolated test instances and plugin backends/managed processes to preserve their daemon route. Set it with the printed private socket when developing plugins beside the installed app; see [development](plugin-development.md#start-a-private-instance). |
 | `KELPI_PROFILE` | `kelpi event ...` only | The effective profile name the pane's PTY was spawned with (injected by the daemon). Hooks attach it beside `session_id` (the wire `profile` field) so the daemon can resume the session under the same profile (agent-lifecycle.md §6.1). Non-empty only; every other command ignores it. |
 | `KELPI_CLI_VERSION` / `KELPI_CLI_BUILD` | `--version`, doctor | Runtime overrides for the compiled-in `CLI_VERSION` / `CLI_BUILD` (3.1), for a packaging step to stamp identity without a rebuild. Trimmed; empty means no override (`packages/cli/src/version.ts:21`). |
 | `KELPID_RUN_DIR` | doctor's `process` check | Overrides the daemon run dir where the `daemon-v<PROTOCOL_VERSION>.pid` record is looked up (16.4). A leading `~` expands to `$HOME` (`packages/cli/src/doctor/checks.ts:192`). |
@@ -2077,7 +2079,9 @@ state keep working; each explains why the code does something that would otherwi
     the `…` short-uuid form, `-` placeholders, the `●` active marker, and full pane UUIDs
     in `pane list` (issue #240).
 18. **Timeout envelope**: default 5s (`KELPI_REPLY_TIMEOUT` override), 2s ping, 120s
-    worktree create, `wait`/`exec` padded by +5s over their logical timeouts. A daemon
+    worktree create, `wait`/`exec` padded by +5s over their logical timeouts, and 35s for
+    one-shot plugin/document requests. `plugin dev` installations disable the CLI read
+    timeout so their temporary source remains available until the daemon replies. A daemon
     reply path that can exceed these must be extended in both places.
 19. **`--json` output shapes differ by family** and scripts depend on them: pane mutation
     verbs and sync strip the `ok` key (compact, sorted); `workspace create`/`label`,
@@ -2088,3 +2092,108 @@ state keep working; each explains why the code does something that would otherwi
     real deadlock at >16KB of child output; `packages/cli/src/proc.ts` uses
     `child_process.execFile`, which drains stdout and stderr concurrently, and any
     replacement must do the same.
+
+---
+
+## Plugin commands
+
+Source: [plugin.ts](../packages/cli/src/commands/plugin.ts),
+[plugin-scaffold.ts](../packages/cli/src/commands/plugin-scaffold.ts), and
+[plugin-dev.ts](../packages/cli/src/commands/plugin-dev.ts).
+`kelpi plugin` defaults to `list`. `kelpi plugin --help` (also `help` or `-h`) prints the
+complete plugin usage to stdout and exits 0. Use this dedicated help for authoring and
+revision verbs.
+
+```text
+kelpi plugin init <directory> --id <namespaced-id> [--name <title>] [--template pane|sidebar|document|browser]
+kelpi plugin validate <directory|file.kelpi-plugin> [--json]
+kelpi plugin pack <directory> --out <file.kelpi-plugin> [--json]
+kelpi plugin dev <directory> --trust
+kelpi plugin list [--json]
+kelpi plugin contributions [--json]
+kelpi plugin install <directory|file.kelpi-plugin> --trust
+kelpi plugin history <plugin-id> [--json]
+kelpi plugin rollback <plugin-id> [--revision <sha256>]
+kelpi plugin enable|disable|reload|remove|logs <plugin-id>
+kelpi plugin open <plugin-id> <view-id> [--workspace <id>] [--state <json>]
+kelpi plugin run <command-id> [--args <json>] [--workspace <id>] [--pane <id>]
+kelpi plugin settings <plugin-id> [--key <key> --value <json>]
+kelpi plugin services [--json]
+kelpi plugin service-call <service-id> <method> [--version <n>] [--provider <id>] [--args <json>]
+kelpi plugin service-select <service-id> <provider-id|default> [--version <n>]
+kelpi plugin watch
+```
+
+Results are JSON by default; `--json` does not select a different renderer. One-shot daemon
+replies print their `result` field as JSON with two-space indentation, omitting the outer
+`ok` envelope. Ordinary one-shot requests use a 35-second read timeout. Argument, package,
+transport and daemon errors exit 1. Extra positional arguments are rejected.
+
+### Offline authoring
+
+`init`, `validate` and `pack` operate on the CLI machine without contacting a daemon or
+executing plugin code. `init` requires `--id`, defaults the display name to that ID and the
+template to `pane`, and refuses an existing destination directory. It returns
+`{path, pluginID, viewID}`. Templates and their placements are described in
+[plugin development](plugin-development.md#create-and-edit-a-project).
+
+`validate` reports format, ID/name/version, API version, dependencies, content revision,
+file count, total bytes and per-file sizes/digests. `pack` requires a source directory and
+an unused output path in an existing directory outside that source. Its report adds the
+artifact path, archive size and artifact SHA-256. Packing does not install or publish it.
+The [package contract](plugins.md#package-format) defines portable path and size limits.
+
+### Daemon operations and version selection
+
+Daemon requests use the `plugin` wire command with `action` and a JSON object encoded in
+`text`. Plugin fields use names such as `pluginID`, `viewID`, `workspaceID` and `paneID`.
+`install` resolves its source path on the CLI machine and sends that path; the source must
+also exist at that path on the daemon machine. It does not upload local files.
+
+Installation requires `--trust`. Paired devices can use installed views and commands, but
+install/dev-install, enable/disable/reload/remove, history/rollback and service-provider
+selection require the daemon owner. `reload` restarts installed bytes; reinstall or `dev`
+copies edits. Reinstalling a healthy, enabled, unchanged revision is a no-op.
+
+`history` reports the selected and retained revisions, original installation times and
+compatibility problems. `rollback` selects the most recently selected other revision unless
+`--revision` supplies its full 64-character lowercase SHA-256 identity. It can select a
+newer retained build as well. The daemon rechecks package bytes, dependencies and saved state
+before switching. See [updates and recovery](plugins.md#updates-and-recovery).
+
+`open` creates a view declaring the `pane` placement; its optional state must be a JSON
+object. Native document/terminal/browser replacements attach to existing native panes.
+`run` invokes a declared command with JSON object arguments. `settings` reads defaults plus
+stored overrides; writing requires both `--key` and a JSON `--value`. Service calls default
+to version 1 and require a positive integer version; `service-select ... default` clears
+the saved provider choice. The [plugin reference](plugins.md) covers API behavior and scope.
+
+### Watching and live development
+
+`watch` streams the daemon's initial `{ok, epoch, sequence, state}` envelope and subsequent
+`{ok, event}` lines unchanged. Ctrl-C exits 130; a transport failure exits 1. Closing the
+connection releases the subscription.
+
+`dev` requires a directory and explicit `--trust`. Run it on the daemon machine: its
+temporary snapshots are passed by filesystem path. It checks the daemon's `plugin-dev`
+capability, pins its stable identity, and sends that identity with every `dev-install`.
+The daemon verifies it before queueing the serialized installation. The initial identity
+request uses 35 seconds; each install disables the CLI read deadline to keep its snapshot
+available while the daemon finishes.
+
+The watcher polls bounded package reads at a one-second interval. A valid first read at
+startup installs immediately; later changes must match on consecutive reads. Installs run one at
+a time against captured bytes. The first valid manifest pins the plugin ID. Invalid edits
+and failed updates leave the previous working revision available and watching continues;
+an unchanged failed revision is not repeatedly retried. Change bytes or restart dev to retry.
+
+Dev output consists of JSON-line events: `watching` includes `path`; `applying` and `applied`
+include `pluginID` and `revision`; `invalid` includes `error`; `failed` includes the identity
+and error; `stopped` includes the signal. Ctrl-C/SIGTERM stops new polls, waits for an
+in-flight install, removes temporary snapshots and leaves the selected revision installed.
+The exit codes are 130 and 143 respectively.
+
+Use the [private-instance workflow](plugin-development.md#start-a-private-instance) to test
+without replacing installed Kelpi. The [roadmap](plugin-roadmap.md) tracks overall progress,
+and the [validation guide](plugin-validation.md) lists feature-specific acceptance checks.
+Native document commands are documented in the [document guide](plugin-documents.md#cli).

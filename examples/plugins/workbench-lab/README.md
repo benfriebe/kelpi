@@ -3,9 +3,10 @@
 A build-free example of custom panes, nested workbench containers, operation hooks, and
 service providers using Kelpi plugin API version 1.
 
-Start an [isolated development instance](../../../docs/plugins.md#try-the-example), then
-install `examples/plugins/agent-board` and this directory through that instance's
-Settings → Plugins. Workbench Lab declares Agent Board as a required dependency.
+Start an [isolated development instance](../../../docs/plugin-development.md#start-a-private-instance),
+then install the absolute paths to `examples/plugins/agent-board` and this directory through
+that instance's Settings → Plugins, in that order. Workbench Lab declares Agent Board as a
+required dependency.
 
 In **Workbench views**, choose **Workspace with tools** for the workspace placement. The
 native pane grid appears beside a contributed Dashboard/Notes tab container. Each named
@@ -22,6 +23,12 @@ service. Dashboard reads gain a `[Workbench Lab]` prefix; the provider delegates
 file access to the bundled implementation. Disabling Agent Board stops its dependent Lab
 views/provider; enabling it restores the saved layout and provider selection.
 
-Edit these files and install the directory again to update the running example. Reload
-restarts the installed copy. See the [authoring guide](../../../docs/plugins.md) for the
-container schema, API contracts, lifecycle behavior, and supported extension boundaries.
+Using the development guide's `kelpi_test` helper from the checkout root, run
+`kelpi_test plugin dev examples/plugins/workbench-lab --trust` to apply source edits. Reload
+restarts the installed copy. Settings → Plugins → Versions selects retained revisions that
+remain compatible with enabled dependencies and saved view state.
+
+Run `node scripts/scenario.mjs plugin-extensions --window hidden` for the interaction scenario;
+use `--window onscreen` for screenshots. See the [authoring guide](../../../docs/plugins.md) for
+container schemas and lifecycle behavior, the [validation record](../../../docs/plugin-validation.md)
+for dated runs, and the [plugin roadmap](../../../docs/plugin-roadmap.md) for overall progress.

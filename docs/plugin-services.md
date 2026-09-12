@@ -5,6 +5,10 @@ all at version 1. A selected provider replaces the listed native adapter on that
 The high-level CLI/UI commands continue to enforce their own workspace, pane, and state rules.
 Service calls return direct values; they do not use the command API's `{ok, ...}` reply envelope.
 
+The [plugin roadmap](plugin-roadmap.md) places these adapters within the overall extension
+scope. Use the [development guide](plugin-development.md) for private instances, SDK artifacts,
+dev watching and package installation.
+
 The [public service map](../packages/plugin-sdk/services.d.ts) describes every method's input
 and result. `api.services.call(service, 1, method, args)` infers those types. All arguments are
 JSON; cancellation travels through the host invocation rather than an `AbortSignal` field.
@@ -21,11 +25,14 @@ is recursive and fails.
 The runnable [Service Lab](../examples/plugins/service-lab) delegates all Git primitives and
 managed processes to bundled implementations, records call history, and marks native previews.
 
+Use `kelpi_test` from the development guide to keep these commands on your private daemon.
+The provider in this example must already be installed:
+
 ```sh
-kelpi plugin services
-kelpi plugin service-call kelpi.git getCurrentBranch --args '{"repoPath":"/code/project"}'
-kelpi plugin service-select kelpi.content.render example.presentation.renderer
-kelpi plugin service-select kelpi.content.render default
+kelpi_test plugin services
+kelpi_test plugin service-call kelpi.git getCurrentBranch --args '{"repoPath":"/code/project"}'
+kelpi_test plugin service-select kelpi.content.render example.presentation.renderer
+kelpi_test plugin service-select kelpi.content.render default
 ```
 
 The CLI defaults to version 1; use `--version` for a different custom contract. Selecting
@@ -168,3 +175,15 @@ timeouts, activation failures, recursion guards, and recovery behavior are descr
 [authoring guide](plugins.md#service-providers). Terminal subscriptions, state replication,
 authentication, workbench ownership, and editor save lifecycle require their existing native
 protocols and are outside these four service contracts.
+
+## Updates and validation
+
+`plugin dev` can apply provider changes while preserving the daemon's selected provider IDs.
+Revision switches restart plugin backends and reset their in-memory data. The daemon rejects
+changes that break enabled required dependencies and restores the previous selection when
+candidate activation fails. Successful revisions do not rewind saved data, and trusted code's
+external effects cannot be undone by code rollback. See [updates and recovery](plugins.md#updates-and-recovery).
+
+Run `node scripts/scenario.mjs plugin-native-services --window hidden` for Service Lab's
+native adapter flows. Use `--window onscreen` for visual inspection. The
+[validation record](plugin-validation.md) identifies the source revisions and results of past runs.

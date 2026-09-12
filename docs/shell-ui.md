@@ -6,6 +6,12 @@ and the web client renders this chrome, inside the Electron shell or in a plain 
 Sizes are given in CSS-pixel-equivalent points; treat them as a starting layout, not a pixel
 contract.
 
+This inventory describes bundled chrome and native pane behavior. The
+[sidebar](plugin-features.md), [toolbar/status](plugin-chrome.md),
+[document](plugin-documents.md), [terminal](plugin-terminals.md) and
+[browser](plugin-browser.md) contracts allow replacement views while Kelpi retains native
+session ownership and recovery. [Custom plugin panes](plugins.md) participate in the same grid.
+
 Where the behavior lives: the client chrome in `packages/client/src/chrome/` (TopBar, Sidebar,
 sidebar-model, SidebarResizer, Inspector, CommandPalette, palette, StatusFooter, HelpOverlay,
 ContextMenu, NewWorkspaceSheet, QuitConfirmDialog, theme, presets, icons), the pane grid in
@@ -21,7 +27,8 @@ daemon (`packages/protocol/src/ws/settings.ts`).
 
 ## 1. Window structure
 
-One main window. Vertical stack:
+One main window. Default vertical stack, with bundled Workspaces on the left and Inspector
+on the right; either sidebar can host either feature or a compatible plugin:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -46,7 +53,8 @@ One main window. Vertical stack:
   are app-level booleans toggled by keybindings (`toggle_sidebar`, default ⌘⇧S;
   `toggle_inspector`, default ⌘I) and by the title-bar controls. Toggling animates
   (default ease, ~0.25s).
-- Sidebar has a 1px divider line on its trailing edge (theme `divider` color) and an
+- Workspaces has a 1px divider line on the edge nearest the pane grid (theme `divider`
+  color: its right edge when placed left, or its left edge when placed right) and an
   invisible resize handle at that edge: zero-width strip with a ±3pt hit inset, shows a
   left-right resize cursor on hover, drag adjusts width clamped to **[180, 300]** (measured
   from the width at gesture start, so the edge tracks the cursor). The width is client-local
@@ -349,7 +357,7 @@ frame, with these overlays:
 - **Drag translucency**: the pane being header-dragged renders at 50% opacity.
 - Background behind non-shell bodies: ghostty background color/opacity (see §2).
 
-Body by pane type:
+Default body by pane type:
 
 - `shell`: the terminal surface (ghostty-web).
 - `markdown`: preview (rendered HTML in a sandboxed content frame,
@@ -360,6 +368,12 @@ Body by pane type:
   refresh button; view-local per grid, not persisted).
 - `web` — the embedded browser pane (own subsystem; the grid supplies tabs/activeTab/
   private flag/favourites and ~20 callbacks; see the web-pane spec).
+- `plugin` — an isolated plugin view with persisted plugin/view identity and versioned JSON
+  state; an unavailable plugin displays recovery controls while retaining that descriptor.
+
+Document, terminal and browser feature hosts can select compatible plugin renderers for
+their native bodies. Their pane types and native buffers, PTYs or browser pages remain owned
+by Kelpi. The bundled components listed above remain the default and fallback renderers.
 
 Clicking anywhere in any pane body (including web views and editors) emits a
 pane-focused event that drives `focusPane` — every pane type participates in the same
@@ -384,7 +398,7 @@ Left-to-right contents:
    - shell → a 10pt circle colored by status: `running` → `statusRunning`,
      `waitingForInput` → `statusWaiting`, `idle` → `textTertiary` (halved opacity when
      the pane isn't focused). Color transitions animate ~0.3s.
-   - markdown → document icon; scratchpad → note icon; diff → `±` icon; web → globe
+   - markdown/plugin → document icon; scratchpad → note icon; diff → `±` icon; web → globe
      icon; all secondary-colored.
 2. **Label chip** (if `pane.label` set and type ≠ markdown): small tag icon + label text
    (10pt monospace), accent-colored text on accent @ 0.12 rounded fill.
@@ -394,6 +408,7 @@ Left-to-right contents:
    - markdown → file basename
    - diff → `"diff: <basename of filePath, or of workingDirectory if no filePath>"`
    - shell/web → `pane.title ?? pane.workingDirectory`, home-abbreviated (`~/…`)
+   - plugin → `pane.label ?? pane.title ?? "Plugin view"`
 4. **ZOOM badge** (only when the workspace is zoomed AND has >1 pane): orange badge
    (expand icon + "ZOOM", 10pt mono, orange @ 0.12 fill); clicking it un-zooms.
    Tooltip "Toggle zoom".
@@ -939,7 +954,8 @@ Command-palette confirms also set this target so a far-away workspace scrolls in
 
 ## 6. Inspector
 
-Right-hand panel, fixed width **280**, sidebar background, only rendered when visible AND
+Inspector is on the right by default and can be placed on the left. It retains its fixed
+width **280** and sidebar background, and is only rendered when visible AND
 a workspace is active. Header row "Inspector" + ×-circle close button, then a divider,
 then a scrollable stack of three sections (12pt padding, dividers between):
 

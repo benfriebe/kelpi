@@ -3,15 +3,18 @@
 A build-free, UI-only replacement toolbar and status bar. Both use `window.kelpi.ui` and
 receive their state from `onChrome`; there are no native imports or backend processes.
 
-Start an isolated instance from the repository root:
+First [prepare the source checkout](../../../docs/plugin-development.md#prepare-a-source-checkout),
+then start an isolated instance from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/plugin-chrome-playground
 ```
 
-In its Settings → Plugins, install `examples/plugins/chrome-lab`, then select **Chrome Lab
+In its Settings → Plugins, install the absolute path to `examples/plugins/chrome-lab`, then select **Chrome Lab
 toolbar** for `topbar` and **Chrome Lab status** for `statusbar`. Keep using that instance's
-CLI and socket so testing stays separate from your installed Kelpi.
+CLI and socket so testing stays separate from your installed Kelpi. The
+[development guide](../../../docs/plugin-development.md#start-a-private-instance) provides a
+`kelpi_test` helper for an external terminal.
 
 The toolbar provides physical sidebar toggles, layout selection, input synchronisation,
 connection status, size control and the shared window command menu. The status bar shows the
@@ -25,7 +28,11 @@ Remote-owned plugin panes cannot access another daemon's window chrome.
 
 Settings, Plugins and Restart UI remain in the menu. The host keeps the native window buttons
 and drag strip outside the plugin iframe. Disable Chrome Lab to restore native chrome;
-enabling it restores your saved selections. Reinstall the directory after editing it.
+enabling it restores your saved selections. From the checkout root, run
+`kelpi_test plugin dev examples/plugins/chrome-lab --trust` while editing. Compatible retained
+revisions are available in Settings → Plugins → Versions; reload restarts only installed bytes.
 
 The contract and its limits are in [the chrome guide](../../../docs/plugin-chrome.md).
-Validation: `node scripts/scenario.mjs plugin-chrome-features`.
+Validation: `node scripts/scenario.mjs plugin-chrome-features --window hidden`; use
+`--window onscreen` for screenshots. See the [plugin roadmap](../../../docs/plugin-roadmap.md)
+for overall progress and the [validation record](../../../docs/plugin-validation.md) for dated results.

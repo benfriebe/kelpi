@@ -1,5 +1,11 @@
 # Document extension validation — 2026-09-10
 
+This is the original phase baseline. The current repository retains this record and the
+two screenshots below; the JSON results and logs were local worktree artifacts.
+See the [roadmap](../../plugin-roadmap.md#completed-and-merged) for merged phases and
+[PR #147](https://github.com/benfriebe/kelpi/pull/147) for the integrated document review.
+This record does not claim a fresh run against later review fixes or current main.
+
 Implemented in `out/worktrees/plugin-documents`, based on merged `main` at `b75de68`.
 The stack separates shared document APIs, native document feature/recovery integration,
 and Document Lab with authoring documentation. The installed application and the unrelated
@@ -24,7 +30,8 @@ All live scenarios used the repository harness with private data, sockets, ports
 fixtures and Electron profiles. Remote tests started a second private daemon. No real
 workspace, installed plugin or user file was used as a mutation fixture. Phone checks used
 a 390×844 viewport with touch emulation, not a physical-device session. Local logs and JSON
-results are under `out/plugin-document-validation` in the worktree.
+results were written under `out/plugin-document-validation` in that worktree and are not
+included in this repository.
 
 The full suite exposed a pre-existing terminal scroll test timer leak: Ghostty's scrollbar
 fade callback outlived a timeout-backed animation-frame shim. The separate test cleanup
@@ -91,6 +98,7 @@ existing semantics; SDK/CLI writes require revisions. Renderer UI state shares a
 
 Document Lab's Markdown preview intentionally supports only headings, paragraphs and fenced
 blocks. This phase extracts document bodies/content ownership, while some native keyboard
-actions remain in assembly. Terminal/browser feature extraction and plugin distribution or
-automatic updates remain separate work. No remote CI status is claimed; this checkout has no
-GitHub Actions workflow.
+actions remained in assembly at that milestone. Terminal/browser replacements and local
+plugin packaging/recovery were implemented in later phases; automatic remote updates remain
+unimplemented. See the [current roadmap](../../plugin-roadmap.md) for status. No remote CI
+result is claimed by this validation record.

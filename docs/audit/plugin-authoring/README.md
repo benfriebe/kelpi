@@ -3,6 +3,8 @@
 This is the pre-review baseline at `fbfe204`, recorded on 2026-09-10. Follow-up fixes
 and their validation are recorded in
 [Package and recovery review fixes](../../plugin-validation.md#package-and-recovery-review-fixes-2026-09-11).
+The [roadmap](../../plugin-roadmap.md) tracks current merged progress and proposed work;
+the JSON reports and screenshots here remain tied to the baseline revision.
 
 Validated on macOS arm64 with Node 24.15.0 and pnpm 10.28.1, in the isolated
 `out/worktrees/plugin-packaging` checkout based on main `7ba942a`.

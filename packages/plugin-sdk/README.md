@@ -1,16 +1,19 @@
 # @kelpi/plugin-sdk
 
 Public types, shared runtime helpers and the `getKelpi()` browser accessor for Kelpi plugin API version 1.
-No React, Electron, or daemon-store imports are required. This workspace package is not yet
-published to npm.
+No React, Electron, or daemon-store imports are required. The checkout provides a standalone
+npm artifact for projects outside the monorepo; packing it is separate from registry publication.
 
 Kelpi injects `window.kelpi` before a plugin view's scripts load. The accessor returns that
 same object; `await api.ready` waits for its private host channel. Backends receive a
 `BackendAPI` in their exported `activate(api)` function and do not call `getKelpi()`.
 
-See [the authoring guide](../../docs/plugins.md), [public types](index.d.ts), [native service contracts](services.d.ts), and the
-[Agent Board example](../../examples/plugins/agent-board). Bundle dependencies and install
-the resulting directory with `kelpi plugin install <directory> --trust`.
+See the [plugin reference](https://github.com/benfriebe/kelpi/blob/main/docs/plugins.md),
+[roadmap](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-roadmap.md),
+[public types](index.d.ts), and [native service contracts](services.d.ts).
+Repository guide and example links below point to `main`; declaration links refer to files
+included in this SDK artifact. The [Agent Board example](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/agent-board)
+demonstrates custom panes and general workbench placements.
 
 ## Start a plugin
 
@@ -18,6 +21,7 @@ Using the CLI/socket of your isolated development instance:
 
 ```sh
 kelpi plugin init ./my-board --id example.my-board --name "My Board"
+kelpi plugin validate ./my-board
 kelpi plugin install ./my-board --trust
 kelpi plugin open example.my-board example.my-board.home
 ```
@@ -29,13 +33,38 @@ The generated package needs no build and contains a pane/sidebar UI plus a backe
 revisions. Invalid edits and failed updates retain the previous working version; `reload`
 restarts the installed copy without copying source changes.
 
-Use `kelpi plugin pack ./my-board --out ./my-board.kelpi-plugin` to create a portable artifact.
+Use `kelpi plugin pack ./my-board --out ./my-board.kelpi-plugin` to create a portable plugin
+artifact, then install it with `kelpi plugin install ./my-board.kelpi-plugin --trust`.
+The output must be outside the source directory and must not already exist. Packing does
+not install the plugin or upload it anywhere.
 `plugin history`, `plugin rollback` and Settings → Plugins → Versions expose retained builds.
-The [development guide](../../docs/plugin-development.md) covers external projects and the
-private instance workflow. To install this SDK outside the repository, run
-`npm pack ./packages/plugin-sdk --pack-destination /tmp` from the checkout, then
-`npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz` in your project. Bundle browser imports before
-packing your plugin.
+The [development guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-development.md)
+covers external projects and the private instance workflow.
+
+## Install and verify the SDK artifact
+
+The SDK's npm `.tgz` provides types and helpers; it is not a `.kelpi-plugin` package. From a
+Kelpi checkout, create it in an existing destination directory:
+
+```sh
+npm pack ./packages/plugin-sdk --ignore-scripts --pack-destination /tmp
+```
+
+In your external plugin project, install the filename printed by `npm pack`, for example:
+
+```sh
+npm install /tmp/kelpi-plugin-sdk-0.1.0.tgz
+```
+
+Backend types compile with a Node-only TypeScript library configuration; view types also
+require `DOM`. Bundle imported runtime helpers into your browser assets before packing the
+plugin. A plain HTML view can use injected `window.kelpi` without an SDK runtime dependency.
+
+From the Kelpi repository root, `pnpm --filter @kelpi/plugin-sdk test:package` packs the real
+SDK, installs it into a temporary external consumer, and checks backend/view types and runtime
+imports. It does not publish to npm. The
+[validation guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-validation.md)
+describes broader plugin lifecycle and UI checks.
 
 ## Typed host operations
 
@@ -86,9 +115,15 @@ Native terminal replacements use the view-only `kelpi.terminal.attach` API. Its 
 binary feed acknowledges output only after the renderer consumes it and preserves the
 daemon-owned process across swaps, reload and fallback. It also carries terminal modes,
 presentation and host actions such as live selection and phone keys. See the
-[terminal contract](../../docs/plugin-terminals.md), [types](terminal.d.ts) and
-[Terminal Lab](../../examples/plugins/terminal-lab). Existing terminal commands and watches
+[terminal contract](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-terminals.md), [types](terminal.d.ts) and
+[Terminal Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/terminal-lab). Existing terminal commands and watches
 remain available to backend and ordinary pane plugins.
+
+Replay frames currently contain bytes without the native replay grid, and terminal
+presentation does not expose size ownership. A replacement therefore cannot yet reproduce
+the bundled renderer's owner-grid mirroring through this API. Terminal Lab fits its own
+measured box; see the [geometry limitation](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-terminals.md#replay-geometry-limitation)
+and the planned SDK follow-up.
 
 ## Browser renderers
 
@@ -99,8 +134,8 @@ places an existing native page in a measured slot and preserves its live session
 renderer swaps. Use `surface.setCovered(true)` for HTML popups over the native page, and
 `surface.focus()` for local caret handoff. Remote controls can be available even when the
 current window cannot display that daemon's native page. See the
-[browser contract](../../docs/plugin-browser.md), [types](browser-pane.d.ts) and
-[Browser Lab](../../examples/plugins/browser-lab).
+[browser contract](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-browser.md), [types](browser-pane.d.ts) and
+[Browser Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/browser-lab).
 
 ## Documents
 
@@ -108,8 +143,8 @@ Native document source is available through `api.documents.get/edit/save/setMode
 and `watch/unwatch`. Mutations require an observed revision and reject stale writes with
 `DOCUMENT_CONFLICT`. Browser document renderers also use `stage` and `applyDraft` to preserve
 each input outside their iframe before serialized writes. See the
-[document contract](../../docs/plugin-documents.md), [types](documents.d.ts) and
-[Document Lab](../../examples/plugins/document-lab) for rendering, recovery and remote scope.
+[document contract](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-documents.md), [types](documents.d.ts) and
+[Document Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/document-lab) for rendering, recovery and remote scope.
 
 ## Hooks and service providers
 
@@ -167,7 +202,7 @@ for successful mutation methods. It does not create workspace records for the ca
 The native editor, source buffers, file watches, save lifecycle, and frame ownership remain
 with Kelpi. `kelpi.process@1` backs managed `api.process.exec`; `kelpi.files@1` still backs
 `api.files.read/write`. Neither service redirects arbitrary Node calls, terminal processes,
-or all internal file access. See the [service guide](../../docs/plugin-services.md) for native
+or all internal file access. See the [service guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-services.md) for native
 reach, limits, fallback behavior, and the complete Git method catalog.
 
 For provider authors, `BuiltinProviderMethods<'kelpi.content.render'>` describes a complete
@@ -195,7 +230,7 @@ also cancels queued callbacks; hidden retained tabs do not relay host keyboard s
 volatile context and native item overrides. Browser views also have `ui.showQuickPick`,
 `ui.showInput`, `ui.showDialog` and `ui.showNotification`, returning the user's choice or null
 on cancellation. These prompts belong to their attached view and hosting window. See the
-[UI guide](../../docs/plugin-ui.md), [types](ui.d.ts), and [UI Lab](../../examples/plugins/ui-lab)
+[UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md), [types](ui.d.ts), and [UI Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/ui-lab)
 for conditions, grouped settings, scope and lifetime rules.
 
 ```sh
@@ -214,5 +249,5 @@ status, metrics and live contributions. `ui.executeChromeCommand(id, target?)` i
 same current command registry as native chrome. Pass the displayed `workspaceID` for layout,
 input and contributed actions so stale targets reject explicitly.
 
-The [chrome guide](../../docs/plugin-chrome.md) documents the full contract and ownership
-rules. [Chrome Lab](../../examples/plugins/chrome-lab) replaces both bars without a backend.
+The [chrome guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-chrome.md) documents the full contract and ownership
+rules. [Chrome Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/chrome-lab) replaces both bars without a backend.

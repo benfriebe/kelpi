@@ -7,8 +7,40 @@ hooks) and the Kelpi daemon, as implemented in the TypeScript daemon
 allowlist in `packages/protocol/src/`). The daemon honors this contract so the **`kelpi` CLI
 binary, hook scripts and saved state keep working unchanged** across upgrades.
 
-Everything here is derived from the current TypeScript source. Where behavior is quirky, the
+The sections below specify the established command vocabulary. Plugin extensions use the
+additional envelope described here and the [plugin API guide](plugins.md); see the
+[roadmap](plugin-roadmap.md) for implementation progress. Where behavior is quirky, the
 quirk is documented as-is and explained in "Compatibility rationale" at the end.
+
+## Plugin envelope and protocol generation
+
+The current control/discovery and WebSocket generation is **2**. Plugin operations use a
+known `plugin` command; plugin-defined command/service names are nested data, not new
+top-level wire verbs:
+
+```json
+{"command":"plugin","action":"list","text":"{}"}
+```
+
+The `text` field contains an encoded JSON object. One-shot operations return
+`{"ok":true,"result":…}` or `{"ok":false,"error":"…"}` and close the reply. The `watch` action
+starts with `{ok, epoch, sequence, state}` and then sends `{ok, event}` lines; disconnect
+releases its subscription. The CLI prints one-shot `result` values and retains the watch
+envelopes unchanged.
+
+`plugin init`, `validate` and `pack` run locally without a daemon request. `plugin dev`
+validates local snapshots and uses identity-guarded `dev-install` requests. Installation
+paths are on the daemon machine; this envelope does not upload packages to remote hosts.
+Use the [CLI reference](cli.md#plugin-commands) for public commands and the
+[development guide](plugin-development.md) for the private-instance workflow.
+
+Wire decoding, reply allowlisting and dispatch remain explicit in
+[decode.ts](../packages/protocol/src/wire/decode.ts),
+[allowlist.ts](../packages/protocol/src/allowlist.ts) and
+[PluginService](../packages/daemon/src/plugins/service.ts). WebSocket management operations
+require the daemon owner; view API calls are bound to their own revocable lease.
+Database generation and downgrade constraints are documented in the
+[upgrade notes](plugins.md#database-and-protocol-upgrade).
 
 ---
 

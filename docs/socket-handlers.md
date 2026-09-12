@@ -10,7 +10,7 @@ resolution helpers plus `tailLines` in `support.ts`), the app handlers under
 `names.ts` for `worktreeErrorMessage`), and the reply handle in
 `packages/daemon/src/control/reply.ts` (seam declared in `packages/daemon/src/seams.ts`).
 
-This document specifies how every wire command is **handled** once it has been parsed off the
+This document specifies how the established wire commands are **handled** once parsed off the
 socket. Wire framing/parsing (newline-delimited JSON, `"command"` key, the
 `replyCommandAllowlist`) is specced in the socket-server doc; this doc picks up at the point
 where the daemon holds a decoded message plus an optional reply handle.
@@ -18,6 +18,15 @@ where the daemon holds a decoded message plus an optional reply handle.
 Audience: anyone changing the daemon's command handlers or the `kelpi` CLI. The CLI, the hook
 scripts and saved state depend on every reply key, error string, and resolution rule below, so
 all of them are normative.
+
+Plugin requests use the explicit `plugin` envelope described in the
+[wire contract](wire-protocol.md#plugin-envelope-and-protocol-generation). The
+[plugin service](../packages/daemon/src/plugins/service.ts) owns management, command/service
+dispatch, view leases and event subscriptions; those actions are documented in the
+[plugin guide](plugins.md). Registered before/after hooks run through the
+[operation boundary](../packages/daemon/src/plugins/operations.ts) used by control and
+WebSocket adapters. They preserve the existing command's validation and reply semantics.
+The [roadmap](plugin-roadmap.md) records which service and UI replacements are implemented.
 
 ---
 

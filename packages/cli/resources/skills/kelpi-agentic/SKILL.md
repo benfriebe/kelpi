@@ -23,16 +23,17 @@ work, and collect results.
 
 ## Prerequisites
 
-You must be running inside a Kelpi pane. Verify with:
+Pane-relative commands use the calling Kelpi pane. Check whether one is available with:
 
 ```bash
 kelpi pane id
 ```
 
-Exit 0 with the pane UUID on stdout means you're in Kelpi; exit 1 with
-empty output means you're not, and every other `kelpi` command below will
-silently no-op. This command is purely local (no socket, no shell `$`
-expansion) so it allowlists cleanly as `Bash(kelpi pane id)`.
+Exit 0 with the pane UUID on stdout means you're in Kelpi; exit 1 with empty output means
+there is no calling pane. Commands that take explicit workspace/pane targets can still work
+from an external terminal, and offline plugin authoring needs no daemon. `pane id` itself is
+purely local (no socket, no shell `$` expansion), so it allowlists cleanly as
+`Bash(kelpi pane id)`.
 
 ## Required up-front questions
 
@@ -84,7 +85,46 @@ kelpi pane send --target worker-1 "<prompt>"
 
 ## Kelpi CLI Reference
 
-The `kelpi` CLI communicates with the Kelpi app over a Unix socket at `/tmp/kelpi.sock`.
+The `kelpi` CLI communicates with the daemon through the pane's injected `KELPI_SOCKET`
+route, or the default Unix socket `/tmp/kelpi.sock`. When targeting a private development
+instance from outside its panes, use its printed TCP route with `KELPI_REQUIRE_SOCKET=1`.
+
+### Plugin commands
+
+Kelpi plugins can add custom panes, replace workbench views and native pane renderers,
+register commands/hooks, and provide services. Use `kelpi plugin --help` for the complete
+command list. `init`, `validate` and `pack` operate locally without a daemon; `dev` and
+installation execute trusted code on the selected daemon machine.
+
+```bash
+# Offline authoring; the default pane template also supports either sidebar.
+kelpi plugin init ./my-plugin --id example.my-plugin --template pane
+kelpi plugin validate ./my-plugin
+kelpi plugin pack ./my-plugin --out ./my-plugin.kelpi-plugin
+
+# Run against the intended daemon. The source/artifact must exist on that machine.
+kelpi plugin install ./my-plugin.kelpi-plugin --trust
+kelpi plugin open example.my-plugin example.my-plugin.home
+kelpi plugin run example.my-plugin.summary
+kelpi plugin dev ./my-plugin --trust
+
+# Inspect or select retained builds; rollback preserves native panes and sessions.
+kelpi plugin history example.my-plugin
+kelpi plugin rollback example.my-plugin
+kelpi plugin logs example.my-plugin
+```
+
+Packing creates a local artifact; it does not publish or install it. `dev` validates and
+applies stable changed revisions, keeps watching after invalid edits or failed updates, and
+leaves the selected revision installed when stopped. `reload` restarts installed bytes
+without copying source edits. Native document, terminal and browser replacements attach to
+existing native panes; use Settings → Plugins → Workbench views to select them.
+
+For development beside installed Kelpi, follow the
+[private-instance guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-development.md).
+The [plugin reference](https://github.com/benfriebe/kelpi/blob/main/docs/plugins.md) documents
+trust, dependencies and recovery; the
+[roadmap](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-roadmap.md) records progress.
 
 ### Pane Commands
 

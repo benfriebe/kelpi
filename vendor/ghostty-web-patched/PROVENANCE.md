@@ -303,8 +303,10 @@ for (const f of ["vendor/ghostty-web-patched/dist/ghostty-web.js",
                  "vendor/ghostty-web-patched/dist/ghostty-web.umd.cjs",
                  "packages/client/node_modules/ghostty-web/dist/ghostty-web.js"]) {
   const m=/data:application\/wasm;base64,([A-Za-z0-9+\/=]+)/.exec(fs.readFileSync(f,"utf8"));
+  if (!m) throw new Error("Missing embedded WASM: " + f);
   const b=Buffer.from(m[1],"base64");
-  console.log(sha(b)===disk ? "ok  " : "STALE", sha(b), b.length, f);
+  if (sha(b)!==disk) throw new Error("Stale embedded WASM: " + f);
+  console.log("ok", sha(b), b.length, f);
 }'
 ```
 
@@ -1055,7 +1057,7 @@ Sandboxed throughout, same discipline as below (`mkdtemp` root, `NEXD_*` overrid
 non-reserved ports, private Electron `--user-data-dir`).
 
 - **Device-pixel readback of the cursor cell, live, two panes** — audit step
-  `terminal-cursor-focus` (new), [`docs/audit/n20-cursor-focus`](../../docs/audit/n20-cursor-focus/).
+  `terminal-cursor-focus` (new), local artifact `docs/audit/n20-cursor-focus/`.
   The cursor is parked on a known cell by a CUP escape and held there by `cat`, then the cell is
   sampled five times 300 ms apart (1200 ms — longer than two 530 ms blink periods), counting the
   pixels that are NOT the background colour read from the next cell along. On a 20 × 24 device-px
@@ -1087,7 +1089,7 @@ non-reserved ports, private Electron `--user-data-dir`).
 - **Terminal fidelity, unchanged**: `fresh-boot, terminal-glyphs, terminal-size-matrix,
   terminal-input-matrix, split-keybinding, terminal-ime, terminal-cursor-focus` in one run —
   **98 assertions, 0 failed, 0 step errors**
-  ([`docs/audit/n20-cursor-focus-fidelity`](../../docs/audit/n20-cursor-focus-fidelity/)). The IME
+  (local artifact `docs/audit/n20-cursor-focus-fidelity/`). The IME
   step matters most here: it measures the textarea and preedit against the cursor CELL, and it
   still reports **off by 0×0 px** at both probes.
 - `pnpm --filter @nex/shell smoke:terminal` — **19/19**, including the `tall` / `re-attach` /
@@ -1127,12 +1129,12 @@ non-reserved ports, private Electron `--user-data-dir`).
   Swift checkout returns `.block_hollow` immediately after the `!state.cursor.visible` check and
   before both the blink check and `.fromTerminal(state.cursor.visual_style)`, exactly as
   transcribed.
-- **Live, twice more**: [`run-V`](../../docs/audit/run-V/index.md) step 70 — the same 88-of-88
+- **Live, twice more**: `run-V` (local artifact `docs/audit/run-V/index.md`) step 70 — the same 88-of-88
   perimeter unfocused and 480-of-480 focused, one frame hash against two, window blur `88 × 5` and
   window focus `480 → 0 → 480 → 480 → 0` — and, because that step runs after the appearance steps
   drag the client to `background-opacity 0.85`, its background probe reads `[0,0,0,0]`: §N17's
   cleared canvas and §N20's cursor **compose**. Re-measured on the packaged app's own staged
-  renderer bytes in [`run-V-packaged-client`](../../docs/audit/run-V-packaged-client/index.md)
+  renderer bytes in `run-V-packaged-client` (local artifact `docs/audit/run-V-packaged-client/index.md`)
   (9 steps / 66 assertions / 0 failed), and the transparency pair re-run in both directions with
   the cursor in place (`run-V-attempts/scoped-transparency-{opaque,transparent}window`, 11
   assertions each, 0 failed).
@@ -1232,31 +1234,55 @@ One thing that looks wrong and is not: `source/package.json` says `"version": "0
 that is what upstream's own `v0.4.0` tag says. The `-nex` version lives in this directory's
 `package.json` (the one the workspace override installs), not in the snapshot.
 
-Rebuilding, exactly as this vendor dir was built (bun is not required, and is not available in
-the environment this was produced in):
+### Rebuild the JavaScript bundle
+
+Run from the Kelpi checkout root with Node 24 or newer and pnpm. This builds from the tracked
+TypeScript and tracked patched WASM; it does not need Bun, Zig or a separate upstream clone.
+The source snapshot has no lockfile, so its build dependencies resolve independently of
+Kelpi's frozen workspace lockfile. Keep the generated scratch directory until verification
+is complete.
 
 ```sh
-cp -R vendor/ghostty-web-patched/source /tmp/gweb            # or any scratch dir
-cd /tmp/gweb
-cp <upstream v0.4.0>/ghostty-vt.wasm .                       # must sit at the ROOT: the build
-                                                             # inlines it as a data: URI
-pnpm install                                                 # vite + vite-plugin-dts only
-npx vite build                                               # NOT `npm run build` (that shells
-                                                             # out to bun and re-builds the wasm)
-cp ghostty-vt.wasm dist/                                     # what `build:wasm-copy` does
-cp -R dist/* <repo>/vendor/ghostty-web-patched/dist/
-cd <repo> && pnpm install && pnpm --filter @nex/client build
+(
+  set -e
+  KELPI_VENDOR_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kelpi-ghostty.XXXXXX")
+  printf 'Vendor build directory: %s\n' "$KELPI_VENDOR_BUILD"
+  cp -R vendor/ghostty-web-patched/source/. "$KELPI_VENDOR_BUILD/"
+  cp vendor/ghostty-web-patched/ghostty-vt.wasm "$KELPI_VENDOR_BUILD/ghostty-vt.wasm"
+  (
+    cd "$KELPI_VENDOR_BUILD"
+    pnpm install
+    pnpm exec vite build
+    cp ghostty-vt.wasm dist/
+  )
+  mkdir -p vendor/ghostty-web-patched/dist
+  cp -R "$KELPI_VENDOR_BUILD/dist/." vendor/ghostty-web-patched/dist/
+  pnpm install --frozen-lockfile
+)
 ```
 
-The wasm is the one thing `source/` does not carry (413 KB of binary);
+Run the [embedded-WASM check](#a-new-wasm-is-not-shipped-until-the-dist-is-rebuilt-on-top-of-it)
+above after installation. It fails if either vendor bundle or the installed client
+copy is missing or contains a different engine. If a prior install retained stale generated
+files, run `pnpm install --frozen-lockfile --force` and repeat the check. Do not copy an older
+worktree's bundle to make the check pass.
+
+After verification, `pnpm --filter @kelpi/client build` builds the web client, or follow the
+[private-instance guide](../../docs/plugin-development.md#start-a-private-instance) to build and
+launch the whole application beside an installed Kelpi. The launcher builds app packages;
+it does not rebuild this ignored vendor bundle.
+
+The WASM is the one thing `source/` does not carry (423,289 bytes for `-nex.13`);
 `vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, so the copy above should come from
 there and NOT from npm: `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`.
 Since `-nex.13` it is no longer the npm package's binary. npm's is
 `d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a` and taking it would reopen
 #165. To rebuild the wasm itself rather than copy it, see "`ghostty-vt.wasm`: the Zig half".
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~688 KiB (704.37 kB as vite reports it,
-+0.13 kB over `-nex.7`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+Sanity checks on a rebuild: the recorded `-nex.13` outputs are 709.40 kB for
+`dist/ghostty-web.js` and 649.19 kB for `dist/ghostty-web.umd.cjs`. Resolved build-tool versions
+may change formatting or size; the embedded-WASM hash and vendor guards are the correctness
+checks. The ESM bundle contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
 (`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
 own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
@@ -1271,8 +1297,9 @@ the pre-existing `bun-types` / `fs/promises` errors in `lib/ghostty.ts` (the tsc
 `bun-types`, which the npm install does not provide); nothing in `terminal.ts`, `renderer.ts` or
 `input-handler.ts`.
 
-`vite build` prints those same four errors and still exits 0 — that is expected, not a broken
-build; the `dist/` line count at the end is the signal to read.
+The recorded `vite build` printed those same four pre-existing declaration errors and still
+exited 0. Record diagnostics from a new rebuild separately; an exit code or bundle size alone
+does not verify the engine. Run the embedded-WASM check and the repository vendor tests.
 
 ## Refreshing
 

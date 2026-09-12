@@ -514,9 +514,9 @@ follows exactly **one client at a time**, the *size owner*:
   known — sees nothing.
 - A non-owner's `attach-pane` subscribes at the pane's **current** geometry (its measured
   size is cached, not applied), so the replay it receives matches what the owner set.
-- **A non-owner MIRRORS the owner's grid** (issue #166, `packages/client/src/terminal/TerminalPane.tsx`
+- **The bundled non-owner renderer MIRRORS the owner's grid** (issue #166, `packages/client/src/terminal/TerminalPane.tsx`
   ▸ `ownsSize` / `adoptReplayGrid`). Every replay states the grid it was serialized at (section
-  4.1), and a client that does not own PTY sizing resizes its ENGINE to that grid before applying
+  4.1), and the bundled client that does not own PTY sizing resizes its ENGINE to that grid before applying
   the bytes, because the bytes are only meaningful at it: the serializer glues a soft-wrapped row
   to its continuation, and every byte the PTY emits afterwards was composed for the owner's
   screen. The engine sizes its own canvas from cols×rows, so the result is letterboxed top-left
@@ -547,6 +547,10 @@ follows exactly **one client at a time**, the *size owner*:
   that describes what is ON THE SCREEN when the pane's box is not what the engine is drawing;
   `data-terminal-rows` (phone, `terminal/keyboard-inset.ts`) and `data-terminal-cell` keep
   describing the pane's own MEASUREMENT, so the two disagreeing is the mirror working.
+
+The owner-grid mirror above is implemented by the bundled terminal. The public plugin SDK
+currently omits replay geometry and size-ownership presentation; see the
+[terminal replacement limitation](plugin-terminals.md#replay-geometry-limitation).
 
 ### 5.2 Applying a resize: VT before PTY, the settled resync, and no column reflow
 

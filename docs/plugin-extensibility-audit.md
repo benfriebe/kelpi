@@ -1,17 +1,24 @@
-**Kelpi plugin extensibility audit**
+# Kelpi plugin extensibility audit
 
 Audited 2026-09-08, starting at `2262828` and reviewing relevant intervening changes through
-`3233e4b`. This document records the source audit and longer-term proposed design. The first
-implementation is now on `feature/plugin-extensibility`; [docs/plugins.md](plugins.md)
-describes the implemented API, installation, recovery, and remaining scope. Illustrative
-APIs below are design proposals, not an alternative API reference.
-Current implementation takes precedence over older architecture/specification comments
-where they differ.
+`3233e4b`. This is the **historical source audit and design proposal**, not a description
+of the current repository. Source observations, line numbers and proposed APIs below refer to
+that audit. They are retained to explain the decisions; current implementation takes
+precedence where it differs.
+
+The [roadmap and progress tracker](plugin-roadmap.md) is the current overall plan, last
+reviewed against merged main `ab9be92` on 2026-09-12. The [plugin guide](plugins.md) defines
+the implemented API, installation and recovery; the [validation record](plugin-validation.md)
+tracks completed phases and their evidence.
 
 The subsequent [feature](plugin-features.md), [chrome](plugin-chrome.md),
 [document](plugin-documents.md), [terminal](plugin-terminals.md) and
 [browser](plugin-browser.md) guides describe the implemented replacement contracts.
-Distribution, update/rollback and an untrusted execution runtime remain future work.
+Local package distribution, version history/rollback, failed-update recovery, templates and
+live development are also implemented; see the [development guide](plugin-development.md).
+The [handoff](plugin-handoff.md) recommends closing the terminal SDK replay-geometry gap,
+then implementing selectable palette/prompt presentation. Public SDK releases,
+automatic remote distribution and an untrusted runtime remain follow-up work.
 
 **Recommendation.** Build a small application kernel with bundled feature plugins and
 installable plugins. Make the workspace sidebar, inspector, pane bodies, menus, and status
@@ -28,7 +35,7 @@ be present in that release. An unrestricted Node backend is fully trusted code o
 machine; its capability declarations cannot constitute an OS security boundary. Supporting
 untrusted backend plugins would be a separate runtime milestone.
 
-**What the repository supports today**
+## Repository state at the original audit
 
 | Area | Evidence | Implication |
 | --- | --- | --- |
@@ -47,7 +54,7 @@ untrusted backend plugins would be a separate runtime milestone.
 | Remote clients | [remote runtimes](../packages/client/src/app/remote-daemons.ts), [RemoteWorkspaceView](../packages/client/src/app/RemoteWorkspaceView.tsx) | One client can connect to several daemons. The secondary-daemon renderer currently supports terminals and gives other kinds placeholders. This path needs the same plugin view resolver as the primary workspace. |
 | Packaging | [daemon bundle](../packages/daemon/scripts/bundle.mjs), [HTTP serving](../packages/daemon/src/ws/http.ts), [package definitions](../package.json) | Internal packages export TS source and are bundled into the product. Installable plugins need prebuilt artifacts, an actual distributable SDK, and asset loading outside the app bundle. |
 
-**Persistence is the first correctness barrier**
+## Persistence is the first correctness barrier
 
 `decodePaneType` in [db/codec.ts](../packages/daemon/src/db/codec.ts), line 220, maps an
 unrecognized type to `shell`. [Boot restoration](../packages/daemon/src/boot/resume.ts),
@@ -89,7 +96,7 @@ old binaries retain their old file. A marker alone cannot make already shipped c
 If retaining the same path, every supported reader/launcher must enforce compatibility
 before plugin records can be written, and older unsupported readers must be excluded.
 
-**A view definition and its placement should be separate**
+## A view definition and its placement should be separate
 
 A pane is a workspace-owned instance in the existing layout tree. A sidebar is a container
 in a client's application layout. Both can host registered views, but their ownership and
@@ -119,7 +126,7 @@ kernel. A recovery command and safe-mode launch must remain reachable even if a 
 sidebar or workbench provider fails. The terminal engine can remain a privileged built-in
 service while its UI and commands use the same contribution contracts.
 
-**Use separate execution locations, connected by one SDK**
+## Use separate execution locations, connected by one SDK
 
 ```mermaid
 flowchart LR
@@ -162,7 +169,7 @@ no compatible target return a structured unavailable result. A CLI command must 
 run once in every attached window, and a sidebar showing several daemons needs separately
 authorized handles to each.
 
-**Expose all product domains through services, commands, queries, and events**
+## Expose all product domains through services, commands, queries, and events
 
 | Domain | Proposed plugin access | Semantics to preserve |
 | --- | --- | --- |
@@ -228,7 +235,7 @@ This gives plugins access across Kelpi's product surface without promising a sta
 every private function. New extension needs should become documented service/provider APIs;
 an experimental API can be explicitly tied to a compatible Kelpi build while it matures.
 
-**Plugin identity, distribution, and authority**
+## Plugin identity, distribution, and authority
 
 Use a manifest that can be read without executing plugin code. An illustrative shape:
 
@@ -304,7 +311,7 @@ access; a restricted backend requires an actually constrained runtime and broker
 Node's own documentation explicitly excludes `node:vm` as a security mechanism.
 [Node VM documentation](https://nodejs.org/api/vm.html).
 
-**Lifetime and UI integration are part of the API**
+## Lifetime and UI integration are part of the API
 
 The host owns stable instance identity, frame/size updates, theme tokens, accessibility name,
 focus requests, clipboard/menu routing, and keyboard context. Each view receives explicit
@@ -325,7 +332,11 @@ pending calls and disposes registrations. Distinguish persistent daemon-owned re
 plugin-owned temporary processes so reloading a plugin does not kill user sessions. Bound
 activation/restart attempts and provide a safe-mode startup that loads bundled recovery UI.
 
-**Implementation sequence and proof of completion**
+## Original implementation sequence and proof of completion
+
+This was the proposed sequence at the audit. The [current roadmap](plugin-roadmap.md)
+maps delivered work to merged PRs and identifies remaining UI and distribution work;
+the table below is not a live checklist.
 
 | Stage | Concrete change | Evidence required before proceeding |
 | --- | --- | --- |
@@ -349,7 +360,7 @@ UI/backend versions during update. Reuse existing targeted suites and live smoke
 the repository's required checks for the actual implementation diff. No timing estimates are
 asserted here: the first built-in extraction and complete plugin slice should establish them.
 
-**Architectural precedents and choices**
+## Architectural precedents and choices
 
 JupyterLab demonstrates the closest composition model: nearly all application features,
 including menus/status UI, are extensions, with explicit service providers/consumers that

@@ -23,6 +23,11 @@ persistence record schemas (persistence.md), settings internals (config-keybindi
 internals (graft-git.md), and keybinding config parsing. Where core behavior touches those, the
 touchpoint is specified here.
 
+The chrome behaviors below describe the bundled features. Workspaces and Inspector can
+move between sidebars or be replaced through the [feature contracts](plugin-features.md).
+Custom plugin panes share the daemon's layout and persistence rules; their descriptors,
+backend lifecycle and recovery are defined in the [plugin guide](plugins.md).
+
 ---
 
 ## 1. Top-level state model
@@ -95,7 +100,7 @@ interface Workspace {
   icon: GroupIcon | null;         // avatar override; null = first letter of name
   profileName: string | null;     // workspace profile assignment; null = built-in "default"
   panes: Pane[];                  // visible panes
-  parkedPanes: Pane[];            // off-layout panes with live PTYs (kelpi open --here sources)
+  parkedPanes: Pane[];            // off-layout panes, including live PTY sources and persisted plugin panes
   layout: PaneLayout;
   focusedPaneID: UUID | null;
   repoAssociations: RepoAssociation[];
@@ -113,9 +118,13 @@ Derived values used by core:
 - `pane(ws, id)` = find in `panes` then `parkedPanes`. Surface/agent lifecycle events resolve panes
   through both lanes; user commands (send/split/close and the like) deliberately search only `panes`.
 
-Pane fields core touches: `id`, `label`, `type` (`shell | markdown | scratchpad | diff | web`),
+Pane fields core touches: `id`, `label`, `type` (`shell | markdown | scratchpad | diff | web | plugin`),
 `title`, `workingDirectory`, `status` (`idle | running | waitingForInput`), `agentSessionID`
 (string | null), `agentKind` (`"claude" | "codex" | null`).
+
+Store transitions also retain the optional `plugin` descriptor and `unavailable` raw
+descriptor fields defined in the [pane model](pane-layout.md#13-pane-model). Their saved
+identity and state follow the [plugin persistence rules](persistence.md).
 
 ### 1.2 Slug generation
 
@@ -1177,7 +1186,7 @@ subtitle = pane.label && pane.title && label != title -> pane.title
            else pane.label != null                    -> homeAbbreviated(workingDirectory)
            else                                        -> ""
 icon     = shell:"terminal", markdown:"doc.text", scratchpad:"note.text",
-           diff:"plusminus", web:"globe"
+           diff:"plusminus", web:"globe", plugin:"document"
 id       = "pane:<paneID>"
 ```
 
@@ -1361,7 +1370,9 @@ Effects:
    passes the step-8 allowlist, which spawns under that recorded profile so the resumed agent lands
    in the environment it was started in (`packages/daemon/src/boot/resume.ts:110` and `:139`;
    agent-lifecycle.md §6.1). A tuple whose id fails the allowlist never drags its profile into a
-   pane that gets a fresh shell. Non-shell panes (markdown/scratchpad/diff/web) get no PTY.
+   pane that gets a fresh shell. Non-shell panes (markdown/scratchpad/diff/web/plugin) get no
+   PTY during restoration. A missing plugin retains its pane and saved state without a
+   substitute terminal; plugin backend activation has its own supervisor lifecycle.
 8. After all surfaces are created: if any resumables exist, sleep ~2 s (give shells time to reach
    a prompt), then for each tuple type the resume command into the pane's PTY:
    - `kind == "claude"` -> `claude --resume <sessionID>`

@@ -1,21 +1,25 @@
 # Replaceable browser panes
 
-Browser panes now have a registered bundled renderer and a `browser` replacement placement.
+Browser panes have a registered bundled renderer and a `browser` replacement placement.
 A plugin can supply tabs, navigation, address editing, Find, favourites and page tools while
 Kelpi retains the existing native pages and storage sessions. Switching renderers, reloading
 the plugin or falling back to the bundled browser keeps those pages alive.
 
+See the [plugin roadmap](plugin-roadmap.md) for overall scope and the
+[development guide](plugin-development.md) for browser starters, dev watching and portable packages.
+
 ## Try Browser Lab alongside your installed Kelpi
 
-From this checkout, after `pnpm install --frozen-lockfile`:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout).
+Then run from its root:
 
 ```sh
 node scripts/dev-instance.mjs --state out/browser-plugin-playground
 ```
 
 The script builds and starts a second Kelpi with its own daemon, database, sockets and
-Electron profile. Install `examples/plugins/browser-lab` in that instance's Settings →
-Plugins, accepting local plugin trust. Open a browser pane and choose **Browser Lab** in
+Electron profile. Install the absolute path to `examples/plugins/browser-lab` in that instance's
+Settings → Plugins, accepting local plugin trust. Open a browser pane and choose **Browser Lab** in
 its **Browser renderer** selector. The example requires no backend or separate build.
 
 For an external terminal, use this instance's printed socket and this checkout's CLI:
@@ -24,6 +28,12 @@ For an external terminal, use this instance's printed socket and this checkout's
 KELPI_SOCKET='THE_PRINTED_SOCKET' KELPI_REQUIRE_SOCKET=1 \
   node packages/cli/dist/kelpi.js plugin install examples/plugins/browser-lab --trust
 ```
+
+The development guide's `kelpi_test` helper supplies this same route. Run
+`kelpi_test plugin dev examples/plugins/browser-lab --trust` from the checkout root to install
+source changes as you edit. Settings → Plugins → Versions selects compatible retained code;
+updates and rollback preserve native tabs and sessions. A revision unable to read saved renderer
+preferences is rejected under the [recovery contract](plugins.md#updates-and-recovery).
 
 The renderer choice is stored per daemon in the current client origin and applies to that
 daemon's browser panes. Remote daemons have independent choices. Missing, disabled or failed
@@ -172,6 +182,7 @@ parking/closing it retains the existing native lifecycle.
 Run `pnpm check` and `node scripts/scenario.mjs plugin-browser-features --window hidden`.
 The scenario uses private daemons and owned loopback pages to verify native page identity,
 navigation, focus, placement, fallback, host loss and remote ownership. The
-[validation record](plugin-validation.md) records the completed gates and visual evidence.
+[validation record](plugin-validation.md) records source revisions, completed gates and visual
+evidence from past runs.
 Phone checks use browser emulation; physical-device keyboards/IME and packaged-release
 validation are separate checks.

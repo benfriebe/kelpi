@@ -6,9 +6,13 @@ phone views, including document panes temporarily running an external editor. Th
 continues to own the pane, PTY process, terminal state, input synchronization and size policy.
 Switching renderers attaches a different view to that process; it never restarts it.
 
+The [plugin roadmap](plugin-roadmap.md) tracks overall progress. The
+[development guide](plugin-development.md) covers private testing, packaging and retained versions.
+
 ## Try Terminal Lab alongside your installed Kelpi
 
-From the implementation checkout:
+First [prepare the source checkout](plugin-development.md#prepare-a-source-checkout),
+including the vendored engine. Then, from the checkout root:
 
 ```sh
 node scripts/build-terminal-lab.mjs
@@ -16,8 +20,8 @@ node scripts/dev-instance.mjs --state out/plugin-terminals-playground
 ```
 
 The development instance has its own database, sockets, ports and Electron profile. In that
-instance, use Settings → Plugins to install `examples/plugins/terminal-lab`, accepting local
-plugin trust. Select **Terminal Lab** in the terminal's renderer picker, or choose it for
+instance, use Settings → Plugins to install the absolute path to `examples/plugins/terminal-lab`,
+accepting local plugin trust. Select **Terminal Lab** in the terminal's renderer picker, or choose it for
 `terminal` under Settings → Plugins → Workbench views. Leave a shell application running
 and switch between Terminal Lab and the bundled renderer.
 
@@ -28,6 +32,11 @@ For installation from an external terminal, use the development instance's print
 KELPI_SOCKET='THE_PRINTED_SOCKET' KELPI_REQUIRE_SOCKET=1 \
   node packages/cli/dist/kelpi.js plugin install examples/plugins/terminal-lab --trust
 ```
+
+For live edits, run `kelpi_test plugin dev examples/plugins/terminal-lab --trust` using the
+development guide's helper. Rerun `node scripts/build-terminal-lab.mjs` after source changes;
+dev installs the generated assets but does not run the build. Build before packing this example.
+Settings → Plugins → Versions switches compatible retained code without restarting its native PTY.
 
 The choice is stored per daemon in this client's origin. All terminal panes in that scope
 use it; a remote daemon has its own choice. Reloading or disabling a plugin retains the
@@ -60,6 +69,8 @@ required. The host supplies the actual owning `context.paneID` and `context.work
 a renderer cannot redirect its attachment to another pane by supplying a pane ID.
 `setState` persists renderer preferences separately from process state, keyed by pane and
 view. The existing per-plugin native-view state file has a total 256 KiB JSON limit.
+Revision switches reject a renderer whose `stateVersion` cannot read that saved state. The
+plugin must migrate older preferences itself; native PTY state is not a plugin migration.
 
 ## Renderer session
 
@@ -168,18 +179,36 @@ Renderers hidden within a mounted layout retain their session but cannot claim g
 Workspace navigation follows the existing native mount/eviction policy; remounting requests
 a fresh snapshot of the same process. Initial/reconnect attach
 omits geometry when hidden; becoming visible resumes measured resizing. The daemon still
-decides whether this window owns process dimensions, including local reconciliation for
-a non-owner window. Remote replacements use the remote runtime's transport and storage.
+decides whether this window owns process dimensions. Remote replacements use the remote
+runtime's transport and storage.
+
+## Replay geometry limitation
+
+As of merged main `ab9be92`, the bundled renderer mirrors another size owner's grid before
+consuming a replay, letterboxing or clipping it when necessary. The public terminal SDK does
+not yet carry that replay grid or size-ownership presentation: replay frames contain bytes
+only. Terminal Lab continues fitting its own measured box, so its multi-window geometry
+behavior does not yet match the bundled renderer.
+
+The native `PtySubscription.onReplay(data, grid)` callback supplies geometry, but
+[the plugin bridge](../packages/client/src/plugins/terminal.ts) currently drops its second
+argument. [TerminalFrame and TerminalPresentation](../packages/plugin-sdk/terminal.d.ts)
+therefore cannot convey it. This is a source-confirmed contract gap; the existing plugin
+scenario does not validate owner-grid mirroring. Completing that path and testing Terminal
+Lab are the [next recommended task](plugin-roadmap.md#next-recommended-task-terminal-sdk-geometry-parity).
 
 ## Validation and remaining scope
 
-Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features`. The live scenario
+Run `pnpm check` and `node scripts/scenario.mjs plugin-terminal-features --window hidden`. The live scenario
 uses private daemons and a persistent terminal fixture to check process identity, replay,
 input and renderer recovery. See the [validation record](plugin-validation.md) for actual
-results and the distinction between emulated phone checks and physical-device testing.
+dated results and the distinction between emulated phone checks and physical-device testing.
+Use `--window onscreen` to inspect screenshots.
 
 This contract permits alternate terminal engines; it does not make every engine implement
 the bundled renderer's complete keyboard, selection or touch behavior. Terminal Lab's
 adapter details and limitations are documented with its source. Browser features have their
 own [replacement contract](plugin-browser.md). Plugin distribution and update/rollback
-workflows remain separate phases.
+through portable local artifacts and retained revisions are implemented; see the development
+guide and [recovery contract](plugins.md#updates-and-recovery). Registry distribution, restricted
+trust and other remaining work are tracked in the roadmap.

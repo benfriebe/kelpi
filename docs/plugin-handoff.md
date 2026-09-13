@@ -1,44 +1,48 @@
 # Plugin extensibility: agent handoff
 
-Current as of **2026-09-13**, reviewed against merged main **`fd2a216`**. Start here when
+Current as of **2026-09-13**, reviewed against merged main **`2f5e728`**. Start here when
 resuming this project in another session. The [roadmap](plugin-roadmap.md) is the overall plan;
 the [API guide](plugins.md) describes shipped contracts; the
 [validation record](plugin-validation.md) separates tested revisions and evidence.
 
 ## Current state
 
-Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists is
-merged into `main` at **`fd2a216`**, and that build is packaged, promoted and running. Terminal
-SDK geometry parity, the selectable palette and prompt presenters, and full Settings presentation
-all landed on 2026-09-12 and 2026-09-13, so there is no open plugin feature branch. Plugin API
-version remains **1**; wire protocol generation remains **2**. The three placements added by
-those phases, `interaction.palette`, `interaction.prompts` and `settings.window`, are additive.
+Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists through
+full Settings presentation is merged into `main` at **`2f5e728`**, and that build is packaged,
+promoted and running. Terminal SDK geometry parity, the selectable palette and prompt presenters
+and full Settings presentation landed on 2026-09-12 and 2026-09-13, and
+[#211](https://github.com/benfriebe/kelpi/pull/211) closed the New Workspace and scenario-lane
+defects behind them. Two draft PRs are stacked on that baseline and described below. Plugin API
+version remains **1**; wire protocol generation remains **2**. The four placements added by those
+phases, `interaction.palette`, `interaction.prompts`, `interaction.notifications` and
+`settings.window`, are additive; the notifications placement arrives with
+[#214](https://github.com/benfriebe/kelpi/pull/214).
 
-The broader replacement goal is still **not complete**: selectable notification presentation,
-the remaining UI composition surfaces, a public registry and distribution, and untrusted
-execution are open scopes in the roadmap's
+The broader replacement goal is still **not complete**: the remaining UI composition surfaces, a
+public registry and distribution, and untrusted execution are open scopes in the roadmap's
 [later work](plugin-roadmap.md#later-work-and-open-decisions).
 
 | Item | State at this handoff |
 | --- | --- |
-| Product baseline | `origin/main` at `fd2a216`, through PR #200. |
-| Promoted build | The installed Kelpi under the root checkout was promoted from this baseline. `~/Library/Application Support/kelpid/last-promote.json` reads `"phase": "promoted"` at 2026-09-12T15:25:02Z. |
-| Open feature branch | None. The only branch with work in progress is `fix/new-workspace-and-lane-leaks` (issues #201, #205, #198), in the `plugin-settings-contracts` worktree below. |
-| Documentation branch | This refresh. The earlier documentation PR [#164](https://github.com/benfriebe/kelpi/pull/164) is merged. |
+| Product baseline | `origin/main` at `2f5e728`, through PR #211. |
+| Promoted build | The installed Kelpi under the root checkout was promoted from this baseline. `~/Library/Application Support/kelpid/last-promote.json` reads `"phase": "promoted"` at 2026-09-13T01:41:24Z on port 53358. |
+| Open feature branches | Two, both from this session and stacked: `fix/runner-daemon-handle` (PR #213) and `feature/plugin-notification-presenter` (PR #214), in the worktrees below. Merge #213 first. |
+| Documentation branch | None of its own; this refresh rides #214's branch. The earlier documentation PRs [#164](https://github.com/benfriebe/kelpi/pull/164) and [#210](https://github.com/benfriebe/kelpi/pull/210) are merged. |
 | Running application | The promoted instance is the user's own. Do not package into it, restart it or take its socket without being asked. |
 
 Worktrees under `/Users/ben/kelpi/worktrees/kelpi/`:
 
 | Worktree | Branch | Disposition |
 | --- | --- | --- |
-| `plugin-terminal-geometry` | the current documentation branch | In use by this refresh. |
-| `plugin-settings-contracts` | `fix/new-workspace-and-lane-leaks` | In progress; leave it alone. |
-| `plugin-interaction-contracts` | `feature/plugin-interaction-lab` | Merged as PR #190; removable. |
-| `fix-cli-module-type` | `fix/cli-module-type-warning` | Merged as PR #200; removable. |
+| `plugin-terminal-geometry` | `fix/runner-daemon-handle` | PR #213; merges first. Leave it alone. |
+| `plugin-settings-contracts` | `feature/plugin-notification-presenter` | PR #214, stacked on #213. In use by this refresh. |
 
-Removing the last two is `git worktree remove` plus deleting the merged branch; each holds a
-built vendor bundle and `node_modules`, so a new task is faster bootstrapped fresh than
-reusing one of them.
+`plugin-interaction-contracts` and `fix-cli-module-type` were removed once their PRs merged and
+their local branches deleted. Two cleanups are still the user's to run, because the auto-mode
+classifier refuses those commands: the merged remote branches for the finished phases, and the
+three `Kelpi-darwin-arm64.pre-promote-*` bundle backups under
+`/Users/ben/code/kelpi/packages/shell/out`. Each worktree holds a built vendor bundle and
+`node_modules`, so a new task is faster bootstrapped fresh than reused from one of them.
 
 In the current local environment the repository root is `/Users/ben/code/kelpi`. Its main
 checkout carries unrelated site work: modified `README.md`, `package.json` and `pnpm-lock.yaml`,
@@ -55,7 +59,7 @@ validation together as each phase lands.
 
 ## Merged plugin work on main
 
-The previous handoff's baseline was `ab9be92`. These nine PRs merged on top of it and are the
+The previous handoff's baseline was `ab9be92`. These eleven PRs merged on top of it and are the
 behaviour a later change must preserve.
 
 | PR | Behavior to preserve |
@@ -69,6 +73,8 @@ behaviour a later change must preserve.
 | [#208](https://github.com/benfriebe/kelpi/pull/208) | `settings.window` is a placement containers are refused, selectable in Settings only. General, Workspaces and Appearance are projected with a host-drawn `part: 'native'` remainder each; Plugins, Remote, Profiles, Keybindings, Labels, Repositories, Web, both key recorders and every destructive confirmation stay native. Projected text fields refuse newline injection into the config file in both client funnels and in the daemon. |
 | [#209](https://github.com/benfriebe/kelpi/pull/209) | Settings Lab and `scripts/scenarios/plugin-settings-presenter.mjs` are the live acceptance. The surface owns the requested section and the host refreshes on a routed change; the native remainder sizes to its content rather than splitting the dialog. |
 | [#200](https://github.com/benfriebe/kelpi/pull/200) | The packaged CLI and daemon bundles ship an ESM `package.json` beside them, so Node stops warning about the module type. |
+| [#210](https://github.com/benfriebe/kelpi/pull/210) | The roadmap and this handoff state one current baseline, one set of open branches and one next-task list. A later refresh replaces those statements rather than appending to them. |
+| [#211](https://github.com/benfriebe/kelpi/pull/211) | File > New Workspace, Cmd+N, the palette row and the empty-state button post one request, and the sheet is hosted at window level whenever the bundled Workspaces sidebar is not mounted, so a plugin view holding the sidebar no longer swallows them and the bundled path still renders exactly one sheet ([#201](https://github.com/benfriebe/kelpi/issues/201)). Every scenario restores what it changed, and the runner checks a post-condition after each one and prints a named leak warning attributed to the scenario that added it ([#205](https://github.com/benfriebe/kelpi/issues/205), [#198](https://github.com/benfriebe/kelpi/issues/198)). A scenario can declare a minimum [`windowPlacement`](../scripts/ui-audit/README.md#a-scenario-can-declare-the-placement-it-needs-windowplacement); `plugin-browser-features` and `dock-bounce-stop-only` run offscreen on their own instance because the zero-opacity hidden window drops native input when another window overlaps it ([#206](https://github.com/benfriebe/kelpi/issues/206)). |
 
 Main fixes before that baseline that still matter are recorded in the roadmap: the vendored
 engine wrap-linkage fix [#167](https://github.com/benfriebe/kelpi/pull/167), bundled replay
@@ -79,18 +85,26 @@ actual bound pairing port, the requested Settings tab on reopen, focus-armed awa
 dwell, caret reclaim from chrome text fields, sidebar drag thresholds, and the deferred
 heartbeat verdict).
 
+## Open draft PRs
+
+Both are from this session and stack in this order: merge #213, then #214. Publication is
+authorized; merging remains the user's step.
+
+| PR | Branch | Behavior it adds |
+| --- | --- | --- |
+| [#213](https://github.com/benfriebe/kelpi/pull/213) | `fix/runner-daemon-handle`, on `main` | Closes [#199](https://github.com/benfriebe/kelpi/issues/199). The runner hands every scenario `t.daemon`, a restartable primary daemon with `start()`, `stop()` and `restart()` over the sandbox's own run dir, ports, database and token, so the daemon that comes back is the same identity at the same address and the window's reconnect is the behaviour under test. Both presenter scenarios press a real disconnect and reconnect: bundled presenters while the connection is down with nothing latched and both selections retained, both presenters re-attaching, a queued prompt leaving no pending request behind, a fresh prompt settling with its action afterwards, no pre-restart input replayed into the new shell, and a half-typed Settings draft intact with neither config file changed. No product code changes. Full battery passed at `59cbba2` ([the daemon handle](../scripts/ui-audit/README.md#the-daemon-handle-stopping-the-primary-daemon), [validation](plugin-validation.md#daemon-disconnect-coverage-2026-09-13)). |
+| [#214](https://github.com/benfriebe/kelpi/pull/214) | `feature/plugin-notification-presenter`, on `fix/runner-daemon-handle` | Closes [#194](https://github.com/benfriebe/kelpi/issues/194). The notification stack becomes its own Settings-only placement, `interaction.notifications`. The presenter declares its box height and the host clamps it to the smaller of 45% of the window and 200 px per visible notice; the frame is not painted at all while the stack is empty; the host keeps the corner rect, registers an overlay rect rather than a modal, and keeps the expiry and result validation; the frame is bounded to the 256 KiB feed with the rest counted in `queued`; native toasts stay bundled. Interaction Lab gains a third view and `plugin-interaction-presenters` grows to 51 checks. Full battery passed at `4377290` ([the notification box](plugin-ui.md#the-notification-box), [validation](plugin-validation.md#selectable-notification-presenter-2026-09-13)). |
+
 ## Next tasks
 
-Two of these are already running on `fix/new-workspace-and-lane-leaks`; the rest are
-unstarted. Each names the code that owns it.
+None of these is running on a branch; the two draft PRs above cover the tasks that were. Each
+names the code that owns it.
 
 | Task | Owned by |
 | --- | --- |
-| [#194](https://github.com/benfriebe/kelpi/issues/194) selectable notification presentation. A prompts presenter always receives an empty `notifications` field; the corner stack needs a presenter-declared box size and overlay rect, or a merged notification model, before a plugin can draw it. | [interaction contracts](../packages/client/src/interaction/contract.ts), [presenter host](../packages/client/src/interaction/presenter.ts), [bundled prompts](../packages/client/src/interaction/BundledPrompts.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts) |
 | [#193](https://github.com/benfriebe/kelpi/issues/193) a remote-hosted plugin view is refused this window's navigation (`ui.getNavigation`, `ui.selectWorkspace`). Decide the product rule first: which window such a view navigates, or whether the refusal becomes an explicit contract. | [host UI](../packages/client/src/plugins/host-ui.ts), [PluginView](../packages/client/src/plugins/PluginView.tsx), [public UI types](../packages/plugin-sdk/ui.d.ts) |
-| [#199](https://github.com/benfriebe/kelpi/issues/199) daemon disconnect and reconnect coverage in the presenter scenarios. **Delivered on `fix/runner-daemon-handle`**: the runner hands every scenario a restartable primary daemon and both presenter scenarios press a real disconnect and reconnect ([validation](plugin-validation.md#daemon-disconnect-coverage-2026-09-13), [the daemon handle](../scripts/ui-audit/README.md#the-daemon-handle-stopping-the-primary-daemon)). That arm exposed [#212](https://github.com/benfriebe/kelpi/issues/212), the daemon's shutdown stalling on unclosed keep-alive sockets until SIGKILL. | [scenario runner](../scripts/scenario.mjs), [the stack helpers](../scripts/ui-audit/lib/stack.mjs), [interaction scenario](../scripts/scenarios/plugin-interaction-presenters.mjs), [settings scenario](../scripts/scenarios/plugin-settings-presenter.mjs) |
-| [#201](https://github.com/benfriebe/kelpi/issues/201) File > New Workspace and Cmd+N do nothing while a plugin view replaces the Workspaces sidebar. **In progress on `fix/new-workspace-and-lane-leaks`.** | [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts), [App](../packages/client/src/App.tsx) |
-| [#205](https://github.com/benfriebe/kelpi/issues/205) and [#198](https://github.com/benfriebe/kelpi/issues/198) scenario lane leaks: scenarios that fail in every full lane and pass alone, from leaked sandbox state rather than load. **In progress on the same branch.** | [battery rules](../scripts/ui-audit/lib/battery.mjs), [scenario runner](../scripts/scenario.mjs), the named scenarios under [`scripts/scenarios/`](../scripts/scenarios) |
+| [#212](https://github.com/benfriebe/kelpi/issues/212) the daemon's WebSocket server closes its listener with `server.close()` and no `closeIdleConnections()`, so the renderer's idle keep-alive HTTP sockets hold the shutdown open until the 8 s SIGTERM window ends in SIGKILL, and the kill skips `persistence.close()`, the run-file cleanup and the final `kelpid stopped` line. Found by #213's restart arm, which changed no daemon code; which socket population holds the listener open is still unpinned. | [ws server](../packages/daemon/src/ws/server.ts), [boot compose](../packages/daemon/src/boot/compose.ts), [the daemon handle](../scripts/ui-audit/lib/stack.mjs) |
+| The one full-battery leak warning that is not yet inert: `plugin-document-features` leaves the phone's remembered place set (`host configured:DocumentRemote`), printed by every full battery on record. The two terminal warnings beside it name a second daemon those scenarios have already stopped. | [the scenario](../scripts/scenarios/plugin-document-features.mjs), [the post-condition](../scripts/scenario.mjs) |
 | An Appearance presenter for the native remainder parts (theme gallery, importer and share codes, colour maps, terminal theme picker, band fill, stat toggles, sparkline colour, highlight preview, Resets). Only if a real plugin needs them. | [sections](../packages/client/src/settings/sections.ts), [presenter host](../packages/client/src/settings/presenter.ts), [public settings types](../packages/plugin-sdk/settings.d.ts) |
 | Physical-device checks. Every phone result on record is Electron emulation; real hardware coverage must be reported separately. | the audit's phone steps and `phone-settings-sheet` in [`scripts/ui-audit/audit.mjs`](../scripts/ui-audit/audit.mjs), the phone sections of the plugin scenarios |
 | The roadmap's later items: remaining UI composition surfaces, a public registry and distribution, untrusted execution. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
@@ -141,10 +155,15 @@ pnpm check
 pnpm --filter @kelpi/plugin-sdk test:package
 node scripts/verify-plugin-sdk.mjs
 node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter --window hidden
+node scripts/scenario.mjs plugin-interaction-presenters plugin-remote plugin-settings-presenter --window hidden
 node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter --window onscreen --no-build
 node scripts/scenario.mjs plugin-terminal-geometry plugin-terminal-features terminal-mirrors-owner-grid --window hidden
 node scripts/scenario.mjs plugin-ui-services plugin-workbench plugin-remote --window hidden --no-build
 ~~~
+
+The run with `plugin-remote` between the two presenter scenarios is the leak probe: it is what
+proves they leave no residual sandbox state, and since PR #211 the runner names any scenario that
+does leave some behind.
 
 A Settings change also has to clear the Settings audit steps, which the presenter phases kept
 green throughout:
@@ -164,12 +183,14 @@ Before declaring a phase fully validated, run the
 actual audit assertions and record packaged-app results. The full audit can complete while
 individual assertions fail. See the [scenario rules](../scripts/ui-audit/README.md#the-rule)
 and [evidence policy](plugin-validation.md#reading-the-evidence). Phone emulation and
-physical-device coverage must be reported separately. The two batteries on record are
-summarised in the roadmap's [validation status](plugin-roadmap.md#validation-status); the
-latest, at `c4001f3`, is **7,904 root tests passed, 1 skipped**, shell **868 passed**, the full
-UI audit at **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes** with the
-failures tracked as issues, and a packaged smoke of **61 checks**. Neither battery was rerun
-at `fd2a216`.
+physical-device coverage must be reported separately. The two batteries covering the merged work
+are summarised in the roadmap's [validation status](plugin-roadmap.md#validation-status); the
+later of them, at `c4001f3`, is **7,904 root tests passed, 1 skipped**, shell **868 passed**, the
+full UI audit at **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes** with the
+failures tracked as issues, and a packaged smoke of **61 checks**. Neither was rerun at
+`2f5e728`. The two draft branches each ran their own: `59cbba2` (#213) in 24.0 minutes and
+`4377290` (#214) in 24.4 minutes, both with no component retried, the whole scenario lane green
+without the battery's retry, and a packaged smoke of **69 checks**.
 
 ### Promoting a build
 
@@ -197,10 +218,11 @@ node scripts/self-upgrade.mjs --detach --no-package --skip-verify \
 ## Starter message for a new session
 
 > Read `docs/plugin-handoff.md` and `docs/plugin-roadmap.md` on `main`. Everything through full
-> Settings presentation is merged at `fd2a216` and that build is promoted and running, so
+> Settings presentation is merged at `2f5e728` and that build is promoted and running, so
 > preserve the dirty root checkout and the installed Kelpi and do not promote anything.
-> Recheck `main` and the open issues before you start. Pick up from the handoff's Next tasks in
-> a fresh isolated worktree, bootstrapping the vendor bundle from source rather than reusing
-> another worktree's. Note that `fix/new-workspace-and-lane-leaks` already owns #201, #205 and
-> #198. Use logical commits and reviewable PR phases, update the roadmap, guides and dated
-> validation together, and leave merging to me.
+> Recheck `main` and the open issues before you start. Two draft PRs are stacked and waiting on
+> me, #213 (`fix/runner-daemon-handle`) and then #214
+> (`feature/plugin-notification-presenter`), so leave those branches and their worktrees alone.
+> Pick up from the handoff's Next tasks in a fresh isolated worktree, bootstrapping the vendor
+> bundle from source rather than reusing another worktree's. Use logical commits and reviewable
+> PR phases, update the roadmap, guides and dated validation together, and leave merging to me.

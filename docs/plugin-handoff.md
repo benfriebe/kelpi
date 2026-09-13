@@ -1,38 +1,51 @@
 # Plugin extensibility: agent handoff
 
-Current as of **2026-09-12**, reviewed against merged main **`ab9be92`**. Start here when
+Current as of **2026-09-13**, reviewed against merged main **`fd2a216`**. Start here when
 resuming this project in another session. The [roadmap](plugin-roadmap.md) is the overall plan;
 the [API guide](plugins.md) describes shipped contracts; the
 [validation record](plugin-validation.md) separates tested revisions and evidence.
 
 ## Current state
 
-The trusted local plugin platform is merged through packages, revision recovery and external
-authoring. Custom panes, both swappable sidebars, toolbar/status, document, terminal and browser
-renderers, shared UI requests and selected native services are implemented. The roadmap links
-each completed phase and its merged PRs, from #125 through #162.
+Everything the roadmap's [completed table](plugin-roadmap.md#completed-and-merged) lists is
+merged into `main` at **`fd2a216`**, and that build is packaged, promoted and running. Terminal
+SDK geometry parity, the selectable palette and prompt presenters, and full Settings presentation
+all landed on 2026-09-12 and 2026-09-13, so there is no open plugin feature branch. Plugin API
+version remains **1**; wire protocol generation remains **2**. The three placements added by
+those phases, `interaction.palette`, `interaction.prompts` and `settings.window`, are additive.
 
-The broader replacement goal is **not complete**. Terminal SDK geometry parity (replay grid and
-size ownership for plugin renderers) is implemented and validated on
-`feature/plugin-terminal-geometry` as [PR #187](https://github.com/benfriebe/kelpi/pull/187), a draft stacked on PR #164, pending review and merge. The selectable
-command-palette and shared-prompt presenters and the first two Settings phases are implemented
-on the stacked branches recorded below; the Settings Lab and the remaining composition surfaces
-are still open. Public registry/distribution and untrusted execution are
-separate future scopes. Plugin API version remains **1**; wire protocol generation remains **2**.
+The broader replacement goal is still **not complete**: selectable notification presentation,
+the remaining UI composition surfaces, a public registry and distribution, and untrusted
+execution are open scopes in the roadmap's
+[later work](plugin-roadmap.md#later-work-and-open-decisions).
 
 | Item | State at this handoff |
 | --- | --- |
-| Product baseline | `origin/main` at `ab9be92`, including PR #185. |
-| Documentation review | [PR #164](https://github.com/benfriebe/kelpi/pull/164), open draft against `main`; this handoff belongs to that PR and is not yet merged. Recheck its state before continuing. |
-| Documentation branch/worktree | `docs/plugin-roadmap` in `out/worktrees/plugin-docs`, rebased onto the product baseline above. |
-| Feature branch | `feature/plugin-terminal-geometry`, stacked on `docs/plugin-roadmap`, in the worktree Kelpi created for the "Plugin roadmap" workspace; published as draft [PR #187](https://github.com/benfriebe/kelpi/pull/187). Rebase onto `main` once PR #164 merges. The following presenter phase is being implemented on `feature/plugin-interaction-contracts`, based on this branch. |
-| Running application | No application or daemon was launched for this handoff. Existing user instances and other worktrees remain owned by their current tasks. |
+| Product baseline | `origin/main` at `fd2a216`, through PR #200. |
+| Promoted build | The installed Kelpi under the root checkout was promoted from this baseline. `~/Library/Application Support/kelpid/last-promote.json` reads `"phase": "promoted"` at 2026-09-12T15:25:02Z. |
+| Open feature branch | None. The only branch with work in progress is `fix/new-workspace-and-lane-leaks` (issues #201, #205, #198), in the `plugin-settings-contracts` worktree below. |
+| Documentation branch | This refresh. The earlier documentation PR [#164](https://github.com/benfriebe/kelpi/pull/164) is merged. |
+| Running application | The promoted instance is the user's own. Do not package into it, restart it or take its socket without being asked. |
 
-In the current local environment, the repository root is `/Users/ben/code/kelpi`. Its main
-checkout has unrelated changes to `README.md`, `package.json` and `pnpm-lock.yaml`, plus
-untracked `.pnpm-store/`, `packages/site/` and `examples/plugins/geo-map-trainer/`. Preserve
-them. Work on this documentation is confined to the docs worktree; do not reset the root,
-carry its changes into a feature branch, or clean up other worktrees.
+Worktrees under `/Users/ben/kelpi/worktrees/kelpi/`:
+
+| Worktree | Branch | Disposition |
+| --- | --- | --- |
+| `plugin-terminal-geometry` | the current documentation branch | In use by this refresh. |
+| `plugin-settings-contracts` | `fix/new-workspace-and-lane-leaks` | In progress; leave it alone. |
+| `plugin-interaction-contracts` | `feature/plugin-interaction-lab` | Merged as PR #190; removable. |
+| `fix-cli-module-type` | `fix/cli-module-type-warning` | Merged as PR #200; removable. |
+
+Removing the last two is `git worktree remove` plus deleting the merged branch; each holds a
+built vendor bundle and `node_modules`, so a new task is faster bootstrapped fresh than
+reusing one of them.
+
+In the current local environment the repository root is `/Users/ben/code/kelpi`. Its main
+checkout carries unrelated site work: modified `README.md`, `package.json` and `pnpm-lock.yaml`,
+plus untracked `.pnpm-store/`, `packages/site/` and `examples/plugins/geo-map-trainer/`.
+Preserve them. Do not reset the root, carry its changes into a feature branch, or clean up the
+many older worktrees under `/Users/ben/code/kelpi/.claude/worktrees/` and
+`/Users/ben/code/kelpi/out/worktrees/`, which belong to other tasks.
 
 The user's established workflow is isolated worktrees/branches, private instances beside
 their installed Kelpi, validation before commits, logical commits and reviewable PR phases.
@@ -40,190 +53,154 @@ Draft PR publication is authorized; merging remains the user's step. Delegate bo
 or implementation tasks where useful. Update the roadmap, API/example guides and dated
 validation together as each phase lands.
 
-## Changes on main since the last plugin phase
+## Merged plugin work on main
 
-The previous plugin validation baseline was `0fe093d`. These subsequently merged changes
-matter when continuing work:
+The previous handoff's baseline was `ab9be92`. These nine PRs merged on top of it and are the
+behaviour a later change must preserve.
 
 | PR | Behavior to preserve |
 | --- | --- |
-| [#167](https://github.com/benfriebe/kelpi/pull/167) | Vendored engine `0.4.0-nex.13` fixes wrap linkage during reflow. It includes a changed WASM binary, so rebuild the JavaScript that embeds it. |
-| [#168](https://github.com/benfriebe/kelpi/pull/168) | Native replays carry serialization geometry; the bundled non-owner terminal mirrors the size owner's grid. Settled-resize resync survives backpressure. The plugin bridge has not gained that geometry. |
-| [#179](https://github.com/benfriebe/kelpi/pull/179) | A new workspace with one selected repository starts its first pane there. |
-| [#180](https://github.com/benfriebe/kelpi/pull/180) | Remote pairing uses the actual bound HTTP port, including when the requested port was zero. |
-| [#181](https://github.com/benfriebe/kelpi/pull/181) | Reopening Settings focuses the requested tab. |
-| [#182](https://github.com/benfriebe/kelpi/pull/182) | Awaiting-input dwell begins on focus/activation, rather than a status change. |
-| [#183](https://github.com/benfriebe/kelpi/pull/183) | Clicking a mouse-reporting terminal reclaims its caret from chrome text fields. |
-| [#184](https://github.com/benfriebe/kelpi/pull/184) | Sidebar multiselect collapses drag companions only after the drag threshold and clears stale drag state on press. |
-| [#185](https://github.com/benfriebe/kelpi/pull/185) | A delayed heartbeat tick defers the timeout verdict once, allowing queued replies to drain. |
+| [#164](https://github.com/benfriebe/kelpi/pull/164) | The roadmap, this handoff and the dated validation record are the documentation contract; each phase updates all three. |
+| [#187](https://github.com/benfriebe/kelpi/pull/187) | SDK replay frames carry `grid` (`null` when the daemon states none) and presentation frames carry `ownsSize`; one forced PTY report per ownership hand-off. A pane's measured size stays distinct from the grid being rendered, and an embedded remote pane mirrors its own daemon's owner. |
+| [#188](https://github.com/benfriebe/kelpi/pull/188) | The palette session and the shared quick pick, input, dialog and notification requests are one window interaction surface. Request ownership, result validation, cancellation, queueing and window/daemon targeting live there, not in the components. |
+| [#189](https://github.com/benfriebe/kelpi/pull/189) | `interaction.palette` and `interaction.prompts` are selectable in Settings only: listed in `ui.getWorkbench().slots`, refused by `ui.selectView`. The bundled presenters cannot be selected away. Password inputs and the notification stack stay bundled whatever is selected; an undeliverable frame fails the presenter rather than arming a watchdog. |
+| [#190](https://github.com/benfriebe/kelpi/pull/190) | Interaction Lab and `scripts/scenarios/plugin-interaction-presenters.mjs` are the live acceptance: second-plugin requests, presenter crash and watchdog fallback with the live request intact, reload, disable, and the phone form factor keeping the bundled presenters. Its cleanup restores both placements, the phone's landing page, emulation and the starting workspace. |
+| [#191](https://github.com/benfriebe/kelpi/pull/191) | Settings sections and fields are closure-free descriptors with host-owned validation, drafts and routing. Tabs commit through the surface only; the TCP caption is composed from a structured status so no OS error text is projected. |
+| [#208](https://github.com/benfriebe/kelpi/pull/208) | `settings.window` is a placement containers are refused, selectable in Settings only. General, Workspaces and Appearance are projected with a host-drawn `part: 'native'` remainder each; Plugins, Remote, Profiles, Keybindings, Labels, Repositories, Web, both key recorders and every destructive confirmation stay native. Projected text fields refuse newline injection into the config file in both client funnels and in the daemon. |
+| [#209](https://github.com/benfriebe/kelpi/pull/209) | Settings Lab and `scripts/scenarios/plugin-settings-presenter.mjs` are the live acceptance. The surface owns the requested section and the host refreshes on a routed change; the native remainder sizes to its content rather than splitting the dialog. |
+| [#200](https://github.com/benfriebe/kelpi/pull/200) | The packaged CLI and daemon bundles ship an ESM `package.json` beside them, so Node stops warning about the module type. |
 
-## First implementation task
+Main fixes before that baseline that still matter are recorded in the roadmap: the vendored
+engine wrap-linkage fix [#167](https://github.com/benfriebe/kelpi/pull/167), bundled replay
+geometry [#168](https://github.com/benfriebe/kelpi/pull/168), and
+[#179](https://github.com/benfriebe/kelpi/pull/179) through
+[#185](https://github.com/benfriebe/kelpi/pull/185) (first pane in a selected repository, the
+actual bound pairing port, the requested Settings tab on reopen, focus-armed awaiting-input
+dwell, caret reclaim from chrome text fields, sidebar drag thresholds, and the deferred
+heartbeat verdict).
 
-Close the terminal SDK geometry gap. The native connection supplies `onReplay(data, grid)`;
-the plugin bridge now states that grid on each SDK replay frame and size ownership on each
-presentation frame ([contract](plugin-terminals.md#replay-geometry-and-size-ownership)).
-Before this branch, replay frames contained only bytes and Terminal Lab fitted its own box
-even when another window owned process sizing. Terminal Lab now mirrors from the public fields,
-and `scripts/scenarios/plugin-terminal-geometry.mjs` is the live plugin acceptance; the
-[validation record](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12) has the counts.
+## Next tasks
+
+Two of these are already running on `fix/new-workspace-and-lane-leaks`; the rest are
+unstarted. Each names the code that owns it.
+
+| Task | Owned by |
+| --- | --- |
+| [#194](https://github.com/benfriebe/kelpi/issues/194) selectable notification presentation. A prompts presenter always receives an empty `notifications` field; the corner stack needs a presenter-declared box size and overlay rect, or a merged notification model, before a plugin can draw it. | [interaction contracts](../packages/client/src/interaction/contract.ts), [presenter host](../packages/client/src/interaction/presenter.ts), [bundled prompts](../packages/client/src/interaction/BundledPrompts.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts) |
+| [#193](https://github.com/benfriebe/kelpi/issues/193) a remote-hosted plugin view is refused this window's navigation (`ui.getNavigation`, `ui.selectWorkspace`). Decide the product rule first: which window such a view navigates, or whether the refusal becomes an explicit contract. | [host UI](../packages/client/src/plugins/host-ui.ts), [PluginView](../packages/client/src/plugins/PluginView.tsx), [public UI types](../packages/plugin-sdk/ui.d.ts) |
+| [#199](https://github.com/benfriebe/kelpi/issues/199) daemon disconnect and reconnect coverage in the presenter scenarios. The runner exposes no primary-daemon handle, so neither presenter scenario presses it. | [scenario runner](../scripts/scenario.mjs), [interaction scenario](../scripts/scenarios/plugin-interaction-presenters.mjs), [settings scenario](../scripts/scenarios/plugin-settings-presenter.mjs) |
+| [#201](https://github.com/benfriebe/kelpi/issues/201) File > New Workspace and Cmd+N do nothing while a plugin view replaces the Workspaces sidebar. **In progress on `fix/new-workspace-and-lane-leaks`.** | [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts), [App](../packages/client/src/App.tsx) |
+| [#205](https://github.com/benfriebe/kelpi/issues/205) and [#198](https://github.com/benfriebe/kelpi/issues/198) scenario lane leaks: scenarios that fail in every full lane and pass alone, from leaked sandbox state rather than load. **In progress on the same branch.** | [battery rules](../scripts/ui-audit/lib/battery.mjs), [scenario runner](../scripts/scenario.mjs), the named scenarios under [`scripts/scenarios/`](../scripts/scenarios) |
+| An Appearance presenter for the native remainder parts (theme gallery, importer and share codes, colour maps, terminal theme picker, band fill, stat toggles, sparkline colour, highlight preview, Resets). Only if a real plugin needs them. | [sections](../packages/client/src/settings/sections.ts), [presenter host](../packages/client/src/settings/presenter.ts), [public settings types](../packages/plugin-sdk/settings.d.ts) |
+| Physical-device checks. Every phone result on record is Electron emulation; real hardware coverage must be reported separately. | the audit's phone steps and `phone-settings-sheet` in [`scripts/ui-audit/audit.mjs`](../scripts/ui-audit/audit.mjs), the phone sections of the plugin scenarios |
+| The roadmap's later items: remaining UI composition surfaces, a public registry and distribution, untrusted execution. | [later work](plugin-roadmap.md#later-work-and-open-decisions) |
+
+The remaining open triage issues from the two batteries are audit-step and lane defects rather
+than plugin contract gaps: [#192](https://github.com/benfriebe/kelpi/issues/192),
+[#202](https://github.com/benfriebe/kelpi/issues/202),
+[#203](https://github.com/benfriebe/kelpi/issues/203),
+[#204](https://github.com/benfriebe/kelpi/issues/204),
+[#206](https://github.com/benfriebe/kelpi/issues/206) and
+[#207](https://github.com/benfriebe/kelpi/issues/207).
+
+Source entrypoints for the surfaces those tasks touch:
 
 | Concern | Source entrypoints |
 | --- | --- |
-| Native replay grid and renderer ownership | [PTY connection](../packages/client/src/connection/pty.ts), [TerminalFeaturePane](../packages/client/src/features/TerminalFeaturePane.tsx), [TerminalPane](../packages/client/src/terminal/TerminalPane.tsx) |
-| Renderer bridge and presentation mapping | [Terminal host](../packages/client/src/plugins/terminal.ts), [pane adapter](../packages/client/src/plugins/terminal-pane.ts), [PluginView](../packages/client/src/plugins/PluginView.tsx) |
-| Public contract and runtime | [Terminal types](../packages/plugin-sdk/terminal.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js), [SDK tests](../packages/plugin-sdk/tests) |
-| Real replacement | [Terminal Lab renderer](../examples/plugins/terminal-lab/ui/renderer.js), [helpers](../examples/plugins/terminal-lab/ui/helpers.js), [xterm adapter](../examples/plugins/terminal-lab/ui/xterm-adapter.js) |
-| Existing behavior and live acceptance | [Native terminal specification](terminal-surface.md), [plugin terminal scenario](../scripts/scenarios/plugin-terminal-features.mjs), [bundled mirror scenario](../scripts/scenarios/terminal-mirrors-owner-grid.mjs) |
-
-Agree the public field names and compatibility behavior in the implementation; this document
-does not introduce an API. Carry authoritative replay geometry and size ownership through
-the host and SDK, distinguish a pane's measured size from the rendered owner grid, and update
-Terminal Lab. Keep each pane bound to its actual local or remote runtime.
-
-Native `replayGrid` is additive wire type `0x07` immediately before its replay. It is metadata,
-not terminal output, and consumes no output credit. Older daemons can omit it: represent
-missing geometry explicitly rather than guessing. Preserve byte acknowledgements, resync
-generations, parser-response routing and hidden-view rules. Do not expose foreign client IDs
-or credentials to solve ownership presentation. A forced resize on an ownership transition
-is deliberate recovery, not a polling mechanism.
-
-Acceptance must cover owner/non-owner windows with different viewport and font sizes,
-letterboxing/clipping, resize, taking control, owner disconnect/reconnect, hidden/revealed
-panes, embedded remote ownership and renderer switches. Assert that the original PTY survives,
-mouse/input coordinates still correspond to rendered cells, and stale handles cannot resize
-or acknowledge a replacement. Add explicit plugin coverage: `terminal-mirrors-owner-grid`
-currently exercises the bundled Electron renderer and a raw second client, not Terminal Lab
-or a physical phone.
-
-Use logical review phases if the change is large: contract/bridge first, replacement example
-and live acceptance next. Every intermediate phase must remain buildable and preserve existing
-renderers. Follow with the presenter work below once this parity gap is validated.
-
-## Following phase: palette and shared prompts
-
-The [roadmap phase](plugin-roadmap.md#following-phase-replaceable-palette-and-shared-prompts)
-is implemented on three stacked branches (`feature/plugin-interaction-contracts`,
-`feature/plugin-interaction-presenters`, `feature/plugin-interaction-lab`): the window
-interaction surface owns the palette session and shared prompts, and a plugin view declaring
-`interaction.palette` or `interaction.prompts` can be selected as that placement's presenter in
-Settings → Plugins → Workbench views. Request authority, cancellation and result validation stay
-in Kelpi; the bundled presenters are the recovery floor and cannot be selected away. Selection is
-Settings-only, and neither password inputs nor notifications are handed to a plugin presenter: a
-prompts presenter draws modal requests only, and selectable notification presentation is later
-scope. See
-[selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
-
-| Concern | Source entrypoints |
-| --- | --- |
-| Window interaction surface | [contracts](../packages/client/src/interaction/contract.ts), [surface](../packages/client/src/interaction/surface.ts), [host](../packages/client/src/interaction/InteractionHost.tsx), [bundled prompts](../packages/client/src/interaction/BundledPrompts.tsx), [palette adapter](../packages/client/src/interaction/PaletteHost.tsx) |
-| Palette mount, shortcuts and window targeting | [App](../packages/client/src/App.tsx), [palette source](../packages/client/src/features/palette-source.ts), [CommandPalette](../packages/client/src/chrome/CommandPalette.tsx), [palette model](../packages/client/src/chrome/palette.ts) |
-| Plugin-facing prompt adapter and public types | [UI service adapter](../packages/client/src/plugins/ui-services.ts), [public UI types](../packages/plugin-sdk/ui.d.ts) |
-| View/request lifetime and host boundary | [PluginView](../packages/client/src/plugins/PluginView.tsx), [host UI](../packages/client/src/plugins/host-ui.ts) |
-| Registration and fallback precedents | [Registry](../packages/client/src/plugins/registry.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
-| Presenter selection, projection and watchdogs | [presenter host](../packages/client/src/interaction/presenter.ts), [presenter slot](../packages/client/src/interaction/presenter-slot.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js) |
-| Focus/modal coordination and Settings | [Modal presence](../packages/client/src/chrome/modal-presence.ts), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
-
-Settings presenter entrypoints, for the phase below:
-
-| Concern | Source entrypoints |
-| --- | --- |
+| Window interaction surface | [contracts](../packages/client/src/interaction/contract.ts), [surface](../packages/client/src/interaction/surface.ts), [host](../packages/client/src/interaction/InteractionHost.tsx), [bundled prompts](../packages/client/src/interaction/BundledPrompts.tsx), [palette adapter](../packages/client/src/interaction/PaletteHost.tsx), [palette source](../packages/client/src/features/palette-source.ts) |
+| Interaction presenter selection and projection | [presenter host](../packages/client/src/interaction/presenter.ts), [presenter slot](../packages/client/src/interaction/presenter-slot.tsx), [public interaction types](../packages/plugin-sdk/interaction.d.ts) |
 | Settings model and authority | [contract](../packages/client/src/settings/contract.ts), [sections](../packages/client/src/settings/sections.ts), [surface](../packages/client/src/settings/surface.ts), [field renderer](../packages/client/src/settings/FieldRenderer.tsx) |
-| Presenter projection, slot and dialog | [presenter host](../packages/client/src/settings/presenter.ts), [presenter slot](../packages/client/src/settings/presenter-slot.tsx), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
-| Placement, selection and recovery rows | [protocol placements](../packages/protocol/src/plugins.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
-| Public contract and bridge | [public settings types](../packages/plugin-sdk/settings.d.ts), [SDK runtime](../packages/plugin-sdk/browser.js), [PluginView](../packages/client/src/plugins/PluginView.tsx) |
-
-The Interaction Lab example and its live acceptance are implemented on
-`feature/plugin-interaction-lab`; see the validation record for the tested revision. Preserve
-keyboard/IME behavior, cancellation on caller/presenter disposal, window/daemon ownership,
-native browser parking, modal queueing and focus restoration. Retain a reachable way to open
-plugin recovery when a replacement fails.
-
-Existing regression scenarios include `plugin-ui-services`, `plugin-preview-shortcuts`,
-`confirm-dialog-keys`, `plugin-workbench`, `plugin-remote`, `plugin-authoring`,
-`plugin-browser-features` and `plugin-terminal-features`. They cover existing behavior;
-`plugin-interaction-presenters` proves the presenter contracts with Interaction Lab, including
-a second plugin's prompt, presenter crash and watchdog fallback with the live request intact,
-reload, disable, and the phone form factor keeping the bundled presenters. Selectable
-notification presentation remains open scope; the notification stack stays bundled.
-
-## Following phase: full Settings presentation
-
-Phase 1 (shared settings contracts) is implemented on `feature/plugin-settings-contracts`,
-based on the Interaction Lab branch. `packages/client/src/settings/contract.ts`,
-`sections.ts` and `surface.ts` are the vocabulary and authority; `FieldRenderer.tsx` draws a
-descriptor with the existing controls; `SettingsOverlay` routes through the surface.
-
-Phase 2 (the selectable presenter) is implemented on `feature/plugin-settings-presenter`,
-stacked on phase 1. `settings.window` is a `PLUGIN_PLACEMENTS` entry that containers are
-refused; `settings/presenter.ts` builds the field-by-field projection and owns the call table;
-`settings/presenter-slot.tsx` owns the latch, the two watchdogs and the bundled floor;
-`features/definitions.ts` registers the bundled `kelpi.settings.window`. Selection is
-Settings-only: the placement is listed in `ui.getWorkbench().slots` and refused by
-`ui.selectView`. General, Workspaces and Appearance's plain rows are projected, and each of those
-three sections also has a `part: 'native'` remainder the host keeps drawing below the projected
-fields: General's failed TCP bind line, CLI compatibility note and config-file footer; Workspaces'
-cross-reference and footer; and Appearance's preset theme gallery, importer and share codes, chrome
-colour map and agent-status colours, terminal theme picker with its background swatch and
-resolved-appearance readout, group-band fill slider, per-metric stat toggles, adaptive sparkline
-colour, search highlight preview and every Reset. All three therefore report `native: true`
-alongside their fields. Plugins, Remote, Profiles, Keybindings, Labels, Repositories and Web stay
-fully native, as do both key recorders and every destructive confirmation. Drafts live in the
-surface, so a presenter failure changes only who paints. Public types are in
-`packages/plugin-sdk/settings.d.ts`, with the runtime feed topic `settings` in `browser.js`.
-
-Phase 3 (`feature/plugin-settings-lab`) adds the Settings Lab example and
-`scripts/scenarios/plugin-settings-presenter.mjs`, the live acceptance recorded in the validation
-record. The decisions taken by precedent (what stays native,
-repository paths not projected, plugin-contributed settings keeping their own draft session)
-are listed in the roadmap row.
+| Settings presenter, slot and dialog | [presenter host](../packages/client/src/settings/presenter.ts), [presenter slot](../packages/client/src/settings/presenter-slot.tsx), [Settings overlay](../packages/client/src/settings/SettingsOverlay.tsx) |
+| Placements, selection and recovery rows | [protocol placements](../packages/protocol/src/plugins.ts), [registry](../packages/client/src/plugins/registry.ts), [Workbench](../packages/client/src/plugins/Workbench.tsx), [feature definitions](../packages/client/src/features/definitions.ts) |
+| Terminal replay geometry and ownership | [PTY connection](../packages/client/src/connection/pty.ts), [terminal host](../packages/client/src/plugins/terminal.ts), [pane adapter](../packages/client/src/plugins/terminal-pane.ts), [terminal types](../packages/plugin-sdk/terminal.d.ts) |
+| Public bridge and SDK runtime | [PluginView](../packages/client/src/plugins/PluginView.tsx), [host UI](../packages/client/src/plugins/host-ui.ts), [UI service adapter](../packages/client/src/plugins/ui-services.ts), [SDK runtime](../packages/plugin-sdk/browser.js), [SDK tests](../packages/plugin-sdk/tests) |
+| Shipped replacement examples | [Interaction Lab](../examples/plugins/interaction-lab), [Settings Lab](../examples/plugins/settings-lab), [Terminal Lab](../examples/plugins/terminal-lab) |
 
 ## Setup and validation for the next agent
 
-1. Check `git status`, fetch main, and inspect the current head and PR #164 state. Read any
-   repository instructions in the worktree you will actually edit.
+1. Check `git status`, fetch `main` and inspect the current head. Read any repository
+   instructions in the worktree you will actually edit. Do not work in the root checkout.
 2. Follow [checkout preparation](plugin-development.md#prepare-a-source-checkout).
    Build the ignored Ghostty bundle from that checkout's tracked source and patched WASM,
-   install its dependencies and run the embedded-WASM check. Do not reuse an unverified
-   bundle or another worktree's `node_modules`.
+   install its dependencies and run the embedded-WASM check (`vendor-engine.test.ts`). Do not
+   reuse an unverified bundle or another worktree's `node_modules`. A fresh worktree has no
+   `dist`, so client suites report "no tests" until it is built.
 3. Start [a private instance](plugin-development.md#start-a-private-instance) and use its
    printed socket with the checkout CLI and `KELPI_REQUIRE_SOCKET=1`. Terminal Lab additionally
    needs `node scripts/build-terminal-lab.mjs` before manual installation or packing; its
-   scenario builds the example automatically.
+   scenario builds the example automatically. Interaction Lab and Settings Lab are build-free,
+   UI-only views.
 4. Validate each implementation phase before committing. Record the exact source revision,
    command, pass/fail/skip counts, build/fixture hashes and retained evidence. Update the
    roadmap and relevant API/example guides in the same review sequence.
 
-For the terminal follow-up, the current entry commands are:
+The current entry commands, covering the merged presenter surfaces:
 
 ~~~sh
 pnpm check
 pnpm --filter @kelpi/plugin-sdk test:package
-node scripts/scenario.mjs plugin-terminal-features terminal-mirrors-owner-grid --window hidden
-node scripts/scenario.mjs plugin-terminal-features terminal-mirrors-owner-grid --window onscreen --no-build
+node scripts/verify-plugin-sdk.mjs
+node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter --window hidden
+node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter --window onscreen --no-build
+node scripts/scenario.mjs plugin-terminal-geometry plugin-terminal-features terminal-mirrors-owner-grid --window hidden
+node scripts/scenario.mjs plugin-ui-services plugin-workbench plugin-remote --window hidden --no-build
 ~~~
 
-Extend those scenarios or add a dedicated one for the new behavior. Use `--no-build` only
-when source and generated bundles are unchanged since the preceding run. Inspect visible
-screenshots; hidden-window screenshots do not establish visual correctness.
+A Settings change also has to clear the Settings audit steps, which the presenter phases kept
+green throughout:
 
-Before declaring the broader phase fully validated, run the
+~~~sh
+node scripts/ui-audit/audit.mjs --window hidden --only settings-open,settings-tab-general,settings-tab-appearance,settings-tab-labels,settings-tab-profiles,settings-tab-keybindings,settings-tab-web,settings-tab-workspaces,keybinding-record,settings-close,settings-tcp-state,settings-repositories,settings-live-apply,phone-settings-sheet
+~~~
+
+That set is **15 steps, 98 assertions** and was `0 failed, 0 step errors` on each settings
+branch. Repeat the visible ones onscreen and inspect the General, Appearance and Workspaces
+screenshots; hidden-window screenshots do not establish visual correctness. Use `--no-build`
+only when source and generated bundles are unchanged since the preceding run. Some steps
+cannot run under `--only` because they expect an earlier step's state.
+
+Before declaring a phase fully validated, run the
 [verification battery](../scripts/verify.mjs) (`node scripts/verify.mjs --full`), review its
 actual audit assertions and record packaged-app results. The full audit can complete while
 individual assertions fail. See the [scenario rules](../scripts/ui-audit/README.md#the-rule)
 and [evidence policy](plugin-validation.md#reading-the-evidence). Phone emulation and
-physical-device coverage must be reported separately.
+physical-device coverage must be reported separately. The two batteries on record are
+summarised in the roadmap's [validation status](plugin-roadmap.md#validation-status); the
+latest, at `c4001f3`, is **7,904 root tests passed, 1 skipped**, shell **868 passed**, the full
+UI audit at **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes** with the
+failures tracked as issues, and a packaged smoke of **61 checks**. Neither battery was rerun
+at `fd2a216`.
 
-The latest merged plugin authoring review recorded **8,369 tests** and **70/70 hidden live
-checks** at the older `0fe093d` baseline. Its earlier onscreen evidence belongs to the
-pre-review authoring revision. Neither count is a fresh whole-product result for `ab9be92`.
-The [current documentation checks](plugin-validation.md#documentation-and-handoff-refresh-2026-09-12)
-are recorded separately; they do not establish full product, packaged or device validation.
+### Promoting a build
+
+Only when the user asks. The promote flow that produced the running build was:
+
+1. Package from a clean worktree at `main`, with the battery already green on that tree.
+2. Place the bundle at the installed path under the root checkout,
+   `/Users/ben/code/kelpi/packages/shell/out/Kelpi-darwin-arm64/Kelpi.app`. The promote script
+   keeps the previous bundle beside it as `Kelpi-darwin-arm64.pre-promote-<stamp>`.
+3. Run it detached, skipping the repackage and the battery it has already passed:
+
+~~~sh
+node scripts/self-upgrade.mjs --detach --no-package --skip-verify \
+  --app /Users/ben/code/kelpi/packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
+~~~
+
+   `--detach` is what makes this survivable from inside a Kelpi pane: the promote re-execs
+   itself outside the pane, the app and daemon it is about to kill, and the pane's session
+   resumes on the other side.
+4. Read the verdict from `~/Library/Application Support/kelpid/last-promote.json`. `"phase":
+   "promoted"` with a fresh `updatedAt` is the success case; the same file names the promote
+   and restarter logs to read when it is not. The packaged daemon's stdio goes to `/dev/null`,
+   so those logs and `kelpid.js status` are the only account of what it did.
 
 ## Starter message for a new session
 
-> Read `docs/plugin-handoff.md` and `docs/plugin-roadmap.md` from documentation PR #164.
-> Recheck main and that PR's state, and preserve the dirty root checkout and installed Kelpi.
-> Continue in an isolated worktree with the terminal SDK replay-geometry and ownership parity
-> task, validating Terminal Lab as well as the bundled renderer. Use logical commits and PR
-> phases, update the docs and validation evidence, and leave merging to me. The subsequent
-> broader phase is selectable palette and shared-prompt presentation.
+> Read `docs/plugin-handoff.md` and `docs/plugin-roadmap.md` on `main`. Everything through full
+> Settings presentation is merged at `fd2a216` and that build is promoted and running, so
+> preserve the dirty root checkout and the installed Kelpi and do not promote anything.
+> Recheck `main` and the open issues before you start. Pick up from the handoff's Next tasks in
+> a fresh isolated worktree, bootstrapping the vendor bundle from source rather than reusing
+> another worktree's. Note that `fix/new-workspace-and-lane-leaks` already owns #201, #205 and
+> #198. Use logical commits and reviewable PR phases, update the roadmap, guides and dated
+> validation together, and leave merging to me.

@@ -141,9 +141,12 @@ fallback. Local installation copies validated bytes into content-addressed revis
 guarded updates, history and rollback preserve usable code and compatible saved state.
 The [plugin guide](docs/plugins.md) specifies these contracts and their limits.
 
-The command palette and shared prompt/notification presenters are bundled renderings of one
-window interaction surface (`packages/client/src/interaction/`); selecting a plugin presenter
-and the application Settings shell remain roadmap work.
+The command palette and the shared quick pick, input and dialog requests are one window
+interaction surface (`packages/client/src/interaction/`), and Settings sections and fields are
+one descriptor model (`packages/client/src/settings/`). A plugin view can be selected in
+Settings as the presenter for `interaction.palette`, `interaction.prompts` or `settings.window`,
+with the bundled rendering as the recovery floor; request authority, validation and drafts stay
+with the host. Notification presentation is still bundled.
 The bundled terminal mirrors its size owner's replay grid, and the public terminal SDK carries
 that grid and size ownership to replacement renderers; the
 [terminal guide](docs/plugin-terminals.md#replay-geometry-and-size-ownership) specifies it.

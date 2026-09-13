@@ -53,7 +53,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 ## Selectable notification presenter (2026-09-13)
 
 Issue [#194](https://github.com/benfriebe/kelpi/issues/194), implemented on
-`feature/plugin-notification-presenter` (based on main `2f5e728`). Tested revision: **`e5e2744`**. Same bootstrapped worktree; private sandboxes only, never the user's
+`feature/plugin-notification-presenter`, stacked on `fix/runner-daemon-handle` ([#213](https://github.com/benfriebe/kelpi/pull/213), itself on main `2f5e728`). Tested revision: **`90bb534`** (the unit suites, SDK checks and the scenario runs in the table were taken on the pre-rebase tree `e5e2744`, whose product code is byte-identical; the last row was taken on `90bb534`). Same bootstrapped worktree; private sandboxes only, never the user's
 daemon. The placement and the one new presenter call are additive: plugin API version stays **1**
 and wire protocol generation stays **2**.
 
@@ -72,6 +72,7 @@ only its box height, which the host clamps.
 | `plugin-interaction-presenters`, hidden | **44/44** (`docs/audit/scenarios/2026-09-13T07-50-06-223Z`, local artifact, after the review fixes), up from 34 checks. |
 | `plugin-interaction-presenters`, onscreen | **44/44** (`2026-09-13T07-23-54-088Z`); all six screenshots inspected by eye and described below. |
 | Paired with `plugin-remote` | **44/44 + 12/12** twice (`2026-09-13T07-51-31-685Z` and `2026-09-13T07-52-49-854Z`, local artifacts, after the review fixes), proving no residual sandbox state. |
+| After stacking on #213 | `node scripts/scenario.mjs plugin-interaction-presenters plugin-remote plugin-settings-presenter --window hidden` at `90bb534`: **51/51 + 12/12 + 34/34** with no leak warning (`2026-09-13T08-19-32-234Z`, local artifact). The 51 checks are the 44 above plus #213's daemon restart arm as check 11, extended so all three lab presenters must re-attach and the notifications selection must be retained across the restart. |
 | Live geometry | Measured in the real window, not asserted from a class: the presenter's first frame drew at `right 12, bottom 40, width 360` against a 1280x820 viewport - the bundled stack's own rect - a one-line notice measured 61 px, and a declared 100000 px clamped to 200 px with one notice up (the per-notice ceiling) and to 369 px with two (45% of that window). The expiry settled null after 9,998 ms. |
 
 What the onscreen screenshots show: the lab's corner stack badged "UI Lab" with its Acknowledge

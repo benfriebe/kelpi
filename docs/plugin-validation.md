@@ -72,6 +72,7 @@ both scenarios previously recorded as a limit.
 | Settings presenter, onscreen | `node scripts/scenario.mjs plugin-settings-presenter --window onscreen --no-build` | **34/34** (`2026-09-13T07-44-20-507Z`); all five screenshots inspected. |
 | Nothing leaks into the next scenario | `node scripts/scenario.mjs plugin-interaction-presenters plugin-remote plugin-settings-presenter --window hidden --no-build` | **41/41 + 12/12 + 34/34** with **zero** leak warnings (`2026-09-13T07-45-07-147Z`). |
 | Scenarios after a restart still pass | `node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter plugin-authoring terminal-copy-paste-chords plugin-terminal-features --window hidden --no-build` | **41/41 + 34/34 + 25/25 + 14/14 + 58/58**, one leak warning (`2026-09-13T07-46-32-004Z`): `plugin-terminal-features` leaving its terminal workbench slot selected, which is pre-existing and reproduces identically in a control chain of `plugin-authoring plugin-terminal-features` with no restart in it. |
+| Full verification battery | `node scripts/verify.mjs --full` at `59cbba2` | **passed in 24.0 min with no component retried**: typecheck, root tests, shell tests, build bundles, all scenarios (hidden, 5.2 min), full audit (18.0 min) and the packaged smoke (69/69). |
 
 A restart is a whole-instance event, which is why the chain above is part of the gate: `scenario.mjs`
 runs every scenario of a run in one instance, so the restart kills every PTY any earlier scenario

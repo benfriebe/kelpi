@@ -306,6 +306,27 @@ export function WorkbenchSidebar(props: {
 }
 
 /**
+ * Does this sidebar placement actually MOUNT its bundled view?
+ *
+ * True for the plain selection, and true for a plugin CONTAINER that wraps the bundled view in one
+ * of its slots - `registration.test.tsx`'s "Wrapped Workspaces" mounts the native sidebar just as
+ * the plain selection does, tab-hidden or not. The same walk `NativeRendererScope` performs, asked
+ * one render earlier, so the answer cannot disagree with what the slot goes on to draw.
+ *
+ * A surface that belongs to a bundled sidebar but is drawn OUTSIDE it asks this before hosting its
+ * own copy. §WS-075's create sheet is the one: a window modal (`ContentView.swift:289-294`) raised
+ * from ⌘N, File ▸ New Workspace, the palette and the empty state, whose only consumer used to be
+ * the native `Sidebar` - so with a plugin view in the slot the gesture did nothing at all
+ * (issue #201). Exactly one host, whatever occupies the placement.
+ */
+export function useSidebarNativeMounted(placement: SidebarPlacement, nativeViewID: string): boolean {
+    const host = useWorkbench();
+    const selected = host.sidebars[placement];
+    if (!selected?.pluginID) return true;
+    return planComposedViews(host.views, host.selections, selected, new Set([nativeViewID])).nativePaths.has(nativeViewID);
+}
+
+/**
  * The route BACK to the bundled presenter, said out loud.
  *
  * Every root slot's select has always listed the bundled view for the slot - `kelpi.palette` and

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = ['examples/plugins/sidebar-lab/', 'packages/plugin-sdk/', 'packages/client/src/plugins/', 'packages/client/src/App.tsx', 'packages/client/src/app/RemoteWorkspaceView.tsx'];
@@ -172,6 +173,15 @@ export default async function ({ page, cli, sandbox, rec, d }) {
     } finally {
         fs.writeFileSync(sandbox.configPath, previousConfig);
         if (await page.eval('location.href') !== originalURL) await page.send('Page.navigate', { url: originalURL });
+        // The workbench slots this scenario chose are the WINDOW's and outlive `plugin remove`,
+        // so they go back to their bundled views before the plugin does (#205, #201).
+        try {
+            const restored = await restoreBundledSlots(page, d, { 'sidebar.primary': 'kelpi.workspaces', 'sidebar.secondary': 'kelpi.inspector' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the workbench placements were not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        } catch (error) {
+            rec.note(`cleanup: the workbench placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
+        }
         await cli.run(['plugin', 'remove', pluginID]);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initialIDs.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
         if (remoteDaemon) await remoteDaemon.stop();

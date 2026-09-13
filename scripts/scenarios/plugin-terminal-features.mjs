@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildTerminalLab } from '../build-terminal-lab.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
+import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/terminal-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/connection/pty.ts', 'packages/client/src/terminal/',
@@ -95,6 +96,86 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         }, { ceilingMs: 5000 });
         if (!focused) throw new Error('Real pointer input did not focus Terminal Lab');
     };
+    /**
+     * The page's focus and the caret, read IMMEDIATELY before a clipboard chord, and repaired.
+     *
+     * ⌘C and ⌘V are the two checks in this file that cannot be asserted through any path the page
+     * does not have to be focused for. Chromium routes a CDP key event only to the focused element
+     * of a FOCUSED page, and the product's own copy goes through `navigator.clipboard`, which
+     * answers `NotAllowedError: Document is not focused` the instant the page is not. The lane's
+     * window is never the key window by construction (#109), so `document.hasFocus()` is true only
+     * while CDP focus emulation is on - and emulation is turned OFF by `harness.blur()`, which
+     * earlier scenarios in the same sandbox use on purpose. One that forgets to turn it back on
+     * takes both chords with it, silently, and that is how both checks came to be filed as
+     * "load-sensitive" in every full lane (#205).
+     *
+     * So the state is RECORDED into the check's own detail either way - a failure that says
+     * `hasFocus:false` names its reason instead of leaving it to be guessed - and, when the page
+     * has been left believing it is not focused, repaired through the harness before the press.
+     * The repair is honest about what it is: a focused window is the product's own precondition
+     * for a copy, the lane can only supply it through emulation, and the runner's post-condition
+     * still names the scenario that turned it off.
+     */
+    /**
+     * Turn CDP focus emulation on inside the plugin frame's OWN target, not just the page's.
+     *
+     * `boot` enables emulation on the page session, which is what makes `document.hasFocus()` true
+     * in a lane whose window is never the key window. A plugin view is a sandboxed iframe, and once
+     * Chromium has put it out of process (which it does as soon as a sandbox has hosted other
+     * plugin frames - alone this scenario's frame stays in-process, behind `plugin-authoring` or
+     * `plugin-browser-features` it does not) the focused frame lives in a renderer that was never
+     * told the page is focused. The top document then answers `hasFocus() === false` while its
+     * `activeElement` is the iframe, `navigator.clipboard` rejects with "Document is not focused",
+     * and ⌘V and ⌘C do nothing (#205). Emulating focus on the child session is the other half of
+     * what the OS would be supplying.
+     */
+    const focusEmulationInFrame = async id => {
+        try {
+            const { root } = await page.send('DOM.getDocument', { depth: 1 });
+            const { nodeId } = await page.send('DOM.querySelector', { nodeId: root.nodeId, selector: frame(id) });
+            if (!nodeId) return false;
+            const frameId = (await page.send('DOM.describeNode', { nodeId })).node?.frameId;
+            const sessionId = frameId === undefined ? undefined : page.frameSessions?.get(frameId);
+            if (sessionId === undefined) return false;
+            await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }, 10_000, sessionId);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    /** The page's focus and the caret, exactly as they stand. Recorded into a check's detail. */
+    const caretNow = async id => {
+        const host = JSON.parse(await page.eval(`JSON.stringify({ hasFocus: document.hasFocus(), active: String(document.activeElement?.outerHTML ?? document.activeElement?.nodeName ?? '<null>').slice(0, 90) })`));
+        const onTheRendererTextarea = await inside(id, `document.activeElement === terminalLab.terminal.textarea`).catch(() => null);
+        return JSON.stringify({ ...host, onTheRendererTextarea });
+    };
+    const clipboardCaret = async (label, id) => {
+        const read = async () => JSON.parse(await caretNow(id));
+        let state = await read();
+        if (state.hasFocus !== true || state.onTheRendererTextarea !== true) {
+            rec.note(`${label}: the page was not focused on the renderer (${JSON.stringify(state)}); restoring focus before the chord`);
+            await harness.focus();
+            await focusEmulationInFrame(id);
+            await focus(id);
+            state = await read();
+            rec.note(`${label}: after the harness repair ${JSON.stringify(state)}`);
+        }
+        if (state.hasFocus !== true) {
+            /*
+             * The focus-independent route, and the one the product itself uses. `app/clipboard.ts`
+             * reads the FOCUSED PANE from the app's own registry, not from the DOM, and asks that
+             * pane's live renderer for its selection across the frame boundary - so the chord works
+             * with the caret on the pane's header, where the top document holds it and
+             * `navigator.clipboard` is allowed to run. Measured: with the caret in the plugin's
+             * out-of-process textarea the top document answers `hasFocus() === false` and the write
+             * is refused; one click on the header and both chords land (#205).
+             */
+            await d.clickPaneHeader(page, id);
+            state = { ...await read(), route: 'the pane header, so the host document holds the caret' };
+            rec.note(`${label}: after taking the caret back into the host document ${JSON.stringify(state)}`);
+        }
+        return JSON.stringify(state);
+    };
     const selectWorkspace = (id, workspaceID, hostName) => inside(id, `void (async () => { const navigation = await kelpi.ui.getNavigation(); const host = navigation.hosts.find(host => ${hostName ? `host.name === ${JSON.stringify(hostName)}` : `host.kind === 'local'`}); await kelpi.ui.selectWorkspace(host.id, ${JSON.stringify(workspaceID)}); })(); true`);
     const diagnostics = async label => {
         const items = [];
@@ -123,14 +204,24 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('real keyboard and IME commit reach the same raw process', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('k')) && input(local).subarray(offset).includes(Buffer.from('日本語'))));
         offset = input(local).length;
         await harness.clipboardWrite('TERMINAL-PASTE-α');
+        await clipboardCaret('platform paste', local.paneID);
+        let caret = await caretNow(local.paneID);
         await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
-        rec.check('platform paste preserves the application bracketed-paste envelope', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~'))), JSON.stringify(input(local).subarray(offset).toString()));
+        rec.check('platform paste preserves the application bracketed-paste envelope', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~'))), `${JSON.stringify(input(local).subarray(offset).toString())} · at the press ${caret}`);
+        // The focus repair goes BEFORE the selection, never after it: it can end in a click, and a
+        // click inside a terminal clears the selection these two checks are about.
+        await clipboardCaret('platform Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
-        await harness.clipboardWrite('COPY-SENTINEL'); await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
-        rec.check('platform Copy obtains live renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'));
+        await harness.clipboardWrite('COPY-SENTINEL');
+        caret = await caretNow(local.paneID);
+        await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
+        rec.check('platform Copy obtains live renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'), `clipboard holds ${JSON.stringify(String((await harness.clipboardRead()).text).slice(0, 60))} · at the press ${caret}`);
+        await clipboardCaret('cleared-selection Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.clearSelection(); true`);
-        await harness.clipboardWrite('CLEARED-SELECTION'); await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta }); await sleep(120);
-        rec.check('cleared selection cannot copy a stale cached value', String((await harness.clipboardRead()).text) === 'CLEARED-SELECTION');
+        await harness.clipboardWrite('CLEARED-SELECTION');
+        caret = await caretNow(local.paneID);
+        await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta }); await sleep(120);
+        rec.check('cleared selection cannot copy a stale cached value', String((await harness.clipboardRead()).text) === 'CLEARED-SELECTION', `at the press ${caret}`);
 
         await choose(local.paneID, 'kelpi.shell');
         rec.check('returning to the bundled renderer preserves pane and operating-system PID', await native(local.paneID) && alive(local) && (await json(['pane', 'list', '--workspace', local.workspaceID, '--json'])).some(pane => pane.id === local.paneID));
@@ -297,7 +388,14 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('disabling a plugin restores the bundled renderer without closing its terminal', await native(local.paneID) && alive(local));
         await cli.ok(['plugin', 'enable', pluginID]); rec.check('reenabling restores the selected renderer', await ready(local.paneID) && alive(local));
         const editorRoot = path.join(sandbox.root, 'external-editor-fixture');
-        const editorCommand = path.join(sandbox.root, 'terminal-editor');
+        /*
+         * The SHARED `$EDITOR` path, for the reason `plugin-authoring` states in full: the daemon
+         * caches its `$VISUAL`/`$EDITOR` resolution for its whole lifetime (CONT-086), so in one
+         * sandbox the first scenario to open an external editor decides the command string this one
+         * gets. Writing this scenario's script at that one path is what makes the cached command
+         * run THIS scenario's fixture (#205).
+         */
+        const editorCommand = path.join(sandbox.root, 'scenario-external-editor');
         fs.writeFileSync(editorCommand, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} ${quote(editorRoot)} "$@"\n`, { mode: 0o755 });
         const exports = `export EDITOR=${quote(editorCommand)}\nexport VISUAL=${quote(editorCommand)}\n`;
         for (const profile of ['.zshenv', '.bash_profile', '.profile']) fs.appendFileSync(path.join(sandbox.home, profile), exports);
@@ -306,9 +404,42 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         let editorPane;
         if (!await d.settle(async () => { editorPane = (await json(['pane', 'list', '--workspace', local.workspaceID, '--json'])).find(pane => pane.type === 'markdown'); return !!editorPane; })) throw new Error('External-editor document did not open');
         if (!await d.settleDom(page, `document.querySelector('[data-testid="open-external-editor-${editorPane.id}"]')`)) throw new Error('External-editor control did not appear');
-        await page.click(`[data-testid="open-external-editor-${editorPane.id}"]`);
         const editor = { cli, root: editorRoot, workspaceID: local.workspaceID, paneID: editorPane.id, pid: 0 };
-        if (!await d.settle(() => state(editor)?.pid > 0) || !await ready(editor.paneID)) throw new Error('External editor did not attach through the terminal replacement');
+        /*
+         * Pressed until the editor is running, rather than once. The control is a button on a
+         * document pane, and under a whole battery's load a press can land while the pane is still
+         * re-laying-out - a toast in the corner, a frame that had not settled - and then nothing
+         * runs `$EDITOR` and the wait below times out on a pane that is still a document. Pressing
+         * it again is what a person does; the note says when it was needed, so a press that is
+         * never enough still reads as a defect rather than as patience (#205).
+         */
+        let editorStarted = false;
+        for (let attempt = 0; attempt < 3 && !editorStarted; attempt += 1) {
+            if (attempt > 0) rec.note(`the external-editor control did not start $EDITOR; pressing it again (attempt ${String(attempt + 1)})`);
+            await page.click(`[data-testid="open-external-editor-${editorPane.id}"]`);
+            editorStarted = await d.settle(() => state(editor)?.pid > 0, { ceilingMs: 12_000 });
+            if (!editorStarted && !await d.settleDom(page, `document.querySelector('[data-testid="open-external-editor-${editorPane.id}"]')`, { ceilingMs: 3_000 })) break;
+        }
+        /*
+         * Split, and said out loud, because "did not attach" was two very different failures under
+         * one sentence and the lane only ever showed the sentence (#205). The first half is the
+         * daemon: did `$EDITOR` actually run. The second is the client: did that pane swap its
+         * document view for the selected terminal renderer. The ceilings are the generous ones
+         * because both legs are a real process start behind a whole battery's load, and the detail
+         * carries what the pane looked like when the wait ran out.
+         */
+        if (!editorStarted) {
+            throw new Error(`The external editor process never started after three presses: ${JSON.stringify(state(editor))}`);
+        }
+        if (!await ready(editor.paneID)) {
+            const pane = await page.eval(`JSON.stringify({
+                frame: !!document.querySelector('[data-testid="plugin-view-${editorPane.id}"] iframe'),
+                terminal: document.querySelector('[data-terminal-pane="${editorPane.id}"]')?.dataset.terminalRenderer ?? null,
+                document: !!document.querySelector('[data-document-pane="${editorPane.id}"]'),
+                slot: (() => { try { const key = Object.keys(localStorage).find(k => k.startsWith('kelpi.workbench.v1:')); return key === undefined ? null : JSON.parse(localStorage.getItem(key) ?? '{}').terminal ?? null; } catch { return 'unreadable'; } })()
+            })`);
+            throw new Error(`The external editor started (pid ${String(state(editor)?.pid)}) but its pane never showed the terminal replacement: ${String(pane)}`);
+        }
         editor.pid = state(editor).pid;
         fixtures.push(editor);
         const editorScreen = `KELPI TERMINAL LAB\nPID ${editor.pid}\n赤 緑 🐙 café\nREADY\nSEARCH-ANCHOR\nINPUT READY`;
@@ -400,6 +531,9 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
             const shot = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
             fs.writeFileSync(file, Buffer.from(shot.data, 'base64')); return file;
         } }, 'terminal-lab-phone');
+        // Back to the landing page BEFORE the window widens again, while the shell is still
+        // mounted: it is the one tap that forgets where this scenario took the phone (#205).
+        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: `${remoteSandbox.base}/?token=${token}` });
         await choose(remote.paneID); rec.check('direct browser attachment preserves the remote process', await ready(remote.paneID) && alive(remote) && await sameScreen(remote, 'HIDDEN-QUERY-COMPLETE'));
@@ -417,15 +551,30 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.note('Physical mobile keyboards, actual OS IME candidate windows and two simultaneous native windows remain device/manual checks; this scenario used trusted CDP input and phone emulation.');
     } catch (error) { await diagnostics('failure').catch(() => {}); await rec.shot(page, 'terminal-failure'); throw error; }
     finally {
+        const safely = async (what, step) => {
+            try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
+        };
         sizeObserver?.close(); sizeObserver = null;
         await diagnostics('final').catch(() => {});
         for (const off of offWire) off();
         fs.writeFileSync(sandbox.configPath, originalConfig);
         await harness.clipboardWrite(originalClipboard).catch(() => {});
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); });
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
         await page.send('Emulation.setUserAgentOverride', originalAgent).catch(() => {});
-        await page.send('Page.navigate', { url: originalURL }).catch(() => {});
+        await safely('the window returns to the shell this runner launched', async () => {
+            await page.send('Page.navigate', { url: originalURL });
+            await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 });
+        });
+        await safely('the terminal placement goes back to bundled', async () => {
+            const restored = await restoreBundledSlots(page, d, { terminal: 'kelpi.shell' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the terminal placement was not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        });
+        await safely('the Settings overlay is closed', async () => {
+            if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
+        });
         await cli.run(['plugin', 'remove', pluginID]);
         for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
         if (remoteDaemon) await remoteDaemon.stop(); remoteSandbox?.cleanup();

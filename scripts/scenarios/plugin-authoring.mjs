@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 import { createHash } from 'node:crypto';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
@@ -157,7 +158,21 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
 
         // A document retains its terminal renderer preference after its external editor exits.
         // Keeping that dormant state must not block the unchanged package or later revisions.
-        const editorCommand = path.join(external, 'editor');
+        /*
+         * ONE path for every scenario's `$EDITOR`, and it lives in the sandbox rather than in the
+         * temporary directory this scenario deletes on its way out.
+         *
+         * The daemon resolves `$VISUAL`/`$EDITOR` through a real login shell and CACHES the answer
+         * for its whole lifetime (`daemon/src/content/external-editor.ts`, CONT-086). The sandbox's
+         * daemon outlives this scenario, so the first scenario to press "Open in $EDITOR" decides
+         * the command string every LATER one gets - and when that string named a script inside the
+         * directory this cleanup removes, the next scenario's press ran a file that no longer
+         * existed and nothing happened at all. That is `plugin-terminal-features`' third lane
+         * failure, "External editor did not attach", red in every full lane and green alone (#205).
+         * Sharing the path fixes it for both directions: whichever runs first, the script at this
+         * path is the one the scenario that is running wrote, pointing at its own fixture root.
+         */
+        const editorCommand = path.join(sandbox.root, 'scenario-external-editor');
         fs.writeFileSync(editorCommand, '#!/bin/sh\nexec ' + shellQuote(process.execPath) + ' ' + shellQuote(path.join(repoRoot, 'scripts/fixtures/plugin-terminal.cjs')) + ' ' + shellQuote(editorRoot) + ' "$@"\n', { mode: 0o755 });
         for (const profile of ['.zshenv', '.bash_profile', '.profile']) {
             const file = path.join(sandbox.home, profile);
@@ -246,6 +261,15 @@ export default async function ({ page, cli, sandbox, rec, d, shell }) {
         native?.close();
         await fixture.close();
         if (workspace) await cli.run(['workspace', 'delete', workspace.workspace_id]);
+        // The workbench slots this scenario chose are the WINDOW's and outlive `plugin remove`,
+        // so they go back to their bundled views before the plugin does (#205, #201).
+        try {
+            const restored = await restoreBundledSlots(page, d, { browser: 'kelpi.web' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the workbench placements were not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        } catch (error) {
+            rec.note(`cleanup: the workbench placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
+        }
         await cli.run(['plugin', 'remove', pluginID]);
         for (const [file, contents] of editorProfiles) {
             if (contents === null) fs.rmSync(file, { force: true });

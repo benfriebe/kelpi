@@ -6,11 +6,30 @@ import { fileURLToPath } from 'node:url';
 import { connect, listTargets } from '../ui-audit/lib/cdp.mjs';
 import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { startBrowserFixture } from '../fixtures/plugin-browser.mjs';
+import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['examples/plugins/browser-lab/', 'packages/plugin-sdk/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/client/src/webpane/', 'packages/client/src/App.tsx',
     'packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx',
     'packages/daemon/src/plugins/', 'packages/daemon/src/webpane/', 'packages/shell/src/webhost/'];
+/**
+ * The weakest window placement this scenario can be trusted at (#206).
+ *
+ * Every check below that drives the REAL native page - the seeded fixture state, the zoom and
+ * resize rectangles, and all three inspector picks - sends its input to a `WebContentsView` the
+ * shell composites, through that view's own CDP session. `ui-audit/README.md` ▸ The placements
+ * records why that is placement-sensitive: AppKit counts the lane's zero-opacity frame as visible
+ * only while nothing is in front of it, and with another window over the lane's rectangle the frame
+ * is occluded, Chromium treats those native views as hidden, and it throttles them and drops the
+ * input. Measured on 2026-09-13, same tree, same machine, minutes apart: at `hidden` 37/44 and an
+ * abort in 86 s, with `clicks: 0` and `cookies: ""` in the fixture's own state; at `offscreen`
+ * 65/66 in 20 s. `offscreen` is parked past the work area, where nothing can be in front of it, and
+ * it costs only the screenshots' resolution - which this file already spends nothing on, because a
+ * native view is composited by the WINDOW and its captures were never the evidence (see the closing
+ * note). #206 recorded the same "a click that never reached the page" in the audit and could not
+ * attribute it.
+ */
+export const windowPlacement = 'offscreen';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pluginID = 'example.browser-lab', viewID = `${pluginID}.browser`;
 const packagePath = path.join(repoRoot, 'examples/plugins/browser-lab');
@@ -276,7 +295,12 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
 
         rec.note('Remote controls cannot claim page pixels from another native shell');
         const localBeforeRemote = await snapshot(native);
-        remote = await d.boot({repoRoot,label:'browser-remote',build:false,window:'hidden',log:message => rec.note(`remote: ${message}`)});
+        // `offscreen`, for the same reason this file declares it at the top: the checks below click
+        // into the REMOTE shell's native page through its own CDP session, and a zero-opacity frame
+        // with anything in front of it is occluded, which makes Chromium drop that input. "a native
+        // pick appears in the remote bundled pickup panel" is the check that was red on it, and it
+        // is the one intermittent #205's triage table recorded for this scenario.
+        remote = await d.boot({repoRoot,label:'browser-remote',build:false,window:'offscreen',log:message => rec.note(`remote: ${message}`)});
         const remotePane = await open(remote.cli,'Remote Browser Lab','remote');
         remoteNative = await targetFor(remote.sandbox.debugPort,remotePane.url);
         await remote.cli.ok(['plugin','install',packagePath,'--trust']);
@@ -316,6 +340,9 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         rec.check('phone Browser Lab controls remain available with an explicit native-display limit', await ready(remotePane.paneID) && await check(remotePane.paneID,'!browserLab.presentation.available') && await sameState(remoteNative,remoteBeforePhone));
         rec.check('phone browser controls fit the viewport and do not mount a terminal key bar', await check(remotePane.paneID,'document.documentElement.scrollWidth <= document.documentElement.clientWidth') && !await page.eval(`!!document.querySelector('[data-testid="terminal-key-ctrl-${remotePane.paneID}"]')`));
         await rec.shot({screenshot:async file => { const shot = await page.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true}); fs.writeFileSync(file,Buffer.from(shot.data,'base64')); return file; }},'browser-lab-phone');
+        // Back to the landing page BEFORE the window widens again, while the shell is still
+        // mounted: it is the one tap that forgets where this scenario took the phone.
+        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled',{enabled:false});
         await page.send('Page.navigate',{url:`${remote.sandbox.base}/?token=${token}`});
         await choose(remotePane.paneID);
@@ -329,10 +356,32 @@ export default async function ({ page, cli, sandbox, rec, d, harness, shell, sle
         rec.note('The onscreen harness captures the composed native window, including its sibling WebContentsView. A separate native-page capture and placement logs corroborate page composition and ownership. Hidden screenshots are not visual evidence. Phone coverage uses emulation; physical-device keyboards and OS IME remain manual.');
     } catch (error) { await diagnostics('failure').catch(() => {}); await rec.shot(page,'browser-failure').catch(() => {}); throw error; }
     finally {
+        /*
+         * The sandbox, its daemon AND its window are shared with every scenario after this one, so
+         * each step here is an undo and none is allowed to skip the rest: a throw mid-run leaves
+         * the phone remembering a remote workspace on a host this block is about to stop, the
+         * `browser` slot naming a view that is about to be removed, and the window emulating a
+         * 390px phone (#205).
+         */
+        const safely = async (what, step) => {
+            try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
+        };
         await diagnostics('final').catch(() => {});
         fs.writeFileSync(sandbox.configPath,config);
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); });
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); await page.send('Emulation.setTouchEmulationEnabled',{enabled:false}).catch(() => {});
-        await page.send('Page.navigate',{url:originalURL}).catch(() => {});
+        await safely('the window returns to the shell this runner launched', async () => {
+            await page.send('Page.navigate',{url:originalURL});
+            await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, {ceilingMs:20_000});
+        });
+        await safely('the browser placement goes back to bundled', async () => {
+            const restored = await restoreBundledSlots(page, d, { browser: 'kelpi.web' }, { daemonID: daemonIDFromSandbox(sandbox) });
+            if (!restored.ok) rec.note(`cleanup: the browser placement was not restored — ${String(restored.detail)}`);
+            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+        });
+        await safely('the Settings overlay is closed', async () => {
+            if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
+        });
         native?.page.close(); remoteNative?.page.close();
         if (remote) await remote.stop();
         await cli.run(['plugin','remove',pluginID]);

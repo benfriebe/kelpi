@@ -14,7 +14,7 @@ import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
-import { bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
+import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
 import { createWorkspacesActions } from './features/workspaces-actions';
 import { usePluginNavigation } from './plugins/use-navigation';
 import { useRemoteWorkspaceSelection } from './app/remote-selection';
@@ -3647,6 +3647,24 @@ function Shell(props: AppProps): ReactElement {
             ) : (
             <>
             <WorkbenchSlot placement="topbar" trafficLightInset={trafficLightInset} />
+
+            {/*
+              * §WS-075's create sheet for the case the sidebar cannot cover: a plugin view
+              * occupying the Workspaces placement. It is a window modal either way, and this host
+              * renders it only while the bundled view is NOT mounted, so ⌘N, File ▸ New
+              * Workspace, the palette row and the empty state's button all land somewhere
+              * whatever is in the sidebar (issue #201), and never twice.
+              */}
+            <WorkspacesCreateSheetHost
+                placement={workspacesPlacement}
+                model={workspacesModel}
+                actions={act}
+                lifecycle={workspacesLifecycle}
+                repos={inspectorData.repos}
+                remotes={remoteDaemonRuntimes}
+                bucket={bucket}
+                reportFailure={notifyFailure}
+            />
 
             {/*
               * §APP-046 / shell-ui.md §1 — the middle row: sidebar | pane grid | inspector,

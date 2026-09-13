@@ -1,12 +1,17 @@
 /** Bundled Workspaces model, view lifecycle and host binding. */
-import { activeAgentCount } from '@kelpi/daemon/store';
-import { useCallback, useMemo, useRef, useState, type ReactElement } from 'react';
+import { activeAgentCount, type WorkspaceColor } from '@kelpi/daemon/store';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { RemoteDaemonSections, type RemoteSelection } from '../app/RemoteDaemonSections';
 import type { RemoteDaemonRuntime } from '../app/remote-daemons';
 import type { InspectorData } from '../app/inspector';
 import { isOkReply, replyError } from '../connection';
 import { Sidebar, type SidebarProps, type SidebarSelectionCommands } from '../chrome/Sidebar';
+import { NewEntrySheet } from '../chrome/NewWorkspaceSheet';
+import { defaultGroupName, nextCreateColor } from '../chrome/sidebar-model';
 import type { ChromeBucket } from '../chrome/theme';
+import type { NewWorkspaceExtras, SubmitResult, WorkspaceWorktreeRequest } from '../chrome/types';
+import { useSidebarNativeMounted } from '../plugins/Workbench';
+import type { SidebarPlacement } from '../plugins/registry';
 import { selectActiveWorkspace, selectFilteredSidebarEntries, selectGroupForWorkspace, type KelpiStoreApi } from '../state';
 import type { KelpiState } from '../state/store';
 import { WORKSPACES_FEATURE } from './definitions';
@@ -84,18 +89,42 @@ export interface WorkspacesFeatureViewProps {
     readonly reportFailure: (label: string, message: string) => void;
 }
 
+/**
+ * Everything §WS-075's create sheet needs, wherever it is hosted: the native sidebar's own sheet
+ * and `WorkspacesCreateSheetHost` below hand a submitted draft to the same two functions.
+ */
+export type WorkspacesCreateHost = Pick<WorkspacesFeatureViewProps,
+    'model' | 'actions' | 'lifecycle' | 'repos' | 'remotes' | 'bucket' | 'reportFailure'>;
+
+/** §1.7: a group destined for another daemon is created THERE: no local row exists. */
+function createRemoteGroup(host: WorkspacesCreateHost, daemonName: string, name: string, color: WorkspaceColor | null): void {
+    const held = host.remotes.get(daemonName);
+    if (held === undefined) return;
+    void held.runtime.commands.createGroup({ name, ...(color !== null ? { color } : {}) })
+        .then(reply => { if (!isOkReply(reply)) host.reportFailure('New remote group', replyError(reply)); })
+        .catch(error => host.reportFailure('New remote group', error instanceof Error ? error.message : String(error)));
+}
+
+/** §WS-078: the worktree variant needs the repo's PATH, which only the registry here knows. */
+function createWorkspaceFromSheet(
+    host: WorkspacesCreateHost,
+    name: string,
+    groupID: string | null,
+    worktree?: WorkspaceWorktreeRequest | undefined,
+    extras?: NewWorkspaceExtras | undefined
+): SubmitResult {
+    if (worktree === undefined) return host.actions.createWorkspace(name, groupID, extras ?? {});
+    const repo = host.repos.find(candidate => candidate.id === worktree.repoID);
+    if (repo === undefined) return 'that repository is no longer registered';
+    return host.actions.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, extras ?? {});
+}
+
 export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactElement {
     const { model, actions, lifecycle } = props;
     return <Sidebar
         entries={model.entries}
         remoteDaemons={model.remoteNames}
-        onCreateRemoteGroup={(daemonName, name, color) => {
-            const held = props.remotes.get(daemonName);
-            if (held === undefined) return;
-            void held.runtime.commands.createGroup({ name, ...(color !== null ? { color } : {}) })
-                .then(reply => { if (!isOkReply(reply)) props.reportFailure('New remote group', replyError(reply)); })
-                .catch(error => props.reportFailure('New remote group', error instanceof Error ? error.message : String(error)));
-        }}
+        onCreateRemoteGroup={(daemonName, name, color) => { createRemoteGroup(props, daemonName, name, color); }}
         trailingSections={<RemoteDaemonSections daemons={[...props.remotes.values()]} selection={props.remoteSelection} onSelect={props.selectRemote} bucket={props.bucket} />}
         activeWorkspaceID={model.activeWorkspaceID}
         filter={model.filter}
@@ -121,12 +150,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onSelectionChange={props.reportSelection}
         onRenameGroup={actions.renameGroup}
         onDeleteGroup={actions.deleteGroup}
-        onCreateWorkspace={(name, groupID, worktree, extras) => {
-            if (worktree === undefined) return actions.createWorkspace(name, groupID, extras ?? {});
-            const repo = props.repos.find(candidate => candidate.id === worktree.repoID);
-            if (repo === undefined) return 'that repository is no longer registered';
-            return actions.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, extras ?? {});
-        }}
+        onCreateWorkspace={(name, groupID, worktree, extras) => createWorkspaceFromSheet(props, name, groupID, worktree, extras)}
         onCreateGroup={actions.createGroup}
         profiles={model.profiles}
         inheritGroupID={model.inheritGroupID}
@@ -152,4 +176,95 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
 
 export function bindWorkspacesFeature(props: WorkspacesFeatureViewProps): BundledFeatureBinding {
     return { definition: WORKSPACES_FEATURE, render: () => <WorkspacesFeatureView {...props} /> };
+}
+
+export type WorkspacesCreateSheetProps = WorkspacesCreateHost & {
+    /** The placement the bundled Workspaces view would occupy: assembly's `workspacesPlacement`. */
+    readonly placement: SidebarPlacement;
+};
+
+/**
+ * §WS-075's create sheet, hosted where the SIDEBAR's selected view cannot take it away.
+ *
+ * The sheet is a window modal, not a piece of the workspace list: `ContentView.swift:289-294`
+ * hangs it off the window, and every route that raises it (⌘N, File ▸ New Workspace, the
+ * palette's New Workspace row, the empty state's Create Workspace button) posts one
+ * `sidebarCreateRequest` through `act.newWorkspace`. While the bundled view draws the placement,
+ * the native `Sidebar` consumes that request and renders the sheet exactly as it always has, and
+ * this host renders nothing. With a PLUGIN view in the placement the native sidebar is not
+ * mounted, so the request had no consumer at all and the gesture did nothing and said nothing
+ * (issue #201). That is the case this host covers.
+ *
+ * Rendered only for that case, so the two can never both be up: the branch is
+ * `useSidebarNativeMounted`, the same walk the slot itself makes, which counts a plugin container
+ * that WRAPS the bundled view as the native sidebar being mounted (it is).
+ */
+export function WorkspacesCreateSheetHost(props: WorkspacesCreateSheetProps): ReactElement | null {
+    const native = useSidebarNativeMounted(props.placement, WORKSPACES_FEATURE.id);
+    return native ? null : <WorkspacesCreateSheet {...props} />;
+}
+
+function WorkspacesCreateSheet(props: WorkspacesCreateSheetProps): ReactElement | null {
+    const { lifecycle, model } = props;
+    const { setSidebarCreateRequest, setCreateSheetOpen } = lifecycle;
+    const [form, setForm] = useState<{ kind: 'workspace' | 'group'; groupID: string | null } | null>(null);
+
+    /**
+     * The same one-shot contract the sidebar applies (`chrome/Sidebar.tsx`, §APP-018's other
+     * half): consumed once and cleared immediately, so ⌘N pressed twice re-opens the sheet the
+     * second time and a re-render after a cancel cannot bring it back.
+     */
+    const request = lifecycle.sidebarCreateRequest;
+    useEffect(() => {
+        if (request === null) return;
+        setForm({ kind: request.kind, groupID: request.groupID });
+        setSidebarCreateRequest(null);
+    }, [request, setSidebarCreateRequest]);
+
+    /** …and the same publication upward: a modal is a whole-window fact, not a sidebar one. */
+    const open = form !== null;
+    useEffect(() => {
+        setCreateSheetOpen(open);
+        return () => { if (open) setCreateSheetOpen(false); };
+    }, [open, setCreateSheetOpen]);
+
+    const groups = useMemo(
+        () => model.entries.filter((entry): entry is Extract<WorkspacesFeatureModel['entries'][number], { kind: 'group' }> => entry.kind === 'group').map(entry => entry.group),
+        [model.entries]
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only, as the sidebar rolls
+    // it: the swatch belongs to the OPENING of the form, not to the entries it read on the way.
+    const color = useMemo(() => nextCreateColor(model.entries), [form]);
+
+    if (form === null) return null;
+    return <NewEntrySheet
+        kind={form.kind}
+        bucket={props.bucket}
+        repos={props.repos}
+        groups={groups}
+        profiles={model.profiles}
+        remoteDaemons={model.remoteNames}
+        defaultColor={color}
+        // §WS-076 then §SET-011, the order the sidebar's own sheet resolves them in.
+        defaultGroupID={form.groupID ?? model.inheritGroupID}
+        {...(form.kind === 'group' ? { defaultName: defaultGroupName(groups.map(group => group.name)) } : {})}
+        onCancel={() => { setForm(null); }}
+        onSubmit={async draft => {
+            if (form.kind === 'group') {
+                if (draft.remoteDaemon !== null) createRemoteGroup(props, draft.remoteDaemon, draft.name, draft.color);
+                else props.actions.createGroup(draft.name, draft.color);
+                setForm(null);
+                return null;
+            }
+            const result = await createWorkspaceFromSheet(props, draft.name, draft.groupID, draft.worktree, {
+                ...(draft.color === null ? {} : { color: draft.color }),
+                profile: draft.profile,
+                repoPaths: draft.repoPaths
+            });
+            // §WS-079: a failed worktree create keeps the SHEET open, with the message inline.
+            if (typeof result === 'string') return result;
+            setForm(null);
+            return null;
+        }}
+    />;
 }

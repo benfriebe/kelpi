@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Selectable notification presenter](#selectable-notification-presenter-2026-09-13).
 - [Daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
 - [Settings Lab and live acceptance](#settings-lab-and-live-acceptance-2026-09-12).
 - [Selectable Settings presenter](#selectable-settings-presenter-2026-09-12).
@@ -49,6 +50,83 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
 
+## Selectable notification presenter (2026-09-13)
+
+Issue [#194](https://github.com/benfriebe/kelpi/issues/194), implemented on
+`feature/plugin-notification-presenter` (based on main `2f5e728`). Tested revision: **`e5e2744`**. Same bootstrapped worktree; private sandboxes only, never the user's
+daemon. The placement and the one new presenter call are additive: plugin API version stays **1**
+and wire protocol generation stays **2**.
+
+The notification stack becomes its own placement, `interaction.notifications`, rather than a field
+filled in on `interaction.prompts`: a prompts presenter written against a field documented as always
+empty would swallow every notice the moment the host started filling it, and a modal frame and a
+corner box cannot honestly be the same frame. The host keeps the corner rect, the overlay
+registration, the 10 second expiry, result validation and the recovery floor; the presenter declares
+only its box height, which the host clamps.
+
+| Check | Result |
+| --- | --- |
+| `pnpm check` | All typechecks pass. Root vitest **7,934 passed, 1 skipped** (the existing optional database skip); shell **870 passed**. New coverage: the notifications projection, the cross-placement `respondInteraction` refusal, the host-owned expiry drop, the acknowledgement arming on an added notice, the bounded frame and the box-height call and its two ceilings in `interaction/presenter.test.ts`; the corner box, its rect-not-modal registration, the unpainted empty frame, the declared-and-clamped height, the declaration dropped when the placement changes hands, the fallback under the same request ids and the phone floor in `interaction/InteractionHost.test.tsx`; eight Interaction Lab notification cases driving the shipped `notifications.js` through the real presenter host in `features/interaction-lab.test.ts`; and the third placement added to `surface.test.ts`, `Workbench.test.tsx`, `registry.test.ts`, `registration.test.tsx`, `protocol/src/plugins.test.ts` and the SDK's `interaction.test.ts`. |
+| SDK artifact | `node scripts/verify-plugin-sdk.mjs` and `pnpm --filter @kelpi/plugin-sdk test:package` pass; the external fixture now settles a notice and declares a box height against the published types. |
+| Manifest | `node packages/cli/dist/kelpi.js plugin validate examples/plugins/interaction-lab` passes: 9 files, `example.interaction-lab.notifications` declared for `interaction.notifications`. |
+| `plugin-interaction-presenters`, hidden | **44/44** (`docs/audit/scenarios/2026-09-13T07-50-06-223Z`, local artifact, after the review fixes), up from 34 checks. |
+| `plugin-interaction-presenters`, onscreen | **44/44** (`2026-09-13T07-23-54-088Z`); all six screenshots inspected by eye and described below. |
+| Paired with `plugin-remote` | **44/44 + 12/12** twice (`2026-09-13T07-51-31-685Z` and `2026-09-13T07-52-49-854Z`, local artifacts, after the review fixes), proving no residual sandbox state. |
+| Live geometry | Measured in the real window, not asserted from a class: the presenter's first frame drew at `right 12, bottom 40, width 360` against a 1280x820 viewport - the bundled stack's own rect - a one-line notice measured 61 px, and a declared 100000 px clamped to 200 px with one notice up (the per-notice ceiling) and to 369 px with two (45% of that window). The expiry settled null after 9,998 ms. |
+
+What the onscreen screenshots show: the lab's corner stack badged "UI Lab" with its Acknowledge
+button in the bottom-right while UI Lab still reads "Waiting…" and no bundled card is anywhere
+(03); the bundled dialog re-presenting the same request after the prompts crash with both failure
+toasts beside it rather than instead of it (04); Settings with the third select ("Interaction Lab
+notifications") and three presenter status rows, the prompts one reading "Failed: …" with **Retry
+presenter** (05); and the idle window with an empty corner, which is the notifications frame not
+being painted at all (06). The palette and prompt shots (01, 02) are unchanged.
+
+Scenario defects found and fixed while writing the acceptance, both in the harness rather than the
+product: the notifications status row was read after Settings had already closed, so the retained
+selection came back null; and the palette-crash arm typed its query once, so a keystroke that did
+not reach the field inside the frame produced no frame for the armed crash to ride and the check
+reported a presenter that never crashed (twice in seven hidden runs, with the diagnostic showing
+the lab palette still painted). The type is retried now, as `openPaletteOn` already retries ⌘P. One
+product affordance was added for the acceptance: the bundled notification card carries
+`data-request-id`, as the bundled dialog always has, so "the same notice, re-presented after a
+failure" is checkable from the DOM instead of guessed from a message that could have been raised
+again.
+
+Independent review, applied before the commit. Four findings, all fixed with tests that fail on
+the pre-fix code:
+
+- **The frame cap was reachable and the code said it was not.** The option limits are CHARACTER
+  limits and JSON expands a control character to six bytes, so one maximal notice serializes to
+  77,449 bytes and a four-notice frame to 309,957, past the 256 KiB `pluginJSON` cap (measured).
+  An oversized frame with live work in it FAILED the placement, so one plugin's notifications could
+  latch the user's chosen presenter out, raise a toast and leave **Retry presenter** re-failing
+  until the notices expired. The projection is now bounded: it carries the notices that fit in
+  visible order and counts the rest in `queued`, and a withheld notice keeps its id and its clock,
+  cannot be answered by a presenter that was not shown it, and arrives in a later frame. The new
+  unit case raises four maximal notices and proves the frame delivers, the presenter is not
+  latched, and the withheld one arrives once a carried one is settled.
+- **The declared box height outlived its presenter.** It survived a crash and Retry, a reload and a
+  different selection, so the next view's first painted frame drew at the dead one's height. The
+  slot now clears it on a generation change and on a stand-down. The lab also declared a measured
+  zero from its first hidden empty frame, which replaced the host's 96 px per notice default; it
+  declares nothing for an empty stack now, and both are tested.
+- **A declaration could claim the corner.** A presenter is a plugin and can raise its own
+  notification every ten seconds, so a declared height alone could hold a transparent,
+  click-swallowing, pane-parking rect over the corner, including over the native toast stack that
+  shares `z-40` and carries the failure toast. The clamp is now the smaller of 45% of the window
+  and 200 px per visible notice; the ceiling and the reason are stated in the UI guide and in the
+  SDK comment.
+- **Scenario flake.** The clamp block reused one notice across two measurements, a declaration and
+  a settle, all inside that notice's ten seconds, so a slow settle expired it and the following
+  crash check went red. The block now dismisses its own notices and the crash arm raises a fresh
+  one, and the scenario's `finally` clears every remaining notification and toast from the corner
+  so nothing leaks into the next scenario.
+
+Recorded limits: daemon disconnect and reconnect is pressed by check 11, which this branch takes from
+[#213](https://github.com/benfriebe/kelpi/pull/213) and extends to the notifications presenter; the call budget breach is covered by unit
+tests only; phone checks use emulation; physical devices are not covered. The full verification
+battery and the packaged smoke for this branch are the lead's to run.
 ## Daemon disconnect coverage (2026-09-13)
 
 Issue [#199](https://github.com/benfriebe/kelpi/issues/199), implemented on

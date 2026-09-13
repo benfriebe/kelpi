@@ -220,29 +220,31 @@ What the surface guarantees, independently of who renders:
 
 The destructive sidebar and agent confirmations, the quit confirmation, phone sheets and the
 native toast stack remain native and are not routed through the surface. A plugin view can be
-selected to present the palette or the shared prompts; see
+selected to present the palette, the shared prompts or the notification stack; see
 [selectable interaction presenters](#selectable-interaction-presenters).
 
 ## Selectable interaction presenters
 
-Two placements are selected independently in Settings → Plugins → Workbench views:
+Three placements are selected independently in Settings → Plugins → Workbench views:
 
 | Placement | What it draws |
 | --- | --- |
 | `interaction.palette` | The command palette, inside the content row box, with the title bar and status footer live behind it. |
-| `interaction.prompts` | Modal quick picks, inputs and dialogs, in the window's modal portal. Notifications stay bundled in this release. |
+| `interaction.prompts` | Modal quick picks, inputs and dialogs, in the window's modal portal. |
+| `interaction.notifications` | The plugin notification stack, in a corner box the host places and the presenter sizes. |
 
-Both placements appear in `ui.getWorkbench().slots` for discovery, and `ui.selectView` refuses
-both: a prompts presenter renders other plugins' requests, so the choice stays the user's.
+All three appear in `ui.getWorkbench().slots` for discovery, and `ui.selectView` refuses all
+three: a prompts or notifications presenter renders other plugins' requests, so the choice stays
+the user's.
 
-[Interaction Lab](../examples/plugins/interaction-lab) is the reference presenter for both
+[Interaction Lab](../examples/plugins/interaction-lab) is the reference presenter for all three
 placements: plain JavaScript, no backend, no build. Install its directory in a private instance,
-select it for either placement, and open the palette or raise a prompt from another plugin such
-as UI Lab. Its README lists the diagnostics and the deliberate crash and stall hooks the live
-scenario uses to prove the fallback. A listener that throws is caught by the SDK and its frame
+select it for any placement, and open the palette or raise a prompt or a notification from another
+plugin such as UI Lab. Its README lists the diagnostics and the deliberate crash and stall hooks the
+live scenario uses to prove the fallback. A listener that throws is caught by the SDK and its frame
 is still acknowledged; only an uncaught view error, a missing readiness report, an
 unacknowledged live frame, an undeliverable frame or a call budget breach fails a presenter.
-A container cannot declare either placement, because a presenter owns its whole overlay.
+A container cannot declare any of the three, because a presenter owns its whole overlay.
 Presenters are desktop-only in this release; a phone window keeps the bundled ones, and the
 snapshot reports `formFactor` so a view can say why.
 
@@ -262,24 +264,30 @@ await kelpi.ui.dismissPalette(sessionID);
 
 // interaction.prompts: one visible request at a time. Null cancels it.
 await kelpi.ui.respondInteraction(requestID, itemID);
+
+// interaction.notifications: settle any visible notice, and size the corner box.
+await kelpi.ui.respondInteraction(notice.requestID, actionID); // null dismisses it
+await kelpi.ui.setNotificationBoxHeight(stack.getBoundingClientRect().height);
 addEventListener('pagehide', stop, { once: true });
 ```
 
 `getInteraction()` reads the same projection once. Every call is checked against the placement
-the view was selected into: the palette methods belong to `interaction.palette` and
-`respondInteraction` to `interaction.prompts`, and a call from the other placement is refused. See
-the [public types](../packages/plugin-sdk/interaction.d.ts) for every field.
+the view was selected into: the palette methods belong to `interaction.palette`,
+`setNotificationBoxHeight` to `interaction.notifications`, `respondInteraction` to whichever of
+`interaction.prompts` and `interaction.notifications` published the request, and a call from
+another placement is refused. See the
+[public types](../packages/plugin-sdk/interaction.d.ts) for every field.
 
-Each placement receives only its own half of the surface:
+Each placement receives only its own part of the surface:
 
-| Snapshot field | `interaction.palette` | `interaction.prompts` |
-| --- | --- | --- |
-| `palette` | The open session: query, scope, the whole item universe, `selectedID`, `remoteWorkspaceSelected`. Null while closed. | Always null. |
-| `paletteOpen` | Both placements. The palette outranks a queued prompt. | Both placements. |
-| `prompt` | Always null. | The visible modal request: `requestID`, `owner`, `kind` (`quickPick`, `input` or `dialog`) and its validated options. |
-| `queued` | Always zero. | Modal requests waiting behind `prompt`. |
-| `notifications` | Always empty. | Always empty in this release: reserved, and the bundled stack draws notifications. |
-| `visible`, `formFactor` | Both placements. `visible: false` means present nothing. | Both placements. |
+| Snapshot field | `interaction.palette` | `interaction.prompts` | `interaction.notifications` |
+| --- | --- | --- | --- |
+| `palette` | The open session: query, scope, the whole item universe, `selectedID`, `remoteWorkspaceSelected`. Null while closed. | Always null. | Always null. |
+| `paletteOpen` | Every placement. The palette outranks a queued prompt. | Every placement. | Every placement. |
+| `prompt` | Always null. | The visible modal request: `requestID`, `owner`, `kind` (`quickPick`, `input` or `dialog`) and its validated options. | Always null. |
+| `queued` | Always zero. | Modal requests waiting behind `prompt`. | Visible notices this frame could not carry (see the box below). Usually zero. |
+| `notifications` | Always empty. | Always empty. | The visible notices, oldest first, at most four and as many as fit one frame: `requestID`, `owner`, and `message`, `detail`, `tone` and `actions`. |
+| `visible`, `formFactor` | Every placement. `visible: false` means present nothing. | Every placement. | Every placement, and `visible` is false whenever the stack is empty. |
 
 Withheld from both: command handlers and `run` closures (rows are descriptors, activation goes
 back through the host), the `pluginID` of any owner (a presenter renders `displayName` and an
@@ -298,9 +306,10 @@ Presenter limits:
 | Rule | Limit |
 | --- | --- |
 | Readiness | `reportPresenterReady()` within 5 seconds of the first frame. |
-| Acknowledgement | Each frame carrying a new prompt or palette session is acknowledged within 5 seconds. |
+| Acknowledgement | Each frame carrying a new prompt, a new palette session or a notification that was not in the previous frame is acknowledged within 5 seconds. A frame that only drops an expired notice arms nothing. |
 | Calls | 240 presenter calls per rolling second. A breach fails the presenter. |
 | Payload | 256 KiB per frame; a palette query of at most 1,024 characters. |
+| Notification box | A declared height of 0 or more, clamped to 45% of the window height. |
 
 An acknowledgement proves the frame reached the view's sandbox, not that the view drew or
 understood it, and only the outstanding frame's acknowledgement counts. Recovery therefore never
@@ -323,9 +332,51 @@ a presenter.
 A `ui.showInput({ password: true })` request is always presented by the bundled presenter and
 never reaches a plugin presenter: the snapshot reports `prompt: null` while such a request is
 visible, and `queued` still counts it. Destructive native confirmations are carved out the same
-way. Notifications are carved out too in this release: `showNotification` results are drawn by
-the native stack, `notifications` is always empty, and selectable notification presentation is
-later scope.
+way.
+
+### The notification box
+
+A notification is not modal: it is a corner box over a window that stays usable, so the geometry
+is split. The host draws the frame exactly where the bundled stack sits - the window's
+bottom-right corner, 40 px up and 12 px in, at most 360 px wide - and registers the rect it covers
+so the web panes underneath park and no others do. A presenter never registers a window modal.
+
+The height is the presenter's: `setNotificationBoxHeight(pixels)` declares what its own cards
+need, and the host clamps it to the smaller of two ceilings.
+
+| Ceiling | Value | Why |
+| --- | --- | --- |
+| Window | 45% of the window height | A corner box may not grow into a window modal that nothing registered. |
+| Content | 200 px per visible notice | A presenter is a plugin like any other and can raise its own notification every ten seconds, so a declaration alone must not be able to hold a box bigger than the cards in it: that box is a transparent rect that swallows clicks, parks the pages under it, and covers the native toast stack it shares the corner (and `z-40`) with, including the toast that says a presenter has failed. |
+
+Before a presenter declares anything the host budgets 96 px per visible notice, so a first notice
+is never drawn into a box of no height, and a stack taller than its box scrolls inside it. A
+declaration belongs to the view that made it: a reload, a **Retry presenter** or a different
+selection drops it, and the next presenter starts at the default again. The frame is not painted
+at all while `notifications` is empty, so an idle stack intercepts no clicks and parks no pages,
+and the selected view stays mounted and hidden so the first notice costs no attach - which is also
+why a presenter should declare nothing while the stack is empty, since an unpainted frame measures
+zero.
+
+A frame is bounded at 256 KiB like every other, and the option limits are character limits: a
+maximal notice (2,048 characters of message, 8,192 of detail, eight actions) serializes to about
+77 KiB once JSON expands its control characters, so four of them do not fit. The host carries the
+notices that fit, in visible order, and counts the rest in `queued`; a withheld notice keeps its
+ID and its expiry clock, cannot be answered by a presenter that was not shown it, and arrives in a
+later frame as earlier ones are settled. The alternative - letting the frame burst - would fail the
+placement and latch the user's chosen presenter out over somebody else's notification.
+
+Expiry stays host-owned. The 10 second clock runs from the moment a notice enters the visible
+stack, the host settles it with null, and the notice simply leaves the next frame; a presenter
+runs no clock and cannot extend one. `respondInteraction(requestID, actionID)` settles a notice
+the published projection carries and `null` dismisses it, exactly as the bundled card's × does;
+any other id is refused, including the prompts placement's visible request.
+
+Native toasts are not projected. A daemon notification, a failed command and a presenter failure
+are host chrome drawn by the window's own toast stack, and a notifications presenter is told
+nothing about them: only plugin `ui.showNotification` requests reach it. Withheld exactly as the
+prompts placement withholds: no `pluginID`, no verb name, an owner is a display name and an opaque
+window-local ref.
 
 ## Selectable Settings presenter
 

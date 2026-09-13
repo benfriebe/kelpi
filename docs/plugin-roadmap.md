@@ -45,6 +45,7 @@ scope and any follow-up results.
 | Palette and shared prompts | One window interaction surface owns the palette session and the shared quick pick, input and dialog requests. A plugin view declaring `interaction.palette` or `interaction.prompts` can be selected as that placement's presenter in Settings; request authority, cancellation and result validation stay in Kelpi and the bundled presenters are the recovery floor. | [#188](https://github.com/benfriebe/kelpi/pull/188), [#189](https://github.com/benfriebe/kelpi/pull/189), [#190](https://github.com/benfriebe/kelpi/pull/190) | [Selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters), [contracts](plugin-validation.md#shared-interaction-contracts-2026-09-12), [presenters](plugin-validation.md#selectable-interaction-presenters-2026-09-12), [Interaction Lab](plugin-validation.md#interaction-lab-and-live-acceptance-2026-09-12) |
 | Full Settings presentation | Settings sections and fields are one shared descriptor model with host-owned validation, drafts and routing. A plugin view declaring `settings.window` can be selected as the Settings presenter, with the bundled panel as the recovery floor; General, Workspaces and Appearance's plain rows are projected and their native remainders stay host-drawn. | [#191](https://github.com/benfriebe/kelpi/pull/191), [#208](https://github.com/benfriebe/kelpi/pull/208), [#209](https://github.com/benfriebe/kelpi/pull/209) | [Selectable Settings presenter](plugin-ui.md#selectable-settings-presenter), [contracts](plugin-validation.md#shared-settings-contracts-2026-09-12), [presenter](plugin-validation.md#selectable-settings-presenter-2026-09-12), [Settings Lab](plugin-validation.md#settings-lab-and-live-acceptance-2026-09-12) |
 | Daemon disconnect in presenter scenarios ([#199](https://github.com/benfriebe/kelpi/issues/199)) | The scenario runner hands every scenario a restartable primary daemon (`stop`, `start`, `restart` over the sandbox's own run dir, ports, database and token), and both presenter scenarios press a real disconnect and reconnect: bundled fallback while the connection is down with no latched failure and the selections retained, both presenters re-attaching, a prompt queued behind a live palette session leaving no pending request on the surface, a fresh prompt afterwards settling with its action, nothing activated by the gap and no pre-restart command replayed into the new shell, and a half-typed Settings draft intact across the restart with neither config file changed. | [#213](https://github.com/benfriebe/kelpi/pull/213) | [The daemon handle](../scripts/ui-audit/README.md#the-daemon-handle-stopping-the-primary-daemon), [validation](plugin-validation.md#daemon-disconnect-coverage-2026-09-13) |
+| Selectable notification presentation ([#194](https://github.com/benfriebe/kelpi/issues/194)) | The notification stack is a placement of its own, `interaction.notifications`, selected in Settings beside the other two. A selected view receives the visible plugin notices and settles them; the host keeps the corner box, the overlay rect it registers, the 10 second expiry and result validation, clamps the height the presenter declares, and paints nothing at all while the stack is empty. Native toasts stay host chrome. | this PR | [Selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters), [validation](plugin-validation.md#selectable-notification-presenter-2026-09-13) |
 
 Related terminal fixes [#132](https://github.com/benfriebe/kelpi/pull/132) and
 [#153](https://github.com/benfriebe/kelpi/pull/153) establish one WASM instance per terminal
@@ -59,15 +60,15 @@ the terminal geometry row above. Main fixes through
 [#200](https://github.com/benfriebe/kelpi/pull/200), which stages an ESM `package.json` beside
 the packaged CLI and daemon bundles, are recorded in the handoff.
 
-The last three phases added the placements `interaction.palette`, `interaction.prompts` and
-`settings.window`, and two additive terminal SDK fields. All are additive: plugin API version
-remains **1** and wire protocol generation remains **2**.
+The last four phases added the placements `interaction.palette`, `interaction.prompts`,
+`interaction.notifications` and `settings.window`, one presenter call
+(`ui.setNotificationBoxHeight`), and two additive terminal SDK fields. All are additive: plugin API
+version remains **1** and wire protocol generation remains **2**.
 
 ## Later work and open decisions
 
 | Work | Current state | Intended next result |
 | --- | --- | --- |
-| Selectable notification presentation ([#194](https://github.com/benfriebe/kelpi/issues/194)) | Plugin notifications and native toasts render in two bundled stacks; a prompts presenter receives an always-empty `notifications` field. The corner geometry has no page parking and no definite height, so it was deliberately held back. | A presenter-declared box size and overlay rect for a corner stack, or a merged notification model, before a plugin can draw notifications. |
 | Remote-hosted views and window navigation ([#193](https://github.com/benfriebe/kelpi/issues/193)) | A plugin view hosted by a remote daemon is refused this window's navigation (`ui.getNavigation`, `ui.selectWorkspace`). | A product rule for which window a remote-hosted view navigates, then a contract that states it, rather than a silent refusal. |
 | Appearance presenter remainder | Appearance's plain rows are projected, but its theme gallery, importer and share codes, chrome and agent-status colour maps, terminal theme picker, band fill, stat toggles, sparkline colour, highlight preview and every Reset stay a host-drawn `part: 'native'` remainder. | Describe those parts as projectable descriptors, if and when a real plugin needs to draw them. Not started on speculation. |
 | Remaining UI composition | Native feature replacements, named containers and menu/item contributions exist. Arbitrary root layout, pane chrome, search/help and phone shell replacement are not a blanket supported API. | Audit each remaining surface against a concrete replacement example and introduce explicit contracts where needed. |
@@ -100,6 +101,7 @@ and untrusted execution have different boundaries and should not be counted as e
 
 Each merged phase has its own dated record with the exact tested revision, commands and counts:
 [daemon disconnect coverage](plugin-validation.md#daemon-disconnect-coverage-2026-09-13),
+[selectable notification presenter](plugin-validation.md#selectable-notification-presenter-2026-09-13),
 [terminal SDK geometry parity](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12),
 [shared interaction contracts](plugin-validation.md#shared-interaction-contracts-2026-09-12),
 [selectable interaction presenters](plugin-validation.md#selectable-interaction-presenters-2026-09-12),

@@ -73,17 +73,19 @@ view. The preferred selection remains saved, so enabling the plugin restores it.
 management controls and “Restore bundled views” remain reachable through Settings and the
 command palette even when a custom view replaces the workspace or top bar.
 
-The command palette and the shared prompts are two further placements in that list,
-`interaction.palette` and `interaction.prompts`, selected independently of each other. They are
-Settings-only: both appear in a plugin's `ui.getWorkbench().slots`, but `ui.selectView` refuses
-them, because a prompts presenter renders other plugins' requests. A container cannot declare
-either one. A prompts presenter draws modal quick picks, inputs and dialogs; the notification
-stack stays native in this release. When a selected presenter fails, the bundled palette or
-prompts takes the placement
+The command palette, the shared prompts and the notification stack are three further placements
+in that list, `interaction.palette`, `interaction.prompts` and `interaction.notifications`,
+selected independently of each other. They are Settings-only: all three appear in a plugin's
+`ui.getWorkbench().slots`, but `ui.selectView` refuses them, because these presenters render other
+plugins' requests. A container cannot declare any of them. A prompts presenter draws modal quick
+picks, inputs and dialogs; a notifications presenter draws the corner stack, in a box the host
+places and sizes from a height the presenter declares. When a selected presenter fails, the
+bundled palette, prompts or notification stack takes the placement
 back for the rest of the window session, the live request keeps its ID and is re-presented, a
 failure toast is raised, and **Retry presenter** appears beside the selection; the saved
 selection is retained as it is for every other slot. Password inputs and native destructive
-confirmations are always drawn by the bundled presenter, and phone windows keep the bundled
+confirmations are always drawn by the bundled presenter, native toasts are host chrome and are
+never projected, and phone windows keep the bundled
 presenters. See [selectable interaction presenters](plugin-ui.md#selectable-interaction-presenters).
 
 The Settings dialog is a fourth, `settings.window`. A selected view draws the rail and the panel
@@ -223,11 +225,11 @@ the commands registered during activation.
 
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
-`document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`, and
-`settings.window`. A view can support several placements or a declared
-custom slot. Document, terminal and browser placements accept isolated views, not containers.
-Neither do the palette, prompts and Settings presenter placements: a presenter owns its whole
-surface.
+`document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
+`interaction.notifications`, and `settings.window`. A view can support several placements or a
+declared custom slot. Document, terminal and browser placements accept isolated views, not
+containers. Neither do the palette, prompts, notifications and Settings presenter placements: a
+presenter owns its whole surface.
 Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
 Browser controls target the owning daemon; native page display requires its Electron host window.

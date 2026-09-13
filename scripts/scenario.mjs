@@ -24,6 +24,13 @@
  *   t.cli       the sandbox's kelpi CLI (boot only): run(args, {env}), ok(args) -> stdout
  *   t.sandbox   paths and ports (boot only): configPath, root, base, controlPort, debugPort
  *   t.shell     the shell process (boot only, else null): lines[], text(), waitForLine(re, label)
+ *   t.daemon    the sandbox's own daemon (boot only, else null): stop(), start(), restart(),
+ *               pid, child, generation, exited, text(), lastStopMs, lastStartMs. A restart reuses
+ *               the sandbox's run dir, ports and token, so the daemon that comes back is the same
+ *               identity at the same address and the window's reconnect is the behaviour under
+ *               test. It waits for `/healthz` and nothing more: the window's own `data-connection`
+ *               is the only authority on the client having reconnected, and every PTY dies with
+ *               the old process. `ui-audit/lib/stack.mjs` ▸ `restartableDaemon` has it in full.
  *   t.rec       the recorder: check(label, ok, detail), note(msg), shot(page, label)
  *   t.d         the driver module itself (PAGE, clickMenuItem, openSidebarMenu, settleDom, ...)
  *   t.sleep
@@ -345,6 +352,12 @@ for (const file of files) {
             // `--attach`, where this runner did not launch the shell and cannot read its pipe; a
             // scenario that needs it must say so rather than assume.
             shell: instance.shell ?? null,
+            // The sandbox's own daemon, for the arms whose only honest gesture is stopping it
+            // (#199): the presenter slots' disconnected fallback, the reconnect, and what happens
+            // to a promise a plugin was awaiting when the socket died. Null under `--attach` for
+            // a stronger reason than `shell` is: that instance belongs to whoever started it, and
+            // a scenario that stopped its daemon would take a developer's session down.
+            daemon: instance.daemon ?? null,
             rec,
             d: driver,
             sleep: driver.sleep,

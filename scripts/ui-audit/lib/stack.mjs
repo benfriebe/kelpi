@@ -385,6 +385,164 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
 }
 
 /**
+ * One sandbox's daemon, restartable in place: `start()`, `stop()`, `restart()`.
+ *
+ * WHY THIS EXISTS (#199). Stopping the PRIMARY daemon under a live window is the only honest way
+ * to press what the client does when the connection goes: the presenter slots' rule 3 fallback,
+ * PluginView's "Connecting to daemon…" placeholder, the reconnect backoff, and every promise a
+ * plugin was awaiting when the socket died. `startDaemon` gives one process and no way back, so
+ * a scenario that wanted the arm had to re-implement the stop-and-start pair itself. Two already
+ * carry a hand-rolled half of it (`scripts/scenarios/plugin-remote.mjs` line 55 and
+ * `plugin-document-features.mjs`, both for a SECOND daemon), and both are left alone deliberately:
+ * this is the shape they could adopt later, not a rewrite of what already works.
+ *
+ * Restarting IN PLACE is what makes the arm mean anything. `makeSandbox` fixes the run dir, the
+ * socket path, the HTTP and control ports and the database, and the daemon's token is minted once
+ * and re-read on every later start (`daemon/src/lifecycle/rundir.ts` ▸ `ensureToken`), so the
+ * process that comes back is the same daemon identity at the same address. The client's saved
+ * token is still good, its reconnect finds a listener, and what the window does in between is the
+ * behaviour under test rather than an artefact of a new address.
+ *
+ * Three limits worth knowing before writing a check against it:
+ *
+ *   - `start()` waits for `/healthz` and then PROVES the identity. Healthz answering is not the
+ *     client having reconnected (the window's own `data-connection` is the only authority on
+ *     that, and a scenario waits for it), and it is not even proof that the process this handle
+ *     spawned is the one answering: `kelpid start --foreground` probes first and, finding a live
+ *     daemon, prints "kelpid already running" and exits 0 (`daemon/src/main.ts` ▸ `commandStart`).
+ *     A survivor answers healthz, so a stop that silently failed would leave `start()` bumping
+ *     `generation` and reporting a dead launcher's pid for a restart that never happened. So the
+ *     launcher is checked for having exited, and `assertSandboxDaemon` then pings the control
+ *     port and refuses anything but this child's own pid.
+ *   - Every PTY the old daemon owned dies with it. A restart is a real daemon crash, not a
+ *     handover, so a pane's shell is a NEW process afterwards and a scenario that reads pane text
+ *     across the restart must say which side of it each reading came from. In a multi-scenario
+ *     run that is EVERY pane in the instance, not only the restarting scenario's.
+ *   - A stop can take eight seconds and end in SIGKILL, and that is a daemon bug rather than a
+ *     slow machine: issue #212. `ws/server.ts` ▸ `stop()` closes the WebSockets it tracks and then
+ *     awaits `server.close()` without `closeIdleConnections()`, so Chromium's idle keep-alive HTTP
+ *     sockets (the client document, and the `/plugin-assets/...` fetches that build each plugin
+ *     view's srcDoc) hold the listener open until they time out. `boot/compose.ts` then sits in
+ *     `ws.stop()` until `startDaemon`'s SIGTERM window elapses; the SIGKILL lands after
+ *     `persistence.flush()` and `pty.killAll()`, so what it skips is `persistence.close()`,
+ *     `clearRunFiles(paths)` and the final `kelpid stopped` line. That is why a sandbox that has
+ *     just rebuilt plugin views stops in eight seconds and an idle one stops in twelve
+ *     milliseconds. Do not paper over it here: `lastStopMs` reports it and a scenario prints it.
+ *
+ * `text()` spans restarts (the stopped processes' output is kept), `pid` and `child` are whichever
+ * process is current, and `generation` counts the starts, which is the cheapest proof that a
+ * restart really replaced the process rather than finding a survivor.
+ */
+export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOptions } = {}) {
+    let current = null;
+    let generation = 0;
+    let stopMs = null;
+    let startMs = null;
+    /** Every stopped process's output, so a restart does not erase the evidence from before it. */
+    const previous = [];
+    const handle = {
+        get child() {
+            return current?.child ?? null;
+        },
+        get pid() {
+            return current?.child?.pid ?? null;
+        },
+        /** How many daemon processes this sandbox has had: 1 after `boot`, 2 after one restart. */
+        get generation() {
+            return generation;
+        },
+        /** True while no process of this sandbox's is running, which a stop is allowed to leave. */
+        get exited() {
+            return current === null || current.exited;
+        },
+        text: () => `${previous.join('')}${current === null ? '' : current.text()}`,
+        /**
+         * How long the last `stop()` and the last `start()` took, in ms, or null before each has
+         * happened. Worth printing beside a restart rather than only its total: a `stopMs` at or
+         * above 8000 is `startDaemon`'s SIGTERM window elapsing and the SIGKILL behind it, which
+         * is issue #212 (the unclosed keep-alive sockets above) rather than a slow machine. Seen
+         * on this tree in 9 of 14 `plugin-interaction-presenters` runs, which rebuilds plugin views
+         * shortly before its restart, and in none of `plugin-settings-presenter`'s 9.
+         */
+        get lastStopMs() {
+            return stopMs;
+        },
+        get lastStartMs() {
+            return startMs;
+        },
+        /**
+         * Spawn one if none is running, wait for `/healthz`, and prove the daemon answering is
+         * the child just spawned. A no-op on a live daemon.
+         *
+         * The proof is the point (see the doc above): a `kelpid start --foreground` that finds a
+         * survivor prints "already running" and exits 0, and the survivor answers healthz, so
+         * without this a restart that never happened would still bump `generation` and hand back
+         * a pid. Both failures throw rather than being reported, because every assertion a
+         * scenario makes after a restart is built on this one.
+         */
+        async start() {
+            if (current !== null && !current.exited) return handle;
+            const began = Date.now();
+            const started = startDaemon(sandbox, daemonOptions);
+            current = started;
+            generation += 1;
+            clearBackgroundTaskPolicy(started.child?.pid);
+            await waitForHealthz(sandbox.base, healthzMs);
+            if (started.exited) {
+                throw new Error(
+                    `the daemon launcher exited before healthz: something else is already answering ${sandbox.base}. ` +
+                        `Its output was: ${started.text().trim().slice(0, 400)}`
+                );
+            }
+            /*
+             * Retried only on a CONNECTION failure: the control listener can come up a beat after
+             * the HTTP one, and a ping that cannot connect yet says nothing. A pid MISMATCH is a
+             * verdict and is rethrown at once.
+             */
+            const deadline = Date.now() + 10_000;
+            for (;;) {
+                try {
+                    await assertSandboxDaemon(sandbox, started.child?.pid);
+                    break;
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (message.startsWith('WRONG DAEMON') || Date.now() > deadline) throw error;
+                    await sleep(150);
+                }
+            }
+            startMs = Date.now() - began;
+            return handle;
+        },
+        /**
+         * SIGTERM, then SIGKILL after 8 s. Safe to call twice and safe to call on a dead one.
+         *
+         * The reference is held until the stop SETTLES, and given up only when it succeeded. A
+         * handle that forgot its process the moment it signalled it would report `exited` while
+         * the thing was still running, drop that generation's output from `text()`, and let the
+         * next `start()` spawn a second daemon onto these ports if the stop had thrown.
+         */
+        async stop() {
+            if (current === null) return handle;
+            const began = Date.now();
+            const stopping = current;
+            try {
+                await stopping.stop();
+                current = null;
+                previous.push(stopping.text());
+            } finally {
+                stopMs = Date.now() - began;
+            }
+            return handle;
+        },
+        async restart() {
+            await handle.stop();
+            return await handle.start();
+        }
+    };
+    return handle;
+}
+
+/**
  * Identity pre-flight: prove the process answering the sandbox control port IS the daemon
  * this harness just spawned, before any step mutates anything. `ping` replies with the
  * daemon's own `pid` (socket-handlers.md §10); comparing it against the spawned child's pid

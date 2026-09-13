@@ -48,9 +48,8 @@ import {
     clearBackgroundTaskPolicy,
     makeCli,
     makeSandbox,
-    startDaemon,
-    startShell,
-    waitForHealthz
+    restartableDaemon,
+    startShell
 } from './stack.mjs';
 
 export { MOD, sleep };
@@ -530,6 +529,13 @@ export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(
     return {
         page,
         harness,
+        /*
+         * No daemon handle, deliberately (#199). This instance was started by somebody else, its
+         * daemon may be a developer's own, and a scenario that stopped it would take their
+         * session down with it. A scenario whose arm needs one checks for null and says so, the
+         * way it already does for `shell`.
+         */
+        daemon: null,
         debugPort,
         async close() {
             harness?.close();
@@ -609,9 +615,15 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         harnessWindow: window
     });
     const harnessSocket = sandbox.harnessSocket ?? path.join(sandbox.root, 'harness.sock');
-    const daemon = startDaemon(sandbox, { repoRoot });
-    clearBackgroundTaskPolicy(daemon.child?.pid);
-    await waitForHealthz(sandbox.base);
+    /*
+     * A RESTARTABLE daemon rather than one process (#199): `stack.mjs` ▸ `restartableDaemon` has
+     * the rule and the two limits. `start()` does what the three lines here used to do (spawn,
+     * clear the background-task policy, wait for healthz), and the instance's own `stop()` below
+     * stops whichever process is current, so a scenario that restarted the daemon still leaves a
+     * sandbox this runner can tear down.
+     */
+    const daemon = restartableDaemon(sandbox, { repoRoot });
+    await daemon.start();
     const shell = startShell(sandbox, { repoRoot, extraEnv: { KELPI_HARNESS_SOCKET: harnessSocket } });
     clearBackgroundTaskPolicy(shell.child?.pid);
     // Before CDP, because a `hidden` window that did not actually go hidden is a run that has
@@ -680,6 +692,12 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
     let stopped = false;
     return {
         sandbox,
+        /**
+         * This sandbox's daemon, restartable in place: `stop()`, `start()`, `restart()`, plus
+         * `pid`, `child`, `generation`, `exited`, `text()` and `lastStopMs` / `lastStartMs`.
+         * `stack.mjs` ▸ `restartableDaemon` has what a restart is and is not. Null under `attach`,
+         * where the runner did not start the daemon and must not stop somebody else's.
+         */
         daemon,
         shell,
         page,

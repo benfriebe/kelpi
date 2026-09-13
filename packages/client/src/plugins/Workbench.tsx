@@ -35,18 +35,18 @@ interface Workbench extends WorkbenchLayout {
 }
 const WorkbenchContext = createContext<Workbench | null>(null);
 /**
- * Every root slot a plugin may DISCOVER through `ui.getWorkbench().slots`, the two presented
+ * Every root slot a plugin may DISCOVER through `ui.getWorkbench().slots`, the three presented
  * interaction surfaces included, and every one it may SELECT itself into. The two lists differ by
  * exactly those surfaces.
  *
  * Any plugin can already put itself in the topbar programmatically, and that is fine: it replaces
- * its own chrome. A prompts presenter renders OTHER plugins' requests - including an
- * `ui.showInput({ password: true })` that no other slot has ever been able to see - so the choice
- * stays the user's, made in Settings, and `ui.selectView` refuses it.
+ * its own chrome. A prompts or notifications presenter renders OTHER plugins' requests - including
+ * an `ui.showInput({ password: true })` that no other slot has ever been able to see - so the
+ * choice stays the user's, made in Settings, and `ui.selectView` refuses it.
  */
-const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'settings.window'] as const;
+const ROOT_SLOTS = ['sidebar.primary', 'sidebar.secondary', 'topbar', 'statusbar', 'panel.bottom', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 /**
- * The presented surfaces: the two interaction placements and the Settings window. Discoverable,
+ * The presented surfaces: the three interaction placements and the Settings window. Discoverable,
  * never selectable by a plugin, and the only slots whose bundled entry names itself.
  */
 const PRESENTED_SLOTS: readonly string[] = [...INTERACTION_PLACEMENTS, SETTINGS_PLACEMENT];
@@ -329,14 +329,14 @@ export function useSidebarNativeMounted(placement: SidebarPlacement, nativeViewI
 /**
  * The route BACK to the bundled presenter, said out loud.
  *
- * Every root slot's select has always listed the bundled view for the slot - `kelpi.palette` and
- * `kelpi.prompts` are in `BUNDLED_FEATURE_DEFINITIONS` and in `slotViews`, and selecting one
- * really does hand the placement back. What the two presented surfaces lack is any OTHER route: a
- * sidebar or a toolbar shows you which view is drawing, so "Toolbar" in a list reads as the
- * original, while a palette you replaced looks the same as a palette you did not, and "Command
- * palette" beside "Interaction Lab palette" does not say which one is the floor. Recovery must
- * never depend on a guess, so the bundled entry names itself here (the status row below prints the
- * same word). Only these two placements: the rest are not recovery surfaces.
+ * Every root slot's select has always listed the bundled view for the slot - `kelpi.palette`,
+ * `kelpi.prompts` and `kelpi.interaction.notifications` are in `BUNDLED_FEATURE_DEFINITIONS` and in
+ * `slotViews`, and selecting one really does hand the placement back. What the presented surfaces
+ * lack is any OTHER route: a sidebar or a toolbar shows you which view is drawing, so "Toolbar" in
+ * a list reads as the original, while a palette you replaced looks the same as a palette you did
+ * not, and "Command palette" beside "Interaction Lab palette" does not say which one is the floor.
+ * Recovery must never depend on a guess, so the bundled entry names itself here (the status row
+ * below prints the same word). Only the presented placements: the rest are not recovery surfaces.
  */
 function optionTitle(slot: string, view: ViewContribution): string {
     return view.pluginID === undefined && PRESENTED_SLOTS.includes(slot)

@@ -9,8 +9,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { INTERACTION_LIMITS, type InteractionPaletteItem, type InteractionPaletteSource } from './contract';
-import { createInteractionPresenterHost, type InteractionPresenterHost, type InteractionPresenterSnapshot } from './presenter';
+import { INTERACTION_LIMITS, type InteractionPaletteItem, type InteractionPaletteSource, type InteractionPlacement } from './contract';
+import { createInteractionPresenterHost, notificationBoxHeight, type InteractionPresenterHost, type InteractionPresenterSnapshot } from './presenter';
 import { createInteractionSurface, type InteractionSurface, type InteractionSurfaceConfig } from './surface';
 
 const surfaces: InteractionSurface[] = [];
@@ -43,17 +43,20 @@ interface Harness {
     readonly errors: Error[];
     readonly awaited: boolean[];
     readonly failures: string[];
+    /** Every `setNotificationBoxHeight` the presenter declared, unclamped. */
+    readonly declared: number[];
     readonly acknowledged: () => number;
     readonly ready: () => number;
     readonly stop: () => void;
     visible: boolean;
 }
 
-function mount(surface: InteractionSurface, placement: 'interaction.palette' | 'interaction.prompts', options: { visible?: boolean; subscribe?: boolean } = {}): Harness {
+function mount(surface: InteractionSurface, placement: InteractionPlacement, options: { visible?: boolean; subscribe?: boolean } = {}): Harness {
     const frames: InteractionPresenterSnapshot[] = [];
     const errors: Error[] = [];
     const awaited: boolean[] = [];
     const failures: string[] = [];
+    const declared: number[] = [];
     let acknowledged = 0;
     let ready = 0;
     const state = { visible: options.visible ?? true };
@@ -64,14 +67,15 @@ function mount(surface: InteractionSurface, placement: 'interaction.palette' | '
         fail: (detail) => failures.push(detail),
         onFrame: (awaits) => awaited.push(awaits),
         onAcknowledged: () => { acknowledged += 1; },
-        onReady: () => { ready += 1; }
+        onReady: () => { ready += 1; },
+        onBoxHeight: (pixels) => declared.push(pixels)
     });
     hosts.push(host);
     const stop = options.subscribe === false
         ? () => {}
         : host.subscribe((value) => frames.push(value), (error) => errors.push(error));
     return {
-        host, frames, errors, awaited, failures, stop,
+        host, frames, errors, awaited, failures, declared, stop,
         acknowledged: () => acknowledged,
         ready: () => ready,
         get visible() { return state.visible; },
@@ -378,5 +382,212 @@ describe('presenter calls', () => {
         expect(() => h.host.getInteraction()).toThrow('unavailable after disposal');
         expect(() => h.host.subscribe(() => {})).toThrow('unavailable after disposal');
         expect(surface.getSnapshot().palette.open).toBe(true);
+    });
+});
+
+/**
+ * The third placement. Everything a notification presenter is told, everything it may settle, and
+ * the one number it is allowed to ask the host for.
+ */
+describe('the notifications projection', () => {
+    it('publishes the stack to its own placement and to neither of the others', async () => {
+        const { source } = feed([row('cmd:a')]);
+        const surface = make({ palette: source });
+        const scope = surface.createScope(owner('view'));
+        const notices = mount(surface, 'interaction.notifications');
+        const prompts = mount(surface, 'interaction.prompts');
+        const palette = mount(surface, 'interaction.palette');
+
+        void scope.request('ui.showNotification', { message: 'Saved', tone: 'success', actions: [{ id: 'open', label: 'Open' }] });
+        void scope.request('ui.showInput', { title: 'A modal beside it' });
+        await flush();
+
+        const frame = notices.frames.at(-1)!;
+        expect(frame.placement).toBe('interaction.notifications');
+        expect(frame.notifications).toHaveLength(1);
+        expect(frame.notifications[0]).toMatchObject({ options: { message: 'Saved', tone: 'success' } });
+        expect(frame.notifications[0]!.options.actions).toEqual([{ id: 'open', label: 'Open' }]);
+        // A notice is not a modal request: the visible prompt and its queue belong elsewhere.
+        expect(frame.prompt).toBeNull();
+        expect(frame.queued).toBe(0);
+        expect(frame.palette).toBeNull();
+        expect(JSON.stringify(frame)).not.toContain('A modal beside it');
+        // An owner is a ref and a display name here too - no plugin id reaches the corner either.
+        expect(Object.keys(frame.notifications[0]!.owner).sort()).toEqual(['displayName', 'ref']);
+        expect(frame.notifications[0]!.owner.displayName).toBe('Test Plugin');
+        expect(JSON.stringify(frame)).not.toContain('example.test');
+        expect(Object.isFrozen(frame.notifications)).toBe(true);
+        expect(Object.isFrozen(frame.notifications[0])).toBe(true);
+
+        // The other two placements are told nothing about it, as before.
+        expect(prompts.frames.at(-1)!.notifications).toEqual([]);
+        expect(palette.frames.at(-1)!.notifications).toEqual([]);
+        expect(JSON.stringify(prompts.frames.at(-1)!)).not.toContain('Saved');
+    });
+
+    it('settles a notice it was published, and refuses every id it was not', async () => {
+        const surface = make();
+        const scope = surface.createScope(owner('view'));
+        const notices = mount(surface, 'interaction.notifications');
+        const prompts = mount(surface, 'interaction.prompts');
+        const notice = scope.request('ui.showNotification', { message: 'Saved', actions: [{ id: 'open', label: 'Open' }] });
+        const prompt = scope.request('ui.showInput', { title: 'Modal' });
+        await flush();
+
+        const noticeID = notices.frames.at(-1)!.notifications[0]!.requestID;
+        const promptID = prompts.frames.at(-1)!.prompt!.requestID;
+        // Each placement answers its own half and guesses nothing about the other's.
+        expect(() => notices.host.call('ui.respondInteraction', { requestID: promptID, value: null })).toThrow('This UI request is not visible.');
+        expect(() => prompts.host.call('ui.respondInteraction', { requestID: noticeID, value: 'open' })).toThrow('This UI request is not visible.');
+        expect(() => notices.host.call('ui.respondInteraction', { requestID: noticeID, value: 'invented' })).toThrow('Unknown UI action.');
+        expect(() => notices.host.call('ui.respondInteraction', { requestID: 'ui-404', value: null })).toThrow('This UI request is not visible.');
+
+        notices.host.call('ui.respondInteraction', { requestID: noticeID, value: 'open' });
+        await expect(notice).resolves.toBe('open');
+        // A dismissal is the same settle with null, exactly as the bundled card's × does.
+        const second = scope.request('ui.showNotification', { message: 'Dismissed' });
+        await flush();
+        notices.host.call('ui.respondInteraction', { requestID: notices.frames.at(-1)!.notifications[0]!.requestID, value: null });
+        await expect(second).resolves.toBeNull();
+        prompts.host.call('ui.respondInteraction', { requestID: promptID, value: 'typed' });
+        await expect(prompt).resolves.toBe('typed');
+    });
+
+    it('keeps the host’s expiry clock: a notice leaves the frame when it times out', async () => {
+        vi.useFakeTimers();
+        const surface = make();
+        const scope = surface.createScope(owner('view'));
+        const h = mount(surface, 'interaction.notifications');
+        const notice = scope.request('ui.showNotification', { message: 'Expires' });
+        await flush();
+        expect(h.frames.at(-1)!.notifications).toHaveLength(1);
+
+        vi.advanceTimersByTime(INTERACTION_LIMITS.notificationMs);
+        await flush();
+        // Settled with null by the host, and simply dropped from the next frame. A presenter never
+        // has to run a clock, and could not be trusted with one.
+        await expect(notice).resolves.toBeNull();
+        expect(h.frames.at(-1)!.notifications).toEqual([]);
+        // A frame that only drops a notice waits for nothing: an idle presenter is not a failure.
+        expect(h.awaited.at(-1)).toBe(false);
+        expect(h.failures).toEqual([]);
+    });
+
+    it('waits for the acknowledgement of a frame that ADDS a notice', async () => {
+        const surface = make();
+        const scope = surface.createScope(owner('view'));
+        const h = mount(surface, 'interaction.notifications');
+        expect(h.awaited).toEqual([false]);
+        void scope.request('ui.showNotification', { message: 'First' });
+        await flush();
+        expect(h.awaited.at(-1)).toBe(true);
+        h.host.noteAcknowledged();
+        expect(h.acknowledged()).toBe(1);
+
+        // A second notice is a second frame to wait for; the first one is already drawn.
+        void scope.request('ui.showNotification', { message: 'Second' });
+        await flush();
+        expect(h.awaited.at(-1)).toBe(true);
+        expect(h.frames.at(-1)!.notifications.map((notice) => notice.options.message)).toEqual(['First', 'Second']);
+        expect(h.failures).toEqual([]);
+        /*
+         * The frame is BOUNDED rather than allowed to burst (the case below), so the undeliverable
+         * arm is hard to reach from this placement. The failure path it shares with the other two
+         * is covered by the palette suite above, and `hasLiveWork` counts a visible notice so a
+         * frame that somehow could not be delivered would hand the stack back to the bundled one
+         * rather than leave it undrawn.
+         */
+    });
+
+    /**
+     * Four maximal notices do not fit in one 256 KiB frame, and the frame must not burst.
+     *
+     * The option limits are CHARACTER limits and JSON expands a control character to six bytes, so
+     * one maximal notice is about 77 KiB serialized and four are about 303 KiB. Before the bound,
+     * that frame was undeliverable, and an undeliverable frame with live work in it FAILS the
+     * placement: the user's chosen presenter would be latched out by somebody else's notification,
+     * with a toast to explain it and a Retry that re-failed until the notices expired.
+     */
+    it('carries the notices that fit, counts the ones it cannot, and never bursts the frame', async () => {
+        const surface = make();
+        const scope = surface.createScope(owner('view'));
+        const h = mount(surface, 'interaction.notifications');
+        const wide = (length: number): string => '\u0001'.repeat(length);
+        const maximal = {
+            message: wide(2048),
+            detail: wide(8192),
+            actions: Array.from({ length: INTERACTION_LIMITS.actions }, (_, index) => ({
+                id: `${String(index)}${wide(127)}`,
+                label: wide(200)
+            }))
+        };
+        const answers = Array.from({ length: INTERACTION_LIMITS.notifications }, () =>
+            scope.request('ui.showNotification', maximal)
+        );
+        await flush();
+
+        // Nothing failed, nothing errored: what the presenter gets is a short frame, not a latch.
+        expect(h.errors).toEqual([]);
+        expect(h.failures).toEqual([]);
+        const frame = h.frames.at(-1)!;
+        expect(new TextEncoder().encode(JSON.stringify(frame)).byteLength).toBeLessThanOrEqual(INTERACTION_LIMITS.payloadBytes);
+        expect(frame.notifications.length).toBeGreaterThan(0);
+        expect(frame.notifications.length).toBeLessThan(INTERACTION_LIMITS.notifications);
+        expect(frame.queued).toBe(INTERACTION_LIMITS.notifications - frame.notifications.length);
+        // The read path agrees with the feed: `pluginJSON` would throw on an oversized frame.
+        expect(() => h.host.getInteraction()).not.toThrow();
+
+        // Visible order, so the withheld ones are the LAST of the four.
+        const live = surface.getSnapshot().notifications.map((notice) => notice.id);
+        expect(frame.notifications.map((notice) => notice.requestID)).toEqual(live.slice(0, frame.notifications.length));
+        const withheldID = live.at(-1)!;
+        // A notice this presenter was not shown cannot be answered by guessing its id.
+        expect(() => h.host.call('ui.respondInteraction', { requestID: withheldID, value: null })).toThrow('This UI request is not visible.');
+
+        // Settling a carried one makes room, and the withheld notice arrives under its own id.
+        const carried = frame.notifications.length;
+        surface.answer(frame.notifications[0]!.requestID, null);
+        await expect(answers[0]).resolves.toBeNull();
+        await flush();
+        const next = h.frames.at(-1)!;
+        expect(next.notifications).toHaveLength(carried);
+        expect(next.notifications.some((notice) => notice.requestID === withheldID)).toBe(true);
+        expect(next.queued).toBe(0);
+        expect(h.failures).toEqual([]);
+    });
+
+    it('takes a declared box height, refuses a nonsense one, and clamps what is painted', () => {
+        const surface = make();
+        const h = mount(surface, 'interaction.notifications');
+        const prompts = mount(surface, 'interaction.prompts');
+
+        h.host.call('ui.setNotificationBoxHeight', { pixels: 240 });
+        h.host.call('ui.setNotificationBoxHeight', { pixels: 0 });
+        expect(h.declared).toEqual([240, 0]);
+        for (const pixels of [-1, Number.NaN, Number.POSITIVE_INFINITY, '240', null])
+            expect(() => h.host.call('ui.setNotificationBoxHeight', { pixels })).toThrow('A notification box height must be');
+        expect(() => h.host.call('ui.setNotificationBoxHeight', {})).toThrow('Invalid interaction arguments.');
+        expect(h.declared).toEqual([240, 0]);
+        // The box belongs to one placement, like the palette calls do.
+        expect(() => prompts.host.call('ui.setNotificationBoxHeight', { pixels: 240 })).toThrow('another interaction placement');
+
+        // The clamp itself: the presenter's number, the host's two ceilings, and a default per
+        // notice for the frames before a presenter has said anything at all.
+        expect(notificationBoxHeight(null, 0, 1000)).toBe(0);
+        expect(notificationBoxHeight(null, 2, 1000)).toBe(2 * INTERACTION_LIMITS.noticeBoxPx);
+        expect(notificationBoxHeight(150, 1, 1000)).toBe(150);
+        expect(notificationBoxHeight(150.6, 1, 1000)).toBe(151);
+        expect(notificationBoxHeight(-10, 1, 1000)).toBe(0);
+        /*
+         * Two ceilings. One notice is worth at most `noticeBoxMaxPx` however big a number the
+         * presenter sends, which is what stops a presenter holding a box bigger than what it draws
+         * over the corner (its own notification every ten seconds would keep it there); and the
+         * window's own fraction binds once enough notices are up to pass it.
+         */
+        expect(notificationBoxHeight(100_000, 1, 1000)).toBe(INTERACTION_LIMITS.noticeBoxMaxPx);
+        expect(notificationBoxHeight(100_000, 2, 1000)).toBe(2 * INTERACTION_LIMITS.noticeBoxMaxPx);
+        expect(notificationBoxHeight(100_000, 4, 1000)).toBe(450);
+        // A window too short for even one default card clamps the default too.
+        expect(notificationBoxHeight(null, 4, 200)).toBe(90);
     });
 });

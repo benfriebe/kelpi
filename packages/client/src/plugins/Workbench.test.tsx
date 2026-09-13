@@ -48,7 +48,7 @@ afterEach(cleanup);
 describe('the presented interaction placements', () => {
     function presenter(): PluginInfo {
         return { manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
-            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] }]
         } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' };
     }
 
@@ -58,18 +58,24 @@ describe('the presented interaction placements', () => {
         // Discovery, so a presenter can find out whether it is the one drawing.
         expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
             { id: 'interaction.palette', title: 'interaction.palette', viewID: 'kelpi.palette' },
-            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'kelpi.prompts' }
+            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'kelpi.prompts' },
+            { id: 'interaction.notifications', title: 'interaction.notifications', viewID: 'kelpi.interaction.notifications' }
         ]) });
         /*
-         * Selection, though, is refused for BOTH - the one place `ui.selectView` departs from every
-         * other root slot. A plugin that could select itself as the prompts presenter would be
-         * rendering other plugins' requests, `ui.showInput({ password: true })` included, on its own
-         * say-so. A topbar it selects itself into replaces only its own chrome.
+         * Selection, though, is refused for ALL THREE - the one place `ui.selectView` departs from
+         * every other root slot. A plugin that could select itself as the prompts or notifications
+         * presenter would be rendering other plugins' requests, `ui.showInput({ password: true })`
+         * included, on its own say-so. A topbar it selects itself into replaces only its own chrome.
          */
-        for (const slot of ['interaction.palette', 'interaction.prompts']) {
+        const bundledFor: Record<string, string> = {
+            'interaction.palette': 'kelpi.palette',
+            'interaction.prompts': 'kelpi.prompts',
+            'interaction.notifications': 'kelpi.interaction.notifications'
+        };
+        for (const slot of ['interaction.palette', 'interaction.prompts', 'interaction.notifications']) {
             expect(() => requestHostUI(bridge, runtime, 'ui.selectView', { slot, viewID: 'sample.present.view' })).toThrow('Workbench slot is not registered.');
             expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
-                { id: slot, title: slot, viewID: slot === 'interaction.palette' ? 'kelpi.palette' : 'kelpi.prompts' }
+                { id: slot, title: slot, viewID: bundledFor[slot] }
             ]) });
         }
 
@@ -91,21 +97,25 @@ describe('the presented interaction placements', () => {
         const options = (slot: string): string[] =>
             [...(screen.getByLabelText(slot) as HTMLSelectElement).options].map(option => `${option.value}=${option.textContent ?? ''}`);
         expect(options('interaction.palette')).toEqual(['kelpi.palette=Command palette (bundled)', 'sample.present.view=Lab presenter']);
-        expect(options('interaction.prompts')).toEqual(['kelpi.prompts=Prompts and notifications (bundled)', 'sample.present.view=Lab presenter']);
-        // Every other slot keeps its plain titles: these two are the recovery surfaces.
+        // "Prompts", not "Prompts and notifications": the stack is its own select now.
+        expect(options('interaction.prompts')).toEqual(['kelpi.prompts=Prompts (bundled)', 'sample.present.view=Lab presenter']);
+        expect(options('interaction.notifications')).toEqual(['kelpi.interaction.notifications=Notifications (bundled)', 'sample.present.view=Lab presenter']);
+        // Every other slot keeps its plain titles: these three are the recovery surfaces.
         expect(options('topbar')).toEqual(['kelpi.topbar=Toolbar']);
 
-        for (const slot of ['interaction.palette', 'interaction.prompts']) {
+        for (const slot of ['interaction.palette', 'interaction.prompts', 'interaction.notifications']) {
             act(() => { fireEvent.change(screen.getByLabelText(slot), { target: { value: 'sample.present.view' } }); });
         }
         act(() => { fireEvent.change(screen.getByLabelText('interaction.palette'), { target: { value: 'kelpi.palette' } }); });
         expect(requestHostUI(bridge, runtime, 'ui.getWorkbench', {})).toMatchObject({ slots: expect.arrayContaining([
             { id: 'interaction.palette', title: 'interaction.palette', viewID: 'kelpi.palette' },
-            // The other placement is untouched: they are selected independently.
-            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'sample.present.view' }
+            // The other placements are untouched: all three are selected independently.
+            { id: 'interaction.prompts', title: 'interaction.prompts', viewID: 'sample.present.view' },
+            { id: 'interaction.notifications', title: 'interaction.notifications', viewID: 'sample.present.view' }
         ]) });
         expect((screen.getByLabelText('interaction.palette') as HTMLSelectElement).value).toBe('kelpi.palette');
         expect(screen.getByTestId('interaction-presenter-status-interaction.palette').textContent).toContain('Bundled');
+        expect(screen.getByTestId('interaction-presenter-status-interaction.notifications').textContent).toContain('Lab presenter');
     });
 });
 

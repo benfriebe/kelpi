@@ -102,13 +102,14 @@ describe('extensible workbench', () => {
         expect(DEFAULT_SLOTS['settings']).toBe('kelpi.settings');
     });
 
-    it('keeps the bundled presenter as a floor for both interaction placements', () => {
+    it('keeps the bundled presenter as a floor for every interaction placement', () => {
         const presenter: PluginInfo = { ...plugin, manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
-            views: [{ id: 'sample.present.view', title: 'Presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+            views: [{ id: 'sample.present.view', title: 'Presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] }]
         } }) };
         expect(DEFAULT_SLOTS['interaction.palette']).toBe('kelpi.palette');
         expect(DEFAULT_SLOTS['interaction.prompts']).toBe('kelpi.prompts');
-        for (const placement of ['interaction.palette', 'interaction.prompts'] as const) {
+        expect(DEFAULT_SLOTS['interaction.notifications']).toBe('kelpi.interaction.notifications');
+        for (const placement of ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] as const) {
             const views = viewRegistry([presenter]);
             expect(resolveSlot(views, placement, 'sample.present.view')?.pluginID).toBe('sample.present');
             // The recovery floor cannot be selected away, and an unknown selection lands on it.

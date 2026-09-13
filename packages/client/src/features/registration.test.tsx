@@ -178,21 +178,26 @@ describe('bundled feature registration in the workbench', () => {
 describe('the presented interaction placements in Settings', () => {
     function presenter(): PluginInfo {
         return { manifest: decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
-            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+            views: [{ id: 'sample.present.view', title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] }]
         } }), enabled: true, status: 'inactive', error: null, revision: 'r', instanceID: 'i' };
     }
 
     it('offers a select per placement, reports who is drawing, and recovers through Retry', () => {
         plugins = [presenter()];
         render(<Harness features={bindings()} />);
-        // Selection is a Settings gesture: the two selects are the only way in.
-        for (const placement of ['interaction.palette', 'interaction.prompts']) {
+        // Selection is a Settings gesture: the three selects are the only way in.
+        const bundled: Record<string, string> = {
+            'interaction.palette': 'kelpi.palette',
+            'interaction.prompts': 'kelpi.prompts',
+            'interaction.notifications': 'kelpi.interaction.notifications'
+        };
+        for (const placement of ['interaction.palette', 'interaction.prompts', 'interaction.notifications']) {
             const select = screen.getByLabelText(placement) as HTMLSelectElement;
-            expect([...select.options].map(option => option.value)).toEqual([placement === 'interaction.palette' ? 'kelpi.palette' : 'kelpi.prompts', 'sample.present.view']);
+            expect([...select.options].map(option => option.value)).toEqual([bundled[placement], 'sample.present.view']);
             // The bundled presenter is the floor: no "Empty" row to select it away with.
             expect([...select.options].some(option => option.value === '')).toBe(false);
+            expect(screen.getByTestId(`interaction-presenter-status-${placement}`).textContent).toContain('Bundled');
         }
-        expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Bundled');
 
         fireEvent.change(screen.getByLabelText('interaction.prompts'), { target: { value: 'sample.present.view' } });
         expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Lab presenter');
@@ -202,6 +207,9 @@ describe('the presented interaction placements in Settings', () => {
         act(() => { noteInteractionPresenterFailure('interaction.prompts', 'sample.present.view:r:i', 'the presenter went away'); });
         expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Failed: the presenter went away');
         expect(screen.getByTestId('interaction-presenter-status-interaction.palette').textContent).toContain('Bundled');
+        // A failure belongs to one placement: the corner stack is not reported as broken.
+        expect(screen.getByTestId('interaction-presenter-status-interaction.notifications').textContent).toContain('Bundled');
+        expect(screen.queryByTestId('interaction-presenter-retry-interaction.notifications')).toBeNull();
         fireEvent.click(screen.getByTestId('interaction-presenter-retry-interaction.prompts'));
         expect(screen.getByTestId('interaction-presenter-status-interaction.prompts').textContent).toContain('Lab presenter');
         // The selection survived the failure and the retry, as it does for every other slot.

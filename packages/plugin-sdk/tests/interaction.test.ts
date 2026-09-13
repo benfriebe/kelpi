@@ -6,7 +6,7 @@ import type { InteractionSnapshot, ViewAPI } from '../index.js';
 const snapshot = (query = ''): InteractionSnapshot => ({
     placement: 'interaction.palette', formFactor: 'desktop', visible: true, paletteOpen: true,
     palette: { sessionID: 'session-1', query, scope: 'all', items: [], selectedID: null, remoteWorkspaceSelected: false },
-    // Notifications stay bundled in this release, so no frame carries one.
+    // A palette frame carries no notification: the stack is its own placement.
     prompt: null, queued: 0, notifications: [],
 });
 function deferred() {
@@ -54,6 +54,7 @@ describe('browser window interaction presenter', () => {
             h.api.ui.activatePaletteItem('session-1', 'kelpi.window.openSettings'),
             h.api.ui.dismissPalette('session-1'),
             h.api.ui.respondInteraction('request-1', null),
+            h.api.ui.setNotificationBoxHeight(240),
         ];
         await tick();
         expect(h.calls().slice(1).map(message => [message.method, message.args])).toEqual([
@@ -63,9 +64,10 @@ describe('browser window interaction presenter', () => {
             ['ui.activatePaletteItem', { sessionID: 'session-1', itemID: 'kelpi.window.openSettings' }],
             ['ui.dismissPalette', { sessionID: 'session-1' }],
             ['ui.respondInteraction', { requestID: 'request-1', value: null }],
+            ['ui.setNotificationBoxHeight', { pixels: 240 }],
         ]);
         for (const message of h.calls().slice(1)) await h.reply(message, null);
-        expect(await Promise.all(pending)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+        expect(await Promise.all(pending)).toEqual(Array.from({ length: pending.length }, () => undefined));
     });
 
     it('coalesces slow presenters, acknowledges in order and stays independent of chrome', async () => {

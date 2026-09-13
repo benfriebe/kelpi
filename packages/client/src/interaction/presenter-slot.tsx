@@ -46,9 +46,9 @@
  */
 
 import { triggersForAction, type KeyBindingMap } from '@kelpi/core/config';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type ReactNode } from 'react';
 
-import { useModalPresenceCount } from '../chrome/modal-presence';
+import { useModalPresenceCount, useOverlayPresence } from '../chrome/modal-presence';
 import { chordKeysForTrigger } from '../content/bridge';
 import { getCurrentPlugins } from '../plugins/client';
 import { PluginView } from '../plugins/PluginView';
@@ -107,6 +107,23 @@ export interface InteractionPresenterSlotProps {
     readonly withheld?: boolean | undefined;
     readonly chords: readonly string[];
     readonly className?: string | undefined;
+    /** The presenter wrapper's own box, for a placement whose height is not a class (§2.6). */
+    readonly style?: CSSProperties | undefined;
+    /**
+     * Register the painted wrapper's RECT, the way the bundled notification stack does
+     * (`chrome/modal-presence.ts`). For the corner placement only: a box over part of the window
+     * parks the panes it covers and nothing else, and a presenter never registers a window modal -
+     * the host holds the one registration for the surfaces that own the window.
+     */
+    readonly overlay?: boolean | undefined;
+    /**
+     * `interaction.notifications`: the presenter's declared box height, unclamped, and `null` when
+     * there is no declaration to honour any more - a new generation, or the placement standing
+     * down. A declaration belongs to the view that made it: carrying one across a reload, a Retry
+     * or a different selection would draw the next presenter's first frame at the previous one's
+     * height.
+     */
+    readonly onBoxHeight?: ((pixels: number | null) => void) | undefined;
     /** Called immediately before the frame takes the caret, as `ModalRequest` does. */
     readonly captureFocus?: (() => void) | undefined;
     /**
@@ -150,8 +167,8 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
     const painted = !bundled && !withheld && props.visible;
 
     /** Everything the model's stable callbacks need from the latest render. */
-    const latest = useRef({ painted, generation, surface, placement, enabled: props.enabled });
-    latest.current = { painted, generation, surface, placement, enabled: props.enabled };
+    const latest = useRef({ painted, generation, surface, placement, enabled: props.enabled, onBoxHeight: props.onBoxHeight });
+    latest.current = { painted, generation, surface, placement, enabled: props.enabled, onBoxHeight: props.onBoxHeight };
 
     const fail = useCallback((detail: string): void => {
         const message = detail || 'The interaction presenter failed.';
@@ -200,6 +217,15 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
         clearTimeout(watch.current.ready);
         watch.current.ready = null;
     }, []);
+    // Stable, like the four above: the model is created once per mounted slot, so a caller's
+    // inline arrow must not be captured by the model it was created with.
+    const onBoxHeight = useCallback((pixels: number): void => latest.current.onBoxHeight?.(pixels), []);
+    /*
+     * A declaration is one generation's. `generation` is `viewID:revision:instanceID`, so this
+     * clears it for a reload, a rollback, a Retry and a different selection alike, and it runs
+     * before the new view has attached and had anything to say.
+     */
+    useEffect(() => { latest.current.onBoxHeight?.(null); }, [generation]);
 
     /*
      * One model per mounted slot, not per generation: the feed inside `PluginView` subscribes to
@@ -219,7 +245,7 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
                 surface, placement,
                 formFactor: () => (latest.current.enabled ? 'desktop' : 'phone'),
                 visible: () => latest.current.painted,
-                fail, onFrame, onAcknowledged, onReady
+                fail, onFrame, onAcknowledged, onReady, onBoxHeight
             })
         };
     }
@@ -257,6 +283,9 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
         if (!bundled) return;
         clearWatchdogs();
         surface.presenterStoodDown(placement);
+        // The bundled surface draws itself: a height the failed (or deselected) presenter declared
+        // is not the floor's business, and must not be waiting for whoever comes back.
+        latest.current.onBoxHeight?.(null);
         cell.current?.host.dispose();
         cell.current = null;
     }, [bundled, surface, placement, clearWatchdogs]);
@@ -303,6 +332,15 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
         return () => window.removeEventListener('focusin', onFocusIn, true);
     }, [painted, peerModal, props.captureFocus]);
 
+    /*
+     * §2.6's finer registration, for the corner placement: the painted frame says WHERE it is, so
+     * the web panes under it park and the rest stay live. Never `useModalPresence` - a notification
+     * does not own the window, and the one window registration is `InteractionHost`'s for the
+     * surfaces that do. Inactive while the frame is not painted, which is also why the empty stack
+     * parks nothing at all.
+     */
+    useOverlayPresence(wrapper, painted && props.overlay === true);
+
     const short = placement.slice('interaction.'.length);
     return <>
         {/*
@@ -317,7 +355,7 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
         {bundled ? null : <div
             {...(withheld ? {} : { 'data-testid': `interaction-presenter-${short}` })}
             data-interaction-presenter={viewID} data-view-id={viewID} ref={wrapper} tabIndex={-1}
-            hidden={!painted} className={props.className} style={{ display: painted ? undefined : 'none' }}>
+            hidden={!painted} className={props.className} style={{ ...props.style, display: painted ? undefined : 'none' }}>
             {/*
               * Mounted while hidden, exactly as a hidden container tab is: attaching the frame on
               * ⌘P would put a lease request and a 10 s readiness window in front of the window's

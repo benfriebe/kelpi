@@ -16,14 +16,20 @@ export const TERMINAL_FEATURE = { id: 'kelpi.shell', title: 'Terminal', placemen
 export const BROWSER_FEATURE = { id: 'kelpi.web', title: 'Browser', placements: ['pane', 'browser'] } as const satisfies BundledFeatureDefinition;
 
 /**
- * The two presented surfaces. They are definitions with no `BundledFeatureBinding`, deliberately:
- * `InteractionHost` mounts them (§2.3), not `WorkbenchSlot`, so `host.features.get(...)` is never
- * consulted for either id. Being definitions is what puts them in `DEFAULT_SLOTS`, which is what
- * makes the bundled presenter impossible to select away (`registry.ts` - `resolveSlot` falls back
- * to `slotDefault`, and the empty-selection escape hatch is closed for a populated slot).
+ * The three presented interaction surfaces. They are definitions with no `BundledFeatureBinding`,
+ * deliberately: `InteractionHost` mounts them (§2.3), not `WorkbenchSlot`, so
+ * `host.features.get(...)` is never consulted for any of these ids. Being definitions is what puts
+ * them in `DEFAULT_SLOTS`, which is what makes the bundled presenter impossible to select away
+ * (`registry.ts` - `resolveSlot` falls back to `slotDefault`, and the empty-selection escape hatch
+ * is closed for a populated slot).
+ *
+ * The prompts entry is "Prompts" and no longer "Prompts and notifications": the stack is its own
+ * placement now, and a recovery entry naming a surface it does not draw would send a user who wants
+ * their notifications back to the wrong select.
  */
 export const INTERACTION_PALETTE_FEATURE = { id: 'kelpi.palette', title: 'Command palette', placements: ['interaction.palette'] } as const satisfies BundledFeatureDefinition;
-export const INTERACTION_PROMPTS_FEATURE = { id: 'kelpi.prompts', title: 'Prompts and notifications', placements: ['interaction.prompts'] } as const satisfies BundledFeatureDefinition;
+export const INTERACTION_PROMPTS_FEATURE = { id: 'kelpi.prompts', title: 'Prompts', placements: ['interaction.prompts'] } as const satisfies BundledFeatureDefinition;
+export const INTERACTION_NOTIFICATIONS_FEATURE = { id: 'kelpi.interaction.notifications', title: 'Notifications', placements: ['interaction.notifications'] } as const satisfies BundledFeatureDefinition;
 
 /**
  * The third presented surface: the Settings dialog's rail and panel.
@@ -52,6 +58,7 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     STATUSBAR_FEATURE,
     INTERACTION_PALETTE_FEATURE,
     INTERACTION_PROMPTS_FEATURE,
+    INTERACTION_NOTIFICATIONS_FEATURE,
     SETTINGS_WINDOW_FEATURE,
     { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
     { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }

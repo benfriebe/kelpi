@@ -152,6 +152,12 @@ export function ModalRequest({ request, visible, answer, captureFocus }: {
 /**
  * The notification stack. It registers its RECT, not a window modal (§2.6): a toast in the corner
  * has no business parking a page it does not cover.
+ *
+ * It is also the recovery floor for `interaction.notifications`: when a selected presenter fails,
+ * this component re-presents the live notices under their own request ids, with the host's expiry
+ * clocks still running. `data-request-id` is on each card for exactly that reason - the same
+ * attribute the bundled dialog carries - so "the SAME request, re-presented" is checkable from the
+ * DOM rather than guessed from a message that could have been raised a second time.
  */
 export function Notifications({ requests, answer }: {
     readonly requests: readonly InteractionNotification[];
@@ -162,7 +168,7 @@ export function Notifications({ requests, answer }: {
     if (!requests.length) return null;
     const colors = { info: tokens.accent, success: '#7bbb8c', warning: '#d9ae62', error: '#E0655C' };
     return <div ref={root} aria-label="Plugin notifications" className="fixed bottom-10 right-3 z-40 flex max-h-[calc(100vh-64px)] w-[min(360px,calc(100vw-24px))] flex-col gap-2 overflow-y-auto">
-        {requests.map(request => <div key={request.id} data-testid="plugin-ui-notification" role={request.options.tone === 'error' ? 'alert' : 'status'}
+        {requests.map(request => <div key={request.id} data-testid="plugin-ui-notification" data-request-id={request.id} role={request.options.tone === 'error' ? 'alert' : 'status'}
             className="rounded-lg p-3 text-[12px] shadow-xl" style={{ color: tokens.textPrimary, background: tokens.surfaceBackground, border: `1px solid ${tokens.divider}`, borderLeft: `3px solid ${colors[request.options.tone ?? 'info']}` }}>
             <div className="flex items-start gap-2"><div className="min-w-0 flex-1">
                 <p className="mb-1 truncate text-[10px]" style={{ color: tokens.textSecondary }}>{request.owner.displayName}</p>

@@ -54,6 +54,9 @@ async function mount(element: HTMLElement) {
     await api.ui.reportPresenterReady();
     if (interaction.palette !== null) await api.ui.setPaletteQuery(interaction.palette.sessionID, 'settings');
     if (interaction.prompt?.kind === 'quickPick') await api.ui.respondInteraction(interaction.prompt.requestID, interaction.prompt.options.items[0]!.id);
+    // The notifications placement: a corner stack whose height the presenter declares.
+    for (const notice of interaction.notifications) await api.ui.respondInteraction(notice.requestID, null);
+    await api.ui.setNotificationBoxHeight(interaction.notifications.length * 96);
     // @ts-expect-error An owner is a display name and an opaque ref, never a plugin identity.
     void interaction.prompt?.owner.pluginID;
     // A Settings presenter routes the host's dialog and edits only the fields it was given.

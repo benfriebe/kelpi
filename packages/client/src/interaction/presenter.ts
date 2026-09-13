@@ -2,17 +2,17 @@
  * What a SELECTED presenter is told, and what it is allowed to do about it.
  *
  * One of these models exists per presented placement (`interaction.palette`,
- * `interaction.prompts`) and is granted to exactly one mounted view by its host
- * (`interaction/presenter-slot.tsx`), the way `plugins/chrome.ts` is granted to the window's
- * chrome view and `plugins/terminal.ts` to a pane's renderer.
+ * `interaction.prompts`, `interaction.notifications`) and is granted to exactly one mounted view by
+ * its host (`interaction/presenter-slot.tsx`), the way `plugins/chrome.ts` is granted to the
+ * window's chrome view and `plugins/terminal.ts` to a pane's renderer.
  *
  * ── Why the projection is per placement ─────────────────────────────────────────────
  *
- * The two placements share one feed topic and nothing else. A palette presenter must not receive
- * another plugin's prompt bodies, and a prompts presenter must not receive the command universe,
- * so the projection is built per placement and the other half is nulled out. `paletteOpen` is the
- * one fact both need: the palette outranks a queued prompt, so a prompts presenter has to know it
- * is standing down.
+ * The three placements share one feed topic and nothing else. A palette presenter must not receive
+ * another plugin's prompt bodies, a prompts presenter must not receive the command universe, and
+ * neither of them is told about a notification, so the projection is built per placement and the
+ * other arms are nulled out. `paletteOpen` is the one fact they all get: the palette outranks a
+ * queued prompt, so a prompts presenter has to know it is standing down.
  *
  * ── What is withheld, and how ───────────────────────────────────────────────────────
  *
@@ -26,13 +26,15 @@
  *     and `respondInteraction` refuses an id the projection did not publish. A replaceable surface
  *     that could render (or answer) another plugin's credential prompt is a harvesting surface no
  *     other slot has. This is the sibling of the destructive-confirmation carve-out.
- *   - **Notifications.** The whole stack, for this release. A prompts presenter presents the three
- *     MODAL kinds - quick pick, input, dialog - and nothing else, so `notifications` is always
- *     empty and the bundled stack keeps drawing (and keeps registering its rect, which a presenter
- *     never does). A toast is not modal: a presenter painted for one would either have to own the
- *     viewport while the window stayed usable behind it, or be confined to a corner box the window
- *     has no way to hand it - and answering a notification action is a settle like any other, so it
- *     is not a surface to hand over for free.
+ *   - **Notifications, from the other two placements.** A prompts presenter presents the three
+ *     MODAL kinds - quick pick, input, dialog - and nothing else, and a palette presenter presents
+ *     a session, so `notifications` is empty in both of those projections and populated only on
+ *     `interaction.notifications`. A toast is not modal: it is a corner box over a window that
+ *     stays usable, which is a different frame with different geometry, so it is its own placement
+ *     and its own selection rather than a field that quietly appears in somebody else's.
+ *   - **Native toasts.** `ui.toasts` in the store - a daemon notification, a command failure, a
+ *     presenter failure - is host chrome, drawn by `App`'s `ToastStack`, and is never projected.
+ *     Only a plugin's own `ui.showNotification` request reaches a presenter.
  *   - **Everything else by construction.** The top level of every frame is copied FIELD BY FIELD,
  *     never by spread, so a field added to `InteractionSnapshot` later cannot leak by omission;
  *     and `pluginJSON` round-trips the result, so a presenter never holds a host object at all.
@@ -61,8 +63,8 @@ import type {
 } from '../../../plugin-sdk/ui.js';
 
 /**
- * The seven `ui.*` methods a granted presenter may send. `ui.getInteraction` is a READ, answered
- * by `getInteraction()`; the other six are calls, answered by `call()`.
+ * The eight `ui.*` methods a granted presenter may send. `ui.getInteraction` is a READ, answered
+ * by `getInteraction()`; the other seven are calls, answered by `call()`.
  */
 export const INTERACTION_UI_METHODS = [
     'ui.getInteraction',
@@ -71,7 +73,8 @@ export const INTERACTION_UI_METHODS = [
     'ui.setPaletteSelection',
     'ui.activatePaletteItem',
     'ui.dismissPalette',
-    'ui.respondInteraction'
+    'ui.respondInteraction',
+    'ui.setNotificationBoxHeight'
 ] as const;
 
 // ── the DTOs ────────────────────────────────────────────────────────────────────────
@@ -104,6 +107,7 @@ export type InteractionPresenterPrompt = { readonly requestID: string; readonly 
     | { readonly kind: 'dialog'; readonly options: UIDialogOptions }
 );
 
+/** One plugin notification, as the `interaction.notifications` presenter sees it. */
 export interface InteractionPresenterNotice {
     readonly requestID: string;
     readonly owner: InteractionOwnerRef;
@@ -122,12 +126,17 @@ export interface InteractionPresenterSnapshot {
     readonly paletteOpen: boolean;
     /** The prompts presenter only; null on `interaction.palette`, and null for a password input. */
     readonly prompt: InteractionPresenterPrompt | null;
-    /** Modal requests waiting behind `prompt`, a withheld password input included. */
+    /**
+     * `interaction.prompts`: modal requests waiting behind `prompt`, a withheld password input
+     * included. `interaction.notifications`: visible notices this frame could not carry, because
+     * four maximal ones do not fit in 256 KiB; they keep their ids and their clocks and arrive in a
+     * later frame. Zero on `interaction.palette`.
+     */
     readonly queued: number;
     /**
-     * ALWAYS empty in this release: the notification stack stays bundled, like a password input.
-     * The field is the step-3 contract's, so a presenter can be written against it before the host
-     * starts filling it, and so a presenter cannot mistake "none right now" for "not my business".
+     * The `interaction.notifications` presenter only: the visible plugin notifications, oldest
+     * first, at most `INTERACTION_LIMITS.notifications` of them. Empty on the other two placements,
+     * where the field means "not my business" rather than "none right now".
      */
     readonly notifications: readonly InteractionPresenterNotice[];
 }
@@ -142,7 +151,7 @@ export interface InteractionPresenterHost {
         listener: (value: InteractionPresenterSnapshot) => void,
         onError?: (error: Error) => void
     ): () => void;
-    /** The six mutating methods. `ui.getInteraction` is read through `getInteraction()`. */
+    /** The seven mutating methods. `ui.getInteraction` is read through `getInteraction()`. */
     call(method: string, args: JsonObject): void | Promise<void>;
     /** The feed's ack, so the watchdog can tell a live presenter from a wedged one. */
     noteAcknowledged(): void;
@@ -164,13 +173,62 @@ export interface InteractionPresenterHostOptions {
     /** A presenter that cannot be trusted with the surface any more (a runaway call loop). */
     readonly fail: (detail: string) => void;
     /**
-     * A frame left for the presenter. `awaitsAcknowledgement` marks a frame carrying a new prompt
-     * or a new palette session - the frames whose acknowledgement the watchdog waits for.
+     * A frame left for the presenter. `awaitsAcknowledgement` marks a frame carrying a new prompt,
+     * a new palette session or a notification that was not in the previous frame - the frames whose
+     * acknowledgement the watchdog waits for.
      */
     readonly onFrame?: ((awaitsAcknowledgement: boolean) => void) | undefined;
     readonly onAcknowledged?: (() => void) | undefined;
     readonly onReady?: (() => void) | undefined;
+    /**
+     * `interaction.notifications`: the height in CSS pixels the presenter says its stack needs,
+     * unclamped. The mount applies `notificationBoxHeight` and paints the box; the model only
+     * carries the declaration, because the ceiling is a fraction of a window the model cannot see.
+     */
+    readonly onBoxHeight?: ((pixels: number) => void) | undefined;
 }
+
+/**
+ * How tall the notifications frame is actually painted.
+ *
+ * `declared` is the presenter's own `setNotificationBoxHeight`, or null before it has said
+ * anything, in which case the host budgets `noticeBoxPx` per visible notice so the very first
+ * frame is drawn into a box with room in it.
+ *
+ * The result is clamped to [0, min(`noticeBoxFraction` of the window, one `noticeBoxMaxPx` per
+ * VISIBLE notice)]. Both ceilings matter and the second is the one that ties the box to content: a
+ * presenter is a plugin like any other, so it can raise its own notification every ten seconds and
+ * hold the box open indefinitely, and a box bigger than what it is drawing is a transparent rect
+ * that swallows clicks and parks the panes under it - over the native toast stack included, which
+ * shares `z-40` with this box and carries the failure toast for a broken presenter. An empty stack
+ * gets zero, which is also when the host paints no frame at all.
+ */
+export function notificationBoxHeight(declared: number | null, notices: number, windowHeight: number): number {
+    const visible = Math.max(0, notices);
+    const ceiling = Math.min(
+        Math.max(0, Math.floor(windowHeight * INTERACTION_LIMITS.noticeBoxFraction)),
+        visible * INTERACTION_LIMITS.noticeBoxMaxPx
+    );
+    const wanted = declared ?? visible * INTERACTION_LIMITS.noticeBoxPx;
+    return Math.min(Math.max(0, Math.round(wanted)), ceiling);
+}
+
+/**
+ * The frame's own byte budget, measured the way `pluginJSON` measures it.
+ *
+ * The projection carries up to `INTERACTION_LIMITS.notifications` notices, and the request funnel
+ * caps each REQUEST at 256 KiB rather than the frame that later carries four of them. The option
+ * limits are CHARACTER limits (2,048 of message, 8,192 of detail, eight actions), and JSON expands
+ * a control character or a lone surrogate to six bytes, so a maximal notice serializes to about
+ * 77 KiB and four of them to about 303 KiB - past the cap. An oversized frame is undeliverable,
+ * and an undeliverable frame with live work in it FAILS the placement, which would latch the
+ * user's chosen presenter out and leave Retry re-failing until the notices expired. So the frame
+ * is bounded instead: it carries the notices that fit, in visible order, and says how many it
+ * could not carry.
+ */
+const NOTICE_FRAME_BUDGET = INTERACTION_LIMITS.payloadBytes - INTERACTION_LIMITS.noticeFrameMargin;
+const frameEncoder = new TextEncoder();
+const jsonBytes = (value: unknown): number => frameEncoder.encode(JSON.stringify(value)).byteLength;
 
 /** Declared keys per call, so an unknown or missing argument is refused before anything runs. */
 const CALL_ARGUMENTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -179,7 +237,8 @@ const CALL_ARGUMENTS: Readonly<Record<string, readonly string[]>> = Object.freez
     'ui.setPaletteSelection': ['sessionID', 'itemID'],
     'ui.activatePaletteItem': ['sessionID', 'itemID'],
     'ui.dismissPalette': ['sessionID'],
-    'ui.respondInteraction': ['requestID', 'value']
+    'ui.respondInteraction': ['requestID', 'value'],
+    'ui.setNotificationBoxHeight': ['pixels']
 });
 
 const PLACEMENT_METHODS: Readonly<Record<InteractionPlacement, readonly string[]>> = Object.freeze({
@@ -191,7 +250,15 @@ const PLACEMENT_METHODS: Readonly<Record<InteractionPlacement, readonly string[]
         'ui.activatePaletteItem',
         'ui.dismissPalette'
     ],
-    'interaction.prompts': ['ui.getInteraction', 'ui.reportPresenterReady', 'ui.respondInteraction']
+    'interaction.prompts': ['ui.getInteraction', 'ui.reportPresenterReady', 'ui.respondInteraction'],
+    // `respondInteraction` belongs to both request placements: a notification action is settled
+    // exactly as a dialog action is, and the id check below is what keeps each to its own.
+    'interaction.notifications': [
+        'ui.getInteraction',
+        'ui.reportPresenterReady',
+        'ui.respondInteraction',
+        'ui.setNotificationBoxHeight'
+    ]
 });
 
 const EMPTY_NOTICES: readonly InteractionPresenterNotice[] = Object.freeze([]);
@@ -274,14 +341,18 @@ export function createInteractionPresenterHost(options: InteractionPresenterHost
     let disposed = false;
     let queued = false;
     let lastKey: string | undefined;
-    let delivered: { requestID: string | null; sessionID: string | null } = { requestID: null, sessionID: null };
+    let delivered: { requestID: string | null; sessionID: string | null; notices: readonly string[] } = {
+        requestID: null,
+        sessionID: null,
+        notices: []
+    };
 
     const ownerOf = (owner: { readonly id: string; readonly displayName: string }): InteractionOwnerRef => ({
         ref: surface.ownerRef(owner.id),
         displayName: owner.displayName
     });
 
-    /** Field by field, both arms, so nothing new can ride along unnoticed. */
+    /** Field by field, every arm, so nothing new can ride along unnoticed. */
     const project = (): InteractionPresenterSnapshot => {
         const snapshot = surface.getSnapshot();
         const formFactor = options.formFactor();
@@ -308,6 +379,49 @@ export function createInteractionPresenterHost(options: InteractionPresenterHost
                 queued: 0,
                 notifications: EMPTY_NOTICES
             };
+        }
+        if (placement === 'interaction.notifications') {
+            const frame = (
+                notifications: readonly InteractionPresenterNotice[],
+                queued: number
+            ): InteractionPresenterSnapshot => ({
+                placement,
+                formFactor,
+                visible,
+                palette: null,
+                paletteOpen,
+                // A notification is not a modal request, so the visible prompt and the queue behind
+                // it are not this presenter's business; `queued` counts what THIS placement is
+                // holding back instead.
+                prompt: null,
+                queued,
+                notifications
+            });
+            /*
+             * Field by field, and then bounded by SIZE (see `NOTICE_FRAME_BUDGET`). Visible order is
+             * kept and the first notice that does not fit stops the rest: a stack that reordered
+             * itself around one big card would be a worse thing to look at than a short one, and a
+             * withheld notice keeps its id, its clock and its place in the next frame.
+             */
+            const carried: InteractionPresenterNotice[] = [];
+            let withheld = 0;
+            let used = jsonBytes(frame(EMPTY_NOTICES, 0));
+            for (const notice of snapshot.notifications) {
+                const candidate = Object.freeze({
+                    requestID: notice.id,
+                    owner: ownerOf(notice.owner),
+                    options: notice.options
+                });
+                // One comma per element beyond the first: the array's own separators.
+                const size = jsonBytes(candidate) + 1;
+                if (withheld > 0 || used + size > NOTICE_FRAME_BUDGET) {
+                    withheld += 1;
+                    continue;
+                }
+                used += size;
+                carried.push(candidate);
+            }
+            return frame(Object.freeze(carried), withheld);
         }
         const active = snapshot.activeModal;
         const shown = active !== null && !withheldFromPresenter(active) ? active : null;
@@ -360,9 +474,14 @@ export function createInteractionPresenterHost(options: InteractionPresenterHost
         }
     };
 
-    /** Live work is what an unacknowledged frame would strand: a visible prompt, an open palette. */
+    /**
+     * Live work is what an unacknowledged frame would strand: a visible prompt, an open palette,
+     * or - on the notifications placement, which is told about none of those - a notice on screen
+     * whose actions somebody is waiting on.
+     */
     const hasLiveWork = (): boolean => {
         const snapshot = surface.getSnapshot();
+        if (placement === 'interaction.notifications') return snapshot.notifications.length > 0;
         return snapshot.activeModal !== null || snapshot.palette.open;
     };
 
@@ -381,10 +500,14 @@ export function createInteractionPresenterHost(options: InteractionPresenterHost
         }
         const requestID = next.value.prompt?.requestID ?? null;
         const sessionID = next.value.palette?.sessionID ?? null;
+        const notices = next.value.notifications.map((notice) => notice.requestID);
         const awaits =
             (requestID !== null && requestID !== delivered.requestID) ||
-            (sessionID !== null && sessionID !== delivered.sessionID);
-        delivered = { requestID, sessionID };
+            (sessionID !== null && sessionID !== delivered.sessionID) ||
+            // A frame that ADDS a notice is waited for; one that only drops an expired notice is
+            // not, or a presenter would be failed for a clock the host runs on its own.
+            notices.some((id) => !delivered.notices.includes(id));
+        delivered = { requestID, sessionID, notices };
         options.onFrame?.(awaits);
     };
 
@@ -515,13 +638,32 @@ export function createInteractionPresenterHost(options: InteractionPresenterHost
                 surface.palette.dismiss(session(args['sessionID']), 'user');
                 return;
             }
+            if (method === 'ui.setNotificationBoxHeight') {
+                const pixels = args['pixels'];
+                // Negative, NaN and infinite are refused outright; anything else is a declaration
+                // the mount clamps (`notificationBoxHeight`), because the ceiling is a fraction of
+                // a window this model cannot measure.
+                if (typeof pixels !== 'number' || !Number.isFinite(pixels) || pixels < 0)
+                    throw new Error('A notification box height must be a number of pixels, zero or more.');
+                options.onBoxHeight?.(pixels);
+                return;
+            }
             const requestID = text(args['requestID'], 'This UI request is not visible.', 128);
             const value = args['value'];
             if (value !== null && typeof value !== 'string') throw new Error('A UI answer must be a string or null.');
-            // A request this presenter was never shown - a queued one, a withheld password input, a
-            // notification the bundled stack owns, another window's - cannot be answered by
-            // guessing its id.
-            if (requestID !== project().prompt?.requestID) throw new Error('This UI request is not visible.');
+            /*
+             * A request this presenter was never shown - a queued one, a withheld password input,
+             * another placement's, another window's - cannot be answered by guessing its id. The
+             * two request placements check their own half of the published frame: a prompts
+             * presenter may settle the visible prompt, a notifications presenter any notice in the
+             * stack it was given, and neither may settle the other's.
+             */
+            const published = project();
+            const visible =
+                placement === 'interaction.notifications'
+                    ? published.notifications.some((notice) => notice.requestID === requestID)
+                    : requestID === published.prompt?.requestID;
+            if (!visible) throw new Error('This UI request is not visible.');
             // `surface.answer` re-checks visibility and runs `validateInteractionAnswer`.
             surface.answer(requestID, value);
             return;

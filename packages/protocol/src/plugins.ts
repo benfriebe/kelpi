@@ -5,8 +5,16 @@ import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, plugi
 
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
-export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'settings.window'] as const;
+export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
+/**
+ * The three presented interaction surfaces, in one place.
+ *
+ * Named here rather than tested by prefix, because a plugin whose own id begins `interaction`
+ * contributes custom slots spelled the same way, and those are ordinary slots. The client's
+ * `interaction/contract.ts` re-exports this list, so a fourth presented surface is added once.
+ */
+export const PLUGIN_INTERACTION_PLACEMENTS = ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] as const;
 export type PluginPlacement = PluginBuiltinPlacement | `${string}.${string}`;
 export interface PluginContainerSlot {
     readonly id: `${string}.${string}`;
@@ -280,7 +288,7 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         if (places.includes('pane') || places.includes('terminal') || places.includes('browser') || places.some(place => place.startsWith('document.'))) throw new Error('containers require workbench placements; pane views own their individual saved state');
         // An interaction presenter owns its whole overlay. A container there would paint a
         // slot-picker header inside the palette box and put recovery behind a plugin select.
-        if (places.includes('interaction.palette') || places.includes('interaction.prompts')) throw new Error('containers cannot present window interaction; an interaction presenter owns its whole overlay');
+        if (places.some(place => (PLUGIN_INTERACTION_PLACEMENTS as readonly string[]).includes(place))) throw new Error('containers cannot present window interaction; an interaction presenter owns its whole overlay');
         // A Settings presenter owns the whole dialog body, rail included, and Settings is the
         // route back from a broken presenter. A container there would put that route behind a
         // slot-picker header inside the dialog.

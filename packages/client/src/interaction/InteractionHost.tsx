@@ -31,23 +31,31 @@
  * presenter cannot fail to park a native web pane, cannot fail to release the caret, and cannot
  * swallow Escape.
  *
- * Two carve-outs, both deliberate. An `ui.showInput({ password: true })` prompt is presented by the
+ * One carve-out, deliberate. An `ui.showInput({ password: true })` prompt is presented by the
  * BUNDLED presenter whatever is selected: the selected view stays mounted and hidden for it
  * (`withheld`), and the projection reports `prompt: null` with `queued` still counting it, so a
- * replaceable surface never renders - or answers - another plugin's credential prompt. And the
- * NOTIFICATION stack stays bundled outright in this release: a presenter presents the three modal
- * kinds, so the stack is rendered outside the slot, keeps its own rect registration (§2.6) and is
- * never projected. A toast is not modal - there is no honest geometry to hand a frame for one - and
- * answering a notification action settles a request like any other.
+ * replaceable surface never renders - or answers - another plugin's credential prompt.
+ *
+ * ── The notification stack is a THIRD placement ─────────────────────────────────────
+ *
+ * `interaction.notifications` is selected separately and mounted separately, because a toast is not
+ * modal: it is a corner box over a window that stays usable. So it registers its RECT (§2.6) rather
+ * than the window, and it is painted only while there is something in it - an empty box would
+ * intercept clicks and park pages for nothing. The host draws that box exactly where the bundled
+ * stack sits and gives it a height the presenter declared and the host clamped
+ * (`notificationBoxHeight`). Native toasts (`App`'s `ToastStack`) are host chrome and stay where
+ * they are: only a plugin's own `ui.showNotification` requests are projected.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactElement } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import type { FormFactorWindow } from '../chrome/form-factor';
 import { modalPresenceCount, useModalPresence, useModalPresenceCount } from '../chrome/modal-presence';
 import type { ChromeBucket } from '../chrome/theme';
 import { ModalRequest, Notifications } from './BundledPrompts';
 import { PaletteHost } from './PaletteHost';
+import type { InteractionNotification } from './contract';
+import { notificationBoxHeight } from './presenter';
 import { InteractionPresenterSlot, NO_CHORDS } from './presenter-slot';
 import type { InteractionSurface } from './surface';
 
@@ -191,8 +199,9 @@ export function InteractionHost({ surface, presenters = false, chords = NO_CHORD
     const withheld = snapshot.activeModal?.kind === 'input' && snapshot.activeModal.options.password === true;
     /*
      * One geometry, because this placement presents one kind of thing: a MODAL request, which owns
-     * the viewport for as long as it is up. The notification stack is a sibling, not a child of the
-     * slot, so it keeps drawing (and keeps registering its rect) whoever presents the prompts.
+     * the viewport for as long as it is up. The notification stack is a sibling, not a child of
+     * this slot: it is its own placement with its own corner box, so who presents the prompts says
+     * nothing about who presents the notices.
      */
     const modal = visible && !withheld;
     return createPortal(<>
@@ -200,8 +209,50 @@ export function InteractionHost({ surface, presenters = false, chords = NO_CHORD
             visible={modal} withheld={withheld} chords={chords} captureFocus={captureFocus} className="fixed inset-0 z-50">
             {snapshot.activeModal && <ModalRequest key={snapshot.activeModal.id} request={snapshot.activeModal} visible={visible} answer={surface.answer} captureFocus={captureFocus} />}
         </InteractionPresenterSlot>
-        <Notifications requests={snapshot.notifications} answer={surface.answer} />
+        <NotificationStack surface={surface} notifications={snapshot.notifications} presenters={presenters} chords={chords} />
     </>, document.body);
+}
+
+/** The window's height, re-read on a resize: the box ceiling is a fraction of it. */
+function useWindowHeight(): number {
+    const [height, setHeight] = useState(() => (typeof window === 'undefined' ? 0 : window.innerHeight));
+    useEffect(() => {
+        const measure = (): void => setHeight(window.innerHeight);
+        measure();
+        window.addEventListener('resize', measure);
+        return () => window.removeEventListener('resize', measure);
+    }, []);
+    return height;
+}
+
+/**
+ * The corner stack, and the one placement whose geometry the HOST has to supply.
+ *
+ * The box is the bundled component's own (`BundledPrompts.tsx` - `bottom-10 right-3`, at most
+ * 360 px wide), so a presenter lands where the user already looks for a notification and cannot
+ * wander across the window. Its height is the presenter's declaration clamped by the host, because
+ * only the presenter knows how tall its own cards are and only the host knows what a corner box is
+ * allowed to grow to (`notificationBoxHeight`: a fraction of the window, and a ceiling per visible
+ * notice, so the box cannot outgrow what it is drawing). Painted only while a notice is up: an
+ * empty frame over the window would swallow clicks and park every page under it for nothing.
+ *
+ * The declaration is held here rather than in the model because it is the mount that paints, and it
+ * is dropped the moment the slot reports a new generation or a stand-down: a reload, a Retry or a
+ * different selection must not draw the next presenter's first frame at the previous one's height.
+ */
+function NotificationStack({ surface, notifications, presenters, chords }: {
+    readonly surface: InteractionSurface;
+    readonly notifications: readonly InteractionNotification[];
+    readonly presenters: boolean;
+    readonly chords: readonly string[];
+}): ReactElement {
+    const [declared, setDeclared] = useState<number | null>(null);
+    const height = notificationBoxHeight(declared, notifications.length, useWindowHeight());
+    return <InteractionPresenterSlot surface={surface} placement="interaction.notifications" enabled={presenters}
+        visible={notifications.length > 0} chords={chords} overlay onBoxHeight={setDeclared}
+        className="fixed bottom-10 right-3 z-40 w-[min(360px,calc(100vw-24px))]" style={{ height }}>
+        <Notifications requests={notifications} answer={surface.answer} />
+    </InteractionPresenterSlot>;
 }
 
 /**

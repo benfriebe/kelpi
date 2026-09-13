@@ -8,6 +8,7 @@ import type { KelpiRuntime } from '../state';
 import { WorkbenchProvider } from '../plugins/Workbench';
 import { BUNDLED_VIEWS, resolveSidebarViews, type ViewContribution } from '../plugins/registry';
 import { InteractionHost } from './InteractionHost';
+import { INTERACTION_LIMITS } from './contract';
 import { resetInteractionPresenterFailures, type InteractionPresenterHost, type InteractionPresenterSnapshot } from './presenter';
 import { interactionPresenterChords } from './presenter-slot';
 import { createInteractionSurface, type InteractionScope, type InteractionSurface, type InteractionSurfaceConfig } from './surface';
@@ -45,7 +46,7 @@ vi.mock('../plugins/PluginView', () => ({
 const PRESENTER_VIEW = 'sample.present.view';
 const PRESENTER: ViewContribution = {
     ...decodePluginManifest({ id: 'sample.present', version: '1.0.0', apiVersion: 1, trust: 'full', contributes: {
-        views: [{ id: PRESENTER_VIEW, title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts'] }]
+        views: [{ id: PRESENTER_VIEW, title: 'Lab presenter', entry: 'ui/index.html', placements: ['interaction.palette', 'interaction.prompts', 'interaction.notifications'] }]
     } }).contributes.views[0]!,
     pluginID: 'sample.present'
 };
@@ -63,20 +64,24 @@ const setConnection = (status: string): void => {
     for (const listener of [...connection.listeners]) listener(status);
 };
 
-/** A workbench with the presenter selected for the prompts placement, and nothing else moved. */
-function Selected({ children, views = [...BUNDLED_VIEWS, PRESENTER] }: { children: ReactNode; views?: readonly ViewContribution[] }): ReactElement {
-    const selections = { 'interaction.prompts': PRESENTER_VIEW } as const;
+/** A workbench with the presenter selected for one placement, and nothing else moved. */
+function Selected({ children, placement = 'interaction.prompts', views = [...BUNDLED_VIEWS, PRESENTER] }: {
+    children: ReactNode;
+    placement?: 'interaction.prompts' | 'interaction.notifications';
+    views?: readonly ViewContribution[];
+}): ReactElement {
+    const selections = { [placement]: PRESENTER_VIEW };
     return <WorkbenchProvider runtime={runtime} chords={[]} layout={{
         views, selections, activeTabs: {}, sidebars: resolveSidebarViews(views, selections),
         select: () => {}, activateTab: () => {}
     }}>{children}</WorkbenchProvider>;
 }
 
-function setupSelected(config: InteractionSurfaceConfig = {}, options: { presenters?: boolean; strict?: boolean } = {}): { surface: InteractionSurface; scope: InteractionScope } {
+function setupSelected(config: InteractionSurfaceConfig = {}, options: { presenters?: boolean; strict?: boolean; placement?: 'interaction.prompts' | 'interaction.notifications' } = {}): { surface: InteractionSurface; scope: InteractionScope } {
     const surface = createInteractionSurface({ focus: { paneHandoff: spy(), handBackCaret: spy(), fallbackPaneID: () => 'pane-focused' }, ...config });
     surfaces.push(surface);
     const scope = surface.createScope({ id: 'view', pluginID: 'example.test', pluginName: 'Test Plugin' });
-    const tree = <Selected><InteractionHost surface={surface} presenters={options.presenters ?? true} chords={['0/Escape', '8/KeyW']} /></Selected>;
+    const tree = <Selected placement={options.placement ?? 'interaction.prompts'}><InteractionHost surface={surface} presenters={options.presenters ?? true} chords={['0/Escape', '8/KeyW']} /></Selected>;
     render(options.strict === true ? <StrictMode>{tree}</StrictMode> : tree);
     return { surface, scope };
 }
@@ -460,8 +465,8 @@ describe('a selected prompts presenter', () => {
         let notice!: Promise<unknown>;
         await act(async () => { notice = scope.request('ui.showNotification', { message: 'Saved', tone: 'success', actions: [{ id: 'open', label: 'Open saved item' }] }); });
 
-        // §2.6: the stack registers WHERE it is, never the window - and a presenter never registers
-        // a rect at all, so the stack stays bundled and keeps drawing its own.
+        // §2.6: the stack registers WHERE it is, never the window - and the prompts presenter is
+        // told nothing about it, because the stack is a placement of its own.
         expect(screen.getByTestId('plugin-ui-notification')).toBeDefined();
         expect(overlayPresenceCount()).toBe(1);
         expect(modalPresenceCount()).toBe(0);
@@ -529,5 +534,136 @@ describe('a selected prompts presenter', () => {
         fireEvent.change(input, { target: { value: 'hunter2' } });
         fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
         await expect(secret).resolves.toBe('hunter2');
+    });
+});
+
+/**
+ * The corner placement. What the host draws around a notifications presenter, and what it takes
+ * back when one fails - the two things only a mounted window can answer.
+ */
+describe('a selected notifications presenter', () => {
+    const box = (): HTMLElement => screen.getByTestId('interaction-presenter-notifications');
+    const notices = () => view.current!.frames.at(-1)!.notifications;
+
+    it('paints a corner box only while a notice is up, registering a rect and no window modal', async () => {
+        const { scope } = setupSelected({}, { placement: 'interaction.notifications', strict: true });
+        // Nothing on screen: the frame is mounted (an attach must not cost a notification its
+        // first second) and hidden, so it intercepts no click and parks no page.
+        expect(box().hidden).toBe(true);
+        expect(overlayPresenceCount()).toBe(0);
+        expect(view.current).toMatchObject({ visible: false, focused: false });
+
+        let notice!: Promise<unknown>;
+        await act(async () => { notice = scope.request('ui.showNotification', { message: 'Saved', tone: 'success', actions: [{ id: 'open', label: 'Open saved item' }] }); });
+
+        expect(box().dataset['interactionPresenter']).toBe(PRESENTER_VIEW);
+        expect(box().hidden).toBe(false);
+        expect(screen.queryByTestId('plugin-ui-notification')).toBeNull();
+        // A corner box is not a window modal, and never was: it registers its rect, like the
+        // bundled stack it replaces. StrictMode's rehearsal leaves exactly one of each.
+        expect(overlayPresenceCount()).toBe(1);
+        expect(modalPresenceCount()).toBe(0);
+        expect(screen.getAllByTestId(`plugin-view-${PRESENTER_VIEW}`)).toHaveLength(1);
+        expect(notices()).toMatchObject([{ options: { message: 'Saved' }, owner: { displayName: 'Test Plugin' } }]);
+        // The bundled geometry, verbatim: 96 px for the one notice until the presenter declares.
+        expect(box().className).toContain('bottom-10 right-3');
+        expect(box().style.height).toBe('96px');
+
+        act(() => { view.current!.presenter!.call('ui.respondInteraction', { requestID: notices()[0]!.requestID, value: 'open' }); });
+        await expect(notice).resolves.toBe('open');
+        // The last notice left, so the box is unpainted again and its rect released.
+        expect(box().hidden).toBe(true);
+        expect(overlayPresenceCount()).toBe(0);
+    });
+
+    it('paints the height the presenter declared, clamped by the window and by what it draws', async () => {
+        const { scope } = setupSelected({}, { placement: 'interaction.notifications' });
+        await act(async () => { void scope.request('ui.showNotification', { message: 'Sized by its content' }); });
+        // Before any declaration the host budgets its own default per notice.
+        expect(box().style.height).toBe(`${INTERACTION_LIMITS.noticeBoxPx}px`);
+        act(() => { view.current!.presenter!.call('ui.setNotificationBoxHeight', { pixels: 132 }); });
+        expect(box().style.height).toBe('132px');
+
+        /*
+         * A presenter that asks for the window gets one notice's worth: the box is tied to the
+         * content, because a presenter can keep its own notification on screen indefinitely and a
+         * box bigger than its cards is a transparent rect that swallows clicks, parks the panes
+         * under it, and covers the toast that would explain a broken presenter.
+         */
+        act(() => { view.current!.presenter!.call('ui.setNotificationBoxHeight', { pixels: 100_000 }); });
+        expect(box().style.height).toBe(`${INTERACTION_LIMITS.noticeBoxMaxPx}px`);
+        // A second notice buys a second card's worth, up to the window's own fraction.
+        await act(async () => { void scope.request('ui.showNotification', { message: 'A second card' }); });
+        expect(box().style.height).toBe(`${Math.min(Math.floor(window.innerHeight * 0.45), 2 * INTERACTION_LIMITS.noticeBoxMaxPx)}px`);
+        act(() => { view.current!.presenter!.call('ui.setNotificationBoxHeight', { pixels: 0 }); });
+        expect(box().style.height).toBe('0px');
+        expect(() => view.current!.presenter!.call('ui.setNotificationBoxHeight', { pixels: -1 })).toThrow('A notification box height must be');
+    });
+
+    it('drops the declared height when the placement changes hands, and starts the next one at the default', async () => {
+        const { scope } = setupSelected({}, { placement: 'interaction.notifications' });
+        let notice!: Promise<unknown>;
+        await act(async () => { notice = scope.request('ui.showNotification', { message: 'Sized by the first presenter' }); });
+        act(() => { view.current!.presenter!.call('ui.setNotificationBoxHeight', { pixels: 180 }); });
+        expect(box().style.height).toBe('180px');
+
+        // The presenter fails: the bundled stack draws itself, and the declaration goes with it.
+        act(() => { view.current!.onError!('the view crashed'); });
+        expect(box().dataset['interactionPresenter']).toBe('bundled');
+
+        // Retry. The same notice is still live, and the box is back at the host's default rather
+        // than at a height the dead generation asked for.
+        act(() => { resetInteractionPresenterFailures(); });
+        expect(box().dataset['interactionPresenter']).toBe(PRESENTER_VIEW);
+        expect(box().style.height).toBe(`${INTERACTION_LIMITS.noticeBoxPx}px`);
+        act(() => { view.current!.presenter!.call('ui.respondInteraction', { requestID: notices()[0]!.requestID, value: null }); });
+        await expect(notice).resolves.toBeNull();
+    });
+
+    it('hands the stack back to the bundled one on a view error, with every notice still live', async () => {
+        const failures: Array<[string, string]> = [];
+        const { surface, scope } = setupSelected({ reportFailure: (label, detail) => failures.push([label, detail]) }, { placement: 'interaction.notifications' });
+        let first!: Promise<unknown>, second!: Promise<unknown>;
+        await act(async () => {
+            first = scope.request('ui.showNotification', { message: 'Still pending', actions: [{ id: 'open', label: 'Open it' }] });
+            second = scope.request('ui.showNotification', { message: 'Beside it' });
+        });
+        const ids = surface.getSnapshot().notifications.map((notice) => notice.id);
+        expect(ids).toHaveLength(2);
+
+        act(() => { view.current!.onError!('the view crashed'); });
+
+        // Re-presented, not re-raised: the same ids, the same unsettled promises, and the clocks
+        // were never restarted - the surface has been holding them all along.
+        expect(screen.getAllByTestId('plugin-ui-notification').map((card) => card.dataset['requestId'])).toEqual(ids);
+        expect(surface.getSnapshot().notifications.map((notice) => notice.id)).toEqual(ids);
+        expect(screen.queryByTestId(`plugin-view-${PRESENTER_VIEW}`)).toBeNull();
+        expect(box().dataset['interactionPresenter']).toBe('bundled');
+        expect(surface.presenterState()['interaction.notifications']).toEqual({ failed: true, detail: 'the view crashed' });
+        expect(surface.presenterState()['interaction.prompts']).toEqual({ failed: false, detail: null });
+        expect(failures).toEqual([['Interaction presenter', 'the view crashed']]);
+        expect(overlayPresenceCount()).toBe(1);
+
+        let settled = false;
+        void first.then(() => { settled = true; });
+        await act(async () => { await Promise.resolve(); });
+        expect(settled).toBe(false);
+        // The bundled card answers the same request, and the answer reaches the plugin.
+        fireEvent.click(screen.getByRole('button', { name: 'Open it' }));
+        await expect(first).resolves.toBe('open');
+        act(() => { surface.answer(surface.getSnapshot().notifications[0]!.id, null); });
+        await expect(second).resolves.toBeNull();
+    });
+
+    it('keeps the bundled stack on a phone, and never mounts the presenter there', async () => {
+        const { scope } = setupSelected({}, { placement: 'interaction.notifications', presenters: false });
+        let notice!: Promise<unknown>;
+        await act(async () => { notice = scope.request('ui.showNotification', { message: 'Phone notice' }); });
+        // The phone keeps every bundled presenter, the corner one included.
+        expect(screen.queryByTestId(`plugin-view-${PRESENTER_VIEW}`)).toBeNull();
+        expect(screen.getByTestId('plugin-ui-notification')).toBeDefined();
+        expect(box().dataset['interactionPresenter']).toBe('bundled');
+        fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }));
+        await expect(notice).resolves.toBeNull();
     });
 });

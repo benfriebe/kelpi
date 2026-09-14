@@ -10607,15 +10607,48 @@ function buildFlows(ctx) {
                     // a timer that was never running: the audit window is frequently not the
                     // frontmost app, and without this the "it survived" assertion could pass for
                     // the wrong reason.
+                    //
+                    // The dwell arms on a FOCUS, never on a status change of the pane already
+                    // wearing the ring: `useFocusDwell`'s effect is keyed on the focused pane id
+                    // with the status read through a ref (#108, and §5.8 of docs/agent-lifecycle.md
+                    // records the trade-off deliberately, so an agent stopping under the user's
+                    // nose keeps its badge until the next focus or activation). So park the ring
+                    // on a sibling, raise the status while it is parked, and click back in: that
+                    // click is the focus event the product now asks for. NOT the deactivate then
+                    // activate route, which is byte for byte what §AGNT-056's second half below
+                    // already measures, and would stop this being an independent control.
                     await setActive(true);
+                    const domIDs = await domPaneIDs(page);
+                    let sibling = (await cli.json(['pane', 'list', '--json'])).find(
+                        (item) => item.is_active_workspace === true && item.id !== paneID && domIDs.includes(item.id)
+                    )?.id;
+                    // Under `--only` the active workspace can hold this pane alone (the trap
+                    // `agent-start` hit: a pane from a BACKGROUND workspace has no header in the
+                    // DOM to click). Borrow one and hand it straight back, so the header width
+                    // the badge assertions below depend on is the one this step started with.
+                    let borrowedSibling = null;
+                    if (sibling === undefined) {
+                        const split = await cli.json(['pane', 'split', '--target', paneID, '--json']);
+                        sibling = typeof split?.pane_id === 'string' ? split.pane_id : undefined;
+                        borrowedSibling = sibling ?? null;
+                        await sleep(1500);
+                    }
+                    recorder.note(`parking focus on ${String(sibling)} so the click back into ${paneID} is a real focus event`);
+                    if (sibling !== undefined) await clickPaneHeader(page, sibling);
                     await cli.ok(['event', 'error', '--message', 'Audit: control run'], { paneID });
+                    await clickPaneHeader(page, paneID);
                     await sleep(1600);
                     const activeClear = await paneStatus();
                     recorder.check(
-                        'with the app active, the 600 ms dwell clears the focused pane (§AGNT-055)',
+                        'with the app active, focusing the pane arms the 600 ms dwell and clears it (§AGNT-055)',
                         activeClear === 'idle',
                         `status=${String(activeClear)}`
                     );
+                    if (borrowedSibling !== null) {
+                        await cli.run(['pane', 'close', '--target', borrowedSibling]);
+                        await sleep(900);
+                        await clickPaneHeader(page, paneID);
+                    }
 
                     await setActive(false);
                     const shellLogMark = runtime.shell.text().length;

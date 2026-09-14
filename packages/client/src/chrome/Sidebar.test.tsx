@@ -349,6 +349,25 @@ describe('context menus (portal-based)', () => {
         expect(screen.getByTestId('context-menu').style.top).toBe('80px');
     });
 
+    it('leaves the footer chevron menu on its own upward drop (#105)', () => {
+        // The one thing the measured clamp must NOT do is push a menu back down: the footer's
+        // menu hangs UPWARD off a bar against the bottom edge, and it supplies its own height
+        // (`FOOTER_MENU_ESTIMATED_HEIGHT`) because nothing can measure it before it exists.
+        // The clamp is one-directional for exactly this reason, and this is what says so: the
+        // chevron sits at 280 in a 300px window, so the two-row menu drops to 280 - 62 - 4.
+        shortWindow(300, 62);
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const toggle = screen.getByTestId('sidebar-new-menu-toggle');
+        toggle.getBoundingClientRect = () =>
+            ({ top: 280, bottom: 289, left: 8, right: 17, width: 9, height: 9, x: 8, y: 280 }) as DOMRect;
+
+        fireEvent.click(toggle);
+
+        const menu = screen.getByTestId('context-menu');
+        expect(menu.style.top).toBe('214px');
+        expect(menu.style.left).toBe('8px');
+    });
+
     it('closes on an outside mousedown', () => {
         render(<Sidebar {...noopProps()} entries={entries()} />);
         fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);

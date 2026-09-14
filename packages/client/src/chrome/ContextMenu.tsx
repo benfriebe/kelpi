@@ -389,6 +389,10 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         first?.focus();
     }, [autoFocus]);
 
+    /* Before the submenu flip, always: the flip measures a box that hangs off this panel, so
+       this panel has to have been moved to where it belongs before that box is read. */
+    const placement = useMeasuredPlacement(rootRef, props.x, props.y, props.avoid);
+
     const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
     const submenu = useSubmenuFlip(openSubmenuID !== null && submenuItems !== undefined);
 
@@ -498,8 +502,6 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             doc.removeEventListener('keydown', onKeyDown, true);
         };
     }, [submenuRef]);
-
-    const placement = useMeasuredPlacement(rootRef, props.x, props.y, props.avoid);
 
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;
@@ -645,7 +647,7 @@ export function menuPlacement(
         return { x, y: Math.min(Math.max(anchor.y, 0), maxY) };
     }
     const below = avoid.bottom + MENU_ROW_GAP;
-    if (below <= maxY) return { x, y: below };
+    if (below <= maxY) return { x, y: Math.max(below, 0) };
     const above = avoid.top - MENU_ROW_GAP - size.height;
     if (above >= 0) return { x, y: above };
     // Taller than the window: neither side fits, so keep it on screen, as low as it will go.

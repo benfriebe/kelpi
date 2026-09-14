@@ -314,10 +314,12 @@ Two cases in `packages/client/src/terminal/vendor-engine.test.ts` do exactly thi
 bundles and for the installed copy. They are the real refresh guard: with a patched wasm on disk and
 a stale dist, every other case in that file still passes.
 
-Note what they can and cannot be: `dist/` is gitignored (see the `source/` section), so those two
-cases compare two UNTRACKED artifacts against one tracked one. On any machine that has built the
-vendor dir they catch the stale-dist mistake; on a fresh clone that has not, there is no `dist/` to
-hash, and the client cannot run either, so the guard is only as present as the artifact it guards.
+Note what they now are: since #6 the bundle is tracked (see the `source/` section), so those two
+cases compare a tracked artifact and the copy pnpm installed from it against the tracked wasm, and
+they run on a fresh clone rather than only on a machine that has built the vendor dir. The guard is
+therefore as present as the repo itself, which is the point of tracking the bundle. What it still
+cannot see is a `source/` edit committed without a rebuild: the bundle and the wasm would agree
+with each other and with the tree, and only the missing rebuild would be wrong.
 
 The `zig build` line is lifted verbatim from `scripts/build-wasm.sh`: `ReleaseSmall`, not
 `ReleaseFast`, and the target is `wasm32-freestanding`. Do not run `npm run build` in

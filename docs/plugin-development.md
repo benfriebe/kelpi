@@ -9,10 +9,19 @@ and the next implementation task.
 
 ## Prepare a source checkout
 
-Use Node.js 24 or newer, and the pnpm version `packageManager` in the root `package.json` names.
-Corepack, or pnpm's own version management, switches to it; a pnpm 11 that does neither ignores
-the `overrides` and `onlyBuiltDependencies` in `pnpm-workspace.yaml` without saying so, which
-installs upstream `ghostty-web` over this repo's fork and leaves node-pty unbuilt.
+Use Node.js 24 or newer, and the pnpm version `packageManager` in the root `package.json` names,
+pnpm 10.28.1. pnpm and corepack both honour that field and switch to it.
+
+The pin is not decoration, and neither is the location of the two pnpm settings.
+`overrides` and `onlyBuiltDependencies` live in `pnpm-workspace.yaml` because pnpm 11 stopped
+reading the `pnpm` field in `package.json`. `overrides` is then read from the workspace file by
+pnpm 10 and 11 alike, so the `ghostty-web` fork resolves under both. The build-script allowlist
+does not travel with it: pnpm 11 removed `onlyBuiltDependencies` outright in favour of
+`allowBuilds`, so a pnpm 11 that ignored the pin would install node-pty and electron unbuilt.
+The pin also keeps the lockfile on the generation that produced it, and the report behind
+[#6](https://github.com/benfriebe/kelpi/issues/6) has pnpm 11 refusing electron-forge's
+`@electron/node-gyp` git subdependency. Converting the allowlist to `allowBuilds` is the work a
+pnpm 11 upgrade needs; `pnpm-workspace.yaml` records the conversion beside the list.
 
 A fresh clone or worktree needs one command:
 

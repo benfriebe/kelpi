@@ -31,11 +31,27 @@
  * 4. The final `pnpm install` is part of the build, not an afterthought. pnpm materialises the
  *    `file:` override as a COPY under `node_modules/.pnpm/ghostty-web@file+vendor+…`, so a new
  *    bundle is invisible to `pnpm typecheck` and to vitest until an install re-copies it.
+ * 5. `source/` carries no lockfile and floats its devDependencies on carets, so each run
+ *    re-resolves the toolchain. The tracked bundle reproduced byte for byte at vite 4.5.14, which
+ *    is an observation about one resolution and not a property of this script: the resolved vite,
+ *    vite-plugin-dts and typescript versions are printed on every run so a rebuild that differs is
+ *    explicable from its own log rather than from memory.
+ * 6. `source/vite.config.js` rolls its declarations up with `rollupTypes: true`, which works on
+ *    this tree (the tracked `index.d.ts` is that 76 kB rollup). The #6 report hit an api-extractor
+ *    failure in the same step and had to set `rollupTypes: false` to finish. If a rebuild dies
+ *    inside `[vite:dts] Start rollup declaration files`, that is the known workaround, and the
+ *    scratch directory kept on failure is where to try it.
  *
  * USAGE
  *   pnpm vendor:build                  # rebuild, verify, publish, reinstall
  *   pnpm vendor:build -- --keep        # keep the scratch build directory for inspection
  *   pnpm vendor:build -- --no-install  # skip the workspace reinstall (the tree is then stale)
+ *
+ * A failed run always keeps its scratch directory and prints the path; only a successful one
+ * cleans up. Publishing stages `dist.new` beside the bundle and renames it into place, so the
+ * window in which the tracked bundle is absent is a rename wide. If a run is killed inside even
+ * that, `git checkout -- vendor/ghostty-web-patched/dist` restores it, which is one of the things
+ * tracking the artifact bought.
  *
  * Afterwards, run the guards that read the artifact:
  *   pnpm vitest run packages/client/src/terminal/vendor-engine.test.ts
@@ -99,6 +115,27 @@ export function assertBundlesCarryTrackedWasm(dir, expected) {
     }
 }
 
+/**
+ * Print the toolchain versions the scratch install actually resolved.
+ *
+ * `source/package.json` floats `vite`, `vite-plugin-dts` and `typescript` on carets with no
+ * lockfile beside them, so "the bundle reproduces byte for byte" is only ever a statement about a
+ * particular resolution. Logging it makes a future non-identical rebuild explicable from its own
+ * output instead of a mystery, and names the three packages worth pinning if it ever has to be.
+ */
+export function reportToolchain(buildDir) {
+    const versions = ['vite', 'vite-plugin-dts', 'typescript'].map((name) => {
+        try {
+            const manifest = path.join(buildDir, 'node_modules', name, 'package.json');
+            return `${name} ${JSON.parse(fs.readFileSync(manifest, 'utf8')).version}`;
+        } catch {
+            // Not fatal: the build below fails loudly enough if a tool is genuinely missing.
+            return `${name} (unresolved)`;
+        }
+    });
+    console.log(`[vendor:build] toolchain: ${versions.join(', ')}`);
+}
+
 export function buildVendorEngine({ keep = false, install = true } = {}) {
     if (!fs.existsSync(path.join(sourceDir, 'package.json'))) {
         throw new Error(`no source snapshot at ${sourceDir}`);
@@ -115,6 +152,8 @@ export function buildVendorEngine({ keep = false, install = true } = {}) {
 
         // (2) in the header: the snapshot resolves its own toolchain, outside this workspace.
         run('pnpm', ['install', '--ignore-workspace'], scratch);
+        // (5) in the header: what that resolution actually produced, on the record.
+        reportToolchain(scratch);
         run('pnpm', ['exec', 'vite', 'build'], scratch);
 
         const built = path.join(scratch, 'dist');
@@ -125,17 +164,26 @@ export function buildVendorEngine({ keep = false, install = true } = {}) {
         // (3) in the header: verify BEFORE publishing, so a bad build never reaches the tree.
         assertBundlesCarryTrackedWasm(built, trackedWasm);
 
+        // Staged beside the bundle and renamed in, rather than deleted and refilled: the tracked
+        // artifact is then absent for a rename rather than for a directory copy.
+        const staged = `${distDir}.new`;
+        fs.rmSync(staged, { recursive: true, force: true });
+        fs.cpSync(built, staged, { recursive: true });
         fs.rmSync(distDir, { recursive: true, force: true });
-        fs.cpSync(built, distDir, { recursive: true });
+        fs.renameSync(staged, distDir);
         for (const bundle of BUNDLES) {
             const { size } = fs.statSync(path.join(distDir, bundle));
             console.log(`[vendor:build] ${bundle}: ${(size / 1000).toFixed(2)} kB`);
         }
         console.log(`[vendor:build] published ${path.relative(repoRoot, distDir)}`);
-    } finally {
-        if (keep) console.log(`[vendor:build] keeping ${scratch}`);
-        else fs.rmSync(scratch, { recursive: true, force: true });
+    } catch (error) {
+        // The scratch directory IS the evidence when a build fails, so it outlives the failure
+        // whatever --keep says. Deleting it costs a full re-download to see the same error again.
+        console.error(`[vendor:build] build failed; kept ${scratch} for inspection`);
+        throw error;
     }
+    if (keep) console.log(`[vendor:build] keeping ${scratch}`);
+    else fs.rmSync(scratch, { recursive: true, force: true });
 
     if (!install) {
         console.log(
@@ -155,7 +203,14 @@ export function buildVendorEngine({ keep = false, install = true } = {}) {
 
 // ── cli ─────────────────────────────────────────────────────────────────────────────
 
-if (process.argv[1] !== undefined && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Both sides through realpathSync: Node resolves the main module's symlinks by default and this
+// file's URL does not, so comparing the two spellings raw would make the whole CLI a silent no-op
+// under --preserve-symlinks. A script whose job is refusing to fail quietly cannot start that way.
+const invokedDirectly =
+    process.argv[1] !== undefined &&
+    fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (invokedDirectly) {
     const argv = process.argv.slice(2);
     if (argv.includes('--help') || argv.includes('-h')) {
         console.log('usage: node scripts/build-vendor-engine.mjs [--keep] [--no-install]');

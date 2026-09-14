@@ -82,9 +82,13 @@ and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hoo
 
 ## Quickstart
 
-Requires Node 24 and the pnpm that `packageManager` in `package.json` names (pnpm 10; corepack,
-or pnpm's own version management, switches to it for you). pnpm 11 reads neither the `overrides`
-nor the build-script allowlist in `pnpm-workspace.yaml` and installs a broken tree in silence.
+Requires Node 24 and the pnpm that `packageManager` in `package.json` names, pnpm 10.28.1; pnpm
+and corepack both honour that field and switch to it. The pin is load-bearing: pnpm 11 removed
+`onlyBuiltDependencies` in favour of `allowBuilds`, so it would leave node-pty and electron
+unbuilt, it moves the lockfile to another generation, and the report this came from has it
+refusing electron-forge's `@electron/node-gyp` git subdependency. The `ghostty-web` override is
+the one part that travels: pnpm 10 and 11 both read `overrides` from `pnpm-workspace.yaml`, which
+is why it lives there rather than in the `package.json` `pnpm` field pnpm 11 stopped reading.
 
 A fresh clone or worktree needs nothing but the install below. The vendored terminal engine's
 bundle is tracked, and `pnpm vendor:build` regenerates it when the vendor source changes. The

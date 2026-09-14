@@ -9517,12 +9517,40 @@ function buildFlows(ctx) {
                         `park→restore=${String(restored.at - parked.at)}ms`
                 );
 
-                await cli.run(['workspace', 'delete', '--name', workspaceName, '--force'], { timeoutMs: 40_000 });
-                await settleDom(
+                /*
+                 * CLEANUP, AND IT IS ASSERTED (#202).
+                 *
+                 * `workspace delete` takes POSITIONAL names or ids and rejects any leading-dash
+                 * token it does not know (`packages/cli/src/commands/workspace.ts:200-206`); the
+                 * `--name` its sibling `workspace create` takes three dozen lines above is exactly
+                 * the trap. This call used to pass `--name`, `cli.run` swallowed the exit 1 and
+                 * the settle below returned false without anyone reading it, so `poster-swap`'s
+                 * workspace stayed ACTIVE for the next 28 steps: `appearance-system-stats`,
+                 * `agent-start`, `agent-notification` and `footer-git-stats` all pick their pane
+                 * from daemon-wide state, found the sandbox's first pane in another workspace, and
+                 * failed on a header that is not in the DOM.
+                 *
+                 * `shards.mjs` calls this step "roster-neutral only if it completes", and the
+                 * shard planner is built on that. These two checks are what makes it true.
+                 */
+                const removed = await cli.run(['workspace', 'delete', workspaceName, '--force'], { timeoutMs: 40_000 });
+                recorder.check(
+                    'the step deletes the scratch workspace it created',
+                    removed.code === 0,
+                    removed.code === 0
+                        ? 'exit 0'
+                        : `exit ${String(removed.code)}: ${`${removed.stderr}${removed.stdout}`.trim().slice(0, 160)}`
+                );
+                const rowGone = await settleDom(
                     page,
                     `![...document.querySelectorAll('[data-testid="workspace-row"]')]
                         .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
-                    { ceilingMs: 1500, intervalMs: 60 }
+                    { ceilingMs: 3000, intervalMs: 60 }
+                );
+                recorder.check(
+                    'and the run is left with the workspace roster it started with',
+                    rowGone,
+                    rowGone ? 'no poster-swap row' : 'the poster-swap row is still in the sidebar'
                 );
             }
         },

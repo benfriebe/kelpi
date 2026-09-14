@@ -755,6 +755,39 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
 // ── the CLI, pointed at the sandbox daemon ──────────────────────────────────────────
 
 /**
+ * The CLI's refusals to PARSE an invocation, as opposed to its refusals to perform one.
+ *
+ * `Unknown command: <x>` (`cli.ts:85`), `Unknown <group> action: <x>` (`workspace.ts:60` and its
+ * six siblings) and `Unknown option for <command>: <flag>` (`workspace.ts:202`) all mean the same
+ * thing: the caller spelled the invocation wrong. For a harness that is never a product outcome,
+ * it is a bug in the step, and it must not be survivable.
+ *
+ * It was. `cli.run` resolves with `{ code, stdout, stderr }` and only `cli.ok` throws, so
+ * `poster-swap`'s cleanup (`workspace delete --name <name> --force`, which the CLI rejects
+ * because delete takes positional names while its sibling `workspace create` takes `--name`)
+ * exited 1 into a value nobody read, and the workspace it was meant to remove stayed ACTIVE for
+ * the next 28 steps and blanked four of them (#202). Checking the exit code at that one call site
+ * fixes that one step; refusing a malformed invocation here fixes the class, for every one of the
+ * hundreds of `cli.run` calls in the harness, in cleanup paths included.
+ *
+ * Value refusals are deliberately NOT in this net (`Unknown event type:`, `Unknown sync mode:`,
+ * `Unknown --agent value:`): a step may legitimately probe what the CLI does with a bad value.
+ * Nothing in `scripts/` asserts on any of the three shapes above.
+ *
+ * STDERR ONLY, and that is the point: the CLI writes all three through `errLine`/`writeErr`
+ * (`packages/cli/src/io.ts:68,73`), while stdout is where a step's own captured pane text comes
+ * back: a scrollback holding a shell's "Unknown command: foo" must never be mistaken for the
+ * harness having misspelled anything.
+ */
+const USAGE_REFUSAL = /^Unknown (?:command|option for [a-z][a-z ]*|[a-z]+ action):.*$/m;
+
+export function cliUsageRefusal({ code, stderr = '' } = {}) {
+    if (code === 0) return null;
+    const hit = USAGE_REFUSAL.exec(stderr);
+    return hit === null ? null : hit[0].trim();
+}
+
+/**
  * The ported TypeScript CLI (`packages/cli/dist/kelpi.js`) over TCP.
  *
  * TCP rather than the unix socket because `KELPI_SOCKET` only overrides the *TCP* transport —
@@ -817,6 +850,12 @@ export function makeCli(sandbox, { repoRoot }) {
             } catch {
                 // best-effort
             }
+        }
+        // A malformed invocation is a bug in the caller, so it throws out of `run` too and does
+        // not wait for a caller that chose to read the exit code (#202). See `cliUsageRefusal`.
+        const refusal = cliUsageRefusal(result);
+        if (refusal !== null) {
+            throw new Error(`kelpi ${args.join(' ')} was refused as malformed: ${refusal}`);
         }
         return result;
     };

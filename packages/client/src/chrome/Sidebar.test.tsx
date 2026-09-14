@@ -232,6 +232,12 @@ describe('group collapse', () => {
 });
 
 describe('context menus (portal-based)', () => {
+    let restoreLayout: (() => void) | null = null;
+    afterEach(() => {
+        restoreLayout?.();
+        restoreLayout = null;
+    });
+
     it('opens on right-click and survives a 1s agent-status re-render (§15)', () => {
         const view = render(<Sidebar {...noopProps()} entries={entries()} />);
         fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
@@ -265,6 +271,82 @@ describe('context menus (portal-based)', () => {
 
         const menu = screen.getByTestId('context-menu');
         expect(Number.parseInt(menu.style.top, 10)).toBeGreaterThanOrEqual(164);
+    });
+
+    /**
+     * #105: every sidebar menu was positioned by one 260px height estimate, so any click inside
+     * the bottom 260px of the window was pushed up to `innerHeight - 260` whatever the menu
+     * actually measured, and with a row rect in hand it flipped to `row.top - 264` instead.
+     * In a short window that band is the whole window, which is what these two reproduce: a
+     * right-click near the TOP of a 300px-tall window, with the panel given the real height of
+     * the menu it opens.
+     *
+     * jsdom has no box model, so both boxes that decide the placement are stubbed: the row (as
+     * the case above already does) and the panel, whose height is the thing the old code never
+     * asked for.
+     */
+    function shortWindow(viewportHeight: number, menuHeight: number): void {
+        const realHeight = globalThis.innerHeight;
+        const realRect = Element.prototype.getBoundingClientRect;
+        Object.defineProperty(globalThis, 'innerHeight', {
+            value: viewportHeight,
+            configurable: true,
+            writable: true
+        });
+        Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+            if (this instanceof HTMLElement && this.dataset['testid'] === 'context-menu') {
+                return {
+                    top: 0,
+                    bottom: menuHeight,
+                    left: 0,
+                    right: 190,
+                    width: 190,
+                    height: menuHeight,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({})
+                } as DOMRect;
+            }
+            return realRect.call(this);
+        };
+        restoreLayout = () => {
+            Element.prototype.getBoundingClientRect = realRect;
+            Object.defineProperty(globalThis, 'innerHeight', {
+                value: realHeight,
+                configurable: true,
+                writable: true
+            });
+        };
+    }
+
+    it('opens a workspace row menu at the row in a short window, not at the top of it (#105)', () => {
+        // The nine-row workspace menu is 190px here; the window is 300px, so every click in it
+        // used to be inside the old 260px band.
+        shortWindow(300, 190);
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const row = screen.getAllByTestId('workspace-row')[0] as HTMLElement;
+        row.getBoundingClientRect = () =>
+            ({ top: 60, bottom: 84, left: 0, right: 240, width: 240, height: 24, x: 0, y: 60 }) as DOMRect;
+
+        fireEvent.contextMenu(row, { clientX: 40, clientY: 72 });
+
+        const top = Number.parseInt(screen.getByTestId('context-menu').style.top, 10);
+        // 4px under the row (run-B m7), which is at the pointer and below it, not the 0 the
+        // 260px estimate produced, 72px ABOVE the cursor with nothing in between.
+        expect(top).toBe(88);
+        expect(top).toBeGreaterThanOrEqual(72);
+    });
+
+    it('opens the background menu at the pointer in a short window (#105)', () => {
+        // New Workspace / New Group: two rows, 62px, a quarter of what the estimate assumed.
+        shortWindow(300, 62);
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+
+        fireEvent.contextMenu(screen.getByTestId('sidebar-spacer'), { clientX: 40, clientY: 80 });
+
+        // Exactly at the pointer: 80 + 62 is nowhere near the bottom of a 300px window, so
+        // there is nothing to clamp. The estimate put it at 40.
+        expect(screen.getByTestId('context-menu').style.top).toBe('80px');
     });
 
     it('closes on an outside mousedown', () => {

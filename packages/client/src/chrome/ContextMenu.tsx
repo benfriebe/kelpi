@@ -72,6 +72,50 @@ function useSubmenuFlip(open: boolean): { ref: RefObject<HTMLDivElement | null>;
     return { ref, flipped };
 }
 
+/**
+ * Where the panel actually lands, from the panel's own measured box (#105).
+ *
+ * Placement used to be decided entirely by `menuAnchorFromEvent`, which had to guess a height
+ * before the panel existed, and guessed ONE: 260 px. That is about right for the nine-row
+ * workspace menu and four times too big for the two-row background menu, so every click inside
+ * the bottom 260 px of the window was pushed up to `innerHeight - 260` whatever the menu really
+ * measured (the New Workspace / New Group menu opened up to 200 px above the pointer with
+ * nothing in between), and a low row's menu flipped to `row.top - 264`, leaving a visible band
+ * of daylight above the header it belongs to.
+ *
+ * So the anchor is now only where the menu WANTS to go, and this decides where it fits, from
+ * `getBoundingClientRect()`, before the browser paints: the same pattern, and the same timing,
+ * as `useSubmenuFlip` above. One estimate cannot serve eight menus of three different heights;
+ * a measurement serves all of them, including menus that do not exist yet.
+ *
+ * No dependency list, for the reason `useOverlayPresence` has none: a menu whose items change
+ * while it is open changes height, and the position has to follow. The state is only written
+ * when it actually moves, so the re-render settles in one extra pass.
+ *
+ * Where there is no box model at all (jsdom, and any host that reports an empty rect) the menu
+ * opens exactly where the caller asked for it: at the pointer, or under the row.
+ */
+function useMeasuredPlacement(
+    ref: RefObject<HTMLDivElement | null>,
+    x: number,
+    y: number,
+    avoid: MenuAvoidRect | null | undefined
+): { x: number; y: number } {
+    const [placed, setPlaced] = useState<{ x: number; y: number } | null>(null);
+    useLayoutEffect(() => {
+        const node = ref.current;
+        if (node === null) return;
+        const box = node.getBoundingClientRect();
+        if (box.height <= 0) {
+            setPlaced(null);
+            return;
+        }
+        const next = menuPlacement({ x, y }, { width: box.width, height: box.height }, avoid);
+        setPlaced((current) => (current !== null && current.x === next.x && current.y === next.y ? current : next));
+    });
+    return placed ?? { x, y };
+}
+
 export interface MenuItemSpec {
     readonly id: string;
     readonly label: string;
@@ -105,6 +149,14 @@ export interface ContextMenuProps {
      * a dropdown, so it behaves like one, and Escape hands focus back through `onClose`.
      */
     readonly autoFocus?: boolean | undefined;
+    /**
+     * A rectangle the panel must not cover: the row that was right-clicked (run-B m7).
+     *
+     * It is given to the COMPONENT, not only to `menuAnchorFromEvent`, because the choice
+     * between "under the row" and "above the row" can only be made correctly once the panel's
+     * real height is known, and that is known here (#105).
+     */
+    readonly avoid?: MenuAvoidRect | null | undefined;
     /** Test seam: where the portal mounts (defaults to `document.body`). */
     readonly container?: Element | undefined;
 }
@@ -447,6 +499,8 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         };
     }, [submenuRef]);
 
+    const placement = useMeasuredPlacement(rootRef, props.x, props.y, props.avoid);
+
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;
 
@@ -460,7 +514,7 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                touch. The title bar's layout dropdown and the preview's copy menu carry the same
                `flex flex-col gap-0.5`, which is what keeps the three menus one family. */
             className="fixed z-50 flex min-w-[190px] flex-col gap-0.5 rounded-lg p-1 text-[12px]"
-            style={{ ...PANEL_STYLE, left: props.x, top: props.y }}
+            style={{ ...PANEL_STYLE, left: placement.x, top: placement.y }}
             onContextMenu={(event) => {
                 event.preventDefault();
             }}
@@ -516,9 +570,15 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     return createPortal(menu, container);
 }
 
-/** Panel size assumptions for the viewport clamp (the panel's own min-width is 190px). */
+/**
+ * The panel's own min-width, for the pre-paint horizontal clamp. There is deliberately no
+ * matching HEIGHT constant any more: one number cannot stand in for eight menus that run from
+ * two rows to nine, and the one that used to be here (260) was what pushed every click in the
+ * bottom 260 px of the window up to `innerHeight - 260`, up to 200 px clear of the pointer for
+ * the two-row background menu (#105). Height comes from the panel's measured box instead
+ * (`useMeasuredPlacement`).
+ */
 const MENU_ESTIMATED_WIDTH = 200;
-const MENU_ESTIMATED_HEIGHT = 260;
 const MENU_ROW_GAP = 4;
 
 /** A rectangle the menu must not cover — normally the row that was right-clicked. */
@@ -528,13 +588,24 @@ export interface MenuAvoidRect {
 }
 
 /**
- * Where a context menu should open for a mouse event, clamped into the viewport.
+ * Where a context menu WANTS to open for a mouse event: the pointer, or just under the row it
+ * acts on. Nothing here depends on how tall the menu is, and that is the point (#105).
  *
  * `avoid` keeps the menu off the row it acts on (run-B m7). Opening at the pointer put the
  * panel straight over the workspace being renamed or deleted, so the one thing a destructive
  * menu has to keep visible — WHICH one — was behind the menu. Given the row's rect the panel
- * drops to just under it, or rises above it when there is no room below, which is what a native
- * menu does when it cannot fit under its anchor.
+ * drops to just under it.
+ *
+ * The other half of run-B m7, rising ABOVE the row when the panel does not fit below, needs
+ * the panel's height and so lives in `ContextMenu` itself, which measures it. Hand the same
+ * rect to `<ContextMenu avoid={...}>` and it makes that call with the real number. This
+ * function used to make it with a flat 260, which is why a group header near the bottom of the
+ * window opened its menu 264 px above itself and left 80 px of daylight under it.
+ *
+ * The returned y is therefore NOT clamped against the bottom edge: clamping it here would throw
+ * away the pointer before the panel could be measured, and the panel is what knows whether the
+ * pointer is too low. In a host with no box model at all the menu simply opens where it was
+ * asked to.
  */
 export function menuAnchorFromEvent(
     event: { clientX: number; clientY: number },
@@ -544,15 +615,39 @@ export function menuAnchorFromEvent(
     y: number;
 } {
     const width = globalThis.innerWidth || 1280;
-    const height = globalThis.innerHeight || 800;
-    const maxY = Math.max(0, height - MENU_ESTIMATED_HEIGHT);
-    let y = event.clientY;
-    if (avoid !== undefined && avoid !== null) {
-        const below = avoid.bottom + MENU_ROW_GAP;
-        y = below <= maxY ? below : Math.max(0, avoid.top - MENU_ESTIMATED_HEIGHT - MENU_ROW_GAP);
-    }
+    const desiredY = avoid === undefined || avoid === null ? event.clientY : avoid.bottom + MENU_ROW_GAP;
     return {
         x: Math.min(event.clientX, Math.max(0, width - MENU_ESTIMATED_WIDTH)),
-        y: Math.min(y, maxY)
+        y: Math.max(desiredY, 0)
     };
+}
+
+/**
+ * Where a panel of a KNOWN size lands, clamped into the viewport: the whole placement rule, in
+ * one pure function, applied once the panel has been measured.
+ *
+ * With an `avoid` rect the panel drops to just under it, or rises above it when the panel does
+ * not fit below, which is what a native menu does when it cannot fit under its anchor. Without
+ * one it opens AT the pointer and is only moved if it would hang off an edge; a menu is never
+ * pushed DOWN, so the footer chevron's upward drop (`FOOTER_MENU_ESTIMATED_HEIGHT` in
+ * `Sidebar.tsx`) is left exactly where it put itself.
+ */
+export function menuPlacement(
+    anchor: { readonly x: number; readonly y: number },
+    size: { readonly width: number; readonly height: number },
+    avoid?: MenuAvoidRect | null | undefined
+): { x: number; y: number } {
+    const width = globalThis.innerWidth || 1280;
+    const height = globalThis.innerHeight || 800;
+    const maxY = Math.max(0, height - size.height);
+    const x = Math.min(anchor.x, Math.max(0, width - size.width));
+    if (avoid === undefined || avoid === null) {
+        return { x, y: Math.min(Math.max(anchor.y, 0), maxY) };
+    }
+    const below = avoid.bottom + MENU_ROW_GAP;
+    if (below <= maxY) return { x, y: below };
+    const above = avoid.top - MENU_ROW_GAP - size.height;
+    if (above >= 0) return { x, y: above };
+    // Taller than the window: neither side fits, so keep it on screen, as low as it will go.
+    return { x, y: Math.min(Math.max(below, 0), maxY) };
 }

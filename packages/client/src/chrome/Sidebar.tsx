@@ -40,7 +40,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
+import { ContextMenu, menuAnchorFromEvent, type MenuAvoidRect, type MenuItemSpec } from './ContextMenu';
 import { hoverFill, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
 import { NewEntrySheet } from './NewWorkspaceSheet';
@@ -488,8 +488,9 @@ export const REVEAL_MEASURE_ATTEMPTS = 30;
 
 /**
  * The bounds of the row a context-menu event was raised on — what `menuAnchorFromEvent` needs
- * in order to keep the menu off it (run-B m7). Degrades to `null` where there is no layout
- * (jsdom has no box model), which puts the menu back at the pointer.
+ * in order to keep the menu off it (run-B m7). It goes to `<ContextMenu avoid>` as well, for
+ * the re-clamp that reads the panel's real height (#105). Degrades to `null` where there is no
+ * layout (jsdom has no box model), which puts the menu back at the pointer.
  */
 function rowRect(event: React.MouseEvent): { top: number; bottom: number } | null {
     const element = event.currentTarget;
@@ -1823,9 +1824,26 @@ function describeTarget(target: DropTarget): string {
     return `topLevel:${String(target.index)}`;
 }
 
+/**
+ * `avoid` rides along with the row menus because the panel picks "under the row" or "above the
+ * row" from its own measured height, and it can only do that if it still has the row (#105).
+ * `x`/`y` are the pre-paint guess; the panel re-clamps them before the frame is painted.
+ */
 type MenuState =
-    | { readonly kind: 'workspace'; readonly id: string; readonly x: number; readonly y: number }
-    | { readonly kind: 'group'; readonly id: string; readonly x: number; readonly y: number }
+    | {
+          readonly kind: 'workspace';
+          readonly id: string;
+          readonly x: number;
+          readonly y: number;
+          readonly avoid: MenuAvoidRect | null;
+      }
+    | {
+          readonly kind: 'group';
+          readonly id: string;
+          readonly x: number;
+          readonly y: number;
+          readonly avoid: MenuAvoidRect | null;
+      }
     | { readonly kind: 'background'; readonly x: number; readonly y: number }
     /**
      * §WS-004's footer chevron. It shares `menu` with the three context menus rather than
@@ -4140,15 +4158,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const onWorkspaceContextMenu = useCallback((workspaceID: string, event: React.MouseEvent): void => {
         event.preventDefault();
         event.stopPropagation();
-        const anchor = menuAnchorFromEvent(event, rowRect(event));
-        setMenu({ kind: 'workspace', id: workspaceID, x: anchor.x, y: anchor.y });
+        const avoid = rowRect(event);
+        const anchor = menuAnchorFromEvent(event, avoid);
+        setMenu({ kind: 'workspace', id: workspaceID, x: anchor.x, y: anchor.y, avoid });
     }, []);
 
     const onGroupContextMenu = useCallback((groupID: string, event: React.MouseEvent): void => {
         event.preventDefault();
         event.stopPropagation();
-        const anchor = menuAnchorFromEvent(event, rowRect(event));
-        setMenu({ kind: 'group', id: groupID, x: anchor.x, y: anchor.y });
+        const avoid = rowRect(event);
+        const anchor = menuAnchorFromEvent(event, avoid);
+        setMenu({ kind: 'group', id: groupID, x: anchor.x, y: anchor.y, avoid });
     }, []);
 
     const onBackgroundContextMenu = useCallback((event: React.MouseEvent): void => {
@@ -4880,6 +4900,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 <ContextMenu
                     x={menu.x}
                     y={menu.y}
+                    avoid={menu.kind === 'workspace' || menu.kind === 'group' ? menu.avoid : null}
                     items={menuItems}
                     /* §WS-004's menu is opened by a CLICK, not a right-click, so it takes the
                        keyboard the way a dropdown does — first row focused, Escape back to the

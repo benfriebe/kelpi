@@ -1,13 +1,16 @@
 import { Blob as NodeBlob } from 'node:buffer';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { parseKeyTrigger } from '@kelpi/core/config';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clientKeyBindings } from '../chrome/keys';
 import { registerModal } from '../chrome/modal-presence';
 import { createKelpiRuntime, createKelpiStore } from '../state';
 import { completeHandshake, createFakeSocketFactory } from '../connection/testing';
+import { TerminalFeaturePane } from '../features/TerminalFeaturePane';
 import { registerTerminalPane, type TerminalPaneHandle } from '../terminal/pane-registry';
-import { dispatchTerminalEditingShortcut, terminalShortcutChords, terminalWindowChords, type TerminalShortcutHost } from './terminal-shortcuts';
+import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from '../terminal/testing';
+import { dispatchTerminalEditingShortcut, terminalShortcutChords, terminalWindowChords, TerminalShortcutContext, type TerminalShortcutHost } from './terminal-shortcuts';
 
 const disposals: (() => void)[] = [];
 afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); vi.restoreAllMocks(); });
@@ -178,5 +181,100 @@ describe('terminal editing shortcuts across daemon owners', () => {
         c.readText.mockResolvedValue('text'); remote.dropText.mockResolvedValue({ ok: false, error: 'remote rejected paste' });
         dispatchTerminalEditingShortcut(event('KeyV'), target);
         await vi.waitFor(() => expect(h.onError).toHaveBeenCalledWith('Paste', 'remote rejected paste'));
+    });
+});
+
+/**
+ * #172 / #170 - the same five actions, reached through a MOUNTED pane with the BUNDLED engine.
+ *
+ * The cases above call `dispatchTerminalEditingShortcut` directly, which is the plugin
+ * renderer's route: `TerminalFeaturePane` hands `onTerminalKey` to `PluginView` and the frame
+ * relays its claimed chords back. The bundled ghostty-web branch got nothing, and that is the
+ * branch an embedded remote workspace draws with (`app/RemoteWorkspaceView.tsx`).
+ *
+ * What made it a total failure rather than a near miss: while a remote workspace fills the pane
+ * area `App.tsx` reports `hasActiveWorkspace: false`, so `chrome/keys.ts` returns at step 3,
+ * before the binding lookup, and EVERY binding is dead - copy, paste, kill_line_backward,
+ * move_to_line_start, move_to_line_end. Ctrl+U survived only because nothing binds it. So these
+ * tests mount with no window dispatcher installed at all, which is that window exactly.
+ *
+ * The window gate itself is left alone on purpose. `act.lineEdit` and `copy` resolve their pane
+ * through `focused()`, which reads the PRIMARY store, so lifting the gate would send `\x15` and
+ * read a selection from a pane in the hidden local workspace. Hence the second pane here: every
+ * assertion is also an assertion that the other daemon's pane was not the one that answered.
+ */
+describe('the bundled terminal renderer in an embedded remote workspace (#172, #170)', () => {
+    let observers: ReturnType<typeof installFakeResizeObserver>;
+    beforeEach(() => { observers = installFakeResizeObserver(); });
+    afterEach(() => {
+        cleanup(); observers.restore();
+        Reflect.deleteProperty(navigator as unknown as Record<string, unknown>, 'clipboard');
+    });
+
+    /** One daemon: its own runtime, its own PTY transport, its own engine, one shell pane. */
+    function daemon(name: string) {
+        const paneID = crypto.randomUUID(), workspaceID = crypto.randomUUID();
+        const state = createDaemonStore(emptyDaemonState('/tmp'));
+        state.dispatch({ type: 'create-workspace', id: workspaceID, paneID, name, color: 'blue', now: 1 });
+        const sockets = createFakeSocketFactory();
+        const runtime = createKelpiRuntime({ store: createKelpiStore(), url: `ws://${crypto.randomUUID()}.test/ws`, socketFactory: sockets.factory, notifications: null });
+        runtime.connect(); completeHandshake(sockets.last(), { state: JSON.parse(JSON.stringify(state.getState())) });
+        disposals.push(() => runtime.dispose());
+        return { runtime, paneID, workspaceID, pty: createFakePtyApi(), renderers: createFakeRendererFactory({ cell: { width: 10, height: 20 } }) };
+    }
+    type Daemon = ReturnType<typeof daemon>;
+    /** jsdom measures everything at 0x0; the pane takes its box through this seam. */
+    const box = (): { width: number; height: number } => ({ width: 800, height: 480 });
+    const pane = (owner: Daemon) => <TerminalFeaturePane runtime={owner.runtime} workspaceID={owner.workspaceID} paneID={owner.paneID}
+        ptyApi={owner.pty} focused visible createRenderer={owner.renderers.factory} measure={box} />;
+    const hostOf = (owner: Daemon): HTMLElement =>
+        document.querySelector(`[data-terminal-pane="${owner.paneID}"] [data-terminal-host]`) as HTMLElement;
+    const bytes = (owner: Daemon): string[] => owner.pty.streams.flatMap(stream => stream.input);
+
+    async function mount(): Promise<{ primary: Daemon; remote: Daemon }> {
+        const primary = daemon('Local'), remote = daemon('Remote');
+        // The provider is the window's (App.tsx wraps `RemoteWorkspaceView` in it); the window
+        // key dispatcher is not installed, because for a remote workspace it stands down.
+        render(<TerminalShortcutContext.Provider value={{ bindings: clientKeyBindings([], true) }}>
+            {pane(primary)}{pane(remote)}
+        </TerminalShortcutContext.Provider>);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        return { primary, remote };
+    }
+
+    it('sends the line-editing byte up the PTY of the daemon whose pane took the chord', async () => {
+        const { primary, remote } = await mount();
+        fireEvent.keyDown(hostOf(remote), { code: 'Backspace', metaKey: true });
+        expect(bytes(remote)).toEqual(['\x15']);
+        expect(bytes(primary)).toEqual([]);
+        fireEvent.keyDown(hostOf(remote), { code: 'ArrowLeft', metaKey: true });
+        fireEvent.keyDown(hostOf(remote), { code: 'ArrowRight', metaKey: true });
+        expect(bytes(remote)).toEqual(['\x15', '\x01', '\x05']);
+        expect(bytes(primary)).toEqual([]);
+        // ...and the local pane still answers for itself, on its own transport.
+        fireEvent.keyDown(hostOf(primary), { code: 'Backspace', metaKey: true });
+        expect(bytes(primary)).toEqual(['\x15']);
+        expect(bytes(remote)).toEqual(['\x15', '\x01', '\x05']);
+    });
+
+    it('copies the live selection of the pane that took the chord, not the other daemon (#170)', async () => {
+        const writeText = vi.fn(async () => {});
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
+        const { primary, remote } = await mount();
+        act(() => {
+            primary.renderers.last().emitSelection('local shell selection');
+            remote.renderers.last().emitSelection('codex conversation text');
+        });
+        fireEvent.keyDown(hostOf(remote), { code: 'KeyC', metaKey: true });
+        await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('codex conversation text'));
+        expect(bytes(remote)).toEqual([]); expect(bytes(primary)).toEqual([]);
+    });
+
+    it('leaves an unbound chord to the engine, which is why Ctrl+U kept working all along', async () => {
+        const { remote } = await mount();
+        const event = new KeyboardEvent('keydown', { code: 'KeyU', ctrlKey: true, bubbles: true, cancelable: true });
+        fireEvent(hostOf(remote), event);
+        expect(event.defaultPrevented).toBe(false);
+        expect(bytes(remote)).toEqual([]);
     });
 });

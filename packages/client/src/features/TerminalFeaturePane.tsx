@@ -68,7 +68,33 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
             </select></label>
             {failed ? <><span role="status">{failed.message || 'Terminal renderer failed.'} The bundled terminal is active.</span><button onClick={() => setFailure(null)}>Retry renderer</button></> : null}
         </div> : null}
-        <div className="min-h-0 flex-1">{replacement ? <PluginView runtime={runtime} paneID={paneID} workspaceID={workspaceID}
+        <div className="min-h-0 flex-1" onKeyDownCapture={replacement ? undefined : event => {
+            /*
+             * #172/#170: the five terminal editing chords, for the BUNDLED engine.
+             *
+             * `dispatchTerminalEditingShortcut` re-homes copy, paste, kill_line_backward,
+             * move_to_line_start and move_to_line_end onto the pane's OWN runtime, and until now
+             * only a plugin renderer could reach it (`onTerminalKey` below). An embedded remote
+             * workspace draws with the bundled engine and the window dispatcher stands down there
+             * by design (`App.tsx` reports `hasActiveWorkspace: false` while `remoteSelection`
+             * is set, and `chrome/keys.ts` returns before the binding lookup), so in a remote
+             * pane ⌘⌫, ⌘C, ⌘V, ⌘← and ⌘→ reached no handler at all. Ctrl+U kept working only
+             * because nothing binds it, which is exactly the asymmetry #172 reports.
+             *
+             * The window gate is left alone: `focused()` reads the PRIMARY store, so relaxing it
+             * would send the byte to a pane in the hidden local workspace. This handler names the
+             * pane the key actually arrived in, and its runtime, so it cannot.
+             *
+             * React dispatches capture handlers from the root container, which is ABOVE the pane
+             * host: this runs before the kitty interceptor and before the engine's own listener,
+             * and `stopPropagation()` keeps a consumed chord away from both. The primary window
+             * is untouched because its dispatcher already consumed the chord at window capture
+             * with `preventDefault()` + `stopPropagation()`, which `defaultPrevented` re-checks.
+             * `dispatchTerminalEditingShortcut` owns the rest of the guard set (hidden pane,
+             * blocked host, open modal, the global hotkey). Same seam as `BrowserFeaturePane`.
+             */
+            if (!event.defaultPrevented && shortcuts.onKey(event)) { event.preventDefault(); event.stopPropagation(); }
+        }}>{replacement ? <PluginView runtime={runtime} paneID={paneID} workspaceID={workspaceID}
             pluginID={selected.pluginID!} viewID={viewID} visible={props.visible} focused={props.focused} claimedChords={shortcuts.chords} onTerminalKey={shortcuts.onKey}
             terminal={paneProps} onError={message => setFailure({ generation, message })} />
             : bindTerminalFeature(paneProps).render({ visible: props.visible, trafficLightInset: 0 })}</div>

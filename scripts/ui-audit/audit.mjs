@@ -82,6 +82,12 @@ import {
     waitForHealthz
 } from './lib/stack.mjs';
 import { CANONICAL_ORDER, aggregateShards, describePartition, planShards } from './lib/shards.mjs';
+import {
+    describePickGuards,
+    focusPageCommentSource,
+    installPickWitnessSource,
+    pickProbeSource
+} from './lib/web-batch.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -1140,6 +1146,22 @@ async function webViewSession(sandbox, site, repoRoot) {
     );
     if (target === undefined) return null;
     return connect(target.webSocketDebuggerUrl, { repoRoot });
+}
+
+/**
+ * Read the embedded page back after a pick that did not happen (#206).
+ *
+ * Never throws. This only ever runs on the failure path, where an exception would replace the
+ * diagnostic with a step error and lose the rest of the step, which is precisely the trade the
+ * ticket is about. `box` is what `view.click` aimed at, so the probe can say what is under that
+ * point now even when no click was ever delivered.
+ */
+async function probePick(view, box) {
+    try {
+        return await view.eval(pickProbeSource(box?.cx, box?.cy));
+    } catch (error) {
+        return { probeError: String(error?.message ?? error) };
+    }
 }
 
 /**
@@ -5969,7 +5991,18 @@ function buildFlows(ctx) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
                     const armed = await view.eval('window.__kelpiInspectorArmed ? window.__kelpiInspectorArmed() : null');
                     recorder.check('the page picker is armed (sticky)', armed === true, String(armed));
-                    await view.click('#hello');
+                    /*
+                     * #206 - a click that picks nothing has five possible explanations, and this
+                     * step used to record none of them: it reported `'no popover'` and moved on,
+                     * so the one run that hit it could not be attributed and the next one will not
+                     * be either. `lib/web-batch.mjs` has the five and the reasoning; the witness
+                     * goes in BEFORE the click because the readings that decide between them
+                     * (armed, the popover flag, the overlay test) are only true at the instant the
+                     * click arrives, and because zero clicks seen is the positive control that
+                     * separates "the picker declined" from "the click never reached the page".
+                     */
+                    await view.eval(installPickWitnessSource());
+                    const helloBox = await view.click('#hello');
                     await sleep(700);
                     // WEB-142/WEB-143: the pick opens its comment popover, and while that is open
                     // the picker is SUSPENDED — so the next element cannot be picked until Done
@@ -5985,7 +6018,13 @@ function buildFlows(ctx) {
                             return done.textContent;
                         })()`
                     );
-                    recorder.check('the pick opened its comment popover, with a Done button', dismissed === 'Done', String(dismissed));
+                    const pickProbe = dismissed === 'Done' ? null : await probePick(view, helloBox);
+                    if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                    recorder.check(
+                        'the pick opened its comment popover, with a Done button',
+                        dismissed === 'Done',
+                        dismissed === 'Done' ? String(dismissed) : describePickGuards(pickProbe)
+                    );
                     await sleep(500);
                     await view.click('#go');
                     await sleep(700);
@@ -6200,7 +6239,8 @@ function buildFlows(ctx) {
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
-                await view.click('#hello');
+                await view.eval(installPickWitnessSource());
+                const helloBox = await view.click('#hello');
                 await sleep(700);
 
                 // ── WEB-140: the popover's header and placement rules ───────────────
@@ -6225,6 +6265,42 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`popover placement: ${JSON.stringify(placement)}`);
+
+                /*
+                 * #206 - the precondition every reading below rests on, asserted once.
+                 *
+                 * Without it a pick that did not happen was not one failure but a wall of them:
+                 * seven `undefined` placement readings, and then `document.querySelector(
+                 * '[data-kelpi-batch-comment]').focus()` threw "Cannot read properties of null",
+                 * which aborted the step at 7 assertions against a baseline of 20 and turned a
+                 * plain red into a step error. So: name the precondition, say WHICH guard declined
+                 * the click (`lib/web-batch.mjs`), tear the batch down the way the tail of this
+                 * step does, and leave. One clear failure, and the next step inherits a clean pane.
+                 */
+                const picked = placement !== null;
+                const pickProbe = picked ? null : await probePick(view, helloBox);
+                if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                recorder.check(
+                    'the click on #hello made a pick, so there is a popover to inspect (#206)',
+                    picked,
+                    picked ? 'the popover is up' : `no pick from this step's click: ${describePickGuards(pickProbe)}`
+                );
+                if (!picked) {
+                    // The step is `needsEyes`, and a missed pick is exactly the run whose picture
+                    // is worth having: the panel, the pane and whatever is in front of the window.
+                    await recorder.shot(page, 'no-pick');
+                    view.close();
+                    await page.eval(
+                        `(() => {
+                            const cancel = document.querySelector('[data-testid="web-batch-cancel-${paneID}"]');
+                            if (cancel !== null) cancel.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(600);
+                    return;
+                }
+
                 recorder.check(
                     'the popover header is "#<label> <selector>" (WEB-140)',
                     /^#1\s+#hello$/.test(String(placement?.header ?? '').trim()),
@@ -6280,10 +6356,9 @@ function buildFlows(ctx) {
 
                 // …and NOT while the user is typing in it: the guard is what stops the two
                 // editors fighting over the cursor.
-                await view.eval(
-                    `(() => { const t = document.querySelector('[data-kelpi-batch-comment]'); t.focus();
-                              t.value = 'typed in the page'; return document.activeElement === t; })()`
-                );
+                // Null-guarded (#206): with no popover this used to be the step error, not a check.
+                const typedInPage = await view.eval(focusPageCommentSource('typed in the page'));
+                recorder.note(`typing straight into the page textarea: ${JSON.stringify(typedInPage)}`);
                 if (String(rowComment) !== '') {
                     await page.click(`[data-testid="${String(rowComment)}"]`);
                     await page.insertText(' MORE');

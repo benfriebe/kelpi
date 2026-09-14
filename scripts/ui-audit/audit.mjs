@@ -39,6 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
 
 /**
@@ -81,7 +82,13 @@ import {
     startShell,
     waitForHealthz
 } from './lib/stack.mjs';
-import { CANONICAL_ORDER, aggregateShards, describePartition, planShards } from './lib/shards.mjs';
+import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards } from './lib/shards.mjs';
+import {
+    describePickGuards,
+    focusPageCommentSource,
+    installPickWitnessSource,
+    pickProbeSource
+} from './lib/web-batch.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -99,6 +106,14 @@ function parseArgs(argv) {
         keep: false,
         verbose: false,
         only: null,
+        /**
+         * Does `--only` bring the chain its steps declare?
+         *
+         * On, because a step that reads `state.webPane` cannot do anything alone but fail (#203).
+         * `--no-chain` is the opt-out, and it exists for one caller: `verify-manifest.mjs` runs a
+         * candidate step ALONE from a cold boot on purpose, and "alone" is the measurement.
+         */
+        chain: true,
         /*
          * Where the shell window goes.
          *
@@ -135,13 +150,14 @@ function parseArgs(argv) {
         else if (arg === '--keep') options.keep = true;
         else if (arg === '--verbose') options.verbose = true;
         else if (arg === '--only' || arg.startsWith('--only=')) options.only = valued('only').split(',').filter(Boolean);
+        else if (arg === '--no-chain') options.chain = false;
         else if (arg === '--window' || arg.startsWith('--window=')) options.window = valued('window');
         else if (arg === '--shards' || arg.startsWith('--shards=')) options.shards = Number.parseInt(valued('shards'), 10);
         else if (arg === '--shard' || arg.startsWith('--shard=')) options.shard = Number.parseInt(valued('shard'), 10);
         else if (arg === '--help' || arg === '-h') {
             process.stdout.write(
                 'usage: node scripts/ui-audit/audit.mjs [--out <dir>] [--packaged] [--no-build] [--force-build]\n' +
-                    '                                      [--keep] [--verbose] [--only a,b]\n' +
+                    '                                      [--keep] [--verbose] [--only a,b] [--no-chain]\n' +
                     '                                      [--window hidden|offscreen|onscreen|default] [--shards N]\n'
             );
             process.exit(0);
@@ -149,6 +165,27 @@ function parseArgs(argv) {
     }
     if (!WINDOW_PLACEMENTS.has(options.window)) {
         throw new Error(`--window must be one of ${[...WINDOW_PLACEMENTS].join(', ')} (got "${options.window}")`);
+    }
+    /**
+     * `--only` runs the steps named AND the prerequisites those steps have already declared.
+     *
+     * `lib/shards.mjs` records which accumulated value binds each spine step, and `--only` used to
+     * ignore it: `--only web-batch-pickup` ran a step the manifest describes as "reads
+     * state.webPane" with nothing having written it, so its whole output was one failed "a web
+     * pane exists" (#203). `expandChains` turns that declaration into the step that writes it.
+     *
+     * Done after the loop, not inside the `--only` branch, so `--no-chain` works whichever side of
+     * `--only` it is written on.
+     */
+    if (options.only !== null && options.chain) {
+        const asked = options.only;
+        options.only = expandChains(asked);
+        const added = options.only.filter((id) => !asked.includes(id));
+        // Loud, because the alternative is a developer who asked for one step watching two run. A
+        // shard child is handed the expanded list, so it adds nothing and prints nothing.
+        if (added.length > 0) {
+            process.stdout.write(`--only also runs ${added.join(', ')} (the chain these steps declare in lib/shards.mjs)\n`);
+        }
     }
     if (!Number.isInteger(options.shards) || options.shards < 1) throw new Error('--shards must be a positive integer');
     if (options.shard !== null && (!Number.isInteger(options.shard) || options.shard < 0)) {
@@ -1143,6 +1180,40 @@ async function webViewSession(sandbox, site, repoRoot) {
 }
 
 /**
+ * Install the click witness in the embedded page (#206), and never throw doing it.
+ *
+ * `probePick` below is non-throwing because it runs on the failure path. This one runs on the
+ * NORMAL path, where a throw would be worse still: it would end the step the way #206 ended, over
+ * the diagnostic rather than over the thing being diagnosed. Returns whether the witness went in,
+ * and a step that ignores that is not flying blind, because the probe has a verdict for a witness
+ * that is not there.
+ */
+async function installWitness(view) {
+    try {
+        await view.eval(installPickWitnessSource());
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Read the embedded page back after a pick that did not happen (#206).
+ *
+ * Never throws. This only ever runs on the failure path, where an exception would replace the
+ * diagnostic with a step error and lose the rest of the step, which is precisely the trade the
+ * ticket is about. `box` is what `view.click` aimed at, so the probe can say what is under that
+ * point now even when no click was ever delivered.
+ */
+async function probePick(view, box) {
+    try {
+        return await view.eval(pickProbeSource(box?.cx, box?.cy));
+    } catch (error) {
+        return { probeError: String(error?.message ?? error) };
+    }
+}
+
+/**
  * Focus a WEB pane the way a person does: click its chrome.
  *
  * `pane-body-…` is not clickable for a web pane — the shell's native `WebContentsView` covers
@@ -1686,21 +1757,18 @@ async function clickSubmenuItem(page, id) {
     await sleep(400);
 }
 
-/** Right-click a sidebar row (or the group header) whose text contains `needle`. */
+/**
+ * Right-click a sidebar row (or the group header) whose text contains `needle`.
+ *
+ * The body moved to `lib/aim.mjs` for #204: measuring the row once and pressing its midpoint sent
+ * `sidebar-remaining` and `workspace-edges` into the sidebar FOOTER once a full run's list had
+ * grown past the scroller, and the `(no-menu)` they reported could not say so. The helper now
+ * scrolls the row into view, re-measures immediately before pressing, refuses a point outside the
+ * scroller, waits for the menu rather than sleeping past it, retries once, and names what
+ * `elementFromPoint` found when it still does not open.
+ */
 async function openSidebarMenu(page, selector, needle) {
-    const target = await page.eval(
-        `(() => {
-            const el = Array.from(document.querySelectorAll('${selector}'))
-                .find(node => (node.innerText ?? '').includes(${JSON.stringify(needle)}));
-            if (el === undefined) return null;
-            const r = el.getBoundingClientRect();
-            return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
-        })()`
-    );
-    if (target === null) throw new Error(`no ${selector} matching "${needle}"`);
-    const point = JSON.parse(String(target));
-    await page.clickAt(point.x, point.y, { button: 'right' });
-    await sleep(450);
+    return await aimSidebarMenu(page, selector, needle);
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────────────
@@ -1766,6 +1834,10 @@ async function runShardedParent() {
             ...(options.packaged ? ['--packaged'] : []),
             ...(options.keep ? ['--keep'] : []),
             ...(options.verbose ? ['--verbose'] : []),
+            // The list is already expanded, so the child's own expansion is a no-op, but pass
+            // `--no-chain` through anyway, so a parent told to run one step alone cannot hand a
+            // child permission to run its chain.
+            ...(options.chain ? [] : ['--no-chain']),
             ...(options.only === null ? [] : ['--only', options.only.join(',')])
         ];
         /*
@@ -5942,14 +6014,28 @@ function buildFlows(ctx) {
                     recorder.check('a web pane exists', false);
                     return;
                 }
-                // The WIDEST on-screen shell: the destination must be in this web pane's
-                // workspace (WEB-133), and the pasted `# kelpi inspect batch …` header is ~50
-                // columns — in a 33-column pane it soft-wraps and `pane capture` returns it as
-                // two screen rows, which reads as a missing header when it is really a narrow
-                // pane. Same class of harness artefact as `widestShellPane`'s three callers.
-                const shell = await widestShellPane(page, cli);
-                recorder.check('there is a shell pane to send the batch to', shell !== null);
+                // Widen the web pane FIRST, then pick the destination.
+                //
+                // `widenForFit` takes this pane to ratio 0.7 and then 0.9, and that width comes
+                // off its siblings, including whichever shell pane is about to receive the
+                // batch. Measuring before the resize therefore picked the widest shell and then
+                // narrowed it, which is the step making its own destination worse and is half of
+                // why #203 failed in every full battery rather than occasionally.
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
+                // The WIDEST on-screen shell, read against the post-resize grid: the destination
+                // must be in this web pane's workspace (WEB-133), and the pasted
+                // `# kelpi inspect batch …` header is ~50 columns wide, so in a 33-column pane
+                // it soft-wraps, `pane capture` returns it as two screen rows and readline
+                // re-draws it (see the header check below). Same class of harness artefact as
+                // `widestShellPane`'s three callers.
+                const shell = await widestShellPane(page, cli);
+                // The reading is the evidence for the widen above: how wide the destination the
+                // header has to survive actually is.
+                recorder.check(
+                    'there is a shell pane to send the batch to',
+                    shell !== null,
+                    shell === null ? 'no visible shell pane' : `${shell.id} at ${String(Math.round(shell.width))}px`
+                );
 
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
@@ -5969,7 +6055,18 @@ function buildFlows(ctx) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
                     const armed = await view.eval('window.__kelpiInspectorArmed ? window.__kelpiInspectorArmed() : null');
                     recorder.check('the page picker is armed (sticky)', armed === true, String(armed));
-                    await view.click('#hello');
+                    /*
+                     * #206 - a click that picks nothing has five possible explanations, and this
+                     * step used to record none of them: it reported `'no popover'` and moved on,
+                     * so the one run that hit it could not be attributed and the next one will not
+                     * be either. `lib/web-batch.mjs` has the five and the reasoning; the witness
+                     * goes in BEFORE the click because the readings that decide between them
+                     * (armed, the popover flag, the overlay test) are only true at the instant the
+                     * click arrives, and because zero clicks seen is the positive control that
+                     * separates "the picker declined" from "the click never reached the page".
+                     */
+                    await installWitness(view);
+                    const helloBox = await view.click('#hello');
                     await sleep(700);
                     // WEB-142/WEB-143: the pick opens its comment popover, and while that is open
                     // the picker is SUSPENDED — so the next element cannot be picked until Done
@@ -5985,7 +6082,16 @@ function buildFlows(ctx) {
                             return done.textContent;
                         })()`
                     );
-                    recorder.check('the pick opened its comment popover, with a Done button', dismissed === 'Done', String(dismissed));
+                    // Only `'no popover'` is a missed pick. `'no button'` and any other label mean
+                    // the popover DID open, so the guards are not what failed and the reading to
+                    // report is the one the popover gave back.
+                    const pickProbe = dismissed === 'no popover' ? await probePick(view, helloBox) : null;
+                    if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                    recorder.check(
+                        'the pick opened its comment popover, with a Done button',
+                        dismissed === 'Done',
+                        pickProbe === null ? String(dismissed) : describePickGuards(pickProbe)
+                    );
                     await sleep(500);
                     await view.click('#go');
                     await sleep(700);
@@ -6148,21 +6254,40 @@ function buildFlows(ctx) {
                     recorder.artifact('batch-paste.txt', text);
                     recorder.block('kelpi pane capture (destination shell)', text.slice(-1600));
                     /**
-                     * The needle is `kelpi inspect batch`, not `# kelpi inspect batch`.
+                     * The needle is `inspect batch`, not `kelpi inspect batch` and certainly not
+                     * `# kelpi inspect batch`.
                      *
                      * What lands in the destination is a SHELL's echo of a pasted line, and a
                      * line long enough to wrap is re-drawn by readline — so `pane capture` can
-                     * return the header's halves in either order and with the leading `# `
-                     * consumed by the redraw. That is a terminal fact, not a payload defect:
-                     * the three assertions below read the payload itself and are exact. Match
-                     * the header's distinguishing words, over the de-wrapped text as well as
-                     * the raw rows.
+                     * return the header's halves in either order and with characters missing from
+                     * the seam the redraw wrote over. The comment here used to allow for the
+                     * leading `# ` going; #203 recorded a run where the `k` of `kelpi` went too:
+                     *
+                     *     26-09-12T10:37:18.782Z (2 items)elpi inspect batch 20
+                     *
+                     * which is the whole header, tail first, with one character eaten, and which
+                     * neither `kelpi inspect batch` nor its de-wrapped form can match. That is a
+                     * terminal fact, not a payload defect: the two assertions below read the
+                     * payload itself and are exact. So match the shortest phrase that is still
+                     * unmistakably this header and sits clear of the line's start, over the
+                     * de-wrapped text as well as the raw rows.
+                     *
+                     * The detail is a READING, not a label: the row the header landed on, and when
+                     * the needle is on no single row (the redraw split it, or nothing arrived) the
+                     * capture's LAST three rows. The capture is `--scrollback`, so its head is the
+                     * first row of the destination shell's whole session (an `ls` from step 2 of a
+                     * full run) and only its tail is the neighbourhood of the send. A failure then
+                     * shows what the shell actually drew, which is what #203 had to be re-run to
+                     * find out.
                      */
                     const dewrapped = text.split('\n').join('');
+                    const rows = text.split('\n').map((row) => row.trim()).filter((row) => row !== '');
+                    const tail = rows.slice(-3).join(' ⏎ ');
+                    const headerRow = rows.find((row) => row.includes('inspect batch')) ?? (tail === '' ? '(no output)' : tail);
                     recorder.check(
                         'the batch header reached the shell pane',
-                        text.includes('kelpi inspect batch') || dewrapped.includes('kelpi inspect batch'),
-                        'header present'
+                        text.includes('inspect batch') || dewrapped.includes('inspect batch'),
+                        headerRow.slice(0, 200)
                     );
                     recorder.check('the payload names both picked elements', text.includes('hello') && text.includes('go'), 'both selectors present');
                     recorder.check('the annotation rode along', text.includes('the page heading'), 'comment present');
@@ -6200,7 +6325,8 @@ function buildFlows(ctx) {
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
-                await view.click('#hello');
+                await installWitness(view);
+                const helloBox = await view.click('#hello');
                 await sleep(700);
 
                 // ── WEB-140: the popover's header and placement rules ───────────────
@@ -6225,6 +6351,43 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`popover placement: ${JSON.stringify(placement)}`);
+
+                /*
+                 * #206 - the precondition every reading below rests on, asserted once.
+                 *
+                 * Without it a pick that did not happen was not one failure but a wall of them:
+                 * seven `undefined` placement readings, and then `document.querySelector(
+                 * '[data-kelpi-batch-comment]').focus()` threw "Cannot read properties of null",
+                 * which aborted the step at 7 assertions against a baseline of 20 and turned a
+                 * plain red into a step error. So: name the precondition, say WHICH guard declined
+                 * the click (`lib/web-batch.mjs`), tear the batch down the way the tail of this
+                 * step does, and leave. One clear failure, and the next step inherits a clean pane.
+                 */
+                const picked = placement !== null;
+                const pickProbe = picked ? null : await probePick(view, helloBox);
+                if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                recorder.check(
+                    'the click on #hello made a pick, so there is a popover to inspect (#206)',
+                    picked,
+                    picked ? 'the popover is up' : `no pick from this step's click: ${describePickGuards(pickProbe)}`
+                );
+                if (!picked) {
+                    // The step is `needsEyes`, and a missed pick is exactly the run whose picture
+                    // is worth having: the panel, the pane and whatever is in front of the window.
+                    await recorder.shot(page, 'no-pick');
+                    view.close();
+                    await page.eval(
+                        `(() => {
+                            const cancel = document.querySelector('[data-testid="web-batch-cancel-${paneID}"]');
+                            if (cancel !== null) cancel.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(600);
+                    recorder.eyes('the "no-pick" shot: whether the batch panel is up, and what is in front of the window');
+                    return;
+                }
+
                 recorder.check(
                     'the popover header is "#<label> <selector>" (WEB-140)',
                     /^#1\s+#hello$/.test(String(placement?.header ?? '').trim()),
@@ -6280,10 +6443,9 @@ function buildFlows(ctx) {
 
                 // …and NOT while the user is typing in it: the guard is what stops the two
                 // editors fighting over the cursor.
-                await view.eval(
-                    `(() => { const t = document.querySelector('[data-kelpi-batch-comment]'); t.focus();
-                              t.value = 'typed in the page'; return document.activeElement === t; })()`
-                );
+                // Null-guarded (#206): with no popover this used to be the step error, not a check.
+                const typedInPage = await view.eval(focusPageCommentSource('typed in the page'));
+                recorder.note(`typing straight into the page textarea: ${JSON.stringify(typedInPage)}`);
                 if (String(rowComment) !== '') {
                     await page.click(`[data-testid="${String(rowComment)}"]`);
                     await page.insertText(' MORE');
@@ -9329,201 +9491,254 @@ function buildFlows(ctx) {
                 const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
                 recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim());
                 if (created.code !== 0) return;
-                await settleDom(
-                    page,
-                    `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
-                        .includes(${JSON.stringify(workspaceName)})`,
-                    { ceilingMs: 1500, intervalMs: 60 }
-                );
-
-                const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
-                const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
-                recorder.check('a web pane is open on the fixture', paneID !== null, String(paneID));
-                if (paneID === null) return;
-                await settleDom(
-                    page,
-                    `document.querySelector('[data-testid="web-page-${paneID}"]')?.getAttribute('data-visible') === 'true'`,
-                    { ceilingMs: 3000, intervalMs: 80 }
-                );
 
                 /*
-                 * The fixture has to be LOADED in that view before the menu opens, and the hole
-                 * being placed does not say so: the client places the view the moment the pane
-                 * exists, while the host is still bootstrapping the tab (`about:blank` first, then
-                 * the real navigation). Measured with the shell's focus trace at this step's own
-                 * pace: the view was attached 13 ms before the right-click, the fixture's
-                 * navigation STARTED 38 ms after it and committed at 46 ms. A poster capture asked
-                 * for in that window is in flight on the about:blank renderer when the fixture
-                 * commits in a new one, and dies with `target closed while handling command` - a
-                 * real no, so the client cooled the pane and parked without a frame, and every
-                 * assertion below failed with "no frame ever carried a poster". The standalone
-                 * harness (`poster-swap-flicker.mjs`) never hit it because it settles the hole for
-                 * 400 ms first; this step went straight from placement to right-click.
-                 *
-                 * The pane-scoped read is `kelpi web url`: the host answers with the live view's
-                 * own title, which exists only once the fixture's document does (the web-pane step
-                 * reads the same line for the same reason).
+                 * The ID, so the delete below cannot be ambiguous. `workspace create` does
+                 * not enforce unique names, so a `poster-swap` left behind by a crashed
+                 * earlier run makes this create succeed and a delete BY NAME fail: the daemon
+                 * resolves strictly and refuses a tie rather than picking one, and the step
+                 * would leave two. The id is free, printed by the create it already ran.
                  */
-                const loaded = await settle(
-                    async () => {
-                        const url = await cli.run(['web', 'url', '--target', paneID], { timeoutMs: 20_000 });
-                        return url.stdout.startsWith(site.url) && url.stdout.includes('Kelpi UI Audit Fixture');
-                    },
-                    { ceilingMs: 15_000, intervalMs: 120 }
-                );
-                recorder.check(
-                    'the fixture is loaded in the pane\'s own view before the menu opens',
-                    loaded,
-                    loaded ? 'kelpi web url reports the fixture title' : 'the live view never reported the fixture title'
-                );
-                if (!loaded) return;
-                // ...and steady: the hole has stopped moving and the shell has finished placing
-                // the view, so the "before" frames the net compares against are settled ones.
-                await settleStable(
-                    () =>
-                        page.eval(
-                            `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
-                              if (el === null) return null;
-                              const r = el.getBoundingClientRect();
-                              return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
-                                      el.getAttribute('data-visible')].join('/'); })()`
-                        ),
-                    { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
-                );
+                const workspaceID = (/\(([0-9a-f-]{36})\)/i.exec(created.stdout) ?? [])[1] ?? null;
+                recorder.check('and the create reported its id', workspaceID !== null, String(workspaceID));
+                const target = workspaceID ?? workspaceName;
 
-                // The shell's lines, stamped as they arrive: the only observable for "the native
-                // view is being drawn", since a `WebContentsView` never appears in the renderer's
-                // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which
-                // biases every comparison below TOWARDS the fix — see the harness's header.
-                const stamps = [];
-                let consumed = runtime.shell?.lines.length ?? 0;
-                const pump = setInterval(() => {
-                    const lines = runtime.shell?.lines ?? [];
-                    while (consumed < lines.length) {
-                        const line = lines[consumed];
-                        consumed += 1;
-                        if (line.includes(`web pane ${paneID} view owner=`)) stamps.push({ at: Date.now(), line });
-                    }
-                }, 1);
-
+                // Everything below is inside the try whose `finally` cleans this workspace up.
                 try {
-                    await page.eval(`(() => {
-                        window.__kelpiPosterNet = { frames: [] };
-                        const tick = () => {
-                            const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
-                            if (hole === null) return;
-                            const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
-                            const box = img === null ? null : img.getBoundingClientRect();
-                            window.__kelpiPosterNet.frames.push({
-                                at: Date.now(),
-                                dpr: window.devicePixelRatio,
-                                visible: hole.getAttribute('data-visible'),
-                                poster: img === null ? null : {
-                                    naturalW: img.naturalWidth, naturalH: img.naturalHeight,
-                                    box: Math.round(box.x) + ',' + Math.round(box.y) + ' ' +
-                                         Math.round(box.width) + '×' + Math.round(box.height),
-                                    w: box.width, h: box.height
-                                }
-                            });
-                            requestAnimationFrame(tick);
-                        };
-                        requestAnimationFrame(tick);
-                        return true;
-                    })()`);
+                    await settleDom(
+                        page,
+                        `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
+                            .includes(${JSON.stringify(workspaceName)})`,
+                        { ceilingMs: 1500, intervalMs: 60 }
+                    );
 
-                    await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
-                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') !== null`, {
-                        ceilingMs: 3000,
-                        intervalMs: 50
-                    });
-                    // Long enough for the park, the paint and a few settled frames either side.
+                    const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+                    const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                    recorder.check('a web pane is open on the fixture', paneID !== null, String(paneID));
+                    if (paneID === null) return;
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="web-page-${paneID}"]')?.getAttribute('data-visible') === 'true'`,
+                        { ceilingMs: 3000, intervalMs: 80 }
+                    );
+
+                    /*
+                     * The fixture has to be LOADED in that view before the menu opens, and the hole
+                     * being placed does not say so: the client places the view the moment the pane
+                     * exists, while the host is still bootstrapping the tab (`about:blank` first, then
+                     * the real navigation). Measured with the shell's focus trace at this step's own
+                     * pace: the view was attached 13 ms before the right-click, the fixture's
+                     * navigation STARTED 38 ms after it and committed at 46 ms. A poster capture asked
+                     * for in that window is in flight on the about:blank renderer when the fixture
+                     * commits in a new one, and dies with `target closed while handling command` - a
+                     * real no, so the client cooled the pane and parked without a frame, and every
+                     * assertion below failed with "no frame ever carried a poster". The standalone
+                     * harness (`poster-swap-flicker.mjs`) never hit it because it settles the hole for
+                     * 400 ms first; this step went straight from placement to right-click.
+                     *
+                     * The pane-scoped read is `kelpi web url`: the host answers with the live view's
+                     * own title, which exists only once the fixture's document does (the web-pane step
+                     * reads the same line for the same reason).
+                     */
+                    const loaded = await settle(
+                        async () => {
+                            const url = await cli.run(['web', 'url', '--target', paneID], { timeoutMs: 20_000 });
+                            return url.stdout.startsWith(site.url) && url.stdout.includes('Kelpi UI Audit Fixture');
+                        },
+                        { ceilingMs: 15_000, intervalMs: 120 }
+                    );
+                    recorder.check(
+                        'the fixture is loaded in the pane\'s own view before the menu opens',
+                        loaded,
+                        loaded ? 'kelpi web url reports the fixture title' : 'the live view never reported the fixture title'
+                    );
+                    if (!loaded) return;
+                    // ...and steady: the hole has stopped moving and the shell has finished placing
+                    // the view, so the "before" frames the net compares against are settled ones.
                     await settleStable(
                         () =>
                             page.eval(
-                                `(() => { const net = window.__kelpiPosterNet;
-                                  const last = net.frames[net.frames.length - 1];
-                                  return JSON.stringify([last?.visible ?? null, last?.poster?.box ?? null]); })()`
+                                `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
+                                  if (el === null) return null;
+                                  const r = el.getBoundingClientRect();
+                                  return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
+                                          el.getAttribute('data-visible')].join('/'); })()`
                             ),
-                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
                     );
-                    await page.key('Escape');
-                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') === null`, {
-                        ceilingMs: 2000,
-                        intervalMs: 50
-                    });
-                    await settleStable(
-                        () => Promise.resolve(String(stamps.length)),
-                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+
+                    // The shell's lines, stamped as they arrive: the only observable for "the native
+                    // view is being drawn", since a `WebContentsView` never appears in the renderer's
+                    // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which
+                    // biases every comparison below TOWARDS the fix — see the harness's header.
+                    const stamps = [];
+                    let consumed = runtime.shell?.lines.length ?? 0;
+                    const pump = setInterval(() => {
+                        const lines = runtime.shell?.lines ?? [];
+                        while (consumed < lines.length) {
+                            const line = lines[consumed];
+                            consumed += 1;
+                            if (line.includes(`web pane ${paneID} view owner=`)) stamps.push({ at: Date.now(), line });
+                        }
+                    }, 1);
+
+                    try {
+                        await page.eval(`(() => {
+                            window.__kelpiPosterNet = { frames: [] };
+                            const tick = () => {
+                                const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
+                                if (hole === null) return;
+                                const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
+                                const box = img === null ? null : img.getBoundingClientRect();
+                                window.__kelpiPosterNet.frames.push({
+                                    at: Date.now(),
+                                    dpr: window.devicePixelRatio,
+                                    visible: hole.getAttribute('data-visible'),
+                                    poster: img === null ? null : {
+                                        naturalW: img.naturalWidth, naturalH: img.naturalHeight,
+                                        box: Math.round(box.x) + ',' + Math.round(box.y) + ' ' +
+                                             Math.round(box.width) + '×' + Math.round(box.height),
+                                        w: box.width, h: box.height
+                                    }
+                                });
+                                requestAnimationFrame(tick);
+                            };
+                            requestAnimationFrame(tick);
+                            return true;
+                        })()`);
+
+                        await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
+                        await settleDom(page, `document.querySelector('[data-testid="context-menu"]') !== null`, {
+                            ceilingMs: 3000,
+                            intervalMs: 50
+                        });
+                        // Long enough for the park, the paint and a few settled frames either side.
+                        await settleStable(
+                            () =>
+                                page.eval(
+                                    `(() => { const net = window.__kelpiPosterNet;
+                                      const last = net.frames[net.frames.length - 1];
+                                      return JSON.stringify([last?.visible ?? null, last?.poster?.box ?? null]); })()`
+                                ),
+                            { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        );
+                        await page.key('Escape');
+                        await settleDom(page, `document.querySelector('[data-testid="context-menu"]') === null`, {
+                            ceilingMs: 2000,
+                            intervalMs: 50
+                        });
+                        await settleStable(
+                            () => Promise.resolve(String(stamps.length)),
+                            { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        );
+                    } finally {
+                        clearInterval(pump);
+                    }
+
+                    const net = JSON.parse(
+                        String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
+                    );
+                    const frames = net.frames ?? [];
+                    const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
+                    const restored = stamps.find(
+                        (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
+                    );
+                    recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
+                    recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
+                    if (parked === undefined || restored === undefined) return;
+
+                    const carried = frames.filter((frame) => frame.poster !== null);
+                    const first = carried[0] ?? null;
+                    recorder.check(
+                        'the still frame is on screen BEFORE the view is handed back (issue #12)',
+                        first !== null && first.at <= parked.at,
+                        first === null
+                            ? '(no frame ever carried a poster)'
+                            : `${String(parked.at - first.at)}ms before the park (negative = the gap the owner saw)`
+                    );
+
+                    const between = frames.filter((frame) => frame.at >= parked.at && frame.at <= restored.at);
+                    const blank = between.filter((frame) => frame.poster === null);
+                    recorder.check(
+                        'no sampled frame while the pane is parked shows an empty hole',
+                        between.length > 0 && blank.length === 0,
+                        `${String(between.length - blank.length)}/${String(between.length)} frames carried the picture`
+                    );
+
+                    // The last placement line the shell logged for this pane. Read here rather than
+                    // through `web-popup-layering`'s own `embedOf`, which is local to that step.
+                    const placementLine =
+                        (runtime.shell?.lines ?? [])
+                            .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
+                            .at(-1) ?? '';
+                    const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
+                    const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
+                    const sample = between.find((frame) => frame.poster !== null) ?? first;
+                    recorder.check(
+                        'the picture stands on the box the view was placed at',
+                        want !== null && sample !== null && sample.poster.box === want,
+                        `poster ${String(sample?.poster?.box)} vs view ${String(want)}`
+                    );
+                    recorder.check(
+                        'and it is 1:1 in device pixels, not a resampled copy',
+                        sample !== null &&
+                            sample.poster.naturalW === Math.round(sample.poster.w * sample.dpr) &&
+                            sample.poster.naturalH === Math.round(sample.poster.h * sample.dpr),
+                        sample === null
+                            ? '(no sample)'
+                            : `natural ${String(sample.poster.naturalW)}×${String(sample.poster.naturalH)} at dpr ${String(sample.dpr)}`
+                    );
+                    recorder.note(
+                        `frames=${String(frames.length)} carrying=${String(carried.length)} ` +
+                            `park→restore=${String(restored.at - parked.at)}ms`
                     );
                 } finally {
-                    clearInterval(pump);
+                    /*
+                     * CLEANUP, AND IT IS ASSERTED (#202).
+                     *
+                     * `workspace delete` takes POSITIONAL names or ids and rejects any leading-dash
+                     * token it does not know (`packages/cli/src/commands/workspace.ts:200-206`); the
+                     * `--name` its sibling `workspace create` takes three dozen lines above is exactly
+                     * the trap. This call used to pass `--name`, `cli.run` swallowed the exit 1 and
+                     * the settle below returned false without anyone reading it, so `poster-swap`'s
+                     * workspace stayed ACTIVE for the next 28 steps: `appearance-system-stats`,
+                     * `agent-start`, `agent-notification` and `footer-git-stats` all pick their pane
+                     * from daemon-wide state, found the sandbox's first pane in another workspace, and
+                     * failed on a header that is not in the DOM.
+                     *
+                     * `shards.mjs` calls this step "roster-neutral only if it completes", and the
+                     * shard planner is built on that. These two checks are what makes it true.
+                     *
+                     * IN A `finally` for the same reason. The body above returns early three times
+                     * once the workspace exists (no web pane, the fixture never loaded, no park or
+                     * restore sample) and can throw at any `cli.ok` or `page.eval` in between, and
+                     * `report.mjs`'s `guard` carries on with the next step after a step error. As
+                     * the last statement of the body this was still #202 on every one of those
+                     * paths, with the two checks below not recorded at all, so the step's
+                     * assertion count moved with the path it took. The `try` opens after the
+                     * create's own early return, so this runs on every path that made a workspace
+                     * and on no path that did not.
+                     */
+                    const removed = await cli.run(['workspace', 'delete', target, '--force'], { timeoutMs: 40_000 });
+                    recorder.check(
+                        'the step deletes the scratch workspace it created',
+                        removed.code === 0,
+                        removed.code === 0
+                            ? `exit 0 (${target})`
+                            : `exit ${String(removed.code)}: ${`${removed.stderr}${removed.stdout}`.trim().slice(0, 160)}`
+                    );
+                    const rowGone = await settleDom(
+                        page,
+                        `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                            .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
+                        { ceilingMs: 3000, intervalMs: 60 }
+                    );
+                    recorder.check(
+                        'and the run is left with the workspace roster it started with',
+                        rowGone,
+                        rowGone ? 'no poster-swap row' : 'the poster-swap row is still in the sidebar'
+                    );
                 }
-
-                const net = JSON.parse(
-                    String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
-                );
-                const frames = net.frames ?? [];
-                const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
-                const restored = stamps.find(
-                    (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
-                );
-                recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
-                recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
-                if (parked === undefined || restored === undefined) return;
-
-                const carried = frames.filter((frame) => frame.poster !== null);
-                const first = carried[0] ?? null;
-                recorder.check(
-                    'the still frame is on screen BEFORE the view is handed back (issue #12)',
-                    first !== null && first.at <= parked.at,
-                    first === null
-                        ? '(no frame ever carried a poster)'
-                        : `${String(parked.at - first.at)}ms before the park (negative = the gap the owner saw)`
-                );
-
-                const between = frames.filter((frame) => frame.at >= parked.at && frame.at <= restored.at);
-                const blank = between.filter((frame) => frame.poster === null);
-                recorder.check(
-                    'no sampled frame while the pane is parked shows an empty hole',
-                    between.length > 0 && blank.length === 0,
-                    `${String(between.length - blank.length)}/${String(between.length)} frames carried the picture`
-                );
-
-                // The last placement line the shell logged for this pane. Read here rather than
-                // through `web-popup-layering`'s own `embedOf`, which is local to that step.
-                const placementLine =
-                    (runtime.shell?.lines ?? [])
-                        .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
-                        .at(-1) ?? '';
-                const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
-                const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
-                const sample = between.find((frame) => frame.poster !== null) ?? first;
-                recorder.check(
-                    'the picture stands on the box the view was placed at',
-                    want !== null && sample !== null && sample.poster.box === want,
-                    `poster ${String(sample?.poster?.box)} vs view ${String(want)}`
-                );
-                recorder.check(
-                    'and it is 1:1 in device pixels, not a resampled copy',
-                    sample !== null &&
-                        sample.poster.naturalW === Math.round(sample.poster.w * sample.dpr) &&
-                        sample.poster.naturalH === Math.round(sample.poster.h * sample.dpr),
-                    sample === null
-                        ? '(no sample)'
-                        : `natural ${String(sample.poster.naturalW)}×${String(sample.poster.naturalH)} at dpr ${String(sample.dpr)}`
-                );
-                recorder.note(
-                    `frames=${String(frames.length)} carrying=${String(carried.length)} ` +
-                        `park→restore=${String(restored.at - parked.at)}ms`
-                );
-
-                await cli.run(['workspace', 'delete', '--name', workspaceName, '--force'], { timeoutMs: 40_000 });
-                await settleDom(
-                    page,
-                    `![...document.querySelectorAll('[data-testid="workspace-row"]')]
-                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
-                    { ceilingMs: 1500, intervalMs: 60 }
-                );
             }
         },
 
@@ -10588,6 +10803,11 @@ function buildFlows(ctx) {
                         )
                     );
 
+                // Declared out here, not in the `try`, so the `finally` can hand a borrowed pane
+                // back even when a throw skips the early close inside Phase 0. An extra shell
+                // pane surviving this step is the leak class `clickPaneHeader`'s note records.
+                let borrowedSibling = null;
+
                 try {
                     for (let attempt = 0; attempt < 50 && !activationReady; attempt++) await sleep(160);
                     recorder.check('the stand-in shell is attached to the daemon', activationReady);
@@ -10602,20 +10822,75 @@ function buildFlows(ctx) {
                     await cli.ok(['event', 'session-start'], { paneID, stdin: JSON.stringify({ session_id: sessionID }) });
                     await sleep(600);
 
-                    // Phase 0 — the control. With the app ACTIVE the clear fires as it always
-                    // has (§AGNT-055), so the two phases below are measuring a gate rather than
-                    // a timer that was never running: the audit window is frequently not the
-                    // frontmost app, and without this the "it survived" assertion could pass for
-                    // the wrong reason.
+                    // Phase 0, the control. What it proves is narrower than it used to be: that
+                    // the dwell mechanism is LIVE in this app instance, so the survival assertion
+                    // below cannot pass on a timer that never existed. It is no longer a
+                    // one-variable contrast with the background phase, because under the current
+                    // rule that phase's survival is over-determined (a status raised on the
+                    // already focused pane survives whether or not the app is active); the
+                    // activation gate itself is measured by §AGNT-056's second half.
+                    //
+                    // The dwell arms on a FOCUS, never on a status change of the pane already
+                    // wearing the ring: `useFocusDwell`'s effect is keyed on the focused pane id
+                    // with the status read through a ref (#108, and §5.8 of docs/agent-lifecycle.md
+                    // records the trade-off deliberately, so an agent stopping under the user's
+                    // nose keeps its badge until the next focus or activation). So park the ring
+                    // on a sibling, raise the status while it is parked, and click back in: that
+                    // click is the focus event the product now asks for. NOT the deactivate then
+                    // activate route, which is byte for byte what §AGNT-056's second half below
+                    // already measures, and would stop this being an independent control.
                     await setActive(true);
+                    const domIDs = await domPaneIDs(page);
+                    let sibling = (await cli.json(['pane', 'list', '--json'])).find(
+                        (item) => item.is_active_workspace === true && item.id !== paneID && domIDs.includes(item.id)
+                    )?.id;
+                    // Under `--only` the active workspace can hold this pane alone (the trap
+                    // `agent-start` hit: a pane from a BACKGROUND workspace has no header in the
+                    // DOM to click). Borrow one and hand it straight back, so the header width
+                    // the badge assertions below depend on is the one this step started with.
+                    if (sibling === undefined) {
+                        const split = await cli.json(['pane', 'split', '--target', paneID, '--json']);
+                        sibling = typeof split?.pane_id === 'string' ? split.pane_id : undefined;
+                        borrowedSibling = sibling ?? null;
+                        await sleep(1500);
+                    }
+                    if (sibling === undefined) {
+                        // The borrow yielded no id, so the ring cannot leave the pane and the
+                        // click below is a click on an already focused pane: no focus change, no
+                        // arm. Say so, rather than let the red read like the #192 symptom.
+                        recorder.note('no sibling to park focus on: the click back cannot be a focus change, so this control cannot arm');
+                    } else {
+                        recorder.note(`parking focus on ${sibling} so the click back into ${paneID} is a real focus event`);
+                        await clickPaneHeader(page, sibling);
+                    }
                     await cli.ok(['event', 'error', '--message', 'Audit: control run'], { paneID });
+                    // The client draws the ring from a LOCAL focus echo, so a click flips
+                    // `focusedPaneID` without waiting for the daemon. If the status delta has not
+                    // reached the store by the render that click causes, `useFocusDwell` reads an
+                    // idle status and returns without arming, and the delta arriving afterwards
+                    // cannot re-arm. Settling here is free: the ring is parked, so nothing can
+                    // clear the pane while we wait.
+                    await sleep(500);
+                    recorder.note(`before the click back: status=${String(await paneStatus())}`);
+                    await clickPaneHeader(page, paneID);
                     await sleep(1600);
                     const activeClear = await paneStatus();
                     recorder.check(
-                        'with the app active, the 600 ms dwell clears the focused pane (§AGNT-055)',
+                        'with the app active, focusing the pane arms the 600 ms dwell and clears it (§AGNT-055)',
                         activeClear === 'idle',
                         `status=${String(activeClear)}`
                     );
+                    // Hand it back HERE, not in the `finally`, so the header the badge assertions
+                    // below read is full width again. The re-click is insurance, not a no-op by
+                    // contract: everything after this needs the ring on `paneID` (§AGNT-056's
+                    // second half arms the dwell on the FOCUSED pane), and one round trip is
+                    // cheaper than a red misattributed to the dwell.
+                    if (borrowedSibling !== null) {
+                        await cli.run(['pane', 'close', '--target', borrowedSibling]);
+                        borrowedSibling = null;
+                        await sleep(900);
+                        await clickPaneHeader(page, paneID);
+                    }
 
                     await setActive(false);
                     const shellLogMark = runtime.shell.text().length;
@@ -10775,9 +11050,14 @@ function buildFlows(ctx) {
                         'the quit dialog: is the destructive Quit legible, is Cancel’s focus visible, does it read as the same app as the delete confirmation?'
                     );
                 } finally {
-                    // Whatever happened above: the session is detached, the app is active again,
-                    // the page has no leftover audit global, the socket is closed, and focus is
-                    // back where it was.
+                    // Whatever happened above: the borrowed pane is gone, the session is
+                    // detached, the app is active again, the page has no leftover audit global,
+                    // the socket is closed, and focus is back where it was.
+                    if (borrowedSibling !== null) {
+                        recorder.note(`returning the borrowed sibling ${borrowedSibling} after an early exit`);
+                        await cli.run(['pane', 'close', '--target', borrowedSibling]);
+                        await sleep(900);
+                    }
                     await cli.run(['event', 'session-end'], {
                         paneID,
                         stdin: JSON.stringify({ session_id: 'audit-life-0000-0001' })

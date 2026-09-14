@@ -204,3 +204,61 @@ describe('remote-revoke', () => {
         expect(names).toEqual(['new', 'old']);
     });
 });
+
+describe('remote-delete', () => {
+    it('removes a REVOKED device and persists it, and the registry read no longer shows it', async () => {
+        const file = registryFile();
+        const remote = channel(file, tailscale({}));
+        const keep = (await remote.pair('keeper', false)) as Record<string, unknown>;
+        const drop = (await remote.pair('ghost', false)) as Record<string, unknown>;
+        const dropID = (drop['device'] as Record<string, unknown>)['id'] as string;
+        await remote.revoke(dropID);
+
+        const reply = (await remote.delete(dropID)) as Record<string, unknown>;
+        expect(reply['ok']).toBe(true);
+        // The reply names the entry that WAS there, revocation timestamp and all.
+        expect(reply['device']).toMatchObject({ id: dropID, name: 'ghost' });
+        expect((reply['device'] as Record<string, unknown>)['revoked_at']).toBeDefined();
+
+        // Persisted: the file itself, and the status the UI re-reads, are both without it.
+        expect(loadDevices(file).map((device) => device.name)).toEqual(['keeper']);
+        const status = (await remote.status()) as Record<string, unknown>;
+        expect((status['devices'] as { id: string }[]).map((device) => device.id)).toEqual([
+            (keep['device'] as Record<string, unknown>)['id']
+        ]);
+    });
+
+    it('refuses a LIVE device with words pointing at revoke, and changes nothing', async () => {
+        const file = registryFile();
+        const remote = channel(file, tailscale({}));
+        const minted = (await remote.pair('phone', false)) as Record<string, unknown>;
+        const id = (minted['device'] as Record<string, unknown>)['id'] as string;
+
+        const reply = (await remote.delete(id)) as Record<string, unknown>;
+        expect(reply['ok']).toBe(false);
+        expect(reply['error']).toContain('revoke it first');
+        // Not revoked-and-deleted, and not revoked either: the entry is untouched.
+        expect(loadDevices(file)).toHaveLength(1);
+        expect(loadDevices(file)[0]?.revokedAt).toBeUndefined();
+    });
+
+    it('reports an unknown target rather than pretending it dropped something', async () => {
+        const file = registryFile();
+        const remote = channel(file, tailscale({}));
+        const reply = (await remote.delete('nope')) as Record<string, unknown>;
+        expect(reply).toEqual({ ok: false, error: 'no device matches "nope"' });
+    });
+
+    it('turns an ambiguous revoked name into the error that names the way out', async () => {
+        const file = registryFile();
+        const remote = channel(file, tailscale({}));
+        for (let pairing = 0; pairing < 2; pairing += 1) {
+            const minted = (await remote.pair('goku', false)) as Record<string, unknown>;
+            await remote.revoke((minted['device'] as Record<string, unknown>)['id'] as string);
+        }
+        const reply = (await remote.delete('goku')) as Record<string, unknown>;
+        expect(reply['ok']).toBe(false);
+        expect(reply['error']).toContain('delete by id instead');
+        expect(loadDevices(file)).toHaveLength(2);
+    });
+});

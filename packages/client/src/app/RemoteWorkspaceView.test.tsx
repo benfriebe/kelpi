@@ -142,6 +142,14 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
             setSplitRatioAtPath: vi.fn((input: { workspaceID: string; splitPath: string; ratio: number }) => {
                 calls.push(`ratio:${input.workspaceID}:${input.splitPath}:${input.ratio.toFixed(6)}`);
                 return Promise.resolve({ ok: true });
+            }),
+            movePaneAdjacent: vi.fn((input: { target: string; anchor: string; zone: string }) => {
+                calls.push(`move:${input.target}:${input.anchor}:${input.zone}`);
+                return Promise.resolve({ ok: true });
+            }),
+            createPane: vi.fn((input: { workspace: string }) => {
+                calls.push(`create:${input.workspace}`);
+                return Promise.resolve({ ok: true });
             })
         },
         activateWorkspace: vi.fn((workspaceID: string) => {
@@ -183,8 +191,8 @@ describe('RemoteWorkspaceView (§1.7)', () => {
      * the grid's own measurement (no ResizeObserver in jsdom, so it listens for `resize`), the
      * same way `App.layout-divider.test.tsx` does for the primary window.
      */
-    function renderTiled(): { calls: string[] } {
-        const { runtime, calls } = remoteRuntime(TILED_2X2);
+    function renderMeasured(shape: Shape = TILED_2X2): { calls: string[] } {
+        const { runtime, calls } = remoteRuntime(shape);
         render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />);
         const container = screen.getByTestId('pane-grid');
         Object.defineProperty(container, 'clientWidth', { configurable: true, value: SIZE.width });
@@ -203,7 +211,7 @@ describe('RemoteWorkspaceView (§1.7)', () => {
      * §7.4 says every drag commits; the path spelling (`set-split-ratio`, §LAY-061) is how.
      */
     it('commits a both-children-are-splits divider by split path to the REMOTE daemon (#54)', () => {
-        const { calls } = renderTiled();
+        const { calls } = renderMeasured();
         const divider = screen.getByTestId('divider-d');
         // On the root bar, clear of the two column dividers' bands (T-junction re-resolution).
         act(() => firePointer(divider, 'pointerdown', { clientX: 399, clientY: 100 }));
@@ -218,7 +226,7 @@ describe('RemoteWorkspaceView (§1.7)', () => {
     });
 
     it('still spells an addressable divider as a pane resize on the REMOTE daemon', () => {
-        const { calls } = renderTiled();
+        const { calls } = renderMeasured();
         // "dL" is the left column's divider: its children are leaves, so a pane names it.
         const divider = screen.getByTestId('divider-dL');
         act(() => firePointer(divider, 'pointerdown', { clientX: 100, clientY: 299 }));
@@ -226,6 +234,22 @@ describe('RemoteWorkspaceView (§1.7)', () => {
         act(() => firePointer(window, 'pointerup', { clientX: 100, clientY: 359 }));
         expect(calls.some((call) => call.startsWith(`resize:${TILE[0]}:`))).toBe(true);
         expect(calls.some((call) => call.startsWith('ratio:'))).toBe(false);
+    });
+
+    /**
+     * #144: the header drag commits through `onMovePane?.()`, which the view never passed, so
+     * on a remote daemon the pane lifted, the drop zone highlighted and the drop was discarded
+     * while the same gesture reordered a local workspace. The wire vocabulary is the second
+     * half of the fix: `pane-move-adjacent` takes `right-of`, not the grid's `right`.
+     */
+    it('routes a header drag-and-drop to the REMOTE daemon as a pane move (#144)', () => {
+        const { calls } = renderMeasured(SIDE_BY_SIDE);
+        const header = screen.getByTestId(`pane-header-${SHELL}`);
+        act(() => firePointer(header, 'pointerdown', { clientX: 40, clientY: 10, pointerId: 7 }));
+        // Into the right half of the second pane (x 401..800), clear of its vertical centre.
+        act(() => firePointer(window, 'pointermove', { clientX: 700, clientY: 300, pointerId: 7 }));
+        act(() => firePointer(window, 'pointerup', { clientX: 700, clientY: 300, pointerId: 7 }));
+        expect(calls).toContain(`move:${SHELL}:${NOTE}:right-of`);
     });
 
     it('says so when the workspace is gone or the daemon is still connecting', () => {

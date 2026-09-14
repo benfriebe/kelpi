@@ -2,7 +2,8 @@
  * `group-*` command handlers (socket-handlers.md §7).
  *
  * `group-list` / `group-reorder` / `group-sort` are request/response; `group-create` /
- * `group-rename` / `group-delete` are fire-and-forget (an unresolvable name is a silent no-op).
+ * `group-rename` / `group-delete` / `group-move` are fire-and-forget (an unresolvable name is a
+ * silent no-op).
  *
  * The reorder/sort pair share one handler: both rewrite the group's `childOrder`, both preserve
  * ids whose workspace vanished at the TAIL of the stored order, and both reply with the LIVE
@@ -133,6 +134,29 @@ function handleGroupDelete(
 }
 
 // ---------------------------------------------------------------------------
+// group-move (§7.5, fire-and-forget)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar's header drag: the group's own slot in `topLevelOrder`, which `group-reorder`
+ * (a group's `childOrder`) has no way to express. Fire-and-forget like `workspace-move`, so an
+ * unresolvable group or an out-of-range slot is a silent no-op: the reducer clamps nothing and
+ * simply returns the state untouched, and the client's shadow order then reverts on the next
+ * broadcast, which is the honest answer to a stale drag.
+ */
+function handleGroupMove(
+    nameOrID: string,
+    index: number,
+    ctx: AppContext,
+    deps: AppDeps
+): void {
+    const group = resolveGroupStrict(resolveStateOf(ctx.store.getState()), nameOrID);
+    if (group === null) return;
+    ctx.store.dispatch({ type: 'move-group', id: group.id, toIndex: index });
+    deps.persist();
+}
+
+// ---------------------------------------------------------------------------
 // group-reorder / group-sort (§7.4)
 // ---------------------------------------------------------------------------
 
@@ -240,6 +264,9 @@ export function groupHandlerEntries(deps: AppDeps): readonly (readonly [string, 
         }),
         forCommand('group-delete', (msg, ctx, reply) => {
             handleGroupDelete(msg.name, msg.cascade, ctx, reply, deps);
+        }),
+        forCommand('group-move', (msg, ctx) => {
+            handleGroupMove(msg.name, msg.index, ctx, deps);
         }),
         forCommand('group-reorder', (msg, ctx, reply) => {
             handleGroupReorder(msg.name, msg.order, null, ctx, reply, deps);

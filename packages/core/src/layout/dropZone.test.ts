@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
     calculateDropZone,
     draggedPaneGoesFirst,
+    DROP_ZONES,
     dropZoneForWireEdge,
     dropZoneOverlayRect,
     movingPane,
-    splitDirectionOfZone
+    splitDirectionOfZone,
+    wireEdgeForDropZone
 } from './dropZone.js';
 import { allPaneIDs } from './tree.js';
 import type { Rect } from './types.js';
@@ -37,6 +39,16 @@ describe('DropZone helpers', () => {
         expect(dropZoneForWireEdge('below')).toBe('bottom');
         expect(dropZoneForWireEdge('left-of')).toBe('left');
         expect(dropZoneForWireEdge('right-of')).toBe('right');
+    });
+
+    it('spells a GUI drop zone back as the wire edge, both ways round', () => {
+        expect(wireEdgeForDropZone('top')).toBe('above');
+        expect(wireEdgeForDropZone('bottom')).toBe('below');
+        expect(wireEdgeForDropZone('left')).toBe('left-of');
+        expect(wireEdgeForDropZone('right')).toBe('right-of');
+        for (const zone of DROP_ZONES) {
+            expect(dropZoneForWireEdge(wireEdgeForDropZone(zone))).toBe(zone);
+        }
     });
 });
 

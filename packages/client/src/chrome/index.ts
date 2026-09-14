@@ -125,7 +125,14 @@ export {
     type ChromeStyleTheme
 } from './presets';
 export { CommandPalette, FOCUS_HANDOFF_MS, type CommandPaletteProps } from './CommandPalette';
-export { ContextMenu, menuAnchorFromEvent, type ContextMenuProps, type MenuItemSpec } from './ContextMenu';
+export {
+    ContextMenu,
+    menuAnchorFromEvent,
+    menuPlacement,
+    type ContextMenuProps,
+    type MenuAvoidRect,
+    type MenuItemSpec
+} from './ContextMenu';
 export {
     HELP_GITHUB_URL,
     HELP_CLI_ENTRIES,

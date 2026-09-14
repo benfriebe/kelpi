@@ -228,6 +228,36 @@ NOT reproduce the stall (stop stayed at 5 to 8 ms), so which socket population a
 here; `lastStopMs` / `lastStartMs` and the shutdown-line note exist so the next reader can tell a
 hung shutdown from a slow machine.
 
+**Fixed (#212, 2026-09-14).** The population the note above left
+open is a connection whose RESPONSE is still in flight, not an idle one. Node 19 and later already
+sweep genuinely idle keep-alive connections inside `close()` itself, which is why the plain `fetch`
+probe never reproduced the stall; what that sweep deliberately spares is a fetch the peer stopped
+reading, such as an abandoned `/plugin-assets/...` request left behind when a plugin view is
+rebuilt. An upgraded socket is a second hole: Node drops it from the list behind
+`closeIdleConnections()` and `closeAllConnections()` while still counting it as an open connection.
+`ws/server.ts` ▸ `closeAsync` now calls `server.closeIdleConnections()` the moment the listener
+closes and, after a 250 ms grace, `server.closeAllConnections()` plus a destroy of every accepted
+socket (collected from the server's own `connection` event), so it always resolves; the WebSocket
+goodbye path is unchanged. `packages/daemon/src/ws/server.test.ts` pins all three populations: one
+idle keep-alive socket and one carrying a 4 MB response the client never drains, and, in a second
+case, a hand-rolled upgrade whose client never answers the goodbye (the only one the raw-socket
+destroy reaches). Each asserts `stop()` resolves inside two seconds and reports that timeout rather
+than hanging the suite when the sweep it covers is removed. Measured live:
+five runs of `node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter
+--window hidden`, **51/51 + 34/34 every time**, ten restarts in all, `lastStopMs` of **13, 9, 13,
+10, 13, 10, 20, 10, 14 and 10 ms** with every replaced daemon logging `kelpid stopped`, against nine
+of fourteen interaction runs at the 8 s cap before. `pnpm check` passes: all typechecks, root vitest
+**7,935 passed, 1 skipped** (511 files, the same optional database skip), shell **870 passed**.
+
+Shipped as [#218](https://github.com/benfriebe/kelpi/pull/218) from `fix/daemon-close-idle-connections`. Tested revision
+**`ec8a928`** (the fix `2a82f8c`, the upgraded-socket test and per-listener socket set `6c93d7b`,
+and the unconditional bound with outcome-independent tests `ec8a928`; `server.test.ts` 25/25, root
+vitest **7,936 passed, 1 skipped**). `node scripts/verify.mjs --full` at `ec8a928` **passed in 24.0 min
+with no component retried** (all scenarios hidden 5.3 min, full audit 17.8 min, packaged smoke
+69/69), and at `2a82f8c` before the amendments in 24.9 min, also unretried; the lane's two daemon
+restarts stopped in 14 and 10 ms. The three leak warnings are the pre-existing ones recorded for
+#213 and #214.
+
 Not established here: physical devices; the phone form factor for either arm (a phone is granted
 no presenter at all, so rule 3 has nothing to do there that the phone's own rule has not already
 done); the 240-calls-per-second budget breach, which remains a unit test.
@@ -941,7 +971,8 @@ KELPI_PLUGIN_PACKAGED=1 node scripts/scenario.mjs plugin-remote --no-build
 
 The last command requires a packaged app built from the revision being tested. The original
 implementation worktree initially lacked
-the vendored Ghostty engine's ignored `dist/`; validation built it from the checked-in
+the vendored Ghostty engine's ignored `dist/` (the bundle is tracked since
+[#6](https://github.com/benfriebe/kelpi/issues/6)); validation built it from the checked-in
 vendor source and refreshed the local file dependency. No tracked vendor runtime source
 was changed. `out/` is local output. `docs/audit/` is ignored by default, but selected evidence
 has been explicitly committed; see [Reading the evidence](#reading-the-evidence).

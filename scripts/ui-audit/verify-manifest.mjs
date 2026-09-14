@@ -74,7 +74,9 @@ function runAlone(id) {
     return new Promise((resolve) => {
         const child = spawn(
             process.execPath,
-            [path.join(here, 'audit.mjs'), '--out', dir, '--no-build', '--window', options.window, '--only', id],
+            // `--no-chain`: `--only` brings a step's declared chain with it now (#203), and this
+            // instrument's whole measurement is the step ALONE, with nothing before it.
+            [path.join(here, 'audit.mjs'), '--out', dir, '--no-build', '--no-chain', '--window', options.window, '--only', id],
             { cwd: repoRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }
         );
         clearBackgroundTaskPolicy(child.pid);

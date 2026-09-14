@@ -75,7 +75,8 @@ export {
     dropZoneForWireEdge,
     dropZoneOverlayRect,
     movingPane,
-    splitDirectionOfZone
+    splitDirectionOfZone,
+    wireEdgeForDropZone
 } from './dropZone.js';
 
 export type { Direction } from './neighbor.js';

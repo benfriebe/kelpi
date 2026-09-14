@@ -167,7 +167,7 @@ export interface WorkspaceWorktreeRequest {
  */
 export type SubmitResult = Promise<string | null> | string | null | void | boolean;
 
-/** Top-level group reorder. No wire verb today — assembly decides how to persist it. */
+/** Top-level group reorder, carried by the `group-move` wire verb. */
 export interface GroupMoveRequest {
     readonly groupID: string;
     readonly index: number;

@@ -1092,6 +1092,19 @@ children promote to top level; with it, member workspaces are deleted too).
 `order` contains only the **live** members (the preserved dangling ids are excluded from
 the reply), full UUID strings, final order. Then persist state.
 
+### 7.5 `group-move` → fire-and-forget
+
+Inputs: `nameOrID`, `index` (both required). Strict `resolveGroup`; null ⇒ silent no-op.
+Dispatch move-group(groupID, toIndex=index), then persist.
+
+This is the group's own slot in `topLevelOrder` (app-state-core.md §4.7): the sidebar's
+group-header drag, the counterpart of §6.3 for a whole group block. The reducer removes the
+header entry then inserts it at `toIndex`, so the index is read against the POST-move order,
+which is exactly what the sidebar's `groupCommit` derives; a `toIndex` equal to the current
+one, or outside `0 ..< topLevelOrder.count`, leaves state untouched (and therefore broadcasts
+nothing, so a stale drag springs back rather than landing somewhere arbitrary). Members ride
+along with the header: only the group's entry lives in the top-level order.
+
 ---
 
 ## 8. File & layout commands (all fire-and-forget)
@@ -1327,7 +1340,8 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,
-`group-rename`, `group-delete`, `open`, `diff`, `layout-cycle`, `layout-select`.
+`group-rename`, `group-delete`, `group-move`, `open`, `diff`, `layout-cycle`,
+`layout-select`.
 
 ---
 

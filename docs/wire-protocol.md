@@ -261,7 +261,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    its own field guards (documented per command in §6): `workspace-create`,
    `workspace-list`, `workspace-move`, `workspace-delete`, `workspace-profile`,
    `workspace-label`, `group-list`, `group-create`, `group-rename`, `group-delete`,
-   `group-reorder`, `group-sort`, `open`, `diff`, `pane-close`, `pane-list`,
+   `group-move`, `group-reorder`, `group-sort`, `open`, `diff`, `pane-close`, `pane-list`,
    `pane-capture`, `graft-start`, `graft-stop`, `graft-status`, `ping`, all `web-*`
    commands, `pane-sync`, `pane-sync-exclude`, `pane-send-key`, `pane-send`,
    `pane-split`, `pane-create`, `pane-name`, `pane-resize`, `pane-move-adjacent`.
@@ -330,9 +330,9 @@ web-exec
 Everything else is **fire-and-forget**: `start`, `stop`, `error`, `notification`,
 `session-start`, `session-end`, `pane-move`, `pane-move-to-workspace`,
 `workspace-move`, `workspace-profile`, `group-create`, `group-rename`, `group-delete`,
-`layout-cycle`, `layout-select`, `open`, `diff`. For these the wire behavior is
-byte-identical to the pre-request/response protocol: the server reads, acts, and never
-writes.
+`group-move`, `layout-cycle`, `layout-select`, `open`, `diff`. For these the wire
+behavior is byte-identical to the pre-request/response protocol: the server reads, acts,
+and never writes.
 
 ---
 
@@ -493,6 +493,7 @@ carry `"command"`.
 | `group-create` | F&F | `name` | `color` |
 | `group-rename` | F&F | `name`, `new_name` | — |
 | `group-delete` | F&F | `name` | `cascade` |
+| `group-move` | F&F | `name`, `index` | — |
 | `group-reorder` | R/R | `name` | `order` |
 | `group-sort` | R/R | `name`, `by` | `descending` |
 | `layout-cycle` | F&F | `pane_id` | — |
@@ -1009,6 +1010,18 @@ children promote to top level).
 {"command":"group-delete","name":"projects","cascade":true}
 ```
 
+#### `group-move` (F&F)
+
+`name` (name-or-id) and `index` (int) both required. The slot is the group's own place
+in the sidebar's TOP-LEVEL order (app-state-core.md §4.7), which is the group-header
+drag. `index` is the slot in the post-move order (the handler removes then inserts), and
+one outside `0 ..< count` is a silent no-op, as is an unresolvable `name`. `group-reorder`
+is the other axis entirely: it rewrites a group's member order.
+
+```json
+{"command":"group-move","name":"projects","index":0}
+```
+
 #### `group-reorder` (R/R)
 
 `name` (name-or-id) required non-empty; `order` = array of member tokens (each a
@@ -1274,7 +1287,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `new_name` | string | `group-rename` |
 | `cascade` | bool | `group-delete` |
 | `force` | bool | `workspace-delete` |
-| `index` | int | `workspace-move` |
+| `index` | int | `workspace-move`, `group-move` |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |
 | `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |

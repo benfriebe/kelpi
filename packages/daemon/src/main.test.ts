@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from './boot/index.js';
 import { openSqliteDatabase } from './db/index.js';
-import { createDeviceValidator, loadDevices, type TailscaleRunner } from './lifecycle/index.js';
+import { createDeviceValidator, loadDevices, mintDevice, type TailscaleRunner } from './lifecycle/index.js';
 import { helpText, parseKelpidArgs, resolveEntry, runKelpid, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -118,6 +118,31 @@ describe('parseKelpidArgs', () => {
         expect(parseKelpidArgs(['devices', 'revoke', 'start'])).toMatchObject({
             command: 'devices',
             deviceTarget: 'start'
+        });
+        expect(parseKelpidArgs(['devices', 'delete', 'abc123'])).toMatchObject({
+            command: 'devices',
+            deviceAction: 'delete',
+            deviceTarget: 'abc123'
+        });
+        // `remove` is the same verb, so both spellings route to the same action.
+        expect(parseKelpidArgs(['devices', 'remove', 'abc123'])).toMatchObject({
+            command: 'devices',
+            deviceAction: 'delete',
+            deviceTarget: 'abc123'
+        });
+        // Only the FIRST word is the action: a device called "revoke" is deletable by name.
+        expect(parseKelpidArgs(['devices', 'delete', 'revoke'])).toMatchObject({
+            command: 'devices',
+            deviceAction: 'delete',
+            deviceTarget: 'revoke'
+        });
+        // And a bare `devices delete` parses as the action with no target - a usage error the
+        // command itself reports, not a parse failure.
+        expect(parseKelpidArgs(['devices', 'delete'])).toMatchObject({
+            command: 'devices',
+            deviceAction: 'delete',
+            deviceTarget: undefined,
+            error: undefined
         });
     });
 
@@ -225,6 +250,54 @@ describe('with no daemon running', () => {
         const missing = io(env);
         expect(await runKelpid(['devices', 'revoke', 'nobody'], missing)).toBe(1);
         expect(missing.text()).toContain('no paired device matches');
+
+        // So does deleting one; and a delete with no target is a usage error before anything
+        // is read, the same shape `revoke` has.
+        const missingDelete = io(env);
+        expect(await runKelpid(['devices', 'delete', 'nobody'], missingDelete)).toBe(1);
+        expect(missingDelete.text()).toContain('no paired device matches');
+
+        const targetless = io(env);
+        expect(await runKelpid(['devices', 'delete'], targetless)).toBe(2);
+        expect(targetless.text()).toContain('Usage: kelpid devices delete <id|name>');
+    });
+
+    it('deletes a revoked device through the CLI and refuses a live one', async () => {
+        const paths = scratch();
+        const devicesPath = path.join(paths.root, 'devices.json');
+        const env = { KELPID_DEVICES_PATH: devicesPath };
+        // Minted directly: `pair` needs a running daemon to have a URL to print, and the
+        // registry verbs under test never touch one.
+        const alice = mintDevice(devicesPath, 'alice');
+        const bob = mintDevice(devicesPath, 'bob');
+
+        // A live device is refused, and told what to do first - nothing is written.
+        const live = io(env);
+        expect(await runKelpid(['devices', 'delete', bob.device.id], live)).toBe(1);
+        expect(live.stdout).toEqual([]);
+        expect(live.text()).toContain('revoke it first');
+        expect(loadDevices(devicesPath)).toHaveLength(2);
+
+        // By NAME too: "no paired device matches" would be a lie about a device the very next
+        // `kelpid devices` prints as live, and it would hide the step that has to come first.
+        const liveByName = io(env);
+        expect(await runKelpid(['devices', 'delete', 'bob'], liveByName)).toBe(1);
+        expect(liveByName.text()).toContain('revoke it first');
+        expect(liveByName.text()).not.toContain('no paired device matches');
+        expect(loadDevices(devicesPath)).toHaveLength(2);
+
+        // Revoke, then delete: the two-step model, and `devices` stops listing it.
+        const revoke = io(env);
+        expect(await runKelpid(['devices', 'revoke', bob.device.id], revoke)).toBe(0);
+        const remove = io(env);
+        expect(await runKelpid(['devices', 'delete', bob.device.id], remove)).toBe(0);
+        expect(remove.stdout.join('\n')).toContain(`deleted "bob" (device ${bob.device.id})`);
+        expect(loadDevices(devicesPath).map((device) => device.id)).toEqual([alice.device.id]);
+
+        const list = io(env);
+        expect(await runKelpid(['devices'], list)).toBe(0);
+        expect(list.stdout.join('\n')).toContain('alice');
+        expect(list.stdout.join('\n')).not.toContain(bob.device.id);
     });
 
     it('fails `url` with a hint on stderr and nothing on stdout', async () => {

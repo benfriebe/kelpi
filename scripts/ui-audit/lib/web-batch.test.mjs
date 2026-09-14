@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
     NO_COMMENT_TEXTAREA,
+    OVERLAY_ATTRS,
     describePickGuards,
     focusPageCommentSource,
     installPickWitnessSource,
@@ -175,9 +178,22 @@ describe('describePickGuards', () => {
         expect(describePickGuards(probe())).toContain('the payload was posted and the host dropped it');
     });
 
+    it('says the pick DID happen when the page still shows one, rather than blaming the host', () => {
+        // The pickup step's check fails for reasons other than a missed pick: a popover with no
+        // buttons, or a Done button that was relabelled or reordered. The witness sees an armed,
+        // non-overlay click with no open popover in every one of those, so without this branch a
+        // button regression would be reported as a payload the host dropped.
+        for (const still of [{ popover: true }, { markers: 2 }, { popover: true, markers: 2 }]) {
+            const line = describePickGuards(probe(still));
+            expect(line).toContain('a pick DID happen');
+            expect(line).toContain('downstream of the pick');
+            expect(line).not.toContain('host dropped it');
+        }
+    });
+
     it('carries all four readings whichever guard declined', () => {
         const line = describePickGuards(probe());
-        for (const facet of ['clicks seen', 'page focus', 'visibility', 'under the pointer']) {
+        for (const facet of ['clicks seen', 'page focus', 'visibility', 'under the pointer', 'popover now']) {
             expect(line).toContain(facet);
         }
     });
@@ -189,5 +205,17 @@ describe('describePickGuards', () => {
 
     it('says the witness was missing rather than guessing', () => {
         expect(describePickGuards(probe({ witness: null }))).toContain('no click witness was installed');
+    });
+});
+
+describe('OVERLAY_ATTRS', () => {
+    it('still matches the product list it is a copy of', () => {
+        // The one thing here that breaks silently: a new overlay attribute in the page script means
+        // the witness reports `overlay: false` for a click the picker declined as an overlay, and
+        // the diagnostic then blames the host for a guard that did decline.
+        const source = fs.readFileSync(new URL('../../../packages/shell/src/webhost/scripts.ts', import.meta.url), 'utf8');
+        const declared = /const OVERLAY_ATTRS = \[([^\]]*)\]/.exec(source);
+        expect(declared, 'OVERLAY_ATTRS is no longer declared as a literal array in scripts.ts').not.toBe(null);
+        expect(OVERLAY_ATTRS).toEqual([...declared[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]));
     });
 });

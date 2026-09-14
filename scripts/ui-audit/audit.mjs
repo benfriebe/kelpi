@@ -1149,6 +1149,24 @@ async function webViewSession(sandbox, site, repoRoot) {
 }
 
 /**
+ * Install the click witness in the embedded page (#206), and never throw doing it.
+ *
+ * `probePick` below is non-throwing because it runs on the failure path. This one runs on the
+ * NORMAL path, where a throw would be worse still: it would end the step the way #206 ended, over
+ * the diagnostic rather than over the thing being diagnosed. Returns whether the witness went in,
+ * and a step that ignores that is not flying blind, because the probe has a verdict for a witness
+ * that is not there.
+ */
+async function installWitness(view) {
+    try {
+        await view.eval(installPickWitnessSource());
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Read the embedded page back after a pick that did not happen (#206).
  *
  * Never throws. This only ever runs on the failure path, where an exception would replace the
@@ -6001,7 +6019,7 @@ function buildFlows(ctx) {
                      * click arrives, and because zero clicks seen is the positive control that
                      * separates "the picker declined" from "the click never reached the page".
                      */
-                    await view.eval(installPickWitnessSource());
+                    await installWitness(view);
                     const helloBox = await view.click('#hello');
                     await sleep(700);
                     // WEB-142/WEB-143: the pick opens its comment popover, and while that is open
@@ -6018,12 +6036,15 @@ function buildFlows(ctx) {
                             return done.textContent;
                         })()`
                     );
-                    const pickProbe = dismissed === 'Done' ? null : await probePick(view, helloBox);
+                    // Only `'no popover'` is a missed pick. `'no button'` and any other label mean
+                    // the popover DID open, so the guards are not what failed and the reading to
+                    // report is the one the popover gave back.
+                    const pickProbe = dismissed === 'no popover' ? await probePick(view, helloBox) : null;
                     if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
                     recorder.check(
                         'the pick opened its comment popover, with a Done button',
                         dismissed === 'Done',
-                        dismissed === 'Done' ? String(dismissed) : describePickGuards(pickProbe)
+                        pickProbe === null ? String(dismissed) : describePickGuards(pickProbe)
                     );
                     await sleep(500);
                     await view.click('#go');
@@ -6239,7 +6260,7 @@ function buildFlows(ctx) {
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
-                await view.eval(installPickWitnessSource());
+                await installWitness(view);
                 const helloBox = await view.click('#hello');
                 await sleep(700);
 
@@ -6298,6 +6319,7 @@ function buildFlows(ctx) {
                         })()`
                     );
                     await sleep(600);
+                    recorder.eyes('the "no-pick" shot: whether the batch panel is up, and what is in front of the window');
                     return;
                 }
 

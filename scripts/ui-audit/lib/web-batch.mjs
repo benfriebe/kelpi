@@ -163,11 +163,16 @@ const facet = (label, value) => `${label} ${value === null || value === undefine
 /**
  * Say WHICH guard declined the click, in one line fit for a check's detail.
  *
- * The order of the tests is the order `onClick` applies them, with "the click never arrived" first
- * because it is not a guard at all and it invalidates every reading after it. The last branch is
- * the interesting one: every guard passed, so the picker posted the payload and the host dropped
- * it, and that is the only verdict here that points at the app rather than at the harness or the
- * machine it is sharing.
+ * "The click never arrived" comes first because it is not a guard at all and it invalidates every
+ * reading after it; the three guards follow.
+ *
+ * The last two branches are the ones to read carefully, because only they can accuse the product.
+ * `popover`/`markers` are checked FIRST: a popover or a numbered badge on the page means the pick
+ * happened and whatever failed, failed after it (a relabelled Done button, a button order change,
+ * a WEB-140 regression), which is not a picker guard at all. Only when no guard declined AND the
+ * page shows no trace of a pick is the payload posted and dropped by the host, and that last one is
+ * the single verdict here that points at the app rather than at the harness or the machine it is
+ * sharing. Getting that precedence backwards would report a button regression as a dropped payload.
  */
 export function describePickGuards(probe) {
     if (probe === null || probe === undefined || typeof probe !== 'object') {
@@ -188,6 +193,7 @@ export function describePickGuards(probe) {
             : `${probe.underPointer.node}${probe.underPointer.overlay === true ? ' (an overlay)' : ''}`),
         facet('page focus', probe.focus),
         facet('visibility', probe.visibility),
+        facet('popover now', probe.popover),
         facet('markers now', probe.markers)
     ].join(', ');
 
@@ -204,6 +210,10 @@ export function describePickGuards(probe) {
         guard = 'a popover was already open, which suspends the picker until Done dismisses it';
     } else if (clicked?.overlay === true) {
         guard = `the click landed on one of the picker's own overlay surfaces (${String(clicked.target)}), which are not pick targets`;
+    } else if (probe.popover === true || (probe.markers ?? 0) > 0) {
+        guard =
+            'a pick DID happen (a popover and/or a numbered marker is on the page), so the failure is ' +
+            'downstream of the pick rather than a picker guard';
     } else {
         guard =
             'no guard declined: the click reached an armed picker, with no open popover and not on an ' +

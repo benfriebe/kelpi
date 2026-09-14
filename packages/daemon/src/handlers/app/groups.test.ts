@@ -167,6 +167,51 @@ describe('group-create / rename / delete', () => {
     });
 });
 
+describe('group-move', () => {
+    /** w1 at top level, `team` holding w2 and w3: the order a header drag reorders. */
+    function mixed() {
+        const h = harness({ initial: seeded(3) });
+        h.dispatch(
+            { type: 'create-group', id: G1, name: 'team', now: NOW },
+            { type: 'move-workspace-to-group', id: W2, groupID: G1 },
+            { type: 'move-workspace-to-group', id: W3, groupID: G1 }
+        );
+        return h;
+    }
+
+    it('moves the group’s own slot in the top-level order, members riding along', () => {
+        const h = mixed();
+        expect(h.state().topLevelOrder).toEqual([
+            { kind: 'workspace', id: W1 },
+            { kind: 'group', id: G1 }
+        ]);
+        expect(h.send({ command: 'group-move', name: 'team', index: 0 })).toEqual([]);
+        expect(h.state().topLevelOrder).toEqual([
+            { kind: 'group', id: G1 },
+            { kind: 'workspace', id: W1 }
+        ]);
+        // The move is `topLevelOrder` only: `group-reorder`'s axis is untouched.
+        expect(h.state().groups[0]?.childOrder).toEqual([W2, W3]);
+        expect(h.persists).toHaveLength(1);
+    });
+
+    it('resolves the group by id as well as by name', () => {
+        const h = mixed();
+        h.send({ command: 'group-move', name: G1, index: 0 });
+        expect(h.state().topLevelOrder[0]).toEqual({ kind: 'group', id: G1 });
+    });
+
+    it('no-ops on an unresolvable name or a slot outside the order', () => {
+        const h = mixed();
+        const before = h.state();
+        h.send({ command: 'group-move', name: 'ghost', index: 0 });
+        expect(h.state()).toBe(before);
+        expect(h.persists).toEqual([]);
+        h.send({ command: 'group-move', name: 'team', index: 7 });
+        expect(h.state().topLevelOrder).toEqual(before.topLevelOrder);
+    });
+});
+
 describe('group-reorder', () => {
     it('rewrites the child order from an explicit list', () => {
         const h = grouped();

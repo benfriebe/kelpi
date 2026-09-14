@@ -256,6 +256,17 @@ export interface GroupDeleteMessage {
     cascade: boolean;
 }
 
+/**
+ * The group's own slot in the SIDEBAR's top-level order (app-state-core.md §4.7), which is the
+ * header drag. `group-reorder` is the other axis: it rewrites a group's `childOrder`, and cannot
+ * express this move.
+ */
+export interface GroupMoveMessage {
+    command: 'group-move';
+    name: string;
+    index: number;
+}
+
 export interface GroupReorderMessage {
     command: 'group-reorder';
     name: string;
@@ -561,6 +572,7 @@ export type WireMessage =
     | GroupCreateMessage
     | GroupRenameMessage
     | GroupDeleteMessage
+    | GroupMoveMessage
     | GroupReorderMessage
     | GroupSortMessage
     | LayoutCycleMessage
@@ -621,6 +633,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'group-create',
     'group-rename',
     'group-delete',
+    'group-move',
     'group-reorder',
     'group-sort',
     'open',

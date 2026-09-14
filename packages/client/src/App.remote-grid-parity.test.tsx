@@ -11,6 +11,11 @@
  * remote one. The handlers the remote view deliberately leaves out are listed below WITH their
  * reason, and the list is compared exactly: adding a new callback to `App`, or closing one of
  * these gaps, has to come past this test.
+ *
+ * Scope, so nobody over-trusts it: this covers the `on*` commit callbacks ONLY. Parity of the
+ * VALUE props is deliberately not checked, and the remote mount is genuinely missing several
+ * (`homeDirectory`, `focusFollowsMouse`, `syncActive`, …). Those are their own bugs with their
+ * own answers, not gestures the grid silently swallows.
  */
 
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
@@ -111,10 +116,18 @@ function renderPrimary(): Record<string, unknown> {
     act(() => {
         completeHandshake(sockets.last(), { state: snapshotState() });
     });
-    return lastMount();
+    const props = lastMount();
+    // The DESKTOP grid, not the phone shell's: `focusFollowsMouse` is passed by that mount
+    // alone. If a form-factor change ever made `phoneActive` true under jsdom, this is a
+    // legible failure instead of a silent substitution of the other mount.
+    expect(props).toHaveProperty('focusFollowsMouse');
+    return props;
 }
 
 function renderRemote(): Record<string, unknown> {
+    // Forget the primary window's mounts: without this, a remote view that stopped mounting a
+    // grid at all would hand `lastMount()` the PRIMARY props back and pass vacuously.
+    recorder.mounts.length = 0;
     const sockets = createFakeSocketFactory();
     const runtime = createKelpiRuntime({
         url: 'ws://remote.test/ws',

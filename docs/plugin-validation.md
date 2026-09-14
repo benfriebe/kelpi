@@ -228,7 +228,7 @@ NOT reproduce the stall (stop stayed at 5 to 8 ms), so which socket population a
 here; `lastStopMs` / `lastStartMs` and the shutdown-line note exist so the next reader can tell a
 hung shutdown from a slow machine.
 
-**Fixed on `fix/daemon-close-idle-connections` (2026-09-14).** The population the note above left
+**Fixed (#212, 2026-09-14).** The population the note above left
 open is a connection whose RESPONSE is still in flight, not an idle one. Node 19 and later already
 sweep genuinely idle keep-alive connections inside `close()` itself, which is why the plain `fetch`
 probe never reproduced the stall; what that sweep deliberately spares is a fetch the peer stopped
@@ -238,9 +238,11 @@ rebuilt. An upgraded socket is a second hole: Node drops it from the list behind
 `ws/server.ts` ▸ `closeAsync` now calls `server.closeIdleConnections()` the moment the listener
 closes and, after a 250 ms grace, `server.closeAllConnections()` plus a destroy of every accepted
 socket (collected from the server's own `connection` event), so it always resolves; the WebSocket
-goodbye path is unchanged. `packages/daemon/src/ws/server.test.ts` holds one idle keep-alive socket
-and one carrying a 4 MB response the client never drains, then asserts `stop()` resolves inside a
-second; with the sweep removed it reports that timeout rather than hanging the suite. Measured live:
+goodbye path is unchanged. `packages/daemon/src/ws/server.test.ts` pins all three populations: one
+idle keep-alive socket and one carrying a 4 MB response the client never drains, and, in a second
+case, a hand-rolled upgrade whose client never answers the goodbye (the only one the raw-socket
+destroy reaches). Each asserts `stop()` resolves inside two seconds and reports that timeout rather
+than hanging the suite when the sweep it covers is removed. Measured live:
 five runs of `node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter
 --window hidden`, **51/51 + 34/34 every time**, ten restarts in all, `lastStopMs` of **13, 9, 13,
 10, 13, 10, 20, 10, 14 and 10 ms** with every replaced daemon logging `kelpid stopped`, against nine

@@ -205,6 +205,23 @@ function listenAsync(server: Server, host: string, port: number): Promise<number
 const CLOSE_GRACE_MS = 250;
 
 /**
+ * One bound listener and the sockets IT accepted, upgraded or not (`closeAsync` says what the set
+ * is for).
+ *
+ * The set belongs to the listener rather than to the process so that closing one does what its
+ * name says. All the binds go down together today, but the daemon already restarts individual
+ * listeners elsewhere (`boot/compose.ts` ▸ `applyTcpPortSetting`, `restartControlServers`), and
+ * the day an `extraHosts` bind gets the same treatment, a shared set would have it destroy every
+ * loopback client's socket on the way out. The sockets are collected from the server's own
+ * `connection` event rather than from the WebSockets because that fires before any upgrade, which
+ * is the last point at which Node still owns the socket for certain.
+ */
+interface Listener {
+    readonly server: Server;
+    readonly rawSockets: Set<Socket>;
+}
+
+/**
  * Stop listening and RESOLVE, which `server.close()` on its own does not promise (#212).
  *
  * `close()` shuts the listener down at once, but the callback this awaits waits for every
@@ -225,8 +242,14 @@ const CLOSE_GRACE_MS = 250;
  * why one sweep covers both rather than needing a second pass over the WebSockets. Destroying a
  * socket that has already closed is a no-op, and `stop()` sends every WebSocket its goodbye long
  * before this, so a well-behaved client is gone by the time the sweep runs either way.
+ *
+ * Of those two calls the destroy is the load-bearing one: `rawSockets` is a superset of what
+ * `closeAllConnections()` can still reach, so it alone is what unblocks the drain. The
+ * `closeAllConnections()` above it is kept because it states the intent in Node's own vocabulary,
+ * not because anything depends on it; delete the destroy loop and the upgraded sockets are out of
+ * reach again, which is why `server.test.ts` pins that case with a peer that never replies.
  */
-function closeAsync(server: Server, rawSockets: ReadonlySet<Socket>): Promise<void> {
+function closeAsync({ server, rawSockets }: Listener): Promise<void> {
     return new Promise<void>((resolve) => {
         if (!server.listening) {
             resolve();
@@ -313,15 +336,9 @@ export function createWsServer(options: WsServerOptions): WsServer {
     });
 
     const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
-    const servers: Server[] = [];
+    const listeners: Listener[] = [];
     const addresses: WsServerAddress[] = [];
     const sockets = new Set<WebSocket>();
-    /**
-     * Every accepted TCP socket, upgraded or not (`closeAsync` says what it is for). Collected
-     * here rather than from the WebSockets because the `connection` event fires before the
-     * upgrade, which is the only point at which Node still owns the socket for certain.
-     */
-    const rawSockets = new Set<Socket>();
     let boundPort: number | undefined;
     let started = false;
     let stopped = false;
@@ -400,15 +417,16 @@ export function createWsServer(options: WsServerOptions): WsServer {
         });
     };
 
-    const makeServer = (): Server => {
+    const makeListener = (): Listener => {
         const server = createServer(requestListener);
+        const rawSockets = new Set<Socket>();
         server.on('upgrade', handleUpgrade);
         server.on('connection', (socket: Socket) => {
             rawSockets.add(socket);
             socket.on('close', () => rawSockets.delete(socket));
         });
         server.on('clientError', (error) => report(error, 'http-client'));
-        return server;
+        return { server, rawSockets };
     };
 
     return {
@@ -416,17 +434,17 @@ export function createWsServer(options: WsServerOptions): WsServer {
             if (started) return addresses;
             started = true;
 
-            const primary = makeServer();
-            servers.push(primary);
-            boundPort = await listenAsync(primary, host, requestedPort);
+            const primary = makeListener();
+            listeners.push(primary);
+            boundPort = await listenAsync(primary.server, host, requestedPort);
             addresses.push({ host, port: boundPort });
 
             for (const extra of options.extraHosts ?? []) {
                 if (extra === host) continue;
-                const server = makeServer();
+                const listener = makeListener();
                 try {
-                    const port = await listenAsync(server, extra, boundPort);
-                    servers.push(server);
+                    const port = await listenAsync(listener.server, extra, boundPort);
+                    listeners.push(listener);
                     addresses.push({ host: extra, port });
                 } catch (error) {
                     // A tailnet address can disappear between config and bind; the daemon
@@ -451,9 +469,10 @@ export function createWsServer(options: WsServerOptions): WsServer {
             }
             sockets.clear();
             wss.close();
-            await Promise.all(servers.map((server) => closeAsync(server, rawSockets)));
-            servers.length = 0;
-            rawSockets.clear();
+            // One `Promise.all` so the grace in `closeAsync` is paid once for every bind rather
+            // than once per bind; each listener sweeps only the sockets it accepted.
+            await Promise.all(listeners.map((listener) => closeAsync(listener)));
+            listeners.length = 0;
         },
         get port() {
             return boundPort;

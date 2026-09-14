@@ -5,6 +5,7 @@ import {
     encodeAckPayload,
     encodePtyFrame
 } from '@kelpi/protocol';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -178,6 +179,39 @@ function keepAliveRequest(base: string, target: string): Promise<net.Socket> {
         socket.once('error', reject);
         socket.once('connect', () => {
             socket.write(`GET ${target} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: keep-alive\r\n\r\n`);
+            resolve(socket);
+        });
+    });
+}
+
+/**
+ * One WebSocket upgrade, hand-rolled, whose client never writes another byte after the 101: the
+ * server's `close(1001)` goodbye is therefore never answered and `ws` waits out its own 30 s
+ * `closeTimeout`. That is a renderer that was suspended, killed or taken off the network, and it
+ * is the population NOTHING in `closeAsync` reaches except the destroy of the raw sockets.
+ *
+ * Hand-rolled rather than a `ws` client with its close handling unhooked, so the case is stated on
+ * the wire instead of against `ws`'s private fields.
+ */
+function silentUpgrade(base: string): Promise<net.Socket> {
+    const url = new URL(base);
+    const key = randomBytes(16).toString('base64');
+    return new Promise<net.Socket>((resolve, reject) => {
+        const socket = net.connect({ host: url.hostname, port: Number(url.port) });
+        rawClients.push(socket);
+        // A shutdown DESTROYS this socket; that is the assertion, not a failure.
+        socket.on('error', () => {});
+        socket.once('error', reject);
+        socket.once('connect', () => {
+            socket.write(
+                `GET /ws?token=${TOKEN} HTTP/1.1\r\n` +
+                    `Host: ${url.host}\r\n` +
+                    'Upgrade: websocket\r\n' +
+                    'Connection: Upgrade\r\n' +
+                    `Sec-WebSocket-Key: ${key}\r\n` +
+                    'Sec-WebSocket-Version: 13\r\n' +
+                    '\r\n'
+            );
             resolve(socket);
         });
     });
@@ -592,12 +626,15 @@ describe('shutdown', () => {
         const startedAt = Date.now();
         const outcome = await Promise.race([
             f.server.stop().then(() => 'stopped' as const),
-            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 1000))
+            // 2000 ms, not something nearer the 250 ms grace: the failure this guards against is
+            // unbounded, so a loose deadline loses no discriminating power and only buys headroom
+            // on a loaded machine.
+            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 2000))
         ]);
         const elapsed = Date.now() - startedAt;
 
         expect(outcome).toBe('stopped');
-        expect(elapsed).toBeLessThan(1000);
+        expect(elapsed).toBeLessThan(2000);
         await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
         // Both sockets were really taken down rather than merely ignored. A paused client only
         // notices once it reads again, so resume first and then wait for the end of the stream.
@@ -606,6 +643,40 @@ describe('shutdown', () => {
         await vi.waitFor(() => {
             expect(idle.readableEnded || idle.destroyed).toBe(true);
             expect(busy.readableEnded || busy.destroyed).toBe(true);
+        });
+    });
+
+    /**
+     * #212's other half, and the one the sockets above do not cover: a socket that has UPGRADED.
+     * Node drops it from the lists behind `closeIdleConnections()` and `closeAllConnections()`
+     * while still counting it toward the drain `close()`'s callback waits on, so the destroy of
+     * the raw sockets in `closeAsync` is the only thing that frees it. Without that one line every
+     * other test in this file still passes while #212 comes straight back through the route a real
+     * renderer teardown takes: `stop()` sends `close(1001)` and `ws` then waits its 30 s
+     * `closeTimeout` for a goodbye that is never coming.
+     */
+    it('stops within the grace even when an upgraded client never answers the goodbye', async () => {
+        const f = await startServer();
+
+        const ghost = await silentUpgrade(f.base);
+        await readUntil(ghost, '101 Switching Protocols');
+        // Upgraded for real: the server is holding a WebSocket, not a half-finished request.
+        await vi.waitFor(() => expect(f.server.clients).toBe(1));
+
+        const startedAt = Date.now();
+        const outcome = await Promise.race([
+            f.server.stop().then(() => 'stopped' as const),
+            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 2000))
+        ]);
+        const elapsed = Date.now() - startedAt;
+
+        expect(outcome).toBe('stopped');
+        expect(elapsed).toBeLessThan(2000);
+        await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
+        // And the socket was really taken down, not merely left to the hello timeout.
+        ghost.resume();
+        await vi.waitFor(() => {
+            expect(ghost.readableEnded || ghost.destroyed).toBe(true);
         });
     });
 });

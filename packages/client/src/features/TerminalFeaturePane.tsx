@@ -15,6 +15,17 @@ export interface TerminalFeaturePaneProps extends TerminalPaneProps {
     readonly runtime: KelpiRuntime;
     readonly workspaceID: string;
     readonly claimedChords?: readonly string[] | undefined;
+    /**
+     * This pane answers the five terminal editing chords itself, because no window dispatcher
+     * will (#172, #170).
+     *
+     * Opt-in, and set from exactly one place: `app/RemoteWorkspaceView.tsx`, which already
+     * declares this stance for its sibling layer (`NO_WINDOW_CHORDS` / `blockWindowShortcuts`).
+     * In the primary window the window dispatcher is the single owner of every binding, and a
+     * chord it DECLINES has to keep falling through to the engine exactly as it always has, so
+     * the seam must not be attached there.
+     */
+    readonly editingShortcuts?: boolean | undefined;
 }
 
 /** One selected renderer attaches to the existing process, including external editors. */
@@ -68,7 +79,7 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
             </select></label>
             {failed ? <><span role="status">{failed.message || 'Terminal renderer failed.'} The bundled terminal is active.</span><button onClick={() => setFailure(null)}>Retry renderer</button></> : null}
         </div> : null}
-        <div className="min-h-0 flex-1" onKeyDownCapture={replacement ? undefined : event => {
+        <div className="min-h-0 flex-1" onKeyDownCapture={replacement || props.editingShortcuts !== true ? undefined : event => {
             /*
              * #172/#170: the five terminal editing chords, for the BUNDLED engine.
              *
@@ -85,13 +96,17 @@ export function TerminalFeaturePane(props: TerminalFeaturePaneProps): ReactEleme
              * would send the byte to a pane in the hidden local workspace. This handler names the
              * pane the key actually arrived in, and its runtime, so it cannot.
              *
+             * Only where `editingShortcuts` says no dispatcher is coming. The primary window's
+             * dispatcher DECLINES as well as consumes (an empty-selection ⌘C is a decline, by
+             * design - `app/clipboard.ts`), and a decline must keep falling through to the engine
+             * there, so the seam is opt-in rather than attached to every bundled pane.
+             *
              * React dispatches capture handlers from the root container, which is ABOVE the pane
              * host: this runs before the kitty interceptor and before the engine's own listener,
-             * and `stopPropagation()` keeps a consumed chord away from both. The primary window
-             * is untouched because its dispatcher already consumed the chord at window capture
-             * with `preventDefault()` + `stopPropagation()`, which `defaultPrevented` re-checks.
+             * and `stopPropagation()` keeps a consumed chord away from both.
              * `dispatchTerminalEditingShortcut` owns the rest of the guard set (hidden pane,
-             * blocked host, open modal, the global hotkey). Same seam as `BrowserFeaturePane`.
+             * blocked host, open modal, the global hotkey, and its own engine re-entry).
+             * Same seam as `BrowserFeaturePane`.
              */
             if (!event.defaultPrevented && shortcuts.onKey(event)) { event.preventDefault(); event.stopPropagation(); }
         }}>{replacement ? <PluginView runtime={runtime} paneID={paneID} workspaceID={workspaceID}

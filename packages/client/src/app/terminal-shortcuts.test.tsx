@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { parseKeyTrigger } from '@kelpi/core/config';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clientKeyBindings } from '../chrome/keys';
+import { clientKeyBindings, createKeyDispatcher, installKeyDispatcher } from '../chrome/keys';
 import { registerModal } from '../chrome/modal-presence';
 import { createKelpiRuntime, createKelpiStore } from '../state';
 import { completeHandshake, createFakeSocketFactory } from '../connection/testing';
@@ -195,13 +195,15 @@ describe('terminal editing shortcuts across daemon owners', () => {
  * What made it a total failure rather than a near miss: while a remote workspace fills the pane
  * area `App.tsx` reports `hasActiveWorkspace: false`, so `chrome/keys.ts` returns at step 3,
  * before the binding lookup, and EVERY binding is dead - copy, paste, kill_line_backward,
- * move_to_line_start, move_to_line_end. Ctrl+U survived only because nothing binds it. So these
- * tests mount with no window dispatcher installed at all, which is that window exactly.
+ * move_to_line_start, move_to_line_end. Ctrl+U survived only because nothing binds it.
  *
- * The window gate itself is left alone on purpose. `act.lineEdit` and `copy` resolve their pane
- * through `focused()`, which reads the PRIMARY store, so lifting the gate would send `\x15` and
- * read a selection from a pane in the hidden local workspace. Hence the second pane here: every
- * assertion is also an assertion that the other daemon's pane was not the one that answered.
+ * Two panes, on two daemons, rendered the two ways the window renders them: `remote` carries
+ * `editingShortcuts` exactly as `RemoteWorkspaceView` sets it, `local` does not, exactly as
+ * `App.tsx` renders the primary workspace. So every assertion is three at once - the right pane
+ * answered, the other daemon's pane did not, and the primary window's pane has no opinion of its
+ * own because its dispatcher owns the chord. The window gate itself is deliberately untouched:
+ * `act.lineEdit` and `copy` resolve their pane through `focused()`, which reads the PRIMARY
+ * store, so lifting the gate would send the byte into the hidden local workspace instead.
  */
 describe('the bundled terminal renderer in an embedded remote workspace (#172, #170)', () => {
     let observers: ReturnType<typeof installFakeResizeObserver>;
@@ -225,49 +227,140 @@ describe('the bundled terminal renderer in an embedded remote workspace (#172, #
     type Daemon = ReturnType<typeof daemon>;
     /** jsdom measures everything at 0x0; the pane takes its box through this seam. */
     const box = (): { width: number; height: number } => ({ width: 800, height: 480 });
-    const pane = (owner: Daemon) => <TerminalFeaturePane runtime={owner.runtime} workspaceID={owner.workspaceID} paneID={owner.paneID}
-        ptyApi={owner.pty} focused visible createRenderer={owner.renderers.factory} measure={box} />;
+    const pane = (owner: Daemon, editingShortcuts: boolean) => <TerminalFeaturePane runtime={owner.runtime}
+        workspaceID={owner.workspaceID} paneID={owner.paneID} ptyApi={owner.pty} focused visible
+        editingShortcuts={editingShortcuts} createRenderer={owner.renderers.factory} measure={box} />;
     const hostOf = (owner: Daemon): HTMLElement =>
         document.querySelector(`[data-terminal-pane="${owner.paneID}"] [data-terminal-host]`) as HTMLElement;
     const bytes = (owner: Daemon): string[] => owner.pty.streams.flatMap(stream => stream.input);
+    /** Every keydown that got past the pane's capture handler, which is what the engine sees. */
+    const engineSees = (owner: Daemon): string[] => {
+        const seen: string[] = [];
+        hostOf(owner).addEventListener('keydown', event => seen.push(event.code), true);
+        return seen;
+    };
+    /** The window's own host, member for member with `App.tsx`'s provider. */
+    const windowHost = (macLike: boolean): TerminalShortcutHost => {
+        const bindings = clientKeyBindings([], macLike);
+        return { bindings, windowChords: terminalWindowChords(bindings), blocked: () => false, globalHotkey: null, onError: vi.fn() };
+    };
+    /** A real window dispatcher, as `App.tsx` installs one for the PRIMARY workspace. */
+    const windowDispatcher = (macLike: boolean, actions: Record<string, () => boolean>): void => {
+        disposals.push(installKeyDispatcher(window, createKeyDispatcher({
+            bindings: clientKeyBindings([], macLike), actions: actions as never, hasActiveWorkspace: () => true
+        })));
+    };
 
-    async function mount(): Promise<{ primary: Daemon; remote: Daemon }> {
-        const primary = daemon('Local'), remote = daemon('Remote');
-        // The provider is the window's (App.tsx wraps `RemoteWorkspaceView` in it); the window
-        // key dispatcher is not installed, because for a remote workspace it stands down.
-        render(<TerminalShortcutContext.Provider value={{ bindings: clientKeyBindings([], true) }}>
-            {pane(primary)}{pane(remote)}
+    async function mount(macLike = true): Promise<{ local: Daemon; remote: Daemon }> {
+        const local = daemon('Local'), remote = daemon('Remote');
+        render(<TerminalShortcutContext.Provider value={windowHost(macLike)}>
+            {pane(local, false)}{pane(remote, true)}
         </TerminalShortcutContext.Provider>);
         await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-        return { primary, remote };
+        return { local, remote };
     }
 
     it('sends the line-editing byte up the PTY of the daemon whose pane took the chord', async () => {
-        const { primary, remote } = await mount();
+        const { local, remote } = await mount();
         fireEvent.keyDown(hostOf(remote), { code: 'Backspace', metaKey: true });
         expect(bytes(remote)).toEqual(['\x15']);
-        expect(bytes(primary)).toEqual([]);
+        expect(bytes(local)).toEqual([]);
         fireEvent.keyDown(hostOf(remote), { code: 'ArrowLeft', metaKey: true });
         fireEvent.keyDown(hostOf(remote), { code: 'ArrowRight', metaKey: true });
         expect(bytes(remote)).toEqual(['\x15', '\x01', '\x05']);
-        expect(bytes(primary)).toEqual([]);
-        // ...and the local pane still answers for itself, on its own transport.
-        fireEvent.keyDown(hostOf(primary), { code: 'Backspace', metaKey: true });
-        expect(bytes(primary)).toEqual(['\x15']);
+        // ...and a primary-workspace pane answers nothing itself: its dispatcher owns the chord,
+        // and there is none installed here.
+        fireEvent.keyDown(hostOf(local), { code: 'Backspace', metaKey: true });
+        expect(bytes(local)).toEqual([]);
         expect(bytes(remote)).toEqual(['\x15', '\x01', '\x05']);
     });
 
     it('copies the live selection of the pane that took the chord, not the other daemon (#170)', async () => {
         const writeText = vi.fn(async () => {});
         Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
-        const { primary, remote } = await mount();
+        const { local, remote } = await mount();
         act(() => {
-            primary.renderers.last().emitSelection('local shell selection');
+            local.renderers.last().emitSelection('local shell selection');
             remote.renderers.last().emitSelection('codex conversation text');
         });
         fireEvent.keyDown(hostOf(remote), { code: 'KeyC', metaKey: true });
         await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('codex conversation text'));
-        expect(bytes(remote)).toEqual([]); expect(bytes(primary)).toEqual([]);
+        expect(bytes(remote)).toEqual([]); expect(bytes(local)).toEqual([]);
+    });
+
+    it('pastes over the owning daemon commands, never the other one', async () => {
+        Object.defineProperty(navigator, 'clipboard', { value: { readText: vi.fn(async () => 'pasted text') }, configurable: true, writable: true });
+        const { local, remote } = await mount();
+        const dropText = vi.spyOn(remote.runtime.commands, 'dropText').mockResolvedValue({ ok: true });
+        const otherDropText = vi.spyOn(local.runtime.commands, 'dropText').mockResolvedValue({ ok: true });
+        fireEvent.keyDown(hostOf(remote), { code: 'KeyV', metaKey: true });
+        await vi.waitFor(() => expect(dropText).toHaveBeenCalledExactlyOnceWith({ paneID: remote.paneID, text: 'pasted text' }));
+        expect(otherDropText).not.toHaveBeenCalled();
+        fireEvent.keyDown(hostOf(local), { code: 'KeyV', metaKey: true });
+        for (let index = 0; index < 8; index++) await Promise.resolve();
+        expect(otherDropText).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The interrupt, and the recursion it would otherwise cause.
+     *
+     * Off macOS the shipped `super+c=copy` is rewritten to `ctrl+c`, so Ctrl+C resolves `copy`
+     * here. With no selection there is nothing to copy and the physical key belongs to the
+     * terminal, so `dispatchTerminalEditingShortcut` hands it back through `handle.dispatchKey`
+     * - which raises a real `keydown` on the engine's key target, INSIDE this pane. Without the
+     * `raisingAtEngine` guard that key re-enters the capture handler, resolves `copy` again and
+     * hands it back again, forever, and the interrupt reaches the engine at no level at all.
+     */
+    it('hands an empty-selection Ctrl+C back to the engine exactly once, off macOS', async () => {
+        const writeText = vi.fn(async () => {});
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
+        const { remote } = await mount(false);
+        const seen = engineSees(remote);
+        fireEvent.keyDown(hostOf(remote), { code: 'KeyC', key: 'c', ctrlKey: true });
+        expect(remote.renderers.last().keys).toEqual([{ key: 'c', code: 'KeyC', ctrlKey: true }]);
+        expect(seen).toEqual(['KeyC']); // the synthesised one only: the chord itself was consumed.
+        expect(writeText).not.toHaveBeenCalled();
+        expect(bytes(remote)).toEqual([]);
+    });
+
+    it('copies a live selection on that same client and raises nothing at the engine', async () => {
+        const writeText = vi.fn(async () => {});
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true });
+        const { remote } = await mount(false);
+        act(() => remote.renderers.last().emitSelection('codex conversation text'));
+        const seen = engineSees(remote);
+        fireEvent.keyDown(hostOf(remote), { code: 'KeyC', key: 'c', ctrlKey: true });
+        await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('codex conversation text'));
+        expect(remote.renderers.last().keys).toEqual([]);
+        expect(seen).toEqual([]);
+    });
+
+    /**
+     * The primary window keeps its dispatcher as the single owner of every binding, consumed or
+     * DECLINED. A decline is a real state there (`copy` with an empty selection is one, by
+     * design - `app/clipboard.ts`), and it has to keep falling through to the engine untouched,
+     * which is why the seam is opt-in rather than attached to every bundled pane.
+     */
+    it('leaves a primary-workspace pane to the window dispatcher, consumed or declined', async () => {
+        const { local, remote } = await mount();
+        const consumes = vi.fn(() => true);
+        windowDispatcher(true, { kill_line_backward: consumes });
+        const consumed = new KeyboardEvent('keydown', { code: 'Backspace', metaKey: true, bubbles: true, cancelable: true });
+        fireEvent(hostOf(local), consumed);
+        expect(consumes).toHaveBeenCalledTimes(1);
+        expect(consumed.defaultPrevented).toBe(true);
+        expect(bytes(local)).toEqual([]); expect(bytes(remote)).toEqual([]);
+
+        for (const dispose of disposals.splice(-1)) dispose(); // that dispatcher, and only it
+        const declines = vi.fn(() => false);
+        windowDispatcher(true, { kill_line_backward: declines });
+        const seen = engineSees(local);
+        const fell = new KeyboardEvent('keydown', { code: 'Backspace', metaKey: true, bubbles: true, cancelable: true });
+        fireEvent(hostOf(local), fell);
+        expect(declines).toHaveBeenCalledTimes(1);
+        expect(fell.defaultPrevented).toBe(false);
+        expect(seen).toEqual(['Backspace']); // straight on to the engine, as it always did
+        expect(bytes(local)).toEqual([]);
     });
 
     it('leaves an unbound chord to the engine, which is why Ctrl+U kept working all along', async () => {

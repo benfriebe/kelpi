@@ -95,6 +95,13 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 ptyApi={runtime.pty}
                 focused={focused}
                 visible={state.visible}
+                // #172/#170: the same stance as `blockWindowShortcuts` above, for the other half
+                // of the keyboard. The window dispatcher stands down while a remote workspace
+                // fills the pane area (`App.tsx` reports `hasActiveWorkspace: false`), so copy,
+                // paste and the three line edits have to be answered by the pane that took the
+                // chord, against THIS daemon's runtime. In the primary window the dispatcher
+                // still owns them and this stays off.
+                editingShortcuts
                 onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
             />
         );

@@ -1223,9 +1223,10 @@ ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev
 
 ## `source/` — the patched TypeScript, and how to rebuild from it
 
-`dist/` is the artifact the app loads, and the root `.gitignore` ignores every `dist/` in the
-tree — so the built engine is **not** in git and a fresh clone has to rebuild it. `source/` is
-what makes that possible: it is the exact patched tree the shipping `dist/` was built from
+`dist/` is the artifact the app loads, and since #6 it **is** in git: the root `.gitignore`
+ignores every other `dist/` in the tree and un-ignores this one, so a fresh clone installs a
+working engine and needs no rebuild. `source/` is what lets the artifact be regenerated rather
+than trusted: it is the exact patched tree the shipping `dist/` was built from
 (`lib/` including `lib/addons` and `lib/providers` and the upstream unit tests, plus
 `package.json`, `vite.config.js`, `tsconfig.json`, `biome.json`, `.prettierrc`). No
 `node_modules`, no `.git`, no `dist` — those are reproduced, not carried.
@@ -1236,30 +1237,31 @@ that is what upstream's own `v0.4.0` tag says. The `-nex` version lives in this 
 
 ### Rebuild the JavaScript bundle
 
-Run from the Kelpi checkout root with Node 24 or newer and pnpm. This builds from the tracked
-TypeScript and tracked patched WASM; it does not need Bun, Zig or a separate upstream clone.
-The source snapshot has no lockfile, so its build dependencies resolve independently of
-Kelpi's frozen workspace lockfile. Keep the generated scratch directory until verification
-is complete.
+A clone does not need this. Run it only after changing `source/` or `ghostty-vt.wasm`, and
+commit the regenerated `dist/` with that change. The bundle is a tracked artifact, and a
+source edit that does not reach it changes nothing in the app.
+
+Run from the Kelpi checkout root with Node 24 or newer and pnpm:
 
 ```sh
-(
-  set -e
-  KELPI_VENDOR_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kelpi-ghostty.XXXXXX")
-  printf 'Vendor build directory: %s\n' "$KELPI_VENDOR_BUILD"
-  cp -R vendor/ghostty-web-patched/source/. "$KELPI_VENDOR_BUILD/"
-  cp vendor/ghostty-web-patched/ghostty-vt.wasm "$KELPI_VENDOR_BUILD/ghostty-vt.wasm"
-  (
-    cd "$KELPI_VENDOR_BUILD"
-    pnpm install
-    pnpm exec vite build
-    cp ghostty-vt.wasm dist/
-  )
-  mkdir -p vendor/ghostty-web-patched/dist
-  cp -R "$KELPI_VENDOR_BUILD/dist/." vendor/ghostty-web-patched/dist/
-  pnpm install --frozen-lockfile
-)
+pnpm vendor:build
 ```
+
+`scripts/build-vendor-engine.mjs` is that command, and its header carries the reasoning for
+each step. It builds from the tracked TypeScript and tracked patched WASM; it does not need
+Bun, Zig or a separate upstream clone. In order it: copies `source/` into a fresh scratch
+directory outside the checkout; stages `ghostty-vt.wasm` at that directory's root, which is
+what `lib/ghostty.ts`'s `new URL('../ghostty-vt.wasm', import.meta.url)` resolves against and
+therefore what makes vite inline the engine instead of leaving a runtime fetch behind; runs
+`pnpm install --ignore-workspace` and `pnpm exec vite build` there, because the snapshot has no
+lockfile and its build dependencies must resolve independently of Kelpi's frozen workspace
+lockfile; copies the WASM into the built `dist/`; **refuses to publish** unless both bundles
+inline exactly the tracked WASM; replaces `vendor/ghostty-web-patched/dist`; then runs
+`pnpm install --frozen-lockfile` and re-checks the installed copy, since pnpm materialises the
+`file:` override as a copy and a new bundle is invisible to typecheck and tests until it does.
+
+`--keep` retains the scratch directory for inspection; `--no-install` stops before the
+workspace reinstall, which leaves the tree importing the previous bundle.
 
 Run the [embedded-WASM check](#a-new-wasm-is-not-shipped-until-the-dist-is-rebuilt-on-top-of-it)
 above after installation. It fails if either vendor bundle or the installed client
@@ -1270,11 +1272,11 @@ worktree's bundle to make the check pass.
 After verification, `pnpm --filter @kelpi/client build` builds the web client, or follow the
 [private-instance guide](../../docs/plugin-development.md#start-a-private-instance) to build and
 launch the whole application beside an installed Kelpi. The launcher builds app packages;
-it does not rebuild this ignored vendor bundle.
+it does not rebuild this vendor bundle.
 
 The WASM is the one thing `source/` does not carry (423,289 bytes for `-nex.13`);
-`vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, so the copy above should come from
-there and NOT from npm: `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`.
+`vendor/ghostty-web-patched/ghostty-vt.wasm` **is** in git, which is where the staged copy comes
+from and NOT npm: `sha256 7de61fbc80d6e2a2ea74c241e22f41eca77ca2fd5a7885acd1e2789b4e49233f`.
 Since `-nex.13` it is no longer the npm package's binary. npm's is
 `d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a` and taking it would reopen
 #165. To rebuild the wasm itself rather than copy it, see "`ghostty-vt.wasm`: the Zig half".
@@ -1282,7 +1284,10 @@ Since `-nex.13` it is no longer the npm package's binary. npm's is
 Sanity checks on a rebuild: the recorded `-nex.13` outputs are 709.40 kB for
 `dist/ghostty-web.js` and 649.19 kB for `dist/ghostty-web.umd.cjs`. Resolved build-tool versions
 may change formatting or size; the embedded-WASM hash and vendor guards are the correctness
-checks. The ESM bundle contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+checks. The tracked bundle was reproduced byte-for-byte by `pnpm vendor:build` under Node
+24.15.0 / pnpm 10.28.1, which resolved vite 4.5.14 (`ghostty-web.js`, `ghostty-web.umd.cjs`,
+`index.d.ts` and `__vite-browser-external-2447137e.js` all identical), so a rebuild that changes
+those files has changed the inputs or the toolchain and the diff deserves reading. The ESM bundle contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
 (`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
 own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
@@ -1304,7 +1309,7 @@ does not verify the engine. Run the embedded-WASM check and the repository vendo
 ## Refreshing
 
 When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 merged, drop this
-vendor dir and the root `pnpm.overrides['ghostty-web']`, take the npm release, and re-run the
+vendor dir and `overrides['ghostty-web']` in `pnpm-workspace.yaml`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
 Note that **none** of the six Nex adaptations is an upstream PR. Taking a future npm release

@@ -2,6 +2,7 @@
   "name": "kelpi",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.28.1",
   "engines": {
     "node": ">=24"
   },
@@ -10,23 +11,12 @@
     "typecheck": "tsc -b packages/protocol packages/core packages/daemon packages/cli && tsc -p packages/plugin-sdk && tsc -p packages/client/tsconfig.json && tsc -p packages/shell/tsconfig.json",
     "test": "node scripts/node-pty-exec-bit.mjs --check && vitest run && pnpm --filter @kelpi/shell test",
     "check": "pnpm typecheck && pnpm test",
+    "vendor:build": "node scripts/build-vendor-engine.mjs",
     "dist": "pnpm --filter @kelpi/daemon build && pnpm --filter @kelpi/client build && pnpm --filter @kelpi/cli build && pnpm --filter @kelpi/shell build && pnpm --filter @kelpi/shell make"
   },
   "devDependencies": {
     "@types/node": "^24",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild",
-      "fs-xattr",
-      "macos-alias",
-      "node-pty"
-    ],
-    "overrides": {
-      "ghostty-web": "file:vendor/ghostty-web-patched"
-    }
   }
 }

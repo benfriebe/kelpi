@@ -1,2 +1,23 @@
 packages:
   - packages/*
+
+# `overrides` and `onlyBuiltDependencies` live HERE, not in the root package.json's `pnpm` field
+# (#6). pnpm 11 stopped reading that field, and it drops it in silence: the override goes, so the
+# client installs upstream `ghostty-web` instead of this repo's fork and every vendored fix in
+# vendor/ghostty-web-patched/PROVENANCE.md disappears from the build with nothing failing; the
+# build-script allowlist goes with it, so node-pty and electron arrive unbuilt. pnpm 10 and 11
+# both read these keys from this file, and `packageManager` in package.json pins the version that
+# produced the lockfile.
+
+# The vendored terminal engine, not npm's. `packages/client` asks for `ghostty-web@^0.4.0`; this
+# resolves it to the patched fork whose bundle is tracked at vendor/ghostty-web-patched/dist.
+overrides:
+  ghostty-web: file:vendor/ghostty-web-patched
+
+# Only these five may run install scripts. node-pty and electron are unusable without theirs.
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - fs-xattr
+  - macos-alias
+  - node-pty

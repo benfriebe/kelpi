@@ -82,10 +82,14 @@ and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hoo
 
 ## Quickstart
 
-Requires Node 24 and pnpm.
+Requires Node 24 and the pnpm that `packageManager` in `package.json` names (pnpm 10; corepack,
+or pnpm's own version management, switches to it for you). pnpm 11 reads neither the `overrides`
+nor the build-script allowlist in `pnpm-workspace.yaml` and installs a broken tree in silence.
 
-For a fresh clone or worktree, first [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout),
-including the vendored terminal engine. To run beside an installed Kelpi, use the
+A fresh clone or worktree needs nothing but the install below. The vendored terminal engine's
+bundle is tracked, and `pnpm vendor:build` regenerates it when the vendor source changes. The
+detail is in [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout).
+To run beside an installed Kelpi, use the
 [private-instance launcher](docs/plugin-development.md#start-a-private-instance).
 
 ```bash
@@ -279,8 +283,9 @@ names the table, id and reason, and `warnings` covers every fallback taken.
 The daemon is the only thing you strictly need — a browser is a complete client. The Electron
 shell adds the native chrome (tray, dock badge, global hotkey, native notifications, web panes).
 
-First [prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout);
-the commands below assume the vendored engine has been built and verified.
+The install below is the whole preparation; see
+[prepare the source checkout](docs/plugin-development.md#prepare-a-source-checkout) for the
+pnpm version this repo pins and for rebuilding the vendored engine after a vendor change.
 
 ```bash
 pnpm install --frozen-lockfile

@@ -52,6 +52,8 @@ export default async function ({ page, harness, cli, sandbox, shell, daemon, rec
 - `rec.check(label, ok, detail)` is the assertion; `rec.note`, `rec.shot(page, label)`.
 - `d` is the driver module: `PAGE` (the testid anchors), `settle`, `settleDom`, `domPaneIDs`, `clickPaneHeader`, `focusPaneBody`, `runInTerminal`, `openSettingsRoot`, `openSettingsTab`, `clickMenuItem`, `openSubmenu`, `clickSubmenuItem`, `openSidebarMenu`, `contextMenuRows`, `clickDialogButton`, `findMenuItem`.
 
+`openSidebarMenu` (shared with the audit, in `lib/aim.mjs`) scrolls its row into view, re-measures it immediately before pressing, refuses a point outside the sidebar's scroller, waits for the menu rather than sleeping past it and retries once. A row measured where it could no longer be clicked is what #204 was: in a full run the list outgrew the scroller, the press landed on the footer, and all the harness could say was `(no-menu)`. It now names the point, both rects and what `elementFromPoint` found there.
+
 Rules that keep scenarios honest: wait on a condition (`settle`, `settleDom`, `page.waitFor`), not on a sleep, except where the wait IS the assertion (a negative check needs a dwell). Prefer `data-testid` anchors; add one to the client rather than matching on text or CSS. A scenario that fails should say what it saw: pass the detail to `rec.check`.
 
 ### The daemon handle: stopping the primary daemon

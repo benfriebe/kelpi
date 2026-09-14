@@ -39,6 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
 
 /**
@@ -1686,21 +1687,18 @@ async function clickSubmenuItem(page, id) {
     await sleep(400);
 }
 
-/** Right-click a sidebar row (or the group header) whose text contains `needle`. */
+/**
+ * Right-click a sidebar row (or the group header) whose text contains `needle`.
+ *
+ * The body moved to `lib/aim.mjs` for #204: measuring the row once and pressing its midpoint sent
+ * `sidebar-remaining` and `workspace-edges` into the sidebar FOOTER once a full run's list had
+ * grown past the scroller, and the `(no-menu)` they reported could not say so. The helper now
+ * scrolls the row into view, re-measures immediately before pressing, refuses a point outside the
+ * scroller, waits for the menu rather than sleeping past it, retries once, and names what
+ * `elementFromPoint` found when it still does not open.
+ */
 async function openSidebarMenu(page, selector, needle) {
-    const target = await page.eval(
-        `(() => {
-            const el = Array.from(document.querySelectorAll('${selector}'))
-                .find(node => (node.innerText ?? '').includes(${JSON.stringify(needle)}));
-            if (el === undefined) return null;
-            const r = el.getBoundingClientRect();
-            return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
-        })()`
-    );
-    if (target === null) throw new Error(`no ${selector} matching "${needle}"`);
-    const point = JSON.parse(String(target));
-    await page.clickAt(point.x, point.y, { button: 'right' });
-    await sleep(450);
+    return await aimSidebarMenu(page, selector, needle);
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────────────

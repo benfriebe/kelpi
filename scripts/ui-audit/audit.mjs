@@ -81,7 +81,7 @@ import {
     startShell,
     waitForHealthz
 } from './lib/stack.mjs';
-import { CANONICAL_ORDER, aggregateShards, describePartition, planShards } from './lib/shards.mjs';
+import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards } from './lib/shards.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -99,6 +99,14 @@ function parseArgs(argv) {
         keep: false,
         verbose: false,
         only: null,
+        /**
+         * Does `--only` bring the chain its steps declare?
+         *
+         * On, because a step that reads `state.webPane` cannot do anything alone but fail (#203).
+         * `--no-chain` is the opt-out, and it exists for one caller: `verify-manifest.mjs` runs a
+         * candidate step ALONE from a cold boot on purpose, and "alone" is the measurement.
+         */
+        chain: true,
         /*
          * Where the shell window goes.
          *
@@ -135,13 +143,14 @@ function parseArgs(argv) {
         else if (arg === '--keep') options.keep = true;
         else if (arg === '--verbose') options.verbose = true;
         else if (arg === '--only' || arg.startsWith('--only=')) options.only = valued('only').split(',').filter(Boolean);
+        else if (arg === '--no-chain') options.chain = false;
         else if (arg === '--window' || arg.startsWith('--window=')) options.window = valued('window');
         else if (arg === '--shards' || arg.startsWith('--shards=')) options.shards = Number.parseInt(valued('shards'), 10);
         else if (arg === '--shard' || arg.startsWith('--shard=')) options.shard = Number.parseInt(valued('shard'), 10);
         else if (arg === '--help' || arg === '-h') {
             process.stdout.write(
                 'usage: node scripts/ui-audit/audit.mjs [--out <dir>] [--packaged] [--no-build] [--force-build]\n' +
-                    '                                      [--keep] [--verbose] [--only a,b]\n' +
+                    '                                      [--keep] [--verbose] [--only a,b] [--no-chain]\n' +
                     '                                      [--window hidden|offscreen|onscreen|default] [--shards N]\n'
             );
             process.exit(0);
@@ -149,6 +158,27 @@ function parseArgs(argv) {
     }
     if (!WINDOW_PLACEMENTS.has(options.window)) {
         throw new Error(`--window must be one of ${[...WINDOW_PLACEMENTS].join(', ')} (got "${options.window}")`);
+    }
+    /**
+     * `--only` runs the steps named AND the prerequisites those steps have already declared.
+     *
+     * `lib/shards.mjs` records which accumulated value binds each spine step, and `--only` used to
+     * ignore it: `--only web-batch-pickup` ran a step the manifest describes as "reads
+     * state.webPane" with nothing having written it, so its whole output was one failed "a web
+     * pane exists" (#203). `expandChains` turns that declaration into the step that writes it.
+     *
+     * Done after the loop, not inside the `--only` branch, so `--no-chain` works whichever side of
+     * `--only` it is written on.
+     */
+    if (options.only !== null && options.chain) {
+        const asked = options.only;
+        options.only = expandChains(asked);
+        const added = options.only.filter((id) => !asked.includes(id));
+        // Loud, because the alternative is a developer who asked for one step watching two run. A
+        // shard child is handed the expanded list, so it adds nothing and prints nothing.
+        if (added.length > 0) {
+            process.stdout.write(`--only also runs ${added.join(', ')} (the chain these steps declare in lib/shards.mjs)\n`);
+        }
     }
     if (!Number.isInteger(options.shards) || options.shards < 1) throw new Error('--shards must be a positive integer');
     if (options.shard !== null && (!Number.isInteger(options.shard) || options.shard < 0)) {
@@ -1766,6 +1796,10 @@ async function runShardedParent() {
             ...(options.packaged ? ['--packaged'] : []),
             ...(options.keep ? ['--keep'] : []),
             ...(options.verbose ? ['--verbose'] : []),
+            // The list is already expanded, so the child's own expansion is a no-op, but pass
+            // `--no-chain` through anyway, so a parent told to run one step alone cannot hand a
+            // child permission to run its chain.
+            ...(options.chain ? [] : ['--no-chain']),
             ...(options.only === null ? [] : ['--only', options.only.join(',')])
         ];
         /*
@@ -5942,14 +5976,22 @@ function buildFlows(ctx) {
                     recorder.check('a web pane exists', false);
                     return;
                 }
-                // The WIDEST on-screen shell: the destination must be in this web pane's
-                // workspace (WEB-133), and the pasted `# kelpi inspect batch …` header is ~50
-                // columns — in a 33-column pane it soft-wraps and `pane capture` returns it as
-                // two screen rows, which reads as a missing header when it is really a narrow
-                // pane. Same class of harness artefact as `widestShellPane`'s three callers.
+                // Widen the web pane FIRST, then pick the destination.
+                //
+                // `widenForFit` takes this pane to ratio 0.7 and then 0.9, and that width comes
+                // off its siblings, including whichever shell pane is about to receive the
+                // batch. Measuring before the resize therefore picked the widest shell and then
+                // narrowed it, which is the step making its own destination worse and is half of
+                // why #203 failed in every full battery rather than occasionally.
+                await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
+                // The WIDEST on-screen shell, read against the post-resize grid: the destination
+                // must be in this web pane's workspace (WEB-133), and the pasted
+                // `# kelpi inspect batch …` header is ~50 columns wide, so in a 33-column pane
+                // it soft-wraps, `pane capture` returns it as two screen rows and readline
+                // re-draws it (see the header check below). Same class of harness artefact as
+                // `widestShellPane`'s three callers.
                 const shell = await widestShellPane(page, cli);
                 recorder.check('there is a shell pane to send the batch to', shell !== null);
-                await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
 
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
@@ -6148,21 +6190,35 @@ function buildFlows(ctx) {
                     recorder.artifact('batch-paste.txt', text);
                     recorder.block('kelpi pane capture (destination shell)', text.slice(-1600));
                     /**
-                     * The needle is `kelpi inspect batch`, not `# kelpi inspect batch`.
+                     * The needle is `inspect batch`, not `kelpi inspect batch` and certainly not
+                     * `# kelpi inspect batch`.
                      *
                      * What lands in the destination is a SHELL's echo of a pasted line, and a
                      * line long enough to wrap is re-drawn by readline — so `pane capture` can
-                     * return the header's halves in either order and with the leading `# `
-                     * consumed by the redraw. That is a terminal fact, not a payload defect:
-                     * the three assertions below read the payload itself and are exact. Match
-                     * the header's distinguishing words, over the de-wrapped text as well as
-                     * the raw rows.
+                     * return the header's halves in either order and with characters missing from
+                     * the seam the redraw wrote over. The comment here used to allow for the
+                     * leading `# ` going; #203 recorded a run where the `k` of `kelpi` went too:
+                     *
+                     *     26-09-12T10:37:18.782Z (2 items)elpi inspect batch 20
+                     *
+                     * which is the whole header, tail first, with one character eaten, and which
+                     * neither `kelpi inspect batch` nor its de-wrapped form can match. That is a
+                     * terminal fact, not a payload defect: the two assertions below read the
+                     * payload itself and are exact. So match the shortest phrase that is still
+                     * unmistakably this header and sits clear of the line's start, over the
+                     * de-wrapped text as well as the raw rows.
+                     *
+                     * The detail is a READING, not a label: the row the header landed on, or the
+                     * capture's first row when the needle is nowhere. A failure then shows what
+                     * the shell actually drew, which is what #203 had to be re-run to find out.
                      */
                     const dewrapped = text.split('\n').join('');
+                    const rows = text.split('\n').map((row) => row.trim()).filter((row) => row !== '');
+                    const headerRow = rows.find((row) => row.includes('inspect batch')) ?? rows[0] ?? '(no output)';
                     recorder.check(
                         'the batch header reached the shell pane',
-                        text.includes('kelpi inspect batch') || dewrapped.includes('kelpi inspect batch'),
-                        'header present'
+                        text.includes('inspect batch') || dewrapped.includes('inspect batch'),
+                        headerRow.slice(0, 200)
                     );
                     recorder.check('the payload names both picked elements', text.includes('hello') && text.includes('go'), 'both selectors present');
                     recorder.check('the annotation rode along', text.includes('the page heading'), 'comment present');

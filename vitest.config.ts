@@ -26,10 +26,13 @@ export default defineConfig({
         // function that can refuse a diff, and the battery runner (#109), which decides whether a
         // red component is a wobble or a regression. Both are named file by file rather than
         // globbed out of `scripts/`, because a wider glob would drag the 1.8 MB audit and its
-        // live-app helpers into a vitest project that has no use for them.
+        // live-app helpers into a vitest project that has no use for them. `shards.test.mjs`
+        // joined them for the same reason (#203): `--only`'s chain expansion decides which steps
+        // a re-run actually runs, and it reads the step manifest's own prose to do it, so a
+        // re-worded entry has to fail here rather than in a 20-minute audit.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs'],
         },
       },
     ],

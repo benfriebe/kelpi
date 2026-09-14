@@ -288,6 +288,55 @@ export function manifestEntry(id) {
 }
 
 /**
+ * Which `state.*` variables a manifest entry declares it WRITES.
+ *
+ * The manifest has said this all along, in the one field that had to be filled in for every
+ * entry: a chained step's `reason` opens either "writes state.X, which Y reads" or "reads
+ * state.X". Reading the declaration is what makes `expandChains` below data-driven rather than a
+ * second, hand-kept list of prerequisites that could drift from this one. `shards.test.mjs` pins
+ * the invariant that keeps it honest: every chain variable that has a reader has a declared
+ * writer, so a re-worded `reason` fails a unit test instead of silently un-teaching `--only`.
+ */
+function writesOf(entry) {
+    return [...String(entry.reason ?? '').matchAll(/\bwrites state\.([A-Za-z][A-Za-z0-9]*)/g)].map((match) => match[1]);
+}
+
+/**
+ * Expand a `--only` list to include the prerequisites its steps have already declared.
+ *
+ * `chain` records WHICH accumulated value binds a spine step (see the header), and `--only` used
+ * to ignore it, so `--only web-batch-pickup` ran a step whose manifest entry says in so many
+ * words that it "reads state.webPane" with nothing having written it, and the step spent its one
+ * assertion on `recorder.check('a web pane exists', false)` (#203). That is not a missing
+ * dependency, it is an unenforced one.
+ *
+ * The expansion is the smallest thing that can be defended from the manifest: for each requested
+ * step, every EARLIER step that declares it writes one of the requested step's chain variables.
+ * Writers only, so `--only web-batch-pickup` gains `web-pane` (~12 s) and not the three readers
+ * sitting between them; earlier writers as well as the last one, because a writer is generally
+ * building on the pane the writer before it made (`split-keybinding` splits what `terminal-ls`
+ * opened). Order is irrelevant to the caller (the runner filters the canonical sequence by
+ * membership), but the result is returned in canonical order anyway so a shard child is handed
+ * the same list its parent read.
+ *
+ * Ids the manifest does not know are passed through untouched: `planShards` already treats an
+ * unknown id as spine, and `--only` is not the place to start refusing them.
+ */
+export function expandChains(ids) {
+    const wanted = new Set(ids);
+    for (const id of ids) {
+        const entry = BY_ID.get(id);
+        if (entry === undefined || entry.chain === null) continue;
+        const variables = new Set(entry.chain.split('+'));
+        for (const candidate of STEP_MANIFEST) {
+            if (candidate.id === id) break;
+            if (writesOf(candidate).some((variable) => variables.has(variable))) wanted.add(candidate.id);
+        }
+    }
+    return [...CANONICAL_ORDER.filter((id) => wanted.has(id)), ...ids.filter((id) => !BY_ID.has(id))];
+}
+
+/**
  * Split a contiguous list into `count` blocks minimising the largest block's cost.
  *
  * Contiguous rather than round-robin, and that is deliberate: a free step is independent, but

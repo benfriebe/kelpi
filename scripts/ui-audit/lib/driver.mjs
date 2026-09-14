@@ -391,6 +391,12 @@ export async function caretNow(page, paneID, { onTheRenderer } = {}) {
  * after a drag, because a click inside a terminal clears the selection the Copy is about and the
  * engine's copy-on-select would overwrite the clipboard the paste is about. Call this BEFORE the
  * selection, or pass a `refocus` that stays off the grid.
+ *
+ * A repair that cannot be made is FATAL, after it has been recorded. `setFrameFocusEmulation` is
+ * the one best-effort step (an Electron without the domain must not take a run down over a signal
+ * that only ever improves the lane); a `refocus` that throws and a pane header that is not in the
+ * DOM both mean the next chord would be pressed at nothing, so they are noted and then rethrown
+ * rather than turned into a note under a green scenario.
  */
 export async function clipboardCaret(page, harness, paneID, { label = 'the clipboard chord', note = () => {}, onTheRenderer, refocus, frameSelector } = {}) {
     const read = () => caretNow(page, paneID, { onTheRenderer });
@@ -403,7 +409,11 @@ export async function clipboardCaret(page, harness, paneID, { label = 'the clipb
         try {
             await putTheCaretBack();
         } catch (error) {
+            // Recorded, then rethrown. A repair that cannot reach the pane means the scenario is
+            // about to press a chord at nothing, and a scenario that carries on and goes green with
+            // a note nobody reads is the exact failure #205 was filed about.
             note(`${label}: the focus repair could not reach the pane (${error instanceof Error ? error.message : String(error)})`);
+            throw error;
         }
         state = await read();
         note(`${label}: after the harness repair ${JSON.stringify(state)}`);
@@ -420,10 +430,13 @@ export async function clipboardCaret(page, harness, paneID, { label = 'the clipb
          */
         try {
             await clickPaneHeader(page, paneID);
-            state = { ...(await read()), route: 'the pane header, so the host document holds the caret' };
         } catch (error) {
-            state = { ...state, route: `the pane header is unreachable (${error instanceof Error ? error.message : String(error)})` };
+            // Recorded, then rethrown, for the reason above: this is the last route there is, and a
+            // chord pressed after it failed proves nothing about the product.
+            note(`${label}: the pane header is unreachable (${error instanceof Error ? error.message : String(error)})`);
+            throw error;
         }
+        state = { ...(await read()), route: 'the pane header, so the host document holds the caret' };
         note(`${label}: after taking the caret back into the host document ${JSON.stringify(state)}`);
     }
     return state;

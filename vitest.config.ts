@@ -26,10 +26,12 @@ export default defineConfig({
         // function that can refuse a diff, and the battery runner (#109), which decides whether a
         // red component is a wobble or a regression. Both are named file by file rather than
         // globbed out of `scripts/`, because a wider glob would drag the 1.8 MB audit and its
-        // live-app helpers into a vitest project that has no use for them. `cdp.test.mjs` earns
-        // its place on the same rule from the other side: a key the harness presses with no entry
-        // in the CDP key table is dispatched with a zero virtual key code and dropped in silence,
-        // so the press that was supposed to fail a promote never happens at all (#207).
+        // live-app helpers into a vitest project that has no use for them. `cdp.test.mjs` earns its
+        // place on the same rule from the other side: the CDP key table is what every audit step and
+        // every scenario presses through, a code with no entry in it goes out with
+        // `windowsVirtualKeyCode: 0` (wrong on the wire, and invisible to anything that reads it),
+        // and one `text` field in that table is a single control byte that a rewrite can delete
+        // without a diff showing anything. Only an assertion holds either of those down.
         test: {
           name: 'harness',
           include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs'],

@@ -9,15 +9,23 @@ import { usePluginCommands } from '../plugins/commands';
  *
  * The same `PaneGrid` + `TerminalPane` the primary workspace area uses, fed from the remote
  * runtime's own store mirror and PTY client — terminals here are the remote machine's, byte
- * for byte, with focus, splits, close, rename, zoom and divider drags routed to the remote
- * daemon's commands.
+ * for byte, with focus, splits, close, rename, zoom, pane moves and divider drags routed to
+ * the remote daemon's commands.
  *
  * Native documents and their selected replacements use the owning runtime's content host.
  * Browser controls use the owning daemon; native page pixels remain in its desktop shell.
+ *
+ * The rule that comes with that, and the one thing a new render site has to remember: every
+ * place that draws a REMOTE daemon's terminal pane must pass `editingShortcuts` to
+ * `TerminalFeaturePane` (#172, #170). The window dispatcher stands down here, so the pane is the
+ * only layer left to answer copy, paste and the three line edits. This file and
+ * `phone/PhoneRemoteWorkspace.tsx` are the two that do.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
 import { useStore } from 'zustand';
+
+import { wireEdgeForDropZone } from '@kelpi/core/layout';
 
 import { tokens } from '../chrome/tokens';
 import { PaneGrid } from '../grid';
@@ -95,6 +103,13 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 ptyApi={runtime.pty}
                 focused={focused}
                 visible={state.visible}
+                // #172/#170: the same stance as `blockWindowShortcuts` above, for the other half
+                // of the keyboard. The window dispatcher stands down while a remote workspace
+                // fills the pane area (`App.tsx` reports `hasActiveWorkspace: false`), so copy,
+                // paste and the three line edits have to be answered by the pane that took the
+                // chord, against THIS daemon's runtime. In the primary window the dispatcher
+                // still owns them and this stays off.
+                editingShortcuts
                 onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
             />
         );
@@ -119,6 +134,23 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             onSplitPane={(paneID, direction) => void runtime.commands.splitPane({ paneID, direction })}
             onRenamePane={(paneID, name) => void runtime.commands.renamePane({ paneID, name })}
             onToggleZoom={(paneID) => void runtime.commands.toggleZoom({ paneID })}
+            /*
+             * The header drag ends in `onMovePane?.(...)`, so an unwired mount swallows the
+             * drop: the pane lifts, the drop zone highlights, and nothing moves (#144). The
+             * remote runtime's `commands` is the same CommandClient over that daemon's socket,
+             * so `pane-move-adjacent` reaches it exactly as `splitPane` above does. The wire
+             * spells the zone `above`/`below`/`left-of`/`right-of`, not the grid's geometric
+             * `top`/`bottom`/`left`/`right`, hence the conversion the primary window also does.
+             */
+            onMovePane={(paneID, anchorID, zone) =>
+                void runtime.commands.movePaneAdjacent({
+                    target: paneID,
+                    anchor: anchorID,
+                    zone: wireEdgeForDropZone(zone)
+                })
+            }
+            /* The empty-layout "New Pane" affordance, same swallow if left unwired. */
+            onCreatePane={() => void runtime.commands.createPane({ workspace: workspaceID })}
             onSetRatio={(splitPath, ratio, commit) => {
                 // Same two spellings as the primary window (pane-layout.md §7.4, App.tsx
                 // `onSetRatio`): `paneID === null` is a divider whose two children are BOTH

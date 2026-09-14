@@ -26,7 +26,7 @@ import {
 } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
-import { createFakePtyApi, createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
+import { createFakePtyApi, createFakeRendererFactory, type FakePtyApi, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
@@ -654,6 +654,22 @@ describe('hosts', () => {
         await waitFor(() => {
             expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W1, visiblePaneIDs: [] });
         });
+
+        /*
+         * #172/#170: one-pane mode renders `TerminalFeaturePane` itself rather than through the
+         * grid, so it owes `editingShortcuts` the same way `RemoteWorkspaceView` does. The proof
+         * is the byte and where it lands: ⌘⌫ on this pane's host puts `0x15` up the REMOTE host's
+         * PTY, not the origin's. Without the prop the pane answers nothing and no byte is sent.
+         */
+        const remotePty = remote?.runtime.pty as unknown as FakePtyApi;
+        const remoteHost = await waitFor(() => {
+            const host = document.querySelector(`[data-terminal-pane="${REMOTE_PANE}"] [data-terminal-host]`);
+            expect(host).toBeTruthy();
+            return host as HTMLElement;
+        });
+        fireEvent.keyDown(remoteHost, { code: 'Backspace', metaKey: true });
+        expect(remotePty.streams.flatMap((stream) => stream.input)).toEqual(['\x15']);
+        expect(h.sent().some((frame) => frame['type'] === 'input')).toBe(false);
 
         // The pane sheet and the menu act on the remote host's commands.
         tap('phone-more');

@@ -9,18 +9,45 @@ and the next implementation task.
 
 ## Prepare a source checkout
 
-Use Node.js 24 or newer and pnpm. A fresh clone or worktree needs the vendored terminal
-engine's ignored `dist/` before the app can build. Follow the
-[vendor rebuild recipe](../vendor/ghostty-web-patched/PROVENANCE.md#rebuild-the-javascript-bundle)
-from the checkout root. It copies this checkout's tracked TypeScript and patched WASM into a
-unique temporary directory, builds the bundle, then runs `pnpm install --frozen-lockfile` in
-the checkout. Run the recipe's embedded-WASM verification afterward.
+Use Node.js 24 or newer, and the pnpm version `packageManager` in the root `package.json` names,
+pnpm 10.28.1. pnpm and corepack both honour that field and switch to it.
 
-At main `ab9be92` the override is `ghostty-web 0.4.0-nex.13`. Its JavaScript inlines the WASM,
-so installing dependencies or copying the standalone WASM alone cannot repair an older
-bundle. Repeat the recipe after vendor source/WASM changes. An existing checkout with a
-verified matching bundle only needs `pnpm install --frozen-lockfile` for workspace dependencies.
-The app launcher does not perform the vendor rebuild.
+The pin is not decoration, and neither is the location of the two pnpm settings.
+`overrides` and `onlyBuiltDependencies` live in `pnpm-workspace.yaml` because pnpm 11 stopped
+reading the `pnpm` field in `package.json`. `overrides` is then read from the workspace file by
+pnpm 10 and 11 alike, so the `ghostty-web` fork resolves under both. The build-script allowlist
+does not travel with it: pnpm 11 removed `onlyBuiltDependencies` outright in favour of
+`allowBuilds`, so a pnpm 11 that ignored the pin would install node-pty and electron unbuilt.
+The pin also keeps the lockfile on the generation that produced it, and the report behind
+[#6](https://github.com/benfriebe/kelpi/issues/6) has pnpm 11 refusing electron-forge's
+`@electron/node-gyp` git subdependency. Converting the allowlist to `allowBuilds` is the work a
+pnpm 11 upgrade needs; `pnpm-workspace.yaml` records the conversion beside the list.
+
+A fresh clone or worktree needs one command:
+
+~~~sh
+pnpm install --frozen-lockfile
+~~~
+
+The vendored terminal engine's bundle (`vendor/ghostty-web-patched/dist`) is tracked, so the
+clone already carries the artifact `packages/client` imports as `ghostty-web`, and the install
+copies it into place.
+
+Rebuild that bundle only after changing `vendor/ghostty-web-patched/source/` or its
+`ghostty-vt.wasm`, and commit the result with the change:
+
+~~~sh
+pnpm vendor:build
+~~~
+
+It builds the tracked TypeScript against the tracked patched WASM in a scratch directory outside
+the checkout, refuses to publish a bundle that does not inline that WASM, and reinstalls so the
+workspace picks the new bundle up: pnpm materialises the `file:` override as a copy, so a
+rebuilt bundle is invisible to typecheck and tests until an install re-copies it. Equally, the
+bundle inlines the WASM, so installing dependencies or replacing the standalone WASM cannot
+repair a stale bundle. The [vendor provenance](../vendor/ghostty-web-patched/PROVENANCE.md#rebuild-the-javascript-bundle)
+explains each step, and `pnpm vitest run packages/client/src/terminal/vendor-engine.test.ts`
+guards the result. The app launcher does not perform the vendor rebuild.
 
 ## Start a private instance
 

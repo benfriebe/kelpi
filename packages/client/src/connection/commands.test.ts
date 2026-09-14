@@ -180,6 +180,10 @@ describe('CommandClient RPC', () => {
         void h.client.moveWorkspace({ workspace: 'dev' });
         // `group` omitted entirely = "move to top level"; never sent as null.
         expect(h.lastCommand()).toEqual({ command: 'workspace-move', name: 'dev' });
+
+        // The group-header drag (#159): the group's own slot, not its member order.
+        void h.client.moveGroup({ group: 'squad', index: 0 });
+        expect(h.lastCommand()).toEqual({ command: 'group-move', name: 'squad', index: 0 });
     });
 
     it('refuses a resize with both or neither directive', async () => {

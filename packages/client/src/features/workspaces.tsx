@@ -141,6 +141,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onToggleWorkspaceLabel={actions.toggleWorkspaceLabel}
         onMoveWorkspace={actions.moveWorkspace}
         onMoveWorkspaces={actions.moveWorkspaces}
+        onMoveGroup={actions.moveGroup}
         onSetWorkspaceIcon={actions.setWorkspaceIcon}
         onSetGroupIcon={actions.setGroupIcon}
         onSetWorkspaceProfile={actions.setWorkspaceProfile}

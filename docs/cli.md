@@ -1972,7 +1972,7 @@ Consequences (pinned by `packages/cli/src/install/merge.test.ts` and
 Fire-and-forget: `stop`, `start`, `error`, `notification`, `session-start`, `session-end`
 (the event family; command = event name), `pane-move`, `pane-move-to-workspace`,
 `workspace-move`, `workspace-profile`, `group-create`, `group-rename`, `group-delete`,
-`layout-cycle`, `layout-select`, `open`, `diff`.
+`group-move`, `layout-cycle`, `layout-select`, `open`, `diff`.
 
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,

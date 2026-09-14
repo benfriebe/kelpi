@@ -52,6 +52,7 @@ function commands() {
         deleteGroup: vi.fn<Commands['deleteGroup']>().mockResolvedValue({ ok: true }),
         deleteWorkspace: vi.fn<Commands['deleteWorkspace']>().mockResolvedValue({ ok: true }),
         labelWorkspace: vi.fn<Commands['labelWorkspace']>().mockResolvedValue({ ok: true }),
+        moveGroup: vi.fn<Commands['moveGroup']>().mockResolvedValue({ ok: true }),
         moveWorkspace: vi.fn<Commands['moveWorkspace']>().mockResolvedValue({ ok: true }),
         moveWorkspaces: vi.fn<Commands['moveWorkspaces']>().mockResolvedValue({ ok: true }),
         renameGroup: vi.fn<Commands['renameGroup']>().mockResolvedValue({ ok: true }),
@@ -256,6 +257,23 @@ describe('retained Workspaces actions', () => {
         expect(await h.actions.createWorkspaceWithWorktree('  task  ', G1, worktree, '/repo', { profile: 'work', color: 'purple' })).toBeNull();
         expect(h.rpc.createWorkspace).toHaveBeenLastCalledWith({ name: 'task', group: G1, repo: '/repo', worktree: 'task', branch: 'topic/task', updateMain: true, profile: 'work', color: 'purple' });
         expect(h.activate).toHaveBeenCalledExactlyOnceWith(W3);
+    });
+});
+
+describe('the sidebar’s group-header drag (#159)', () => {
+    it('commits through the mounted view as one group-move naming the header’s new slot', () => {
+        const h = setup();
+        render(<WorkspacesFeatureView {...viewProps(h)} />);
+        /*
+         * jsdom lays nothing out, so the sidebar's uniform row geometry IS its geometry
+         * (`Sidebar.tsx` ▸ §WS-093's stated degradation): 34px rows under the 4px content
+         * pad, i.e. alpha 4–38 and the `squad` header 38–72.
+         */
+        fireEvent.mouseDown(screen.getByTestId('group-header'), { clientY: 50 });
+        fireEvent.mouseMove(window, { clientY: 10 }); // alpha's top half → slot 0
+        fireEvent.mouseUp(window);
+        expect(h.rpc.moveGroup).toHaveBeenCalledExactlyOnceWith({ group: G1, index: 0 });
+        expect(h.run).toHaveBeenCalledWith('Move group', expect.anything());
     });
 });
 

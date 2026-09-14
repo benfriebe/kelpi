@@ -111,6 +111,10 @@ export function PhoneRemoteWorkspace(props: PhoneRemoteWorkspaceProps): ReactEle
                         ptyApi={runtime.pty}
                         focused
                         visible
+                        // #172/#170: this is a remote daemon's pane, so the pane answers the
+                        // editing chords itself, exactly as `RemoteWorkspaceView` has it do in
+                        // `layout` mode above. Every remote render site owes this.
+                        editingShortcuts
                         onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
                         createRenderer={props.createRenderer}
                     />

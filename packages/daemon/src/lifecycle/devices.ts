@@ -188,6 +188,52 @@ export function removeDevice(file: string, id: string): void {
 }
 
 /**
+ * Drop an ALREADY-REVOKED entry from the registry, by id or by the name of a revoked device.
+ * Returns the deleted entry, or null when nothing matched.
+ *
+ * The two-step model (revoke, then delete) is the point: the audit record survives until the
+ * owner chooses to drop it, and a live device is REFUSED rather than silently revoked-and-
+ * deleted. Deleting rewrites the file, which trips the registry watcher (`boot/compose.ts` →
+ * `revalidateSessions`), and that is harmless: the entry it removes was already cut.
+ *
+ * The name rule is `revokeDevice`'s mirrored, not shared. That one resolves a name among LIVE
+ * devices (the only ones worth revoking), so reusing it here would match nothing, ever. A
+ * delete looks among the REVOKED, which is also where duplicate names collect (re-pairing a
+ * machine leaves one revoked ghost per pairing, all called the same thing), so the ambiguous
+ * case is the common one and it says to use the id.
+ *
+ * A name with no revoked bearer but a LIVE one is the refusal, not "no such device": saying
+ * nothing matches would be false about an entry `kelpid devices` lists on the very next line,
+ * and it would hide the one thing the caller needs to do first.
+ */
+export function deleteDevice(file: string, idOrName: string): PairedDevice | null {
+    const target = idOrName.trim();
+    const devices = loadDevices(file);
+    let match = devices.find((device) => device.id === target);
+    if (match === undefined) {
+        const named = devices.filter((device) => device.revokedAt !== undefined && device.name === target);
+        if (named.length > 1) {
+            throw new Error(`"${target}" names ${String(named.length)} revoked devices - delete by id instead`);
+        }
+        match = named[0];
+        if (match === undefined) {
+            // At most one, and `mintDevice` is what guarantees it: a live name is unique.
+            match = devices.find((device) => device.revokedAt === undefined && device.name === target);
+        }
+    }
+    if (match === undefined) return null;
+    if (match.revokedAt === undefined) {
+        throw new Error(`"${match.name}" is a live device - revoke it first (device ${match.id})`);
+    }
+    const doomed = match;
+    saveDevices(
+        file,
+        devices.filter((device) => device.id !== doomed.id)
+    );
+    return doomed;
+}
+
+/**
  * The shared mtime-cached read both validators sit on: the live devices' token hashes, as
  * raw bytes, re-read only when the file's identity (mtime/size/inode) changed. Every failure
  * — missing file, corrupt file, unreadable file — yields an empty list and no cache, so a

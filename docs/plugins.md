@@ -374,7 +374,7 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `commands.execute(id, args?)` | Invoke a declared command, including another installed plugin's command. |
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
 | `storage.get(key)` / `storage.set(key, value)` | Persistent JSON belonging to this plugin on this daemon. |
-| `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. |
+| `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. Overrides outlive `kelpi plugin remove` and a later reinstall inherits them ([#198](https://github.com/benfriebe/kelpi/issues/198)). Nothing clears one: `set` only merges, and writing the manifest default back persists it as an override, so a genuinely clean install means deleting `<db>.plugins/data/<plugin-id>/settings.json`, where `<db>` is the daemon database path. [Service provider preferences](plugin-services.md) survive removal the same way but, unlike settings, do have an explicit clear. |
 | `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad and Diff source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
 | `files.read(path)` / `files.write(path, text)` | UTF-8 files on the daemon machine; reads are limited to 256 KiB. |
 | `process.exec(file, args?, {cwd?})` | Run a program on the daemon machine; argv is passed directly, without a shell. Returns stdout/stderr. |

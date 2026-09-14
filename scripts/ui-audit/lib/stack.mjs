@@ -418,16 +418,19 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
  *     handover, so a pane's shell is a NEW process afterwards and a scenario that reads pane text
  *     across the restart must say which side of it each reading came from. In a multi-scenario
  *     run that is EVERY pane in the instance, not only the restarting scenario's.
- *   - A stop can take eight seconds and end in SIGKILL, and that is a daemon bug rather than a
- *     slow machine: issue #212. `ws/server.ts` ▸ `stop()` closes the WebSockets it tracks and then
- *     awaits `server.close()` without `closeIdleConnections()`, so Chromium's idle keep-alive HTTP
- *     sockets (the client document, and the `/plugin-assets/...` fetches that build each plugin
- *     view's srcDoc) hold the listener open until they time out. `boot/compose.ts` then sits in
- *     `ws.stop()` until `startDaemon`'s SIGTERM window elapses; the SIGKILL lands after
- *     `persistence.flush()` and `pty.killAll()`, so what it skips is `persistence.close()`,
- *     `clearRunFiles(paths)` and the final `kelpid stopped` line. That is why a sandbox that has
- *     just rebuilt plugin views stops in eight seconds and an idle one stops in twelve
- *     milliseconds. Do not paper over it here: `lastStopMs` reports it and a scenario prints it.
+ *   - A stop that takes eight seconds and ends in SIGKILL is a daemon bug rather than a slow
+ *     machine. That was issue #212, FIXED on 2026-09-14: `ws/server.ts` ▸ `stop()` used to close
+ *     the WebSockets it tracks and then await `server.close()`, whose callback waits for every
+ *     connection to drain, so Chromium's leftover HTTP sockets (the client document, and the
+ *     `/plugin-assets/...` fetches that build each plugin view's srcDoc) held the listener open;
+ *     `boot/compose.ts` then sat in `ws.stop()` until `startDaemon`'s SIGTERM window elapsed, and
+ *     the SIGKILL landed after `persistence.flush()` and `pty.killAll()`, so what it skipped was
+ *     `persistence.close()`, `clearRunFiles(paths)` and the final `kelpid stopped` line. That is
+ *     why a sandbox that had just rebuilt plugin views stopped in eight seconds while an idle one
+ *     stopped in twelve milliseconds. `closeAsync` now sweeps the idle connections at once and
+ *     destroys whatever is left 250 ms later, so every stop measured since has been 9 to 20 ms.
+ *     Keep reporting the reading rather than papering over it: a stop at the cap now means a
+ *     REGRESSION. `lastStopMs` reports it and a scenario prints it.
  *
  * `text()` spans restarts (the stopped processes' output is kept), `pid` and `child` are whichever
  * process is current, and `generation` counts the starts, which is the cheapest proof that a
@@ -460,9 +463,11 @@ export function restartableDaemon(sandbox, { healthzMs = 30_000, ...daemonOption
          * How long the last `stop()` and the last `start()` took, in ms, or null before each has
          * happened. Worth printing beside a restart rather than only its total: a `stopMs` at or
          * above 8000 is `startDaemon`'s SIGTERM window elapsing and the SIGKILL behind it, which
-         * is issue #212 (the unclosed keep-alive sockets above) rather than a slow machine. Seen
-         * on this tree in 9 of 14 `plugin-interaction-presenters` runs, which rebuilds plugin views
-         * shortly before its restart, and in none of `plugin-settings-presenter`'s 9.
+         * was issue #212 (the unclosed sockets above) rather than a slow machine. Seen on this
+         * tree in 9 of 14 `plugin-interaction-presenters` runs, which rebuilds plugin views
+         * shortly before its restart, and in none of `plugin-settings-presenter`'s 9; since the
+         * fix, in none of either. A reading at the cap is now a regression to chase, not a
+         * known bug to note.
          */
         get lastStopMs() {
             return stopMs;

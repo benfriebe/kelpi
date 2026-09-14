@@ -13,10 +13,13 @@ import type { PluginChannel } from '../plugins/service.js';
  *   - binary frames → `PaneStreamSession` (replay + live PTY output, input, ack, resize).
  *
  * Shutdown closes both in the right order (clients get a goodbye frame, streams unsubscribe
- * from the PTY manager, listeners close) and never leaves a half-open socket behind.
+ * from the PTY manager, listeners close) and never leaves a half-open socket behind. It is also
+ * BOUNDED: `closeAsync` below is what stops a browser's leftover HTTP sockets from holding the
+ * whole daemon's shutdown open until something kills it (#212).
  */
 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
 import { getRequestListener } from '@hono/node-server';
@@ -187,13 +190,95 @@ function listenAsync(server: Server, host: string, port: number): Promise<number
     });
 }
 
-function closeAsync(server: Server): Promise<void> {
+/**
+ * How long `closeAsync` lets a response that is still in flight finish before the socket
+ * carrying it is destroyed (#212).
+ *
+ * 250 ms because every response this server serves is local: a small JSON body, or a file off
+ * the client build or a plugin bundle, over loopback or a tailnet hop. A response that has not
+ * finished in a quarter of a second is one the peer has stopped reading, not one that needs
+ * more time. It is also an order of magnitude under the budgets around it (the scenario runner
+ * allows 8 s between SIGTERM and SIGKILL, and the steps ahead of this one in `boot/compose.ts`
+ * are capped at 1 s to 2 s each), and it costs a clean stop nothing: the timer is cleared the
+ * moment the close callback fires, which in the common case is single-digit milliseconds.
+ */
+const CLOSE_GRACE_MS = 250;
+
+/**
+ * One bound listener and the sockets IT accepted, upgraded or not (`closeAsync` says what the set
+ * is for).
+ *
+ * The set belongs to the listener rather than to the process so that closing one does what its
+ * name says. All the binds go down together today, but the daemon already restarts individual
+ * listeners elsewhere (`boot/compose.ts` ▸ `applyTcpPortSetting`, `restartControlServers`), and
+ * the day an `extraHosts` bind gets the same treatment, a shared set would have it destroy every
+ * loopback client's socket on the way out. The sockets are collected from the server's own
+ * `connection` event rather than from the WebSockets because that fires before any upgrade, which
+ * is the last point at which Node still owns the socket for certain.
+ */
+interface Listener {
+    readonly server: Server;
+    readonly rawSockets: Set<Socket>;
+}
+
+/**
+ * Stop listening and RESOLVE, which `server.close()` on its own does not promise (#212).
+ *
+ * `close()` shuts the listener down at once, but the callback this awaits waits for every
+ * connection to drain, and two populations can hold that off indefinitely:
+ *
+ *   - A connection whose response is still in flight. The renderer fetches the client document
+ *     and the `/plugin-assets/...` files that build each plugin view's `srcDoc`; a fetch it has
+ *     stopped reading leaves that connection busy, and Node's own pre-close sweep (`close()`
+ *     calls `closeIdleConnections()` itself on Node 19 and later) deliberately spares it.
+ *   - A socket that has UPGRADED. Node drops those from the list behind
+ *     `closeIdleConnections()` and `closeAllConnections()` while still counting them as open
+ *     connections, so neither call reaches a WebSocket whose peer never answered the goodbye.
+ *
+ * So: sweep the idle connections at once (explicitly, rather than relying on `close()` doing it,
+ * which is version-dependent), then after `CLOSE_GRACE_MS` take the rest. `closeAllConnections()`
+ * has the HTTP ones, and `rawSockets` has the upgraded ones Node no longer tracks: it is every
+ * accepted socket, collected from the `connection` event before any upgrade can happen, which is
+ * why one sweep covers both rather than needing a second pass over the WebSockets. Destroying a
+ * socket that has already closed is a no-op, and `stop()` sends every WebSocket its goodbye long
+ * before this, so a well-behaved client is gone by the time the sweep runs either way.
+ *
+ * Of those two calls the destroy is the load-bearing one: `rawSockets` is a superset of what
+ * `closeAllConnections()` can still reach, so it alone is what unblocks the drain. The
+ * `closeAllConnections()` above it is kept because it states the intent in Node's own vocabulary,
+ * not because anything depends on it; delete the destroy loop and the upgraded sockets are out of
+ * reach again, which is why `server.test.ts` pins that case with a peer that never replies.
+ *
+ * The sweep then RESOLVES this promise itself rather than trusting the close callback to fire now
+ * that it has run. A bound that depends on the very callback the bug is about is not a bound: it
+ * would hold only for the socket populations we already know about, and the next one nobody has
+ * thought of would stall the daemon exactly as these two did. The callback stays the fast path,
+ * clearing the timer and resolving first in every healthy stop, and it is a no-op if it arrives
+ * after the sweep. The cost is one discriminator: removing the destroy loop no longer stalls
+ * `stop()`, so the test that pins the upgraded case asserts that the socket ENDED rather than
+ * only that the stop resolved.
+ */
+function closeAsync({ server, rawSockets }: Listener): Promise<void> {
     return new Promise<void>((resolve) => {
         if (!server.listening) {
             resolve();
             return;
         }
-        server.close(() => resolve());
+        let settled = false;
+        let sweep: ReturnType<typeof setTimeout> | undefined;
+        server.close(() => {
+            settled = true;
+            if (sweep !== undefined) clearTimeout(sweep);
+            resolve();
+        });
+        server.closeIdleConnections();
+        if (settled) return;
+        sweep = setTimeout(() => {
+            server.closeAllConnections();
+            for (const socket of rawSockets) socket.destroy();
+            settled = true;
+            resolve();
+        }, CLOSE_GRACE_MS);
     });
 }
 
@@ -262,7 +347,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
     });
 
     const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
-    const servers: Server[] = [];
+    const listeners: Listener[] = [];
     const addresses: WsServerAddress[] = [];
     const sockets = new Set<WebSocket>();
     let boundPort: number | undefined;
@@ -343,11 +428,16 @@ export function createWsServer(options: WsServerOptions): WsServer {
         });
     };
 
-    const makeServer = (): Server => {
+    const makeListener = (): Listener => {
         const server = createServer(requestListener);
+        const rawSockets = new Set<Socket>();
         server.on('upgrade', handleUpgrade);
+        server.on('connection', (socket: Socket) => {
+            rawSockets.add(socket);
+            socket.on('close', () => rawSockets.delete(socket));
+        });
         server.on('clientError', (error) => report(error, 'http-client'));
-        return server;
+        return { server, rawSockets };
     };
 
     return {
@@ -355,17 +445,17 @@ export function createWsServer(options: WsServerOptions): WsServer {
             if (started) return addresses;
             started = true;
 
-            const primary = makeServer();
-            servers.push(primary);
-            boundPort = await listenAsync(primary, host, requestedPort);
+            const primary = makeListener();
+            listeners.push(primary);
+            boundPort = await listenAsync(primary.server, host, requestedPort);
             addresses.push({ host, port: boundPort });
 
             for (const extra of options.extraHosts ?? []) {
                 if (extra === host) continue;
-                const server = makeServer();
+                const listener = makeListener();
                 try {
-                    const port = await listenAsync(server, extra, boundPort);
-                    servers.push(server);
+                    const port = await listenAsync(listener.server, extra, boundPort);
+                    listeners.push(listener);
                     addresses.push({ host: extra, port });
                 } catch (error) {
                     // A tailnet address can disappear between config and bind; the daemon
@@ -390,8 +480,10 @@ export function createWsServer(options: WsServerOptions): WsServer {
             }
             sockets.clear();
             wss.close();
-            await Promise.all(servers.map(closeAsync));
-            servers.length = 0;
+            // One `Promise.all` so the grace in `closeAsync` is paid once for every bind rather
+            // than once per bind; each listener sweeps only the sockets it accepted.
+            await Promise.all(listeners.map((listener) => closeAsync(listener)));
+            listeners.length = 0;
         },
         get port() {
             return boundPort;

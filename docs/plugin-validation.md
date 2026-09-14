@@ -249,6 +249,15 @@ five runs of `node scripts/scenario.mjs plugin-interaction-presenters plugin-set
 of fourteen interaction runs at the 8 s cap before. `pnpm check` passes: all typechecks, root vitest
 **7,935 passed, 1 skipped** (511 files, the same optional database skip), shell **870 passed**.
 
+Shipped as [#218](https://github.com/benfriebe/kelpi/pull/218) from `fix/daemon-close-idle-connections`. Tested revision
+**`ec8a928`** (the fix `2a82f8c`, the upgraded-socket test and per-listener socket set `6c93d7b`,
+and the unconditional bound with outcome-independent tests `ec8a928`; `server.test.ts` 25/25, root
+vitest **7,936 passed, 1 skipped**). `node scripts/verify.mjs --full` at `ec8a928` **passed in 24.0 min
+with no component retried** (all scenarios hidden 5.3 min, full audit 17.8 min, packaged smoke
+69/69), and at `2a82f8c` before the amendments in 24.9 min, also unretried; the lane's two daemon
+restarts stopped in 14 and 10 ms. The three leak warnings are the pre-existing ones recorded for
+#213 and #214.
+
 Not established here: physical devices; the phone form factor for either arm (a phone is granted
 no presenter at all, so rule 3 has nothing to do there that the phone's own rule has not already
 done); the 240-calls-per-second budget breach, which remains a unit test.

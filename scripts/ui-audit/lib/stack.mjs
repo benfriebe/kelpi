@@ -757,10 +757,21 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
 /**
  * The CLI's refusals to PARSE an invocation, as opposed to its refusals to perform one.
  *
- * `Unknown command: <x>` (`cli.ts:85`), `Unknown <group> action: <x>` (`workspace.ts:60` and its
- * six siblings) and `Unknown option for <command>: <flag>` (`workspace.ts:202`) all mean the same
- * thing: the caller spelled the invocation wrong. For a harness that is never a product outcome,
- * it is a bug in the step, and it must not be survivable.
+ * Five shapes, and they all mean the same thing: the caller spelled the invocation wrong. For a
+ * harness that is never a product outcome, it is a bug in the step, and it must not be survivable.
+ *
+ *   Unknown command: <x>                      cli.ts:85
+ *   Unknown <group> action: <x>               workspace.ts:60 and its six siblings
+ *   Unknown option for <command>: <flag>      workspace.ts:202, the only one of its kind
+ *   <command>: unknown option <flag>          args.ts:88-100, `rejectLeftoverArgs`
+ *   <command>: unexpected argument '<x>'      the same, for a positional nobody consumed
+ *
+ * The last two are the DOMINANT form and were missed on the first pass: `rejectLeftoverArgs` is
+ * how 16 call sites across `pane.ts`, `workspace.ts`, `group.ts` and `install-hooks.ts` refuse a
+ * flag they do not know, lowercase and with no `Unknown` prefix, and its command label is
+ * sometimes `kelpi pane list` and sometimes bare `pane resize`. Without them the net covered
+ * `workspace delete` and almost nothing else, while this file's own contract (and the README's)
+ * claimed the class.
  *
  * It was. `cli.run` resolves with `{ code, stdout, stderr }` and only `cli.ok` throws, so
  * `poster-swap`'s cleanup (`workspace delete --name <name> --force`, which the CLI rejects
@@ -772,19 +783,23 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
  *
  * Value refusals are deliberately NOT in this net (`Unknown event type:`, `Unknown sync mode:`,
  * `Unknown --agent value:`): a step may legitimately probe what the CLI does with a bad value.
- * Nothing in `scripts/` asserts on any of the three shapes above.
+ * Nothing in `scripts/` asserts on any of the five shapes above.
  *
- * STDERR ONLY, and that is the point: the CLI writes all three through `errLine`/`writeErr`
- * (`packages/cli/src/io.ts:68,73`), while stdout is where a step's own captured pane text comes
- * back: a scrollback holding a shell's "Unknown command: foo" must never be mistaken for the
- * harness having misspelled anything.
+ * THE FIRST LINE OF STDERR, and both halves of that are the point. Stderr, because the CLI writes
+ * every refusal through `errLine`/`writeErr` (`packages/cli/src/io.ts:68,73`) while stdout is
+ * where a step's own captured pane text comes back: a scrollback holding a shell's
+ * "Unknown command: foo" must never be mistaken for the harness having misspelled anything. The
+ * first line, because a refusal is always the first thing written, whereas `web.ts:104` and
+ * `plugin.ts:143` relay a daemon's or a plugin's arbitrary multi-line message to the same stream,
+ * and a second line of one of those is not this harness's bug.
  */
-const USAGE_REFUSAL = /^Unknown (?:command|option for [a-z][a-z ]*|[a-z]+ action):.*$/m;
+const UNKNOWN_TOKEN = /^Unknown (?:command|option for [a-z][a-z ]*|[a-z]+ action):/;
+const LEFTOVER_TOKEN = /^(?:kelpi )?[a-z][a-z-]*(?: [a-z-]+)*: (?:unknown option |unexpected argument ')/;
 
 export function cliUsageRefusal({ code, stderr = '' } = {}) {
     if (code === 0) return null;
-    const hit = USAGE_REFUSAL.exec(stderr);
-    return hit === null ? null : hit[0].trim();
+    const first = stderr.trimStart().split('\n', 1)[0].trim();
+    return UNKNOWN_TOKEN.test(first) || LEFTOVER_TOKEN.test(first) ? first : null;
 }
 
 /**

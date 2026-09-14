@@ -81,9 +81,19 @@ describe('workspace delete, as the harness spells it', () => {
         // Asserted on the boolean rather than the text, so a regression reports itself in one line
         // instead of diffing 2.2 MB of audit into the terminal.
         expect(audit.includes("'workspace', 'delete', '--name'")).toBe(false);
-        const posterSwap = deleteInvocations(audit).filter((call) => call.text.includes('workspaceName'));
-        expect(posterSwap.length).toBeGreaterThanOrEqual(1);
-        for (const call of posterSwap) expect(call.tokens.filter((token) => token.startsWith('-'))).toEqual(['--force']);
+        const scratch = deleteInvocations(audit).filter(
+            (call) => call.text.includes('workspaceName') || call.text.includes('target')
+        );
+        // Both of the file's scratch-workspace cleanups: `web-popup-layering`'s, which was already
+        // positional and already checked, and `poster-swap`'s, which now deletes by id.
+        expect(scratch.length).toBeGreaterThanOrEqual(2);
+        for (const call of scratch) expect(call.tokens.filter((token) => token.startsWith('-'))).toEqual(['--force']);
+    });
+
+    it('and poster-swap deletes the id its create reported, not a name that may not be unique', () => {
+        const audit = fs.readFileSync(path.join(repoRoot, 'scripts', 'ui-audit', 'audit.mjs'), 'utf8');
+        expect(audit).toContain("const target = workspaceID ?? workspaceName;");
+        expect(audit).toContain("await cli.run(['workspace', 'delete', target, '--force']");
     });
 
     it('keeps the accepted set in step with the CLI', () => {
@@ -117,8 +127,37 @@ describe('cliUsageRefusal', () => {
         );
     });
 
+    it('catches the form every other command refuses with (rejectLeftoverArgs)', () => {
+        expect(
+            cliUsageRefusal({
+                code: 1,
+                stdout: '',
+                stderr: 'kelpi pane capture: unknown option --nmae\nUsage: kelpi pane capture <pane-id> [--lines N]\n'
+            })
+        ).toBe('kelpi pane capture: unknown option --nmae');
+        // The label is bare at some call sites and `kelpi `-prefixed at others.
+        expect(cliUsageRefusal({ code: 1, stdout: '', stderr: "pane resize: unexpected argument 'sideways'\n" })).toBe(
+            "pane resize: unexpected argument 'sideways'"
+        );
+        expect(cliUsageRefusal({ code: 1, stdout: '', stderr: 'workspace move: unknown option --to\n' })).toBe(
+            'workspace move: unknown option --to'
+        );
+    });
+
     it('reads stderr only, so a captured scrollback cannot be mistaken for a misspelt invocation', () => {
         expect(cliUsageRefusal({ code: 1, stdout: '$ worspace\nUnknown command: worspace\n', stderr: '' })).toBeNull();
+    });
+
+    it('reads the FIRST line, so a relayed daemon or plugin message cannot trip it', () => {
+        // `web.ts` and `plugin.ts` relay arbitrary multi-line text to the same stream; only the
+        // first line of stderr is ever the CLI's own parse refusal.
+        expect(
+            cliUsageRefusal({
+                code: 1,
+                stdout: '',
+                stderr: 'kelpi web eval: the page threw\n  Unknown web action: navigate\n  at <anonymous>:1:1\n'
+            })
+        ).toBeNull();
     });
 
     it('leaves a refusal to PERFORM the command alone, so a step can still assert on one', () => {

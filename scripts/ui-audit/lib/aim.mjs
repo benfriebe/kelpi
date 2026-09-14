@@ -24,10 +24,11 @@
  * step. That also explains why extra dwell never helped: `workspace-edges` already sleeps 1800 ms
  * before its right-click and still failed.
  *
- * So: scroll the row into view, measure it immediately before pressing, refuse to press a point
- * that is outside the scroller, wait for the menu instead of sleeping, retry once, and when it
- * still does not open, record what `document.elementFromPoint` says was actually under the
- * pointer. The next failure names its own cause.
+ * So: take down any menu that is already up (an old one satisfies "a menu is open" on its own),
+ * scroll the row into view, measure it immediately before pressing, refuse to press a point that
+ * is outside the scroller, wait for the menu instead of sleeping, retry once, and when it still
+ * does not open, record what `document.elementFromPoint` says was actually under the pointer. The
+ * next failure names its own cause.
  *
  * The geometry is pure and lives here so it can be unit-tested without a window: see
  * `aim.test.mjs`. This module imports nothing.
@@ -134,16 +135,46 @@ export function landingExpression(x, y) {
 
 const read = async (page, expression) => JSON.parse(String(await page.eval(expression)));
 
+const menuIsUp = async (page) =>
+    (await page.eval(`document.querySelector(${JSON.stringify(CONTEXT_MENU)}) !== null`)) === true;
+
+/**
+ * Take down a menu that was already up before the press.
+ *
+ * "A context menu exists" is the only proof the press worked, and a menu left over from an earlier
+ * gesture satisfies it the instant the poll starts: the helper would return with the WRONG menu on
+ * screen, and `clickMenuItem` reads the DOM with no wait of its own. The old flat `sleep(450)` at
+ * least gave the replacement time to land. So dismiss it first, the way a person would, and wait
+ * for it to go. No call site is in that state today; this keeps it that way.
+ */
+async function clearOpenMenu(page, ceilingMs) {
+    if (!(await menuIsUp(page))) return true;
+    await page.key('Escape');
+    const deadline = Date.now() + ceilingMs;
+    for (;;) {
+        if (!(await menuIsUp(page))) return true;
+        if (Date.now() > deadline) return false;
+        await sleep(40);
+    }
+}
+
 /**
  * Right-click a sidebar row (or a group header) whose text contains `needle`, and return with its
  * context menu on screen.
  *
- * Throws when the row is not there, when the row cannot be brought inside its scroller, or when
- * two presses opened no menu. Every one of those errors names the measurement it acted on.
+ * Throws when the row is not there, when the row cannot be brought inside its scroller, when a
+ * menu that was already open refuses to close, or when two presses opened no menu. Every one of
+ * those errors names the measurement it acted on.
  */
 export async function openSidebarMenu(page, selector, needle, { ceilingMs = 1500, settleMs = 150, attempts = 2 } = {}) {
     let last = null;
     for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (!(await clearOpenMenu(page, ceilingMs))) {
+            throw new Error(
+                `a context menu was already open before right-clicking ${selector} "${needle}" and Escape did not ` +
+                    'dismiss it, so nothing this press did could be proved'
+            );
+        }
         const aim = await read(page, aimExpression(selector, needle));
         if (aim.found !== true) throw new Error(`no ${selector} matching "${needle}"`);
         const point = rowClickPoint(aim.row);
@@ -157,7 +188,7 @@ export async function openSidebarMenu(page, selector, needle, { ceilingMs = 1500
         const deadline = Date.now() + ceilingMs;
         let opened = false;
         for (;;) {
-            opened = (await page.eval(`document.querySelector(${JSON.stringify(CONTEXT_MENU)}) !== null`)) === true;
+            opened = await menuIsUp(page);
             if (opened || Date.now() > deadline) break;
             await sleep(40);
         }

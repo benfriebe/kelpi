@@ -101,15 +101,18 @@ describe('the page-side expressions', () => {
 
 /**
  * A page whose sidebar is whatever the test says it is. `opensOn` is the press that mounts the
- * menu: `1` for a list that answers at once, `Infinity` for the one #204 reported.
+ * menu: `1` for a list that answers at once, `Infinity` for the one #204 reported. `menuUp` starts
+ * it with a stale menu on screen, and `escapeCloses` says whether Escape takes that one down.
  */
-const fakePage = ({ row, list, opensOn = 1, found = true }) => {
+const fakePage = ({ row, list, opensOn = 1, found = true, menuUp = false, escapeCloses = true }) => {
     const clicks = [];
     const evals = [];
-    let menuOpen = false;
+    const keys = [];
+    let menuOpen = menuUp;
     return {
         clicks,
         evals,
+        keys,
         async eval(expression) {
             evals.push(expression);
             if (expression.includes('scrollIntoView')) {
@@ -123,6 +126,10 @@ const fakePage = ({ row, list, opensOn = 1, found = true }) => {
                 });
             }
             return menuOpen;
+        },
+        async key(code) {
+            keys.push(code);
+            if (code === 'Escape' && escapeCloses) menuOpen = false;
         },
         async clickAt(x, y, options) {
             clicks.push({ x, y, ...options });
@@ -173,5 +180,27 @@ describe('openSidebarMenu', () => {
         await expect(openSidebarMenu(page, '[data-testid="workspace-row"]', 'Gone', fast)).rejects.toThrow(
             'no [data-testid="workspace-row"] matching "Gone"'
         );
+    });
+
+    it('takes down a menu that was already up, so a stale one cannot pass for proof', async () => {
+        // Without the Escape the first poll is satisfied by the OLD menu and the caller reads it.
+        const page = fakePage({ row: { x: 8, y: 300, w: 216, h: 26 }, list: scroller, menuUp: true });
+        const opened = await openSidebarMenu(page, '[data-testid="workspace-row"]', 'Remain A', fast);
+        expect(page.keys).toEqual(['Escape']);
+        expect(opened.attempt).toBe(1);
+        expect(page.clicks).toEqual([{ x: 68, y: 313, button: 'right' }]);
+    });
+
+    it('and refuses to press at all when that menu will not go', async () => {
+        const page = fakePage({
+            row: { x: 8, y: 300, w: 216, h: 26 },
+            list: scroller,
+            menuUp: true,
+            escapeCloses: false
+        });
+        await expect(openSidebarMenu(page, '[data-testid="workspace-row"]', 'Remain A', fast)).rejects.toThrow(
+            /already open.*Escape did not dismiss it/s
+        );
+        expect(page.clicks).toEqual([]);
     });
 });

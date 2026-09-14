@@ -47,7 +47,7 @@
  *   pnpm vendor:build -- --keep        # keep the scratch build directory for inspection
  *   pnpm vendor:build -- --no-install  # skip the workspace reinstall (the tree is then stale)
  *
- * A failed run always keeps its scratch directory and prints the path; only a successful one
+ * A failed build always keeps its scratch directory and prints the path; only a successful one
  * cleans up. Publishing stages `dist.new` beside the bundle and renames it into place, so the
  * window in which the tracked bundle is absent is a rename wide. If a run is killed inside even
  * that, `git checkout -- vendor/ghostty-web-patched/dist` restores it, which is one of the things

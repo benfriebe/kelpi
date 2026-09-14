@@ -6,9 +6,10 @@ import {
     encodePtyFrame
 } from '@kelpi/protocol';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
 import type { ControlDispatcher } from '../seams.js';
@@ -31,6 +32,8 @@ interface Fixture {
 
 const running: WsServer[] = [];
 const openSockets: WebSocket[] = [];
+/** Hand-rolled HTTP clients (the shutdown tests); torn down even when an assertion fails. */
+const rawClients: net.Socket[] = [];
 const temporaries: string[] = [];
 
 afterEach(async () => {
@@ -38,6 +41,7 @@ afterEach(async () => {
         socket.removeAllListeners();
         socket.close();
     }
+    for (const socket of rawClients.splice(0)) socket.destroy();
     for (const server of running.splice(0)) await server.stop();
     while (temporaries.length > 0) {
         fs.rmSync(temporaries.pop() as string, { recursive: true, force: true });
@@ -157,6 +161,46 @@ async function handshake(base: string): Promise<Client> {
     });
     await client.waitForJson((message) => message['type'] === 'snapshot', 'snapshot');
     return client;
+}
+
+/**
+ * One keep-alive HTTP/1.1 request, written by hand so the test owns when (and whether) the
+ * response is read. `fetch` and `http.Agent` both drain for you, which is the behaviour #212 is
+ * about NOT having.
+ */
+function keepAliveRequest(base: string, target: string): Promise<net.Socket> {
+    const url = new URL(base);
+    return new Promise<net.Socket>((resolve, reject) => {
+        const socket = net.connect({ host: url.hostname, port: Number(url.port) });
+        rawClients.push(socket);
+        // A shutdown DESTROYS this socket; that is the assertion, not a failure.
+        socket.on('error', () => {});
+        socket.once('error', reject);
+        socket.once('connect', () => {
+            socket.write(`GET ${target} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: keep-alive\r\n\r\n`);
+            resolve(socket);
+        });
+    });
+}
+
+/** Drain a hand-rolled response until `needle` has arrived, so the socket is idle afterwards. */
+function readUntil(socket: net.Socket, needle: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        let text = '';
+        const timer = setTimeout(() => {
+            socket.off('data', onData);
+            reject(new Error(`timed out waiting for ${needle} in ${text.slice(0, 200)}`));
+        }, 2000);
+        const onData = (chunk: Buffer): void => {
+            text += chunk.toString('utf8');
+            if (!text.includes(needle)) return;
+            clearTimeout(timer);
+            socket.off('data', onData);
+            socket.pause();
+            resolve();
+        };
+        socket.on('data', onData);
+    });
 }
 
 function clientDist(files: Record<string, string>): string {
@@ -516,5 +560,52 @@ describe('shutdown', () => {
         await closed;
 
         await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
+    });
+
+    /**
+     * #212: a browser's leftover HTTP sockets used to hold `stop()` open until something killed
+     * the process. `server.close()` stops the listener at once but its callback waits for every
+     * connection to drain, and `boot/compose.ts` awaits that callback, so the whole shutdown
+     * sat there (past `persistence.close()`, `clearRunFiles` and the final log line) until the
+     * scenario runner's 8 s SIGTERM window ran out.
+     *
+     * Two sockets, because they fail differently. The idle keep-alive one is what the issue was
+     * filed about; Node 19 and later happen to sweep that one inside `close()` itself, so it is
+     * here to pin the headline case rather than to fail. The one with a response still in
+     * flight, a fetch the peer stopped reading, is exactly what a renderer leaves behind when it
+     * abandons a plugin asset, and it is the one nothing sweeps: without `closeAllConnections()`
+     * after the grace, `stop()` never resolves and this assertion reports the timeout instead of
+     * hanging the suite.
+     */
+    it('stops within the grace even while a browser holds keep-alive HTTP sockets open', async () => {
+        const dist = clientDist({ 'index.html': 'SHELL', 'assets/big.bin': 'x'.repeat(4 * 1024 * 1024) });
+        const f = await startServer({ distDir: dist });
+
+        const idle = await keepAliveRequest(f.base, '/healthz');
+        await readUntil(idle, '"ok":true');
+
+        // Never read from this one: the response stalls on backpressure a few dozen kilobytes
+        // in and the connection stays busy, which is what `closeIdleConnections()` spares.
+        const busy = await keepAliveRequest(f.base, '/assets/big.bin');
+        await new Promise<void>((resolve) => busy.once('readable', () => resolve()));
+
+        const startedAt = Date.now();
+        const outcome = await Promise.race([
+            f.server.stop().then(() => 'stopped' as const),
+            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 1000))
+        ]);
+        const elapsed = Date.now() - startedAt;
+
+        expect(outcome).toBe('stopped');
+        expect(elapsed).toBeLessThan(1000);
+        await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
+        // Both sockets were really taken down rather than merely ignored. A paused client only
+        // notices once it reads again, so resume first and then wait for the end of the stream.
+        idle.resume();
+        busy.resume();
+        await vi.waitFor(() => {
+            expect(idle.readableEnded || idle.destroyed).toBe(true);
+            expect(busy.readableEnded || busy.destroyed).toBe(true);
+        });
     });
 });

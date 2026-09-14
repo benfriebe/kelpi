@@ -13,10 +13,13 @@ import type { PluginChannel } from '../plugins/service.js';
  *   - binary frames → `PaneStreamSession` (replay + live PTY output, input, ack, resize).
  *
  * Shutdown closes both in the right order (clients get a goodbye frame, streams unsubscribe
- * from the PTY manager, listeners close) and never leaves a half-open socket behind.
+ * from the PTY manager, listeners close) and never leaves a half-open socket behind. It is also
+ * BOUNDED: `closeAsync` below is what stops a browser's leftover HTTP sockets from holding the
+ * whole daemon's shutdown open until something kills it (#212).
  */
 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
 import { getRequestListener } from '@hono/node-server';
@@ -187,13 +190,61 @@ function listenAsync(server: Server, host: string, port: number): Promise<number
     });
 }
 
-function closeAsync(server: Server): Promise<void> {
+/**
+ * How long `closeAsync` lets a response that is still in flight finish before the socket
+ * carrying it is destroyed (#212).
+ *
+ * 250 ms because every response this server serves is local: a small JSON body, or a file off
+ * the client build or a plugin bundle, over loopback or a tailnet hop. A response that has not
+ * finished in a quarter of a second is one the peer has stopped reading, not one that needs
+ * more time. It is also an order of magnitude under the budgets around it (the scenario runner
+ * allows 8 s between SIGTERM and SIGKILL, and the steps ahead of this one in `boot/compose.ts`
+ * are capped at 1 s to 2 s each), and it costs a clean stop nothing: the timer is cleared the
+ * moment the close callback fires, which in the common case is single-digit milliseconds.
+ */
+const CLOSE_GRACE_MS = 250;
+
+/**
+ * Stop listening and RESOLVE, which `server.close()` on its own does not promise (#212).
+ *
+ * `close()` shuts the listener down at once, but the callback this awaits waits for every
+ * connection to drain, and two populations can hold that off indefinitely:
+ *
+ *   - A connection whose response is still in flight. The renderer fetches the client document
+ *     and the `/plugin-assets/...` files that build each plugin view's `srcDoc`; a fetch it has
+ *     stopped reading leaves that connection busy, and Node's own pre-close sweep (`close()`
+ *     calls `closeIdleConnections()` itself on Node 19 and later) deliberately spares it.
+ *   - A socket that has UPGRADED. Node drops those from the list behind
+ *     `closeIdleConnections()` and `closeAllConnections()` while still counting them as open
+ *     connections, so neither call reaches a WebSocket whose peer never answered the goodbye.
+ *
+ * So: sweep the idle connections at once (explicitly, rather than relying on `close()` doing it,
+ * which is version-dependent), then after `CLOSE_GRACE_MS` take the rest. `closeAllConnections()`
+ * has the HTTP ones, and `rawSockets` has the upgraded ones Node no longer tracks: it is every
+ * accepted socket, collected from the `connection` event before any upgrade can happen, which is
+ * why one sweep covers both rather than needing a second pass over the WebSockets. Destroying a
+ * socket that has already closed is a no-op, and `stop()` sends every WebSocket its goodbye long
+ * before this, so a well-behaved client is gone by the time the sweep runs either way.
+ */
+function closeAsync(server: Server, rawSockets: ReadonlySet<Socket>): Promise<void> {
     return new Promise<void>((resolve) => {
         if (!server.listening) {
             resolve();
             return;
         }
-        server.close(() => resolve());
+        let settled = false;
+        let sweep: ReturnType<typeof setTimeout> | undefined;
+        server.close(() => {
+            settled = true;
+            if (sweep !== undefined) clearTimeout(sweep);
+            resolve();
+        });
+        server.closeIdleConnections();
+        if (settled) return;
+        sweep = setTimeout(() => {
+            server.closeAllConnections();
+            for (const socket of rawSockets) socket.destroy();
+        }, CLOSE_GRACE_MS);
     });
 }
 
@@ -265,6 +316,12 @@ export function createWsServer(options: WsServerOptions): WsServer {
     const servers: Server[] = [];
     const addresses: WsServerAddress[] = [];
     const sockets = new Set<WebSocket>();
+    /**
+     * Every accepted TCP socket, upgraded or not (`closeAsync` says what it is for). Collected
+     * here rather than from the WebSockets because the `connection` event fires before the
+     * upgrade, which is the only point at which Node still owns the socket for certain.
+     */
+    const rawSockets = new Set<Socket>();
     let boundPort: number | undefined;
     let started = false;
     let stopped = false;
@@ -346,6 +403,10 @@ export function createWsServer(options: WsServerOptions): WsServer {
     const makeServer = (): Server => {
         const server = createServer(requestListener);
         server.on('upgrade', handleUpgrade);
+        server.on('connection', (socket: Socket) => {
+            rawSockets.add(socket);
+            socket.on('close', () => rawSockets.delete(socket));
+        });
         server.on('clientError', (error) => report(error, 'http-client'));
         return server;
     };
@@ -390,8 +451,9 @@ export function createWsServer(options: WsServerOptions): WsServer {
             }
             sockets.clear();
             wss.close();
-            await Promise.all(servers.map(closeAsync));
+            await Promise.all(servers.map((server) => closeAsync(server, rawSockets)));
             servers.length = 0;
+            rawSockets.clear();
         },
         get port() {
             return boundPort;

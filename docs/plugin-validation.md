@@ -228,6 +228,25 @@ NOT reproduce the stall (stop stayed at 5 to 8 ms), so which socket population a
 here; `lastStopMs` / `lastStartMs` and the shutdown-line note exist so the next reader can tell a
 hung shutdown from a slow machine.
 
+**Fixed on `fix/daemon-close-idle-connections` (2026-09-14).** The population the note above left
+open is a connection whose RESPONSE is still in flight, not an idle one. Node 19 and later already
+sweep genuinely idle keep-alive connections inside `close()` itself, which is why the plain `fetch`
+probe never reproduced the stall; what that sweep deliberately spares is a fetch the peer stopped
+reading, such as an abandoned `/plugin-assets/...` request left behind when a plugin view is
+rebuilt. An upgraded socket is a second hole: Node drops it from the list behind
+`closeIdleConnections()` and `closeAllConnections()` while still counting it as an open connection.
+`ws/server.ts` ▸ `closeAsync` now calls `server.closeIdleConnections()` the moment the listener
+closes and, after a 250 ms grace, `server.closeAllConnections()` plus a destroy of every accepted
+socket (collected from the server's own `connection` event), so it always resolves; the WebSocket
+goodbye path is unchanged. `packages/daemon/src/ws/server.test.ts` holds one idle keep-alive socket
+and one carrying a 4 MB response the client never drains, then asserts `stop()` resolves inside a
+second; with the sweep removed it reports that timeout rather than hanging the suite. Measured live:
+five runs of `node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter
+--window hidden`, **51/51 + 34/34 every time**, ten restarts in all, `lastStopMs` of **13, 9, 13,
+10, 13, 10, 20, 10, 14 and 10 ms** with every replaced daemon logging `kelpid stopped`, against nine
+of fourteen interaction runs at the 8 s cap before. `pnpm check` passes: all typechecks, root vitest
+**7,935 passed, 1 skipped** (511 files, the same optional database skip), shell **870 passed**.
+
 Not established here: physical devices; the phone form factor for either arm (a phone is granted
 no presenter at all, so rule 3 has nothing to do there that the phone's own rule has not already
 done); the 240-calls-per-second budget breach, which remains a unit test.

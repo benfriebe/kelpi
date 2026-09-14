@@ -10,6 +10,7 @@ import {
     createAssetCredentialGate,
     createAssetCredentialValidator,
     createDeviceValidator,
+    deleteDevice,
     hashDeviceToken,
     loadDevices,
     mintDevice,
@@ -105,6 +106,66 @@ describe('revokeDevice', () => {
     it('returns null for an unknown target', () => {
         mintDevice(file, 'alice');
         expect(revokeDevice(file, 'nobody')).toBeNull();
+    });
+});
+
+describe('deleteDevice', () => {
+    it('drops a revoked entry and persists the file without it, leaving the others alone', () => {
+        const alice = mintDevice(file, 'alice');
+        const bob = mintDevice(file, 'bob');
+        revokeDevice(file, bob.device.id);
+
+        const deleted = deleteDevice(file, bob.device.id);
+        expect(deleted?.id).toBe(bob.device.id);
+        expect(deleted?.revokedAt).toBeDefined();
+        // Persisted, not just returned: a fresh read of the file no longer carries it.
+        expect(loadDevices(file).map((device) => device.id)).toEqual([alice.device.id]);
+    });
+
+    it('refuses a live device, pointing at revoke, and writes nothing', () => {
+        const alice = mintDevice(file, 'alice');
+        const before = fs.readFileSync(file, 'utf8');
+        expect(() => deleteDevice(file, alice.device.id)).toThrow(/is a live device - revoke it first/);
+        expect(fs.readFileSync(file, 'utf8')).toBe(before);
+        expect(loadDevices(file)).toHaveLength(1);
+    });
+
+    it('deletes by the name of a revoked device, and demands an id when that name is ambiguous', () => {
+        // The issue's own case: re-pairing one machine leaves a revoked ghost per pairing,
+        // all called the same thing, so duplicates collect on the REVOKED side of the list.
+        const first = mintDevice(file, 'goku');
+        revokeDevice(file, first.device.id);
+        const second = mintDevice(file, 'goku');
+
+        // While only one "goku" is revoked, the name is unambiguous and resolves to it - the
+        // live namesake is not a candidate, so this is not the live/revoked coin toss it looks.
+        expect(deleteDevice(file, 'goku')?.id).toBe(first.device.id);
+
+        revokeDevice(file, second.device.id);
+        const third = mintDevice(file, 'goku');
+        revokeDevice(file, third.device.id);
+        expect(() => deleteDevice(file, 'goku')).toThrow(/names 2 revoked devices - delete by id instead/);
+        expect(loadDevices(file)).toHaveLength(2);
+    });
+
+    it('returns null for an unknown target, and for a live name it must not reach', () => {
+        mintDevice(file, 'alice');
+        expect(deleteDevice(file, 'nobody')).toBeNull();
+        // A LIVE device's name is not a delete handle: names resolve among the revoked only,
+        // so this matches nothing rather than refusing something it found.
+        expect(deleteDevice(file, 'alice')).toBeNull();
+        expect(loadDevices(file)).toHaveLength(1);
+    });
+
+    it('leaves the validator seeing the deletion, the same mtime reload a revoke gets', () => {
+        const minted = mintDevice(file, 'alice');
+        const validate = createDeviceValidator(file);
+        expect(validate(minted.token)).toBe(true);
+        revokeDevice(file, minted.device.id);
+        expect(validate(minted.token)).toBe(false);
+        deleteDevice(file, minted.device.id);
+        // Deleting an already-cut entry re-admits nothing: the token stays refused.
+        expect(validate(minted.token)).toBe(false);
     });
 });
 

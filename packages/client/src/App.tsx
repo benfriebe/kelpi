@@ -4003,7 +4003,8 @@ function Shell(props: AppProps): ReactElement {
                 remote={{
                     status: () => commands.remoteStatus(),
                     pair: (name, tailnet) => commands.remotePair(name, tailnet),
-                    revoke: (target) => commands.remoteRevoke(target)
+                    revoke: (target) => commands.remoteRevoke(target),
+                    delete: (target) => commands.remoteDelete(target)
                 }}
                 /*
                  * No `onBrowseForFolder`: the shell's dialog loop is one-way (it answers

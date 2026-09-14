@@ -1426,6 +1426,13 @@ describe('remote-access commands (ws/remote.ts) — owner-only', () => {
                 revoke(target) {
                     calls.push(`revoke:${target}`);
                     return Promise.resolve({ ok: true, device: { id: target, name: 'x', created_at: '' } });
+                },
+                delete(target) {
+                    calls.push(`delete:${target}`);
+                    return Promise.resolve({
+                        ok: true,
+                        device: { id: target, name: 'x', created_at: '', revoked_at: '2026-09-01T00:00:00Z' }
+                    });
                 }
             }
         });
@@ -1453,10 +1460,14 @@ describe('remote-access commands (ws/remote.ts) — owner-only', () => {
         session.handleMessage(
             JSON.stringify({ type: 'command', id: 'r3', payload: { command: 'remote-revoke', target: 'a1' } })
         );
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'r4', payload: { command: 'remote-delete', target: 'a1' } })
+        );
         await settle();
-        expect(calls).toEqual(['status', 'pair:phone:true', 'revoke:a1']);
+        expect(calls).toEqual(['status', 'pair:phone:true', 'revoke:a1', 'delete:a1']);
         expect(replyFor(transport, 'r1')?.['reply']).toMatchObject({ ok: true });
         expect(replyFor(transport, 'r2')?.['reply']).toMatchObject({ ok: true, url: 'https://x/?token=kd_1' });
+        expect(replyFor(transport, 'r4')?.['reply']).toMatchObject({ ok: true, device: { id: 'a1' } });
     });
 
     it('refuses a session that authenticated with a PAIRED-DEVICE token', async () => {
@@ -1469,11 +1480,16 @@ describe('remote-access commands (ws/remote.ts) — owner-only', () => {
         session.handleMessage(
             JSON.stringify({ type: 'command', id: 'g2', payload: { command: 'remote-revoke', target: 'a1' } })
         );
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 'g3', payload: { command: 'remote-delete', target: 'a1' } })
+        );
         await settle();
-        // The channel was never reached — the registry, mint and revoke are the owner's.
+        // The channel was never reached: the registry, mint, revoke and delete are the owner's.
         expect(calls).toEqual([]);
         expect(replyFor(transport, 'g1')?.['reply']).toEqual({ ok: false, error: 'remote-status is owner-only' });
         expect(replyFor(transport, 'g2')?.['reply']).toEqual({ ok: false, error: 'remote-revoke is owner-only' });
+        // A guest must not be able to erase the record of its own device having been cut.
+        expect(replyFor(transport, 'g3')?.['reply']).toEqual({ ok: false, error: 'remote-delete is owner-only' });
     });
 
     it('answers "not available" when no channel is composed', async () => {

@@ -352,6 +352,15 @@ export class CommandClient {
     }
 
     /**
+     * Drop an ALREADY-REVOKED entry from the registry, by device id (or unambiguous revoked
+     * name). A live device is refused with an error naming `revoke`: the record of a
+     * credential having been cut is never erased in the same breath as the credential.
+     */
+    remoteDelete(target: string, options?: SendOptions): Promise<CommandReply> {
+        return this.raw({ command: 'remote-delete', target }, options ?? {});
+    }
+
+    /**
      * Which panes this client actually renders + whether its document is visible. Drives
      * notification suppression and the daemon's "app is active" answer.
      */

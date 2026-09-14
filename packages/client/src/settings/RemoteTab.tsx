@@ -21,7 +21,11 @@
  *      cannot click is not a repair.
  *   3. **Paired devices** — the registry, live entries first, with per-row Revoke. A revoke
  *      cuts the device's open sessions within a debounce (the daemon watches the registry),
- *      so the row flipping to "revoked" is the whole story.
+ *      so the row flipping to "revoked" is the whole story. A revoked row then carries a
+ *      Delete, which drops it from the registry for good: two steps, never one, so the record
+ *      of a device having been cut outlives the cutting and only goes when the owner says so.
+ *      A live row has no Delete at all: the daemon refuses one anyway (`ws/remote.ts`), and
+ *      an affordance that exists to be refused is worse than one that is not drawn.
  */
 
 import { encodeQr, qrSvg } from '@kelpi/core/qr';
@@ -35,6 +39,8 @@ export interface RemoteTabActions {
     status(): Promise<Record<string, unknown>>;
     pair(name: string, tailnet: boolean): Promise<Record<string, unknown>>;
     revoke(target: string): Promise<Record<string, unknown>>;
+    /** Drop an already-revoked entry. Only ever called with a revoked device's id. */
+    delete(target: string): Promise<Record<string, unknown>>;
 }
 
 /** One §1.7 `remote-daemon` registry entry, as the settings snapshot carries it. */
@@ -361,6 +367,22 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
         );
     };
 
+    /**
+     * Always by id, never by name: the rows carry ids and the registry collects duplicate
+     * revoked names (one per re-pairing of the same machine), so a name would be the one
+     * handle that cannot say which row was clicked.
+     */
+    const forget = (id: string): void => {
+        actions.delete(id).then(
+            () => {
+                if (alive.current) refresh();
+            },
+            () => {
+                if (alive.current) refresh();
+            }
+        );
+    };
+
     const copyURL = (): void => {
         if (minted === null) return;
         navigator.clipboard?.writeText(minted.url).then(
@@ -579,7 +601,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
             <SettingsSection
                 title="Paired devices"
                 testID="remote-devices"
-                hint="Revoking cuts the device everywhere: new hellos at once, open sessions within moments."
+                hint="Revoking cuts the device everywhere: new hellos at once, open sessions within moments. A revoked device can then be deleted from the list."
             >
                 {live.length === 0 && revoked.length === 0 ? (
                     <SettingsDetail>
@@ -609,8 +631,22 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                         detail={`revoked ${shortDate(device.revokedAt ?? '')} · id ${device.id}`}
                         testID={`remote-device-${device.id}`}
                     >
-                        <span style={{ color: tokens.textTertiary }} className="text-[11px]">
-                            revoked
+                        <span className="flex items-center gap-2">
+                            <span style={{ color: tokens.textTertiary }} className="text-[11px]">
+                                revoked
+                            </span>
+                            {/*
+                              * No confirmation: the token is already dead, so this drops a
+                              * record and can re-admit nothing. The refresh in `forget` is what
+                              * makes the row go, on both outcomes, without a reload.
+                              */}
+                            <SettingsButton
+                                testID={`remote-delete-${device.id}`}
+                                tone="danger"
+                                onClick={() => forget(device.id)}
+                            >
+                                Delete
+                            </SettingsButton>
                         </span>
                     </SettingsRow>
                 ))}

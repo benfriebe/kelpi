@@ -46,12 +46,17 @@ function actions(overrides: Partial<RemoteTabActions> = {}): RemoteTabActions {
                 notes: ['tailscale serve: already fronting 127.0.0.1:61154 on :443']
             }),
         revoke: () => Promise.resolve({ ok: true, device: { id: 'aa11', name: 'phone', created_at: '' } }),
+        delete: () =>
+            Promise.resolve({
+                ok: true,
+                device: { id: 'bb22', name: 'old-laptop', created_at: '', revoked_at: '2026-08-20T00:00:00Z' }
+            }),
         ...overrides
     };
 }
 
 describe('Settings ▸ Remote', () => {
-    it('shows the tailnet identity and the registry, live devices with a Revoke and revoked ones inert', async () => {
+    it('shows the tailnet identity and the registry: Revoke on a live device, Delete on a revoked one', async () => {
         render(<RemoteTab actions={actions()} />);
         await waitFor(() => {
             expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk.taila.ts.net');
@@ -59,9 +64,13 @@ describe('Settings ▸ Remote', () => {
         expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('serve is fronting the daemon');
         expect(screen.getByTestId('remote-device-aa11').textContent).toContain('phone');
         expect(screen.getByTestId('remote-revoke-aa11')).toBeTruthy();
-        // A revoked device keeps its record but offers no button.
+        // A live device offers Revoke and NOT Delete: revoke first is the rule, and the
+        // daemon refuses a delete of a live device anyway.
+        expect(screen.queryByTestId('remote-delete-aa11')).toBeNull();
+        // A revoked device keeps its record, still says so, and can now be dropped.
         expect(screen.getByTestId('remote-device-bb22').textContent).toContain('revoked');
         expect(screen.queryByTestId('remote-revoke-bb22')).toBeNull();
+        expect(screen.getByTestId('remote-delete-bb22').textContent).toBe('Delete');
     });
 
     it('pairs a device and shows the one-time URL with its warning', async () => {
@@ -276,6 +285,42 @@ describe('Settings ▸ Remote', () => {
         await waitFor(() => expect(screen.getByTestId('remote-revoke-aa11')).toBeTruthy());
         fireEvent.click(screen.getByTestId('remote-revoke-aa11'));
         await waitFor(() => expect(revoke).toHaveBeenCalledWith('aa11'));
+    });
+
+    it('deletes a revoked device by id and the row goes on the refresh, with no reload', async () => {
+        const remove = vi.fn(() =>
+            Promise.resolve({ ok: true, device: { id: 'bb22', name: 'old-laptop', created_at: '' } })
+        );
+        // The second status is the registry AFTER the delete - what a re-fetch really returns.
+        const status = vi
+            .fn<() => Promise<Record<string, unknown>>>()
+            .mockResolvedValueOnce({
+                ok: true,
+                devices: [
+                    { id: 'aa11', name: 'phone', created_at: '2026-09-01T00:00:00Z' },
+                    {
+                        id: 'bb22',
+                        name: 'old-laptop',
+                        created_at: '2026-08-01T00:00:00Z',
+                        revoked_at: '2026-08-20T00:00:00Z'
+                    }
+                ],
+                tailnet: { available: true, backend: 'Running', dns_name: 'werk.taila.ts.net', serving: true }
+            })
+            .mockResolvedValue({
+                ok: true,
+                devices: [{ id: 'aa11', name: 'phone', created_at: '2026-09-01T00:00:00Z' }],
+                tailnet: { available: true, backend: 'Running', dns_name: 'werk.taila.ts.net', serving: true }
+            });
+        render(<RemoteTab actions={actions({ status, delete: remove })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-delete-bb22')).toBeTruthy());
+
+        fireEvent.click(screen.getByTestId('remote-delete-bb22'));
+        // By id, never by name: duplicate revoked names are exactly what this list collects.
+        await waitFor(() => expect(remove).toHaveBeenCalledWith('bb22'));
+        await waitFor(() => expect(screen.queryByTestId('remote-device-bb22')).toBeNull());
+        // The live row is untouched, and nothing reloaded the tab to get here.
+        expect(screen.getByTestId('remote-device-aa11')).toBeTruthy();
     });
 });
 

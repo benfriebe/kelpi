@@ -82,6 +82,12 @@ import {
     waitForHealthz
 } from './lib/stack.mjs';
 import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards } from './lib/shards.mjs';
+import {
+    describePickGuards,
+    focusPageCommentSource,
+    installPickWitnessSource,
+    pickProbeSource
+} from './lib/web-batch.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -1170,6 +1176,40 @@ async function webViewSession(sandbox, site, repoRoot) {
     );
     if (target === undefined) return null;
     return connect(target.webSocketDebuggerUrl, { repoRoot });
+}
+
+/**
+ * Install the click witness in the embedded page (#206), and never throw doing it.
+ *
+ * `probePick` below is non-throwing because it runs on the failure path. This one runs on the
+ * NORMAL path, where a throw would be worse still: it would end the step the way #206 ended, over
+ * the diagnostic rather than over the thing being diagnosed. Returns whether the witness went in,
+ * and a step that ignores that is not flying blind, because the probe has a verdict for a witness
+ * that is not there.
+ */
+async function installWitness(view) {
+    try {
+        await view.eval(installPickWitnessSource());
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Read the embedded page back after a pick that did not happen (#206).
+ *
+ * Never throws. This only ever runs on the failure path, where an exception would replace the
+ * diagnostic with a step error and lose the rest of the step, which is precisely the trade the
+ * ticket is about. `box` is what `view.click` aimed at, so the probe can say what is under that
+ * point now even when no click was ever delivered.
+ */
+async function probePick(view, box) {
+    try {
+        return await view.eval(pickProbeSource(box?.cx, box?.cy));
+    } catch (error) {
+        return { probeError: String(error?.message ?? error) };
+    }
 }
 
 /**
@@ -6017,7 +6057,18 @@ function buildFlows(ctx) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
                     const armed = await view.eval('window.__kelpiInspectorArmed ? window.__kelpiInspectorArmed() : null');
                     recorder.check('the page picker is armed (sticky)', armed === true, String(armed));
-                    await view.click('#hello');
+                    /*
+                     * #206 - a click that picks nothing has five possible explanations, and this
+                     * step used to record none of them: it reported `'no popover'` and moved on,
+                     * so the one run that hit it could not be attributed and the next one will not
+                     * be either. `lib/web-batch.mjs` has the five and the reasoning; the witness
+                     * goes in BEFORE the click because the readings that decide between them
+                     * (armed, the popover flag, the overlay test) are only true at the instant the
+                     * click arrives, and because zero clicks seen is the positive control that
+                     * separates "the picker declined" from "the click never reached the page".
+                     */
+                    await installWitness(view);
+                    const helloBox = await view.click('#hello');
                     await sleep(700);
                     // WEB-142/WEB-143: the pick opens its comment popover, and while that is open
                     // the picker is SUSPENDED — so the next element cannot be picked until Done
@@ -6033,7 +6084,16 @@ function buildFlows(ctx) {
                             return done.textContent;
                         })()`
                     );
-                    recorder.check('the pick opened its comment popover, with a Done button', dismissed === 'Done', String(dismissed));
+                    // Only `'no popover'` is a missed pick. `'no button'` and any other label mean
+                    // the popover DID open, so the guards are not what failed and the reading to
+                    // report is the one the popover gave back.
+                    const pickProbe = dismissed === 'no popover' ? await probePick(view, helloBox) : null;
+                    if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                    recorder.check(
+                        'the pick opened its comment popover, with a Done button',
+                        dismissed === 'Done',
+                        pickProbe === null ? String(dismissed) : describePickGuards(pickProbe)
+                    );
                     await sleep(500);
                     await view.click('#go');
                     await sleep(700);
@@ -6267,7 +6327,8 @@ function buildFlows(ctx) {
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
-                await view.click('#hello');
+                await installWitness(view);
+                const helloBox = await view.click('#hello');
                 await sleep(700);
 
                 // ── WEB-140: the popover's header and placement rules ───────────────
@@ -6292,6 +6353,43 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`popover placement: ${JSON.stringify(placement)}`);
+
+                /*
+                 * #206 - the precondition every reading below rests on, asserted once.
+                 *
+                 * Without it a pick that did not happen was not one failure but a wall of them:
+                 * seven `undefined` placement readings, and then `document.querySelector(
+                 * '[data-kelpi-batch-comment]').focus()` threw "Cannot read properties of null",
+                 * which aborted the step at 7 assertions against a baseline of 20 and turned a
+                 * plain red into a step error. So: name the precondition, say WHICH guard declined
+                 * the click (`lib/web-batch.mjs`), tear the batch down the way the tail of this
+                 * step does, and leave. One clear failure, and the next step inherits a clean pane.
+                 */
+                const picked = placement !== null;
+                const pickProbe = picked ? null : await probePick(view, helloBox);
+                if (pickProbe !== null) recorder.note(`the pick that did not happen: ${JSON.stringify(pickProbe)}`);
+                recorder.check(
+                    'the click on #hello made a pick, so there is a popover to inspect (#206)',
+                    picked,
+                    picked ? 'the popover is up' : `no pick from this step's click: ${describePickGuards(pickProbe)}`
+                );
+                if (!picked) {
+                    // The step is `needsEyes`, and a missed pick is exactly the run whose picture
+                    // is worth having: the panel, the pane and whatever is in front of the window.
+                    await recorder.shot(page, 'no-pick');
+                    view.close();
+                    await page.eval(
+                        `(() => {
+                            const cancel = document.querySelector('[data-testid="web-batch-cancel-${paneID}"]');
+                            if (cancel !== null) cancel.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(600);
+                    recorder.eyes('the "no-pick" shot: whether the batch panel is up, and what is in front of the window');
+                    return;
+                }
+
                 recorder.check(
                     'the popover header is "#<label> <selector>" (WEB-140)',
                     /^#1\s+#hello$/.test(String(placement?.header ?? '').trim()),
@@ -6347,10 +6445,9 @@ function buildFlows(ctx) {
 
                 // …and NOT while the user is typing in it: the guard is what stops the two
                 // editors fighting over the cursor.
-                await view.eval(
-                    `(() => { const t = document.querySelector('[data-kelpi-batch-comment]'); t.focus();
-                              t.value = 'typed in the page'; return document.activeElement === t; })()`
-                );
+                // Null-guarded (#206): with no popover this used to be the step error, not a check.
+                const typedInPage = await view.eval(focusPageCommentSource('typed in the page'));
+                recorder.note(`typing straight into the page textarea: ${JSON.stringify(typedInPage)}`);
                 if (String(rowComment) !== '') {
                     await page.click(`[data-testid="${String(rowComment)}"]`);
                     await page.insertText(' MORE');
@@ -10655,6 +10752,11 @@ function buildFlows(ctx) {
                         )
                     );
 
+                // Declared out here, not in the `try`, so the `finally` can hand a borrowed pane
+                // back even when a throw skips the early close inside Phase 0. An extra shell
+                // pane surviving this step is the leak class `clickPaneHeader`'s note records.
+                let borrowedSibling = null;
+
                 try {
                     for (let attempt = 0; attempt < 50 && !activationReady; attempt++) await sleep(160);
                     recorder.check('the stand-in shell is attached to the daemon', activationReady);
@@ -10669,20 +10771,75 @@ function buildFlows(ctx) {
                     await cli.ok(['event', 'session-start'], { paneID, stdin: JSON.stringify({ session_id: sessionID }) });
                     await sleep(600);
 
-                    // Phase 0 — the control. With the app ACTIVE the clear fires as it always
-                    // has (§AGNT-055), so the two phases below are measuring a gate rather than
-                    // a timer that was never running: the audit window is frequently not the
-                    // frontmost app, and without this the "it survived" assertion could pass for
-                    // the wrong reason.
+                    // Phase 0, the control. What it proves is narrower than it used to be: that
+                    // the dwell mechanism is LIVE in this app instance, so the survival assertion
+                    // below cannot pass on a timer that never existed. It is no longer a
+                    // one-variable contrast with the background phase, because under the current
+                    // rule that phase's survival is over-determined (a status raised on the
+                    // already focused pane survives whether or not the app is active); the
+                    // activation gate itself is measured by §AGNT-056's second half.
+                    //
+                    // The dwell arms on a FOCUS, never on a status change of the pane already
+                    // wearing the ring: `useFocusDwell`'s effect is keyed on the focused pane id
+                    // with the status read through a ref (#108, and §5.8 of docs/agent-lifecycle.md
+                    // records the trade-off deliberately, so an agent stopping under the user's
+                    // nose keeps its badge until the next focus or activation). So park the ring
+                    // on a sibling, raise the status while it is parked, and click back in: that
+                    // click is the focus event the product now asks for. NOT the deactivate then
+                    // activate route, which is byte for byte what §AGNT-056's second half below
+                    // already measures, and would stop this being an independent control.
                     await setActive(true);
+                    const domIDs = await domPaneIDs(page);
+                    let sibling = (await cli.json(['pane', 'list', '--json'])).find(
+                        (item) => item.is_active_workspace === true && item.id !== paneID && domIDs.includes(item.id)
+                    )?.id;
+                    // Under `--only` the active workspace can hold this pane alone (the trap
+                    // `agent-start` hit: a pane from a BACKGROUND workspace has no header in the
+                    // DOM to click). Borrow one and hand it straight back, so the header width
+                    // the badge assertions below depend on is the one this step started with.
+                    if (sibling === undefined) {
+                        const split = await cli.json(['pane', 'split', '--target', paneID, '--json']);
+                        sibling = typeof split?.pane_id === 'string' ? split.pane_id : undefined;
+                        borrowedSibling = sibling ?? null;
+                        await sleep(1500);
+                    }
+                    if (sibling === undefined) {
+                        // The borrow yielded no id, so the ring cannot leave the pane and the
+                        // click below is a click on an already focused pane: no focus change, no
+                        // arm. Say so, rather than let the red read like the #192 symptom.
+                        recorder.note('no sibling to park focus on: the click back cannot be a focus change, so this control cannot arm');
+                    } else {
+                        recorder.note(`parking focus on ${sibling} so the click back into ${paneID} is a real focus event`);
+                        await clickPaneHeader(page, sibling);
+                    }
                     await cli.ok(['event', 'error', '--message', 'Audit: control run'], { paneID });
+                    // The client draws the ring from a LOCAL focus echo, so a click flips
+                    // `focusedPaneID` without waiting for the daemon. If the status delta has not
+                    // reached the store by the render that click causes, `useFocusDwell` reads an
+                    // idle status and returns without arming, and the delta arriving afterwards
+                    // cannot re-arm. Settling here is free: the ring is parked, so nothing can
+                    // clear the pane while we wait.
+                    await sleep(500);
+                    recorder.note(`before the click back: status=${String(await paneStatus())}`);
+                    await clickPaneHeader(page, paneID);
                     await sleep(1600);
                     const activeClear = await paneStatus();
                     recorder.check(
-                        'with the app active, the 600 ms dwell clears the focused pane (§AGNT-055)',
+                        'with the app active, focusing the pane arms the 600 ms dwell and clears it (§AGNT-055)',
                         activeClear === 'idle',
                         `status=${String(activeClear)}`
                     );
+                    // Hand it back HERE, not in the `finally`, so the header the badge assertions
+                    // below read is full width again. The re-click is insurance, not a no-op by
+                    // contract: everything after this needs the ring on `paneID` (§AGNT-056's
+                    // second half arms the dwell on the FOCUSED pane), and one round trip is
+                    // cheaper than a red misattributed to the dwell.
+                    if (borrowedSibling !== null) {
+                        await cli.run(['pane', 'close', '--target', borrowedSibling]);
+                        borrowedSibling = null;
+                        await sleep(900);
+                        await clickPaneHeader(page, paneID);
+                    }
 
                     await setActive(false);
                     const shellLogMark = runtime.shell.text().length;
@@ -10842,9 +10999,14 @@ function buildFlows(ctx) {
                         'the quit dialog: is the destructive Quit legible, is Cancel’s focus visible, does it read as the same app as the delete confirmation?'
                     );
                 } finally {
-                    // Whatever happened above: the session is detached, the app is active again,
-                    // the page has no leftover audit global, the socket is closed, and focus is
-                    // back where it was.
+                    // Whatever happened above: the borrowed pane is gone, the session is
+                    // detached, the app is active again, the page has no leftover audit global,
+                    // the socket is closed, and focus is back where it was.
+                    if (borrowedSibling !== null) {
+                        recorder.note(`returning the borrowed sibling ${borrowedSibling} after an early exit`);
+                        await cli.run(['pane', 'close', '--target', borrowedSibling]);
+                        await sleep(900);
+                    }
                     await cli.run(['event', 'session-end'], {
                         paneID,
                         stdin: JSON.stringify({ session_id: 'audit-life-0000-0001' })

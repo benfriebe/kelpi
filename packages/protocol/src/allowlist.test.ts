@@ -18,6 +18,7 @@ const SPEC_FIRE_AND_FORGET: readonly WireCommandName[] = [
     'group-create',
     'group-rename',
     'group-delete',
+    'group-move',
     'layout-cycle',
     'layout-select',
     'open',

@@ -96,3 +96,19 @@ const WIRE_EDGE_TO_ZONE: Record<WireMoveEdge, DropZone> = {
 export function dropZoneForWireEdge(edge: WireMoveEdge): DropZone {
     return WIRE_EDGE_TO_ZONE[edge];
 }
+
+const ZONE_TO_WIRE_EDGE: Record<DropZone, WireMoveEdge> = {
+    top: 'above',
+    bottom: 'below',
+    left: 'left-of',
+    right: 'right-of'
+};
+
+/**
+ * The inverse: a GUI drop zone in the vocabulary `pane-move-adjacent` speaks. Every mount
+ * that turns a header drag into a command needs it, so it lives here rather than as a map
+ * copied into each one (the copy is how a mount ends up sending `right` for `right-of`).
+ */
+export function wireEdgeForDropZone(zone: DropZone): WireMoveEdge {
+    return ZONE_TO_WIRE_EDGE[zone];
+}

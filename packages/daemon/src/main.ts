@@ -38,6 +38,7 @@ import { resolveControlEndpoints } from './control/index.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
+    deleteDevice,
     isProcessAlive,
     loadDevices,
     mintDevice,
@@ -86,9 +87,9 @@ export interface ParsedArgs {
     readonly qr: boolean;
     /** `pair --qr --qr-invert`: the symbol drawn for a LIGHT terminal instead of a dark one. */
     readonly qrInvert: boolean;
-    /** `devices [revoke]`: list by default. */
-    readonly deviceAction: 'list' | 'revoke';
-    /** `devices revoke <id-or-name>`. */
+    /** `devices [revoke|delete]`: list by default (`remove` is a spelling of `delete`). */
+    readonly deviceAction: 'list' | 'revoke' | 'delete';
+    /** `devices revoke <id-or-name>` / `devices delete <id-or-name>`. */
     readonly deviceTarget: string | undefined;
     /** Set when parsing failed; `runKelpid` prints it and exits 2. */
     readonly error: string | undefined;
@@ -108,6 +109,9 @@ Usage:
   kelpid devices                List paired devices
   kelpid devices revoke <id|name>
                                 Revoke a paired device (applies at its next connect)
+  kelpid devices delete <id|name>
+                                Drop an already-revoked device from the list
+                                (revoke it first; "remove" is the same verb)
   kelpid import [options]       Import the Swift app's nex.db into the daemon's database
   kelpid --version              Print the daemon version
   kelpid --help                 This message
@@ -148,6 +152,7 @@ token only that device holds, stored hashed in <data dir>/devices.json):
   kelpid pair --name "alice-laptop" --tailnet
   kelpid devices
   kelpid devices revoke alice-laptop
+  kelpid devices delete alice-laptop
 
 Pairing a phone from a terminal: --qr draws the URL as a QR code on stderr, under
 the URL, so the phone can be pointed at the screen instead of being typed into.
@@ -215,7 +220,7 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
     let pairName: string | undefined;
     let qr = false;
     let qrInvert = false;
-    let deviceAction: 'list' | 'revoke' = 'list';
+    let deviceAction: 'list' | 'revoke' | 'delete' = 'list';
     let deviceTarget: string | undefined;
     let error: string | undefined;
 
@@ -297,12 +302,19 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
             }
             default:
                 // `devices` takes positional words, checked BEFORE the verb list so a device
-                // named like a verb (`kelpid devices revoke start`) still resolves.
+                // named like a verb (`kelpid devices revoke start`) still resolves. Only the
+                // FIRST word can be the action, so `devices delete revoke` deletes the device
+                // called "revoke" rather than parsing as two actions.
                 if (command === 'devices' && deviceAction === 'list' && arg === 'revoke') {
                     deviceAction = 'revoke';
                     break;
                 }
-                if (command === 'devices' && deviceAction === 'revoke' && deviceTarget === undefined && !arg.startsWith('--')) {
+                // `remove` is the same verb under the name half the world reaches for.
+                if (command === 'devices' && deviceAction === 'list' && (arg === 'delete' || arg === 'remove')) {
+                    deviceAction = 'delete';
+                    break;
+                }
+                if (command === 'devices' && deviceAction !== 'list' && deviceTarget === undefined && !arg.startsWith('--')) {
                     deviceTarget = arg;
                     break;
                 }
@@ -887,11 +899,16 @@ async function commandPair(
 }
 
 /**
- * `kelpid devices [revoke <id-or-name>]` — the registry's management verbs. Reads and writes
- * `devices.json` directly (same-UID trust, like every run-dir file); the daemon notices on
- * the next hello.
+ * `kelpid devices [revoke|delete <id-or-name>]`: the registry's management verbs. Reads and
+ * writes `devices.json` directly (same-UID trust, like every run-dir file); the daemon notices
+ * on the next hello.
+ *
+ * Revoke and delete are two steps on purpose: revoke cuts the credential and KEEPS the record,
+ * delete drops the record once the owner no longer wants it in the list. A live device is
+ * refused by `deleteDevice` rather than silently revoked-and-deleted, so there is no spelling
+ * of `devices` that cuts a device without leaving a trace of having done so.
  */
-function commandDevices(io: CliIO, action: 'list' | 'revoke', target: string | undefined): number {
+function commandDevices(io: CliIO, action: 'list' | 'revoke' | 'delete', target: string | undefined): number {
     const env = io.env ?? process.env;
     const file = resolveDevicesPath(env);
     try {
@@ -912,6 +929,20 @@ function commandDevices(io: CliIO, action: 'list' | 'revoke', target: string | u
                     + 'connect, and any session it has open is cut within a moment (the daemon watches '
                     + 'the registry).'
             );
+            return 0;
+        }
+        if (action === 'delete') {
+            if (target === undefined) {
+                io.err('kelpid devices delete needs a device id or name (see `kelpid devices`).');
+                io.err('Usage: kelpid devices delete <id|name>');
+                return 2;
+            }
+            const deleted = deleteDevice(file, target);
+            if (deleted === null) {
+                io.err(`no paired device matches "${target}" (see \`kelpid devices\`).`);
+                return 1;
+            }
+            io.out(`deleted "${deleted.name}" (device ${deleted.id})`);
             return 0;
         }
         const devices = loadDevices(file);

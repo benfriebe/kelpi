@@ -6,6 +6,22 @@ dist/
 out/
 *.tsbuildinfo
 
+# The vendored terminal engine's bundle IS committed, despite being a `dist/` (#6).
+#
+# It is a build output that is also a dependency: `vendor/ghostty-web-patched/package.json` points
+# `main`/`module`/`types`/`exports` into `dist/`, the root override installs that directory as
+# `ghostty-web`, and pnpm COPIES a `file:` dependency into its store at install time. While the
+# bundle was ignored, a fresh clone installed an empty package, `pnpm typecheck` failed with
+# TS2307 ("Cannot find module 'ghostty-web'"), every `App.*` suite failed to load, and the only
+# repair was a hand-run rebuild plus a second install, a build that a clone cannot perform from
+# what the clone contains, since the bundle's own toolchain is not in this workspace's lockfile.
+# Tracking it makes `pnpm install --frozen-lockfile` sufficient. It is regenerated, not edited:
+# `pnpm vendor:build` rebuilds it from the tracked `source/` snapshot and the tracked
+# `ghostty-vt.wasm`, and `packages/client/src/terminal/vendor-engine.test.ts` guards what lands.
+!vendor/ghostty-web-patched/dist/
+# vendor:build stages the rebuilt bundle here before renaming it over dist/; never tracked.
+vendor/ghostty-web-patched/dist.new/
+
 # The living specs in docs/ ARE committed: 106 comments across 81 source files cite them by
 # section as the normative behaviour, and `pnpm test` checks the wire protocol against
 # docs/wire-protocol.md. A spec the repo does not carry cannot be reviewed beside the change

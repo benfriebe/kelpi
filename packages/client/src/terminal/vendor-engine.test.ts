@@ -1,13 +1,14 @@
 /**
  * The vendored terminal engine is a FORK, and forks get lost.
  *
- * `ghostty-web` reaches this app through `pnpm.overrides['ghostty-web'] =
- * file:vendor/ghostty-web-patched`, and `packages/client/package.json` still asks for
- * `^0.4.0`. Drop the override — or take a future npm release wholesale — and everything still
- * installs, still typechecks and still boots; what silently disappears is the behaviour this
- * repo added on top of upstream. The IME half is the easiest to lose and the hardest to notice
- * in a unit test: composition would still work, the preedit would still show, it would just be
- * back in the corner of the pane instead of on the caret (TERM-032 / TERM-033).
+ * `ghostty-web` reaches this app through `overrides['ghostty-web'] =
+ * file:vendor/ghostty-web-patched` in `pnpm-workspace.yaml` (it lived in the root package.json's
+ * `pnpm` field until #6; pnpm 11 stopped reading that one), and `packages/client/package.json`
+ * still asks for `^0.4.0`. Drop the override, or take a future npm release wholesale, and
+ * everything still installs, still typechecks and still boots; what silently disappears is the
+ * behaviour this repo added on top of upstream. The IME half is the easiest to lose and the
+ * hardest to notice in a unit test: composition would still work, the preedit would still show,
+ * it would just be back in the corner of the pane instead of on the caret (TERM-032 / TERM-033).
  *
  * The behaviour itself is measured in the live audit (`scripts/ui-audit/audit.mjs` step
  * `terminal-ime`, which parks the cursor with a CUP escape and compares measured origins

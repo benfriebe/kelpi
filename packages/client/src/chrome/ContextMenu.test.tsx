@@ -2,19 +2,61 @@
  * Placement, which is the part of a context menu a user notices only when it is wrong.
  *
  * The menu itself (portal lifetime, submenus, dismissal) is covered by `Sidebar.test.tsx`;
- * what lives here is `menuAnchorFromEvent`, whose whole job is deciding where the panel lands.
+ * what lives here is where the panel lands: `menuAnchorFromEvent` asks for a position,
+ * `menuPlacement` decides it from a size, and the panel measures itself and applies the second
+ * to the first before the frame is painted.
+ *
+ * #105 shipped because the two cases below that stub nothing ("rises above the row" and
+ * "clamps into the viewport") asserted only `y < row.top` and `y < 5000`, which a menu placed
+ * 200 px from the pointer satisfies. Anything about a menu's EDGES now has to state the height
+ * it is talking about, so the cases that do live against a stubbed panel box.
  */
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ContextMenu, menuAnchorFromEvent } from './ContextMenu';
+import { ContextMenu, menuAnchorFromEvent, menuPlacement } from './ContextMenu';
+
+/** jsdom has no box model, so a panel that has to be measured is given one. */
+function panelBox(height: number, width = 190): DOMRect {
+    return {
+        top: 0,
+        bottom: height,
+        left: 0,
+        right: width,
+        width,
+        height,
+        x: 0,
+        y: 0,
+        toJSON: () => ({})
+    } as DOMRect;
+}
+
+let restoreRect: (() => void) | null = null;
+
+/** Every `[data-testid="context-menu"]` panel reports `height`; everything else is unchanged. */
+function stubPanelHeight(height: number): void {
+    const real = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+        if (this instanceof HTMLElement && this.dataset['testid'] === 'context-menu') return panelBox(height);
+        return real.call(this);
+    };
+    restoreRect = () => {
+        Element.prototype.getBoundingClientRect = real;
+    };
+}
 
 afterEach(() => {
     cleanup();
+    restoreRect?.();
+    restoreRect = null;
 });
 
 const ROW = { top: 120, bottom: 164 };
+/** The two-row New Workspace / New Group menu, by `FOOTER_MENU_ESTIMATED_HEIGHT`'s arithmetic. */
+const SHORT_MENU = 62;
+/** The nine-row workspace menu, separators included. */
+const TALL_MENU = 270;
 
 describe('menuAnchorFromEvent', () => {
     it('opens at the pointer when nothing has to be avoided', () => {
@@ -27,20 +69,45 @@ describe('menuAnchorFromEvent', () => {
         expect(menuAnchorFromEvent({ clientX: 40, clientY: 140 }, ROW)).toEqual({ x: 40, y: 168 });
     });
 
-    it('rises above the row when there is no room below it', () => {
-        const low = { top: 700, bottom: 744 };
-        const anchor = menuAnchorFromEvent({ clientX: 40, clientY: 720 }, low);
-        expect(anchor.y).toBeLessThan(low.top);
-    });
-
-    it('still clamps into the viewport', () => {
-        const anchor = menuAnchorFromEvent({ clientX: 5000, clientY: 5000 });
-        expect(anchor.x).toBeLessThan(5000);
-        expect(anchor.y).toBeLessThan(5000);
-    });
-
     it('ignores a null rect (a host with no layout)', () => {
         expect(menuAnchorFromEvent({ clientX: 12, clientY: 34 }, null)).toEqual({ x: 12, y: 34 });
+    });
+
+    it('leaves the bottom edge to the panel, which is the only thing that knows the height', () => {
+        // #105: this used to clamp to `innerHeight - 260` here, which threw the pointer away
+        // before anything could measure the panel. The x edge is still clamped, because the
+        // panel's min-width is fixed and a menu that opens off the right of the screen in the
+        // frame before the measurement would be visible.
+        const anchor = menuAnchorFromEvent({ clientX: 5000, clientY: 5000 });
+        expect(anchor.x).toBeLessThan(5000);
+        expect(anchor.y).toBe(5000);
+    });
+});
+
+describe('menuPlacement', () => {
+    // jsdom's window is 1024 x 768.
+    it('keeps a short menu at the pointer where one 260px estimate floated it up (#105)', () => {
+        // A right-click 68px off the bottom of the window. The two-row menu fits there; the
+        // estimate used to push it to 508, nearly 200px clear of the cursor.
+        expect(menuPlacement({ x: 40, y: 700 }, { width: 190, height: SHORT_MENU })).toEqual({ x: 40, y: 700 });
+    });
+
+    it('drops under the row it acts on while the panel fits below it', () => {
+        expect(menuPlacement({ x: 40, y: 168 }, { width: 190, height: TALL_MENU }, ROW)).toEqual({ x: 40, y: 168 });
+    });
+
+    it('rises above the row only when the panel really does not fit below', () => {
+        const low = { top: 600, bottom: 624 };
+        // Same row, same click: the short menu still fits under it, so it stays under it.
+        expect(menuPlacement({ x: 40, y: 628 }, { width: 190, height: SHORT_MENU }, low).y).toBe(628);
+        // The tall one does not, so it rises, and its BOTTOM lands 4px clear of the row, where
+        // the flat 260 used to put its TOP 264px above and leave the gap #105 reports.
+        const risen = menuPlacement({ x: 40, y: 628 }, { width: 190, height: TALL_MENU }, low);
+        expect(risen.y + TALL_MENU).toBe(low.top - 4);
+    });
+
+    it('clamps a panel taller than the window into the viewport', () => {
+        expect(menuPlacement({ x: 40, y: 700 }, { width: 190, height: 900 })).toEqual({ x: 40, y: 0 });
     });
 });
 
@@ -57,6 +124,30 @@ describe('ContextMenu', () => {
         const menu = screen.getByTestId('context-menu');
         expect(menu.style.left).toBe('40px');
         expect(menu.style.top).toBe('168px');
+    });
+
+    it('re-clamps to its own measured height before the frame is painted (#105)', () => {
+        stubPanelHeight(SHORT_MENU);
+        render(<ContextMenu x={40} y={740} items={[{ id: 'new', label: 'New Workspace' }]} onClose={() => undefined} />);
+        // 740 + 62 hangs 34px off the bottom, so it comes up by exactly that much, and by
+        // nothing more. The estimate would have put it at 508.
+        expect(screen.getByTestId('context-menu').style.top).toBe('706px');
+    });
+
+    it('rises above the row it must not cover, using the measured height (#105)', () => {
+        stubPanelHeight(TALL_MENU);
+        const low = { top: 600, bottom: 624 };
+        render(
+            <ContextMenu
+                x={40}
+                y={low.bottom + 4}
+                avoid={low}
+                items={[{ id: 'rename', label: 'Rename…' }]}
+                onClose={() => undefined}
+            />
+        );
+        // Its BOTTOM edge lands 4px above the row, wherever its top has to be for that.
+        expect(screen.getByTestId('context-menu').style.top).toBe(`${low.top - 4 - TALL_MENU}px`);
     });
 
     /**

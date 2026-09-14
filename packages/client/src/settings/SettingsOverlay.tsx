@@ -857,7 +857,8 @@ interface RailTabProps {
 const NO_REMOTE_ACTIONS: RemoteTabActions = {
     status: () => Promise.resolve({ ok: false, error: 'remote access is not available' }),
     pair: () => Promise.resolve({ ok: false, error: 'remote access is not available' }),
-    revoke: () => Promise.resolve({ ok: false, error: 'remote access is not available' })
+    revoke: () => Promise.resolve({ ok: false, error: 'remote access is not available' }),
+    delete: () => Promise.resolve({ ok: false, error: 'remote access is not available' })
 };
 
 const RAIL_GLYPH: Readonly<Record<SettingsTabIcon, (props: { readonly size: number }) => ReactElement>> = {

@@ -184,7 +184,7 @@ export interface SyncHubOptions {
     readonly webPanes?: WebPaneChannel | undefined;
     /** The pane header's restart button; absent = `restart-pane-agent` says "not available". */
     readonly agents?: AgentChannel | undefined;
-    /** Settings ▸ Remote: pair/revoke/status (`ws/remote.ts`). Absent = "not available". */
+    /** Settings ▸ Remote: pair/revoke/delete/status (`ws/remote.ts`). Absent = "not available". */
     readonly remote?: RemoteChannel | undefined;
     /**
      * M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). Absent =
@@ -2535,6 +2535,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                         return;
                     }
                     settle(channel.revoke(target));
+                    return;
+                }
+                case 'remote-delete': {
+                    const target = text(payload['target']);
+                    if (target === undefined) {
+                        this.contentReply(id, failure('remote-delete requires target'));
+                        return;
+                    }
+                    settle(channel.delete(target));
                     return;
                 }
             }

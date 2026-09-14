@@ -296,8 +296,11 @@ export function manifestEntry(id) {
  * second, hand-kept list of prerequisites that could drift from this one. `shards.test.mjs` pins
  * the invariant that keeps it honest: every chain variable that has a reader has a declared
  * writer, so a re-worded `reason` fails a unit test instead of silently un-teaching `--only`.
+ *
+ * Exported for that test alone, so the guard reads the manifest through the same pattern the
+ * expansion does rather than through a second copy of it.
  */
-function writesOf(entry) {
+export function writesOf(entry) {
     return [...String(entry.reason ?? '').matchAll(/\bwrites state\.([A-Za-z][A-Za-z0-9]*)/g)].map((match) => match[1]);
 }
 
@@ -321,6 +324,12 @@ function writesOf(entry) {
  *
  * Ids the manifest does not know are passed through untouched: `planShards` already treats an
  * unknown id as spine, and `--only` is not the place to start refusing them.
+ *
+ * The limit of the guarantee: this reaches DECLARED chain variables only. A step that reads a
+ * `state.*` value no `chain` field names is invisible here, and one exists today
+ * (`state.agentFocusWas`, written by `agent-start` and read by `agent-stop`); it is harmless
+ * because `agent-stop` declares `chain: 'agentPane'` and that already pulls `agent-start` in, but
+ * a future undeclared reader would silently lose its prerequisite, which is #203's own failure.
  */
 export function expandChains(ids) {
     const wanted = new Set(ids);

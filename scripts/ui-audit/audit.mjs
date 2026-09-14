@@ -5991,7 +5991,13 @@ function buildFlows(ctx) {
                 // re-draws it (see the header check below). Same class of harness artefact as
                 // `widestShellPane`'s three callers.
                 const shell = await widestShellPane(page, cli);
-                recorder.check('there is a shell pane to send the batch to', shell !== null);
+                // The reading is the evidence for the widen above: how wide the destination the
+                // header has to survive actually is.
+                recorder.check(
+                    'there is a shell pane to send the batch to',
+                    shell !== null,
+                    shell === null ? 'no visible shell pane' : `${shell.id} at ${String(Math.round(shell.width))}px`
+                );
 
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
@@ -6208,13 +6214,18 @@ function buildFlows(ctx) {
                      * unmistakably this header and sits clear of the line's start, over the
                      * de-wrapped text as well as the raw rows.
                      *
-                     * The detail is a READING, not a label: the row the header landed on, or the
-                     * capture's first row when the needle is nowhere. A failure then shows what
-                     * the shell actually drew, which is what #203 had to be re-run to find out.
+                     * The detail is a READING, not a label: the row the header landed on, and when
+                     * the needle is on no single row (the redraw split it, or nothing arrived) the
+                     * capture's LAST three rows. The capture is `--scrollback`, so its head is the
+                     * first row of the destination shell's whole session (an `ls` from step 2 of a
+                     * full run) and only its tail is the neighbourhood of the send. A failure then
+                     * shows what the shell actually drew, which is what #203 had to be re-run to
+                     * find out.
                      */
                     const dewrapped = text.split('\n').join('');
                     const rows = text.split('\n').map((row) => row.trim()).filter((row) => row !== '');
-                    const headerRow = rows.find((row) => row.includes('inspect batch')) ?? rows[0] ?? '(no output)';
+                    const tail = rows.slice(-3).join(' ⏎ ');
+                    const headerRow = rows.find((row) => row.includes('inspect batch')) ?? (tail === '' ? '(no output)' : tail);
                     recorder.check(
                         'the batch header reached the shell pane',
                         text.includes('inspect batch') || dewrapped.includes('inspect batch'),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CANONICAL_ORDER, STEP_MANIFEST, expandChains, manifestEntry } from './shards.mjs';
+import { CANONICAL_ORDER, STEP_MANIFEST, expandChains, manifestEntry, writesOf } from './shards.mjs';
 
 /**
  * `--only` against the chains the manifest already declares (#203).
@@ -64,17 +64,29 @@ describe('expandChains', () => {
      * The expansion reads the manifest's own prose ("writes state.X"), so this is the guard that
      * keeps that reading honest: a re-worded `reason` that drops the declaration fails here
      * instead of silently un-teaching `--only` the dependency it was taught.
+     *
+     * Through `writesOf` itself, not a second copy of its pattern: a guard that matched the prose
+     * slightly differently from the code it guards would be the very drift it is here to catch.
+     * It covers DECLARED chain variables only (see `expandChains`'s note on `state.agentFocusWas`).
      */
     it('finds a declared writer at or before every step that declares a chain', () => {
-        const written = new Map();
+        const written = new Set();
         const orphans = [];
         for (const entry of STEP_MANIFEST) {
+            const writes = new Set(writesOf(entry));
             for (const variable of entry.chain === null ? [] : entry.chain.split('+')) {
-                const writesItself = /\bwrites state\.(\w+)/.test(entry.reason) && entry.reason.includes(`writes state.${variable}`);
-                if (!written.has(variable) && !writesItself) orphans.push(`${entry.id} reads state.${variable}`);
+                if (!written.has(variable) && !writes.has(variable)) orphans.push(`${entry.id} reads state.${variable}`);
             }
-            for (const match of entry.reason.matchAll(/\bwrites state\.(\w+)/g)) written.set(match[1], entry.id);
+            for (const variable of writes) written.add(variable);
         }
         expect(orphans).toEqual([]);
+    });
+
+    it('reads a writer declaration out of the manifest\'s own prose, wherever the sentence puts it', () => {
+        // `terminal-ls` opens with the phrase; `fresh-boot` buries it mid-sentence; a reader has none.
+        expect(writesOf(manifestEntry('terminal-ls'))).toEqual(['firstPane']);
+        expect(writesOf(manifestEntry('fresh-boot'))).toEqual(['firstPane']);
+        expect(writesOf(manifestEntry('web-pane'))).toEqual(['webPane']);
+        expect(writesOf(manifestEntry('web-batch-pickup'))).toEqual([]);
     });
 });

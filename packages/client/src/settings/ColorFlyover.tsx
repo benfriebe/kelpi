@@ -270,7 +270,7 @@ const FLYOVER_MARGIN = 8;
  * Where the panel sits: under its trigger, flipped above it when there is no room below.
  *
  * The same rule the footer's popovers and `ContextMenu`'s submenu follow — `useSubmenuFlip`
- * measures and flips sideways, `menuAnchorFromEvent` drops below its avoid-rect and rises above
+ * measures and flips sideways, `menuPlacement` drops below its avoid-rect and rises above
  * it when the drop would go off-screen. Pure and separately tested, because the measurement it
  * works from does not exist in jsdom: a zero viewport still returns a deterministic box rather
  * than a NaN.

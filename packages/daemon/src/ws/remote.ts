@@ -2,12 +2,13 @@
  * Remote-access verbs for the Settings UI — the `kelpid pair` / `kelpid devices` /
  * `kelpid url --tailnet` flow, in-app.
  *
- * Three WS-only commands (`remote-status`, `remote-pair`, `remote-revoke`), routed like the
- * content family (matched before the wire decode; the CLI keeps its own spellings and this
- * grows no `WIRE_COMMANDS` surface). All three are **owner-only**: a session that
- * authenticated with a paired-device token (`kd_…`) is refused — a guest must not read the
- * registry, mint peers, or revoke the hand that paired it. `ws/sync.ts` enforces that at the
- * routing step, where the session's credential is known.
+ * Four WS-only commands (`remote-status`, `remote-pair`, `remote-revoke`, `remote-delete`),
+ * routed like the content family (matched before the wire decode; the CLI keeps its own
+ * spellings and this grows no `WIRE_COMMANDS` surface). All four are **owner-only**: a
+ * session that authenticated with a paired-device token (`kd_…`) is refused; a guest must
+ * not read the registry, mint peers, revoke the hand that paired it, or erase the record of
+ * having been cut. `ws/sync.ts` enforces that at the routing step, where the session's
+ * credential is known.
  *
  * The channel itself is a thin composition over the modules the CLI already uses
  * (`lifecycle/devices.ts`, `lifecycle/tailnet.ts`), so the UI and the CLI cannot drift:
@@ -20,12 +21,15 @@
  *     the token never left this process, so there is nothing to keep a record of.
  *   - `revoke(target)` marks the device revoked; the daemon's registry watcher then cuts
  *     any open session (`boot/compose.ts` → `revalidateSessions`) with no work here.
+ *   - `delete(target)` drops an already-revoked entry from the registry. A live device is
+ *     refused and told to revoke first, so the audit record always outlives the credential.
  *
  * The minted token rides the reply exactly once, inside the pairing URL — the registry
  * stores only its hash, so a re-ask is impossible by design and the UI says so.
  */
 
 import {
+    deleteDevice,
     loadDevices,
     mintDevice,
     removeDevice,
@@ -42,7 +46,7 @@ import {
 } from '../lifecycle/tailnet.js';
 
 /** The UI's command family. Owner-only; see the module note. */
-export const REMOTE_COMMANDS = ['remote-status', 'remote-pair', 'remote-revoke'] as const;
+export const REMOTE_COMMANDS = ['remote-status', 'remote-pair', 'remote-revoke', 'remote-delete'] as const;
 export type RemoteCommand = (typeof REMOTE_COMMANDS)[number];
 
 export function isRemoteCommand(command: string): command is RemoteCommand {
@@ -115,6 +119,8 @@ export interface RemoteChannel {
     status(): Promise<RemoteReply>;
     pair(name: string, tailnet: boolean): Promise<RemoteReply>;
     revoke(target: string): Promise<RemoteReply>;
+    /** Drop an already-revoked entry. A live device is refused, never revoked-and-deleted. */
+    delete(target: string): Promise<RemoteReply>;
 }
 
 export function createRemoteChannel(options: RemoteChannelOptions): RemoteChannel {
@@ -248,6 +254,19 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 const revoked = revokeDevice(devicesFile(), target, options.now);
                 if (revoked === null) return { ok: false, error: `no device matches "${target}"` };
                 return { ok: true, device: wireDevice(revoked) };
+            } catch (failure) {
+                return { ok: false, error: failure instanceof Error ? failure.message : String(failure) };
+            }
+        },
+
+        // The reply carries the entry that WAS there, exactly as `revoke` returns the one it
+        // changed: the UI re-reads the registry either way, and an ok reply naming the row is
+        // what lets a caller say which device went.
+        async delete(target: string): Promise<RemoteReply> {
+            try {
+                const deleted = deleteDevice(devicesFile(), target);
+                if (deleted === null) return { ok: false, error: `no device matches "${target}"` };
+                return { ok: true, device: wireDevice(deleted) };
             } catch (failure) {
                 return { ok: false, error: failure instanceof Error ? failure.message : String(failure) };
             }

@@ -21,7 +21,11 @@
  *      cannot click is not a repair.
  *   3. **Paired devices** — the registry, live entries first, with per-row Revoke. A revoke
  *      cuts the device's open sessions within a debounce (the daemon watches the registry),
- *      so the row flipping to "revoked" is the whole story.
+ *      so the row flipping to "revoked" is the whole story. A revoked row then carries a
+ *      Delete, which drops it from the registry for good: two steps, never one, so the record
+ *      of a device having been cut outlives the cutting and only goes when the owner says so.
+ *      A live row has no Delete at all: the daemon refuses one anyway (`ws/remote.ts`), and
+ *      an affordance that exists to be refused is worse than one that is not drawn.
  */
 
 import { encodeQr, qrSvg } from '@kelpi/core/qr';
@@ -35,6 +39,8 @@ export interface RemoteTabActions {
     status(): Promise<Record<string, unknown>>;
     pair(name: string, tailnet: boolean): Promise<Record<string, unknown>>;
     revoke(target: string): Promise<Record<string, unknown>>;
+    /** Drop an already-revoked entry. Only ever called with a revoked device's id. */
+    delete(target: string): Promise<Record<string, unknown>>;
 }
 
 /** One §1.7 `remote-daemon` registry entry, as the settings snapshot carries it. */
@@ -281,7 +287,16 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
         };
     }, []);
 
-    const refresh = useCallback((): void => {
+    /**
+     * Re-read the registry and the tailnet identity.
+     *
+     * `pending` is the complaint of the mutation that just ran, when it was refused. It has to
+     * ride THROUGH the read rather than be set before it: the banner a refusal belongs in is
+     * the one a successful status read clears, so setting it first would wipe it a moment
+     * later. Nothing else passes an argument, so the default keeps every other caller a
+     * plain `refresh()`.
+     */
+    const refresh = useCallback((pending: string | null = null): void => {
         actions.status().then(
             (reply) => {
                 if (!alive.current) return;
@@ -289,7 +304,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                     setStatusError(text(reply['error']) ?? 'remote status failed');
                     return;
                 }
-                setStatusError(null);
+                setStatusError(pending);
                 setDevices(parseDevices(reply['devices']));
                 const parsed = parseTailnet(reply['tailnet']);
                 setTailnet(parsed);
@@ -350,15 +365,35 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
         );
     };
 
-    const revoke = (id: string): void => {
-        actions.revoke(id).then(
-            () => {
-                if (alive.current) refresh();
+    /**
+     * One registry mutation: run it, re-read the list either way (the re-read is what makes the
+     * row change or go without a reload), and carry a refusal into the banner. A refused revoke
+     * or delete used to be silent, which left a real write failure (`devices.json` unwritable,
+     * a malformed registry) indistinguishable from a no-op.
+     */
+    const mutate = (run: Promise<Record<string, unknown>>, fallback: string): void => {
+        run.then(
+            (reply) => {
+                if (!alive.current) return;
+                refresh(reply['ok'] === true ? null : (text(reply['error']) ?? fallback));
             },
-            () => {
-                if (alive.current) refresh();
+            (error: unknown) => {
+                if (alive.current) refresh(error instanceof Error ? error.message : String(error));
             }
         );
+    };
+
+    const revoke = (id: string): void => {
+        mutate(actions.revoke(id), 'revoke failed');
+    };
+
+    /**
+     * Always by id, never by name: the rows carry ids and the registry collects duplicate
+     * revoked names (one per re-pairing of the same machine), so a name would be the one
+     * handle that cannot say which row was clicked.
+     */
+    const forget = (id: string): void => {
+        mutate(actions.delete(id), 'delete failed');
     };
 
     const copyURL = (): void => {
@@ -579,7 +614,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
             <SettingsSection
                 title="Paired devices"
                 testID="remote-devices"
-                hint="Revoking cuts the device everywhere: new hellos at once, open sessions within moments."
+                hint="Revoking cuts the device everywhere: new hellos at once, open sessions within moments. A revoked device can then be deleted from the list."
             >
                 {live.length === 0 && revoked.length === 0 ? (
                     <SettingsDetail>
@@ -609,8 +644,22 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                         detail={`revoked ${shortDate(device.revokedAt ?? '')} · id ${device.id}`}
                         testID={`remote-device-${device.id}`}
                     >
-                        <span style={{ color: tokens.textTertiary }} className="text-[11px]">
-                            revoked
+                        <span className="flex items-center gap-2">
+                            <span style={{ color: tokens.textTertiary }} className="text-[11px]">
+                                revoked
+                            </span>
+                            {/*
+                              * No confirmation: the token is already dead, so this drops a
+                              * record and can re-admit nothing. The re-read in `mutate` is what
+                              * makes the row go, on both outcomes, without a reload.
+                              */}
+                            <SettingsButton
+                                testID={`remote-delete-${device.id}`}
+                                tone="danger"
+                                onClick={() => forget(device.id)}
+                            >
+                                Delete
+                            </SettingsButton>
                         </span>
                     </SettingsRow>
                 ))}

@@ -28,11 +28,20 @@ describe('public plugin protocol', () => {
         expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views).toMatchObject([{ placements: ['browser'], stateVersion: 3 }]);
     });
     it('accepts interaction presenter placements with no dependency and refuses a container in them', () => {
-        const placements = ['interaction.palette', 'interaction.prompts'];
+        const placements = ['interaction.palette', 'interaction.prompts', 'interaction.notifications'];
         const views = [{ ...manifest.contributes.views[0], placements }];
         expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views[0]?.placements).toEqual(placements);
-        const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['interaction.prompts'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
-        expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/interaction/);
+        // Each of the three, on its own: a presenter owns its whole overlay, corner box included.
+        for (const placement of placements) {
+            const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: [placement], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
+            expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/interaction/);
+        }
+        // A plugin whose own id starts the same way contributes ORDINARY custom slots, and a
+        // container in one of those is fine: the refusal is a list, not a prefix.
+        const own = { ...manifest, id: 'interaction.board' };
+        const ownViews = [{ ...manifest.contributes.views[0], id: 'interaction.board.view', placements: ['interaction.board.stack.main'] }];
+        const ownContainers = [{ id: 'interaction.board.stack', title: 'Stack', placements: ['sidebar.primary'], layout: 'tabs', slots: [{ id: 'interaction.board.stack.main', title: 'Main' }] }];
+        expect(decodePluginManifest({ ...own, contributes: { views: ownViews, containers: ownContainers } }).contributes.containers).toHaveLength(1);
     });
     it('accepts the Settings window placement and refuses a container in it', () => {
         const placements = ['settings.window'];

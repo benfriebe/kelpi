@@ -19,7 +19,7 @@
  * a replaceable presenter that can read it can enumerate the other plugins in the window.
  */
 
-import type { JsonObject, JsonValue, WorkspaceColor } from '@kelpi/protocol';
+import { PLUGIN_INTERACTION_PLACEMENTS, type JsonObject, type JsonValue, type WorkspaceColor } from '@kelpi/protocol';
 import type {
     UIDialogOptions,
     UIInputOptions,
@@ -37,16 +37,24 @@ export const INTERACTION_PROMPT_METHODS = [
 ] as const;
 
 /**
- * The two placements a plugin view may be SELECTED into, one per presented surface.
+ * The three placements a plugin view may be SELECTED into, one per presented surface.
  *
- * Two rather than one, because the palette and the prompts are selected independently and are
- * mounted in different places (the palette on the content row for UI-FIDELITY M53, the prompts in
- * the `document.body` portal), exactly as `sidebar.primary`/`sidebar.secondary` and
- * `topbar`/`statusbar` are two placements resolved by the one `resolveSlot`.
+ * Three rather than one, because each is selected independently and each is mounted somewhere else:
+ * the palette on the content row for UI-FIDELITY M53, the prompts in the `document.body` portal,
+ * the notifications in a corner box of that same portal. Exactly as `sidebar.primary`/
+ * `sidebar.secondary` and `topbar`/`statusbar` are separate placements resolved by the one
+ * `resolveSlot`.
  *
- * The strings are also `PLUGIN_PLACEMENTS` entries, so a manifest can declare them.
+ * Notifications are their OWN placement rather than a field filled in on `interaction.prompts`,
+ * for two reasons. A prompts presenter written against a field documented as always empty would
+ * swallow every notification the moment the host started filling it. And the two frames need
+ * different geometry: a prompt owns the viewport while it is up, a notification is a corner box
+ * over a window that stays usable, so one frame cannot honestly draw both.
+ *
+ * The strings are `PLUGIN_PLACEMENTS` entries, so a manifest can declare them, and the list itself
+ * is the protocol's, so the manifest validator and this module cannot come to disagree.
  */
-export const INTERACTION_PLACEMENTS = ['interaction.palette', 'interaction.prompts'] as const;
+export const INTERACTION_PLACEMENTS = PLUGIN_INTERACTION_PLACEMENTS;
 
 export type InteractionPlacement = (typeof INTERACTION_PLACEMENTS)[number];
 
@@ -72,7 +80,35 @@ export const INTERACTION_LIMITS = Object.freeze({
     presenterCallWindowMs: 1_000,
     presenterQueryChars: 1_024,
     presenterReadyMs: 5_000,
-    presenterAckMs: 5_000
+    presenterAckMs: 5_000,
+    /*
+     * The notifications box. A corner stack has no natural height - its content is the presenter's,
+     * and the host cannot read a number out of an isolated frame - so the presenter DECLARES one
+     * (`ui.setNotificationBoxHeight`) and the host clamps it.
+     *
+     * `noticeBoxPx` is what the box is worth per visible notice before a presenter has declared
+     * anything: the bundled card's own height with an owner badge, one line of message and a row of
+     * actions (`BundledPrompts.tsx`), so the first frame is never drawn into a zero-height box.
+     *
+     * Two ceilings, and the second is the load-bearing one. `noticeBoxFraction` stops a corner box
+     * growing into a modal nobody registered. `noticeBoxMaxPx` ties the box to CONTENT: a presenter
+     * is itself a plugin, so it can raise its own notification every ten seconds and keep a box on
+     * screen for as long as it likes, and without a per-notice ceiling that box could be a
+     * transparent, click-swallowing, pane-parking rect over the whole corner - including over the
+     * native toast stack, which shares `z-40` and is where the failure toast that explains a broken
+     * presenter appears. 200 px is comfortably more than the bundled card needs (the live scenario
+     * measures 61 px for a one-line notice and 105 px with a detail line and an action row), and a
+     * stack taller than its box scrolls inside it.
+     */
+    noticeBoxPx: 96,
+    noticeBoxMaxPx: 200,
+    noticeBoxFraction: 0.45,
+    /*
+     * Headroom between the notices a frame carries and the 256 KiB the frame is serialized under
+     * (`pluginJSON`). It covers the feed envelope and the rest of the snapshot's fields, so the
+     * projection can decide what fits from the notices alone.
+     */
+    noticeFrameMargin: 2_048
 });
 
 /**

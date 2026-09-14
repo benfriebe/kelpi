@@ -6,8 +6,9 @@
  * belong to other owners, so the view renders `owner.displayName` and never sees a plugin id.
  *
  * Two things are deliberately absent. A password input is always drawn by the bundled presenter, so
- * the frame reports `prompt: null` while one is visible and only `queued` counts it. Notifications
- * are bundled in this release: `notifications` is always empty and this view never assumes one.
+ * the frame reports `prompt: null` while one is visible and only `queued` counts it. And
+ * notifications are their own placement (`interaction.notifications`, this lab's third view), so
+ * `notifications` is empty in every frame this view receives and nothing here reads it.
  *
  * The view is mounted `fixed inset-0` in the window's modal portal: it draws its own backdrop and a
  * centred card, and the host keeps the modal registration, the focus release and Escape.
@@ -139,8 +140,6 @@ function render(snapshot) {
     lab.queued = snapshot.queued;
     lab.requestID = prompt?.requestID ?? null;
     lab.kind = prompt?.kind ?? null;
-    // Never assumed: a presenter presents modal requests only, and this release sends none.
-    if (snapshot.notifications.length > 0) failed(new Error('This release never sends notifications to a presenter.'));
     if (prompt === null) {
         request = null; selectedID = null; navigable = []; lab.matched = []; lab.selectedID = null;
         delete element('panel').dataset.testid;

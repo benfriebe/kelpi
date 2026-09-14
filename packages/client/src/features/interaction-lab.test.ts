@@ -30,7 +30,13 @@ import { createInteractionSurface, type InteractionSurface } from '../interactio
 const assets = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../examples/plugins/interaction-lab/ui');
 const views = {
     palette: fs.readFileSync(path.join(assets, 'palette.js'), 'utf8'),
-    prompts: fs.readFileSync(path.join(assets, 'prompts.js'), 'utf8')
+    prompts: fs.readFileSync(path.join(assets, 'prompts.js'), 'utf8'),
+    notifications: fs.readFileSync(path.join(assets, 'notifications.js'), 'utf8')
+} as const;
+const PLACEMENTS = {
+    palette: 'interaction.palette',
+    prompts: 'interaction.prompts',
+    notifications: 'interaction.notifications'
 } as const;
 
 /** What each view publishes for the scenario, and what this suite reads back. */
@@ -44,8 +50,11 @@ interface LabDiagnostics {
     readonly requestID?: string | null;
     readonly kind?: string | null;
     readonly queued?: number;
+    readonly notices?: readonly string[];
+    readonly boxHeight?: number | null;
     crash(mode?: string): void;
     stall(): void;
+    declare?(pixels: number | null): void;
 }
 
 const surfaces: InteractionSurface[] = [];
@@ -90,21 +99,23 @@ function make(options: { readonly items?: readonly InteractionPaletteItem[]; rea
     return { surface, execute };
 }
 
-async function mount(view: 'palette' | 'prompts', surface: InteractionSurface, options: { readonly visible?: boolean } = {}) {
+async function mount(view: keyof typeof views, surface: InteractionSurface, options: { readonly visible?: boolean } = {}) {
     const html = fs.readFileSync(path.join(assets, `${view}.html`), 'utf8');
     document.documentElement.innerHTML = new DOMParser().parseFromString(html, 'text/html').documentElement.innerHTML;
     const state = { visible: options.visible ?? true };
     const failures: string[] = [], thrown: Error[] = [], errors: Error[] = [];
     const calls: Array<{ method: string; args: JsonObject }> = [];
     let acknowledged = 0, readied = 0;
+    const declaredHeights: number[] = [];
     const host: InteractionPresenterHost = createInteractionPresenterHost({
         surface,
-        placement: view === 'palette' ? 'interaction.palette' : 'interaction.prompts',
+        placement: PLACEMENTS[view],
         formFactor: () => 'desktop',
         visible: () => state.visible,
         fail: (detail) => { failures.push(detail); },
         onAcknowledged: () => { acknowledged += 1; },
-        onReady: () => { readied += 1; }
+        onReady: () => { readied += 1; },
+        onBoxHeight: (pixels) => declaredHeights.push(pixels)
     });
     const call = async (method: string, args: JsonObject): Promise<void> => {
         calls.push({ method, args });
@@ -136,7 +147,8 @@ async function mount(view: 'palette' | 'prompts', surface: InteractionSurface, o
             setPaletteSelection: (sessionID: string, itemID: string | null) => call('ui.setPaletteSelection', { sessionID, itemID }),
             activatePaletteItem: (sessionID: string, itemID: string) => call('ui.activatePaletteItem', { sessionID, itemID }),
             dismissPalette: (sessionID: string) => call('ui.dismissPalette', { sessionID }),
-            respondInteraction: (requestID: string, value: string | null) => call('ui.respondInteraction', { requestID, value })
+            respondInteraction: (requestID: string, value: string | null) => call('ui.respondInteraction', { requestID, value }),
+            setNotificationBoxHeight: (pixels: number) => call('ui.setNotificationBoxHeight', { pixels })
         }
     });
     // Evaluate the shipped module unchanged, exactly as `plugins/chrome-lab.test.ts` does.
@@ -150,7 +162,7 @@ async function mount(view: 'palette' | 'prompts', surface: InteractionSurface, o
         for (const [name, listener, listenerOptions] of registered) globalThis.removeEventListener(name, listener, listenerOptions);
     });
     return {
-        calls, errors, failures, thrown,
+        calls, errors, failures, thrown, declaredHeights,
         acknowledged: () => acknowledged,
         readied: () => readied,
         lab: (): LabDiagnostics => (globalThis as unknown as { interactionLab: LabDiagnostics }).interactionLab,
@@ -532,6 +544,189 @@ describe('Interaction Lab fails on purpose for the recovery paths', () => {
         // acknowledgement: this is the watchdog path, not a view error.
         expect(h.acknowledged()).toBe(acknowledged);
         expect(found('lab-prompt')).toHaveLength(0);
+        expect(h.failures).toEqual([]);
+        expect(h.thrown).toEqual([]);
+    });
+});
+
+describe('Interaction Lab presents the notification stack', () => {
+    async function notifications(options: { readonly visible?: boolean } = {}) {
+        const { surface } = make();
+        const h = await mount('notifications', surface, options);
+        await ready(h);
+        const scope = surface.createScope(owner);
+        cleanups.push(() => scope.dispose());
+        return { h, surface, scope };
+    }
+    const notice = (message: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ message, ...extra });
+
+    it('reports readiness on the first frame, with an empty stack and nothing drawn', async () => {
+        const { surface } = make();
+        // The ordinary case for this placement: the host mounts it hidden, because there is
+        // nothing to show until somebody notifies, and arms the readiness window anyway.
+        const h = await mount('notifications', surface, { visible: false });
+        await ready(h);
+        expect(h.readied()).toBe(1);
+        expect(found('lab-notice')).toHaveLength(0);
+        expect(document.body.dataset.visible).toBe('false');
+        expect(h.lab().notices).toEqual([]);
+        expect(h.failures).toEqual([]);
+        expect(h.lab().lastError).toBeNull();
+        /*
+         * And it declares NOTHING for an empty stack. An unpainted frame measures zero, and a
+         * declared zero would replace the host's own default of one card's worth per notice: the
+         * first real notice would then be drawn into a box with no height in it.
+         */
+        expect(h.sent('ui.setNotificationBoxHeight')).toEqual([]);
+        expect(h.declaredHeights).toEqual([]);
+        expect(h.lab().boxHeight).toBeNull();
+    });
+
+    it('draws each notice with its owner, tone, detail and actions, and answers with an action id', async () => {
+        const { h, scope } = await notifications();
+        const answer = scope.request('ui.showNotification', notice('Deployment finished', {
+            detail: 'Two panes were restarted.', tone: 'success', actions: [{ id: 'open', label: 'Open log' }, { id: 'undo', label: 'Undo' }]
+        }));
+        await until(() => found('lab-notice').length === 1, 'the notice');
+        const card = one('lab-notice');
+        expect(card.dataset.tone).toBe('success');
+        expect(card.textContent).toContain('Deployment finished');
+        expect(card.textContent).toContain('Two panes were restarted.');
+        expect(one('lab-notice-owner').textContent).toBe('UI Lab');
+        expect(one('lab-notice-owner').dataset.ownerRef).toBe(h.lab().snapshot?.notifications[0]?.owner.ref);
+        expect(labels('lab-notice-action')).toEqual(['open', 'undo']);
+        const requestID = h.lab().notices?.[0];
+        found('lab-notice-action')[1]!.click();
+        await expect(answer).resolves.toBe('undo');
+        expect(h.sent('ui.respondInteraction')).toEqual([{ requestID, value: 'undo' }]);
+        // The answered notice leaves the next frame, and the stack empties with it.
+        await until(() => found('lab-notice').length === 0, 'the settled notice');
+        expect(document.body.dataset.visible).toBe('false');
+        expect(h.failures).toEqual([]);
+    });
+
+    it('dismisses with null, keeps every other notice, and never assumes a prompt', async () => {
+        const { h, scope } = await notifications();
+        const first = scope.request('ui.showNotification', notice('First'));
+        const second = scope.request('ui.showNotification', notice('Second'));
+        // A modal request beside them belongs to the prompts placement and is not in this frame.
+        const prompt = scope.request('ui.showInput', { title: 'Another placement’s business' });
+        await until(() => found('lab-notice').length === 2, 'both notices');
+        expect(h.lab().snapshot?.prompt).toBeNull();
+        expect(h.lab().snapshot?.queued).toBe(0);
+        expect(JSON.stringify(h.lab().snapshot)).not.toContain('Another placement');
+
+        found('lab-notice-dismiss').find((button) => button.dataset.requestId === h.lab().notices?.[0])!.click();
+        await expect(first).resolves.toBeNull();
+        await until(() => found('lab-notice').length === 1, 'the surviving notice');
+        expect(one('lab-notice').textContent).toContain('Second');
+        one('lab-notice-dismiss').click();
+        await expect(second).resolves.toBeNull();
+        // The prompt was never this view's to settle, and is still pending.
+        let settled = false;
+        void prompt.then(() => { settled = true; });
+        await flush();
+        expect(settled).toBe(false);
+    });
+
+    it('lets the host expire a notice: the clock is never the presenter’s', async () => {
+        vi.useFakeTimers();
+        try {
+            const { surface } = make();
+            const h = await mount('notifications', surface);
+            const scope = surface.createScope(owner);
+            cleanups.push(() => scope.dispose());
+            const answer = scope.request('ui.showNotification', notice('Expires on its own'));
+            await vi.advanceTimersByTimeAsync(50);
+            expect(found('lab-notice')).toHaveLength(1);
+            await vi.advanceTimersByTimeAsync(10_000);
+            // Settled with null by the surface, and simply gone from the frame after it.
+            await expect(answer).resolves.toBeNull();
+            expect(found('lab-notice')).toHaveLength(0);
+            expect(h.sent('ui.respondInteraction')).toEqual([]);
+            expect(h.failures).toEqual([]);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('declares its box height only once it has something to draw, and keeps a deliberate one', async () => {
+        const { h, scope } = await notifications();
+        // The host's default is what draws the first notice; this view declares nothing until it
+        // has a stack to measure.
+        expect(h.declaredHeights).toEqual([]);
+        // jsdom lays nothing out, so the measured content height is zero: what this proves is the
+        // call and its bookkeeping, and the scenario measures a real box in a real window.
+        void scope.request('ui.showNotification', notice('Sized by its content'));
+        await until(() => found('lab-notice').length === 1, 'the notice');
+        expect(h.declaredHeights.length).toBeGreaterThan(0);
+        expect(h.declaredHeights.every((pixels) => Number.isFinite(pixels) && pixels >= 0)).toBe(true);
+
+        h.lab().declare!(4_000);
+        await flush();
+        expect(h.declaredHeights.at(-1)).toBe(4_000);
+        expect(h.lab().boxHeight).toBe(4_000);
+        const sent = h.sent('ui.setNotificationBoxHeight').length;
+        void scope.request('ui.showNotification', notice('A second card'));
+        await until(() => found('lab-notice').length === 2, 'the second notice');
+        // An unchanged declaration is not re-sent: a frame that moves nothing spends no budget.
+        expect(h.sent('ui.setNotificationBoxHeight')).toHaveLength(sent);
+        expect(h.failures).toEqual([]);
+    });
+
+    it('presents nothing while the placement is not visible, without settling anything', async () => {
+        const { h, scope } = await notifications();
+        const answer = scope.request('ui.showNotification', notice('Still pending', { actions: [{ id: 'ok', label: 'OK' }] }));
+        await until(() => found('lab-notice').length === 1, 'the notice');
+        const requestID = h.lab().notices?.[0];
+        h.show(false);
+        await until(() => found('lab-notice').length === 0, 'the hidden placement');
+        expect(document.body.dataset.visible).toBe('false');
+
+        h.show(true);
+        await until(() => found('lab-notice').length === 1, 'the restored notice');
+        // The same request under the same id: nothing was answered by being hidden.
+        expect(h.lab().notices?.[0]).toBe(requestID);
+        one('lab-notice-action').click();
+        await expect(answer).resolves.toBe('ok');
+    });
+
+    it('fails on purpose for the recovery paths, with the notice still live', async () => {
+        const { surface } = make();
+        const h = await mount('notifications', surface);
+        await ready(h);
+        const scope = surface.createScope(owner);
+        cleanups.push(() => scope.dispose());
+        const answer = scope.request('ui.showNotification', notice('Survives the crash'));
+        await until(() => found('lab-notice').length === 1, 'the notice');
+
+        h.lab().crash('uncaught');
+        const scheduled: Array<() => void> = [];
+        const real = globalThis.setTimeout;
+        const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, ms?: number) =>
+            ms === undefined ? (scheduled.push(callback), 0) : real(callback, ms)) as unknown as typeof globalThis.setTimeout);
+        try {
+            void scope.request('ui.showNotification', notice('Raised into the crash'));
+            await until(() => h.thrown.length === 1, 'the armed crash');
+        } finally { timers.mockRestore(); }
+        expect(scheduled).toHaveLength(1);
+        expect(() => scheduled[0]!()).toThrow('Interaction Lab crashed on purpose.');
+        // Nothing was settled by the crash: the host hands the stack back with the ids intact.
+        let settled = false;
+        void answer.then(() => { settled = true; });
+        await flush();
+        expect(settled).toBe(false);
+        expect(surface.getSnapshot().notifications).toHaveLength(2);
+    });
+
+    it('stops acknowledging frames when the stall hook is armed', async () => {
+        const { h, scope } = await notifications();
+        const acknowledged = h.acknowledged();
+        h.lab().stall();
+        void scope.request('ui.showNotification', notice('Never acknowledged'));
+        await until(() => (h.lab().frames ?? 0) > 1, 'the stalled frame');
+        await flush();
+        // The frame arrived and was never settled: the watchdog path, not a view error.
+        expect(h.acknowledged()).toBe(acknowledged);
+        expect(found('lab-notice')).toHaveLength(0);
         expect(h.failures).toEqual([]);
         expect(h.thrown).toEqual([]);
     });

@@ -382,7 +382,8 @@ describe('presenter failure', () => {
         const surface = make();
         expect(surface.presenterState()).toEqual({
             'interaction.palette': { failed: false, detail: null },
-            'interaction.prompts': { failed: false, detail: null }
+            'interaction.prompts': { failed: false, detail: null },
+            'interaction.notifications': { failed: false, detail: null }
         });
         // Bundled until a presenter says it has painted: nothing else is drawing yet.
         expect(surface.usesBundledPresenter('interaction.prompts')).toBe(true);
@@ -393,8 +394,12 @@ describe('presenter failure', () => {
         surface.presenterFailed('interaction.prompts', 'no acknowledgement');
         expect(surface.presenterState()).toEqual({
             'interaction.palette': { failed: false, detail: null },
-            'interaction.prompts': { failed: true, detail: 'no acknowledgement' }
+            'interaction.prompts': { failed: true, detail: 'no acknowledgement' },
+            // Three placements, three independent verdicts: the corner stack is untouched by the
+            // prompts presenter's failure, and it has its own Retry in Settings.
+            'interaction.notifications': { failed: false, detail: null }
         });
+        expect(surface.usesBundledPresenter('interaction.notifications')).toBe(true);
         expect(surface.usesBundledPresenter('interaction.prompts')).toBe(true);
         // Cached against the state it describes, so a subscriber cannot spin on it.
         expect(surface.presenterState()).toBe(surface.presenterState());

@@ -22,8 +22,13 @@ async function present(): Promise<void> {
     if (current.prompt?.kind === 'quickPick') await ui.respondInteraction(current.prompt.requestID, current.prompt.options.items[0]!.id);
     if (current.prompt?.kind === 'input') await ui.respondInteraction(current.prompt.requestID, current.prompt.options.value ?? '');
     if (current.prompt?.kind === 'dialog') await ui.respondInteraction(current.prompt.requestID, null);
-    // Reserved and always empty in this release: the bundled stack draws notifications.
-    for (const notice of current.notifications) void notice.owner.displayName;
+    // Populated on `interaction.notifications` only: a notice is settled with an action id, or
+    // with null for a dismissal, and the box height is declared from the drawn content.
+    for (const notice of current.notifications) {
+        void notice.owner.displayName;
+        await ui.respondInteraction(notice.requestID, notice.options.actions?.[0]?.id ?? null);
+    }
+    await ui.setNotificationBoxHeight(240);
     stop();
 }
 void present;
@@ -40,4 +45,8 @@ void ui.respondInteraction('request', { id: 'yes' });
 void ui.setPaletteQuery('settings');
 // @ts-expect-error Opening the palette stays a window gesture; a presenter may only dismiss it.
 void ui.openPalette('all');
+// @ts-expect-error A box height is a number of pixels the host clamps, not a CSS length.
+void ui.setNotificationBoxHeight('240px');
+// @ts-expect-error A presenter declares its own box; it cannot move the box somewhere else.
+void ui.setNotificationBoxRect({ x: 0, y: 0 });
 void [closure, identified];

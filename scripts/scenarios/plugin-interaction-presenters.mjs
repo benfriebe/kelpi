@@ -1,45 +1,54 @@
 /**
  * Selectable interaction presenters, against a real window.
  *
- * Step 3 of the palette-and-shared-prompt phase lets a plugin view be chosen, in Settings ▸ Plugins
- * ▸ Workbench views, to DRAW the command palette (`interaction.palette`) or the shared modal prompts
- * (`interaction.prompts`) that every other plugin raises through `kelpi.ui.show*`. The unit suites
- * pin the projection, the watchdogs and the latch; what only a real window can answer is whether the
- * chosen frame actually receives the session, whether a keystroke crossing the iframe boundary still
- * reaches the host, and - the one that matters most - whether a promise somebody is awaiting is
- * still answerable when the frame drawing it dies. So this scenario presses all of it:
+ * The palette-and-shared-prompt phase, and the notification step after it, let a plugin view be
+ * chosen in Settings ▸ Plugins ▸ Workbench views to DRAW the command palette
+ * (`interaction.palette`), the shared modal prompts (`interaction.prompts`) or the notification
+ * stack (`interaction.notifications`) that every other plugin raises through `kelpi.ui.show*`. The
+ * unit suites pin the projection, the watchdogs and the latch; what only a real window can answer is
+ * whether the chosen frame actually receives the session, whether a keystroke crossing the iframe
+ * boundary still reaches the host, where a corner box is really drawn, and - the one that matters
+ * most - whether a promise somebody is awaiting is still answerable when the frame drawing it dies.
+ * So this scenario presses all of it:
  *
- *   1. both placements are offered in Settings, and the two chosen views attach as isolated frames;
- *   2. `ui.selectView` refuses both placements while `getWorkbench().slots` still lists them;
+ *   1. all three placements are offered in Settings, and the chosen views attach as isolated frames;
+ *   2. `ui.selectView` refuses all three while `getWorkbench().slots` still lists them;
  *   3. ⌘P through the plugin palette: real session rows, typing that filters inside the iframe,
  *      Enter that creates exactly one pane, a disabled row that creates none, and the two relayed
  *      chords (Escape, ⌘W) that dismiss and hand the caret back to the pane;
  *   4. a UI Lab quick pick / input / dialog presented by the plugin: owner display name with no
  *      plugin id anywhere in the frame, answers that reach UI Lab, cancels that return null, native
  *      chords that stand down, `queued` counting a second request, and one waiting behind Settings;
- *   5. the two carve-outs: a password input and a notification stay bundled;
- *   6. failure and recovery: a crash while a prompt is LIVE, the same request id re-presented by the
- *      bundled dialog, an answer that still reaches its plugin, the failure toast, the Settings
- *      status row, Retry - and then the acknowledgement watchdog doing the same thing on a stall;
- *   7. disable / enable / reload, with the selection retained throughout;
- *   8. a palette presenter crashing with the palette OPEN: the session goes, ⌘P draws bundled;
- *   9. a phone window keeping both bundled presenters with the lab still selected;
- *  10. the PRIMARY daemon stopped and replaced under a live palette session and a queued prompt:
- *      bundled while the connection is down, no latch, both presenters back, the queued promise
+ *   5. the password carve-out: a password input stays bundled and still settles to its plugin;
+ *   6. the notification stack in the lab's own frame: nothing painted while it is empty, the
+ *      bundled corner rect, an action and a dismissal that reach UI Lab, the host's 10 s expiry, a
+ *      declared box height clamped by the host, a native toast that still draws natively, and a
+ *      crash and a stall that hand the live notices back to the bundled stack under their own ids;
+ *   7. failure and recovery on the prompts placement: a crash while a prompt is LIVE, the same
+ *      request id re-presented by the bundled dialog, an answer that still reaches its plugin, the
+ *      failure toast, the Settings status row, Retry - and the acknowledgement watchdog on a stall;
+ *   8. disable / enable / reload, with the selection retained throughout;
+ *   9. a palette presenter crashing with the palette OPEN: the session goes, ⌘P draws bundled;
+ *  10. a phone window keeping every bundled presenter with the lab still selected;
+ *  11. the PRIMARY daemon stopped and replaced under a live palette session and a queued prompt:
+ *      bundled while the connection is down, no latch, every presenter back, the queued promise
  *      settled and never answered late, nothing activated, the caret usable, nothing run twice;
- *  11. six screenshots for the eyes, each with a note saying what to look for.
+ *  12. six screenshots for the eyes, each with a note saying what to look for.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
  * `examples/plugins/interaction-lab` (plain JS, no build): `example.interaction-lab.palette` for
- * `interaction.palette`, `example.interaction-lab.prompts` for `interaction.prompts`, each setting
+ * `interaction.palette`, `example.interaction-lab.prompts` for `interaction.prompts`,
+ * `example.interaction-lab.notifications` for `interaction.notifications`, each setting
  * `document.body.dataset.ready = 'true'` once it has reported readiness and exposing
- * `globalThis.interactionLab = { snapshot, ready, frames, lastError, crash(), stall() }`. The rows
- * and controls are read by test id - `lab-palette`, `lab-palette-input`, `lab-palette-row`,
- * `lab-prompt`, `lab-prompt-input`, `lab-prompt-item`, `lab-prompt-action` - with `data-item-id`,
- * `data-request-id` and `data-action-id` on the rows. Everything else is read from the CONTRACT
- * (`interactionLab.snapshot`, the host's own test ids), never from the example's private shape, so a
- * cosmetic change in the lab cannot silently turn a check green.
+ * `globalThis.interactionLab = { snapshot, ready, frames, lastError, crash(), stall() }`, with
+ * `notices`, `boxHeight` and `declare()` on the notifications view. The rows and controls are read
+ * by test id - `lab-palette`, `lab-palette-input`, `lab-palette-row`, `lab-prompt`,
+ * `lab-prompt-input`, `lab-prompt-item`, `lab-prompt-action`, `lab-notice`, `lab-notice-action`,
+ * `lab-notice-dismiss` - with `data-item-id`, `data-request-id` and `data-action-id` on the rows.
+ * Everything else is read from the CONTRACT (`interactionLab.snapshot`, the host's own test ids),
+ * never from the example's private shape, so a cosmetic change in the lab cannot silently turn a
+ * check green.
  *
  * Both failure hooks only ARM: they set a flag the next frame reads, so every use here produces a
  * frame afterwards (a request queued behind the live one, or a keystroke that moves the host-owned
@@ -53,7 +62,7 @@
  *   - **The disconnected window is not covered on the PHONE.** Presenters are disabled outright on
  *     a phone (recovery floor rule 1, which check 9 reads), so the bundled palette and prompts are
  *     already the pair drawing there and losing the connection cannot change which presenter draws.
- *     Rule 3 has nothing left to do that rule 1 has not already done, so check 10 stays on the
+ *     Rule 3 has nothing left to do that rule 1 has not already done, so check 11 stays on the
  *     desktop window.
  *   - **A queued prompt's promise cannot be watched resolving inside the frame that raised it.**
  *     `PluginView`'s main effect depends on the connection, so a disconnect disposes the view's UI
@@ -96,7 +105,7 @@ import { fileURLToPath } from 'node:url';
 export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src/interaction/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/plugin-sdk/', 'packages/protocol/src/plugins.ts',
     'packages/client/src/App.tsx', 'packages/client/src/chrome/', 'packages/client/src/phone/', 'packages/client/src/settings/',
-    // Check 10 is a real disconnect and reconnect of the primary daemon, so the socket's status
+    // Check 11 is a real disconnect and reconnect of the primary daemon, so the socket's status
     // machine and its backoff are things this scenario would now catch a regression in.
     'packages/client/src/connection/'];
 
@@ -104,12 +113,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const labID = 'example.interaction-lab', uiID = 'example.ui-lab';
 const labPath = path.join(repoRoot, 'examples/plugins/interaction-lab');
 const uiPath = path.join(repoRoot, 'examples/plugins/ui-lab');
-const paletteView = `${labID}.palette`, promptsView = `${labID}.prompts`;
+const paletteView = `${labID}.palette`, promptsView = `${labID}.prompts`, noticesView = `${labID}.notifications`;
 /** Whichever wrapper draws carries the test id; `data-interaction-presenter` names who it is. */
 const paletteSlot = `[data-interaction-presenter="${paletteView}"]`, promptsSlot = `[data-interaction-presenter="${promptsView}"]`;
-const paletteFrame = `${paletteSlot} iframe`, promptsFrame = `${promptsSlot} iframe`;
+const noticesSlot = `[data-interaction-presenter="${noticesView}"]`;
+const paletteFrame = `${paletteSlot} iframe`, promptsFrame = `${promptsSlot} iframe`, noticesFrame = `${noticesSlot} iframe`;
 const bundledPalette = '[data-testid="interaction-presenter-palette"][data-interaction-presenter="bundled"]';
 const bundledPrompts = '[data-testid="interaction-presenter-prompts"][data-interaction-presenter="bundled"]';
+const bundledNotices = '[data-testid="interaction-presenter-notifications"][data-interaction-presenter="bundled"]';
 const modal = '[data-testid="plugin-ui-dialog"]';
 const notice = '[data-testid="plugin-ui-notification"]';
 
@@ -151,6 +162,22 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
     const painted = (viewID, ceilingMs = 10_000) => d.settleDom(page, `document.querySelector('[data-interaction-presenter="${viewID}"]')?.hidden === false`, { ceilingMs });
     const standingBy = (viewID, ceilingMs = 10_000) => d.settleDom(page, `document.querySelector('[data-interaction-presenter="${viewID}"]')?.hidden === true`, { ceilingMs });
     const drawsBundled = (selector, ceilingMs = 10_000) => d.settleDom(page, `document.querySelector('${selector}')`, { ceilingMs });
+    /**
+     * A host element's box in the terms the notification geometry is DECLARED in: its insets from
+     * the window's bottom-right corner, its size, and the viewport it was measured against. Null
+     * when the element is not there - and note that a BUNDLED wrapper is `display: contents` and
+     * has no box of its own, so the bundled stack is measured through its own root instead.
+     */
+    const boxOf = async selector => {
+        const raw = await page.eval(`(() => {
+            const node = document.querySelector(${JSON.stringify(selector)});
+            if (node === null) return 'null';
+            const box = node.getBoundingClientRect();
+            return JSON.stringify({ right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom),
+                width: Math.round(box.width), height: Math.round(box.height), viewportWidth: innerWidth, viewportHeight: innerHeight });
+        })()`);
+        return typeof raw === 'string' && raw !== 'null' ? JSON.parse(raw) : null;
+    };
     /**
      * Arm one of the lab's failure hooks. Both only set a flag that the NEXT frame reads, so every
      * use below has to produce a frame afterwards - a queued request, or a keystroke that moves the
@@ -385,44 +412,53 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         await openPlugins();
         const paletteChoices = await slotOptions('interaction.palette');
         const promptChoices = await slotOptions('interaction.prompts');
-        const offered = labelFor(paletteChoices, paletteView) !== null && labelFor(promptChoices, promptsView) !== null;
+        const noticeChoices = await slotOptions('interaction.notifications');
+        const offered = labelFor(paletteChoices, paletteView) !== null && labelFor(promptChoices, promptsView) !== null
+            && labelFor(noticeChoices, noticesView) !== null;
         /*
          * The route BACK, read from the live select rather than assumed. A replaced palette looks
          * exactly like an unreplaced one, so the bundled entry has to say which one is the floor -
-         * and a user who cannot find it is a user stuck with a presenter they no longer want.
+         * and a user who cannot find it is a user stuck with a presenter they no longer want. The
+         * prompts entry no longer claims the notifications: they have a select of their own.
          */
-        const bundledLabels = [labelFor(paletteChoices, 'kelpi.palette'), labelFor(promptChoices, 'kelpi.prompts')];
-        const chosen = await chooseSlot('interaction.palette', paletteView) && await chooseSlot('interaction.prompts', promptsView);
-        const statuses = `${await statusRow('interaction.palette')} | ${await statusRow('interaction.prompts')}`;
+        const bundledLabels = [labelFor(paletteChoices, 'kelpi.palette'), labelFor(promptChoices, 'kelpi.prompts'),
+            labelFor(noticeChoices, 'kelpi.interaction.notifications')];
+        const chosen = await chooseSlot('interaction.palette', paletteView) && await chooseSlot('interaction.prompts', promptsView)
+            && await chooseSlot('interaction.notifications', noticesView);
+        const statuses = `${await statusRow('interaction.palette')} | ${await statusRow('interaction.prompts')} | ${await statusRow('interaction.notifications')}`;
         await closeSettings();
-        const bothAttached = await attached(paletteView) && await attached(promptsView);
-        const bothReady = await ready(paletteFrame) && await ready(promptsFrame);
-        rec.check('Settings offers both interaction placements and selects the lab for each',
-            offered && chosen && bothAttached,
-            `palette options ${JSON.stringify(paletteChoices)}, prompt options ${JSON.stringify(promptChoices)}, status ${statuses}`);
+        const allAttached = await attached(paletteView) && await attached(promptsView) && await attached(noticesView);
+        const allReady = await ready(paletteFrame) && await ready(promptsFrame) && await ready(noticesFrame);
+        rec.check('Settings offers all three interaction placements and selects the lab for each',
+            offered && chosen && allAttached,
+            `palette options ${JSON.stringify(paletteChoices)}, prompt options ${JSON.stringify(promptChoices)}, notification options ${JSON.stringify(noticeChoices)}, status ${statuses}`);
         rec.check('each interaction select names its bundled entry as the recovery floor',
-            JSON.stringify(bundledLabels) === JSON.stringify(['Command palette (bundled)', 'Prompts and notifications (bundled)']),
+            JSON.stringify(bundledLabels) === JSON.stringify(['Command palette (bundled)', 'Prompts (bundled)', 'Notifications (bundled)']),
             JSON.stringify(bundledLabels));
-        rec.check('both presenters attach as isolated views and report they have painted',
-            bothReady && await isolated(paletteFrame) && await isolated(promptsFrame),
-            `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)}`);
-        const projections = [await labSnapshot(paletteFrame), await labSnapshot(promptsFrame)];
+        rec.check('all three presenters attach as isolated views and report they have painted',
+            allReady && await isolated(paletteFrame) && await isolated(promptsFrame) && await isolated(noticesFrame),
+            `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)} · notifications ${await labState(noticesFrame)}`);
+        const projections = [await labSnapshot(paletteFrame), await labSnapshot(promptsFrame), await labSnapshot(noticesFrame)];
         rec.check('each placement receives only its own half of the surface',
             projections[0]?.placement === 'interaction.palette' && projections[0]?.prompt === null && projections[0]?.queued === 0
             && projections[1]?.placement === 'interaction.prompts' && projections[1]?.palette === null
-            && projections[0]?.formFactor === 'desktop' && projections[1]?.notifications?.length === 0,
+            && projections[0]?.formFactor === 'desktop' && projections[1]?.notifications?.length === 0
+            && projections[2]?.placement === 'interaction.notifications' && projections[2]?.palette === null
+            && projections[2]?.prompt === null && projections[2]?.queued === 0 && projections[2]?.notifications?.length === 0,
             JSON.stringify(projections));
 
         // ── 2 · discoverable, never programmatically selectable ──────────────────────
         const slots = JSON.parse(await inFrame(uiFrame, `(async () => { const workbench = await kelpi.ui.getWorkbench(); return JSON.stringify(workbench.slots.filter(slot => slot.id.startsWith('interaction.'))); })()`));
         const refusals = [
             await inFrame(uiFrame, `kelpi.ui.selectView('interaction.prompts', ${JSON.stringify(promptsView)}).then(() => 'resolved', error => error.message)`),
-            await inFrame(uiFrame, `kelpi.ui.selectView('interaction.palette', ${JSON.stringify(paletteView)}).then(() => 'resolved', error => error.message)`)
+            await inFrame(uiFrame, `kelpi.ui.selectView('interaction.palette', ${JSON.stringify(paletteView)}).then(() => 'resolved', error => error.message)`),
+            await inFrame(uiFrame, `kelpi.ui.selectView('interaction.notifications', ${JSON.stringify(noticesView)}).then(() => 'resolved', error => error.message)`)
         ];
-        rec.check('a plugin discovers both interaction slots but ui.selectView refuses them',
+        rec.check('a plugin discovers all three interaction slots but ui.selectView refuses them',
             refusals.every(message => message === 'Workbench slot is not registered.')
             && slots.find(slot => slot.id === 'interaction.palette')?.viewID === paletteView
-            && slots.find(slot => slot.id === 'interaction.prompts')?.viewID === promptsView,
+            && slots.find(slot => slot.id === 'interaction.prompts')?.viewID === promptsView
+            && slots.find(slot => slot.id === 'interaction.notifications')?.viewID === noticesView,
             `${JSON.stringify(slots)} · ${JSON.stringify(refusals)}`);
 
         // ── 3 · the palette, drawn by the plugin ─────────────────────────────────────
@@ -552,7 +588,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         await page.key('Escape');
         if (!await dataset('behindSettings')) throw new Error('the parked request did not cancel');
 
-        // ── 5 · the two carve-outs stay bundled ──────────────────────────────────────
+        // ── 5 · the password carve-out stays bundled ─────────────────────────────────
         await raise(`void kelpi.ui.showInput({title:'Deploy token', password:true}).then(value => { document.body.dataset.secret = JSON.stringify(value); }); true`);
         const bundledPassword = await d.settleDom(page, `document.querySelector('${bundledPrompts} ${modal} input[aria-label="Deploy token"][type="password"]')`);
         const withheld = await d.settle(async () => {
@@ -566,19 +602,183 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         rec.check('the withheld password request still settles to its requesting plugin',
             await frameCheck(uiFrame, `document.body.dataset.secret === ${JSON.stringify(JSON.stringify('hunter2'))}`),
             String(await datasetValue('secret')));
-        await askUILab('notification');
-        const bundledNotice = await d.settleDom(page, `document.querySelector('${notice}')`);
-        const noticeWithheld = (await labSnapshot(promptsFrame))?.notifications?.length === 0;
-        /*
-         * The action button by what it IS, not by its position in the card, and aim-checked: the
-         * native toast stack shares this corner of the window and is no longer something anything
-         * stands down for, so a blind `page.click` here can press a toast instead.
-         */
-        await clickHost(`${notice} button:not([aria-label="Dismiss notification"])`);
-        rec.check('a notification is drawn by the bundled stack and never projected to the presenter',
-            bundledNotice && noticeWithheld && await output('notification', 'ack'));
 
-        // ── 6 · failure, and the way back ────────────────────────────────────────────
+        // ── 6 · the notification stack, drawn by the lab ─────────────────────────────
+        /*
+         * An empty stack is the ordinary state of this placement, and the frame is NOT painted for
+         * it: an always-on box in the corner would swallow every click that landed in it and park
+         * the pages underneath for nothing. So the first check is that the corner is clear while
+         * there is nothing to show, taken from `elementFromPoint` rather than from the style.
+         */
+        const notificationsIdle = await page.eval(`(() => {
+            const node = document.querySelector('${noticesSlot}');
+            if (node === null) return 'not mounted';
+            if (node.hidden === false) return 'painted with an empty stack';
+            const hit = document.elementFromPoint(innerWidth - 24, innerHeight - 60);
+            return hit !== null && node.contains(hit) ? 'intercepting the corner' : 'clear';
+        })()`);
+        rec.check('the notifications frame is mounted but paints nothing, and intercepts nothing, while the stack is empty',
+            notificationsIdle === 'clear' && await attached(noticesView), String(notificationsIdle));
+
+        await askUILab('notification');
+        if (!await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 1`)) {
+            throw new Error(`the notification did not reach the notifications presenter: ${await labState(noticesFrame)}`);
+        }
+        const presentedNotice = (await labSnapshot(noticesFrame))?.notifications?.[0] ?? null;
+        const noticeLeaks = await inFrame(noticesFrame, `(() => {
+            const html = document.documentElement.outerHTML;
+            const snapshot = JSON.stringify(globalThis.interactionLab?.snapshot ?? null);
+            return html.includes(${JSON.stringify(uiID)}) || snapshot.includes(${JSON.stringify(uiID)})
+                || html.includes('native:') || snapshot.includes('native:');
+        })()`);
+        const labBox = await boxOf(noticesSlot);
+        rec.check('a plugin notification reaches the notifications presenter with a display name and no plugin id anywhere',
+            presentedNotice?.owner?.displayName === 'UI Lab'
+            && JSON.stringify(Object.keys(presentedNotice.owner).sort()) === JSON.stringify(['displayName', 'ref'])
+            && noticeLeaks === false && await painted(noticesView) && await page.eval(`!document.querySelector('${notice}')`),
+            `notice ${JSON.stringify(presentedNotice)}, plugin id or verb name in frame: ${String(noticeLeaks)}`);
+        await shot('plugin-notification-stack', 'the corner stack is the LAB’s: a card badged "UI Lab" with an Acknowledge button in the bottom-right of the window, in the same place the bundled stack draws, with the window still usable behind it and no bundled notification card anywhere.');
+        await clickFrame(noticesFrame, '[data-testid="lab-notice-action"][data-action-id="ack"]');
+        rec.check('an action clicked inside the presenter returns its id to the requesting plugin',
+            await output('notification', 'ack') && await standingBy(noticesView),
+            await labState(noticesFrame));
+
+        await askUILab('notification');
+        if (!await frameCheck(noticesFrame, `document.querySelector('[data-testid="lab-notice-dismiss"]')`)) throw new Error('the second notification did not reach the presenter');
+        await clickFrame(noticesFrame, '[data-testid="lab-notice-dismiss"]');
+        rec.check('dismissing inside the presenter answers the request with null', await output('notification', null));
+
+        /*
+         * The expiry stays the HOST's: the 10 second clock runs from the moment a notice enters the
+         * visible stack, the host settles it with null, and the next frame simply does not carry it
+         * any more. A presenter neither runs that clock nor can extend it.
+         */
+        await askUILab('notification');
+        if (!await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 1`)) throw new Error('the third notification did not reach the presenter');
+        const expiredAt = Date.now();
+        const expired = await frameCheck(uiFrame, `document.getElementById('notification-result').textContent === 'null'`, 20_000);
+        const expiryMs = Date.now() - expiredAt;
+        rec.check('the host expires a presented notification after its 10 seconds and the frame stands down again',
+            expired && expiryMs > 5_000 && await standingBy(noticesView)
+            && await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 0`),
+            `settled null after ${String(expiryMs)} ms`);
+
+        /*
+         * A native toast is not a plugin notification: `ui.notify`, a daemon message and a command
+         * failure are host chrome, drawn by `App`'s own stack in the same corner, and a presenter is
+         * told nothing about them. Raised with the stack EMPTY so nothing is over it, and dismissed
+         * again straight away: a plugin toast has no timer of its own, and one left in the corner
+         * would sit over every tap the phone section aims at later.
+         */
+        await raise(`void kelpi.ui.notify('A native toast beside the lab stack'); true`);
+        const toastDrawn = await d.settleDom(page, `(document.querySelector('[data-testid="toast-stack"]')?.textContent ?? '').includes('A native toast beside the lab stack')`, { ceilingMs: 8_000 });
+        const toastProjected = JSON.stringify(await labSnapshot(noticesFrame) ?? null).includes('A native toast beside the lab stack');
+        rec.check('a native toast still draws in the bundled toast stack and is never projected to the presenter',
+            toastDrawn && !toastProjected && await standingBy(noticesView),
+            `drawn ${String(toastDrawn)}, projected ${String(toastProjected)}`);
+        if (toastDrawn) await clickHost('[data-testid="toast-stack"] button');
+        if (!await toastsGone(6_000)) rec.note('the native toast did not dismiss on its click; the corner may be covered for the checks below');
+
+        /*
+         * The box. Its corner and its width are the host's - the bundled stack's own rect - and the
+         * HEIGHT is the presenter's declaration under two host ceilings: 45% of the window, so a
+         * corner box cannot become a window modal nothing registered, and 200 px per VISIBLE notice,
+         * so a presenter (which can raise its own notification every ten seconds) cannot hold a box
+         * bigger than the cards in it over the corner the toast stack shares. One notice is clamped
+         * by the second; two are clamped by the first on this window, so both are pressed here.
+         */
+        await raise(`void kelpi.ui.showNotification({message:'Measured box'}).then(value => { document.body.dataset.boxNotice = JSON.stringify(value); }); true`);
+        if (!await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 1`)) throw new Error('the measured notification did not reach the presenter');
+        const measured = await boxOf(noticesSlot);
+        await inFrame(noticesFrame, `(() => { globalThis.interactionLab.declare(100000); return true; })()`);
+        const perNotice = async count => d.settle(async () => {
+            const box = await boxOf(noticesSlot);
+            return box !== null && box.height === Math.min(Math.floor(box.viewportHeight * 0.45), count * 200);
+        }, { ceilingMs: 6_000 });
+        const clampedOne = await perNotice(1);
+        const oneBox = await boxOf(noticesSlot);
+        await raise(`void kelpi.ui.showNotification({message:'A second card'}).then(value => { document.body.dataset.secondBoxNotice = JSON.stringify(value); }); true`);
+        if (!await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 2`)) throw new Error('the second measured notification did not reach the presenter');
+        const clampedTwo = await perNotice(2);
+        const twoBox = await boxOf(noticesSlot);
+        rec.check('the host draws the presenter at the bundled corner and clamps the height it declares',
+            clampedOne && clampedTwo && labBox !== null && labBox.right === 12 && labBox.bottom === 40
+            && labBox.width === Math.min(360, labBox.viewportWidth - 24)
+            && measured !== null && measured.height > 0 && measured.height < oneBox.height
+            && twoBox.height > oneBox.height,
+            `first notice ${JSON.stringify(labBox)}, measured ${JSON.stringify(measured)}, declared 100000 with one notice ${JSON.stringify(oneBox)}, with two ${JSON.stringify(twoBox)}`);
+        await inFrame(noticesFrame, `(() => { globalThis.interactionLab.declare(null); return true; })()`);
+        /*
+         * Both measured notices are dismissed rather than left to expire: they have ten seconds
+         * each, and the crash arm below has to know exactly what was live when the presenter died.
+         */
+        for (let card = 0; card < 2; card += 1) {
+            // A card that expired on its own while this block ran is already settled, and the wait
+            // below covers both ways out.
+            if (!await frameCheck(noticesFrame, `document.querySelector('[data-testid="lab-notice-dismiss"]')`, 4_000)) break;
+            await clickFrame(noticesFrame, '[data-testid="lab-notice-dismiss"]');
+        }
+        if (!await frameCheck(uiFrame, `document.body.dataset.boxNotice === 'null' && document.body.dataset.secondBoxNotice === 'null'`, 15_000)) {
+            throw new Error('the measured notifications did not settle before the crash arm');
+        }
+        if (!await standingBy(noticesView)) throw new Error('the notifications frame did not stand down before the crash arm');
+
+        /*
+         * Failure, with notices LIVE. A fresh notice is raised for it - never one left over from the
+         * block above, whose ten seconds may already be spent - and the crash lands on the NEXT
+         * frame, so a second notification produces one: the stack then has two requests in flight
+         * when the presenter dies, and both have to come back under their own ids with their clocks
+         * untouched.
+         */
+        await raise(`void kelpi.ui.showNotification({message:'Live through the crash'}).then(value => { document.body.dataset.liveNotice = JSON.stringify(value); }); true`);
+        if (!await frameCheck(noticesFrame, `document.querySelectorAll('[data-testid="lab-notice"]').length === 1`)) throw new Error('the live notification did not reach the presenter before the crash');
+        const liveNoticeIDs = JSON.parse(await inFrame(noticesFrame, `JSON.stringify((globalThis.interactionLab?.snapshot?.notifications ?? []).map(item => item.requestID))`));
+        await arm(noticesFrame, `crash('uncaught')`);
+        await raise(`void kelpi.ui.showNotification({message:'Raised into the notification crash'}).then(value => { document.body.dataset.noticeCrash = JSON.stringify(value); }); true`);
+        const noticesTookOver = await d.settleDom(page, `document.querySelectorAll('${bundledNotices} ${notice}').length === 2`, { ceilingMs: 10_000 });
+        const bundledIDs = JSON.parse(await page.eval(`JSON.stringify([...document.querySelectorAll('${notice}')].map(card => card.getAttribute('data-request-id')))`));
+        const bundledBox = await boxOf(`${bundledNotices} [aria-label="Plugin notifications"]`);
+        rec.check('a notifications presenter crash hands the live stack back to the bundled one under the same request ids',
+            noticesTookOver && liveNoticeIDs.length === 1 && bundledIDs.includes(liveNoticeIDs[0])
+            && bundledIDs.length === 2 && await drawsBundled(bundledNotices)
+            && bundledBox !== null && bundledBox.right === 12 && bundledBox.bottom === 40,
+            `live ${JSON.stringify(liveNoticeIDs)} · bundled ${JSON.stringify(bundledIDs)} · bundled box ${JSON.stringify(bundledBox)}`);
+        // Nothing was settled by the failure: each request's own promise is what expires.
+        rec.check('the crashed stack’s requests were never settled by the failure and still expire on the host’s clock',
+            await frameCheck(uiFrame, `document.body.dataset.liveNotice === 'null'`, 15_000)
+            && await frameCheck(uiFrame, `document.body.dataset.noticeCrash === 'null'`, 15_000));
+        await openPlugins();
+        const noticeFailed = await d.settle(async () => (await statusRow('interaction.notifications')).includes('Failed'), { ceilingMs: 6_000 });
+        const noticeStatus = await statusRow('interaction.notifications');
+        // Read while Settings is still OPEN: the select is gone once the overlay closes.
+        const noticeSelected = await slotValue('interaction.notifications');
+        await retry('interaction.notifications');
+        const noticeCleared = await d.settle(async () => !(await statusRow('interaction.notifications')).includes('Failed'), { ceilingMs: 6_000 });
+        await closeSettings();
+        rec.check('Settings reports the failed notifications presenter beside its retained selection, and Retry brings it back',
+            noticeFailed && noticeCleared && noticeSelected === noticesView
+            && await attached(noticesView, 12_000) && await ready(noticesFrame),
+            `${noticeStatus} · selected ${String(noticeSelected)}`);
+
+        /*
+         * And the other watchdog. A frame that ADDS a notice is one the host waits 5 seconds for, so
+         * a stalled presenter loses the stack to the bundled one with the notice still up - the
+         * notice has ten seconds to live, so this is caught inside its own lifetime.
+         */
+        await arm(noticesFrame, 'stall()');
+        await raise(`void kelpi.ui.showNotification({message:'Stalled notification stack'}).then(value => { document.body.dataset.noticeStall = JSON.stringify(value); }); true`);
+        const stalledNotice = await d.settleDom(page, `(document.querySelector('${bundledNotices} ${notice}')?.textContent ?? '').includes('Stalled notification stack')`, { ceilingMs: 15_000 });
+        await openPlugins();
+        const noticeAck = await d.settle(async () => (await statusRow('interaction.notifications')).includes('stopped acknowledging'), { ceilingMs: 8_000 });
+        const noticeAckRow = await statusRow('interaction.notifications');
+        await retry('interaction.notifications');
+        await closeSettings();
+        rec.check('the acknowledgement watchdog fails a stalled notifications presenter and the bundled stack keeps the notice',
+            stalledNotice && noticeAck && await frameCheck(uiFrame, `document.body.dataset.noticeStall === 'null'`, 15_000)
+            && await attached(noticesView, 12_000) && await ready(noticesFrame),
+            `${noticeAckRow}`);
+
+        // ── 7 · failure, and the way back ────────────────────────────────────────────
         await askUILab('input');
         if (!await frameCheck(promptsFrame, `document.querySelector('[data-testid="lab-prompt-input"]')`)) throw new Error('the input did not reach the presenter before the crash');
         const liveID = (await labSnapshot(promptsFrame))?.prompt?.requestID ?? null;
@@ -620,7 +820,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         // nothing without this: Settings opens at the install field.
         await page.eval(`document.querySelector('[data-testid="interaction-presenter-status-interaction.prompts"]')?.scrollIntoView({block:'center'})`);
         await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-        await shot('settings-presenter-status', 'Settings ▸ Plugins ▸ Workbench views, scrolled to the presenter rows: the interaction.prompts row reads "Failed: …" with a "Retry presenter" button beside it, the interaction.palette row still names the lab, and both interaction selects above them still hold the lab views.');
+        await shot('settings-presenter-status', 'Settings ▸ Plugins ▸ Workbench views, scrolled to the presenter rows: the interaction.prompts row reads "Failed: …" with a "Retry presenter" button beside it, the interaction.palette and interaction.notifications rows still name the lab, and the three interaction selects above them still hold the lab views.');
         rec.check('Settings reports the failed presenter beside its retained selection',
             failedStatus && await slotValue('interaction.prompts') === promptsView,
             `${await statusRow('interaction.prompts')} · selected ${String(await slotValue('interaction.prompts'))}`);
@@ -661,57 +861,81 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             stalledID !== null && watchdog && answered && ackStatus,
             `request ${stalledID === null ? 'id unreadable while stalled' : String(stalledID)} · ${ackRow}`);
 
-        // ── 7 · disable, enable, reload ──────────────────────────────────────────────
+        // ── 8 · disable, enable, reload ──────────────────────────────────────────────
         await cli.ok(['plugin', 'disable', labID]);
-        const gone = await d.settleDom(page, `!document.querySelector('${paletteSlot}') && !document.querySelector('${promptsSlot}')`);
+        const gone = await d.settleDom(page, `!document.querySelector('${paletteSlot}') && !document.querySelector('${promptsSlot}') && !document.querySelector('${noticesSlot}')`);
         const bundledRows = await openPaletteOn(shellPane, bundledPaletteOpen);
         await page.key('Escape');
         await raise(`void kelpi.ui.showInput({title:'Bundled while disabled'}).then(value => { document.body.dataset.disabled = JSON.stringify(value); }); true`);
         const bundledDialog = await d.settleDom(page, `document.querySelector('${bundledPrompts} ${modal}')?.textContent.includes('Bundled while disabled')`);
         await page.key('Escape');
-        rec.check('disabling the plugin puts both surfaces back on the bundled presenters',
-            gone && bundledRows && bundledDialog && await drawsBundled(bundledPrompts));
+        await raise(`void kelpi.ui.showNotification({message:'Bundled notice while disabled'}).then(value => { document.body.dataset.disabledNotice = JSON.stringify(value); }); true`);
+        const bundledWhileDisabled = await d.settleDom(page, `(document.querySelector('${bundledNotices} ${notice}')?.textContent ?? '').includes('Bundled notice while disabled')`);
+        rec.check('disabling the plugin puts all three surfaces back on the bundled presenters',
+            gone && bundledRows && bundledDialog && bundledWhileDisabled && await drawsBundled(bundledPrompts));
         await openPlugins();
-        const statusWhileDisabled = `${await statusRow('interaction.palette')} | ${await statusRow('interaction.prompts')}`;
+        const statusWhileDisabled = `${await statusRow('interaction.palette')} | ${await statusRow('interaction.prompts')} | ${await statusRow('interaction.notifications')}`;
         await closeSettings();
         await cli.ok(['plugin', 'enable', labID]);
-        const back = await attached(paletteView) && await attached(promptsView) && await ready(paletteFrame) && await ready(promptsFrame);
+        const back = await attached(paletteView) && await attached(promptsView) && await attached(noticesView)
+            && await ready(paletteFrame) && await ready(promptsFrame) && await ready(noticesFrame);
         await openPlugins();
-        const retained = await slotValue('interaction.palette') === paletteView && await slotValue('interaction.prompts') === promptsView;
+        const retained = await slotValue('interaction.palette') === paletteView && await slotValue('interaction.prompts') === promptsView
+            && await slotValue('interaction.notifications') === noticesView;
         await closeSettings();
-        rec.check('the selection is retained across disable and enable, and both presenters come back',
+        rec.check('the selection is retained across disable and enable, and every presenter comes back',
             back && retained, `while disabled: ${statusWhileDisabled}`);
         await cli.ok(['plugin', 'reload', labID]);
-        const reloaded = await attached(promptsView, 20_000) && await ready(promptsFrame) && await ready(paletteFrame);
+        const reloaded = await attached(promptsView, 20_000) && await ready(promptsFrame) && await ready(paletteFrame)
+            && await attached(noticesView, 20_000) && await ready(noticesFrame);
         await askUILab('pick');
         const presentsAfterReload = await frameCheck(promptsFrame, `document.querySelector('[data-testid="lab-prompt-item"]')`);
         await page.key('Escape');
-        rec.check('a plugin reload returns working presenters to both placements',
+        rec.check('a plugin reload returns working presenters to every placement',
             reloaded && presentsAfterReload && await output('pick', null), await labState(promptsFrame));
 
-        // ── 8 · a palette presenter that dies with the palette open ──────────────────
+        // ── 9 · a palette presenter that dies with the palette open ──────────────────
         if (!await openPaletteOn(shellPane, pluginPaletteOpen)) throw new Error('the plugin palette did not open before the crash');
         await arm(paletteFrame, `crash('uncaught')`);
-        // The same rule as the prompts arm: the crash lands on the next frame, and a keystroke that
-        // moves the host-owned query is the cheapest way to produce one over a live session.
-        await typeInFrame(paletteFrame, '[data-testid="lab-palette-input"]', 'crash');
-        const sessionGone = await d.settleDom(page, `!document.querySelector('[data-testid="command-palette"]') && document.querySelector('${bundledPalette}')`, { ceilingMs: 10_000 });
+        /*
+         * The same rule as the prompts arm: the crash lands on the NEXT frame, and a keystroke that
+         * moves the host-owned query is the cheapest way to produce one over a live session. The
+         * typing is retried, though, and that is not belt and braces: a keystroke that does not
+         * reach the field inside the frame produces no frame at all, the arm simply sits there, and
+         * the wait below then reports a presenter that never crashed (observed in the hidden lane -
+         * `docs/audit/scenarios/2026-09-13T07-15-56-436Z`, where the diagnostic showed the lab
+         * palette still painted and no bundled wrapper). Each attempt is one more frame for the arm
+         * to ride, and the first one that lands is the one that fails the placement.
+         */
+        let sessionGone = false;
+        for (let attempt = 0; attempt < 3 && !sessionGone; attempt += 1) {
+            try { await typeInFrame(paletteFrame, '[data-testid="lab-palette-input"]', `crash ${String(attempt)}`); }
+            catch { /* the frame may already be on its way out; the settle below is the answer */ }
+            sessionGone = await d.settleDom(page, `!document.querySelector('[data-testid="command-palette"]') && document.querySelector('${bundledPalette}')`, { ceilingMs: 6_000 });
+        }
+        // What the window actually held when the wait gave up, for a red that has to be diagnosable
+        // from the report alone: which wrapper is drawing, and whether a card is still on screen.
+        const afterCrash = sessionGone ? 'dismissed' : String(await page.eval(`JSON.stringify({
+            palette: document.querySelector('[data-testid="command-palette"]') !== null,
+            rows: document.querySelectorAll('[data-testid="palette-row"]').length,
+            presenters: [...document.querySelectorAll('[data-interaction-presenter]')].map(node => node.getAttribute('data-interaction-presenter') + (node.hidden ? ':hidden' : ':painted'))
+        })`));
         const paneCount = (await panes()).length;
         const bundledNext = await openPaletteOn(shellPane, bundledPaletteOpen);
         await page.key('Escape');
         rec.check('a palette presenter crash dismisses the session and the next ⌘P draws the bundled palette',
             sessionGone && bundledNext && (await panes()).length === paneCount,
-            `panes ${String(paneCount)} → ${String((await panes()).length)}`);
+            `session gone ${String(sessionGone)} (${afterCrash}), bundled palette reopened ${String(bundledNext)}, panes ${String(paneCount)} → ${String((await panes()).length)}`);
         await openPlugins();
         await retry('interaction.palette');
         await closeSettings();
         if (!(await attached(paletteView) && await ready(paletteFrame))) throw new Error('Retry did not bring the palette presenter back');
 
-        // ── 9 · the phone keeps the bundled presenters ───────────────────────────────
+        // ── 10 · the phone keeps the bundled presenters ──────────────────────────────
         /*
-         * The two failure toasts from checks 6 and 8 have to be gone before the window is narrowed:
-         * at 390 px the corner stack is most of the width and it sits over the phone's pane rows,
-         * so a tap aimed at one lands on the toast's text instead.
+         * The failure toasts from the notification, prompt and palette crashes have to be gone
+         * before the window is narrowed: at 390 px the corner stack is most of the width and it
+         * sits over the phone's pane rows, so a tap aimed at one lands on the toast's text instead.
          */
         if (!await toastsGone()) rec.note('the toast stack did not empty before the phone section; a tap below may report being covered by it');
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -731,7 +955,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         if (!await d.settleDom(page, `!document.querySelector('[data-testid="command-palette"]')`, { ceilingMs: 8_000 })) {
             throw new Error('the phone palette did not dismiss on the close chord');
         }
-        let phonePrompt = null;
+        let phonePrompt = null, phoneNotice = null;
         // The pane list is two taps in from the landing view, and each one re-lays-out the shell,
         // so both go through the aim-checked click rather than a rect measured a frame too early.
         if (await d.settleDom(page, `document.querySelector('[data-testid="phone-title"]')`, { ceilingMs: 10_000 })) {
@@ -742,24 +966,28 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
                     await raise(`void kelpi.ui.showInput({title:'Phone bundled prompt'}).then(value => { document.body.dataset.phone = JSON.stringify(value); }); true`);
                     phonePrompt = await d.settleDom(page, `document.querySelector('${bundledPrompts} ${modal}')?.textContent.includes('Phone bundled prompt')`, { ceilingMs: 8_000 });
                     await page.key('Escape');
+                    await raise(`void kelpi.ui.showNotification({message:'Phone bundled notice'}).then(value => { document.body.dataset.phoneNotice = JSON.stringify(value); }); true`);
+                    phoneNotice = await d.settleDom(page, `(document.querySelector('${bundledNotices} ${notice}')?.textContent ?? '').includes('Phone bundled notice')`, { ceilingMs: 8_000 });
                 }
             }
         }
-        if (phonePrompt === null) rec.note('SKIPPED: the phone prompt half - the phone shell never showed the UI Lab pane, so no request could be raised there.');
-        rec.check('a phone window keeps both bundled presenters with the lab still selected',
-            phonePalette && (phonePrompt === null || phonePrompt) && await page.eval(`!document.querySelector('${paletteSlot}') && !document.querySelector('${promptsSlot}')`),
-            `palette ${String(phonePalette)}, prompt ${String(phonePrompt)}`);
+        if (phonePrompt === null) rec.note('SKIPPED: the phone prompt and notification halves - the phone shell never showed the UI Lab pane, so no request could be raised there.');
+        rec.check('a phone window keeps every bundled presenter with the lab still selected',
+            phonePalette && (phonePrompt === null || phonePrompt) && (phoneNotice === null || phoneNotice)
+            && await page.eval(`!document.querySelector('${paletteSlot}') && !document.querySelector('${promptsSlot}') && !document.querySelector('${noticesSlot}')`),
+            `palette ${String(phonePalette)}, prompt ${String(phonePrompt)}, notice ${String(phoneNotice)}`);
         // Back to the landing page BEFORE the window widens again, while the shell is still mounted:
         // it is the one tap that forgets where this scenario took the phone.
         if (!await phoneToLanding()) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
-        rec.check('returning to the desktop form factor re-attaches both plugin presenters',
-            await attached(paletteView) && await attached(promptsView) && await ready(paletteFrame) && await ready(promptsFrame),
-            `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)}`);
-        await shot('interaction-lab-ready', 'the ordinary window: both presenters selected and idle, the grid drawn normally, no dialog and no palette on screen.');
+        rec.check('returning to the desktop form factor re-attaches every plugin presenter',
+            await attached(paletteView) && await attached(promptsView) && await attached(noticesView)
+            && await ready(paletteFrame) && await ready(promptsFrame) && await ready(noticesFrame),
+            `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)} · notifications ${await labState(noticesFrame)}`);
+        await shot('interaction-lab-ready', 'the ordinary window: all three presenters selected and idle, the grid drawn normally, no dialog, no palette and no notification card on screen - the empty corner is the notifications frame not being painted at all.');
 
-        // ── 10 · the primary daemon goes away and comes back ─────────────────────────
+        // ── 11 · the primary daemon goes away and comes back ─────────────────────────
         /*
          * Rule 3 of the recovery floor, at last pressed for real (#199). `presenter-slot.tsx` draws
          * bundled while the daemon connection is down, and the only honest way to reach that state
@@ -887,10 +1115,10 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
                 && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
                 `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}`);
 
-            const attachedAgain = await attached(paletteView, 20_000) && await attached(promptsView, 20_000);
-            const readyAgain = attachedAgain && await ready(paletteFrame) && await ready(promptsFrame);
-            rec.check('both presenters re-attach and report they have painted once the daemon is back',
-                readyAgain, `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)}`);
+            const attachedAgain = await attached(paletteView, 20_000) && await attached(promptsView, 20_000) && await attached(noticesView, 20_000);
+            const readyAgain = attachedAgain && await ready(paletteFrame) && await ready(promptsFrame) && await ready(noticesFrame);
+            rec.check('every presenter re-attaches and reports it has painted once the daemon is back',
+                readyAgain, `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)} · notifications ${await labState(noticesFrame)}`);
 
             /*
              * The palette session is the window's, not the daemon's, so losing the connection is
@@ -909,8 +1137,8 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             }
 
             await openPlugins();
-            const statusesAfter = [await statusRow('interaction.palette'), await statusRow('interaction.prompts')];
-            const selectionsAfter = [await slotValue('interaction.palette'), await slotValue('interaction.prompts')];
+            const statusesAfter = [await statusRow('interaction.palette'), await statusRow('interaction.prompts'), await statusRow('interaction.notifications')];
+            const selectionsAfter = [await slotValue('interaction.palette'), await slotValue('interaction.prompts'), await slotValue('interaction.notifications')];
             await closeSettings();
             /*
              * The latch is what this check is really about. `generation` is
@@ -924,7 +1152,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
                 && offline.some(sample => sample.presenters.includes('bundled'))
                 && samples.every(sample => sample.toast === '')
                 && statusesAfter.every(status => !status.includes('Failed'))
-                && JSON.stringify(selectionsAfter) === JSON.stringify([paletteView, promptsView]),
+                && JSON.stringify(selectionsAfter) === JSON.stringify([paletteView, promptsView, noticesView]),
                 `while disconnected the presenters were ${JSON.stringify([...new Set(offline.flatMap(sample => sample.presenters))])}; afterwards ${JSON.stringify(statusesAfter)} with ${JSON.stringify(selectionsAfter)} selected, and the toast stack stayed empty throughout`);
 
             /*
@@ -973,7 +1201,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
                 caretBack && count(markedBefore, markerBefore) === 1 && count(markedAfter, markerBefore) === 0
                 && count(markedAfter, markerAfter) === 1,
                 `${markerBefore} ×${String(count(markedBefore, markerBefore))} before the restart and ×${String(count(markedAfter, markerBefore))} after it (zero is the claim: the new shell must not replay it); the pane took ${markerAfter} ×${String(count(markedAfter, markerAfter))} afterwards; caret in ${String(await page.eval(CARET_PANE)) || '<none>'}`);
-            await shot('after-daemon-restart', 'the window after its daemon was stopped and replaced: both lab presenters attached and idle again, the pane grid drawn normally with the shell pane’s new prompt, and no reconnect banner, no toast, no dialog and no palette anywhere.');
+            await shot('after-daemon-restart', 'the window after its daemon was stopped and replaced: every lab presenter attached and idle again, the pane grid drawn normally with the shell pane’s new prompt, and no reconnect banner, no toast, no dialog and no palette anywhere.');
         }
     } catch (error) {
         await rec.shot(page, 'failure-live');
@@ -994,7 +1222,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding()) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
-        // Check 10's recorder, if a throw landed between installing it and reading it: an observer
+        // Check 11's recorder, if a throw landed between installing it and reading it: an observer
         // and a 100 ms timer left running in the window are the next scenario's, not this one's.
         await safely('the connection recorder is stopped', () => page.eval(`(() => { if (typeof globalThis.__daemonTrailStop === 'function') globalThis.__daemonTrailStop(); return true; })()`));
         // A prompt or a palette left up by a thrown check owns the window: every chord below would
@@ -1014,11 +1242,30 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
          * about to be removed. Both entries are the ones check 1 read the "(bundled)" label off, so
          * this also leaves the window on the recovery floor the next scenario expects.
          */
-        await safely('both interaction placements go back to bundled', async () => {
+        await safely('every interaction placement goes back to bundled', async () => {
             await openPlugins();
             await chooseSlot('interaction.palette', 'kelpi.palette');
             await chooseSlot('interaction.prompts', 'kelpi.prompts');
+            await chooseSlot('interaction.notifications', 'kelpi.interaction.notifications');
             await closeSettings();
+        });
+        /*
+         * And the corner. A notification lives ten seconds and a plugin toast has no timer at all,
+         * so either can outlast this scenario and sit over whatever the next one taps in the
+         * bottom right. Dismissed through the elements themselves rather than through an aim-checked
+         * click, because these two stacks overlap each other by design and this is cleanup, not an
+         * assertion. Runs after the selections are restored, so the cards are the bundled stack's.
+         */
+        await safely('every notification and toast in the corner is dismissed', async () => {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+                const left = Number(await page.eval(`(() => {
+                    for (const button of document.querySelectorAll('${notice} button[aria-label="Dismiss notification"], [data-testid="toast-stack"] button')) button.click();
+                    return document.querySelectorAll('${notice}, [data-testid="toast-stack"]').length;
+                })()`));
+                if (left === 0) return;
+                await sleep(250);
+            }
+            rec.note('cleanup: the corner still holds a notification or a toast');
         });
         await cli.run(['plugin', 'remove', labID]);
         await cli.run(['plugin', 'remove', uiID]);

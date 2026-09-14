@@ -492,6 +492,7 @@
             activatePaletteItem: async (sessionID, itemID) => { await base.call('ui.activatePaletteItem', { sessionID, itemID }); },
             dismissPalette: async sessionID => { await base.call('ui.dismissPalette', { sessionID }); },
             respondInteraction: async (requestID, value) => { await base.call('ui.respondInteraction', { requestID, value }); },
+            setNotificationBoxHeight: async pixels => { await base.call('ui.setNotificationBoxHeight', { pixels }); },
             getSettingsPresentation: () => base.call('ui.getSettingsPresentation'),
             onSettingsPresentation: settingsFeed.subscribe,
             setSettingsSection: async id => { await base.call('ui.setSettingsSection', { id }); },

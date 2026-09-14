@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Interaction Lab notifications</title><link rel="stylesheet" href="style.css"></head>
+<body data-view="notifications">
+<!-- No backdrop here: a notification is a corner box over a window that stays usable, so the
+     document paints nothing of its own and only the cards are visible. -->
+<ul id="stack" class="stack" aria-label="Interaction Lab notifications"></ul>
+<p id="error" class="notice-error" role="alert" hidden></p>
+<script type="module" src="notifications.js"></script>
+</body></html>

@@ -39,3 +39,22 @@ button { padding: 4px 10px; border: 1px solid var(--kelpi-border); border-radius
 button[data-kind="primary"] { border-color: var(--kelpi-accent); color: var(--kelpi-accent); }
 button[data-kind="danger"] { border-color: #d98282; color: #d98282; }
 #error { color: #e68b89; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* ── the notifications presenter ─────────────────────────────────────────────
+   No backdrop and no panel: the host draws this view into a corner box (bottom-10 right-3, at most
+   360 px wide) whose HEIGHT this view declares, so the document paints only the cards. The stack is
+   anchored to the bottom of that box, the way the bundled one is, and grows upward. */
+body[data-view="notifications"] { background: transparent; }
+.stack { position: absolute; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.notice { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--kelpi-border); border-left: 3px solid var(--kelpi-accent); border-radius: 10px; background: var(--kelpi-bg); box-shadow: 0 12px 32px rgb(0 0 0 / 40%); }
+/* The bundled stack's own tones (`interaction/BundledPrompts.tsx`), so a replaced stack still
+   reads as the same four kinds of message. */
+.notice[data-tone="success"] { border-left-color: #7bbb8c; }
+.notice[data-tone="warning"] { border-left-color: #d9ae62; }
+.notice[data-tone="error"] { border-left-color: #e0655c; }
+.notice .head { gap: 6px; }
+.notice .text { color: var(--kelpi-fg); overflow-wrap: anywhere; white-space: pre-wrap; }
+.notice .sub { flex: none; max-width: 100%; overflow: visible; white-space: pre-wrap; }
+.notice .actions { justify-content: flex-start; }
+.notice button { padding: 2px 8px; font-size: 11px; }
+#error.notice-error { position: absolute; right: 0; bottom: 0; left: 0; margin: 0; color: #e68b89; font-size: 10px; }

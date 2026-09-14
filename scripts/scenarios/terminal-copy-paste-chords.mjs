@@ -19,6 +19,9 @@
  * the sentinel, which is indistinguishable from no copy at all and fails the same assertion.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 /**
  * The source this presses (ui-audit/README.md ▸ The rule). `clipboard.ts` is the two actions'
  * decisions, `pane-registry.ts` the live selection read they depend on, `bindings.ts` the two
@@ -161,6 +164,19 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
             await sleep(200);
         };
 
+        /*
+         * The focus repair goes BEFORE the drag, never after it: it can end in a click, and a click
+         * inside a terminal clears the selection ⌘C is about. What it repairs is the lane's own
+         * precondition. `harness.blur()` in an earlier scenario leaves the page believing it is not
+         * focused, and `navigator.clipboard` then refuses every call the two chords below make
+         * (#205, #207; driver.mjs ▸ clipboardCaret has the mechanism).
+         */
+        await d.clipboardCaret(page, harness, paneA, {
+            label: 'the ⌘C chord',
+            note: (message) => rec.note(message),
+            refocus: () => d.focusPaneBody(page, paneA)
+        });
+
         await dragAlongRow3();
         const selected = await selectionLength(paneA);
         rec.check('the drag made a selection the engine reports', selected > 0, `${String(selected)} characters`);
@@ -174,6 +190,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         }
         rec.check('the sentinel really is on the clipboard before ⌘C', (await readClipboard()) === POISON);
 
+        const caretAtCopy = await d.caretNow(page, paneA);
         await page.key('KeyC', { modifiers: d.MOD.meta, key: 'c' });
         await sleep(250);
         const copied = await readClipboard();
@@ -181,7 +198,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         rec.check(
             '⌘C put the terminal selection on the clipboard (#81)',
             copied.includes(MARK),
-            `holds ${JSON.stringify(copied.slice(0, 60))}`
+            `holds ${JSON.stringify(copied.slice(0, 60))} · at the press ${JSON.stringify(caretAtCopy)}`
         );
         rec.check(
             'and the sentinel is gone, so nothing overwrote the copy afterwards (no Edit menu double-fire)',
@@ -210,14 +227,68 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
          * No `commands: ['paste']`. The chord alone has to paste, which is the difference this PR
          * makes: the paste is Kelpi's own action resolved against the FOCUSED pane, not the browser's
          * editing command landing on whichever DOM node happens to hold the caret.
+         *
+         * Everything the failing run of #207 could not name is read at the moment of the press. That
+         * run pressed ⌘V, pane B's tail came back as `sh-3.2$ cat -v` and a lone `/` with no
+         * sentinel, and nothing recorded could separate three different stories: the page was not
+         * focused, so `readText()` was refused; the pasteboard had been replaced between ⌘C and ⌘V
+         * (`harness.clipboardRead` is Electron's main-process clipboard on the real NSPasteboard, so
+         * any other run and any person on this machine can clobber it); or the paste ran and typed
+         * something that is not the copied text. So the caret, the clipboard one instruction before
+         * the press, and the app's own error toast afterwards all go into the failure's detail.
+         *
+         * `refocus` stays OFF the grid for the reason the ⌘] above exists: a click inside pane B is
+         * a mouse-up over a cell and copy-on-select would overwrite the clipboard this paste is
+         * about. The pane header is the route the product's own paste resolves through anyway.
          */
+        await d.clipboardCaret(page, harness, paneB, {
+            label: 'the ⌘V chord',
+            note: (message) => rec.note(message),
+            refocus: () => d.clickPaneHeader(page, paneB)
+        });
+        const clipboardAtPaste = await readClipboard();
+        rec.check(
+            'the copied text was still on the clipboard at the moment of ⌘V',
+            clipboardAtPaste.includes(MARK),
+            `holds ${JSON.stringify(clipboardAtPaste.slice(0, 60))}`
+        );
+        const caretAtPaste = await d.caretNow(page, paneB);
         await page.key('KeyV', { modifiers: d.MOD.meta, key: 'v' });
         const pasted = await captureUntil(paneB, (text) => text.includes(MARK), 3_000);
         rec.note(`pane B tail: ${JSON.stringify(pasted.slice(-200))}`);
+        /*
+         * The toast is read only when the sentinel is missing, and promptly: a refused or
+         * unavailable clipboard is reported by the product itself (`App.tsx` ▸ `pasteClipboardInto`
+         * calls `notifyFailure`), so the reason is already rendered in the app and this scenario
+         * simply never looked, and an error toast lives for ERROR_TOAST_MS (6 s) of which the
+         * capture above has already spent up to 3. The image branch of the same function is SILENT
+         * on success, so "no toast, and something that is not the sentinel in the pane" is itself a
+         * reading, and the whole capture goes to a file beside the screenshots rather than being
+         * cut to a 160-character detail.
+         */
+        const landed = pasted.includes(MARK);
+        const reading = landed
+            ? null
+            : {
+                  caretAtPress: caretAtPaste,
+                  clipboardBeforePress: clipboardAtPaste.slice(0, 200),
+                  clipboardAfterPress: (await readClipboard()).slice(0, 200),
+                  toast: String(
+                      await page.eval(`(document.querySelector('[data-testid="toast-stack"]')?.textContent ?? '')`)
+                  ).slice(0, 300),
+                  capture: pasted
+              };
+        if (reading !== null) {
+            const file = path.join(rec.outDir, `${rec.name}-paste-failure.json`);
+            fs.writeFileSync(file, JSON.stringify(reading, null, 2) + '\n');
+            rec.note(`the whole pane B capture and the readings at the press: ${file}`);
+        }
         rec.check(
             'the ⌘V chord ALONE pasted the copied text into the focused pane (#81)',
-            pasted.includes(MARK),
-            pasted.slice(-160)
+            landed,
+            landed
+                ? pasted.slice(-160)
+                : `tail ${JSON.stringify(pasted.slice(-120))} · toast ${JSON.stringify(reading.toast)} · clipboard at the press ${JSON.stringify(reading.clipboardBeforePress.slice(0, 60))} · and after ${JSON.stringify(reading.clipboardAfterPress.slice(0, 60))} · caret ${JSON.stringify(caretAtPaste)}`
         );
         const occurrences = (pasted.match(new RegExp(MARK, 'g')) ?? []).length;
         rec.check(

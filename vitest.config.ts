@@ -29,10 +29,15 @@ export default defineConfig({
         // live-app helpers into a vitest project that has no use for them. `shards.test.mjs`
         // joined them for the same reason (#203): `--only`'s chain expansion decides which steps
         // a re-run actually runs, and it reads the step manifest's own prose to do it, so a
-        // re-worded entry has to fail here rather than in a 20-minute audit.
+        // re-worded entry has to fail here rather than in a 20-minute audit. `cdp.test.mjs` earns
+        // its place on the same rule from the other side: the CDP key table is what every audit
+        // step and every scenario presses through, a code with no entry in it goes out with
+        // `windowsVirtualKeyCode: 0` (wrong on the wire, and invisible to anything that reads it),
+        // and one `text` field in that table is a single control byte that a rewrite can delete
+        // without a diff showing anything. Only an assertion holds either of those down.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs'],
         },
       },
     ],

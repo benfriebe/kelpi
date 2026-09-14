@@ -97,85 +97,26 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         if (!focused) throw new Error('Real pointer input did not focus Terminal Lab');
     };
     /**
-     * The page's focus and the caret, read IMMEDIATELY before a clipboard chord, and repaired.
+     * The focus state the two clipboard chords need, recorded and repaired: `driver.mjs`.
      *
-     * ⌘C and ⌘V are the two checks in this file that cannot be asserted through any path the page
-     * does not have to be focused for. Chromium routes a CDP key event only to the focused element
-     * of a FOCUSED page, and the product's own copy goes through `navigator.clipboard`, which
-     * answers `NotAllowedError: Document is not focused` the instant the page is not. The lane's
-     * window is never the key window by construction (#109), so `document.hasFocus()` is true only
-     * while CDP focus emulation is on - and emulation is turned OFF by `harness.blur()`, which
-     * earlier scenarios in the same sandbox use on purpose. One that forgets to turn it back on
-     * takes both chords with it, silently, and that is how both checks came to be filed as
-     * "load-sensitive" in every full lane (#205).
-     *
-     * So the state is RECORDED into the check's own detail either way - a failure that says
-     * `hasFocus:false` names its reason instead of leaving it to be guessed - and, when the page
-     * has been left believing it is not focused, repaired through the harness before the press.
-     * The repair is honest about what it is: a focused window is the product's own precondition
-     * for a copy, the lane can only supply it through emulation, and the runner's post-condition
-     * still names the scenario that turned it off.
+     * The helper is shared with `terminal-copy-paste-chords`, which presses the same two chords at
+     * the same two risks (#205, #207). What is local to this file is the two probes it takes: the
+     * caret this renderer wants is its own xterm textarea, which lives inside the plugin's frame
+     * and is unreachable from the top document, and putting it back means a real pointer click
+     * inside that frame rather than on the pane body.
      */
-    /**
-     * Turn CDP focus emulation on inside the plugin frame's OWN target, not just the page's.
-     *
-     * `boot` enables emulation on the page session, which is what makes `document.hasFocus()` true
-     * in a lane whose window is never the key window. A plugin view is a sandboxed iframe, and once
-     * Chromium has put it out of process (which it does as soon as a sandbox has hosted other
-     * plugin frames - alone this scenario's frame stays in-process, behind `plugin-authoring` or
-     * `plugin-browser-features` it does not) the focused frame lives in a renderer that was never
-     * told the page is focused. The top document then answers `hasFocus() === false` while its
-     * `activeElement` is the iframe, `navigator.clipboard` rejects with "Document is not focused",
-     * and ⌘V and ⌘C do nothing (#205). Emulating focus on the child session is the other half of
-     * what the OS would be supplying.
-     */
-    const focusEmulationInFrame = async id => {
-        try {
-            const { root } = await page.send('DOM.getDocument', { depth: 1 });
-            const { nodeId } = await page.send('DOM.querySelector', { nodeId: root.nodeId, selector: frame(id) });
-            if (!nodeId) return false;
-            const frameId = (await page.send('DOM.describeNode', { nodeId })).node?.frameId;
-            const sessionId = frameId === undefined ? undefined : page.frameSessions?.get(frameId);
-            if (sessionId === undefined) return false;
-            await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }, 10_000, sessionId);
-            return true;
-        } catch {
-            return false;
-        }
-    };
-    /** The page's focus and the caret, exactly as they stand. Recorded into a check's detail. */
-    const caretNow = async id => {
-        const host = JSON.parse(await page.eval(`JSON.stringify({ hasFocus: document.hasFocus(), active: String(document.activeElement?.outerHTML ?? document.activeElement?.nodeName ?? '<null>').slice(0, 90) })`));
-        const onTheRendererTextarea = await inside(id, `document.activeElement === terminalLab.terminal.textarea`).catch(() => null);
-        return JSON.stringify({ ...host, onTheRendererTextarea });
-    };
-    const clipboardCaret = async (label, id) => {
-        const read = async () => JSON.parse(await caretNow(id));
-        let state = await read();
-        if (state.hasFocus !== true || state.onTheRendererTextarea !== true) {
-            rec.note(`${label}: the page was not focused on the renderer (${JSON.stringify(state)}); restoring focus before the chord`);
-            await harness.focus();
-            await focusEmulationInFrame(id);
-            await focus(id);
-            state = await read();
-            rec.note(`${label}: after the harness repair ${JSON.stringify(state)}`);
-        }
-        if (state.hasFocus !== true) {
-            /*
-             * The focus-independent route, and the one the product itself uses. `app/clipboard.ts`
-             * reads the FOCUSED PANE from the app's own registry, not from the DOM, and asks that
-             * pane's live renderer for its selection across the frame boundary - so the chord works
-             * with the caret on the pane's header, where the top document holds it and
-             * `navigator.clipboard` is allowed to run. Measured: with the caret in the plugin's
-             * out-of-process textarea the top document answers `hasFocus() === false` and the write
-             * is refused; one click on the header and both chords land (#205).
-             */
-            await d.clickPaneHeader(page, id);
-            state = { ...await read(), route: 'the pane header, so the host document holds the caret' };
-            rec.note(`${label}: after taking the caret back into the host document ${JSON.stringify(state)}`);
-        }
-        return JSON.stringify(state);
-    };
+    const caretProbe = id => () => inside(id, `document.activeElement === terminalLab.terminal.textarea`);
+    const caretNow = async id => JSON.stringify(await d.caretNow(page, id, { onTheRenderer: caretProbe(id) }));
+    const clipboardCaret = async (label, id) =>
+        JSON.stringify(
+            await d.clipboardCaret(page, harness, id, {
+                label,
+                note: message => rec.note(message),
+                onTheRenderer: caretProbe(id),
+                refocus: () => focus(id),
+                frameSelector: frame(id)
+            })
+        );
     const selectWorkspace = (id, workspaceID, hostName) => inside(id, `void (async () => { const navigation = await kelpi.ui.getNavigation(); const host = navigation.hosts.find(host => ${hostName ? `host.name === ${JSON.stringify(hostName)}` : `host.kind === 'local'`}); await kelpi.ui.selectWorkspace(host.id, ${JSON.stringify(workspaceID)}); })(); true`);
     const diagnostics = async label => {
         const items = [];

@@ -1470,6 +1470,23 @@ describe('remote-access commands (ws/remote.ts) — owner-only', () => {
         expect(replyFor(transport, 'r4')?.['reply']).toMatchObject({ ok: true, device: { id: 'a1' } });
     });
 
+    it('refuses a targetless mutation before the channel is reached', async () => {
+        const { hub, calls } = remoteHub();
+        const transport = recordingTransport();
+        const session = hub.createSession(transport);
+        session.handleMessage(hello({ token: 'tok' }));
+        session.handleMessage(JSON.stringify({ type: 'command', id: 't1', payload: { command: 'remote-delete' } }));
+        // An empty string is not a target either (`text()` rejects it), which is what keeps a
+        // blank field from being sent as a device id.
+        session.handleMessage(
+            JSON.stringify({ type: 'command', id: 't2', payload: { command: 'remote-delete', target: '' } })
+        );
+        await settle();
+        expect(calls).toEqual([]);
+        expect(replyFor(transport, 't1')?.['reply']).toEqual({ ok: false, error: 'remote-delete requires target' });
+        expect(replyFor(transport, 't2')?.['reply']).toEqual({ ok: false, error: 'remote-delete requires target' });
+    });
+
     it('refuses a session that authenticated with a PAIRED-DEVICE token', async () => {
         const { hub, calls } = remoteHub();
         const transport = recordingTransport();

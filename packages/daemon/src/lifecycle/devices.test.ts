@@ -148,13 +148,33 @@ describe('deleteDevice', () => {
         expect(loadDevices(file)).toHaveLength(2);
     });
 
-    it('returns null for an unknown target, and for a live name it must not reach', () => {
-        mintDevice(file, 'alice');
+    it('returns null only for a target nothing bears, and refuses a LIVE name rather than denying it', () => {
+        const alice = mintDevice(file, 'alice');
         expect(deleteDevice(file, 'nobody')).toBeNull();
-        // A LIVE device's name is not a delete handle: names resolve among the revoked only,
-        // so this matches nothing rather than refusing something it found.
-        expect(deleteDevice(file, 'alice')).toBeNull();
+        // A live name has no revoked bearer, but "no paired device matches" would be a lie
+        // about a device `kelpid devices` lists on the very next line. It gets the refusal the
+        // id form gets, naming the device so revoke has something to take.
+        expect(() => deleteDevice(file, 'alice')).toThrow(
+            `"alice" is a live device - revoke it first (device ${alice.device.id})`
+        );
         expect(loadDevices(file)).toHaveLength(1);
+    });
+
+    it('matches an id before a name, so a device named after another id is still reachable', () => {
+        // Ids are 8 random hex characters, so this needs a device deliberately named after
+        // another's id; the rule is `revokeDevice`'s precedence, and the point is that it
+        // never silently deletes the wrong row.
+        const live = mintDevice(file, 'phone');
+        const shadow = mintDevice(file, live.device.id);
+        revokeDevice(file, shadow.device.id);
+
+        // The string is BOTH a live device's id and a revoked device's name. The id wins, so
+        // this refuses rather than deleting the revoked namesake behind the caller's back.
+        expect(() => deleteDevice(file, live.device.id)).toThrow(/is a live device - revoke it first/);
+        expect(loadDevices(file)).toHaveLength(2);
+        // The shadowed entry is still deletable, by its own id.
+        expect(deleteDevice(file, shadow.device.id)?.id).toBe(shadow.device.id);
+        expect(loadDevices(file).map((device) => device.id)).toEqual([live.device.id]);
     });
 
     it('leaves the validator seeing the deletion, the same mtime reload a revoke gets', () => {

@@ -322,6 +322,31 @@ describe('Settings ▸ Remote', () => {
         // The live row is untouched, and nothing reloaded the tab to get here.
         expect(screen.getByTestId('remote-device-aa11')).toBeTruthy();
     });
+
+    it('surfaces a refused delete in the status banner instead of leaving the row unexplained', async () => {
+        // The refusal a real write failure produces: the row cannot go, so saying nothing
+        // would leave a failure indistinguishable from a no-op.
+        const remove = vi.fn(() => Promise.resolve({ ok: false, error: "EACCES: permission denied, open 'devices.json'" }));
+        render(<RemoteTab actions={actions({ delete: remove })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-delete-bb22')).toBeTruthy());
+
+        fireEvent.click(screen.getByTestId('remote-delete-bb22'));
+        await waitFor(() =>
+            expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('EACCES: permission denied')
+        );
+        // The re-read still happened, so the row is whatever the registry now says it is.
+        expect(screen.getByTestId('remote-device-bb22')).toBeTruthy();
+    });
+
+    it('says so when a revoke is refused, the same way', async () => {
+        const revoke = vi.fn(() => Promise.resolve({ ok: false, error: 'remote-revoke is owner-only' }));
+        render(<RemoteTab actions={actions({ revoke })} />);
+        await waitFor(() => expect(screen.getByTestId('remote-revoke-aa11')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('remote-revoke-aa11'));
+        await waitFor(() =>
+            expect(screen.getByTestId('remote-tailnet-line').textContent).toBe('remote-revoke is owner-only')
+        );
+    });
 });
 
 describe('the Daemons registry card (§1.7)', () => {

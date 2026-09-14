@@ -287,7 +287,16 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
         };
     }, []);
 
-    const refresh = useCallback((): void => {
+    /**
+     * Re-read the registry and the tailnet identity.
+     *
+     * `pending` is the complaint of the mutation that just ran, when it was refused. It has to
+     * ride THROUGH the read rather than be set before it: the banner a refusal belongs in is
+     * the one a successful status read clears, so setting it first would wipe it a moment
+     * later. Nothing else passes an argument, so the default keeps every other caller a
+     * plain `refresh()`.
+     */
+    const refresh = useCallback((pending: string | null = null): void => {
         actions.status().then(
             (reply) => {
                 if (!alive.current) return;
@@ -295,7 +304,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                     setStatusError(text(reply['error']) ?? 'remote status failed');
                     return;
                 }
-                setStatusError(null);
+                setStatusError(pending);
                 setDevices(parseDevices(reply['devices']));
                 const parsed = parseTailnet(reply['tailnet']);
                 setTailnet(parsed);
@@ -356,15 +365,26 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
         );
     };
 
-    const revoke = (id: string): void => {
-        actions.revoke(id).then(
-            () => {
-                if (alive.current) refresh();
+    /**
+     * One registry mutation: run it, re-read the list either way (the re-read is what makes the
+     * row change or go without a reload), and carry a refusal into the banner. A refused revoke
+     * or delete used to be silent, which left a real write failure (`devices.json` unwritable,
+     * a malformed registry) indistinguishable from a no-op.
+     */
+    const mutate = (run: Promise<Record<string, unknown>>, fallback: string): void => {
+        run.then(
+            (reply) => {
+                if (!alive.current) return;
+                refresh(reply['ok'] === true ? null : (text(reply['error']) ?? fallback));
             },
-            () => {
-                if (alive.current) refresh();
+            (error: unknown) => {
+                if (alive.current) refresh(error instanceof Error ? error.message : String(error));
             }
         );
+    };
+
+    const revoke = (id: string): void => {
+        mutate(actions.revoke(id), 'revoke failed');
     };
 
     /**
@@ -373,14 +393,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
      * handle that cannot say which row was clicked.
      */
     const forget = (id: string): void => {
-        actions.delete(id).then(
-            () => {
-                if (alive.current) refresh();
-            },
-            () => {
-                if (alive.current) refresh();
-            }
-        );
+        mutate(actions.delete(id), 'delete failed');
     };
 
     const copyURL = (): void => {
@@ -637,7 +650,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                             </span>
                             {/*
                               * No confirmation: the token is already dead, so this drops a
-                              * record and can re-admit nothing. The refresh in `forget` is what
+                              * record and can re-admit nothing. The re-read in `mutate` is what
                               * makes the row go, on both outcomes, without a reload.
                               */}
                             <SettingsButton

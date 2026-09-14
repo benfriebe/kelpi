@@ -278,6 +278,14 @@ describe('with no daemon running', () => {
         expect(live.text()).toContain('revoke it first');
         expect(loadDevices(devicesPath)).toHaveLength(2);
 
+        // By NAME too: "no paired device matches" would be a lie about a device the very next
+        // `kelpid devices` prints as live, and it would hide the step that has to come first.
+        const liveByName = io(env);
+        expect(await runKelpid(['devices', 'delete', 'bob'], liveByName)).toBe(1);
+        expect(liveByName.text()).toContain('revoke it first');
+        expect(liveByName.text()).not.toContain('no paired device matches');
+        expect(loadDevices(devicesPath)).toHaveLength(2);
+
         // Revoke, then delete: the two-step model, and `devices` stops listing it.
         const revoke = io(env);
         expect(await runKelpid(['devices', 'revoke', bob.device.id], revoke)).toBe(0);

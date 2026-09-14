@@ -971,7 +971,8 @@ KELPI_PLUGIN_PACKAGED=1 node scripts/scenario.mjs plugin-remote --no-build
 
 The last command requires a packaged app built from the revision being tested. The original
 implementation worktree initially lacked
-the vendored Ghostty engine's ignored `dist/`; validation built it from the checked-in
+the vendored Ghostty engine's ignored `dist/` (the bundle is tracked since
+[#6](https://github.com/benfriebe/kelpi/issues/6)); validation built it from the checked-in
 vendor source and refreshed the local file dependency. No tracked vendor runtime source
 was changed. `out/` is local output. `docs/audit/` is ignored by default, but selected evidence
 has been explicitly committed; see [Reading the evidence](#reading-the-evidence).

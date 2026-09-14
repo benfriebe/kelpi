@@ -600,38 +600,50 @@ export async function connect(webSocketDebuggerUrl, { repoRoot, verbose = false 
     return session;
 }
 
-/** Enough of the US layout for the audit's flows. `text` is what a terminal should receive. */
-const KEYS = {
+/**
+ * The letters and the digit row, generated rather than enumerated.
+ *
+ * A `KeyboardEvent.code` of `KeyX` or `DigitN` has the uppercase character's own code point as
+ * its virtual key code on every layout this harness drives, so there is nothing here to get right
+ * by hand and nothing to leave out. Enumerating them is how the two most-pressed keys in the whole
+ * suite came to be missing: `KeyC` and `KeyV` were never added, so every platform Copy and every
+ * platform paste went out with `windowsVirtualKeyCode: 0` for as long as the clipboard chords have
+ * existed (#207), and so did `KeyH` and `KeyM` in `terminal-leaves-platform-chords`. Two call sites
+ * also build the code at run time (`Key${character.toUpperCase()}` in the audit's typing step,
+ * `Digit${ordinal}` in `workspace-switch-keeps-the-caret`), which no hand-written list can follow.
+ */
+const ALPHANUMERIC_KEYS = Object.fromEntries([
+    ...Array.from({ length: 26 }, (_, index) => {
+        const letter = String.fromCharCode(0x41 + index);
+        return [`Key${letter}`, { key: letter.toLowerCase(), keyCode: 0x41 + index }];
+    }),
+    ...Array.from({ length: 10 }, (_, digit) => [`Digit${String(digit)}`, { key: String(digit), keyCode: 0x30 + digit }])
+]);
+
+/**
+ * Enough of the US layout for the audit's flows. `text` is what a terminal should receive.
+ *
+ * A key with no `keyCode` here is dispatched with `windowsVirtualKeyCode: 0`, which Chromium
+ * drops: a silent, very confusing no-op. `cdp.test.mjs` reads every key code the harness names in
+ * `scripts/` and fails when one of them does not resolve here, so the no-op cannot come back.
+ */
+export const KEYS = {
+    ...ALPHANUMERIC_KEYS,
     Enter: { key: 'Enter', keyCode: 13, text: '\r' },
     Tab: { key: 'Tab', keyCode: 9, text: '\t' },
-    Escape: { key: 'Escape', keyCode: 27, text: '' },
+    Escape: { key: 'Escape', keyCode: 27, text: '' },
     Backspace: { key: 'Backspace', keyCode: 8, text: '\b' },
     Space: { key: ' ', keyCode: 32, text: ' ' },
     ArrowUp: { key: 'ArrowUp', keyCode: 38 },
     ArrowDown: { key: 'ArrowDown', keyCode: 40 },
     ArrowLeft: { key: 'ArrowLeft', keyCode: 37 },
     ArrowRight: { key: 'ArrowRight', keyCode: 39 },
-    KeyA: { key: 'a', keyCode: 65 },
-    KeyD: { key: 'd', keyCode: 68 },
-    KeyE: { key: 'e', keyCode: 69 },
-    KeyF: { key: 'f', keyCode: 70 },
-    // The web-pane priority layer's chords. A key with no `keyCode` here is dispatched with
-    // `windowsVirtualKeyCode: 0`, which Chromium drops — a silent, very confusing no-op.
-    KeyL: { key: 'l', keyCode: 76 },
-    KeyT: { key: 't', keyCode: 84 },
-    KeyN: { key: 'n', keyCode: 78 },
-    KeyO: { key: 'o', keyCode: 79 },
-    KeyP: { key: 'p', keyCode: 80 },
-    KeyR: { key: 'r', keyCode: 82 },
-    KeyS: { key: 's', keyCode: 83 },
-    KeyW: { key: 'w', keyCode: 87 },
-    Digit1: { key: '1', keyCode: 49 },
-    Digit2: { key: '2', keyCode: 50 },
-    Digit3: { key: '3', keyCode: 51 },
+    Home: { key: 'Home', keyCode: 36 },
+    End: { key: 'End', keyCode: 35 },
     Comma: { key: ',', keyCode: 188 },
     Equal: { key: '=', keyCode: 187 },
     Minus: { key: '-', keyCode: 189 },
-    Digit0: { key: '0', keyCode: 48 },
+    Slash: { key: '/', keyCode: 191 },
     BracketLeft: { key: '[', keyCode: 219 },
     BracketRight: { key: ']', keyCode: 221 }
 };

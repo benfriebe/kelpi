@@ -311,6 +311,124 @@ export async function focusPaneBody(page, paneID) {
     return box;
 }
 
+// ── clipboard chords: the focus the page has to believe it has ──────────────────────
+
+/**
+ * Turn CDP focus emulation on inside a frame's OWN target, not just the page's.
+ *
+ * `boot` enables emulation on the page session, which is what makes `document.hasFocus()` true in
+ * a lane whose window is never the key window. A plugin view is a sandboxed iframe, and once
+ * Chromium has put it out of process (which it does as soon as a sandbox has hosted other plugin
+ * frames) the focused frame lives in a renderer that was never told the page is focused. The top
+ * document then answers `hasFocus() === false` while its `activeElement` is the iframe,
+ * `navigator.clipboard` rejects with "Document is not focused", and the Copy and paste chords do
+ * nothing (#205). Emulating focus on the child session is the other half of what the OS supplies.
+ *
+ * Best effort: a frame the harness cannot reach must not take a run down over a signal that only
+ * ever improves the lane.
+ */
+export async function setFrameFocusEmulation(page, frameSelector) {
+    try {
+        const { root } = await page.send('DOM.getDocument', { depth: 1 });
+        const { nodeId } = await page.send('DOM.querySelector', { nodeId: root.nodeId, selector: frameSelector });
+        if (!nodeId) return false;
+        const frameId = (await page.send('DOM.describeNode', { nodeId })).node?.frameId;
+        const sessionId = frameId === undefined ? undefined : page.frameSessions?.get(frameId);
+        if (sessionId === undefined) return false;
+        await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }, 10_000, sessionId);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The page's focus and the caret, exactly as they stand. Recorded into a check's own detail.
+ *
+ * `onTheRenderer` is the caller's answer to "is the caret where this pane's chord needs it".
+ * The default is the one a bundled terminal pane wants (the engine's hidden textarea lives inside
+ * the pane body); a plugin view passes a probe that runs inside its own frame.
+ */
+export async function caretNow(page, paneID, { onTheRenderer } = {}) {
+    const header = JSON.stringify(`[data-testid="pane-header-${paneID}"]`);
+    const body = JSON.stringify(`[data-testid="pane-body-${paneID}"]`);
+    const host = JSON.parse(
+        await page.eval(
+            `JSON.stringify({
+                hasFocus: document.hasFocus(),
+                active: String(document.activeElement?.outerHTML ?? document.activeElement?.nodeName ?? '<null>').slice(0, 90),
+                appFocusedPane: document.querySelector(${header})?.getAttribute('data-focused') === 'true'
+            })`
+        )
+    );
+    const probe =
+        onTheRenderer ??
+        (() => page.eval(`(() => { const body = document.querySelector(${body}); return body !== null && body.contains(document.activeElement); })()`));
+    return { ...host, onTheRenderer: await probe().catch(() => null) };
+}
+
+/**
+ * The page's focus and the caret, read IMMEDIATELY before a clipboard chord, and repaired.
+ *
+ * A platform Copy or paste is the one kind of check that cannot be asserted through any path the
+ * page does not have to be focused for. Chromium routes a CDP key event only to the focused
+ * element of a FOCUSED page, and the product's own copy goes through `navigator.clipboard`, which
+ * answers `NotAllowedError: Document is not focused` the instant the page is not. The lane's
+ * window is never the key window by construction (#109), so `document.hasFocus()` is true only
+ * while CDP focus emulation is on, and emulation is turned OFF by `harness.blur()`, which earlier
+ * scenarios in the same sandbox use on purpose. One that forgets to turn it back on takes every
+ * later clipboard chord with it, silently (#205, #207).
+ *
+ * So the state is RECORDED into the check's own detail either way - a failure that says
+ * `hasFocus:false` names its reason instead of leaving it to be guessed - and, when the page has
+ * been left believing it is not focused, repaired through the harness before the press. The repair
+ * is honest about what it is: a focused window is the product's own precondition for a copy, the
+ * lane can only supply it through emulation, and the runner's post-condition still names the
+ * scenario that turned it off.
+ *
+ * `refocus` is how the caller puts the caret back, and it matters more than it looks: the default
+ * clicks the pane body, which is right for a pane with nothing selected and WRONG immediately
+ * after a drag, because a click inside a terminal clears the selection the Copy is about and the
+ * engine's copy-on-select would overwrite the clipboard the paste is about. Call this BEFORE the
+ * selection, or pass a `refocus` that stays off the grid.
+ */
+export async function clipboardCaret(page, harness, paneID, { label = 'the clipboard chord', note = () => {}, onTheRenderer, refocus, frameSelector } = {}) {
+    const read = () => caretNow(page, paneID, { onTheRenderer });
+    const putTheCaretBack = refocus ?? (() => focusPaneBody(page, paneID));
+    let state = await read();
+    if (state.hasFocus !== true || state.onTheRenderer !== true) {
+        note(`${label}: the page was not focused on the renderer (${JSON.stringify(state)}); restoring focus before the chord`);
+        await harness.focus();
+        if (frameSelector !== undefined) await setFrameFocusEmulation(page, frameSelector);
+        try {
+            await putTheCaretBack();
+        } catch (error) {
+            note(`${label}: the focus repair could not reach the pane (${error instanceof Error ? error.message : String(error)})`);
+        }
+        state = await read();
+        note(`${label}: after the harness repair ${JSON.stringify(state)}`);
+    }
+    if (state.hasFocus !== true) {
+        /*
+         * The focus-independent route, and the one the product itself uses. `app/clipboard.ts`
+         * reads the FOCUSED PANE from the app's own registry, not from the DOM, and asks that
+         * pane's live renderer for its selection across the frame boundary, so the chord works
+         * with the caret on the pane's header, where the top document holds it and
+         * `navigator.clipboard` is allowed to run. Measured: with the caret in a plugin's
+         * out-of-process textarea the top document answers `hasFocus() === false` and the write is
+         * refused; one click on the header and both chords land (#205).
+         */
+        try {
+            await clickPaneHeader(page, paneID);
+            state = { ...(await read()), route: 'the pane header, so the host document holds the caret' };
+        } catch (error) {
+            state = { ...state, route: `the pane header is unreachable (${error instanceof Error ? error.message : String(error)})` };
+        }
+        note(`${label}: after taking the caret back into the host document ${JSON.stringify(state)}`);
+    }
+    return state;
+}
+
 /** Type a shell command into the focused terminal and press Return. */
 export async function runInTerminal(page, command, { settleMs = 900 } = {}) {
     await page.type(command);

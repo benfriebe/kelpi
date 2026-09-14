@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
 - [Settings Lab and live acceptance](#settings-lab-and-live-acceptance-2026-09-12).
 - [Selectable Settings presenter](#selectable-settings-presenter-2026-09-12).
 - [Shared settings contracts](#shared-settings-contracts-2026-09-12).
@@ -47,6 +48,108 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Daemon disconnect coverage (2026-09-13)
+
+Issue [#199](https://github.com/benfriebe/kelpi/issues/199), implemented on
+`fix/runner-daemon-handle` (based on merged main `2f5e728`). Tested revision: **`a98aa3f`**. Private sandboxes only; no product code changed, so plugin API version and wire protocol
+are untouched.
+
+The scenario runner now hands a scenario `t.daemon`, the sandbox's own daemon with `stop()`,
+`start()` and `restart()` (`scripts/ui-audit/lib/stack.mjs` ▸ `restartableDaemon`,
+`scripts/ui-audit/README.md` ▸ The daemon handle). A restart reuses the sandbox's run dir, ports,
+database and token, so the daemon that comes back is the same identity at the same address and the
+window's reconnect is the behaviour under test. Both presenter scenarios gained an arm that stops
+the PRIMARY daemon under a live window, which is what recovery-floor rule 3 exists for and what
+both scenarios previously recorded as a limit.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Typecheck and tests | `pnpm check` | All typechecks pass. Root vitest **7,915 passed, 1 skipped** (511 files, the existing optional database skip); shell **870 passed**. |
+| Interaction presenters, hidden, built | `node scripts/scenario.mjs plugin-interaction-presenters --window hidden` | **41/41** (`docs/audit/scenarios/2026-09-13T07-41-37-934Z`, local artifact), up from 34/34 before the arm. |
+| Settings presenter, hidden | `node scripts/scenario.mjs plugin-settings-presenter --window hidden --no-build` | **34/34** (`2026-09-13T07-42-43-361Z`), up from 30/30 before the arm. |
+| Interaction presenters, onscreen | `node scripts/scenario.mjs plugin-interaction-presenters --window onscreen --no-build` | **41/41** (`2026-09-13T07-43-28-392Z`); all six screenshots inspected. |
+| Settings presenter, onscreen | `node scripts/scenario.mjs plugin-settings-presenter --window onscreen --no-build` | **34/34** (`2026-09-13T07-44-20-507Z`); all five screenshots inspected. |
+| Nothing leaks into the next scenario | `node scripts/scenario.mjs plugin-interaction-presenters plugin-remote plugin-settings-presenter --window hidden --no-build` | **41/41 + 12/12 + 34/34** with **zero** leak warnings (`2026-09-13T07-45-07-147Z`). |
+| Scenarios after a restart still pass | `node scripts/scenario.mjs plugin-interaction-presenters plugin-settings-presenter plugin-authoring terminal-copy-paste-chords plugin-terminal-features --window hidden --no-build` | **41/41 + 34/34 + 25/25 + 14/14 + 58/58**, one leak warning (`2026-09-13T07-46-32-004Z`): `plugin-terminal-features` leaving its terminal workbench slot selected, which is pre-existing and reproduces identically in a control chain of `plugin-authoring plugin-terminal-features` with no restart in it. |
+| Full verification battery | `node scripts/verify.mjs --full` at `59cbba2` | **passed in 24.0 min with no component retried**: typecheck, root tests, shell tests, build bundles, all scenarios (hidden, 5.2 min), full audit (18.0 min) and the packaged smoke (69/69). |
+
+A restart is a whole-instance event, which is why the chain above is part of the gate: `scenario.mjs`
+runs every scenario of a run in one instance, so the restart kills every PTY any earlier scenario
+made, and a generation that ends in SIGKILL also loses `persistence.close()` and the run files. The
+rule that follows is in the README: put a restart arm late in a scenario, and never let a later step
+lean on a pane created before it.
+
+What the two arms assert. `plugin-interaction-presenters` check 10 restarts the daemon under a live
+palette session drawn by the lab and a dialog queued behind it: the window leaves `connected` and
+comes back to it (the assertion is "not connected", and every run recorded here read
+`reconnecting`); while it is down every `data-interaction-presenter` reads `bundled`, no
+failure toast appears, no placement latches and both selections are retained; both presenters
+re-attach and report they have painted; the palette session is kept or dropped but activates
+nothing (the pane set is identical either side); the queued request leaves no pending prompt on the
+surface, nothing queued behind it and no dialog drawn under any id; a prompt raised after the
+reconnect is presented by the lab and settles with its action; and a shell pane takes input again
+with the pre-restart marker reading exactly zero afterwards, which is the reading that fails if
+buffered pre-restart input is ever replayed into the new shell. `plugin-settings-presenter` check 11 restarts it with the
+dialog open on Appearance and a half-typed draft: the bundled dialog takes the same section still
+holding the draft, the presenter comes back with the draft and the section, nothing latches, and
+both the Kelpi and ghostty config files are byte-identical across the restart with no key written
+twice.
+
+Two things measured rather than assumed, both recorded in the scenario headers. A plugin view's
+iframe is destroyed and rebuilt on a disconnect (`PluginView`'s main effect depends on the
+connection), and its `pagehide` fires about 30 ms into the restart, so a queued prompt's promise
+cannot be watched resolving inside the frame that raised it and nothing read out of that frame
+afterwards can fail; the arm claims only what the host can answer and keeps the frame readings in
+its detail as an observation. And the window is disconnected for well under a second in an idle
+sandbox, so the disconnected state is recorded with a `MutationObserver` installed before the
+restart rather than polled for afterwards.
+
+The runner's handle also proves what it restarted. `kelpid start --foreground` probes first and,
+finding a live daemon, prints "already running" and exits 0, so a stop that silently failed would
+leave a healthz check satisfied by the survivor and every later pid and generation assertion
+passing on a restart that never happened. `start()` therefore refuses a launcher that has already
+exited and then calls `assertSandboxDaemon`, which pings the control port and compares the pid.
+Negative control on this tree: with a daemon started behind the handle's back, `start()` refuses
+with `WRONG DAEMON on 127.0.0.1:<port>: ping answered by pid 7700, but this harness spawned pid
+7705`.
+
+### The shutdown stall this exposed ([#212](https://github.com/benfriebe/kelpi/issues/212))
+
+A restart is bimodal: the daemon either stops in 12 to 14 ms or takes 8002 to 8005 ms and is
+SIGKILLed by `startDaemon`'s SIGTERM window. Measured over every run of this branch: nine of
+fourteen `plugin-interaction-presenters` runs stalled and five did not; all nine
+`plugin-settings-presenter` runs stopped in 11 to 13 ms; five standalone probes covering shell
+PTYs, plugin backends, reloads and disable/enable stopped in 8 to 19 ms.
+
+This is a daemon bug and not the runner's handle. `ws/server.ts` ▸ `stop()` closes the WebSockets
+it tracks (its `sockets` set holds WebSockets only) and then awaits `closeAsync`, which calls
+`server.close()` with no `closeIdleConnections()` or `closeAllConnections()`, so the renderer's
+keep-alive HTTP sockets hold the listener open; `boot/compose.ts` sits in `ws.stop()` until the
+SIGKILL. Because `persistence.flush()` and `pty.killAll()` run before `ws.stop()`, what the kill
+skips is `persistence.close()`, `clearRunFiles(paths)` and the final `kelpid stopped` log line.
+
+Evidence taken on 2026-09-13, both from `plugin-interaction-presenters`, one stalling run and one
+not:
+
+- **The kill lands inside the shutdown.** The stalling run's replaced daemon never logged
+  `kelpid stopped`: its output goes straight from the last running line to the next daemon's
+  `kelpid listening` banner. The fast runs log it. The scenario now records this either way, so
+  the reason for a slow stop is in the run's own notes.
+- **`lsof -p <daemon pid> -a -i -P -n` immediately before the restart** (temporary instrumentation,
+  not kept): the stalling run held three listeners and **six** ESTABLISHED sockets on the HTTP
+  port, three of them at freshly allocated ephemeral ports (the plugin-asset fetches that had just
+  rebuilt the presenter views); the fast run held **five**, none of them recent.
+
+Not established: one idle keep-alive socket from a plain `fetch` against a bare sandbox daemon did
+NOT reproduce the stall (stop stayed at 5 to 8 ms), so which socket population actually holds
+`server.close()` open is #212's to pin down rather than this branch's. No daemon code was changed
+here; `lastStopMs` / `lastStartMs` and the shutdown-line note exist so the next reader can tell a
+hung shutdown from a slow machine.
+
+Not established here: physical devices; the phone form factor for either arm (a phone is granted
+no presenter at all, so rule 3 has nothing to do there that the phone's own rule has not already
+done); the 240-calls-per-second budget breach, which remains a unit test.
 
 ## Settings Lab and live acceptance (2026-09-12)
 
@@ -81,9 +184,10 @@ with **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes**, th
 #205, with every `settings-*` and `phone-settings-sheet` step green; the packaged smoke
 repackaged and passed **61 checks**.
 
-Recorded limits: daemon disconnect and reconnect is not pressed by the scenario; the call
-budget breach is covered by unit tests only; phone checks use emulation; physical devices are
-not covered.
+Recorded limits: the call budget breach is covered by unit tests only; phone checks use
+emulation; physical devices are not covered. Daemon disconnect and reconnect was not pressed
+by the scenario at this revision; it was added later and is recorded in
+[daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
 
 ## Selectable Settings presenter (2026-09-12)
 
@@ -151,9 +255,11 @@ worktree; private sandboxes only. Retained onscreen screenshots are in
 | Regression gates, hidden | `plugin-ui-services` 30/30, `confirm-dialog-keys` 10/10, `plugin-workbench` 22/22, `plugin-preview-shortcuts` 6/6, `recover-interface-keeps-web-panes` 8/8, `workspace-switch-keeps-the-caret` 14/14, `web-pane-comes-back-after-hide` 7/7, `sidebar-swap` 11/11, `plugin-extensions` 23/23, `plugin-authoring` 25/25; `plugin-chrome-features` 34/34 alone; `plugin-remote` **12/12** alone and after the presenter scenario (`2026-09-12T06-18-11-971Z`, `2026-09-12T06-18-39-966Z`). The gate run before the cleanup fix had `plugin-remote` at 10/12 after the presenter scenario, because that scenario left the phone's remembered place set; its cleanup now returns the phone shell to its landing page, restores the bundled views for both placements, clears emulation and returns to the starting workspace. |
 | Independent review | One Opus review of the working tree. Applied before `54ef523`: the failure screenshot note and gating, the stall arm asserting the acknowledgement watchdog message, the live "(bundled)" label check, an aim-checked notification click, wider `covers`, quick-pick arrow navigation matching the bundled presenter, and stale comments about toast modal presence. |
 
-Recorded limits: daemon disconnect and reconnect is not pressed by the scenario (the runner
-exposes no primary-daemon handle); phone checks use emulation; physical devices are not
-covered; selectable notification presentation is not part of this phase.
+Recorded limits: phone checks use emulation; physical devices are not covered; selectable
+notification presentation is not part of this phase. Daemon disconnect and reconnect was not
+pressed by the scenario at this revision, because the runner exposed no primary-daemon handle;
+both were added later and are recorded in
+[daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
 
 ### Full verification battery at `54ef523`
 
@@ -748,6 +854,7 @@ node scripts/verify.mjs --full
 node scripts/scenario.mjs plugin-extensions --window onscreen
 node scripts/scenario.mjs plugin-remote plugin-workbench
 node scripts/scenario.mjs plugin-workbench sidebar-swap stuck-drag-teardown --window onscreen
+node scripts/scenario.mjs plugin-interaction-presenters plugin-remote plugin-settings-presenter --window hidden --no-build
 KELPI_PLUGIN_PACKAGED=1 node scripts/scenario.mjs plugin-remote --no-build
 ```
 

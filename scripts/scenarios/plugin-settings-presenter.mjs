@@ -31,7 +31,10 @@
  *      raised OVER Settings owns its own Escape;
  *   9. disable / enable / reload, with the selection retained;
  *  10. a phone window keeping the bundled sheet with the lab still selected;
- *  11. four screenshots for the eyes, each with a note saying what to look for.
+ *  11. the PRIMARY daemon stopped and replaced with the dialog open on a projected section and a
+ *      half-typed draft in it: the bundled dialog takes over on the same section still holding the
+ *      draft, the presenter comes back with it, nothing latches, and neither config file changes;
+ *  12. five screenshots for the eyes, each with a note saying what to look for.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
@@ -62,13 +65,10 @@
  *
  * ── Limits, on the record ───────────────────────────────────────────────────────────
  *
- *   - **No daemon disconnect/reconnect.** Rule 3 of the recovery floor (`settings/presenter-slot.tsx`)
- *     draws bundled while the connection is down, and the honest way to press it is to stop the
- *     PRIMARY daemon under a live window. `scripts/scenario.mjs` hands a scenario `cli`, `sandbox`
- *     and `shell` but no daemon handle, and `plugin-remote.mjs`'s scaffolding only buys a SECOND
- *     daemon, which is not the runtime a Settings presenter is selected for. Disable, reload and
- *     both watchdogs exercise the same latch-and-retry path here; the connection arm stays covered
- *     by `presenter-slot`'s unit suite.
+ *   - **The disconnected dialog is not covered on the PHONE.** A phone window is granted no
+ *     Settings presenter at all (check 10), so the bundled sheet is already what draws there and
+ *     losing the connection cannot change who is drawing. Rule 3 has nothing left to do that the
+ *     phone's own rule has not already done, so check 11 stays on the desktop window.
  *   - **The call-budget breach is not pressed live.** 240 calls per rolling second fails the
  *     presenter (`presenter.ts` ▸ `charge`), and driving 240 calls through the frame in under a
  *     second from CDP measures the harness rather than the host. `presenter.test.ts` owns it.
@@ -100,7 +100,10 @@ import { fileURLToPath } from 'node:url';
 export const covers = ['examples/plugins/settings-lab/', 'packages/client/src/settings/',
     'packages/client/src/plugins/', 'packages/client/src/features/', 'packages/plugin-sdk/',
     'packages/protocol/src/plugins.ts', 'packages/client/src/App.tsx', 'packages/client/src/chrome/',
-    'packages/client/src/phone/', 'packages/daemon/src/settings/'];
+    'packages/client/src/phone/', 'packages/daemon/src/settings/',
+    // Check 11 is a real disconnect and reconnect of the primary daemon, so the socket's status
+    // machine and its backoff are things this scenario would now catch a regression in.
+    'packages/client/src/connection/'];
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.settings-lab', uiID = 'example.ui-lab';
@@ -138,7 +141,7 @@ const SEED_LINES = `remote-daemon = ScenarioRemote:${PAIRING_URL}\nprofile = Sce
 const FORBIDDEN = [PAIRING_TOKEN, PAIRING_URL, PROFILE_SECRET, 'remote-daemon', 'token=',
     'set-general-setting', 'set-ghostty-setting', uiID];
 
-export default async function ({ page, cli, sandbox, rec, d, sleep }) {
+export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     if (!fs.existsSync(path.join(labPath, 'kelpi.plugin.json'))) {
         throw new Error(`settings-lab is not in this checkout (${labPath}); the example has to land before this scenario can run`);
     }
@@ -886,7 +889,112 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await openSettings();
         rec.check('returning to the desktop form factor re-attaches the Settings presenter',
             await attached(20_000) && await ready() && await painted(), await labState());
-        rec.note('LIMIT: the daemon-disconnect arm of the recovery floor is not pressed here; the runner hands a scenario no primary-daemon handle. See the header.');
+
+        // ── 11 · the primary daemon goes away and comes back ─────────────────────────
+        /*
+         * Rule 3 of the recovery floor, pressed for real (#199). `settings/presenter-slot.tsx`
+         * draws the bundled dialog while the daemon connection is down, and the honest way to reach
+         * that state is to stop the PRIMARY daemon under a live window: `plugin-remote.mjs`'s
+         * scaffolding buys a SECOND daemon, which is not the runtime a Settings presenter is
+         * selected for. `t.daemon.restart()` is the runner's handle for it, and the restart is IN
+         * PLACE (same run dir, ports, database and token), so the window loses its connection and
+         * finds the same daemon again.
+         *
+         * The case chosen is the one the floor exists for: Settings OPEN, on a projected section,
+         * with a half-typed draft nobody has committed. The draft lives in the host's settings
+         * surface rather than in the frame, so the bundled panel is expected to take the dialog
+         * still holding it, exactly as it does after a crash in check 7 - and the config file is
+         * the authority on the other half of the claim, that a disconnect and a reconnect write
+         * nothing at all.
+         *
+         * Measured on this tree: the window is disconnected for well under a second in an idle
+         * sandbox, which a poll can miss entirely, so the disconnected state is OBSERVED with a
+         * MutationObserver installed before the restart rather than polled for afterwards.
+         */
+        if (daemon === null) {
+            rec.note('SKIPPED: the daemon-disconnect arm - this run attached to an instance it did not start, and `t.daemon` is null there because stopping somebody else’s daemon would take their session down.');
+        } else {
+            await openSettings();
+            if (!(await attached(20_000) && await ready())) throw new Error(`the presenter was not drawing before the restart: ${await labState()}`);
+            await routeTo('appearance');
+            const draftText = 'Half typed across the restart';
+            await draftThroughAPI('appearance.fontFamily', draftText);
+            if (!await d.settle(async () => (await fieldSnapshot('appearance.fontFamily'))?.draft === draftText, { ceilingMs: 8_000 })) {
+                throw new Error(`the half-typed draft never reached the surface before the restart: ${await labState()}`);
+            }
+            const configBefore = readConfig(), ghosttyBefore = readGhostty();
+            /** `key = value` lines counted by key: a write replayed on reconnect is a second one. */
+            const keyCounts = text => {
+                const counts = {};
+                for (const line of text.split('\n')) {
+                    const match = /^\s*([\w-]+)\s*=/.exec(line);
+                    if (match !== null) counts[match[1]] = (counts[match[1]] ?? 0) + 1;
+                }
+                return counts;
+            };
+            await page.eval(`(() => {
+                const samples = [];
+                const read = () => JSON.stringify({
+                    connection: document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') ?? null,
+                    presenter: document.querySelector('[data-testid="settings-presenter"]')?.getAttribute('data-settings-presenter') ?? null,
+                    settings: document.querySelector('[data-testid="settings-close"]') !== null,
+                    appearance: document.querySelector('[data-testid="settings-tab-appearance"]') !== null,
+                    draft: document.querySelector('[data-testid="terminal-font-family-input"]')?.value ?? null,
+                    toast: (document.querySelector('[data-testid="toast-stack"]')?.textContent ?? '').slice(0, 120)
+                });
+                let last = '';
+                const sample = () => { const now = read(); if (now === last) return; last = now; samples.push({ at: Date.now(), ...JSON.parse(now) }); };
+                sample();
+                const observer = new MutationObserver(sample);
+                observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-connection', 'data-settings-presenter', 'hidden'] });
+                const timer = setInterval(sample, 80);
+                globalThis.__daemonTrailStop = () => { observer.disconnect(); clearInterval(timer); sample(); return JSON.stringify(samples); };
+                return true;
+            })()`);
+            const pidBefore = daemon.pid, generationBefore = daemon.generation;
+            const startedAt = Date.now();
+            await daemon.restart();
+            const healthzMs = Date.now() - startedAt;
+            const reconnected = await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
+            const connectedMs = Date.now() - startedAt;
+            // A dwell, on purpose: what this arm claims is mostly what does NOT happen after the
+            // reconnect (a late write, a failure toast, a lost draft), and a negative read taken in
+            // the same tick as the reconnect proves nothing.
+            await sleep(2_000);
+            const samples = JSON.parse(String(await page.eval('globalThis.__daemonTrailStop()')));
+            const offline = samples.filter(sample => sample.connection !== 'connected');
+            rec.note(`the daemon was replaced in ${String(healthzMs)} ms (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms; a stop at or above 8000 is the SIGTERM window elapsing and the SIGKILL behind it) and the window was back in ${String(connectedMs)} ms; ${String(samples.length)} recorded states, ${String(offline.length)} of them disconnected`);
+            for (const sample of samples) rec.note(`  +${String(sample.at - startedAt)} ms ${JSON.stringify({ connection: sample.connection, presenter: sample.presenter, settings: sample.settings, appearance: sample.appearance, draft: sample.draft, toast: sample.toast })}`);
+            rec.check('stopping the primary daemon disconnects the window, and the replacement reconnects it',
+                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected'
+                && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
+                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}`);
+            rec.check('the bundled dialog draws the same section with the uncommitted draft while the daemon is gone',
+                offline.every(sample => sample.presenter !== labView)
+                && offline.some(sample => sample.presenter === 'bundled' && sample.settings === true && sample.appearance === true && sample.draft === draftText),
+                `while disconnected the dialog was drawn by ${JSON.stringify([...new Set(offline.map(sample => sample.presenter))])} on the appearance tab ${JSON.stringify([...new Set(offline.map(sample => sample.appearance))])} with the font family field reading ${JSON.stringify([...new Set(offline.map(sample => sample.draft))])}`);
+
+            const backAgain = await attached(25_000) && await ready(20_000) && await painted();
+            const sectionAfter = (await labSnapshot())?.sectionID ?? null;
+            const draftAfter = (await fieldSnapshot('appearance.fontFamily'))?.draft ?? null;
+            await openPlugins();
+            const statusAfter = await statusRow(), selectedAfter = await slotValue();
+            await routeTo('appearance', { click: false });
+            rec.check('the presenter comes back on the same section, still holding the draft, with nothing latched',
+                backAgain && sectionAfter === 'appearance' && draftAfter === draftText
+                && !statusAfter.includes('Failed') && selectedAfter === labView
+                && samples.every(sample => sample.toast === ''),
+                `section ${String(sectionAfter)}, draft ${JSON.stringify(draftAfter)}, status ${JSON.stringify(statusAfter)}, selected ${String(selectedAfter)}, and the toast stack stayed empty throughout`);
+
+            const configAfter = readConfig(), ghosttyAfter = readGhostty();
+            rec.check('a disconnect and a reconnect write nothing, and duplicate no line that was written before them',
+                configAfter === configBefore && ghosttyAfter === ghosttyBefore
+                && JSON.stringify(keyCounts(configAfter)) === JSON.stringify(keyCounts(configBefore))
+                && /chrome-appearance\s*=\s*dark/.test(configAfter),
+                `kelpi config ${String(configBefore.length)} → ${String(configAfter.length)} bytes (identical ${String(configAfter === configBefore)}), ghostty config identical ${String(ghosttyAfter === ghosttyBefore)}; keys ${JSON.stringify(keyCounts(configAfter))}; the value committed in check 4 is still there once`);
+            await shot('after-daemon-restart', 'Settings drawn by the LAB again after its daemon was stopped and replaced: the lab’s own rail with all ten sections, its "SETTINGS LAB Appearance" header carrying the "1 unsaved" badge for the draft nobody committed (the terminal Font family row holding it is below the fold), the host’s native remainder underneath with the preset gallery, the title bar reading "connected" with no reconnect banner, and no toast and no bundled rail anywhere.');
+            await resetField('appearance.fontFamily');
+        }
         rec.note('LIMIT: the 240-calls-per-second budget breach is not pressed live; driving it from CDP measures the harness. See the header.');
     } catch (error) {
         await rec.shot(page, 'failure-live');
@@ -905,6 +1013,9 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding()) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
+        // Check 11's recorder, if a throw landed between installing it and reading it: an observer
+        // and an 80 ms timer left running in the window are the next scenario's, not this one's.
+        await safely('the connection recorder is stopped', () => page.eval(`(() => { if (typeof globalThis.__daemonTrailStop === 'function') globalThis.__daemonTrailStop(); return true; })()`));
         await safely('the seeded pairing and profile lines are removed', () => {
             if (!seeded) return;
             fs.writeFileSync(sandbox.configPath, readConfig().split('\n').filter(line => !line.includes(PAIRING_TOKEN) && !line.includes(PROFILE_SECRET)).join('\n'));

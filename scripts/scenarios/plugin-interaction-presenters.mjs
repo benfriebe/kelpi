@@ -24,7 +24,10 @@
  *   7. disable / enable / reload, with the selection retained throughout;
  *   8. a palette presenter crashing with the palette OPEN: the session goes, ⌘P draws bundled;
  *   9. a phone window keeping both bundled presenters with the lab still selected;
- *  10. four screenshots for the eyes, each with a note saying what to look for.
+ *  10. the PRIMARY daemon stopped and replaced under a live palette session and a queued prompt:
+ *      bundled while the connection is down, no latch, both presenters back, the queued promise
+ *      settled and never answered late, nothing activated, the caret usable, nothing run twice;
+ *  11. six screenshots for the eyes, each with a note saying what to look for.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
@@ -45,15 +48,22 @@
  * frame reached the sandbox, never that the view drew it - while an uncaught error is what the SDK
  * reports as a view error and `InteractionPresenterSlot` fails the placement on.
  *
- * ── Two limits, on the record ───────────────────────────────────────────────────────
+ * ── Limits, on the record ───────────────────────────────────────────────────────────
  *
- *   - **No daemon disconnect/reconnect.** Fallback rule 3 (`interaction/presenter-slot.tsx`) draws
- *     bundled while the connection is down, and the honest way to press it is to stop the PRIMARY
- *     daemon under a live window. `scripts/scenario.mjs` hands a scenario `cli`, `sandbox` and
- *     `shell` but not `t.daemon`, and `plugin-remote.mjs`'s scaffolding only buys a SECOND daemon,
- *     which is not the runtime a presenter is selected for (window UI is the primary runtime's,
- *     `docs/plugin-ui.md` ▸ Shared prompts). Disable, reload and the two watchdogs exercise the same
- *     latch-and-retry path here; the connection arm stays covered by `presenter-slot`'s unit suite.
+ *   - **The disconnected window is not covered on the PHONE.** Presenters are disabled outright on
+ *     a phone (recovery floor rule 1, which check 9 reads), so the bundled palette and prompts are
+ *     already the pair drawing there and losing the connection cannot change which presenter draws.
+ *     Rule 3 has nothing left to do that rule 1 has not already done, so check 10 stays on the
+ *     desktop window.
+ *   - **A queued prompt's promise cannot be watched resolving inside the frame that raised it.**
+ *     `PluginView`'s main effect depends on the connection, so a disconnect disposes the view's UI
+ *     scope AND clears its document: the frame's `pagehide` fires about 30 ms into the restart,
+ *     before any cancellation could be drawn in it, and the rebuilt panel is a fresh document. So
+ *     "the promise settled with null exactly once" is not assertable from here at all, and check
+ *     10 does not pretend otherwise: it asserts what the HOST can answer (no prompt on the
+ *     surface, nothing queued behind it, no dialog drawn under any id, and a prompt raised after
+ *     the reconnect that settles with its action) and records the frame's own readings as an
+ *     observation in the detail.
  *   - **Native chords under a PAINTED presenter are absorbed by the frame, not relayed.** ⌘, and ⌘D
  *     are deliberately outside `interactionPresenterChords`, so with the caret inside the presenter
  *     iframe they never reach the host at all. Check 4's assertion is therefore the observable one -
@@ -85,7 +95,10 @@ import { fileURLToPath } from 'node:url';
  */
 export const covers = ['examples/plugins/interaction-lab/', 'packages/client/src/interaction/', 'packages/client/src/features/',
     'packages/client/src/plugins/', 'packages/plugin-sdk/', 'packages/protocol/src/plugins.ts',
-    'packages/client/src/App.tsx', 'packages/client/src/chrome/', 'packages/client/src/phone/', 'packages/client/src/settings/'];
+    'packages/client/src/App.tsx', 'packages/client/src/chrome/', 'packages/client/src/phone/', 'packages/client/src/settings/',
+    // Check 10 is a real disconnect and reconnect of the primary daemon, so the socket's status
+    // machine and its backoff are things this scenario would now catch a regression in.
+    'packages/client/src/connection/'];
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.interaction-lab', uiID = 'example.ui-lab';
@@ -110,7 +123,7 @@ const CARET_PANE = `(() => {
 })()`;
 const CARET_HTML = `(() => { const active = document.activeElement; return active === null ? '<null>' : String(active.outerHTML ?? active.nodeName).slice(0, 120); })()`;
 
-export default async function ({ page, cli, rec, d, sleep }) {
+export default async function ({ page, cli, rec, d, sleep, daemon }) {
     if (!fs.existsSync(path.join(labPath, 'kelpi.plugin.json'))) {
         throw new Error(`interaction-lab is not in this checkout (${labPath}); the example has to land before this scenario can run`);
     }
@@ -675,7 +688,6 @@ export default async function ({ page, cli, rec, d, sleep }) {
         await page.key('Escape');
         rec.check('a plugin reload returns working presenters to both placements',
             reloaded && presentsAfterReload && await output('pick', null), await labState(promptsFrame));
-        rec.note('LIMIT: the daemon-disconnect arm of the fallback is not pressed here; the runner hands a scenario no primary-daemon handle. See the header.');
 
         // ── 8 · a palette presenter that dies with the palette open ──────────────────
         if (!await openPaletteOn(shellPane, pluginPaletteOpen)) throw new Error('the plugin palette did not open before the crash');
@@ -746,6 +758,223 @@ export default async function ({ page, cli, rec, d, sleep }) {
             await attached(paletteView) && await attached(promptsView) && await ready(paletteFrame) && await ready(promptsFrame),
             `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)}`);
         await shot('interaction-lab-ready', 'the ordinary window: both presenters selected and idle, the grid drawn normally, no dialog and no palette on screen.');
+
+        // ── 10 · the primary daemon goes away and comes back ─────────────────────────
+        /*
+         * Rule 3 of the recovery floor, at last pressed for real (#199). `presenter-slot.tsx` draws
+         * bundled while the daemon connection is down, and the only honest way to reach that state
+         * is to stop the PRIMARY daemon under a live window: `plugin-remote.mjs`'s scaffolding buys
+         * a SECOND daemon, which is not the runtime a presenter is selected for (window UI is the
+         * primary runtime's, `docs/plugin-ui.md` ▸ Shared prompts). `t.daemon.restart()` is the
+         * runner's handle for it, and the restart is IN PLACE - same run dir, ports, database and
+         * token - so the window loses its connection and finds THE SAME daemon again, which is what
+         * makes the reconnect the behaviour under test rather than a new address.
+         *
+         * Three measurements decide how this arm is written, all taken on this tree:
+         *
+         *  1. **The gap can be half a second.** With a daemon that answers SIGTERM, healthz is back
+         *     ~170 ms after the restart begins and `data-connection` ~450 ms in; when the daemon
+         *     misses that eight-second window (four of six runs of this scenario, and none of
+         *     `plugin-settings-presenter`'s: `stack.mjs` ▸ `restartableDaemon` has the reading) the
+         *     window is down for about fifteen seconds instead. A poll sized for the slow case
+         *     misses the fast one completely and reports that the client never noticed, so the
+         *     disconnected state is OBSERVED instead: a MutationObserver installed before the
+         *     restart records every change to the connection, to which presenter is mounted and to
+         *     the toast stack.
+         *  2. **A plugin view's iframe is destroyed and rebuilt.** `PluginView`'s main effect
+         *     depends on the connection, so its cleanup disposes the view's UI scope and its body
+         *     is cleared; the frame's `pagehide` fires ~30 ms into the restart, which is BEFORE any
+         *     cancellation could be drawn in it. So the queued prompt's promise cannot be observed
+         *     resolving inside the frame that raised it, and nothing read out of that frame
+         *     afterwards can fail. This arm asserts only what the host can answer: no prompt on
+         *     the surface, nothing queued, no dialog under any id, and a fresh prompt after the
+         *     reconnect that is presented and settles with its action.
+         *  3. **Every PTY dies with the old daemon.** The shell pane comes back with a new process
+         *     and an empty scrollback, so the marker run before the restart must read EXACTLY zero
+         *     afterwards rather than "no more than one": one is what a replay of buffered
+         *     pre-restart input into the new shell would produce, which is the regression this
+         *     reading exists to catch.
+         *
+         * The phone is deliberately not covered here: presenters are disabled outright on a phone
+         * (rule 1, checked in 9), so the bundled palette and prompts are already the ones drawing
+         * and a disconnect cannot change which presenter draws. There is nothing for rule 3 to do
+         * there that rule 1 has not already done.
+         */
+        if (daemon === null) {
+            rec.note('SKIPPED: the daemon-disconnect arm - this run attached to an instance it did not start, and `t.daemon` is null there because stopping somebody else’s daemon would take their session down.');
+        } else {
+            const MARKER = 'MARK', markerBefore = `${MARKER}-BEFORE`, markerAfter = `${MARKER}-AFTER`;
+            const count = (text, needle) => text.split(needle).length - 1;
+            const capture = () => cli.ok(['pane', 'capture', '--target', shellPane, '--scrollback']);
+            const paneIDs = async () => (await panes()).map(pane => String(pane.id)).sort().join(',');
+            /**
+             * Record every change to the connection, to who is drawing and to the toast stack.
+             *
+             * A MutationObserver rather than a poll, for measurement 1 above: the window can be
+             * disconnected for as little as half a second and the attribute changes are what this
+             * is about, so the DOM's own notification is both cheaper and complete. The 100 ms
+             * timer beside it is the backstop for a state that arrives with no mutation under it.
+             */
+            const trail = `(() => {
+                const samples = [];
+                const read = () => JSON.stringify({
+                    connection: document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') ?? null,
+                    presenters: [...document.querySelectorAll('[data-interaction-presenter]')].map(node => node.getAttribute('data-interaction-presenter')),
+                    palette: document.querySelector('[data-testid="command-palette"]') !== null,
+                    dialog: document.querySelector('${modal}')?.getAttribute('data-request-id') ?? null,
+                    toast: (document.querySelector('[data-testid="toast-stack"]')?.textContent ?? '').slice(0, 120)
+                });
+                let last = '';
+                const sample = () => { const now = read(); if (now === last) return; last = now; samples.push({ at: Date.now(), ...JSON.parse(now) }); };
+                sample();
+                const observer = new MutationObserver(sample);
+                observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-connection', 'data-interaction-presenter', 'data-request-id', 'hidden'] });
+                const timer = setInterval(sample, 100);
+                globalThis.__daemonTrailStop = () => { observer.disconnect(); clearInterval(timer); sample(); return JSON.stringify(samples); };
+                return true;
+            })()`;
+
+            // A marker whose OUTPUT differs from the line that produced it: the echoed command
+            // carries `MARK-%s`, so every `MARK-BEFORE` in the capture is one execution.
+            await d.focusPaneBody(page, shellPane);
+            await d.runInTerminal(page, `printf '${MARKER}-%s\\n' BEFORE`, { settleMs: 1_200 });
+            const markedBefore = await capture();
+            const panesBeforeRestart = await paneIDs();
+
+            if (!await openPaletteOn(shellPane, pluginPaletteOpen)) throw new Error('the plugin palette did not open before the restart');
+            /*
+             * The prompt is QUEUED rather than presented, and that is the point: the palette
+             * session holds the window's modal presence, so the surface delivers the request to
+             * the prompts presenter with `visible: false` and the wrapper stands down. A promise
+             * nobody can even see is the worst thing to lose in a disconnect, so that is the one
+             * this arm loses. Raised by evaluation rather than by pressing UI Lab's own button,
+             * because the palette presenter is an overlay over the whole content row and a click
+             * aimed at the pane under it lands on the overlay.
+             */
+            await raise(`void kelpi.ui.showDialog({ title: 'Across the restart', message: 'Queued behind the palette session.', cancelID: 'cancel', actions: [{ id: 'cancel', label: 'Cancel' }, { id: 'confirm', label: 'Confirm', kind: 'primary' }] }).then(value => { document.body.dataset.acrossRestart = JSON.stringify(value); }); true`);
+            const queuedPrompt = await d.settle(async () => {
+                const snapshot = await labSnapshot(promptsFrame);
+                return snapshot?.prompt?.options?.title === 'Across the restart';
+            }, { ceilingMs: 8_000 });
+            const queuedState = await labSnapshot(promptsFrame);
+            if (!queuedPrompt) throw new Error(`the dialog never reached the prompts presenter before the restart: ${await labState(promptsFrame)}`);
+
+            await page.eval(trail);
+            const pidBefore = daemon.pid, generationBefore = daemon.generation;
+            // Where a slow stop went, in the daemon's own words: `boot/compose.ts` logs
+            // "kelpid stopped" as the LAST thing it does, so its absence is the SIGKILL landing
+            // inside the shutdown (#212) rather than a machine that was merely busy.
+            const textBefore = daemon.text().length;
+            const startedAt = Date.now();
+            await daemon.restart();
+            const loggedStop = daemon.text().slice(textBefore).includes('kelpid stopped');
+            const healthzMs = Date.now() - startedAt;
+            const reconnected = await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
+            const connectedMs = Date.now() - startedAt;
+            // A dwell, on purpose: the claims below are about what does NOT arrive after the
+            // reconnect (a stale answer, a late failure toast, a second execution), and a negative
+            // read taken in the same tick as the reconnect proves nothing.
+            await sleep(2_000);
+            const samples = JSON.parse(String(await page.eval('globalThis.__daemonTrailStop()')));
+            const offline = samples.filter(sample => sample.connection !== 'connected');
+            rec.note(`the daemon was replaced in ${String(healthzMs)} ms (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms) and the window was back in ${String(connectedMs)} ms; ${String(samples.length)} recorded states, ${String(offline.length)} of them disconnected`);
+            rec.note(loggedStop
+                ? 'the replaced daemon logged its final "kelpid stopped" line, so it shut down cleanly'
+                : 'the replaced daemon never logged "kelpid stopped": the SIGTERM window elapsed and the SIGKILL landed inside its shutdown, after persistence.flush() and pty.killAll() and before persistence.close() and clearRunFiles(). That is issue #212, not this handle.');
+            for (const sample of samples) rec.note(`  +${String(sample.at - startedAt)} ms ${JSON.stringify({ connection: sample.connection, presenters: sample.presenters, palette: sample.palette, dialog: sample.dialog, toast: sample.toast })}`);
+            rec.check('stopping the primary daemon disconnects the window, and the replacement reconnects it',
+                reconnected && offline.length > 0 && samples.at(-1)?.connection === 'connected'
+                && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
+                `pid ${String(pidBefore)} → ${String(daemon.pid)}, generation ${String(generationBefore)} → ${String(daemon.generation)}; connection states ${JSON.stringify([...new Set(samples.map(sample => sample.connection))])}`);
+
+            const attachedAgain = await attached(paletteView, 20_000) && await attached(promptsView, 20_000);
+            const readyAgain = attachedAgain && await ready(paletteFrame) && await ready(promptsFrame);
+            rec.check('both presenters re-attach and report they have painted once the daemon is back',
+                readyAgain, `palette ${await labState(paletteFrame)} · prompts ${await labState(promptsFrame)}`);
+
+            /*
+             * The palette session is the window's, not the daemon's, so losing the connection is
+             * allowed to keep it or to drop it. What is NOT allowed is for the gap to run one of
+             * its rows: a ⌘P session over a pane grid holds "create a scratchpad" under the caret,
+             * and a surface that re-delivered its selection on reconnect would make the pane.
+             */
+            const sessionAfter = await painted(paletteView, 4_000);
+            const panesAfterRestart = await paneIDs();
+            rec.check('the palette session is either kept or dropped by the disconnect, and activates nothing',
+                panesAfterRestart === panesBeforeRestart,
+                `panes ${panesBeforeRestart === panesAfterRestart ? 'unchanged' : `${panesBeforeRestart} → ${panesAfterRestart}`}; the session was ${sessionAfter ? 'still up and drawn by the lab again' : 'dismissed'} afterwards, and the bundled palette drew it while the daemon was gone in ${String(offline.filter(sample => sample.palette).length)} of ${String(offline.length)} disconnected states`);
+            if (sessionAfter) {
+                await closeChord();
+                if (!await standingBy(paletteView, 8_000)) rec.note('the palette session did not dismiss on the close chord after the restart');
+            }
+
+            await openPlugins();
+            const statusesAfter = [await statusRow('interaction.palette'), await statusRow('interaction.prompts')];
+            const selectionsAfter = [await slotValue('interaction.palette'), await slotValue('interaction.prompts')];
+            await closeSettings();
+            /*
+             * The latch is what this check is really about. `generation` is
+             * `viewID:revision:instanceID`, and a disconnect moves none of them, so a connection
+             * that comes back must find the placement exactly as it left it: no failure recorded,
+             * no Retry needed, the selection untouched. A toast anywhere in the trail would mean
+             * the slot had FAILED the placement rather than stood it down.
+             */
+            rec.check('the slots fall back to bundled while the daemon is gone and never latch a failure',
+                offline.every(sample => sample.presenters.every(name => name === 'bundled'))
+                && offline.some(sample => sample.presenters.includes('bundled'))
+                && samples.every(sample => sample.toast === '')
+                && statusesAfter.every(status => !status.includes('Failed'))
+                && JSON.stringify(selectionsAfter) === JSON.stringify([paletteView, promptsView]),
+                `while disconnected the presenters were ${JSON.stringify([...new Set(offline.flatMap(sample => sample.presenters))])}; afterwards ${JSON.stringify(statusesAfter)} with ${JSON.stringify(selectionsAfter)} selected, and the toast stack stayed empty throughout`);
+
+            /*
+             * What is left of the request nobody could see.
+             *
+             * This check used to claim the promise "settled with null exactly once", and it could
+             * not: the frame that raised it is torn down about 30 ms into the restart, so the
+             * cancellation the disposal sends can never be drawn in it, and both of the readings
+             * that were meant to prove it (a dataset key written by the frame, and the panel's
+             * output field) live in the document that is destroyed. Two clauses that cannot fail
+             * are worse than no clause, so the claim is now the one the HOST can answer: the
+             * surface holds no prompt and nothing queued behind it, and no dialog is drawn under
+             * any id. The frame readings stay in the detail as the observation they are.
+             */
+            const surfaceAfter = await labSnapshot(promptsFrame);
+            const answerAfter = await datasetValue('acrossRestart');
+            const dialogAfter = await page.eval(`document.querySelector('${modal}')?.getAttribute('data-request-id') ?? null`);
+            const panelAfter = await inFrame(uiFrame, `document.getElementById('dialog-result')?.textContent ?? '<gone>'`);
+            rec.check('the disconnect leaves no pending prompt on the surface and nothing drawn under its id',
+                surfaceAfter?.prompt === null && surfaceAfter.queued === 0 && dialogAfter === null,
+                `the request was ${String(queuedState?.prompt?.requestID ?? 'unreadable')} and withheld behind the palette session (visible ${String(queuedState?.visible)}); afterwards the surface holds ${JSON.stringify({ prompt: surfaceAfter?.prompt, queued: surfaceAfter?.queued })} and the window draws no dialog. Observed, not asserted: the rebuilt UI Lab panel reads ${JSON.stringify(panelAfter)} and carries ${answerAfter === null ? 'no recorded answer, because the frame was rebuilt and the promise died with the document that raised it' : `the answer ${String(answerAfter)}`}`);
+            await askUILab('dialog');
+            if (!await frameCheck(promptsFrame, `document.querySelector('[data-testid="lab-prompt-action"][data-action-id="confirm"]')`)) {
+                throw new Error(`a fresh dialog did not reach the presenter after the reconnect: ${await labState(promptsFrame)}`);
+            }
+            await clickFrame(promptsFrame, '[data-testid="lab-prompt-action"][data-action-id="confirm"]');
+            const freshAnswer = await output('dialog', 'confirm');
+            rec.check('a prompt raised after the reconnect is presented by the lab and settles with its action',
+                freshAnswer && (await labSnapshot(promptsFrame))?.queued === 0,
+                `UI Lab reads ${String(await inFrame(uiFrame, `document.getElementById('dialog-result')?.textContent ?? '<gone>'`))} and nothing is queued behind it`);
+
+            const caretBack = await caretIn(shellPane) || await (async () => { await d.focusPaneBody(page, shellPane); return await caretIn(shellPane); })();
+            await d.runInTerminal(page, `printf '${MARKER}-%s\\n' AFTER`, { settleMs: 1_500 });
+            const markedAfter = await capture();
+            /*
+             * Two claims in one reading. The pane takes input again, which is the caret not being
+             * stranded in a frame that no longer exists; and the pre-restart marker is EXACTLY
+             * ABSENT afterwards, which is the only reading that can fail on the regression this is
+             * named for. The old PTY died with the old daemon and the pane's shell is a new
+             * process with an empty screen, so a clean run reads zero; a buffer of pre-restart
+             * input replayed into that new shell would run the command again and read one, which
+             * "no more than one" would have passed. The `markerAfter` half then proves the pane is
+             * genuinely live rather than merely silent.
+             */
+            rec.check('the caret is not stranded and no command is replayed into the new shell',
+                caretBack && count(markedBefore, markerBefore) === 1 && count(markedAfter, markerBefore) === 0
+                && count(markedAfter, markerAfter) === 1,
+                `${markerBefore} ×${String(count(markedBefore, markerBefore))} before the restart and ×${String(count(markedAfter, markerBefore))} after it (zero is the claim: the new shell must not replay it); the pane took ${markerAfter} ×${String(count(markedAfter, markerAfter))} afterwards; caret in ${String(await page.eval(CARET_PANE)) || '<none>'}`);
+            await shot('after-daemon-restart', 'the window after its daemon was stopped and replaced: both lab presenters attached and idle again, the pane grid drawn normally with the shell pane’s new prompt, and no reconnect banner, no toast, no dialog and no palette anywhere.');
+        }
     } catch (error) {
         await rec.shot(page, 'failure-live');
         throw error;
@@ -765,6 +994,9 @@ export default async function ({ page, cli, rec, d, sleep }) {
         await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding()) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
+        // Check 10's recorder, if a throw landed between installing it and reading it: an observer
+        // and a 100 ms timer left running in the window are the next scenario's, not this one's.
+        await safely('the connection recorder is stopped', () => page.eval(`(() => { if (typeof globalThis.__daemonTrailStop === 'function') globalThis.__daemonTrailStop(); return true; })()`));
         // A prompt or a palette left up by a thrown check owns the window: every chord below would
         // stand down behind it, including the ⌘, that opens Settings.
         await safely('any request or session still up is dismissed', async () => {

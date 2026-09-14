@@ -34,7 +34,7 @@ A sandbox is private: its own run dir, control socket, database and ephemeral po
 A scenario is an ES module with a default export:
 
 ```js
-export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
+export default async function ({ page, harness, cli, sandbox, shell, daemon, rec, d, sleep }) {
     const created = JSON.parse(await cli.ok(['pane', 'create', '--workspace', 'Default', '--json']));
     await d.settleDom(page, `document.querySelector('[data-testid="pane-header-${created.pane_id}"]')`);
     await d.openSidebarMenu(page, d.PAGE.workspaceRows, 'Default');
@@ -48,10 +48,35 @@ export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
 - `harness` is the shell's native-surface channel (below).
 - `cli` is the sandbox's `kelpi`: `run(args, { env })` gives `{ code, stdout, stderr }`; `ok(args)` requires exit 0 and returns stdout. Pass `env: { KELPI_PANE_ID }` to speak as a pane.
 - `shell` is the shell process this runner launched: `lines` (every stdout/stderr line so far), `text()`, `waitForLine(pattern, label, timeoutMs)`. It is `null` under `--attach`, where the runner did not start the shell and cannot read its pipe, so a scenario that needs it must check and say so. Use it only for behaviour whose sole external evidence is a log line: the web-pane placement trail (`web pane <id> view owner=main|holder bounds=… (reason)`) is the case it was added for, because a native view is composited by the window and never appears in the renderer's own frames.
+- `daemon` is the sandbox's own daemon, restartable in place: `stop()`, `start()`, `restart()`, plus `pid`, `child`, `generation` (how many processes this sandbox has had), `exited`, `text()` (which spans restarts) and `lastStopMs` / `lastStartMs`. `null` under `--attach`, where the daemon belongs to whoever started the instance and stopping it would take their session down, so an arm that needs one checks for null and says so. See [the daemon handle](#the-daemon-handle-stopping-the-primary-daemon) below.
 - `rec.check(label, ok, detail)` is the assertion; `rec.note`, `rec.shot(page, label)`.
 - `d` is the driver module: `PAGE` (the testid anchors), `settle`, `settleDom`, `domPaneIDs`, `clickPaneHeader`, `focusPaneBody`, `runInTerminal`, `openSettingsRoot`, `openSettingsTab`, `clickMenuItem`, `openSubmenu`, `clickSubmenuItem`, `openSidebarMenu`, `contextMenuRows`, `clickDialogButton`, `findMenuItem`.
 
 Rules that keep scenarios honest: wait on a condition (`settle`, `settleDom`, `page.waitFor`), not on a sleep, except where the wait IS the assertion (a negative check needs a dwell). Prefer `data-testid` anchors; add one to the client rather than matching on text or CSS. A scenario that fails should say what it saw: pass the detail to `rec.check`.
+
+### The daemon handle: stopping the primary daemon
+
+A window that has lost its daemon is a state a great deal of the client is written for, and nothing in the DOM can put it there: the plugin views draw "Connecting to daemon…", the presenter slots fall back to their bundled children, the reconnect backs off from 500 ms to 15 s, and every promise a plugin was awaiting is settled by the scope that is being disposed. `daemon` is how a scenario reaches it (#199):
+
+```js
+const before = daemon.pid;
+await daemon.restart();                       // stop, start, wait for /healthz
+await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
+rec.check('the daemon really was replaced', daemon.pid !== before && daemon.generation === 2);
+```
+
+The restart is IN PLACE: `makeSandbox` fixes the run dir, the socket, the ports and the database, and the token is minted once and re-read on every later start, so the daemon that comes back is the same identity at the same address and the client's saved token is still good. What the window does in between is therefore the behaviour under test rather than an artefact of a new address.
+
+Four things to know before writing a check against it:
+
+- **`/healthz` is not "the client reconnected".** `start()` waits for the daemon's HTTP listener and stops there. The window's own `data-connection` on `[data-testid="kelpi-app"]` is the authority, and it is worth OBSERVING rather than polling for: a `MutationObserver` installed before the restart catches the disconnected state whatever the backoff does, where a poll can miss a fast reconnect and report that the window never noticed.
+- **Every PTY dies with the old process, in the WHOLE instance.** A restart is a real daemon death, not a handover, so a pane's shell is a new process with an empty scrollback afterwards. `scenario.mjs` runs every scenario of a run in one instance, so that is every pane the earlier scenarios made, not only the restarting scenario's, and a generation that ends in SIGKILL (below) also loses `persistence.close()` and the run files. So put a restart arm LATE in a scenario, leave the instance able to boot a fresh pane afterwards, and never let a later step lean on a pane created before the restart. A check that reads pane text across a restart has to say which side of it each reading came from.
+- **A plugin view's iframe is destroyed and rebuilt.** `PluginView`'s main effect depends on the connection status, so its cleanup disposes the view's UI scope and the document is cleared; nothing a scenario left inside that frame survives. Instrument the HOST page, not the frame, for anything that has to be read after the restart.
+- **`--attach` has no handle.** It is `null` there, and for a stronger reason than `shell` is: that instance belongs to whoever started it.
+
+Print `lastStopMs` and `lastStartMs` beside a restart rather than only its total. A stop at or above 8000 ms is `startDaemon`'s SIGTERM window elapsing and the SIGKILL behind it, and it is a daemon bug rather than a slow machine: **issue #212**. `ws/server.ts` ▸ `stop()` closes the WebSockets it tracks and then awaits `server.close()` without `closeIdleConnections()`, so the renderer's idle keep-alive HTTP sockets (the client document, and the `/plugin-assets/...` fetches that build each plugin view's srcDoc) hold the listener open; `boot/compose.ts` sits in `ws.stop()` until the SIGKILL, which lands after `persistence.flush()` and `pty.killAll()` and so skips `persistence.close()`, `clearRunFiles(paths)` and the final `kelpid stopped` line. Measured on 2026-09-13: `plugin-interaction-presenters`, which rebuilds plugin views shortly before its restart, hit it in nine runs of fourteen (stops of 8002 to 8005 ms against 12 to 14 ms in the other five) with the arm green each time, while all nine `plugin-settings-presenter` runs and five standalone probes never did.
+
+`stop()` alone leaves the sandbox daemonless for as long as the scenario wants (the state the fallbacks are written for); `start()` brings it back; `restart()` is the pair. The instance's own `stop()` stops whichever process is current, so a run that restarted the daemon still tears its sandbox down. `scripts/scenarios/plugin-interaction-presenters.mjs` and `plugin-settings-presenter.mjs` each end with an arm that uses it.
 
 ## The native surfaces: the shell's harness channel
 

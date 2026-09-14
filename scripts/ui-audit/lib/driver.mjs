@@ -403,22 +403,14 @@ export async function clickSubmenuItem(page, id) {
     await sleep(400);
 }
 
-/** Right-click a sidebar row (or the group header) whose text contains `needle`. */
-export async function openSidebarMenu(page, selector, needle) {
-    const target = await page.eval(
-        `(() => {
-            const el = Array.from(document.querySelectorAll('${selector}'))
-                .find(node => (node.innerText ?? '').includes(${JSON.stringify(needle)}));
-            if (el === undefined) return null;
-            const r = el.getBoundingClientRect();
-            return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
-        })()`
-    );
-    if (target === null) throw new Error(`no ${selector} matching "${needle}"`);
-    const point = JSON.parse(String(target));
-    await page.clickAt(point.x, point.y, { button: 'right' });
-    await sleep(450);
-}
+/**
+ * Right-click a sidebar row (or the group header) whose text contains `needle`.
+ *
+ * This is the one helper the audit and the scenarios now SHARE rather than keep two copies of:
+ * the measure-once-and-press body both files had is what #204 was, and a fix that landed in one
+ * copy would have left the other pressing the sidebar footer. `lib/aim.mjs` has the reasoning.
+ */
+export { openSidebarMenu } from './aim.mjs';
 
 /** The rows of the open context menu, as trimmed labels. */
 export async function contextMenuRows(page) {

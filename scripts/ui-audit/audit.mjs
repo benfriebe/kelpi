@@ -39,6 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
 
 /**
@@ -1756,21 +1757,18 @@ async function clickSubmenuItem(page, id) {
     await sleep(400);
 }
 
-/** Right-click a sidebar row (or the group header) whose text contains `needle`. */
+/**
+ * Right-click a sidebar row (or the group header) whose text contains `needle`.
+ *
+ * The body moved to `lib/aim.mjs` for #204: measuring the row once and pressing its midpoint sent
+ * `sidebar-remaining` and `workspace-edges` into the sidebar FOOTER once a full run's list had
+ * grown past the scroller, and the `(no-menu)` they reported could not say so. The helper now
+ * scrolls the row into view, re-measures immediately before pressing, refuses a point outside the
+ * scroller, waits for the menu rather than sleeping past it, retries once, and names what
+ * `elementFromPoint` found when it still does not open.
+ */
 async function openSidebarMenu(page, selector, needle) {
-    const target = await page.eval(
-        `(() => {
-            const el = Array.from(document.querySelectorAll('${selector}'))
-                .find(node => (node.innerText ?? '').includes(${JSON.stringify(needle)}));
-            if (el === undefined) return null;
-            const r = el.getBoundingClientRect();
-            return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
-        })()`
-    );
-    if (target === null) throw new Error(`no ${selector} matching "${needle}"`);
-    const point = JSON.parse(String(target));
-    await page.clickAt(point.x, point.y, { button: 'right' });
-    await sleep(450);
+    return await aimSidebarMenu(page, selector, needle);
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────────────
@@ -9493,201 +9491,254 @@ function buildFlows(ctx) {
                 const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
                 recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim());
                 if (created.code !== 0) return;
-                await settleDom(
-                    page,
-                    `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
-                        .includes(${JSON.stringify(workspaceName)})`,
-                    { ceilingMs: 1500, intervalMs: 60 }
-                );
-
-                const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
-                const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
-                recorder.check('a web pane is open on the fixture', paneID !== null, String(paneID));
-                if (paneID === null) return;
-                await settleDom(
-                    page,
-                    `document.querySelector('[data-testid="web-page-${paneID}"]')?.getAttribute('data-visible') === 'true'`,
-                    { ceilingMs: 3000, intervalMs: 80 }
-                );
 
                 /*
-                 * The fixture has to be LOADED in that view before the menu opens, and the hole
-                 * being placed does not say so: the client places the view the moment the pane
-                 * exists, while the host is still bootstrapping the tab (`about:blank` first, then
-                 * the real navigation). Measured with the shell's focus trace at this step's own
-                 * pace: the view was attached 13 ms before the right-click, the fixture's
-                 * navigation STARTED 38 ms after it and committed at 46 ms. A poster capture asked
-                 * for in that window is in flight on the about:blank renderer when the fixture
-                 * commits in a new one, and dies with `target closed while handling command` - a
-                 * real no, so the client cooled the pane and parked without a frame, and every
-                 * assertion below failed with "no frame ever carried a poster". The standalone
-                 * harness (`poster-swap-flicker.mjs`) never hit it because it settles the hole for
-                 * 400 ms first; this step went straight from placement to right-click.
-                 *
-                 * The pane-scoped read is `kelpi web url`: the host answers with the live view's
-                 * own title, which exists only once the fixture's document does (the web-pane step
-                 * reads the same line for the same reason).
+                 * The ID, so the delete below cannot be ambiguous. `workspace create` does
+                 * not enforce unique names, so a `poster-swap` left behind by a crashed
+                 * earlier run makes this create succeed and a delete BY NAME fail: the daemon
+                 * resolves strictly and refuses a tie rather than picking one, and the step
+                 * would leave two. The id is free, printed by the create it already ran.
                  */
-                const loaded = await settle(
-                    async () => {
-                        const url = await cli.run(['web', 'url', '--target', paneID], { timeoutMs: 20_000 });
-                        return url.stdout.startsWith(site.url) && url.stdout.includes('Kelpi UI Audit Fixture');
-                    },
-                    { ceilingMs: 15_000, intervalMs: 120 }
-                );
-                recorder.check(
-                    'the fixture is loaded in the pane\'s own view before the menu opens',
-                    loaded,
-                    loaded ? 'kelpi web url reports the fixture title' : 'the live view never reported the fixture title'
-                );
-                if (!loaded) return;
-                // ...and steady: the hole has stopped moving and the shell has finished placing
-                // the view, so the "before" frames the net compares against are settled ones.
-                await settleStable(
-                    () =>
-                        page.eval(
-                            `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
-                              if (el === null) return null;
-                              const r = el.getBoundingClientRect();
-                              return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
-                                      el.getAttribute('data-visible')].join('/'); })()`
-                        ),
-                    { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
-                );
+                const workspaceID = (/\(([0-9a-f-]{36})\)/i.exec(created.stdout) ?? [])[1] ?? null;
+                recorder.check('and the create reported its id', workspaceID !== null, String(workspaceID));
+                const target = workspaceID ?? workspaceName;
 
-                // The shell's lines, stamped as they arrive: the only observable for "the native
-                // view is being drawn", since a `WebContentsView` never appears in the renderer's
-                // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which
-                // biases every comparison below TOWARDS the fix — see the harness's header.
-                const stamps = [];
-                let consumed = runtime.shell?.lines.length ?? 0;
-                const pump = setInterval(() => {
-                    const lines = runtime.shell?.lines ?? [];
-                    while (consumed < lines.length) {
-                        const line = lines[consumed];
-                        consumed += 1;
-                        if (line.includes(`web pane ${paneID} view owner=`)) stamps.push({ at: Date.now(), line });
-                    }
-                }, 1);
-
+                // Everything below is inside the try whose `finally` cleans this workspace up.
                 try {
-                    await page.eval(`(() => {
-                        window.__kelpiPosterNet = { frames: [] };
-                        const tick = () => {
-                            const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
-                            if (hole === null) return;
-                            const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
-                            const box = img === null ? null : img.getBoundingClientRect();
-                            window.__kelpiPosterNet.frames.push({
-                                at: Date.now(),
-                                dpr: window.devicePixelRatio,
-                                visible: hole.getAttribute('data-visible'),
-                                poster: img === null ? null : {
-                                    naturalW: img.naturalWidth, naturalH: img.naturalHeight,
-                                    box: Math.round(box.x) + ',' + Math.round(box.y) + ' ' +
-                                         Math.round(box.width) + '×' + Math.round(box.height),
-                                    w: box.width, h: box.height
-                                }
-                            });
-                            requestAnimationFrame(tick);
-                        };
-                        requestAnimationFrame(tick);
-                        return true;
-                    })()`);
+                    await settleDom(
+                        page,
+                        `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
+                            .includes(${JSON.stringify(workspaceName)})`,
+                        { ceilingMs: 1500, intervalMs: 60 }
+                    );
 
-                    await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
-                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') !== null`, {
-                        ceilingMs: 3000,
-                        intervalMs: 50
-                    });
-                    // Long enough for the park, the paint and a few settled frames either side.
+                    const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+                    const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                    recorder.check('a web pane is open on the fixture', paneID !== null, String(paneID));
+                    if (paneID === null) return;
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="web-page-${paneID}"]')?.getAttribute('data-visible') === 'true'`,
+                        { ceilingMs: 3000, intervalMs: 80 }
+                    );
+
+                    /*
+                     * The fixture has to be LOADED in that view before the menu opens, and the hole
+                     * being placed does not say so: the client places the view the moment the pane
+                     * exists, while the host is still bootstrapping the tab (`about:blank` first, then
+                     * the real navigation). Measured with the shell's focus trace at this step's own
+                     * pace: the view was attached 13 ms before the right-click, the fixture's
+                     * navigation STARTED 38 ms after it and committed at 46 ms. A poster capture asked
+                     * for in that window is in flight on the about:blank renderer when the fixture
+                     * commits in a new one, and dies with `target closed while handling command` - a
+                     * real no, so the client cooled the pane and parked without a frame, and every
+                     * assertion below failed with "no frame ever carried a poster". The standalone
+                     * harness (`poster-swap-flicker.mjs`) never hit it because it settles the hole for
+                     * 400 ms first; this step went straight from placement to right-click.
+                     *
+                     * The pane-scoped read is `kelpi web url`: the host answers with the live view's
+                     * own title, which exists only once the fixture's document does (the web-pane step
+                     * reads the same line for the same reason).
+                     */
+                    const loaded = await settle(
+                        async () => {
+                            const url = await cli.run(['web', 'url', '--target', paneID], { timeoutMs: 20_000 });
+                            return url.stdout.startsWith(site.url) && url.stdout.includes('Kelpi UI Audit Fixture');
+                        },
+                        { ceilingMs: 15_000, intervalMs: 120 }
+                    );
+                    recorder.check(
+                        'the fixture is loaded in the pane\'s own view before the menu opens',
+                        loaded,
+                        loaded ? 'kelpi web url reports the fixture title' : 'the live view never reported the fixture title'
+                    );
+                    if (!loaded) return;
+                    // ...and steady: the hole has stopped moving and the shell has finished placing
+                    // the view, so the "before" frames the net compares against are settled ones.
                     await settleStable(
                         () =>
                             page.eval(
-                                `(() => { const net = window.__kelpiPosterNet;
-                                  const last = net.frames[net.frames.length - 1];
-                                  return JSON.stringify([last?.visible ?? null, last?.poster?.box ?? null]); })()`
+                                `(() => { const el = document.querySelector('[data-testid="web-page-${paneID}"]');
+                                  if (el === null) return null;
+                                  const r = el.getBoundingClientRect();
+                                  return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
+                                          el.getAttribute('data-visible')].join('/'); })()`
                             ),
-                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        { ceilingMs: 3000, stableMs: 400, intervalMs: 80 }
                     );
-                    await page.key('Escape');
-                    await settleDom(page, `document.querySelector('[data-testid="context-menu"]') === null`, {
-                        ceilingMs: 2000,
-                        intervalMs: 50
-                    });
-                    await settleStable(
-                        () => Promise.resolve(String(stamps.length)),
-                        { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+
+                    // The shell's lines, stamped as they arrive: the only observable for "the native
+                    // view is being drawn", since a `WebContentsView` never appears in the renderer's
+                    // own frames. The 1 ms poll is a lower bound on the pipe's own latency, which
+                    // biases every comparison below TOWARDS the fix — see the harness's header.
+                    const stamps = [];
+                    let consumed = runtime.shell?.lines.length ?? 0;
+                    const pump = setInterval(() => {
+                        const lines = runtime.shell?.lines ?? [];
+                        while (consumed < lines.length) {
+                            const line = lines[consumed];
+                            consumed += 1;
+                            if (line.includes(`web pane ${paneID} view owner=`)) stamps.push({ at: Date.now(), line });
+                        }
+                    }, 1);
+
+                    try {
+                        await page.eval(`(() => {
+                            window.__kelpiPosterNet = { frames: [] };
+                            const tick = () => {
+                                const hole = document.querySelector('[data-testid="web-page-${paneID}"]');
+                                if (hole === null) return;
+                                const img = document.querySelector('[data-testid="web-poster-${paneID}"]');
+                                const box = img === null ? null : img.getBoundingClientRect();
+                                window.__kelpiPosterNet.frames.push({
+                                    at: Date.now(),
+                                    dpr: window.devicePixelRatio,
+                                    visible: hole.getAttribute('data-visible'),
+                                    poster: img === null ? null : {
+                                        naturalW: img.naturalWidth, naturalH: img.naturalHeight,
+                                        box: Math.round(box.x) + ',' + Math.round(box.y) + ' ' +
+                                             Math.round(box.width) + '×' + Math.round(box.height),
+                                        w: box.width, h: box.height
+                                    }
+                                });
+                                requestAnimationFrame(tick);
+                            };
+                            requestAnimationFrame(tick);
+                            return true;
+                        })()`);
+
+                        await page.rightClick(`[data-testid="pane-header-${paneID}"]`);
+                        await settleDom(page, `document.querySelector('[data-testid="context-menu"]') !== null`, {
+                            ceilingMs: 3000,
+                            intervalMs: 50
+                        });
+                        // Long enough for the park, the paint and a few settled frames either side.
+                        await settleStable(
+                            () =>
+                                page.eval(
+                                    `(() => { const net = window.__kelpiPosterNet;
+                                      const last = net.frames[net.frames.length - 1];
+                                      return JSON.stringify([last?.visible ?? null, last?.poster?.box ?? null]); })()`
+                                ),
+                            { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        );
+                        await page.key('Escape');
+                        await settleDom(page, `document.querySelector('[data-testid="context-menu"]') === null`, {
+                            ceilingMs: 2000,
+                            intervalMs: 50
+                        });
+                        await settleStable(
+                            () => Promise.resolve(String(stamps.length)),
+                            { ceilingMs: 1500, stableMs: 300, intervalMs: 70 }
+                        );
+                    } finally {
+                        clearInterval(pump);
+                    }
+
+                    const net = JSON.parse(
+                        String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
+                    );
+                    const frames = net.frames ?? [];
+                    const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
+                    const restored = stamps.find(
+                        (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
+                    );
+                    recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
+                    recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
+                    if (parked === undefined || restored === undefined) return;
+
+                    const carried = frames.filter((frame) => frame.poster !== null);
+                    const first = carried[0] ?? null;
+                    recorder.check(
+                        'the still frame is on screen BEFORE the view is handed back (issue #12)',
+                        first !== null && first.at <= parked.at,
+                        first === null
+                            ? '(no frame ever carried a poster)'
+                            : `${String(parked.at - first.at)}ms before the park (negative = the gap the owner saw)`
+                    );
+
+                    const between = frames.filter((frame) => frame.at >= parked.at && frame.at <= restored.at);
+                    const blank = between.filter((frame) => frame.poster === null);
+                    recorder.check(
+                        'no sampled frame while the pane is parked shows an empty hole',
+                        between.length > 0 && blank.length === 0,
+                        `${String(between.length - blank.length)}/${String(between.length)} frames carried the picture`
+                    );
+
+                    // The last placement line the shell logged for this pane. Read here rather than
+                    // through `web-popup-layering`'s own `embedOf`, which is local to that step.
+                    const placementLine =
+                        (runtime.shell?.lines ?? [])
+                            .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
+                            .at(-1) ?? '';
+                    const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
+                    const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
+                    const sample = between.find((frame) => frame.poster !== null) ?? first;
+                    recorder.check(
+                        'the picture stands on the box the view was placed at',
+                        want !== null && sample !== null && sample.poster.box === want,
+                        `poster ${String(sample?.poster?.box)} vs view ${String(want)}`
+                    );
+                    recorder.check(
+                        'and it is 1:1 in device pixels, not a resampled copy',
+                        sample !== null &&
+                            sample.poster.naturalW === Math.round(sample.poster.w * sample.dpr) &&
+                            sample.poster.naturalH === Math.round(sample.poster.h * sample.dpr),
+                        sample === null
+                            ? '(no sample)'
+                            : `natural ${String(sample.poster.naturalW)}×${String(sample.poster.naturalH)} at dpr ${String(sample.dpr)}`
+                    );
+                    recorder.note(
+                        `frames=${String(frames.length)} carrying=${String(carried.length)} ` +
+                            `park→restore=${String(restored.at - parked.at)}ms`
                     );
                 } finally {
-                    clearInterval(pump);
+                    /*
+                     * CLEANUP, AND IT IS ASSERTED (#202).
+                     *
+                     * `workspace delete` takes POSITIONAL names or ids and rejects any leading-dash
+                     * token it does not know (`packages/cli/src/commands/workspace.ts:200-206`); the
+                     * `--name` its sibling `workspace create` takes three dozen lines above is exactly
+                     * the trap. This call used to pass `--name`, `cli.run` swallowed the exit 1 and
+                     * the settle below returned false without anyone reading it, so `poster-swap`'s
+                     * workspace stayed ACTIVE for the next 28 steps: `appearance-system-stats`,
+                     * `agent-start`, `agent-notification` and `footer-git-stats` all pick their pane
+                     * from daemon-wide state, found the sandbox's first pane in another workspace, and
+                     * failed on a header that is not in the DOM.
+                     *
+                     * `shards.mjs` calls this step "roster-neutral only if it completes", and the
+                     * shard planner is built on that. These two checks are what makes it true.
+                     *
+                     * IN A `finally` for the same reason. The body above returns early three times
+                     * once the workspace exists (no web pane, the fixture never loaded, no park or
+                     * restore sample) and can throw at any `cli.ok` or `page.eval` in between, and
+                     * `report.mjs`'s `guard` carries on with the next step after a step error. As
+                     * the last statement of the body this was still #202 on every one of those
+                     * paths, with the two checks below not recorded at all, so the step's
+                     * assertion count moved with the path it took. The `try` opens after the
+                     * create's own early return, so this runs on every path that made a workspace
+                     * and on no path that did not.
+                     */
+                    const removed = await cli.run(['workspace', 'delete', target, '--force'], { timeoutMs: 40_000 });
+                    recorder.check(
+                        'the step deletes the scratch workspace it created',
+                        removed.code === 0,
+                        removed.code === 0
+                            ? `exit 0 (${target})`
+                            : `exit ${String(removed.code)}: ${`${removed.stderr}${removed.stdout}`.trim().slice(0, 160)}`
+                    );
+                    const rowGone = await settleDom(
+                        page,
+                        `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                            .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
+                        { ceilingMs: 3000, intervalMs: 60 }
+                    );
+                    recorder.check(
+                        'and the run is left with the workspace roster it started with',
+                        rowGone,
+                        rowGone ? 'no poster-swap row' : 'the poster-swap row is still in the sidebar'
+                    );
                 }
-
-                const net = JSON.parse(
-                    String(await page.eval(`JSON.stringify(window.__kelpiPosterNet ?? { frames: [] })`))
-                );
-                const frames = net.frames ?? [];
-                const parked = stamps.find((stamp) => stamp.line.includes('owner=holder'));
-                const restored = stamps.find(
-                    (stamp) => stamp.line.includes('owner=main') && parked !== undefined && stamp.at > parked.at
-                );
-                recorder.check('the shell parked the view for the menu', parked !== undefined, parked?.line.trim() ?? '(none)');
-                recorder.check('…and handed it back when the menu closed', restored !== undefined, restored?.line.trim() ?? '(none)');
-                if (parked === undefined || restored === undefined) return;
-
-                const carried = frames.filter((frame) => frame.poster !== null);
-                const first = carried[0] ?? null;
-                recorder.check(
-                    'the still frame is on screen BEFORE the view is handed back (issue #12)',
-                    first !== null && first.at <= parked.at,
-                    first === null
-                        ? '(no frame ever carried a poster)'
-                        : `${String(parked.at - first.at)}ms before the park (negative = the gap the owner saw)`
-                );
-
-                const between = frames.filter((frame) => frame.at >= parked.at && frame.at <= restored.at);
-                const blank = between.filter((frame) => frame.poster === null);
-                recorder.check(
-                    'no sampled frame while the pane is parked shows an empty hole',
-                    between.length > 0 && blank.length === 0,
-                    `${String(between.length - blank.length)}/${String(between.length)} frames carried the picture`
-                );
-
-                // The last placement line the shell logged for this pane. Read here rather than
-                // through `web-popup-layering`'s own `embedOf`, which is local to that step.
-                const placementLine =
-                    (runtime.shell?.lines ?? [])
-                        .filter((line) => line.includes(`web pane ${paneID} view owner=main`))
-                        .at(-1) ?? '';
-                const placed = /bounds=(\d+),(\d+) (\d+)×(\d+)/.exec(placementLine);
-                const want = placed === null ? null : `${placed[1]},${placed[2]} ${placed[3]}×${placed[4]}`;
-                const sample = between.find((frame) => frame.poster !== null) ?? first;
-                recorder.check(
-                    'the picture stands on the box the view was placed at',
-                    want !== null && sample !== null && sample.poster.box === want,
-                    `poster ${String(sample?.poster?.box)} vs view ${String(want)}`
-                );
-                recorder.check(
-                    'and it is 1:1 in device pixels, not a resampled copy',
-                    sample !== null &&
-                        sample.poster.naturalW === Math.round(sample.poster.w * sample.dpr) &&
-                        sample.poster.naturalH === Math.round(sample.poster.h * sample.dpr),
-                    sample === null
-                        ? '(no sample)'
-                        : `natural ${String(sample.poster.naturalW)}×${String(sample.poster.naturalH)} at dpr ${String(sample.dpr)}`
-                );
-                recorder.note(
-                    `frames=${String(frames.length)} carrying=${String(carried.length)} ` +
-                        `park→restore=${String(restored.at - parked.at)}ms`
-                );
-
-                await cli.run(['workspace', 'delete', '--name', workspaceName, '--force'], { timeoutMs: 40_000 });
-                await settleDom(
-                    page,
-                    `![...document.querySelectorAll('[data-testid="workspace-row"]')]
-                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)}))`,
-                    { ceilingMs: 1500, intervalMs: 60 }
-                );
             }
         },
 

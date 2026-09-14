@@ -760,6 +760,54 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
 // ── the CLI, pointed at the sandbox daemon ──────────────────────────────────────────
 
 /**
+ * The CLI's refusals to PARSE an invocation, as opposed to its refusals to perform one.
+ *
+ * Five shapes, and they all mean the same thing: the caller spelled the invocation wrong. For a
+ * harness that is never a product outcome, it is a bug in the step, and it must not be survivable.
+ *
+ *   Unknown command: <x>                      cli.ts:85
+ *   Unknown <group> action: <x>               workspace.ts:60 and its six siblings
+ *   Unknown option for <command>: <flag>      workspace.ts:202, the only one of its kind
+ *   <command>: unknown option <flag>          args.ts:88-100, `rejectLeftoverArgs`
+ *   <command>: unexpected argument '<x>'      the same, for a positional nobody consumed
+ *
+ * The last two are the DOMINANT form and were missed on the first pass: `rejectLeftoverArgs` is
+ * how 16 call sites across `pane.ts`, `workspace.ts`, `group.ts` and `install-hooks.ts` refuse a
+ * flag they do not know, lowercase and with no `Unknown` prefix, and its command label is
+ * sometimes `kelpi pane list` and sometimes bare `pane resize`. Without them the net covered
+ * `workspace delete` and almost nothing else, while this file's own contract (and the README's)
+ * claimed the class.
+ *
+ * It was. `cli.run` resolves with `{ code, stdout, stderr }` and only `cli.ok` throws, so
+ * `poster-swap`'s cleanup (`workspace delete --name <name> --force`, which the CLI rejects
+ * because delete takes positional names while its sibling `workspace create` takes `--name`)
+ * exited 1 into a value nobody read, and the workspace it was meant to remove stayed ACTIVE for
+ * the next 28 steps and blanked four of them (#202). Checking the exit code at that one call site
+ * fixes that one step; refusing a malformed invocation here fixes the class, for every one of the
+ * hundreds of `cli.run` calls in the harness, in cleanup paths included.
+ *
+ * Value refusals are deliberately NOT in this net (`Unknown event type:`, `Unknown sync mode:`,
+ * `Unknown --agent value:`): a step may legitimately probe what the CLI does with a bad value.
+ * Nothing in `scripts/` asserts on any of the five shapes above.
+ *
+ * THE FIRST LINE OF STDERR, and both halves of that are the point. Stderr, because the CLI writes
+ * every refusal through `errLine`/`writeErr` (`packages/cli/src/io.ts:68,73`) while stdout is
+ * where a step's own captured pane text comes back: a scrollback holding a shell's
+ * "Unknown command: foo" must never be mistaken for the harness having misspelled anything. The
+ * first line, because a refusal is always the first thing written, whereas `web.ts:104` and
+ * `plugin.ts:143` relay a daemon's or a plugin's arbitrary multi-line message to the same stream,
+ * and a second line of one of those is not this harness's bug.
+ */
+const UNKNOWN_TOKEN = /^Unknown (?:command|option for [a-z][a-z ]*|[a-z]+ action):/;
+const LEFTOVER_TOKEN = /^(?:kelpi )?[a-z][a-z-]*(?: [a-z-]+)*: (?:unknown option |unexpected argument ')/;
+
+export function cliUsageRefusal({ code, stderr = '' } = {}) {
+    if (code === 0) return null;
+    const first = stderr.trimStart().split('\n', 1)[0].trim();
+    return UNKNOWN_TOKEN.test(first) || LEFTOVER_TOKEN.test(first) ? first : null;
+}
+
+/**
  * The ported TypeScript CLI (`packages/cli/dist/kelpi.js`) over TCP.
  *
  * TCP rather than the unix socket because `KELPI_SOCKET` only overrides the *TCP* transport —
@@ -822,6 +870,12 @@ export function makeCli(sandbox, { repoRoot }) {
             } catch {
                 // best-effort
             }
+        }
+        // A malformed invocation is a bug in the caller, so it throws out of `run` too and does
+        // not wait for a caller that chose to read the exit code (#202). See `cliUsageRefusal`.
+        const refusal = cliUsageRefusal(result);
+        if (refusal !== null) {
+            throw new Error(`kelpi ${args.join(' ')} was refused as malformed: ${refusal}`);
         }
         return result;
     };

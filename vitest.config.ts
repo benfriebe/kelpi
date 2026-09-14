@@ -32,7 +32,7 @@ export default defineConfig({
         // re-worded entry has to fail here rather than in a 20-minute audit.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs'],
         },
       },
     ],

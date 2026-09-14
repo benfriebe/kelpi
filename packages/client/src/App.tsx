@@ -53,7 +53,7 @@ import { renderRegisteredView } from './plugins/renderers';
  */
 
 import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
-import type { DropZone, SplitDirection } from '@kelpi/core/layout';
+import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import type { JsonObject } from '@kelpi/protocol';
 import {
     activeAgentCount,
@@ -233,14 +233,6 @@ import {
     webCommandIsSilent,
     type WebPaneTab
 } from './webpane';
-
-/** `@kelpi/core/layout`'s geometric drop zones → the wire's `pane-move-adjacent` vocabulary. */
-const WIRE_DROP_ZONE: Readonly<Record<DropZone, 'above' | 'below' | 'left-of' | 'right-of'>> = {
-    top: 'above',
-    bottom: 'below',
-    left: 'left-of',
-    right: 'right-of'
-};
 
 /** Command-error toasts clear themselves; a failed command is news, not a permanent banner. */
 const ERROR_TOAST_MS = 6000;
@@ -1453,7 +1445,7 @@ function Shell(props: AppProps): ReactElement {
                     commands.movePaneAdjacent({
                         target: paneID,
                         anchor: anchorID,
-                        zone: WIRE_DROP_ZONE[zone]
+                        zone: wireEdgeForDropZone(zone)
                     })
                 );
             },

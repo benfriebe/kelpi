@@ -248,6 +248,15 @@ interface Listener {
  * `closeAllConnections()` above it is kept because it states the intent in Node's own vocabulary,
  * not because anything depends on it; delete the destroy loop and the upgraded sockets are out of
  * reach again, which is why `server.test.ts` pins that case with a peer that never replies.
+ *
+ * The sweep then RESOLVES this promise itself rather than trusting the close callback to fire now
+ * that it has run. A bound that depends on the very callback the bug is about is not a bound: it
+ * would hold only for the socket populations we already know about, and the next one nobody has
+ * thought of would stall the daemon exactly as these two did. The callback stays the fast path,
+ * clearing the timer and resolving first in every healthy stop, and it is a no-op if it arrives
+ * after the sweep. The cost is one discriminator: removing the destroy loop no longer stalls
+ * `stop()`, so the test that pins the upgraded case asserts that the socket ENDED rather than
+ * only that the stop resolved.
  */
 function closeAsync({ server, rawSockets }: Listener): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -267,6 +276,8 @@ function closeAsync({ server, rawSockets }: Listener): Promise<void> {
         sweep = setTimeout(() => {
             server.closeAllConnections();
             for (const socket of rawSockets) socket.destroy();
+            settled = true;
+            resolve();
         }, CLOSE_GRACE_MS);
     });
 }

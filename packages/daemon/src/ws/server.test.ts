@@ -35,6 +35,8 @@ const running: WsServer[] = [];
 const openSockets: WebSocket[] = [];
 /** Hand-rolled HTTP clients (the shutdown tests); torn down even when an assertion fails. */
 const rawClients: net.Socket[] = [];
+/** Every `stop()` a test started but may not have awaited (`stopWithin`). */
+const pendingStops: Promise<void>[] = [];
 const temporaries: string[] = [];
 
 afterEach(async () => {
@@ -42,7 +44,11 @@ afterEach(async () => {
         socket.removeAllListeners();
         socket.close();
     }
+    // Order matters: destroying the hand-rolled clients is what lets a `stop()` that is still
+    // pending drain, and it has to finish HERE, because `WsServer.stop` short-circuits on its own
+    // stopped flag and the call below would hand back a promise for a shutdown nobody is running.
     for (const socket of rawClients.splice(0)) socket.destroy();
+    await Promise.all(pendingStops.splice(0));
     for (const server of running.splice(0)) await server.stop();
     while (temporaries.length > 0) {
         fs.rmSync(temporaries.pop() as string, { recursive: true, force: true });
@@ -174,10 +180,13 @@ function keepAliveRequest(base: string, target: string): Promise<net.Socket> {
     return new Promise<net.Socket>((resolve, reject) => {
         const socket = net.connect({ host: url.hostname, port: Number(url.port) });
         rawClients.push(socket);
-        // A shutdown DESTROYS this socket; that is the assertion, not a failure.
+        // A shutdown DESTROYS this socket; that is the assertion, not a failure. Only a failure
+        // to GET CONNECTED is this promise's business, so that listener comes off once it is up.
         socket.on('error', () => {});
-        socket.once('error', reject);
+        const failed = (error: Error): void => reject(error);
+        socket.once('error', failed);
         socket.once('connect', () => {
+            socket.off('error', failed);
             socket.write(`GET ${target} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: keep-alive\r\n\r\n`);
             resolve(socket);
         });
@@ -199,10 +208,12 @@ function silentUpgrade(base: string): Promise<net.Socket> {
     return new Promise<net.Socket>((resolve, reject) => {
         const socket = net.connect({ host: url.hostname, port: Number(url.port) });
         rawClients.push(socket);
-        // A shutdown DESTROYS this socket; that is the assertion, not a failure.
+        // As above: connecting is what this promise can fail at, and nothing after that.
         socket.on('error', () => {});
-        socket.once('error', reject);
+        const failed = (error: Error): void => reject(error);
+        socket.once('error', failed);
         socket.once('connect', () => {
+            socket.off('error', failed);
             socket.write(
                 `GET /ws?token=${TOKEN} HTTP/1.1\r\n` +
                     `Host: ${url.host}\r\n` +
@@ -213,6 +224,27 @@ function silentUpgrade(base: string): Promise<net.Socket> {
                     '\r\n'
             );
             resolve(socket);
+        });
+    });
+}
+
+/**
+ * Race `stop()` against `budgetMs` and report which won, so a regression is an assertion rather
+ * than a suite that hangs.
+ *
+ * The promise is kept rather than dropped: a `stop()` that lost the race is still running, and
+ * cleanup cannot start another one (`WsServer.stop` returns early once its stopped flag is set),
+ * so `afterEach` awaits THIS one after destroying the clients that were holding it up. That is
+ * what keeps the teardown independent of the outcome, which matters most in the run that FAILS.
+ */
+function stopWithin(server: WsServer, budgetMs: number): Promise<'stopped' | 'timed out'> {
+    const stopping = server.stop();
+    pendingStops.push(stopping);
+    return new Promise<'stopped' | 'timed out'>((resolve) => {
+        const timer = setTimeout(() => resolve('timed out'), budgetMs);
+        void stopping.then(() => {
+            clearTimeout(timer);
+            resolve('stopped');
         });
     });
 }
@@ -623,18 +655,11 @@ describe('shutdown', () => {
         const busy = await keepAliveRequest(f.base, '/assets/big.bin');
         await new Promise<void>((resolve) => busy.once('readable', () => resolve()));
 
-        const startedAt = Date.now();
-        const outcome = await Promise.race([
-            f.server.stop().then(() => 'stopped' as const),
-            // 2000 ms, not something nearer the 250 ms grace: the failure this guards against is
-            // unbounded, so a loose deadline loses no discriminating power and only buys headroom
-            // on a loaded machine.
-            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 2000))
-        ]);
-        const elapsed = Date.now() - startedAt;
-
-        expect(outcome).toBe('stopped');
-        expect(elapsed).toBeLessThan(2000);
+        // 2000 ms, not something nearer the 250 ms grace: the failure this guards against is
+        // unbounded, so a loose deadline loses no discriminating power and only buys headroom on
+        // a loaded machine. One assertion, not a second one on the elapsed time, which would say
+        // the same thing while being the only part of this test a slow machine could break.
+        expect(await stopWithin(f.server, 2000)).toBe('stopped');
         await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
         // Both sockets were really taken down rather than merely ignored. A paused client only
         // notices once it reads again, so resume first and then wait for the end of the stream.
@@ -651,9 +676,14 @@ describe('shutdown', () => {
      * Node drops it from the lists behind `closeIdleConnections()` and `closeAllConnections()`
      * while still counting it toward the drain `close()`'s callback waits on, so the destroy of
      * the raw sockets in `closeAsync` is the only thing that frees it. Without that one line every
-     * other test in this file still passes while #212 comes straight back through the route a real
-     * renderer teardown takes: `stop()` sends `close(1001)` and `ws` then waits its 30 s
-     * `closeTimeout` for a goodbye that is never coming.
+     * other test in this file still passes while a real renderer teardown leaves the socket behind:
+     * `stop()` sends `close(1001)` and `ws` then waits its 30 s `closeTimeout` for a goodbye that
+     * is never coming.
+     *
+     * So the assertion that pins it is the LAST one, that the socket ended. `closeAsync` resolves
+     * on its own deadline whether or not the sweep reached anything, which is what makes the bound
+     * unconditional and what stops the timing check here from discriminating: remove the destroy
+     * and this stop still returns on time, with a live WebSocket behind it.
      */
     it('stops within the grace even when an upgraded client never answers the goodbye', async () => {
         const f = await startServer();
@@ -663,15 +693,7 @@ describe('shutdown', () => {
         // Upgraded for real: the server is holding a WebSocket, not a half-finished request.
         await vi.waitFor(() => expect(f.server.clients).toBe(1));
 
-        const startedAt = Date.now();
-        const outcome = await Promise.race([
-            f.server.stop().then(() => 'stopped' as const),
-            new Promise<'timed out'>((resolve) => setTimeout(() => resolve('timed out'), 2000))
-        ]);
-        const elapsed = Date.now() - startedAt;
-
-        expect(outcome).toBe('stopped');
-        expect(elapsed).toBeLessThan(2000);
+        expect(await stopWithin(f.server, 2000)).toBe('stopped');
         await expect(fetch(`${f.base}/healthz`)).rejects.toThrow();
         // And the socket was really taken down, not merely left to the hello timeout.
         ghost.resume();

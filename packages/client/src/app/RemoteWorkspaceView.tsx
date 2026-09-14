@@ -14,6 +14,12 @@ import { usePluginCommands } from '../plugins/commands';
  *
  * Native documents and their selected replacements use the owning runtime's content host.
  * Browser controls use the owning daemon; native page pixels remain in its desktop shell.
+ *
+ * The rule that comes with that, and the one thing a new render site has to remember: every
+ * place that draws a REMOTE daemon's terminal pane must pass `editingShortcuts` to
+ * `TerminalFeaturePane` (#172, #170). The window dispatcher stands down here, so the pane is the
+ * only layer left to answer copy, paste and the three line edits. This file and
+ * `phone/PhoneRemoteWorkspace.tsx` are the two that do.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';
@@ -97,6 +103,13 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
                 ptyApi={runtime.pty}
                 focused={focused}
                 visible={state.visible}
+                // #172/#170: the same stance as `blockWindowShortcuts` above, for the other half
+                // of the keyboard. The window dispatcher stands down while a remote workspace
+                // fills the pane area (`App.tsx` reports `hasActiveWorkspace: false`), so copy,
+                // paste and the three line edits have to be answered by the pane that took the
+                // chord, against THIS daemon's runtime. In the primary window the dispatcher
+                // still owns them and this stays off.
+                editingShortcuts
                 onFocusRequest={(id) => runtime.focusPane(workspaceID, id)}
             />
         );

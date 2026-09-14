@@ -68,10 +68,33 @@ async function pasteIntoOwner(runtime: KelpiRuntime, paneID: string, clipboard: 
     if (!isOkReply(reply)) throw new Error(replyError(reply));
 }
 
+/**
+ * True only while `handle.dispatchKey` is handing a key back to the engine (the empty-selection
+ * Ctrl+C branch below), which is the one thing here that raises a DOM event of its own.
+ *
+ * `dispatchKey` synthesises a REAL `keydown` on the engine's key target
+ * (`terminal/renderer.ts`, `terminal/testing.ts`), which is a descendant of the node a bundled
+ * renderer's capture listener sits on (`features/TerminalFeaturePane.tsx`). Without this the
+ * key we just handed back arrives here again, resolves `copy` again, reads the same empty
+ * selection again and hands it back again: unbounded recursion, with the interrupt never
+ * reaching the engine at any level. Ctrl+C is the key that cannot be allowed to do that.
+ *
+ * Module scope rather than a ref because the re-entry is a DOM dispatch, not a React one, and
+ * it crosses every caller: the bundled listener, the plugin relay and the phone key bar's
+ * latched Ctrl all reach the same `dispatchKey`. `dispatchEvent` is synchronous, so the
+ * try/finally window below is exactly the re-entry and nothing else, even when `selected` runs
+ * from a `readSelection` promise.
+ *
+ * Returning FALSE rather than true is the point: the synthesised key is the engine's own, so it
+ * must fall through untouched to the encoder that was asked for it.
+ */
+let raisingAtEngine = false;
+
 export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
     runtime: KelpiRuntime; paneID: string; visible: boolean; host: TerminalShortcutHost;
     clipboard?: Clipboard | undefined;
 }): boolean {
+    if (raisingAtEngine) return false;
     const { runtime, paneID, host } = options;
     const trigger = triggerFromEvent(event), action = trigger && actionForTrigger(host.bindings, trigger);
     if (!action || !EDITING_ACTIONS.has(action)) return false;
@@ -99,7 +122,10 @@ export function dispatchTerminalEditingShortcut(event: KeyEventLike, options: {
             if (text === '' && interruptKey && paneHandle(paneID) === handle && handle.focusedOnScreen() &&
                 !host.blocked?.() && modalPresenceCount() === 0 && isTerminal(current) &&
                 current?.createdAt === original?.createdAt && current?.type === original?.type &&
-                current?.externalEditorCommand === original?.externalEditorCommand) handle.dispatchKey(interruptKey);
+                current?.externalEditorCommand === original?.externalEditorCommand) {
+                raisingAtEngine = true;
+                try { handle.dispatchKey(interruptKey); } finally { raisingAtEngine = false; }
+            }
             return text;
         };
         copySelection({ focusedPaneID: () => paneID,

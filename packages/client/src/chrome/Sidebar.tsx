@@ -4237,9 +4237,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
     const dragStartGroup = useCallback(
         (groupID: string, event: React.MouseEvent) => {
+            if (needle.length > 0) return; // §5.1: no drag & drop in the filtered list.
             onDragStart('group', groupID, event);
         },
-        [onDragStart]
+        [needle.length, onDragStart]
     );
 
     const body =

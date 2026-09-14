@@ -8,7 +8,7 @@ import type { WorkspacesFeatureLifecycle } from './workspaces';
 
 export interface WorkspacesActionHost {
     readonly store: KelpiStoreApi;
-    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setWorkspaceIcon' | 'setWorkspaceProfile'>;
+    readonly commands: Pick<CommandClient, 'addRepoAssociation' | 'createGroup' | 'createGroupForWorkspaces' | 'createWorkspace' | 'deleteGroup' | 'deleteWorkspace' | 'labelWorkspace' | 'moveGroup' | 'moveWorkspace' | 'moveWorkspaces' | 'renameGroup' | 'renameWorkspace' | 'setBulkColor' | 'setBulkLabel' | 'setGroupCollapsed' | 'setGroupColor' | 'setGroupIcon' | 'setWorkspaceIcon' | 'setWorkspaceProfile'>;
     readonly run: (label: string, command: Promise<CommandReply>) => boolean;
     readonly notifyFailure: (label: string, message: string) => void;
     readonly activateWorkspaceAndReveal: (workspaceID: string) => void;
@@ -202,6 +202,11 @@ export function createWorkspacesActions(host: WorkspacesActionHost) {
                     index: request.index
                 })
             );
+        },
+
+        /** The sidebar's group-header drag (§4.7): the group's slot in the top-level order. */
+        moveGroup(request: { groupID: string; index: number }): boolean {
+            return run('Move group', commands.moveGroup({ group: request.groupID, index: request.index }));
         },
 
         moveWorkspaces(request: {

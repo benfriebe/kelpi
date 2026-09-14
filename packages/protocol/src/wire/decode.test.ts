@@ -414,6 +414,7 @@ describe('workspace and group commands', () => {
             'group-create',
             'group-rename',
             'group-delete',
+            'group-move',
             'group-reorder',
             'group-sort'
         ]) {
@@ -461,6 +462,20 @@ describe('workspace and group commands', () => {
             color: 'blue'
         });
         expect(ok({ command: 'group-delete', name: 'projects' })).toMatchObject({ cascade: false });
+    });
+
+    it('decodes group-move and requires an index to move to', () => {
+        expect(ok({ command: 'group-move', name: 'projects', index: 0 })).toEqual({
+            command: 'group-move',
+            name: 'projects',
+            index: 0
+        });
+        // A group has one axis, so unlike `workspace-move` the slot is not optional.
+        expect(rejected({ command: 'group-move', name: 'projects' }).field).toBe('index');
+        expect(rejected({ command: 'group-move', name: 'projects', index: '1' })).toMatchObject({
+            reason: 'field-type',
+            field: 'index'
+        });
     });
 
     it('omits group on workspace-move to express top level', () => {

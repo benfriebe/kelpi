@@ -363,6 +363,15 @@ function decodeCommand(
             if (name === undefined) return guard(command, 'group-delete requires name', 'name');
             return { command, name, cascade: fields.flag('cascade', false) };
         }
+        case 'group-move': {
+            const name = fields.nonEmpty('name');
+            if (name === undefined) return guard(command, 'group-move requires name', 'name');
+            const index = fields.int('index');
+            // Unlike `workspace-move` (whose index is optional because `group` alone is a
+            // meaningful move), a group has one axis: without a slot there is nothing to do.
+            if (index === undefined) return guard(command, 'group-move requires index', 'index');
+            return { command, name, index };
+        }
         case 'group-reorder': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'group-reorder requires name', 'name');

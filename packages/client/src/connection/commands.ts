@@ -699,6 +699,15 @@ export class CommandClient {
         );
     }
 
+    /**
+     * The sidebar's group-header drag: the group's own slot in the top-level order. `index` is
+     * the slot in the POST-move order, which is what `groupCommit` derives, so it needs no
+     * post-remove adjustment (`chrome/sidebar-model.ts`).
+     */
+    moveGroup(input: { group: string; index: number }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('group-move', { name: input.group, index: input.index }), options ?? {});
+    }
+
     reorderGroup(
         input: { group: string; order: readonly string[] },
         options?: SendOptions

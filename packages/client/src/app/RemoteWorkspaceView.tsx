@@ -14,6 +14,12 @@ import { usePluginCommands } from '../plugins/commands';
  *
  * Native documents and their selected replacements use the owning runtime's content host.
  * Browser controls use the owning daemon; native page pixels remain in its desktop shell.
+ *
+ * The rule that comes with that, and the one thing a new render site has to remember: every
+ * place that draws a REMOTE daemon's terminal pane must pass `editingShortcuts` to
+ * `TerminalFeaturePane` (#172, #170). The window dispatcher stands down here, so the pane is the
+ * only layer left to answer copy, paste and the three line edits. This file and
+ * `phone/PhoneRemoteWorkspace.tsx` are the two that do.
  */
 
 import { useEffect, type ReactElement, type ReactNode } from 'react';

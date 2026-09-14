@@ -19,11 +19,17 @@ export interface TerminalFeaturePaneProps extends TerminalPaneProps {
      * This pane answers the five terminal editing chords itself, because no window dispatcher
      * will (#172, #170).
      *
-     * Opt-in, and set from exactly one place: `app/RemoteWorkspaceView.tsx`, which already
-     * declares this stance for its sibling layer (`NO_WINDOW_CHORDS` / `blockWindowShortcuts`).
-     * In the primary window the window dispatcher is the single owner of every binding, and a
-     * chord it DECLINES has to keep falling through to the engine exactly as it always has, so
-     * the seam must not be attached there.
+     * **Every site that renders a REMOTE daemon's terminal pane must set this**, and only those
+     * sites may: `app/RemoteWorkspaceView.tsx` (the desktop grid, and the phone's `layout` mode
+     * through it) and `phone/PhoneRemoteWorkspace.tsx` (the phone's one-pane mode, which renders
+     * this component directly rather than through the grid). It is the same stance those files
+     * already take for their sibling layer (`NO_WINDOW_CHORDS` / `blockWindowShortcuts`).
+     *
+     * Opt-in rather than always-on because in the primary window the window dispatcher is the
+     * single owner of every binding, and a chord it DECLINES (an empty-selection copy is one, by
+     * design) has to keep falling through to the engine exactly as it always has. The cost of
+     * that choice is this comment: a new remote render site gets #172 back by default unless it
+     * passes the prop.
      */
     readonly editingShortcuts?: boolean | undefined;
 }

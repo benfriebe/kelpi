@@ -51,6 +51,22 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
     );
     const focusEcho = useStore(runtime.store, (state) => state.ui.focusEcho);
     const connection = useStore(runtime.store, (state) => state.ui.connection);
+    /*
+     * §APP-069/§H4: the home `PaneHeader` abbreviates against, from the daemon that OWNS these
+     * paths. Every path in this grid is the REMOTE machine's, and §APP-069 is explicit that `~`
+     * needs "the daemon's home rather than the viewer's" - the local window's home would match
+     * nothing and print the raw `/Users/…` the primary window stopped printing (#216). The
+     * mirror strips `homeDirectory` deliberately, so this daemon's handshake (`welcome.daemon`)
+     * is the only place it lives.
+     */
+    const homeDirectory = useStore(runtime.store, (state) => state.daemon.info?.home);
+    /*
+     * §10/shell-ui §4.6: hover-focus is a config-file setting, and the config that describes
+     * this grid is the one that rode THIS daemon's handshake - the same `settings.general` read
+     * the primary mount makes against its own runtime. Unpassed, hover-focus was simply dead on
+     * a remote daemon's workspace (#216).
+     */
+    const general = useStore(runtime.store, (state) => state.settings.value.general);
 
     // The remote daemon fans PTY bytes out by what this connection REPORTS it is showing —
     // the same activation contract the primary window keeps.
@@ -118,10 +134,18 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
     return (
         <PaneGrid
             visible={props.visible}
+            focusFollowsMouse={general.focusFollowsMouse}
+            focusFollowsMouseDelayMs={general.focusFollowsMouseDelay}
             layout={workspace.layout}
             panes={workspace.panes}
             focusedPaneID={focusedPaneID}
             zoomedPaneID={workspace.zoomedPaneID ?? null}
+            /* Sync input is the remote daemon's own standing state, mirrored like the layout:
+               a workspace put in sync from that machine wears the same SYNC / SYNC OFF badges
+               here. Display only - both badges are read-only in the header. */
+            syncActive={workspace.isSyncInputActive}
+            syncExcludedPaneIDs={workspace.syncInputExcluded}
+            homeDirectory={homeDirectory}
             headerCommandsFor={paneID => contributions.menu('pane.header', paneID)}
             headerExtras={paneID => {
                 const items = contributions.items('pane.header', paneID);

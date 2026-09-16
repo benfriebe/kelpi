@@ -31,7 +31,7 @@ function workspace(id: string, name: string): Record<string, unknown> {
         focusedPaneID: null,
         zoomedPaneID: null,
         isSyncInputActive: false,
-        syncExcludedPaneIDs: [],
+        syncInputExcluded: [],
         parkedPaneIDs: [],
         panes: [],
         layout: { kind: 'leaf', paneID: `${id}-p` }

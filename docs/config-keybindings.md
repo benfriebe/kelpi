@@ -283,7 +283,10 @@ connection, command RPC, PTY streams and store mirror (`app/remote-daemons.ts`) 
   workspaces; `RemoteDaemonSections` through the Sidebar's `trailingSections` slot);
 - selecting a remote workspace swaps the workspace area to `RemoteWorkspaceView`: the same
   grid + terminal surfaces, fed by the REMOTE runtime, with focus/split/close/rename/zoom
-  and divider drags routed to the remote daemon's commands. Content and web panes render
+  and divider drags routed to the remote daemon's commands. That grid reads
+  `focus-follows-mouse` (with its delay) and the `~` home off the REMOTE daemon's own
+  handshake, so both describe the daemon whose panes are on screen, while appearance and
+  the terminal theme stay the local window's (#216). Content and web panes render
   an honest placeholder there (staged); while a remote workspace is showing, the LOCAL
   pane keymap stands down (`hasActiveWorkspace` answers false) so a ⌘D cannot split the
   hidden local workspace;

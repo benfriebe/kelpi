@@ -92,7 +92,7 @@ function fakeRemoteRuntime(target: string): { runtime: KelpiRuntime; calls: stri
                 focusedPaneID: REMOTE_PANE,
                 zoomedPaneID: null,
                 isSyncInputActive: false,
-                syncExcludedPaneIDs: [],
+                syncInputExcluded: [],
                 parkedPaneIDs: [],
                 panes: [
                     {

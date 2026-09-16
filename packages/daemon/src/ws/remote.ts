@@ -39,9 +39,12 @@ import {
 } from '../lifecycle/devices.js';
 import {
     defaultTailscaleRunner,
+    explainTailscaleProbe,
     parseServeProxies,
     parseTailscaleStatus,
     resolveTailnetURL,
+    tailscaleProbeDiagnostics,
+    type TailscaleResult,
     type TailscaleRunner
 } from '../lifecycle/tailnet.js';
 
@@ -82,6 +85,19 @@ export interface RemoteStatusReply {
         readonly serving: boolean;
         /** Why `available` is false, when it is — words for the status card. */
         readonly reason?: string;
+        /**
+         * How the CLI was looked for. Present whenever the runner reported its search (the
+         * production one always does): every candidate tried, the one that answered, and what
+         * the first candidate that ran and refused said.
+         *
+         * Detection failures used to reach this card as "state: unknown" with the stderr that
+         * named the cause discarded, which is a dead end for whoever has to fix it (#169).
+         */
+        readonly probe?: {
+            readonly tried: readonly string[];
+            readonly used?: string;
+            readonly failure?: string;
+        };
     };
 }
 
@@ -123,6 +139,22 @@ export interface RemoteChannel {
     delete(target: string): Promise<RemoteReply>;
 }
 
+/**
+ * The probe's search, as the status card carries it. Omitted entirely when the runner reported
+ * no search, so an injected one-binary runner reads exactly as it always did.
+ */
+function wireProbe(probe: TailscaleResult): Pick<RemoteStatusReply['tailnet'], 'probe'> {
+    const search = tailscaleProbeDiagnostics(probe);
+    if (search.tried.length === 0) return {};
+    return {
+        probe: {
+            tried: search.tried,
+            ...(search.used !== undefined ? { used: search.used } : {}),
+            ...(search.failure !== undefined ? { failure: search.failure } : {})
+        }
+    };
+}
+
 export function createRemoteChannel(options: RemoteChannelOptions): RemoteChannel {
     const env = options.env ?? process.env;
     const run = options.tailscale ?? defaultTailscaleRunner();
@@ -155,11 +187,20 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
             }
             const port = boundPort();
             const probe = await run(['status', '--json']);
+            // Every answer below carries the search that produced it: which binaries were
+            // tried, which one answered, and what the first one that ran and refused said.
+            // Without it a detection failure is one word ("unknown") and no way forward (#169).
+            const searched = wireProbe(probe);
             if (probe.code === -1 && probe.stderr === 'ENOENT') {
                 return {
                     ok: true,
                     devices: list,
-                    tailnet: { available: false, serving: false, reason: 'tailscale is not installed' }
+                    tailnet: {
+                        available: false,
+                        serving: false,
+                        reason: explainTailscaleProbe('tailscale is not installed', probe),
+                        ...searched
+                    }
                 };
             }
             const identity = parseTailscaleStatus(probe.stdout);
@@ -171,7 +212,11 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                         available: false,
                         serving: false,
                         ...(identity.backend !== undefined ? { backend: identity.backend } : {}),
-                        reason: `tailscaled is not running (state: ${identity.backend ?? 'unknown'})`
+                        reason: explainTailscaleProbe(
+                            `tailscaled is not running (state: ${identity.backend ?? 'unknown'})`,
+                            probe
+                        ),
+                        ...searched
                     }
                 };
             }
@@ -183,7 +228,8 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                         available: false,
                         serving: false,
                         backend: identity.backend,
-                        reason: 'no MagicDNS name - enable MagicDNS for the tailnet'
+                        reason: 'no MagicDNS name - enable MagicDNS for the tailnet',
+                        ...searched
                     }
                 };
             }
@@ -203,7 +249,8 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                     available: true,
                     backend: identity.backend,
                     dns_name: identity.dnsName,
-                    serving
+                    serving,
+                    ...searched
                 }
             };
         },

@@ -1,12 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    defaultTailscaleRunner,
+    explainTailscaleProbe,
     firstLink,
     parseServeProxyPorts,
     parseTailscaleStatus,
     resolveTailnetURL,
     tailnetClientURL,
     tailscaleBinaryCandidates,
+    tailscaleProbeDiagnostics,
     type TailscaleRunner
 } from './tailnet.js';
 
@@ -272,9 +279,13 @@ describe('tailscaleBinaryCandidates', () => {
         expect(tailscaleBinaryCandidates({ KELPID_TAILSCALE: '  ' }, 'linux')).toEqual(['tailscale']);
     });
 
-    it('macOS probes PATH first, then the App Store bundle CLI (which symlinks nothing)', () => {
+    it('macOS probes PATH, then the standard install dirs, then the App Store bundle CLI', () => {
+        // A Finder-launched app has neither /usr/local/bin nor /opt/homebrew/bin on PATH, so
+        // without those two the search fell through to the sandboxed bundle CLI (#169).
         expect(tailscaleBinaryCandidates({}, 'darwin')).toEqual([
             'tailscale',
+            '/usr/local/bin/tailscale',
+            '/opt/homebrew/bin/tailscale',
             '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
         ]);
     });
@@ -282,5 +293,83 @@ describe('tailscaleBinaryCandidates', () => {
     it('everywhere else PATH is the only candidate', () => {
         expect(tailscaleBinaryCandidates({}, 'linux')).toEqual(['tailscale']);
         expect(tailscaleBinaryCandidates({}, 'win32')).toEqual(['tailscale']);
+    });
+});
+
+describe('defaultTailscaleRunner', () => {
+    const dirs: string[] = [];
+
+    afterEach(() => {
+        for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    /** A real executable: the runner shells out, so only a real one exercises the search. */
+    function fakeCLI(name: string, body: string): string {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-tailscale-'));
+        dirs.push(dir);
+        const file = path.join(dir, name);
+        fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+        return file;
+    }
+
+    /** A path in a directory that exists, with nothing at it: ENOENT, not a permissions error. */
+    function absentCLI(): string {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-tailscale-'));
+        dirs.push(dir);
+        return path.join(dir, 'tailscale');
+    }
+
+    it('walks past a candidate that RAN and failed, keeping what it said (#169)', async () => {
+        const absent = absentCLI();
+        const sandboxed = fakeCLI('sandboxed', 'echo "failed to connect to local tailscaled" >&2\nexit 1');
+        const working = fakeCLI('working', `printf '%s' '${STATUS_RUNNING}'`);
+
+        const result = await defaultTailscaleRunner([absent, sandboxed, working])(['status', '--json']);
+
+        // The old rule advanced only on ENOENT, so `sandboxed` ended the search and a healthy
+        // tailnet read as "state: unknown".
+        expect(result.code).toBe(0);
+        expect(result.binary).toBe(working);
+        expect(parseTailscaleStatus(result.stdout)).toEqual({
+            backend: 'Running',
+            dnsName: 'werk.taila5f942.ts.net'
+        });
+        expect(tailscaleProbeDiagnostics(result)).toEqual({
+            tried: [absent, sandboxed, working],
+            used: working,
+            failure: `${sandboxed} exited 1: failed to connect to local tailscaled`
+        });
+    });
+
+    it('reports the candidate that ran over the one that was never there when none answer', async () => {
+        const absent = absentCLI();
+        const sandboxed = fakeCLI('sandboxed', 'echo "Tailscale is sandboxed\nsecond line" >&2\nexit 1');
+
+        const result = await defaultTailscaleRunner([absent, sandboxed])(['status', '--json']);
+
+        expect(result.code).toBe(1);
+        expect(result.binary).toBe(sandboxed);
+        // One line, because the status card is one line.
+        expect(explainTailscaleProbe('tailscaled is not running (state: unknown)', result)).toBe(
+            `tailscaled is not running (state: unknown) - tried ${absent}, ${sandboxed}; ` +
+                `${sandboxed} exited 1: Tailscale is sandboxed`
+        );
+    });
+
+    it('every candidate missing is still the not-installed sentinel, with the search attached', async () => {
+        const first = absentCLI();
+        const second = absentCLI();
+
+        const result = await defaultTailscaleRunner([first, second])(['status', '--json']);
+
+        expect(result).toMatchObject({ code: -1, stderr: 'ENOENT' });
+        expect(tailscaleProbeDiagnostics(result)).toEqual({
+            tried: [first, second],
+            used: undefined,
+            failure: undefined
+        });
+        expect(explainTailscaleProbe('tailscale is not installed', result)).toBe(
+            `tailscale is not installed - tried ${first}, ${second}`
+        );
     });
 });

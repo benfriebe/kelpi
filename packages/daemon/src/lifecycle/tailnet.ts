@@ -24,22 +24,58 @@
 
 import { execFile } from 'node:child_process';
 
+/** One candidate binary's answer to one invocation. */
+export interface TailscaleAttempt {
+    /** What was tried: a bare name (resolved through PATH) or an absolute path. */
+    readonly binary: string;
+    /** Its exit code, or `-1` for a binary that was not there at all. */
+    readonly code: number;
+    /** The FIRST line of its stderr, trimmed - what a one-line status card has room for. */
+    readonly stderr: string;
+}
+
+/** What one `tailscale <args>` invocation answered, plus the search that produced it. */
+export interface TailscaleResult {
+    readonly code: number;
+    readonly stdout: string;
+    readonly stderr: string;
+    /** The candidate this output came from. Absent from injected runners, which are one binary. */
+    readonly binary?: string | undefined;
+    /**
+     * Every candidate tried, in order. A failed probe is only diagnosable if the search behind
+     * it can be read back (#169), so the runner carries the whole search and not just the
+     * answer it settled on.
+     */
+    readonly attempts?: readonly TailscaleAttempt[] | undefined;
+}
+
 /** One `tailscale <args>` invocation. Injected for tests; production shells out. */
 export interface TailscaleRunner {
-    (args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }>;
+    (args: readonly string[]): Promise<TailscaleResult>;
 }
 
 /** The Mac App Store Tailscale ships its CLI inside the bundle and puts NOTHING on PATH. */
 const MAC_APP_BUNDLE_CLI = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
 
+/** How long one candidate gets to answer before it is killed and reported as a timeout. */
+const CANDIDATE_TIMEOUT_MS = 15_000;
+
 /**
  * Where to look for the `tailscale` CLI, in order.
  *
- * An explicit `KELPID_TAILSCALE` wins ALONE — a configured path that is wrong should fail
+ * An explicit `KELPID_TAILSCALE` wins ALONE - a configured path that is wrong should fail
  * loudly, not silently fall back to some other install. Without it: PATH first (standalone
- * installs and Linux), then — on macOS — the App Store bundle's own binary, which is where
- * the CLI lives on a machine whose owner installed Tailscale the normal Mac way and never
- * symlinked it (measured on this repo's own dev machine, 2026-09-01).
+ * installs and Linux), then - on macOS - the two directories a standalone install actually
+ * drops its CLI in, and LAST the App Store bundle's own binary.
+ *
+ * The middle two are not redundant with PATH, because the daemon's PATH is not the owner's.
+ * A daemon started by the Electron shell inherits the app's environment, and an app launched
+ * from Finder or a LaunchAgent gets the LaunchServices PATH (`/usr/bin:/bin:/usr/sbin:/sbin`),
+ * which has neither `/usr/local/bin` nor `/opt/homebrew/bin` on it. Without these the search
+ * fell straight past a perfectly good CLI to the App Store bundle binary, which is sandboxed,
+ * and remote pairing reported "tailscaled is not running (state: unknown)" on a machine whose
+ * tailnet was healthy and whose own shell could prove it (#169). The bundle CLI stays last for
+ * the same reason: it is the candidate least likely to be able to answer.
  */
 export function tailscaleBinaryCandidates(
     env: NodeJS.ProcessEnv = process.env,
@@ -47,7 +83,23 @@ export function tailscaleBinaryCandidates(
 ): readonly string[] {
     const override = env['KELPID_TAILSCALE']?.trim();
     if (override !== undefined && override.length > 0) return [override];
-    return platform === 'darwin' ? ['tailscale', MAC_APP_BUNDLE_CLI] : ['tailscale'];
+    return platform === 'darwin'
+        ? ['tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale', MAC_APP_BUNDLE_CLI]
+        : ['tailscale'];
+}
+
+/** The first non-empty line of a stream, trimmed. A refusal's first line is the one that names it. */
+export function firstLine(text: string): string {
+    for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.length > 0) return trimmed;
+    }
+    return '';
+}
+
+/** A candidate that is not installed at all, as opposed to one that ran and refused. */
+function missing(result: { readonly code: number; readonly stderr: string }): boolean {
+    return result.code === -1 && result.stderr === 'ENOENT';
 }
 
 function execTailscale(
@@ -55,27 +107,100 @@ function execTailscale(
     args: readonly string[]
 ): Promise<{ code: number; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
-        execFile(binary, [...args], { encoding: 'utf8', timeout: 15_000 }, (error, stdout, stderr) => {
-            if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-                resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
-                return;
+        execFile(
+            binary,
+            [...args],
+            { encoding: 'utf8', timeout: CANDIDATE_TIMEOUT_MS },
+            (error, stdout, stderr) => {
+                if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
+                    return;
+                }
+                const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
+                // A candidate killed for taking too long exits on a signal with nothing on
+                // stderr, which is how a hung CLI used to arrive as a bare "state: unknown".
+                const killed = error !== null && (error as { killed?: unknown }).killed === true;
+                const said =
+                    killed && stderr.trim().length === 0
+                        ? `timed out after ${String(CANDIDATE_TIMEOUT_MS / 1000)}s`
+                        : stderr;
+                resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr: said });
             }
-            const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
-            resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr });
-        });
+        );
     });
 }
 
-/** Tries each candidate in order; only a missing binary (ENOENT) moves to the next. */
+/**
+ * Tries every candidate in order and hands back the first that ANSWERS, not the first that runs.
+ *
+ * The old rule - advance only on ENOENT - meant a single binary that was present but could not
+ * reach the backend (the sandboxed App Store CLI above all) ended the search for every other
+ * install on the machine (#169). Now any failure advances, and the whole search rides back on
+ * `attempts` so a caller can say which binaries were tried and what the failing one said.
+ *
+ * When nothing answers, the failure reported is the first candidate that actually RAN: a binary
+ * that refused says why, a binary that was never there says nothing worth printing. All of them
+ * missing still reports the ENOENT sentinel, which is the "tailscale is not installed" case.
+ */
 export function defaultTailscaleRunner(candidates: readonly string[] = tailscaleBinaryCandidates()): TailscaleRunner {
     return async (args) => {
-        let last = { code: -1, stdout: '', stderr: 'ENOENT' };
+        const attempts: TailscaleAttempt[] = [];
+        let failure: { code: number; stdout: string; stderr: string; binary: string } | undefined;
         for (const binary of candidates) {
-            last = await execTailscale(binary, args);
-            if (!(last.code === -1 && last.stderr === 'ENOENT')) return last;
+            const result = await execTailscale(binary, args);
+            attempts.push({ binary, code: result.code, stderr: firstLine(result.stderr) });
+            if (result.code === 0) return { ...result, binary, attempts };
+            if (failure === undefined || (missing(failure) && !missing(result))) failure = { ...result, binary };
         }
-        return last;
+        if (failure === undefined) return { code: -1, stdout: '', stderr: 'ENOENT', attempts };
+        return { ...failure, attempts };
     };
+}
+
+/** What a probe can tell a human about the search that produced it. */
+export interface TailscaleProbeDiagnostics {
+    /** Every candidate tried, in order. Empty when the runner reported no search. */
+    readonly tried: readonly string[];
+    /** The candidate that answered, when one did. */
+    readonly used: string | undefined;
+    /** `<binary> exited 1: <first stderr line>`, for the first candidate that ran and refused. */
+    readonly failure: string | undefined;
+}
+
+/**
+ * Reads a probe's search back out. Every surface that renders a failed probe goes through this,
+ * so the Remote tab, `kelpid url --tailnet` and the log all name the same binaries (#169).
+ */
+export function tailscaleProbeDiagnostics(result: TailscaleResult): TailscaleProbeDiagnostics {
+    const attempts = result.attempts ?? [];
+    const refused = attempts.find((attempt) => attempt.code !== 0 && !missing(attempt));
+    return {
+        tried: attempts.map((attempt) => attempt.binary),
+        used: result.code === 0 ? result.binary : undefined,
+        failure: refused === undefined ? undefined : describeAttempt(refused)
+    };
+}
+
+function describeAttempt(attempt: TailscaleAttempt): string {
+    const said = attempt.stderr.trim();
+    const exit = attempt.code === -1 ? 'could not be run' : `exited ${String(attempt.code)}`;
+    return said.length === 0 ? `${attempt.binary} ${exit}` : `${attempt.binary} ${exit}: ${said}`;
+}
+
+/**
+ * A failure line with the probe's own search appended: which binaries were tried, and what the
+ * one that ran and refused said.
+ *
+ * Without it every failure collapsed into "state: unknown" with the stderr that named the cause
+ * discarded, which is a message nobody can act on (#169). A probe that reported no search (an
+ * injected runner, which is one binary by construction) is left exactly as it was.
+ */
+export function explainTailscaleProbe(message: string, result: TailscaleResult): string {
+    const search = tailscaleProbeDiagnostics(result);
+    if (search.tried.length === 0) return message;
+    const head = message.replace(/\.$/, '');
+    const tried = `tried ${search.tried.join(', ')}`;
+    return search.failure === undefined ? `${head} - ${tried}` : `${head} - ${tried}; ${search.failure}`;
 }
 
 // ── parsing ─────────────────────────────────────────────────────────────────────────
@@ -264,8 +389,10 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
     if (status.code === -1 && status.stderr === 'ENOENT') {
         return {
             kind: 'error',
-            message:
-                'tailscale is not installed (no `tailscale` on PATH, and no Mac App Store bundle CLI).',
+            message: explainTailscaleProbe(
+                'tailscale is not installed (no `tailscale` CLI on PATH or in the usual install locations).',
+                status
+            ),
             repair:
                 'Install it from https://tailscale.com/download, or point KELPID_TAILSCALE at the CLI binary, then re-run `kelpid url --tailnet`.',
             steps: [
@@ -279,7 +406,12 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
     if (status.code !== 0 || identity.backend !== 'Running') {
         return {
             kind: 'error',
-            message: `tailscaled is not running (state: ${identity.backend ?? 'unknown'}).`,
+            // Not "unknown" on its own: which binaries were tried and what the one that ran
+            // said is the whole diagnosis, and it used to be thrown away (#169).
+            message: explainTailscaleProbe(
+                `tailscaled is not running (state: ${identity.backend ?? 'unknown'}).`,
+                status
+            ),
             repair: 'Run `tailscale up`, then re-run `kelpid url --tailnet`.',
             steps: ['Start Tailscale on this machine and sign in - `tailscale up` does both.']
         };

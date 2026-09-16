@@ -274,6 +274,10 @@ export function retryVerdicts(history, { consecutive = CONSECUTIVE_LANE_FAILS } 
             verdict: lanes >= wanted && everyRetryPassed ? ORDERING_DEPENDENT : LOAD_SENSITIVE,
             lanes,
             predecessor: last.predecessor ?? null,
+            // Whether the predecessor MOVED is its own flag, not something to infer from the name:
+            // `null` is a real predecessor ("it ran first in the lane"), so a scenario that GAINED
+            // one mid-streak read as "no drift" and the note went silent in exactly that direction.
+            predecessorDrifted: drifted !== undefined,
             predecessorThen: drifted === undefined ? null : drifted.predecessor ?? null,
             leakedBy: last.leakedBy ?? null
         });
@@ -340,7 +344,10 @@ const verdictLine = (verdict) => {
     const lanes = `${verdict.lanes >= HISTORY_KEPT ? 'at least ' : ''}${String(verdict.lanes)} full lane${verdict.lanes === 1 ? '' : 's'}`;
     if (verdict.verdict !== ORDERING_DEPENDENT) return `${verdict.name}: ${LOAD_SENSITIVE} (red in ${lanes}, green alone)`;
     const after = verdict.predecessor === null ? 'it runs first in the lane' : `it runs after ${verdict.predecessor}`;
-    const drift = (verdict.predecessorThen ?? null) === null ? '' : ` (it ran after ${verdict.predecessorThen} when the streak started)`;
+    const drift =
+        verdict.predecessorDrifted === true
+            ? ` (it ran ${verdict.predecessorThen === null ? 'first in the lane' : `after ${verdict.predecessorThen}`} when the streak started)`
+            : '';
     const leak = verdict.leakedBy === null ? '' : `; the lane's leak post-condition named ${verdict.leakedBy} as leaving state behind`;
     return `${verdict.name}: ${ORDERING_DEPENDENT} (red in ${lanes} in a row, green in every isolated retry), ${after}${drift}${leak}`;
 };

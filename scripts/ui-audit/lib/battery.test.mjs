@@ -337,6 +337,7 @@ describe('the retry history tells an ordering failure from a wobble, across batt
                 lanes: 1,
                 predecessor: 'plugin-browser-features',
                 // One lane cannot have drifted, so the predecessor of record is the only one there is.
+                predecessorDrifted: false,
                 predecessorThen: null,
                 leakedBy: 'plugin-browser-features'
             }
@@ -457,10 +458,31 @@ describe('the retry history tells an ordering failure from a wobble, across batt
             verdict: ORDERING_DEPENDENT,
             lanes: 2,
             predecessor: 'plugin-chrome-features',
+            predecessorDrifted: true,
             predecessorThen: 'plugin-browser-features'
         });
         const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
         expect(table).toContain('it runs after plugin-chrome-features (it ran after plugin-browser-features when the streak started)');
+    });
+
+    it('says the predecessor moved in the other direction too: a scenario that GAINED one mid-streak', async () => {
+        // `null` is a real predecessor ("it ran first in the lane"), so the drift cannot be inferred
+        // from the name: inserting an alphabetically earlier scenario is exactly how this happens.
+        const first = lane([['plugin-document-features', 3], ['confirm-dialog-keys', 0]]);
+        const second = lane([['plugin-browser-features', 0], ['plugin-document-features', 3]], ['plugin-browser-features']);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(first), { at: '1' });
+        history = recordRetryHistory(history, scenarioObservations(second), { at: '2' });
+
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({
+            verdict: ORDERING_DEPENDENT,
+            lanes: 2,
+            predecessor: 'plugin-browser-features',
+            predecessorDrifted: true,
+            predecessorThen: null
+        });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('it runs after plugin-browser-features (it ran first in the lane when the streak started)');
     });
 
     it('forgets a scenario the lane has not run for twelve folds, so no verdict outlives its scenario', () => {

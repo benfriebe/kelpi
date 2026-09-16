@@ -99,6 +99,32 @@ export function isPaneSurfaceCaret(element: Element | null): boolean {
 }
 
 /**
+ * Issue #174 - is a CHROME text field holding the caret right now?
+ *
+ * The same distinction {@link shouldGrabFocus} makes, asked as a fact about the window rather
+ * than as permission to move anything: an editable that is not (and is not inside) a marked
+ * pane surface - the sidebar rename, the command palette, the pane search bar, a Settings
+ * field - is where the keystrokes are going, whichever pane wears the focus ring.
+ *
+ * AppKit hands ghostty this for free as the third term of its surface-focus computation
+ * (`window.isKeyWindow && … && isFirstResponder`, `BaseTerminalController.syncFocusToSurfaceTree`),
+ * which is why a sidebar rename hollows the cursor in the shipped app. The port had the window
+ * term and the pane term and not this one, so a pane went on drawing a full-strength ring and a
+ * blinking cursor while the user was typing into a rename field. This is that term, and the
+ * ring's documented meaning (`docs/shell-ui.md` §4.1 - it marks the pane keys will go to) is
+ * what makes it a correction rather than a new rule: `focusedPaneID` still says WHICH pane, and
+ * this says whether the keyboard is with it at all.
+ */
+export function chromeCaretHeld(target?: Document): boolean {
+    if (target === undefined && typeof document === 'undefined') return false;
+    const owningDocument = target ?? document;
+    const active = owningDocument.activeElement;
+    if (active === null || active === owningDocument.body) return false;
+    if (!isEditable(active)) return false;
+    return !isPaneSurfaceCaret(active);
+}
+
+/**
  * Polite focus (terminal-surface.md §6): a (re)mounting surface grabs the caret unless a text
  * field OUTSIDE any pane currently holds it — a sidebar rename or the command palette must
  * survive a grid re-render.

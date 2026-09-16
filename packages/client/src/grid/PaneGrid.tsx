@@ -63,6 +63,7 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import { FocusRing, useFocusDwell } from './FocusRing';
@@ -627,6 +628,27 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         [panes, focusedPaneID]
     );
 
+    /*
+     * Issue #174 - the ring's two missing terms, read once for the whole grid.
+     *
+     * `focusedPaneID` answers WHICH pane wears the ring and nothing here changes that: a
+     * workspace always has a focused pane, every explicit focus verb writes it, and
+     * `docs/shell-ui.md` §4.1 is what the border means. What the reporter saw is the other
+     * half - the ring said "keys come here" while the caret was in a chrome text field, and it
+     * said the same thing with the window in the background. Both are facts the CURSOR already
+     * knew (`terminal/TerminalPane.tsx` ▸ `surfaceFocused`, §N20's port of
+     * `ghostty_surface_set_focus`) and the ring did not, so the two disagreed.
+     *
+     * Dimming rather than clearing, because the pane IS still the keyboard target the moment
+     * the field lets go or the window comes back - `undoSurfaceAutoFocus` hands the caret to
+     * `[data-pane-id][data-focused="true"]` by name, and an armed claim collects it
+     * (`app/pane-focus.ts`). `data-focused` is untouched, so every audit selector still reads
+     * the same thing.
+     */
+    const windowFocused = useWindowFocused();
+    const chromeCaret = useChromeCaret();
+    const ringDimmed = chromeCaret || !windowFocused;
+
     useFocusDwell({
         paneID: focusedPaneID,
         status: focusedStatus,
@@ -830,7 +852,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             focus ring and the resize badge painting above it, as the Swift's later
                             `.overlay` modifiers do (`:379`, `:387`). */}
                         {props.renderPaneOverlay?.(pane.id) ?? null}
-                        <FocusRing focused={focused} />
+                        <FocusRing focused={focused} dimmed={ringDimmed} />
                         {/*
                           * §N26's matrix, for the record: this badge is over the page area of a
                           * WEB pane too, and there it is invisible — a native `WebContentsView`

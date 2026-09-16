@@ -553,6 +553,53 @@ describe('PaneGrid focus', () => {
         expect(screen.getByTestId('pane-b').style.zIndex).toBe('1');
     });
 
+    /**
+     * Issue #174 - the ring marks the pane keys go to, so it says so at full strength only
+     * while the keys are actually going there.
+     *
+     * `focusedPaneID` and `data-focused` are unchanged in both cases: the pane IS where typing
+     * resumes the moment the field lets go or the window comes back, which is why this dims
+     * rather than clears.
+     */
+    it('dims the ring while a chrome text field holds the caret, without moving focus', () => {
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+        renderGrid({ focusedPaneID: 'b' });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('false');
+
+        const rename = document.createElement('input');
+        document.body.append(rename);
+        try {
+            act(() => {
+                rename.focus();
+            });
+            expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('true');
+            // Still one ring, still on the same pane.
+            expect(screen.getByTestId('pane-b').getAttribute('data-focused')).toBe('true');
+            expect(screen.getByTestId('pane-a').getAttribute('data-focused')).toBe('false');
+        } finally {
+            rename.remove();
+        }
+        vi.restoreAllMocks();
+    });
+
+    it('dims the ring while the window is in the background', () => {
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+        renderGrid({ focusedPaneID: 'b' });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('false');
+
+        act(() => {
+            window.dispatchEvent(new Event('blur'));
+        });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('true');
+        expect(screen.getByTestId('pane-b').getAttribute('data-focused')).toBe('true');
+
+        act(() => {
+            window.dispatchEvent(new Event('focus'));
+        });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('false');
+        vi.restoreAllMocks();
+    });
+
     it('fires the dwell clear once for a non-idle focused pane', () => {
         vi.useFakeTimers();
         const onDwellClear = vi.fn();

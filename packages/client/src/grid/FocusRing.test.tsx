@@ -1,13 +1,23 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PaneStatus } from '@kelpi/core/layout';
 
-import { FOCUS_DWELL_MS, FocusRing, useFocusDwell, type FocusDwellOptions } from './FocusRing';
+import { PANE_SURFACE_ATTR } from '../app/pane-focus';
+import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
+import {
+    FOCUS_DWELL_MS,
+    FOCUS_RING_DIM_OPACITY,
+    FocusRing,
+    useFocusDwell,
+    type FocusDwellOptions
+} from './FocusRing';
 
 afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    vi.restoreAllMocks();
 });
 
 describe('FocusRing', () => {
@@ -18,6 +28,112 @@ describe('FocusRing', () => {
         const ring = screen.getByTestId('focus-ring');
         expect(ring.style.border).toContain('2px solid');
         expect(ring.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    /** #174: the ring still marks the pane, at reduced alpha while the keyboard is elsewhere. */
+    it('draws dimmed without losing the border or the pane it marks', () => {
+        const view = render(<FocusRing focused />);
+        expect(screen.getByTestId('focus-ring').style.opacity).toBe('1');
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('false');
+
+        view.rerender(<FocusRing focused dimmed />);
+        const ring = screen.getByTestId('focus-ring');
+        expect(ring.getAttribute('data-dimmed')).toBe('true');
+        expect(ring.style.opacity).toBe(String(FOCUS_RING_DIM_OPACITY));
+        expect(ring.style.border).toContain('2px solid');
+    });
+});
+
+/**
+ * #174 - the two terms the ring was missing, as the grid and `TerminalPane` read them.
+ *
+ * Both are DOM-level facts about the window, so they are exercised against the real document
+ * rather than through a mocked hook: a chrome `<input>` outside every `[data-pane-surface]`
+ * versus an editor's textarea inside one, and `window`'s own focus/blur events.
+ */
+function Terms(): ReactElement {
+    const chromeCaret = useChromeCaret();
+    const windowFocused = useWindowFocused();
+    return (
+        <span
+            data-testid="terms"
+            data-chrome-caret={chromeCaret ? 'true' : 'false'}
+            data-dimmed={chromeCaret || !windowFocused ? 'true' : 'false'}
+        />
+    );
+}
+
+function terms(): HTMLElement {
+    return screen.getByTestId('terms');
+}
+
+describe('the ring’s window terms (#174)', () => {
+    // jsdom reports `document.hasFocus()` as false for every test document, which would pin the
+    // window term on. The window under test is the foreground one unless a test says otherwise.
+    beforeEach(() => {
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    });
+
+    it('dims while a chrome text field holds the caret, and not for a pane surface', () => {
+        const chrome = document.createElement('input');
+        const surface = document.createElement('div');
+        surface.setAttribute(PANE_SURFACE_ATTR, '');
+        const paneField = document.createElement('textarea');
+        surface.append(paneField);
+        document.body.append(chrome, surface);
+
+        try {
+            render(<Terms />);
+            expect(terms().getAttribute('data-dimmed')).toBe('false');
+
+            // The sidebar rename / palette / search field takes the caret.
+            act(() => chrome.focus());
+            expect(terms().getAttribute('data-chrome-caret')).toBe('true');
+            expect(terms().getAttribute('data-dimmed')).toBe('true');
+
+            // A PANE's own surface is not chrome: the ring goes back to full strength.
+            act(() => paneField.focus());
+            expect(terms().getAttribute('data-chrome-caret')).toBe('false');
+            expect(terms().getAttribute('data-dimmed')).toBe('false');
+        } finally {
+            chrome.remove();
+            surface.remove();
+        }
+    });
+
+    it('answers a blur with nothing taking the caret, one task later', () => {
+        vi.useFakeTimers();
+        const chrome = document.createElement('input');
+        document.body.append(chrome);
+        try {
+            render(<Terms />);
+            act(() => chrome.focus());
+            expect(terms().getAttribute('data-dimmed')).toBe('true');
+
+            act(() => chrome.blur());
+            act(() => {
+                vi.advanceTimersByTime(1);
+            });
+            expect(terms().getAttribute('data-dimmed')).toBe('false');
+        } finally {
+            chrome.remove();
+        }
+    });
+
+    it('dims while the window is in the background', () => {
+        render(<Terms />);
+        expect(terms().getAttribute('data-dimmed')).toBe('false');
+
+        act(() => {
+            window.dispatchEvent(new Event('blur'));
+        });
+        expect(terms().getAttribute('data-chrome-caret')).toBe('false');
+        expect(terms().getAttribute('data-dimmed')).toBe('true');
+
+        act(() => {
+            window.dispatchEvent(new Event('focus'));
+        });
+        expect(terms().getAttribute('data-dimmed')).toBe('false');
     });
 });
 

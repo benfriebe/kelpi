@@ -206,14 +206,30 @@ export function scenarioObservations(results, { stillRed = [] } = {}) {
     return observations;
 }
 
-/** This lane's observations folded into the stored history, as a new history. */
+/**
+ * This lane's observations folded into the stored history, as a new history.
+ *
+ * Each entry carries the fold that wrote it, which is what lets a KEY be dropped as well as an
+ * entry. Only a green observation clears a scenario's streak, and only a lane that still contains
+ * the scenario can write one, so without pruning a renamed or deleted scenario would keep its
+ * verdict forever: the loudest line in the run, about something nobody can act on, clearable only
+ * by deleting a gitignored file by hand.
+ */
 export function recordRetryHistory(history, observations, { at = new Date().toISOString() } = {}) {
-    const scenarios = { ...(history?.scenarios ?? {}) };
+    const fold = (Number.isInteger(history?.folds) && history.folds >= 0 ? history.folds : 0) + 1;
+    const scenarios = {};
+    for (const [name, entries] of Object.entries(history?.scenarios ?? {})) {
+        const runs = Array.isArray(entries) ? entries : [];
+        // A store written before folds were stamped reads as fold 0, so it survives its first
+        // HISTORY_KEPT folds and is then either re-stamped by a lane that still runs it or dropped.
+        const seenAt = Number.isInteger(runs.at(-1)?.fold) ? runs.at(-1).fold : 0;
+        if (fold - seenAt < HISTORY_KEPT) scenarios[name] = runs;
+    }
     for (const { name, ...observation } of observations) {
         const past = Array.isArray(scenarios[name]) ? scenarios[name] : [];
-        scenarios[name] = [...past, { at, ...observation }].slice(-HISTORY_KEPT);
+        scenarios[name] = [...past, { at, fold, ...observation }].slice(-HISTORY_KEPT);
     }
-    return { version: 1, scenarios };
+    return { version: 1, folds: fold, scenarios };
 }
 
 /**
@@ -222,8 +238,19 @@ export function recordRetryHistory(history, observations, { at = new Date().toIS
  * and every one of them was rescued by the retry; anything shorter is still load-sensitive, which
  * is what a real wobble looks like. Nothing else gets a verdict: a scenario that passed the lane
  * needs no word, and one whose retry was red is already failing the battery under its own name.
+ *
+ * A red retry INSIDE the streak resets the claim rather than strengthening it, on purpose. This
+ * line exists to say what an isolated retry is hiding, and a lane whose retry was also red hid
+ * nothing: it failed the battery under the scenario's own name, with `red alone as well` in the
+ * table, so a person has already seen that failure whole.
+ *
+ * `consecutive` is validated here rather than trusted, because it reaches this function from an
+ * env var two files away. An exported-but-empty variable is an ordinary shell accident, and a
+ * `consecutive` of 0 would call every rescued failure ordering-dependent on its first lane, which
+ * is #205's mislabel pointed the other way; a typo would turn the rule off with no message at all.
  */
 export function retryVerdicts(history, { consecutive = CONSECUTIVE_LANE_FAILS } = {}) {
+    const wanted = Number.isFinite(consecutive) && consecutive >= 1 ? Math.ceil(consecutive) : CONSECUTIVE_LANE_FAILS;
     const verdicts = [];
     for (const [name, entries] of Object.entries(history?.scenarios ?? {})) {
         const runs = Array.isArray(entries) ? entries : [];
@@ -236,32 +263,66 @@ export function retryVerdicts(history, { consecutive = CONSECUTIVE_LANE_FAILS } 
             lanes += 1;
             if (run?.retryPassed !== true) everyRetryPassed = false;
         }
+        // Whether the streak ran behind the SAME scenario every time. Two failures behind two
+        // different predecessors is evidence against a predecessor-specific ordering failure, and
+        // the name is the actionable half of the line, so the streak still counts but the line
+        // has to say the predecessor moved rather than assert a cause that held once.
+        const streak = runs.slice(-lanes);
+        const drifted = streak.find((run) => (run?.predecessor ?? null) !== (last.predecessor ?? null));
         verdicts.push({
             name,
-            verdict: lanes >= consecutive && everyRetryPassed ? ORDERING_DEPENDENT : LOAD_SENSITIVE,
+            verdict: lanes >= wanted && everyRetryPassed ? ORDERING_DEPENDENT : LOAD_SENSITIVE,
             lanes,
             predecessor: last.predecessor ?? null,
+            predecessorThen: drifted === undefined ? null : drifted.predecessor ?? null,
             leakedBy: last.leakedBy ?? null
         });
     }
     return verdicts;
 }
 
-/** The store, or an empty history when the file is absent, unreadable or not this shape. */
+/** Nothing recorded yet: what an absent, unreadable or foreign store reads as. */
+const emptyHistory = () => ({ version: 1, folds: 0, scenarios: {} });
+
+/**
+ * The store, or an empty history when the file is absent, unreadable or not this shape.
+ *
+ * `version` is honoured rather than decorative: a store a later version wrote is a store this code
+ * does not know how to fold, and starting again from empty costs N lanes of history where reading
+ * it as v1 would mis-parse it silently. The shape is checked for the same reason, an ARRAY being
+ * the one that passes a bare `typeof === 'object'`.
+ */
 export function readRetryHistory(file) {
     try {
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-        return { version: 1, scenarios: typeof parsed?.scenarios === 'object' && parsed.scenarios !== null ? parsed.scenarios : {} };
+        if (parsed?.version !== 1) return emptyHistory();
+        if (typeof parsed.scenarios !== 'object' || parsed.scenarios === null || Array.isArray(parsed.scenarios)) return emptyHistory();
+        return {
+            version: 1,
+            folds: Number.isInteger(parsed.folds) && parsed.folds >= 0 ? parsed.folds : 0,
+            scenarios: parsed.scenarios
+        };
     } catch {
-        return { version: 1, scenarios: {} };
+        return emptyHistory();
     }
 }
 
-/** Evidence, never a gate: a history that will not write must not fail an otherwise green run. */
+/**
+ * Evidence, never a gate: a history that will not write must not fail an otherwise green run.
+ *
+ * Written beside the store and renamed over it, because `writeFileSync` truncates before it writes
+ * and a battery that read the file in that window would parse nothing, fold its own single lane
+ * into an empty history and write THAT back, resetting every streak in the file without a word.
+ * `rename(2)` is an atomic replace on the same filesystem, so a reader gets the whole old file or
+ * the whole new one. The read-modify-write around it is still unlocked, and that is accepted: two
+ * overlapping batteries cost one missed lane, which shortens a streak, not a reset that erases it.
+ */
 export function writeRetryHistory(file, history) {
     try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, `${JSON.stringify(history, null, 2)}\n`);
+        const temporary = `${file}.${String(process.pid)}.tmp`;
+        fs.writeFileSync(temporary, `${JSON.stringify(history, null, 2)}\n`);
+        fs.renameSync(temporary, file);
     } catch {
         /* a directory that will not write is not this battery's verdict */
     }
@@ -274,11 +335,14 @@ export function writeRetryHistory(file, history) {
  * blamed for the state this scenario inherited.
  */
 const verdictLine = (verdict) => {
-    const lanes = `${String(verdict.lanes)} full lane${verdict.lanes === 1 ? '' : 's'}`;
+    // A streak can only be counted as far back as the store kept, so one that fills the window is
+    // "at least": the run before the oldest entry may well have been red too.
+    const lanes = `${verdict.lanes >= HISTORY_KEPT ? 'at least ' : ''}${String(verdict.lanes)} full lane${verdict.lanes === 1 ? '' : 's'}`;
     if (verdict.verdict !== ORDERING_DEPENDENT) return `${verdict.name}: ${LOAD_SENSITIVE} (red in ${lanes}, green alone)`;
     const after = verdict.predecessor === null ? 'it runs first in the lane' : `it runs after ${verdict.predecessor}`;
+    const drift = (verdict.predecessorThen ?? null) === null ? '' : ` (it ran after ${verdict.predecessorThen} when the streak started)`;
     const leak = verdict.leakedBy === null ? '' : `; the lane's leak post-condition named ${verdict.leakedBy} as leaving state behind`;
-    return `${verdict.name}: ${ORDERING_DEPENDENT} (red in ${lanes} in a row, green in every isolated retry), ${after}${leak}`;
+    return `${verdict.name}: ${ORDERING_DEPENDENT} (red in ${lanes} in a row, green in every isolated retry), ${after}${drift}${leak}`;
 };
 
 const wall = (ms) => (ms >= 90_000 ? `${(ms / 60_000).toFixed(1)}m` : `${(ms / 1000).toFixed(1)}s`);

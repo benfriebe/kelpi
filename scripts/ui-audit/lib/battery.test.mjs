@@ -331,7 +331,15 @@ describe('the retry history tells an ordering failure from a wobble, across batt
     it('calls a scenario that failed ONE lane and passed alone load-sensitive, as before', async () => {
         const verdicts = retryVerdicts(afterBatteries(1));
         expect(verdicts).toEqual([
-            { name: 'plugin-document-features', verdict: LOAD_SENSITIVE, lanes: 1, predecessor: 'plugin-browser-features', leakedBy: 'plugin-browser-features' }
+            {
+                name: 'plugin-document-features',
+                verdict: LOAD_SENSITIVE,
+                lanes: 1,
+                predecessor: 'plugin-browser-features',
+                // One lane cannot have drifted, so the predecessor of record is the only one there is.
+                predecessorThen: null,
+                leakedBy: 'plugin-browser-features'
+            }
         ]);
 
         const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
@@ -376,7 +384,7 @@ describe('the retry history tells an ordering failure from a wobble, across batt
         const file = path.join(dir, 'nested', 'battery-retry-history.json');
         try {
             // Nothing recorded yet: a first battery must read an empty history, not crash on one.
-            expect(readRetryHistory(file)).toEqual({ version: 1, scenarios: {} });
+            expect(readRetryHistory(file)).toEqual({ version: 1, folds: 0, scenarios: {} });
             expect(retryVerdicts(readRetryHistory(file))).toEqual([]);
 
             writeRetryHistory(file, afterBatteries(1));
@@ -391,6 +399,98 @@ describe('the retry history tells an ordering failure from a wobble, across batt
                 lanes: 2,
                 predecessor: 'plugin-browser-features'
             });
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps the last twelve folds per scenario, drops the oldest, and says "at least" when it is full', async () => {
+        let history = { version: 1, folds: 0, scenarios: {} };
+        for (let fold = 1; fold <= 13; fold += 1) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks), { at: `fold-${String(fold)}` });
+        }
+        const runs = history.scenarios['plugin-document-features'];
+        // The cap is per scenario and it drops from the FRONT: thirteen folds leave folds 2 to 13.
+        expect(runs).toHaveLength(12);
+        expect(runs.at(0).at).toBe('fold-2');
+        expect(runs.at(-1).at).toBe('fold-13');
+
+        // A streak that fills the window cannot be counted past it, and the line must not pretend
+        // otherwise: the run before the oldest entry kept may well have been red too.
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({ verdict: ORDERING_DEPENDENT, lanes: 12 });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('red in at least 12 full lanes in a row');
+    });
+
+    it('resets the claim when one retry inside the streak was red, and says so as load-sensitive', () => {
+        // Deliberate: that battery went red under the scenario's own name, so nothing was hidden by
+        // a retry and this line has nothing to add. Four lanes deep, one red alone, still a wobble.
+        let history = { version: 1, folds: 0, scenarios: {} };
+        for (const stillRed of [[], ['plugin-document-features'], [], []]) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks, { stillRed }), { at: 'x' });
+        }
+        expect(retryVerdicts(history)).toMatchObject([{ name: 'plugin-document-features', verdict: LOAD_SENSITIVE, lanes: 4 }]);
+    });
+
+    it('validates N instead of trusting it: empty, zero, negative and unparsable all read as the default', () => {
+        const one = afterBatteries(1);
+        const two = afterBatteries(2);
+        // `Number('')` and `Number('0')` are 0, which would make the FIRST rescued failure
+        // ordering-dependent; `Number('abc')` is NaN, which would turn the rule off entirely.
+        for (const bad of [0, -1, Number.NaN, Number(''), '2', null]) {
+            expect(retryVerdicts(one, { consecutive: bad })[0].verdict).toBe(LOAD_SENSITIVE);
+            expect(retryVerdicts(two, { consecutive: bad })[0].verdict).toBe(ORDERING_DEPENDENT);
+        }
+        // A fraction is rounded UP, so 2.5 means three: it must never be easier than the integer above it.
+        expect(retryVerdicts(two, { consecutive: 2.5 })[0].verdict).toBe(LOAD_SENSITIVE);
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 2.5 })[0].verdict).toBe(ORDERING_DEPENDENT);
+    });
+
+    it('says the predecessor moved when the streak did not run behind the same scenario twice', async () => {
+        const behind = (name) => lane([['confirm-dialog-keys', 0], [name, 0], ['plugin-document-features', 3]], [name]);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(behind('plugin-browser-features')), { at: '1' });
+        history = recordRetryHistory(history, scenarioObservations(behind('plugin-chrome-features')), { at: '2' });
+
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({
+            verdict: ORDERING_DEPENDENT,
+            lanes: 2,
+            predecessor: 'plugin-chrome-features',
+            predecessorThen: 'plugin-browser-features'
+        });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('it runs after plugin-chrome-features (it ran after plugin-browser-features when the streak started)');
+    });
+
+    it('forgets a scenario the lane has not run for twelve folds, so no verdict outlives its scenario', () => {
+        const withGone = lane([['gone-away', 2], ['plugin-document-features', 3]], ['gone-away']);
+        const withoutGone = lane([['plugin-document-features', 3]]);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(withGone), { at: '1' });
+        expect(retryVerdicts(history).map((verdict) => verdict.name)).toContain('gone-away');
+
+        for (let fold = 0; fold < 11; fold += 1) history = recordRetryHistory(history, scenarioObservations(withoutGone), { at: 'n' });
+        expect(Object.keys(history.scenarios)).toContain('gone-away');
+        history = recordRetryHistory(history, scenarioObservations(withoutGone), { at: 'last' });
+        expect(Object.keys(history.scenarios)).not.toContain('gone-away');
+        expect(retryVerdicts(history).map((verdict) => verdict.name)).toEqual(['plugin-document-features']);
+    });
+
+    it('reads a truncated, foreign or wrong-shaped store as no history rather than throwing', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'battery-history-bad-'));
+        const file = path.join(dir, 'battery-retry-history.json');
+        try {
+            // A store half-written by a battery that died: the one case the atomic rename exists to
+            // prevent, and it must still read as nothing rather than take the run down.
+            fs.writeFileSync(file, '{"version":1,"scen');
+            expect(readRetryHistory(file)).toEqual({ version: 1, folds: 0, scenarios: {} });
+            // A store a LATER version wrote is not one this code knows how to fold.
+            fs.writeFileSync(file, JSON.stringify({ version: 2, scenarios: { target: [{ failedLane: true, retryPassed: true }] } }));
+            expect(readRetryHistory(file).scenarios).toEqual({});
+            // An array passes a bare `typeof === "object"`, so the shape is checked as well.
+            fs.writeFileSync(file, JSON.stringify({ version: 1, scenarios: [] }));
+            expect(readRetryHistory(file).scenarios).toEqual({});
+            expect(retryVerdicts(readRetryHistory(file))).toEqual([]);
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }

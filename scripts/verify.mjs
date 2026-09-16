@@ -749,10 +749,19 @@ const battery = await runBattery({ components, log });
  */
 const historyFile = path.join(repoRoot, 'docs', 'audit', 'battery-retry-history.json');
 let verdicts = [];
-if (laneObservations !== null) {
+// An empty list is a lane that observed nothing (a `results.json` that could not be read), not a
+// green lane: it must write nothing and say nothing rather than re-emit the last run's verdicts.
+if (laneObservations !== null && laneObservations.length > 0) {
+    // `parseInt`, not `Number()`: an exported-but-empty KELPI_ORDERING_LANES is `0` under `Number`,
+    // which would call every retry-rescued scenario ordering-dependent on its first failure.
+    const asked = Number.parseInt(process.env.KELPI_ORDERING_LANES ?? '', 10);
+    const consecutive = Number.isInteger(asked) && asked >= 1 ? asked : CONSECUTIVE_LANE_FAILS;
     const history = recordRetryHistory(readRetryHistory(historyFile), laneObservations);
     writeRetryHistory(historyFile, history);
-    verdicts = retryVerdicts(history, { consecutive: Number(process.env.KELPI_ORDERING_LANES ?? CONSECUTIVE_LANE_FAILS) });
+    // Only the scenarios THIS lane ran. The store outlives a rename or a deletion, and a verdict
+    // for a scenario nothing runs any more would be the loudest line in every later green run.
+    const seen = new Set(laneObservations.map((observation) => observation.name));
+    verdicts = retryVerdicts(history, { consecutive }).filter((verdict) => seen.has(verdict.name));
 }
 
 // The table is the point of running everything: one red battery now says which checks failed,

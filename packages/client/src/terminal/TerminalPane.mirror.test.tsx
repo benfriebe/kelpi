@@ -26,6 +26,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TopBar } from '../chrome/TopBar';
+import { mirroredPaneClip, subscribeTerminalPanes } from './pane-registry';
 import { TERMINAL_MIRROR_ATTRIBUTE, TerminalPane } from './TerminalPane';
 import {
     createFakePtyApi,
@@ -619,6 +620,38 @@ describe('a mirrored pane marks the edge it is clipping (#178)', () => {
         expect(mounted.root.getAttribute('data-terminal-clip')).toBeNull();
         expect(edges(mounted.root)).toEqual({ right: false, bottom: false });
         expect(chipTooltip()).not.toContain('hidden');
+    });
+
+    it('announces a visibility flip, because a hidden pane reports no clip', async () => {
+        /*
+         * The registry's contract is that an answer which MOVED is announced, and visibility moves
+         * this one without touching the clip: a pane in an unselected workspace, or behind a modal,
+         * stays mounted and registered and stops reporting, so the chip stops counting it. The
+         * clip itself has not changed, so `publishClip`'s equality guard announces nothing, and the
+         * announcement beside it is the phone key bar's and is phone-gated. This is the case that
+         * says a desktop hears it too.
+         */
+        const mounted = await mount({ ownsSize: false, width: 840, height: 600 });
+        mounted.pty.last().replay('wide-owner-screen', { cols: 120, rows: 30 });
+        await settle();
+        expect(mirroredPaneClip()).toEqual({ cols: 36, rows: 0 });
+
+        let notifications = 0;
+        const stop = subscribeTerminalPanes(() => {
+            notifications += 1;
+        });
+        try {
+            await mounted.update({ visible: false });
+            expect(mirroredPaneClip()).toBeNull();
+            expect(notifications).toBeGreaterThan(0);
+
+            const afterHide = notifications;
+            await mounted.update({ visible: true });
+            expect(mirroredPaneClip()).toEqual({ cols: 36, rows: 0 });
+            expect(notifications).toBeGreaterThan(afterHide);
+        } finally {
+            stop();
+        }
     });
 
     it('opens when the viewer shrinks below the owner, and closes when it takes size control', async () => {

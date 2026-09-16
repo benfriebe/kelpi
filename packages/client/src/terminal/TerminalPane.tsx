@@ -1990,13 +1990,35 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      * The registry publishes the predicate as `focusedOnScreen()` and reads it at call time; what
      * a pull cannot do is say that the answer MOVED, which it does whenever the ring moves or a
      * sibling is zoomed - none of which touches this pane's engine, its handle or its DOM. One
-     * announcement per change, on the two props that decide it. Phone only: on a desktop nothing
-     * is subscribed, so an announcement would be a message to nobody.
+     * announcement per change. Phone only: the key bar is the one subscriber this predicate
+     * exists for and it is not mounted on a desktop, so announcing a ring move there would only
+     * re-render a top bar whose own read the ring cannot change.
      */
     useEffect(() => {
         if (!phone) return;
         notifyTerminalPanes();
-    }, [phone, focused, visible]);
+    }, [phone, focused]);
+
+    /*
+     * #178 - VISIBILITY moves a registry answer on every form factor, so it is announced on every
+     * form factor.
+     *
+     * `mirrorClip()` reports null for a hidden pane, because the chip must not count a clip nobody
+     * is looking at. That is a change to what this handle answers which nothing else can see: the
+     * clip itself did not move, so `publishClip`'s equality guard returns before its own notify,
+     * and the announcement above is phone-gated. The registry's contract is that a moved answer is
+     * announced (`pane-registry.ts`), and the hide direction is the one that would otherwise leave
+     * a number that is too big on a control claiming to fix it.
+     *
+     * Cheap where nobody is listening: a window that sizes its own PTY subscribes to nothing
+     * (`chrome/TopBar.tsx` never evaluates the subscribe on that branch), so this is a counter bump
+     * and no render at all. The gate stays on the READ rather than moving into `publishClip`: a
+     * hidden pane keeps `data-terminal-clip`, which is what the DOM contract in
+     * `docs/terminal-surface.md` section 5.1 says it holds.
+     */
+    useEffect(() => {
+        notifyTerminalPanes();
+    }, [visible]);
 
     // ── the engine's textarea, told it is talking to a software keyboard (C2) ───────
     //

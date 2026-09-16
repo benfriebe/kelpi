@@ -10,18 +10,29 @@
  * These run under the ROOT vitest through the `harness` project in `vitest.config.ts`, beside
  * `verify-plan.test.mjs`, for the reason that file's header gives.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
     FAILED,
     FAILED_TWICE,
+    LOAD_SENSITIVE,
     NOT_RUN,
+    ORDERING_DEPENDENT,
     PASSED,
     PASSED_ON_RETRY,
     failedScenariosFromResults,
     failedTestFilesFromVitestJson,
     formatBatterySummary,
-    runBattery
+    readRetryHistory,
+    recordRetryHistory,
+    retryVerdicts,
+    runBattery,
+    scenarioObservations,
+    writeRetryHistory
 } from './battery.mjs';
 
 /**
@@ -263,5 +274,247 @@ describe('the summary table', () => {
         expect(text).toContain('retried alone: packages/daemon/src/b.test.ts');
         // A green component never explains itself: the table stays readable when nothing is wrong.
         expect(text).not.toContain('red alone as well');
+    });
+});
+
+describe('the retry history tells an ordering failure from a wobble, across batteries (#215)', () => {
+    /** One full lane's `results.json`: `[name, failedChecks]` in run order, plus who leaked. */
+    const lane = (rows, leakedBy = []) => ({
+        stamp: '2026-09-16T08-00-00-000Z',
+        windowPlacement: 'hidden',
+        summaries: rows.map(([name, failed]) => ({ name, checks: 11, failed, ms: 9000 })),
+        leaks: leakedBy.map((name) => ({ name, leaked: ["the phone's remembered place is still set"] }))
+    });
+
+    /** The lane that #205 lived in: a producer that leaks, and the scenario that runs into it. */
+    const laneThatLeaks = lane(
+        [
+            ['confirm-dialog-keys', 0],
+            ['plugin-browser-features', 0],
+            ['plugin-document-features', 3]
+        ],
+        ['plugin-browser-features']
+    );
+
+    const afterBatteries = (count, { stillRed = [] } = {}) => {
+        let history = { version: 1, scenarios: {} };
+        for (let index = 0; index < count; index += 1) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks, { stillRed }), {
+                at: `2026-09-1${String(index + 1)}T08:00:00.000Z`
+            });
+        }
+        return history;
+    };
+
+    /** The component the battery actually ran: red lane, green isolated retry of that scenario. */
+    const retriedLane = async () =>
+        runBattery({
+            components: [fake('scenarios (all, hidden)', { ok: false, retryOk: true, retryOf: ['plugin-document-features'] }).component]
+        });
+
+    it('reads each scenario of the lane with what ran before it and who the leak report blames', () => {
+        expect(scenarioObservations(laneThatLeaks)).toEqual([
+            { name: 'confirm-dialog-keys', failedLane: false, retryPassed: null, predecessor: null, leakedBy: null },
+            { name: 'plugin-browser-features', failedLane: false, retryPassed: null, predecessor: 'confirm-dialog-keys', leakedBy: null },
+            {
+                name: 'plugin-document-features',
+                failedLane: true,
+                retryPassed: true,
+                predecessor: 'plugin-browser-features',
+                leakedBy: 'plugin-browser-features'
+            }
+        ]);
+        // The retry could not save it, so it is not a green-alone at all and gets no verdict later.
+        expect(scenarioObservations(laneThatLeaks, { stillRed: ['plugin-document-features'] })[2].retryPassed).toBe(false);
+    });
+
+    it('calls a scenario that failed ONE lane and passed alone load-sensitive, as before', async () => {
+        const verdicts = retryVerdicts(afterBatteries(1));
+        expect(verdicts).toEqual([
+            {
+                name: 'plugin-document-features',
+                verdict: LOAD_SENSITIVE,
+                lanes: 1,
+                predecessor: 'plugin-browser-features',
+                // One lane cannot have drifted, so the predecessor of record is the only one there is.
+                predecessorDrifted: false,
+                predecessorThen: null,
+                leakedBy: 'plugin-browser-features'
+            }
+        ]);
+
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('plugin-document-features: load-sensitive (red in 1 full lane, green alone)');
+        expect(table).not.toContain(ORDERING_DEPENDENT);
+    });
+
+    it('calls it ordering-dependent after two consecutive lanes, and names the scenario before it', async () => {
+        const verdicts = retryVerdicts(afterBatteries(2));
+        expect(verdicts.map((verdict) => [verdict.name, verdict.verdict, verdict.lanes])).toEqual([
+            ['plugin-document-features', ORDERING_DEPENDENT, 2]
+        ]);
+
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('plugin-document-features: ordering-dependent (red in 2 full lanes in a row, green in every isolated retry)');
+        expect(table).toContain('it runs after plugin-browser-features');
+        // The runner's leak post-condition already named the predecessor; the battery says so on
+        // the same line, because that name is the whole difference between a flake and a cause.
+        expect(table).toContain("the lane's leak post-condition named plugin-browser-features as leaving state behind");
+        expect(table).not.toContain(LOAD_SENSITIVE);
+    });
+
+    it('takes N from the caller: three lanes deep is still load-sensitive when N is four', () => {
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 4 })[0].verdict).toBe(LOAD_SENSITIVE);
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 3 })[0].verdict).toBe(ORDERING_DEPENDENT);
+    });
+
+    it('says nothing about a scenario whose retry was red, or one the lane never failed', () => {
+        // Red twice is the battery's own failure under its own name, not a history question.
+        expect(retryVerdicts(afterBatteries(2, { stillRed: ['plugin-document-features'] }))).toEqual([]);
+        // A green lane ends the streak: the next fail starts again at one.
+        const green = recordRetryHistory(afterBatteries(2), scenarioObservations(lane([['plugin-browser-features', 0], ['plugin-document-features', 0]])), {
+            at: '2026-09-13T08:00:00.000Z'
+        });
+        expect(retryVerdicts(green)).toEqual([]);
+        const again = recordRetryHistory(green, scenarioObservations(laneThatLeaks), { at: '2026-09-14T08:00:00.000Z' });
+        expect(retryVerdicts(again)[0]).toMatchObject({ verdict: LOAD_SENSITIVE, lanes: 1 });
+    });
+
+    it('survives a round trip through the store, and reads an absent store as no history', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'battery-history-'));
+        const file = path.join(dir, 'nested', 'battery-retry-history.json');
+        try {
+            // Nothing recorded yet: a first battery must read an empty history, not crash on one.
+            expect(readRetryHistory(file)).toEqual({ version: 1, folds: 0, scenarios: {} });
+            expect(retryVerdicts(readRetryHistory(file))).toEqual([]);
+
+            writeRetryHistory(file, afterBatteries(1));
+            // The second battery is a different process: it can only see what the file kept.
+            const reloaded = recordRetryHistory(readRetryHistory(file), scenarioObservations(laneThatLeaks), { at: '2026-09-15T08:00:00.000Z' });
+            writeRetryHistory(file, reloaded);
+
+            expect(readRetryHistory(file)).toEqual(reloaded);
+            expect(readRetryHistory(file).scenarios['plugin-document-features']).toHaveLength(2);
+            expect(retryVerdicts(readRetryHistory(file))[0]).toMatchObject({
+                verdict: ORDERING_DEPENDENT,
+                lanes: 2,
+                predecessor: 'plugin-browser-features'
+            });
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps the last twelve folds per scenario, drops the oldest, and says "at least" when it is full', async () => {
+        let history = { version: 1, folds: 0, scenarios: {} };
+        for (let fold = 1; fold <= 13; fold += 1) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks), { at: `fold-${String(fold)}` });
+        }
+        const runs = history.scenarios['plugin-document-features'];
+        // The cap is per scenario and it drops from the FRONT: thirteen folds leave folds 2 to 13.
+        expect(runs).toHaveLength(12);
+        expect(runs.at(0).at).toBe('fold-2');
+        expect(runs.at(-1).at).toBe('fold-13');
+
+        // A streak that fills the window cannot be counted past it, and the line must not pretend
+        // otherwise: the run before the oldest entry kept may well have been red too.
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({ verdict: ORDERING_DEPENDENT, lanes: 12 });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('red in at least 12 full lanes in a row');
+    });
+
+    it('resets the claim when one retry inside the streak was red, and says so as load-sensitive', () => {
+        // Deliberate: that battery went red under the scenario's own name, so nothing was hidden by
+        // a retry and this line has nothing to add. Four lanes deep, one red alone, still a wobble.
+        let history = { version: 1, folds: 0, scenarios: {} };
+        for (const stillRed of [[], ['plugin-document-features'], [], []]) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks, { stillRed }), { at: 'x' });
+        }
+        expect(retryVerdicts(history)).toMatchObject([{ name: 'plugin-document-features', verdict: LOAD_SENSITIVE, lanes: 4 }]);
+    });
+
+    it('validates N instead of trusting it: empty, zero, negative and unparsable all read as the default', () => {
+        const one = afterBatteries(1);
+        const two = afterBatteries(2);
+        // `Number('')` and `Number('0')` are 0, which would make the FIRST rescued failure
+        // ordering-dependent; `Number('abc')` is NaN, which would turn the rule off entirely.
+        for (const bad of [0, -1, Number.NaN, Number(''), '2', null]) {
+            expect(retryVerdicts(one, { consecutive: bad })[0].verdict).toBe(LOAD_SENSITIVE);
+            expect(retryVerdicts(two, { consecutive: bad })[0].verdict).toBe(ORDERING_DEPENDENT);
+        }
+        // A fraction is rounded UP, so 2.5 means three: it must never be easier than the integer above it.
+        expect(retryVerdicts(two, { consecutive: 2.5 })[0].verdict).toBe(LOAD_SENSITIVE);
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 2.5 })[0].verdict).toBe(ORDERING_DEPENDENT);
+    });
+
+    it('says the predecessor moved when the streak did not run behind the same scenario twice', async () => {
+        const behind = (name) => lane([['confirm-dialog-keys', 0], [name, 0], ['plugin-document-features', 3]], [name]);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(behind('plugin-browser-features')), { at: '1' });
+        history = recordRetryHistory(history, scenarioObservations(behind('plugin-chrome-features')), { at: '2' });
+
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({
+            verdict: ORDERING_DEPENDENT,
+            lanes: 2,
+            predecessor: 'plugin-chrome-features',
+            predecessorDrifted: true,
+            predecessorThen: 'plugin-browser-features'
+        });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('it runs after plugin-chrome-features (it ran after plugin-browser-features when the streak started)');
+    });
+
+    it('says the predecessor moved in the other direction too: a scenario that GAINED one mid-streak', async () => {
+        // `null` is a real predecessor ("it ran first in the lane"), so the drift cannot be inferred
+        // from the name: inserting an alphabetically earlier scenario is exactly how this happens.
+        const first = lane([['plugin-document-features', 3], ['confirm-dialog-keys', 0]]);
+        const second = lane([['plugin-browser-features', 0], ['plugin-document-features', 3]], ['plugin-browser-features']);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(first), { at: '1' });
+        history = recordRetryHistory(history, scenarioObservations(second), { at: '2' });
+
+        const verdicts = retryVerdicts(history);
+        expect(verdicts[0]).toMatchObject({
+            verdict: ORDERING_DEPENDENT,
+            lanes: 2,
+            predecessor: 'plugin-browser-features',
+            predecessorDrifted: true,
+            predecessorThen: null
+        });
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('it runs after plugin-browser-features (it ran first in the lane when the streak started)');
+    });
+
+    it('forgets a scenario the lane has not run for twelve folds, so no verdict outlives its scenario', () => {
+        const withGone = lane([['gone-away', 2], ['plugin-document-features', 3]], ['gone-away']);
+        const withoutGone = lane([['plugin-document-features', 3]]);
+        let history = recordRetryHistory({ version: 1, folds: 0, scenarios: {} }, scenarioObservations(withGone), { at: '1' });
+        expect(retryVerdicts(history).map((verdict) => verdict.name)).toContain('gone-away');
+
+        for (let fold = 0; fold < 11; fold += 1) history = recordRetryHistory(history, scenarioObservations(withoutGone), { at: 'n' });
+        expect(Object.keys(history.scenarios)).toContain('gone-away');
+        history = recordRetryHistory(history, scenarioObservations(withoutGone), { at: 'last' });
+        expect(Object.keys(history.scenarios)).not.toContain('gone-away');
+        expect(retryVerdicts(history).map((verdict) => verdict.name)).toEqual(['plugin-document-features']);
+    });
+
+    it('reads a truncated, foreign or wrong-shaped store as no history rather than throwing', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'battery-history-bad-'));
+        const file = path.join(dir, 'battery-retry-history.json');
+        try {
+            // A store half-written by a battery that died: the one case the atomic rename exists to
+            // prevent, and it must still read as nothing rather than take the run down.
+            fs.writeFileSync(file, '{"version":1,"scen');
+            expect(readRetryHistory(file)).toEqual({ version: 1, folds: 0, scenarios: {} });
+            // A store a LATER version wrote is not one this code knows how to fold.
+            fs.writeFileSync(file, JSON.stringify({ version: 2, scenarios: { target: [{ failedLane: true, retryPassed: true }] } }));
+            expect(readRetryHistory(file).scenarios).toEqual({});
+            // An array passes a bare `typeof === "object"`, so the shape is checked as well.
+            fs.writeFileSync(file, JSON.stringify({ version: 1, scenarios: [] }));
+            expect(readRetryHistory(file).scenarios).toEqual({});
+            expect(retryVerdicts(readRetryHistory(file))).toEqual([]);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

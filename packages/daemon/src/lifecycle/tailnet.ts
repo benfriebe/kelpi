@@ -57,25 +57,44 @@ export interface TailscaleRunner {
 /** The Mac App Store Tailscale ships its CLI inside the bundle and puts NOTHING on PATH. */
 const MAC_APP_BUNDLE_CLI = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
 
-/** How long one candidate gets to answer before it is killed and reported as a timeout. */
-const CANDIDATE_TIMEOUT_MS = 15_000;
+/**
+ * One deadline for the WHOLE candidate search, not one per candidate.
+ *
+ * This number is the client's `DEFAULT_COMMAND_TIMEOUT_MS`
+ * (`packages/client/src/connection/commands.ts`), which is the budget `remote-status` is given.
+ * A search that outlives it produces a diagnosis nobody ever sees, because the client replaces
+ * the whole reply with "command 'remote-status' timed out" - and an unresponsive tailscaled is
+ * precisely the failure this diagnosis exists for. So widening the candidate list must not
+ * multiply wall clock, and these two numbers move together or not at all.
+ */
+const SEARCH_TIMEOUT_MS = 15_000;
 
 /**
  * Where to look for the `tailscale` CLI, in order.
  *
  * An explicit `KELPID_TAILSCALE` wins ALONE - a configured path that is wrong should fail
- * loudly, not silently fall back to some other install. Without it: PATH first (standalone
- * installs and Linux), then - on macOS - the two directories a standalone install actually
- * drops its CLI in, and LAST the App Store bundle's own binary.
+ * loudly, not silently fall back to some other install. Without it, on macOS: PATH, then
+ * `/usr/local/bin`, then `/opt/homebrew/bin`, then the App Store bundle's own binary.
  *
- * The middle two are not redundant with PATH, because the daemon's PATH is not the owner's.
- * A daemon started by the Electron shell inherits the app's environment, and an app launched
- * from Finder or a LaunchAgent gets the LaunchServices PATH (`/usr/bin:/bin:/usr/sbin:/sbin`),
- * which has neither `/usr/local/bin` nor `/opt/homebrew/bin` on it. Without these the search
- * fell straight past a perfectly good CLI to the App Store bundle binary, which is sandboxed,
- * and remote pairing reported "tailscaled is not running (state: unknown)" on a machine whose
- * tailnet was healthy and whose own shell could prove it (#169). The bundle CLI stays last for
- * the same reason: it is the candidate least likely to be able to answer.
+ * Those three absolute paths are three different things, and the order is the point:
+ *
+ *  - `/usr/local/bin/tailscale` is what the OFFICIAL standalone installer drops (a small shell
+ *    shim that execs the binary inside the app bundle), so it comes first: it is the install
+ *    the vendor put there.
+ *  - `/opt/homebrew/bin` is Homebrew's own prefix on Apple Silicon, and it is user-writable by
+ *    design. That is not a new trust decision: it is already first on the owner's interactive
+ *    PATH, so a terminal-started daemon execs whatever is there today, and the daemon runs as
+ *    that same user either way.
+ *  - the App Store bundle CLI stays LAST because it is the candidate least likely to be able to
+ *    answer: it is sandboxed, and it is where the search used to end up by default.
+ *
+ * None of the three is redundant with PATH, because the daemon's PATH is not the owner's. A
+ * daemon started by the Electron shell inherits the app's environment, and an app launched from
+ * Finder or a LaunchAgent gets the LaunchServices PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which
+ * has neither directory on it. Without them the search fell straight past a perfectly good CLI
+ * to the sandboxed bundle binary, and remote pairing reported "tailscaled is not running
+ * (state: unknown)" on a machine whose tailnet was healthy and whose own shell could prove it
+ * (#169).
  */
 export function tailscaleBinaryCandidates(
     env: NodeJS.ProcessEnv = process.env,
@@ -104,52 +123,83 @@ function missing(result: { readonly code: number; readonly stderr: string }): bo
 
 function execTailscale(
     binary: string,
-    args: readonly string[]
+    args: readonly string[],
+    timeoutMs: number
 ): Promise<{ code: number; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
-        execFile(
-            binary,
-            [...args],
-            { encoding: 'utf8', timeout: CANDIDATE_TIMEOUT_MS },
-            (error, stdout, stderr) => {
-                if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-                    resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
-                    return;
-                }
-                const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
-                // A candidate killed for taking too long exits on a signal with nothing on
-                // stderr, which is how a hung CLI used to arrive as a bare "state: unknown".
-                const killed = error !== null && (error as { killed?: unknown }).killed === true;
-                const said =
-                    killed && stderr.trim().length === 0
-                        ? `timed out after ${String(CANDIDATE_TIMEOUT_MS / 1000)}s`
-                        : stderr;
-                resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr: said });
+        execFile(binary, [...args], { encoding: 'utf8', timeout: timeoutMs }, (error, stdout, stderr) => {
+            if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+                resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
+                return;
             }
-        );
+            // A candidate killed for taking too long exits on a signal with nothing on stderr,
+            // which is how a hung CLI used to arrive as a bare "state: unknown". It reads as
+            // "could not be run", like a missing binary, because that is what it amounts to.
+            if (error !== null && (error as { killed?: unknown }).killed === true) {
+                const waited =
+                    timeoutMs >= 1000 ? `${String(Math.round(timeoutMs / 1000))}s` : `${String(timeoutMs)}ms`;
+                resolve({ code: -1, stdout, stderr: firstLine(stderr) || `timed out after ${waited}` });
+                return;
+            }
+            const code = error === null ? 0 : ((error as { code?: unknown }).code as number | undefined) ?? 1;
+            resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr });
+        });
     });
 }
 
 /**
- * Tries every candidate in order and hands back the first that ANSWERS, not the first that runs.
+ * Tries every candidate in order, hands back the first that ANSWERS, and then PINS it.
  *
- * The old rule - advance only on ENOENT - meant a single binary that was present but could not
- * reach the backend (the sandboxed App Store CLI above all) ended the search for every other
- * install on the machine (#169). Now any failure advances, and the whole search rides back on
- * `attempts` so a caller can say which binaries were tried and what the failing one said.
+ * Two rules, and they are not the same rule:
+ *
+ *  1. **The search advances past any failure.** The old rule - advance only on ENOENT - meant a
+ *     binary that was present but could not reach the backend (the sandboxed App Store CLI above
+ *     all) ended the search for every other install on the machine (#169). The whole search
+ *     rides back on `attempts`, so a caller can say which binaries were tried and what the
+ *     failing one said.
+ *  2. **Only the search advances.** Once a candidate has answered it is pinned for the life of
+ *     this runner and every later invocation goes to it alone. `resolveTailnetURL` reads status,
+ *     reads serve config and then MUTATES serve config; re-searching per invocation could read
+ *     one install's backend and configure another's, and would re-issue a mutating
+ *     `serve --bg` against up to three more binaries on a refusal. A refusal from the pinned
+ *     binary is an answer, not a reason to go looking for a binary that says yes.
+ *
+ * The pin is dropped only when the pinned binary reports the ENOENT sentinel (uninstalled, or
+ * upgraded out from under us), which starts a fresh search.
+ *
+ * `budgetMs` is ONE deadline for the whole search rather than one per candidate: see
+ * `SEARCH_TIMEOUT_MS`. Candidates the budget does not reach are not tried and are not listed.
  *
  * When nothing answers, the failure reported is the first candidate that actually RAN: a binary
  * that refused says why, a binary that was never there says nothing worth printing. All of them
  * missing still reports the ENOENT sentinel, which is the "tailscale is not installed" case.
  */
-export function defaultTailscaleRunner(candidates: readonly string[] = tailscaleBinaryCandidates()): TailscaleRunner {
+export function defaultTailscaleRunner(
+    candidates: readonly string[] = tailscaleBinaryCandidates(),
+    budgetMs: number = SEARCH_TIMEOUT_MS
+): TailscaleRunner {
+    /** The candidate that answered, with the search that found it. */
+    let pinned: { binary: string; attempts: readonly TailscaleAttempt[] } | undefined;
     return async (args) => {
+        if (pinned !== undefined) {
+            const result = await execTailscale(pinned.binary, args, budgetMs);
+            // Its own answer, right or wrong - but the search is still the pinning one, because
+            // that is the question "how was the CLI found?" and it has not been asked again.
+            if (!missing(result)) return { ...result, binary: pinned.binary, attempts: pinned.attempts };
+            pinned = undefined;
+        }
+        const deadline = Date.now() + budgetMs;
         const attempts: TailscaleAttempt[] = [];
         let failure: { code: number; stdout: string; stderr: string; binary: string } | undefined;
         for (const binary of candidates) {
-            const result = await execTailscale(binary, args);
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
+            const result = await execTailscale(binary, args, remaining);
             attempts.push({ binary, code: result.code, stderr: firstLine(result.stderr) });
-            if (result.code === 0) return { ...result, binary, attempts };
+            if (result.code === 0) {
+                pinned = { binary, attempts };
+                return { ...result, binary, attempts };
+            }
             if (failure === undefined || (missing(failure) && !missing(result))) failure = { ...result, binary };
         }
         if (failure === undefined) return { code: -1, stdout: '', stderr: 'ENOENT', attempts };
@@ -188,19 +238,37 @@ function describeAttempt(attempt: TailscaleAttempt): string {
 }
 
 /**
- * A failure line with the probe's own search appended: which binaries were tried, and what the
- * one that ran and refused said.
+ * The search as ONE fact.
  *
- * Without it every failure collapsed into "state: unknown" with the stderr that named the cause
- * discarded, which is a message nobody can act on (#169). A probe that reported no search (an
- * injected runner, which is one binary by construction) is left exactly as it was.
+ * When a candidate answered after an earlier one refused, those are two halves of one story and
+ * reading them as two unrelated ones invites the wrong conclusion - on a machine with two
+ * installs the binary that answered and the binary that complained can be talking to different
+ * backends, and "after" is what says so.
+ */
+export function describeTailscaleSearch(search: TailscaleProbeDiagnostics): string | undefined {
+    if (search.used === undefined) return search.failure;
+    return search.failure === undefined
+        ? `answered by ${search.used}`
+        : `answered by ${search.used}, after ${search.failure}`;
+}
+
+/**
+ * A message with the probe's own search appended, for a surface with room for one long line -
+ * `kelpid url --tailnet` writes this to a terminal.
+ *
+ * The Remote tab does NOT use this: its status row is a right-hand column that does not wrap, so
+ * it renders the structured `probe` on a detail row of its own instead. Without either, every
+ * failure collapsed into "state: unknown" with the stderr that named the cause discarded (#169).
+ * A probe that reported no search (an injected runner, which is one binary by construction) is
+ * left exactly as it was.
  */
 export function explainTailscaleProbe(message: string, result: TailscaleResult): string {
     const search = tailscaleProbeDiagnostics(result);
     if (search.tried.length === 0) return message;
     const head = message.replace(/\.$/, '');
+    const found = describeTailscaleSearch(search);
     const tried = `tried ${search.tried.join(', ')}`;
-    return search.failure === undefined ? `${head} - ${tried}` : `${head} - ${tried}; ${search.failure}`;
+    return found === undefined ? `${head} - ${tried}` : `${head} - ${tried}; ${found}`;
 }
 
 // ── parsing ─────────────────────────────────────────────────────────────────────────

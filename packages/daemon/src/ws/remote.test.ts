@@ -108,7 +108,7 @@ describe('remote-status', () => {
         expect(reply['tailnet']).toMatchObject({ available: true, serving: false });
     });
 
-    it('names the binaries tried and what the failing one said, never a bare "unknown" (#169)', async () => {
+    it('keeps reason short and puts the binaries tried, and what failed, in `probe` (#169)', async () => {
         const file = registryFile();
         const bundle = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
         // What the production runner hands back after walking the candidate list on a Mac whose
@@ -126,12 +126,17 @@ describe('remote-status', () => {
                 ]
             });
         const reply = (await channel(file, { run }).status()) as Record<string, unknown>;
-        const failure = `${bundle} exited 1: failed to connect to local tailscaled`;
+        // `reason` is the one short sentence the tab's status row has room for; the search is a
+        // list of absolute paths and someone else's stderr, and rides beside it for the detail
+        // row. Folding it into `reason` scrolled the whole tab sideways.
         expect(reply['tailnet']).toEqual({
             available: false,
             serving: false,
-            reason: `tailscaled is not running (state: unknown) - tried tailscale, ${bundle}; ${failure}`,
-            probe: { tried: ['tailscale', bundle], failure }
+            reason: 'tailscaled is not running (state: unknown)',
+            probe: {
+                tried: ['tailscale', bundle],
+                failure: `${bundle} exited 1: failed to connect to local tailscaled`
+            }
         });
     });
 

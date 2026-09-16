@@ -39,7 +39,6 @@ import {
 } from '../lifecycle/devices.js';
 import {
     defaultTailscaleRunner,
-    explainTailscaleProbe,
     parseServeProxies,
     parseTailscaleStatus,
     resolveTailnetURL,
@@ -92,6 +91,8 @@ export interface RemoteStatusReply {
          *
          * Detection failures used to reach this card as "state: unknown" with the stderr that
          * named the cause discarded, which is a dead end for whoever has to fix it (#169).
+         * Structured rather than prose because the card renders it on its own full-width detail
+         * row, and because `used` and `failure` can name two different installs.
          */
         readonly probe?: {
             readonly tried: readonly string[];
@@ -190,6 +191,10 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
             // Every answer below carries the search that produced it: which binaries were
             // tried, which one answered, and what the first one that ran and refused said.
             // Without it a detection failure is one word ("unknown") and no way forward (#169).
+            //
+            // It rides BESIDE `reason` rather than inside it. `reason` is the one short sentence
+            // the tab's status row has room for (that row is a right-hand column that does not
+            // wrap); the search is long, is a list, and belongs on the detail row under it.
             const searched = wireProbe(probe);
             if (probe.code === -1 && probe.stderr === 'ENOENT') {
                 return {
@@ -198,7 +203,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                     tailnet: {
                         available: false,
                         serving: false,
-                        reason: explainTailscaleProbe('tailscale is not installed', probe),
+                        reason: 'tailscale is not installed',
                         ...searched
                     }
                 };
@@ -212,10 +217,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                         available: false,
                         serving: false,
                         ...(identity.backend !== undefined ? { backend: identity.backend } : {}),
-                        reason: explainTailscaleProbe(
-                            `tailscaled is not running (state: ${identity.backend ?? 'unknown'})`,
-                            probe
-                        ),
+                        reason: `tailscaled is not running (state: ${identity.backend ?? 'unknown'})`,
                         ...searched
                     }
                 };

@@ -279,6 +279,41 @@ describe('Settings ▸ Remote', () => {
         );
     });
 
+    it('keeps the status line short and puts the CLI search on its own detail row (#169)', async () => {
+        const bundle = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+        const status = () =>
+            Promise.resolve({
+                ok: true,
+                devices: [],
+                tailnet: {
+                    available: false,
+                    serving: false,
+                    reason: 'tailscaled is not running (state: unknown)',
+                    probe: {
+                        tried: ['tailscale', '/usr/local/bin/tailscale', bundle],
+                        failure: `${bundle} exited 1: failed to connect to local tailscaled`
+                    }
+                }
+            });
+        render(<RemoteTab actions={actions({ status })} />);
+        await waitFor(() =>
+            expect(screen.getByTestId('remote-tailnet-line').textContent).toBe(
+                'tailscaled is not running (state: unknown)'
+            )
+        );
+        // The diagnosis, which is a list of absolute paths plus someone else's stderr, goes on
+        // the row's own full-width line - never in the value column, which does not wrap.
+        const detail = screen.getByTestId('remote-tailnet-probe').textContent ?? '';
+        expect(detail).toContain(`${bundle} exited 1: failed to connect to local tailscaled`);
+        expect(detail).toContain(`Tried: tailscale, /usr/local/bin/tailscale, ${bundle}`);
+    });
+
+    it('shows no diagnosis row when the daemon reports no CLI search', async () => {
+        render(<RemoteTab actions={actions()} />);
+        await waitFor(() => expect(screen.getByTestId('remote-tailnet-line').textContent).toContain('werk'));
+        expect(screen.queryByTestId('remote-tailnet-probe')).toBeNull();
+    });
+
     it('revokes through the action and refreshes the registry', async () => {
         const revoke = vi.fn(() => Promise.resolve({ ok: true, device: { id: 'aa11', name: 'phone', created_at: '' } }));
         render(<RemoteTab actions={actions({ revoke })} />);

@@ -61,6 +61,21 @@ interface TailnetStatus {
     readonly dnsName: string | null;
     readonly serving: boolean;
     readonly reason: string | null;
+    /**
+     * How the daemon looked for the `tailscale` CLI (`ws/remote.ts`): every candidate binary it
+     * tried, the one that answered, and what the first one that ran and refused said.
+     *
+     * This is the diagnosis, and it does not fit the status row - it is a list of absolute paths
+     * plus a line of someone else's stderr. It goes on the row's own full-width detail line, so
+     * "tailscaled is not running (state: unknown)" stops being the whole story (#169).
+     */
+    readonly probe: TailnetProbe | null;
+}
+
+interface TailnetProbe {
+    readonly tried: readonly string[];
+    readonly used: string | null;
+    readonly failure: string | null;
 }
 
 /**
@@ -229,8 +244,40 @@ function parseTailnet(raw: unknown): TailnetStatus {
         available: record['available'] === true,
         dnsName: text(record['dns_name']),
         serving: record['serving'] === true,
-        reason: text(record['reason'])
+        reason: text(record['reason']),
+        probe: parseProbe(record['probe'])
     };
+}
+
+/** The CLI search, defensively: no `tried` list means there is nothing to show. */
+function parseProbe(raw: unknown): TailnetProbe | null {
+    if (typeof raw !== 'object' || raw === null) return null;
+    const record = raw as Record<string, unknown>;
+    const tried = Array.isArray(record['tried'])
+        ? record['tried'].filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+        : [];
+    if (tried.length === 0) return null;
+    return { tried, used: text(record['used']), failure: text(record['failure']) };
+}
+
+/**
+ * The search as one line of prose, or null when it says nothing the status row has not.
+ *
+ * `used` and `failure` are two halves of one story: on a machine with two installs, the binary
+ * that answered and the binary that complained can be talking to different backends, and
+ * "after" is the word that says so. A search where everything went right (one candidate, it
+ * answered) is not worth a row.
+ */
+function probeDetail(probe: TailnetProbe): string | null {
+    const found =
+        probe.used === null
+            ? probe.failure
+            : probe.failure === null
+              ? `answered by ${probe.used}`
+              : `answered by ${probe.used}, after ${probe.failure}`;
+    if (found === null && probe.tried.length < 2) return null;
+    const tried = `Tried: ${probe.tried.join(', ')}`;
+    return found === null ? tried : `${found}. ${tried}`;
 }
 
 /** The daemon's repair steps, defensively: anything that is not a non-empty string is dropped. */
@@ -417,6 +464,11 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
     // Encoding a version 7 symbol is about a millisecond, but the card re-renders on every
     // Copy click (the "Copied" flag) and the picture never changes while the URL does not.
     const qr = useMemo(() => pairingQr(minted), [minted]);
+    // Only while the daemon is the one answering: a client-side timeout says nothing about
+    // which binary it found, and a working tailnet found on the first candidate says nothing
+    // worth a row either.
+    const diagnosis =
+        statusError !== null || tailnet === null || tailnet.probe === null ? null : probeDetail(tailnet.probe);
 
     return (
         <div className="flex flex-col gap-5" data-testid="settings-tab-remote">
@@ -425,7 +477,16 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                 testID="remote-tailnet"
                 hint="The blessed remote path: tailscale serve fronts the daemon with automatic HTTPS, and the listener itself stays on loopback."
             >
-                <SettingsRow label="Status" testID="remote-tailnet-status">
+                <SettingsRow
+                    label="Status"
+                    testID="remote-tailnet-status"
+                    // The diagnosis, on the row's own full-width line. The value column beside
+                    // the label is `shrink-0` and does not wrap, so a 250-character search
+                    // laid out there would scroll the whole tab sideways (#169).
+                    {...(diagnosis === null
+                        ? {}
+                        : { detail: <span data-testid="remote-tailnet-probe">{diagnosis}</span> })}
+                >
                     <span style={{ color: tokens.textSecondary }} data-testid="remote-tailnet-line">
                         {statusError !== null
                             ? statusError

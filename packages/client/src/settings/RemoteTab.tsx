@@ -275,7 +275,9 @@ function probeDetail(probe: TailnetProbe): string | null {
             : probe.failure === null
               ? `answered by ${probe.used}`
               : `answered by ${probe.used}, after ${probe.failure}`;
-    if (found === null && probe.tried.length < 2) return null;
+    // A successful probe always sets `used`, so `found` is never null on a healthy machine: the
+    // test for "nothing worth a row" is that nothing FAILED and there was only one candidate.
+    if (probe.failure === null && probe.tried.length < 2) return null;
     const tried = `Tried: ${probe.tried.join(', ')}`;
     return found === null ? tried : `${found}. ${tried}`;
 }

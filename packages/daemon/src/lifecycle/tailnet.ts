@@ -182,11 +182,27 @@ export function defaultTailscaleRunner(
     let pinned: { binary: string; attempts: readonly TailscaleAttempt[] } | undefined;
     return async (args) => {
         if (pinned !== undefined) {
-            const result = await execTailscale(pinned.binary, args, budgetMs);
-            // Its own answer, right or wrong - but the search is still the pinning one, because
-            // that is the question "how was the CLI found?" and it has not been asked again.
-            if (!missing(result)) return { ...result, binary: pinned.binary, attempts: pinned.attempts };
-            pinned = undefined;
+            const binary = pinned.binary;
+            const result = await execTailscale(binary, args, budgetMs);
+            // The search is the pinning one, with THIS invocation's outcome standing in for the
+            // pinned binary's entry. Handing back the frozen search records the binary that just
+            // failed at code 0, which drops the stderr naming the cause and puts the card back to
+            // a bare "state: unknown" - the ticket's own symptom, reintroduced by its fix (#169).
+            const attempts =
+                result.code === 0
+                    ? pinned.attempts
+                    : pinned.attempts.map((attempt) =>
+                          attempt.binary === binary
+                              ? { binary, code: result.code, stderr: firstLine(result.stderr) }
+                              : attempt
+                      );
+            // `-1` is absent OR could not be run, a timeout included: either way this binary has
+            // stopped being an answer, so the pin goes and the NEXT invocation searches afresh.
+            // Not this one. Re-searching here would spend a second full budget, and sharing one
+            // budget would leave the loop with nothing tried and report a wedged install as
+            // "tailscale is not installed".
+            if (result.code === -1) pinned = undefined;
+            if (!missing(result)) return { ...result, binary, attempts };
         }
         const deadline = Date.now() + budgetMs;
         const attempts: TailscaleAttempt[] = [];
@@ -213,7 +229,14 @@ export interface TailscaleProbeDiagnostics {
     readonly tried: readonly string[];
     /** The candidate that answered, when one did. */
     readonly used: string | undefined;
-    /** `<binary> exited 1: <first stderr line>`, for the first candidate that ran and refused. */
+    /**
+     * `<binary> exited 1: <first stderr line>`: why this probe did not work.
+     *
+     * The binary that produced THIS result when it is one that ran and refused, otherwise the
+     * first candidate in the search that did. The distinction matters once a binary is pinned:
+     * an earlier candidate's refusal, from the search that pinned it, is a stale answer to a
+     * question nobody asked.
+     */
     readonly failure: string | undefined;
 }
 
@@ -223,7 +246,8 @@ export interface TailscaleProbeDiagnostics {
  */
 export function tailscaleProbeDiagnostics(result: TailscaleResult): TailscaleProbeDiagnostics {
     const attempts = result.attempts ?? [];
-    const refused = attempts.find((attempt) => attempt.code !== 0 && !missing(attempt));
+    const ran = (attempt: TailscaleAttempt): boolean => attempt.code !== 0 && !missing(attempt);
+    const refused = attempts.find((attempt) => attempt.binary === result.binary && ran(attempt)) ?? attempts.find(ran);
     return {
         tried: attempts.map((attempt) => attempt.binary),
         used: result.code === 0 ? result.binary : undefined,

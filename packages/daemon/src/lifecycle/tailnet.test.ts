@@ -399,6 +399,86 @@ describe.skipIf(process.platform === 'win32')('defaultTailscaleRunner', () => {
         ]);
     });
 
+    it('reports what the PINNED binary just did, not what it did when it was pinned (#169)', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        const once = path.join(dir, 'answered.once');
+        // Answers the first time, refuses every time after: the daemon boots while tailscale is
+        // healthy and tailscale stops later, which is the ordinary way this fails.
+        const flaky = fakeCLI(
+            dir,
+            'flaky',
+            [
+                `echo "flaky $*" >> '${log}'`,
+                `if [ -f '${once}' ]; then`,
+                '    echo "failed to connect to local tailscaled" >&2',
+                '    exit 1',
+                'fi',
+                `: > '${once}'`,
+                `printf '%s' '${STATUS_RUNNING}'`
+            ].join('\n')
+        );
+        const spare = answeringCLI(dir, 'spare', log);
+        const run = defaultTailscaleRunner([flaky, spare]);
+
+        expect((await run(['status', '--json'])).binary).toBe(flaky);
+        const second = await run(['status', '--json']);
+
+        expect(second.code).toBe(1);
+        // The pinning search records `flaky` at code 0. Handing that back unedited dropped the
+        // one line that names the cause, and the card fell back to a bare "state: unknown".
+        expect(tailscaleProbeDiagnostics(second)).toEqual({
+            tried: [flaky],
+            used: undefined,
+            failure: `${flaky} exited 1: failed to connect to local tailscaled`
+        });
+        // A refusal is an ANSWER, so the pin holds and `spare` is never consulted.
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            'flaky status --json',
+            'flaky status --json'
+        ]);
+    });
+
+    it('drops the pin when the pinned binary wedges, so the next invocation searches again', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        const runs = path.join(dir, 'runs');
+        const refusing = refusingCLI(dir, 'refusing', 'failed to connect to local tailscaled', log);
+        // Answers, then wedges on its SECOND call only: one timeout is the point being made, and
+        // paying it twice would just be the test sleeping.
+        const wedging = fakeCLI(
+            dir,
+            'wedging',
+            [
+                `echo "wedging $*" >> '${log}'`,
+                `echo x >> '${runs}'`,
+                `if [ "$(wc -l < '${runs}')" -eq 2 ]; then exec sleep 30; fi`,
+                `printf '%s' '${STATUS_RUNNING}'`
+            ].join('\n')
+        );
+        const run = defaultTailscaleRunner([refusing, wedging], 2_000);
+
+        expect((await run(['status', '--json'])).binary).toBe(wedging);
+
+        // One budget, and the hang is named rather than blamed on the candidate that refused
+        // during the search that pinned it.
+        const wedged = await run(['status', '--json']);
+        expect(wedged).toMatchObject({ code: -1, binary: wedging });
+        expect(tailscaleProbeDiagnostics(wedged).failure).toBe(`${wedging} could not be run: timed out after 2s`);
+
+        // The pin is gone - a binary that could not be RUN has stopped being an answer - so this
+        // one searches from the top, and `refusing` runs a second time, which it never would
+        // while the pin held.
+        expect((await run(['status', '--json'])).binary).toBe(wedging);
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            'refusing status --json',
+            'wedging status --json',
+            'wedging status --json',
+            'refusing status --json',
+            'wedging status --json'
+        ]);
+    });
+
     it('drops the pin when the pinned binary goes away, and searches again', async () => {
         const dir = scratch();
         const first = answeringCLI(dir, 'first');

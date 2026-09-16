@@ -59,7 +59,10 @@ describe('hydrateSettings', () => {
     it('falls back per field rather than blanking the whole snapshot', () => {
         const hydrated = hydrateSettings({
             keybindLines: ['a=b', 7, null],
-            general: { focusFollowsMouse: 'yes', focusFollowsMouseDelay: -5 },
+            // `macosOptionAsAlt` is ABSENT rather than malformed, which is the shape an older
+            // daemon sends (#171): the shipped default has to stand, because a snapshot that
+            // guessed `true` would turn ⌥ back into a modifier on a daemon that never said so.
+            general: { focusFollowsMouse: 'yes', focusFollowsMouseDelay: -5, macosOptionAsAlt: 'true' },
             appearance: { backgroundColor: '', backgroundOpacity: 4, fontSize: 'big' }
         });
         expect(hydrated).not.toBeNull();
@@ -67,6 +70,10 @@ describe('hydrateSettings', () => {
         expect(hydrated?.general.focusFollowsMouse).toBe(DEFAULT_WS_SETTINGS.general.focusFollowsMouse);
         expect(hydrated?.general.focusFollowsMouseDelay).toBe(0);
         expect(hydrated?.general.theme).toBeNull();
+        // The string `'true'` is not a boolean, so it falls back like every other bad value here,
+        // and an omitted field does the same (`hydrateSettings({general: {}})` below).
+        expect(hydrated?.general.macosOptionAsAlt).toBe(DEFAULT_WS_SETTINGS.general.macosOptionAsAlt);
+        expect(hydrateSettings({ general: {} })?.general.macosOptionAsAlt).toBe(false);
         expect(hydrated?.appearance.backgroundColor).toBe(DEFAULT_WS_SETTINGS.appearance.backgroundColor);
         expect(hydrated?.appearance.backgroundOpacity).toBe(1);
         expect(hydrated?.appearance.fontSize).toBeNull();

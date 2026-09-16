@@ -51,11 +51,23 @@
  * macOS system-editing chords (⌘V, ⌘C, ⌘X, ⌘A, ⌘Z) are never encoded, at any flags. See
  * `isSystemEditingChord` for why, and for the trade Ghostty makes identically (#80).
  *
- * **A fifth, of the same kind:** the five chords the PLATFORM owns (⌘H, ⌥⌘H, ⌃⌘F, ⌘M, ⌘Q) are
- * never encoded either. They are stated once, in `@kelpi/core/config` ▸ `PLATFORM_CHORDS`, so
- * the shell's application menu and this encoder cannot disagree about the set; see that module
- * for what is in it and why, and `TerminalPane`'s interceptor for the other half of handing
- * them back, which is keeping the ENGINE from preventing their default (#95).
+ * **A fifth, and it is a SETTING rather than a rule:** on macOS the ⌥ key either composes a
+ * character or is the Alt modifier, and it cannot be both for one keystroke. `macos-option-as-alt`
+ * decides which, defaulting to ghostty's own answer (compose). See {@link KittyOptionRule} for the
+ * whole of it, and #171 for the report: ⌥⇧- reached Codex as `CSI 8212;4u` instead of an em dash.
+ *
+ * That setting is about a LAYOUT, which gives the rule for everything it does not cover: **a key
+ * somebody synthesized carries the modifiers its sender meant**, because there is no layout
+ * underneath it to have spent them. The on-screen key bar's ⌥ latch is the case that matters (it
+ * is the only keyboard an iPad has), and the caller states it: `TerminalPane`'s `sendKey` flags
+ * every key it raises and passes `optionAsAlt: true` for the duration, so a latched ⌥ is Alt at
+ * either setting value while a typed ⌥ still composes.
+ *
+ * **A sixth, of the same kind as the fourth:** the five chords the PLATFORM owns (⌘H, ⌥⌘H,
+ * ⌃⌘F, ⌘M, ⌘Q) are never encoded either. They are stated once, in `@kelpi/core/config` ▸
+ * `PLATFORM_CHORDS`, so the shell's application menu and this encoder cannot disagree about the
+ * set; see that module for what is in it and why, and `TerminalPane`'s interceptor for the other
+ * half of handing them back, which is keeping the ENGINE from preventing their default (#95).
  *
  * One divergence worth naming rather than burying: for a **shifted punctuation** key the
  * `unicode-key-code` this module reports is the *produced* glyph lowercased (`ctrl+@` → 64), not
@@ -241,10 +253,76 @@ export function kittyModifiers(event: KittyKeyEventLike): number {
     if (event.shiftKey === true) mods |= KITTY_MOD_SHIFT;
     // Ghostty's "alt" is the Option key; the browser's `metaKey` is ⌘, which the protocol calls
     // super. A ⌘ chord only reaches this module when the app's own dispatcher declined it.
+    // Whether ⌥ is a modifier AT ALL is the caller's to say on macOS: see {@link KittyOptionRule}.
     if (event.altKey === true) mods |= KITTY_MOD_ALT;
     if (event.ctrlKey === true) mods |= KITTY_MOD_CTRL;
     if (event.metaKey === true) mods |= KITTY_MOD_SUPER;
     return mods;
+}
+
+/**
+ * Who owns the ⌥ key on macOS: the LAYOUT or this encoder (`macos-option-as-alt`, #171).
+ *
+ * macOS composes a character from ⌥ the way no other platform does: ⌥⇧- is an em dash, ⌥8 is a
+ * bullet, ⌥l is `@` on the German layout, and the browser hands that composed character over as
+ * `KeyboardEvent.key` with `altKey` still true. There is no second reading of the key available
+ * to a web client: Cocoa can re-translate the keystroke WITHOUT the option modifier and recover
+ * the `b` under ⌥b, and a `KeyboardEvent` cannot. What arrives is the glyph, and the only
+ * decision left is whether alt is reported alongside it.
+ *
+ * So this is a genuine either/or, which is why ghostty makes it a setting and why Kelpi copies
+ * both the name and the default:
+ *
+ *   - **`optionAsAlt: false`** (the shipped default, ghostty's own): ⌥ alone is the layout's.
+ *     A text key loses the alt bit, so the composed character is what the terminal receives.
+ *     ⌥b / ⌥f / ⌥d go from an alt bit beside a composed glyph to that glyph as text.
+ *   - **`optionAsAlt: true`**: alt is reported, beside whatever glyph the layout produced, and
+ *     nothing is typed. That is what this module did before #171 and what every fixture written
+ *     before it still asserts; it is NOT ghostty's `true`, which gets the unmodified letter back
+ *     from Cocoa. All it promises is today's bytes.
+ *
+ * `macLike` is the platform read, passed in rather than sniffed here (`chrome/keys.ts` owns the
+ * one read of `navigator.platform`). Off macOS the rule never applies: no layout composes from
+ * Alt there, so an Alt bit that arrived is one the user meant.
+ *
+ * The same sentence is why a caller raising a SYNTHESIZED key passes `optionAsAlt: true` for the
+ * duration however the setting is set (`TerminalPane` ▸ `sendKey`): nothing composed it, so its
+ * Alt is the Alt its sender meant. See the header's fifth limit.
+ */
+export interface KittyOptionRule {
+    /** True: ⌥ is Alt (pre-#171 behaviour). False: ⌥ composes, and a text key drops the bit. */
+    readonly optionAsAlt: boolean;
+    /** Is this client mac-like? The rule is macOS-only. */
+    readonly macLike: boolean;
+}
+
+/**
+ * The rule an omitted argument means: ⌥ is Alt, exactly as this module read it before #171.
+ *
+ * Deliberately NOT the setting's default. The setting ships `false`, and the pane passes the
+ * user's value on every call; this constant is what keeps a call that says nothing about ⌥
+ * byte-identical to the one it was before the parameter existed.
+ */
+export const KITTY_OPTION_IS_ALT: KittyOptionRule = { optionAsAlt: true, macLike: false };
+
+/**
+ * Did the LAYOUT produce this key rather than the user reaching for a modifier? (#171)
+ *
+ * Four conditions, and each one is load-bearing:
+ *
+ *   - the rule says ⌥ composes, on a mac-like client;
+ *   - alt is held, and **neither ctrl nor super is**. ⌃⌥ and ⌥⌘ chords are not composition on
+ *     any layout, they are the chords they look like, and `isSystemEditingChord` /
+ *     `isPlatformChord` upstream already depend on ⌥⌘H reaching them intact;
+ *   - `key` is a single Unicode scalar. That is what "the layout produced a character" MEANS
+ *     here: ⌥ArrowLeft is `'ArrowLeft'`, ⌥e is `'Dead'` mid-composition, and neither is text,
+ *     so both keep their alt bit and their encoding. Arrow-key word motion under ⌥ is
+ *     unaffected by this setting, which is a deliberate narrowing of ghostty's own rule.
+ */
+function optionComposed(event: KittyKeyEventLike, rule: KittyOptionRule): boolean {
+    if (rule.optionAsAlt || !rule.macLike) return false;
+    if (event.altKey !== true || event.ctrlKey === true || event.metaKey === true) return false;
+    return singleCodepoint(event.key) !== null;
 }
 
 /** F13…F35 → its codepoint, or null for anything else. */
@@ -349,8 +427,15 @@ export function isSystemEditingChord(event: KittyKeyEventLike): boolean {
  *
  * `null` is not a failure. It is the byte-identity guarantee: every `null` leaves the event
  * untouched, so the engine encodes it exactly as it did before this file existed.
+ *
+ * `option` is the ⌥ rule (#171); omitted, it is {@link KITTY_OPTION_IS_ALT}, the answer this
+ * function gave before the parameter existed. The pane passes the user's setting.
  */
-export function encodeKittyKey(event: KittyKeyEventLike, rawFlags: number): Uint8Array | null {
+export function encodeKittyKey(
+    event: KittyKeyEventLike,
+    rawFlags: number,
+    option: KittyOptionRule = KITTY_OPTION_IS_ALT
+): Uint8Array | null {
     const flags = sanitizeKittyFlags(rawFlags);
     if (flags === 0) return null;
 
@@ -383,8 +468,18 @@ export function encodeKittyKey(event: KittyKeyEventLike, rawFlags: number): Uint
 
     /** Any modifier at all — what decides whether Enter / Tab / Backspace keep their C0 byte. */
     const chorded = mods !== 0;
+    /**
+     * The modifiers a TEXT key is left holding (#171).
+     *
+     * Identical to `mods` except on macOS with `macos-option-as-alt` off, where a ⌥ that
+     * composed a character was spent by the layout and is not a modifier any more. The narrowing
+     * to text keys is why this is a second value rather than a change to `kittyModifiers`: the
+     * modifier-key, keypad and functional branches below all keep the bit, so ⌥ArrowLeft is
+     * still `CSI 1;3D` and ⌥Numpad5 is still `CSI 57404;3u` whatever this setting says.
+     */
+    const textMods = optionComposed(event, option) ? mods & ~KITTY_MOD_ALT : mods;
     /** ctrl / alt / super — the modifiers that stop a key from producing text. */
-    const nonText = (mods & (KITTY_MOD_ALT | KITTY_MOD_CTRL | KITTY_MOD_SUPER)) !== 0;
+    const nonText = (textMods & (KITTY_MOD_ALT | KITTY_MOD_CTRL | KITTY_MOD_SUPER)) !== 0;
 
     // ── the modifier keys themselves (§TERM-030's subject) ──────────────────────────
     const sides = KITTY_MODIFIER_KEYS.get(event.key);
@@ -436,15 +531,17 @@ export function encodeKittyKey(event: KittyKeyEventLike, rawFlags: number): Uint
     const codepoint = kittyTextCodepoint(event.key);
     if (codepoint === null) return null; // 'Dead', 'Process', 'Unidentified', media keys…
     if (!nonText) {
-        // Plain typing (and shift+typing). The engine writes the text; under `report all keys`
-        // there is no text, only the escape code.
+        // Plain typing (and shift+typing, and #171's ⌥-composed character, which is plain typing
+        // the moment the layout rather than the encoder owns the ⌥). The engine writes the text;
+        // under `report all keys` there is no text, only the escape code, and the ⌥ that was
+        // spent composing is not reported there either.
         if (!allKeys) return null;
-        return kittySequence({ number: codepoint, final: 'u' }, mods, eventType);
+        return kittySequence({ number: codepoint, final: 'u' }, textMods, eventType);
     }
     // ctrl+key / alt+key / super+key — the ambiguity the protocol exists to remove. `ctrl+i` is
     // `CSI 105;5u` here and 0x09 (indistinguishable from Tab) in the legacy encoding.
     if (!disambiguate) return null;
-    return kittySequence({ number: codepoint, final: 'u' }, mods, eventType);
+    return kittySequence({ number: codepoint, final: 'u' }, textMods, eventType);
 }
 
 /** Keys whose unmodified legacy byte the spec keeps: Enter `\r`, Tab `\t`, Backspace `\x7f`. */
@@ -461,6 +558,12 @@ export function sanitizeKittyFlags(value: number | undefined): number {
 export interface KittyKeyboardOptions {
     /** The pane's live flags, read through a getter so the handlers never go stale. */
     readonly flags: () => number;
+    /**
+     * The ⌥ rule (#171), read through a getter for the same reason the flags are: a Settings
+     * toggle must govern the very next keystroke, not the next pane. Omitted leaves ⌥ as Alt
+     * ({@link KITTY_OPTION_IS_ALT}), which is what every caller written before #171 meant.
+     */
+    readonly option?: (() => KittyOptionRule) | undefined;
     /**
      * `release` is true for a `keyup` encoding (`CSI …:3u`). terminal-surface.md §8.2 mirrors
      * only the press that carries the input into sync siblings, so the pane host routes a
@@ -482,7 +585,7 @@ export function createKittyKeyboard(options: KittyKeyboardOptions): KittyKeyboar
             return sanitizeKittyFlags(options.flags()) !== 0;
         },
         key(event: KittyKeyEventLike): boolean {
-            const bytes = encodeKittyKey(event, options.flags());
+            const bytes = encodeKittyKey(event, options.flags(), options.option?.() ?? KITTY_OPTION_IS_ALT);
             if (bytes === null) return false;
             options.write(bytes, event.type === 'keyup');
             return true;

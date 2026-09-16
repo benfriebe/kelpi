@@ -288,6 +288,36 @@ describe('the key bar routes through the ENGINE: bytes off a real ghostty-web', 
         press({ key: 'Backspace', code: 'Backspace' });
         expect(hex(out.join(''))).toBe('7f');
     });
+
+    /**
+     * #171'S PREMISE, MEASURED RATHER THAN ASSUMED. Nothing of the bar is mounted here either.
+     *
+     * The ticket is "an em dash cannot be typed", and the fix is in the kitty encoder alone. That
+     * is only correct if a pane with no protocol negotiated already types the character, so it is
+     * asserted at the real engine: with ⌥ held, `key` carries the glyph the macOS layout composed
+     * and `input-handler.ts` passes it to the WASM encoder as the key's utf8. No ESC prefix joins
+     * it, because nothing in this port or the vendored engine ever sets `ALT_ESC_PREFIX` (DEC
+     * 1036) - the same measurement the Alt latch case below pins for `x`.
+     *
+     * `macos-option-as-alt` is not read anywhere on this path and must not be: the legacy path was
+     * never broken, so the setting has nothing to gate here (`TerminalPane.kitty.test.tsx` asserts
+     * the pane end of that, at both values with the flags at zero).
+     */
+    it('types an ⌥-composed character as its own UTF-8, which is why only the kitty path needed fixing (#171)', () => {
+        const area = host.querySelector('textarea') as HTMLTextAreaElement;
+        const press = (init: KeyboardEventInit): void => {
+            area.dispatchEvent(new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true }));
+        };
+
+        // ⌥⇧- on a US layout: U+2014, the character the ticket asked for.
+        press({ key: '\u2014', code: 'Minus', altKey: true, shiftKey: true });
+        expect(hex(out.join(''))).toBe('e2 80 94');
+
+        // ⌥b on the same layout, the key the other value of the setting is about.
+        out.length = 0;
+        press({ key: '\u222B', code: 'KeyB', altKey: true });
+        expect(hex(out.join(''))).toBe(hex('\u222B'));
+    });
 });
 
 // ── the soft keyboard's own shapes, measured at the same engine ──────────────────────

@@ -80,6 +80,24 @@ describe('parseGeneralSettings', () => {
         );
     });
 
+    /**
+     * #171. Ghostty's key of this name defaults to `false`, and Kelpi ships the same default, so
+     * it parses like the gate above rather than like the lenient default-true flags: absent means
+     * off (the layout keeps ⌥ and composes), and only the literal `true` hands ⌥ to the encoder
+     * as the Alt modifier.
+     */
+    it('ships macos-option-as-alt OFF and turns it on only for the literal "true"', () => {
+        expect(parseGeneralSettings('').macosOptionAsAlt).toBe(false);
+        expect(parseGeneralSettings('macos-option-as-alt = true').macosOptionAsAlt).toBe(true);
+        expect(parseGeneralSettings('macos-option-as-alt = TRUE').macosOptionAsAlt).toBe(true);
+        expect(parseGeneralSettings('macos-option-as-alt = yes').macosOptionAsAlt).toBe(false);
+        expect(parseGeneralSettings('macos-option-as-alt = left').macosOptionAsAlt).toBe(false);
+        expect(parseGeneralSettings('macos-option-as-alt =').macosOptionAsAlt).toBe(false);
+        expect(
+            parseGeneralSettings('macos-option-as-alt = true\nmacos-option-as-alt = false').macosOptionAsAlt
+        ).toBe(false);
+    });
+
     it('clamps the delay at 0 and ignores non-integers', () => {
         expect(parseGeneralSettings('focus-follows-mouse-delay = -20').focusFollowsMouseDelay).toBe(0);
         expect(parseGeneralSettings('focus-follows-mouse-delay = abc').focusFollowsMouseDelay).toBe(

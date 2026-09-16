@@ -108,6 +108,18 @@ export interface WsGeneralSettings {
      * There is no `clipboardRead` twin: OSC 52 reads are refused outright, with no key.
      */
     readonly clipboardWrite: boolean;
+    /**
+     * `macos-option-as-alt` (#171), default **false**: is ⌥ the Alt modifier, or the layout's?
+     *
+     * A CLIENT-side rule, and the only one on this snapshot the daemon never reads: the pane's
+     * kitty encoder is what consults it (`client/src/terminal/kitty-keyboard.ts`). It rides the
+     * snapshot for the reasons every client-side flag here does. Settings ▸ Workspaces renders
+     * it, and two attached windows must not disagree about what the file says.
+     *
+     * False (ghostty's own default) means ⌥ composes, so ⌥⇧- types an em dash; true means ⌥ is
+     * Alt, so ⌥b / ⌥f / ⌥d stay readline's meta-word chords and nothing composes.
+     */
+    readonly macosOptionAsAlt: boolean;
 }
 
 /**
@@ -396,7 +408,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         newGroupPlacement: 'end-of-list',
         inheritGroupOnNewWorkspace: true,
         expandGroupOnWorkspaceDrop: true,
-        clipboardWrite: false
+        clipboardWrite: false,
+        macosOptionAsAlt: false
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -506,7 +519,12 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // §TERM-046's OSC 52 gate. Not a Swift key either — ghostty owns `clipboard-write` there and
     // the app ships it wide open; here it is a kelpi key that ships OFF, and the Settings ▸
     // Workspaces toggle is what turns it on.
-    'clipboard-write'
+    'clipboard-write',
+    // #171's ⌥ rule. Ghostty owns a key of this name in ITS file, and this port does what it did
+    // for `clipboard-write` directly above: the same spelling, the same default, but a KELPI key,
+    // because the daemon is not a ghostty config implementation (it parses seven ghostty keys and
+    // says so) and the value is enforced in the client rather than by ghostty.
+    'macos-option-as-alt'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

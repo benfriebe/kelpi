@@ -602,6 +602,20 @@ export const SETTINGS_FIELD_DEFINITIONS: readonly SettingsFieldDefinition[] = Ob
         read: (settings) => settings.general.clipboardWrite,
         encode: BOOLEAN
     },
+    {
+        id: 'workspaces.macosOptionAsAlt',
+        sectionID: 'workspaces',
+        groupID: 'panes-section',
+        kind: 'toggle',
+        label: 'Option as Alt',
+        detail: "macOS only, and it governs panes where an application has negotiated the kitty keyboard protocol, which is where the character was being lost. Off (the default, and ghostty's): ⌥ belongs to the keyboard layout, so ⌥⇧- types an em dash and every other ⌥ combination types its character. On: the pane reports ⌥ as a held modifier beside that character instead and types nothing, which is what it did before this setting existed. ⌥ plus an arrow, Enter or Backspace is unaffected either way, and so is the key bar's ⌥ latch.",
+        testID: 'macos-option-as-alt-toggle',
+        rowTestID: 'macos-option-as-alt-row',
+        target: { file: 'kelpi', key: 'macos-option-as-alt' },
+        default: false,
+        read: (settings) => settings.general.macosOptionAsAlt,
+        encode: BOOLEAN
+    },
 
     // ── Appearance (the plain value-and-verb rows only) ─────────────────────────────
     //

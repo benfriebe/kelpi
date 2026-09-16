@@ -23,6 +23,15 @@
  *     which is stricter than the shipped app (ghostty's own `clipboard-write` defaults to
  *     `allow`, and `GhosttyApp.swift:114-123` honours every write it is handed), and the row
  *     states the half no toggle governs — clipboard *reads* are refused outright.
+ *   - **Option as Alt**, `macos-option-as-alt` (#171): the second row here that borrows a
+ *     ghostty key name, and the only one whose two values are a preference rather than a safe
+ *     default and a risk. Off, the macOS layout keeps ⌥ and composes characters with it (⌥⇧- is
+ *     an em dash); on, the pane reports ⌥ as a held modifier beside whatever the layout composed
+ *     and types nothing, which is what panes did before the key existed. That is ALL `true`
+ *     promises, and the caption says so rather than promising a working ⌥b: a browser reports
+ *     only the composed glyph, so `true` has always sent alt beside `∫` rather than beside `b`,
+ *     and no readline binding matches either (config-keybindings.md §7.5 has the measurement).
+ *     Ghostty's own default is off and this ships the same, per the decision on #171.
  *
  * Values are read straight off the daemon snapshot; a change is a verb, and the broadcast that
  * follows is what moves the control. There is no optimistic local state, so two windows cannot

@@ -417,6 +417,25 @@ describe('createSettingsService (write-through)', () => {
         expect(f.read() ?? '').toContain('clipboard-write = false');
     });
 
+    /**
+     * #171. The daemon never READS this one: it is the client's kitty encoder that consults it.
+     * What the daemon owes is the round trip, so a Settings toggle reaches the file and the
+     * snapshot every attached window reads back.
+     */
+    it('round-trips the ⌥ rule it never enforces itself, which is off until the file says otherwise', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.macosOptionAsAlt).toBe(false);
+
+        expect(f.service.setGeneralSetting('macos-option-as-alt', 'true').general.macosOptionAsAlt).toBe(true);
+        expect(f.read() ?? '').toContain('macos-option-as-alt = true');
+        expect(f.read() ?? '').toContain('keybind = super+d=split_down');
+
+        expect(f.service.setGeneralSetting('macos-option-as-alt', 'false').general.macosOptionAsAlt).toBe(
+            false
+        );
+        expect(f.read() ?? '').toContain('macos-option-as-alt = false');
+    });
+
     it('creates the config file (and its directory) when there is none', () => {
         const root = tmpRoot();
         const configPath = path.join(root, 'nested', 'deeper', 'config');

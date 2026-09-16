@@ -170,7 +170,8 @@ describe('the field table', () => {
             'confirm-quit-toggle',
             'focus-follows-mouse-toggle',
             'focus-delay-slider',
-            'clipboard-write-toggle'
+            'clipboard-write-toggle',
+            'macos-option-as-alt-toggle'
         ]);
         /*
          * Appearance's projected half, in the tab's own order. The hand-built rows are the gaps:

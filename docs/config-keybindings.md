@@ -95,13 +95,13 @@ Per-key parse rules:
 | `global-hotkey` | value `none`, `unbind`, or empty → cleared (null). Otherwise parsed as a trigger string (section 3.2); unparseable values are silently ignored (stays null/prior) |
 | `global-hotkey-hide-on-repress` | `false` (lowercased) → `false`; ANY other value (incl. garbage) → `true` |
 
-Additive keys (`parseGeneralSettings`, `packages/core/src/config/general.ts:19-135` and
-`packages/core/src/config/general.ts:188-221`; `parseChromeSettings`,
+Additive keys (`parseGeneralSettings`, `packages/core/src/config/general.ts:10-142` and
+`packages/core/src/config/general.ts:177-261`; `parseChromeSettings`,
 `packages/core/src/config/chrome.ts`). These have no pre-port equivalent in the file: the
 pre-port app kept them in macOS UserDefaults, which a multi-client daemon has no equivalent
 of, so they live in this file so every attached client agrees. Every one of them is writable
 through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
-`packages/protocol/src/ws/settings.ts:461-510`):
+`packages/protocol/src/ws/settings.ts:474-528`):
 
 | key | rule |
 |---|---|
@@ -111,6 +111,7 @@ through `set-general-setting` (section 1.3; `WS_WRITABLE_GENERAL_KEYS`,
 | `inherit-group-on-new-workspace` | default true; only `false` disables |
 | `expand-group-on-workspace-drop` | default true; only `false` disables |
 | `clipboard-write` | default false; only the literal `true` enables (the OSC 52 write gate; there is no `clipboard-read` twin, reads are refused outright) |
+| `macos-option-as-alt` | default false; only the literal `true` enables. Ghostty's key of the same name, at ghostty's own default: `false` leaves ⌥ to the macOS layout (⌥⇧- types an em dash), `true` reports it as the Alt modifier. Section 7.5; client-side, macOS-only, `true`/`false` only (no `left` / `right`) |
 | `worktree-base-path` | stored verbatim, case preserved; a blank value means the shipped default `~/kelpi/worktrees/<repo>` rather than the filesystem root |
 | `new-workspace-placement`, `new-group-placement` | `end-of-list` (default) or `near-selection` (lowercased); anything else ignored |
 | chrome and status-bar family | `chrome-appearance`, `chrome-colors`, `sidebar-color-intensity`, `sidebar-avatar-fill`, `sidebar-avatar-stroke`, `sidebar-group-fill`, `sidebar-group-stroke`, `show-system-stats`, `system-stats`, `show-system-stat-graphs`, `sparkline-style`, `sparkline-color`, `sparkline-width`, `search-match-color`, `search-match-text-color`, `search-match-current-color`, `search-match-current-text-color` (parse rules and defaults in `packages/core/src/config/chrome.ts`; shell-ui.md §2, §8.1) |
@@ -155,7 +156,7 @@ Used when the user changes a general setting in the Settings UI (WS verb
    (`packages/daemon/src/settings/service.ts:436-457`).
 
 Settings written through this path (`WS_WRITABLE_GENERAL_KEYS`,
-`packages/protocol/src/ws/settings.ts:461-510`): `focus-follows-mouse`,
+`packages/protocol/src/ws/settings.ts:474-528`): `focus-follows-mouse`,
 `focus-follows-mouse-delay`, `tcp-port`, `global-hotkey` (value = trigger config string, or
 `none` when cleared), `global-hotkey-hide-on-repress`, and every additive key of section 1.2.
 Note `theme` is NEVER written to this file by Kelpi: the config `theme` key is a read-only
@@ -1017,6 +1018,77 @@ hold. Bind one of these five only if you mean it.
 - **⌘W** (Close). Routed by Kelpi to close a PANE rather than the window, and in the map as
   `close_pane`.
 
+### 7.5 The ⌥ key in a terminal pane (`macos-option-as-alt`, #171)
+
+macOS composes characters from ⌥ the way no other platform does: ⌥⇧- is an em dash, ⌥8 is a
+bullet, ⌥e is the acute accent, and on a German layout ⌥l is `@`. Whether ⌥ does that or acts as
+the Alt modifier is one choice for both, because a keystroke cannot be both at once. Ghostty
+settles it with `macos-option-as-alt`; Kelpi ships the same key name and the same default.
+
+| value | what ⌥ does | what it costs |
+|---|---|---|
+| `false` (default, ghostty's) | belongs to the keyboard layout: the composed character is typed | the alt bit on ⌥+letter, so an application that reads one as a chord stops seeing it |
+| `true` | reported as a held modifier BESIDE whatever the layout composed, and nothing is typed: the bytes panes sent before this key existed, which is all it promises | every ⌥-composed character; ⌥⇧- sends `CSI 8212;4u` instead of typing an em dash |
+
+**What `true` is not.** It does not make ⌥b a readline meta chord, and nothing in Kelpi ever did.
+A legacy pane has always typed `∫` (the utf8 rule above), and a kitty pane has always sent
+`CSI 8747;3u`, the alt bit beside `∫` rather than beside `b`; no readline binding matches either.
+So what `false` actually costs, end to end, is that ⌥+letter on a kitty-negotiating application
+goes from an unbindable alt-plus-glyph to that glyph as text. The rest of the ⌥ vocabulary is
+byte-identical at both values (points 2 and 3 below).
+
+Written by Settings ▸ Workspaces ▸ Panes ▸ "Option as Alt", or by hand in
+`~/.config/kelpi/config`. Four facts about the scope, each of them measured rather than assumed:
+
+1. **Only the kitty path ever read ⌥ as a modifier.** A pane with no protocol negotiated has
+   always typed the composed character: the vendored engine puts `KeyboardEvent.key` in the key's
+   utf8 and nothing in this port sets `ALT_ESC_PREFIX` (DEC 1036), so an ⌥-composed glyph reaches
+   the PTY as its own UTF-8 whatever this key says (`packages/client/src/terminal/KeyBar.test.tsx`,
+   the `#171` case, measures it at the real engine). The setting is consulted in exactly one
+   place, `packages/client/src/terminal/kitty-keyboard.ts`, which is where #171's `CSI 8212;4u`
+   came from.
+2. **Text keys only.** ⌥ plus a key that produces no character keeps its alt bit at either value,
+   so ⌥← / ⌥→ word motion is `CSI 1;3D` / `CSI 1;3C` as before, and so are ⌥Enter, the keypad and
+   the ⌥ key itself under `report all keys`. This is a deliberate narrowing of ghostty's rule,
+   which clears the modifier for every key.
+3. **⌥ alone.** ⌃⌥ and ⌥⌘ chords are not composition on any layout and are untouched, which is
+   also what keeps ⌥⌘H reaching the platform (section 7.4).
+4. **macOS only**, by the same platform read section 3.5 uses. Nowhere else composes from Alt.
+
+Two honest limits, because they are the difference between this port and ghostty:
+
+- **`true` cannot recover the unmodified letter.** Cocoa re-translates the keystroke without the
+  option modifier and hands ghostty the `b` under ⌥b; a browser reports only the composed glyph,
+  so `true` reports alt beside THAT glyph (`CSI 8747;3u` for ⌥b on a US layout). Those are the
+  bytes Kelpi sent before this key existed, which is all `true` promises: today's behaviour.
+  Recovering the `b` is possible on a US layout by reading `event.code`, and a `code` to
+  base-character table already exists one module over (`KeyBar.tsx` ▸ `characterKey`). It is
+  declined here as policy, not as physics: such a table is wrong for AZERTY, QWERTZ and Dvorak,
+  where `code: 'KeyQ'` is not `q`, and being wrong there means silently sending the wrong letter.
+  A follow-up, not an impossibility.
+- **No `left` / `right`.** Ghostty's key also takes those, and a `KeyboardEvent` for a composed
+  character says only that alt was down, never which one. A value this port cannot honour is
+  better refused than half-kept, so anything other than `true` reads as `false`.
+
+Three more facts worth stating because each one has surprised somebody:
+
+- **A key the on-screen key bar raises keeps its ⌥.** The bar's Alt latch is not composition:
+  nothing was typed on a layout, so the modifier is the one the person tapped. The pane flags
+  every key it synthesizes (`TerminalPane` ▸ `sendKey`) and the encoder reads ⌥ as Alt for those,
+  at either value. That is what keeps the latch working on an iPad, where the bar is the only
+  keyboard there is.
+- **Under `report all keys` the Shift bit survives a composition that spent it.** ⌥⇧- reports
+  `CSI 8212;2u`: alt is dropped as spent, shift is not, although shift was just as much a part of
+  composing U+2014 on a US layout. That is the same divergence the encoder already documents for
+  shifted punctuation (it reports the produced glyph, not the layout's base key), not an oversight.
+- **A pane attached to a REMOTE daemon takes the shipped default** and composes, whatever either
+  config file says. The remote-workspace views thread no settings at all, exactly as they thread
+  no font family or padding today.
+
+Bindings are unaffected either way. The window dispatcher matches on `event.code` (section 7.2)
+and runs before any pane, so the four shipped ⌥ bindings (`alt+super+left` / `right` / `up` /
+`down`) still fire with ⌥ composing, and an arrow composes nothing in the first place.
+
 ---
 
 ## 8. Global hotkey (system-wide)
@@ -1458,10 +1530,12 @@ registries instead); nothing persists to a per-app preferences store.
    delete gate; CLI `--force` bypasses regardless), "Expand group when a workspace is
    dropped into it", "Confirm before quitting with active agents" (the ⌘Q dialog; a
    browser client has no ⌘Q and the row says so); a *Panes* section: focus-follows-mouse
-   toggle + 0–500/25 delay slider, shown only while the toggle is on (section 10); and the
+   toggle + 0–500/25 delay slider, shown only while the toggle is on (section 10); the
    `clipboard-write` toggle (OSC 52; the row states that clipboard reads are refused
-   regardless). Values are read straight off the daemon snapshot with no optimistic local
-   state, so two windows cannot disagree about what the file says.
+   regardless); and the "Option as Alt" toggle (`macos-option-as-alt`, section 7.5, default
+   off, whose caption states what each value costs because neither is the safe one). Values
+   are read straight off the daemon snapshot with no optimistic local state, so two windows
+   cannot disagree about what the file says.
 9. **Remote** (Kelpi-only): device pairing (`kelpid pair` / `devices` / `url --tailnet`
    in-app) and the section 1.7 daemon registry.
 

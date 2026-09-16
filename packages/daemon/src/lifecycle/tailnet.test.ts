@@ -445,6 +445,10 @@ describe.skipIf(process.platform === 'win32')('defaultTailscaleRunner', () => {
         const runs = path.join(dir, 'runs');
         const refusing = refusingCLI(dir, 'refusing', 'failed to connect to local tailscaled', log);
         // Answers, then wedges on its SECOND call only: one timeout is the point being made, and
+        // the third call answers again so the re-search can be seen reaching a candidate; in
+        // production the re-search reaches a later candidate only if the wedged binary recovers,
+        // because the shared budget is spent on it first. Deliberately slow: it burns one full
+        // 2 s budget, hence the explicit per-test timeout below.
         // paying it twice would just be the test sleeping.
         const wedging = fakeCLI(
             dir,
@@ -477,7 +481,7 @@ describe.skipIf(process.platform === 'win32')('defaultTailscaleRunner', () => {
             'refusing status --json',
             'wedging status --json'
         ]);
-    });
+    }, 15_000);
 
     it('drops the pin when the pinned binary goes away, and searches again', async () => {
         const dir = scratch();

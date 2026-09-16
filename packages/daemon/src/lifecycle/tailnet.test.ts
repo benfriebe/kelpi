@@ -449,7 +449,6 @@ describe.skipIf(process.platform === 'win32')('defaultTailscaleRunner', () => {
         // production the re-search reaches a later candidate only if the wedged binary recovers,
         // because the shared budget is spent on it first. Deliberately slow: it burns one full
         // 2 s budget, hence the explicit per-test timeout below.
-        // paying it twice would just be the test sleeping.
         const wedging = fakeCLI(
             dir,
             'wedging',

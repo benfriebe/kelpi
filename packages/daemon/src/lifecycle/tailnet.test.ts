@@ -1,12 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    defaultTailscaleRunner,
+    describeTailscaleSearch,
+    explainTailscaleProbe,
     firstLink,
     parseServeProxyPorts,
     parseTailscaleStatus,
     resolveTailnetURL,
     tailnetClientURL,
     tailscaleBinaryCandidates,
+    tailscaleProbeDiagnostics,
     type TailscaleRunner
 } from './tailnet.js';
 
@@ -272,9 +280,13 @@ describe('tailscaleBinaryCandidates', () => {
         expect(tailscaleBinaryCandidates({ KELPID_TAILSCALE: '  ' }, 'linux')).toEqual(['tailscale']);
     });
 
-    it('macOS probes PATH first, then the App Store bundle CLI (which symlinks nothing)', () => {
+    it('macOS probes PATH, then the standard install dirs, then the App Store bundle CLI', () => {
+        // A Finder-launched app has neither /usr/local/bin nor /opt/homebrew/bin on PATH, so
+        // without those two the search fell through to the sandboxed bundle CLI (#169).
         expect(tailscaleBinaryCandidates({}, 'darwin')).toEqual([
             'tailscale',
+            '/usr/local/bin/tailscale',
+            '/opt/homebrew/bin/tailscale',
             '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
         ]);
     });
@@ -282,5 +294,254 @@ describe('tailscaleBinaryCandidates', () => {
     it('everywhere else PATH is the only candidate', () => {
         expect(tailscaleBinaryCandidates({}, 'linux')).toEqual(['tailscale']);
         expect(tailscaleBinaryCandidates({}, 'win32')).toEqual(['tailscale']);
+    });
+});
+
+/**
+ * Real executables on disk: the runner shells out, so nothing less exercises the search.
+ *
+ * Two environmental requirements, neither worth a runtime probe. A `/bin/sh` at that path, and a
+ * TMPDIR that is not mounted `noexec` (on macOS `os.tmpdir()` is `/var/folders/...`, which is
+ * exec-mountable; under a noexec mount `execFile` returns EACCES and these read as "ran and
+ * failed"). Windows has neither, and the shebang and the `0o755` mode are both meaningless
+ * there, so the whole block is skipped rather than left to fail obscurely.
+ */
+describe.skipIf(process.platform === 'win32')('defaultTailscaleRunner', () => {
+    const dirs: string[] = [];
+
+    afterEach(() => {
+        for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    function scratch(): string {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-tailscale-'));
+        dirs.push(dir);
+        return dir;
+    }
+
+    function fakeCLI(dir: string, name: string, body: string): string {
+        const file = path.join(dir, name);
+        fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+        return file;
+    }
+
+    /** A path in a directory that exists, with nothing at it: ENOENT, not a permissions error. */
+    function absentCLI(dir: string, name = 'tailscale'): string {
+        return path.join(dir, name);
+    }
+
+    /**
+     * A candidate that answers with a real status document, optionally recording its argv.
+     *
+     * The JSON is embedded in SINGLE quotes inside the script, so it must never contain an
+     * apostrophe. `STATUS_RUNNING` is the only thing that could put one there.
+     */
+    function answeringCLI(dir: string, name: string, log?: string): string {
+        const record = log === undefined ? '' : `echo "${name} $*" >> '${log}'\n`;
+        return fakeCLI(dir, name, `${record}printf '%s' '${STATUS_RUNNING}'`);
+    }
+
+    function refusingCLI(dir: string, name: string, said: string, log?: string): string {
+        const record = log === undefined ? '' : `echo "${name} $*" >> '${log}'\n`;
+        return fakeCLI(dir, name, `${record}echo "${said}" >&2\nexit 1`);
+    }
+
+    it('walks past a candidate that RAN and failed, keeping what it said (#169)', async () => {
+        const dir = scratch();
+        const absent = absentCLI(dir);
+        const sandboxed = refusingCLI(dir, 'sandboxed', 'failed to connect to local tailscaled');
+        const working = answeringCLI(dir, 'working');
+
+        const result = await defaultTailscaleRunner([absent, sandboxed, working])(['status', '--json']);
+
+        // The old rule advanced only on ENOENT, so `sandboxed` ended the search and a healthy
+        // tailnet read as "state: unknown".
+        expect(result.code).toBe(0);
+        expect(result.binary).toBe(working);
+        expect(parseTailscaleStatus(result.stdout)).toEqual({
+            backend: 'Running',
+            dnsName: 'werk.taila5f942.ts.net'
+        });
+        const search = tailscaleProbeDiagnostics(result);
+        expect(search).toEqual({
+            tried: [absent, sandboxed, working],
+            used: working,
+            failure: `${sandboxed} exited 1: failed to connect to local tailscaled`
+        });
+        // One fact, not two: the binary that answered and the one that complained can be
+        // talking to different backends, and "after" is what says so.
+        expect(describeTailscaleSearch(search)).toBe(
+            `answered by ${working}, after ${sandboxed} exited 1: failed to connect to local tailscaled`
+        );
+    });
+
+    it('pins the binary that answered, so a MUTATION never re-runs on another candidate', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        const sandboxed = refusingCLI(dir, 'sandboxed', 'failed to connect to local tailscaled', log);
+        const working = answeringCLI(dir, 'working', log);
+        const run = defaultTailscaleRunner([sandboxed, working]);
+
+        const status = await run(['status', '--json']);
+        expect(status.binary).toBe(working);
+
+        // `serve --bg` writes the tailnet's :443 handler. Re-searching would re-issue it against
+        // every other candidate on a refusal, and could configure an install whose backend is
+        // not the one `status` was read from.
+        const serve = await run(['serve', '--bg', '61154']);
+        expect(serve.binary).toBe(working);
+        expect(serve.code).toBe(0);
+
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            'sandboxed status --json',
+            'working status --json',
+            'working serve --bg 61154'
+        ]);
+    });
+
+    it('reports what the PINNED binary just did, not what it did when it was pinned (#169)', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        const once = path.join(dir, 'answered.once');
+        // Answers the first time, refuses every time after: the daemon boots while tailscale is
+        // healthy and tailscale stops later, which is the ordinary way this fails.
+        const flaky = fakeCLI(
+            dir,
+            'flaky',
+            [
+                `echo "flaky $*" >> '${log}'`,
+                `if [ -f '${once}' ]; then`,
+                '    echo "failed to connect to local tailscaled" >&2',
+                '    exit 1',
+                'fi',
+                `: > '${once}'`,
+                `printf '%s' '${STATUS_RUNNING}'`
+            ].join('\n')
+        );
+        const spare = answeringCLI(dir, 'spare', log);
+        const run = defaultTailscaleRunner([flaky, spare]);
+
+        expect((await run(['status', '--json'])).binary).toBe(flaky);
+        const second = await run(['status', '--json']);
+
+        expect(second.code).toBe(1);
+        // The pinning search records `flaky` at code 0. Handing that back unedited dropped the
+        // one line that names the cause, and the card fell back to a bare "state: unknown".
+        expect(tailscaleProbeDiagnostics(second)).toEqual({
+            tried: [flaky],
+            used: undefined,
+            failure: `${flaky} exited 1: failed to connect to local tailscaled`
+        });
+        // A refusal is an ANSWER, so the pin holds and `spare` is never consulted.
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            'flaky status --json',
+            'flaky status --json'
+        ]);
+    });
+
+    it('drops the pin when the pinned binary wedges, so the next invocation searches again', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        const runs = path.join(dir, 'runs');
+        const refusing = refusingCLI(dir, 'refusing', 'failed to connect to local tailscaled', log);
+        // Answers, then wedges on its SECOND call only: one timeout is the point being made, and
+        // the third call answers again so the re-search can be seen reaching a candidate; in
+        // production the re-search reaches a later candidate only if the wedged binary recovers,
+        // because the shared budget is spent on it first. Deliberately slow: it burns one full
+        // 2 s budget, hence the explicit per-test timeout below.
+        const wedging = fakeCLI(
+            dir,
+            'wedging',
+            [
+                `echo "wedging $*" >> '${log}'`,
+                `echo x >> '${runs}'`,
+                `if [ "$(wc -l < '${runs}')" -eq 2 ]; then exec sleep 30; fi`,
+                `printf '%s' '${STATUS_RUNNING}'`
+            ].join('\n')
+        );
+        const run = defaultTailscaleRunner([refusing, wedging], 2_000);
+
+        expect((await run(['status', '--json'])).binary).toBe(wedging);
+
+        // One budget, and the hang is named rather than blamed on the candidate that refused
+        // during the search that pinned it.
+        const wedged = await run(['status', '--json']);
+        expect(wedged).toMatchObject({ code: -1, binary: wedging });
+        expect(tailscaleProbeDiagnostics(wedged).failure).toBe(`${wedging} could not be run: timed out after 2s`);
+
+        // The pin is gone - a binary that could not be RUN has stopped being an answer - so this
+        // one searches from the top, and `refusing` runs a second time, which it never would
+        // while the pin held.
+        expect((await run(['status', '--json'])).binary).toBe(wedging);
+        expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+            'refusing status --json',
+            'wedging status --json',
+            'wedging status --json',
+            'refusing status --json',
+            'wedging status --json'
+        ]);
+    }, 15_000);
+
+    it('drops the pin when the pinned binary goes away, and searches again', async () => {
+        const dir = scratch();
+        const first = answeringCLI(dir, 'first');
+        const second = answeringCLI(dir, 'second');
+        const run = defaultTailscaleRunner([first, second]);
+
+        expect((await run(['status', '--json'])).binary).toBe(first);
+        fs.rmSync(first);
+        expect((await run(['status', '--json'])).binary).toBe(second);
+    });
+
+    it('spends ONE budget across the whole search, not one per candidate', async () => {
+        const dir = scratch();
+        const log = path.join(dir, 'ran.log');
+        // `exec` so the sleeping process IS the one execFile spawned and the timeout kills it.
+        const hung = fakeCLI(dir, 'hung', 'exec sleep 30');
+        const working = answeringCLI(dir, 'working', log);
+
+        const started = Date.now();
+        const result = await defaultTailscaleRunner([hung, working], 400)(['status', '--json']);
+
+        // Four candidates must not cost four timeouts: the client gives remote-status 15s total.
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(result).toMatchObject({ code: -1, stderr: 'timed out after 400ms' });
+        // The budget was spent, so `working` was never reached and is not claimed as tried.
+        expect(tailscaleProbeDiagnostics(result).tried).toEqual([hung]);
+        expect(fs.existsSync(log)).toBe(false);
+    });
+
+    it('reports the candidate that ran over the one that was never there when none answer', async () => {
+        const dir = scratch();
+        const absent = absentCLI(dir);
+        const sandboxed = fakeCLI(dir, 'sandboxed', 'echo "Tailscale is sandboxed\nsecond line" >&2\nexit 1');
+
+        const result = await defaultTailscaleRunner([absent, sandboxed])(['status', '--json']);
+
+        expect(result.code).toBe(1);
+        expect(result.binary).toBe(sandboxed);
+        // One line, because the status card is one line.
+        expect(explainTailscaleProbe('tailscaled is not running (state: unknown)', result)).toBe(
+            `tailscaled is not running (state: unknown) - tried ${absent}, ${sandboxed}; ` +
+                `${sandboxed} exited 1: Tailscale is sandboxed`
+        );
+    });
+
+    it('every candidate missing is still the not-installed sentinel, with the search attached', async () => {
+        const dir = scratch();
+        const first = absentCLI(dir, 'first');
+        const second = absentCLI(dir, 'second');
+
+        const result = await defaultTailscaleRunner([first, second])(['status', '--json']);
+
+        expect(result).toMatchObject({ code: -1, stderr: 'ENOENT' });
+        expect(tailscaleProbeDiagnostics(result)).toEqual({
+            tried: [first, second],
+            used: undefined,
+            failure: undefined
+        });
+        expect(explainTailscaleProbe('tailscale is not installed', result)).toBe(
+            `tailscale is not installed - tried ${first}, ${second}`
+        );
     });
 });

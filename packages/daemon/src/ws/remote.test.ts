@@ -107,6 +107,62 @@ describe('remote-status', () => {
         const reply = (await channel(file, ts, 0).status()) as Record<string, unknown>;
         expect(reply['tailnet']).toMatchObject({ available: true, serving: false });
     });
+
+    it('keeps reason short and puts the binaries tried, and what failed, in `probe` (#169)', async () => {
+        const file = registryFile();
+        const bundle = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+        // What the production runner hands back after walking the candidate list on a Mac whose
+        // daemon inherited a Finder PATH: nothing on PATH, then the sandboxed App Store CLI,
+        // which ran and could not reach the backend.
+        const run: TailscaleRunner = () =>
+            Promise.resolve({
+                code: 1,
+                stdout: '',
+                stderr: 'failed to connect to local tailscaled',
+                binary: bundle,
+                attempts: [
+                    { binary: 'tailscale', code: -1, stderr: 'ENOENT' },
+                    { binary: bundle, code: 1, stderr: 'failed to connect to local tailscaled' }
+                ]
+            });
+        const reply = (await channel(file, { run }).status()) as Record<string, unknown>;
+        // `reason` is the one short sentence the tab's status row has room for; the search is a
+        // list of absolute paths and someone else's stderr, and rides beside it for the detail
+        // row. Folding it into `reason` scrolled the whole tab sideways.
+        expect(reply['tailnet']).toEqual({
+            available: false,
+            serving: false,
+            reason: 'tailscaled is not running (state: unknown)',
+            probe: {
+                tried: ['tailscale', bundle],
+                failure: `${bundle} exited 1: failed to connect to local tailscaled`
+            }
+        });
+    });
+
+    it('says which candidate answered when one did', async () => {
+        const file = registryFile();
+        const run: TailscaleRunner = (args) =>
+            Promise.resolve(
+                args[0] === 'status'
+                    ? {
+                          code: 0,
+                          stdout: RUNNING,
+                          stderr: '',
+                          binary: '/opt/homebrew/bin/tailscale',
+                          attempts: [
+                              { binary: 'tailscale', code: -1, stderr: 'ENOENT' },
+                              { binary: '/opt/homebrew/bin/tailscale', code: 0, stderr: '' }
+                          ]
+                      }
+                    : { code: 0, stdout: '{}', stderr: '' }
+            );
+        const reply = (await channel(file, { run }).status()) as Record<string, unknown>;
+        expect(reply['tailnet']).toMatchObject({
+            available: true,
+            probe: { tried: ['tailscale', '/opt/homebrew/bin/tailscale'], used: '/opt/homebrew/bin/tailscale' }
+        });
+    });
 });
 
 describe('remote-pair', () => {

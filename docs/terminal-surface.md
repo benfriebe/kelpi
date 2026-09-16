@@ -543,10 +543,21 @@ follows exactly **one client at a time**, the *size owner*:
   against its engine's, and repairs with one forced `resize-pane` — the daemon treats a forced
   report from a non-owner as "re-seed me" and replays it. One request per hand-off, never a poll.
 - **DOM contract** (`data-terminal-mirror` on the pane root, `TerminalPane.tsx`): `<cols>x<rows>`
-  while this pane is mirroring another client's grid, absent otherwise. It is the only attribute
-  that describes what is ON THE SCREEN when the pane's box is not what the engine is drawing;
-  `data-terminal-rows` (phone, `terminal/keyboard-inset.ts`) and `data-terminal-cell` keep
-  describing the pane's own MEASUREMENT, so the two disagreeing is the mirror working.
+  while this pane is mirroring another client's grid, absent otherwise. It and
+  `data-terminal-clip` below are the two attributes that describe what is ON THE SCREEN when the
+  pane's box is not what the engine is drawing; `data-terminal-rows` (phone,
+  `terminal/keyboard-inset.ts`) and `data-terminal-cell` keep describing the pane's own
+  MEASUREMENT, so the two kinds disagreeing is the mirror working.
+- **The clipped side is visible** (#178, `data-terminal-clip` on the pane root): `<cols>x<rows>`
+  of the mirrored grid this pane's box is CUTTING OFF, in whole cells, absent when nothing is cut
+  off. The mirror attribute says what the canvas is; this says how much of it the user cannot
+  see, and each non-zero axis also draws an edge marker inside the pane
+  (`data-testid="terminal-clip-right-<paneID>"`, `"terminal-clip-bottom-<paneID>"`), both
+  `pointer-events-none` and `aria-hidden` so neither the engine's pointer arithmetic nor the
+  pane's accessible content changes. The count is repeated where it can be acted on: the desktop
+  take-size-control chip's tooltip (`chrome/TopBar.tsx`) and the phone's take-size-control menu
+  row (`phone/PhoneShell.tsx`). A pane that sizes its own PTY, and a mirror that fits inside its
+  box, have none of it.
 
 The plugin bridge carries both facts to a replacement renderer as well: every SDK replay frame
 states this grid (`grid`, null when the daemon stated none) and presentation states ownership

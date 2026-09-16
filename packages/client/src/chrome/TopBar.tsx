@@ -15,9 +15,16 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@kelpi/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@kelpi/daemon/store';
-import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 
 import type { ConnectionStatus } from '../connection';
+import {
+    mirrorClipPhrase,
+    mirroredPaneClip,
+    subscribeTerminalPanes,
+    terminalPanesVersion,
+    type TerminalMirrorClip
+} from '../terminal';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
@@ -201,6 +208,20 @@ export function identityDotColor(
     return workspaceColorHex(color, bucket);
 }
 
+/**
+ * #178 - the second line of the take-size-control chip's tooltip: what the clip is costing.
+ *
+ * "36 columns and 2 rows of the owner's screen are hidden past this window's edge." A viewer
+ * whose pane is narrower than the owner's mirrors that grid (#166) and the surplus is cut off by
+ * the pane's `overflow-hidden`, so the chip beside this line is the one control that gets those
+ * columns back. Never rendered with a zero on either axis: `mirroredPaneClip` answers null.
+ */
+function hiddenCellsLine(clip: TerminalMirrorClip): string {
+    // One axis clipped by exactly one cell is the only singular subject there is.
+    const verb = (clip.cols === 0 || clip.rows === 0) && Math.max(clip.cols, clip.rows) === 1 ? 'is' : 'are';
+    return `${mirrorClipPhrase(clip)} of the owner's screen ${verb} hidden past this window's edge.`;
+}
+
 export function TopBar(props: TopBarProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
     const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
@@ -231,6 +252,26 @@ export function TopBar(props: TopBarProps): ReactElement {
      * menu it sits beside, at the same precision: only the panes its box reaches park.
      */
     useOverlayPresence(layoutMenuRef, layoutMenuOpen);
+    /*
+     * #178 - how much of the owner's grid this window's panes are clipping off, live.
+     *
+     * The panes are the only things that know (they hold the mirrored grid and their own
+     * measurement), they publish it on their registry handle, and the same counter the phone key
+     * bar re-reads on is what brings a changed answer here: a pane's box moving, or the owner's
+     * grid moving, is not otherwise a reason for this bar to render.
+     *
+     * Subscribed only while the chip is SHOWN, the way the key bar's host subscribes only on a
+     * phone, and that is the whole condition a mirror can exist under: the chip's rule and the
+     * pane's are the same one, arm for arm (`features/TerminalFeaturePane.tsx`). So a window that
+     * sizes its own PTY neither subscribes nor asks, and renders exactly what it rendered before.
+     */
+    const mirroring = props.sizeControlledElsewhere === true;
+    const subscribeClip = useCallback(
+        (onChange: () => void): (() => void) => (mirroring ? subscribeTerminalPanes(onChange) : () => undefined),
+        [mirroring]
+    );
+    useSyncExternalStore(subscribeClip, terminalPanesVersion, terminalPanesVersion);
+    const clipped = mirroring ? mirroredPaneClip() : null;
     const hasWorkspace = props.workspaceName !== null;
     const paneCount = props.panes.length;
     const syncable = (props.syncedPaneCount ?? 0) >= 2;
@@ -512,7 +553,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                         type="button"
                         data-testid="take-size-control"
                         aria-label="Take size control"
-                        title="Terminal sizing follows another connected window. Click to size the panes to this one."
+                        title={`Terminal sizing follows another connected window. Click to size the panes to this one.${clipped === null ? '' : `\n${hiddenCellsLine(clipped)}`}`}
                         className="flex items-center gap-1 rounded px-1.5 py-0.5"
                         data-hovered={hovered === 'size-control' ? 'true' : 'false'}
                         style={{

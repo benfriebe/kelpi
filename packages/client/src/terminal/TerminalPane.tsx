@@ -57,7 +57,7 @@ import {
     watchSoftKeyboardMotion
 } from './keyboard-inset';
 import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
-import { notifyTerminalPanes, registerTerminalPane } from './pane-registry';
+import { notifyTerminalPanes, registerTerminalPane, type TerminalMirrorClip } from './pane-registry';
 import {
     IDLE_PANE_MODES,
     createMouseReporter,
@@ -571,6 +571,16 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const mirrorRef = useRef<TerminalGeometry | null>(null);
     /**
+     * #178 - the owner's columns and rows this box is cutting off, or null when nothing is.
+     *
+     * The ONE piece of mirror state that is React state rather than a `data-` attribute, and the
+     * reason is what it draws: an edge indicator is a painted element, so something has to render
+     * it. The ref is the copy the window's chip reads through the pane registry (a live read, as
+     * every other handle read is); `publishClip` writes both, and only when the count moves.
+     */
+    const clipRef = useRef<TerminalMirrorClip | null>(null);
+    const [clip, setClip] = useState<TerminalMirrorClip | null>(null);
+    /**
      * #166 — the grid the LAST replay stated, whoever owned sizing when it arrived.
      *
      * Recorded even while this client owns the PTY, and that is the point: the `size-control`
@@ -727,6 +737,36 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     }, []);
 
     /**
+     * #178 - restate how much of a mirrored canvas this box is clipping off.
+     *
+     * Derived from the two grids the pane already holds: the one the engine was moved to (the
+     * owner's, while a mirror is in force) and the one this box measures. Their difference in
+     * whole cells is exactly what the root's `overflow-hidden` is cutting - a box WIDER than the
+     * canvas letterboxes and hides nothing, which is what the floor at zero says, and a mirror
+     * that fits reports null so that a pane which is not clipped is the pane it has always been,
+     * indicator and attribute absent.
+     *
+     * Called from `publishMirror` (the grid moved) and from `syncGeometry` (the box did), which
+     * between them are every way the answer can change. The equality guard is what keeps a
+     * replay that restates the same grid, and a drag that lands on the same cell count, from
+     * rendering anything at all.
+     */
+    const publishClip = useCallback((): void => {
+        const mirror = mirrorRef.current;
+        const measured = geometryRef.current;
+        const cols = mirror === null || measured === null ? 0 : Math.max(0, mirror.cols - measured.cols);
+        const rows = mirror === null || measured === null ? 0 : Math.max(0, mirror.rows - measured.rows);
+        const next: TerminalMirrorClip | null = cols === 0 && rows === 0 ? null : { cols, rows };
+        const previous = clipRef.current;
+        if (previous?.cols === next?.cols && previous?.rows === next?.rows) return;
+        clipRef.current = next;
+        setClip(next);
+        // The window's take-size-control chip says the same number in its tooltip and lives in
+        // another tree entirely, so it is told the way every other cross-tree read is told.
+        notifyTerminalPanes();
+    }, []);
+
+    /**
      * Publish (or clear) the mirrored-grid attribute on the pane root (#166).
      *
      * Imperative, like the paint-hold pair beside it: a mirror is established by a replay, and a
@@ -734,10 +774,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      */
     const publishMirror = useCallback((grid: TerminalGeometry | null): void => {
         const root = rootRef.current;
-        if (root === null) return;
-        if (grid === null) root.removeAttribute(TERMINAL_MIRROR_ATTRIBUTE);
-        else root.setAttribute(TERMINAL_MIRROR_ATTRIBUTE, `${String(grid.cols)}x${String(grid.rows)}`);
-    }, []);
+        if (root !== null) {
+            if (grid === null) root.removeAttribute(TERMINAL_MIRROR_ATTRIBUTE);
+            else root.setAttribute(TERMINAL_MIRROR_ATTRIBUTE, `${String(grid.cols)}x${String(grid.rows)}`);
+        }
+        publishClip();
+    }, [publishClip]);
 
     /**
      * Measure → engine → daemon. `force` bypasses the unchanged-geometry short circuit.
@@ -791,6 +833,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
         if (unchanged && !force) return;
         geometryRef.current = next;
+        // #178: the box moved, so what a mirror is clipping off moved with it.
+        publishClip();
         const cell = renderer.cellSize();
         setCellHint(
             cell.width > 0 && cell.height > 0 ? `${cell.width.toFixed(2)}x${cell.height.toFixed(2)}` : ''
@@ -822,9 +866,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             });
         }
         if (!unchanged || force) current.onDimensionsChange?.(current.paneID, next);
-        // `publishMirror` is the only dependency this callback has ever had; it is identity-stable
-        // (`useCallback(..., [])`), so the list is a formality rather than a re-creation risk.
-    }, [publishMirror]);
+        // `publishMirror` and `publishClip` are this callback's only dependencies, and both are
+        // identity-stable (`useCallback(..., [])`), so the list is a formality rather than a
+        // re-creation risk.
+    }, [publishMirror, publishClip]);
 
     /**
      * Trailing debounce with a ceiling: a burst coalesces, but a gesture that never stops still
@@ -1081,7 +1126,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 cellHeight: () => rendererRef.current?.cellSize().height ?? 0,
                 // `latest` is written in a LAYOUT effect (§N35 residual (b)), so this answers with
                 // the commit that gave the pane the ring rather than one commit later.
-                focusedOnScreen: () => latest.current.focused && latest.current.visible
+                focusedOnScreen: () => latest.current.focused && latest.current.visible,
+                // #178: what this pane is clipping off the owner's grid, for the one chip that
+                // can undo it. A live read, like `selection` above, announced by `publishClip`.
+                //
+                // Null while the pane is HIDDEN, for the same reason `syncGeometry` idles there: a
+                // pane in an unselected workspace, or behind a modal, stays mounted and registered
+                // with its last clip intact, and counting it would put a number on the chip for a
+                // clip the user is not looking at.
+                mirrorClip: () => (latest.current.visible ? clipRef.current : null)
             });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies
@@ -1937,13 +1990,35 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
      * The registry publishes the predicate as `focusedOnScreen()` and reads it at call time; what
      * a pull cannot do is say that the answer MOVED, which it does whenever the ring moves or a
      * sibling is zoomed - none of which touches this pane's engine, its handle or its DOM. One
-     * announcement per change, on the two props that decide it. Phone only: on a desktop nothing
-     * is subscribed, so an announcement would be a message to nobody.
+     * announcement per change. Phone only: the key bar is the one subscriber this predicate
+     * exists for and it is not mounted on a desktop, so announcing a ring move there would only
+     * re-render a top bar whose own read the ring cannot change.
      */
     useEffect(() => {
         if (!phone) return;
         notifyTerminalPanes();
-    }, [phone, focused, visible]);
+    }, [phone, focused]);
+
+    /*
+     * #178 - VISIBILITY moves a registry answer on every form factor, so it is announced on every
+     * form factor.
+     *
+     * `mirrorClip()` reports null for a hidden pane, because the chip must not count a clip nobody
+     * is looking at. That is a change to what this handle answers which nothing else can see: the
+     * clip itself did not move, so `publishClip`'s equality guard returns before its own notify,
+     * and the announcement above is phone-gated. The registry's contract is that a moved answer is
+     * announced (`pane-registry.ts`), and the hide direction is the one that would otherwise leave
+     * a number that is too big on a control claiming to fix it.
+     *
+     * Cheap where nobody is listening: a window that sizes its own PTY subscribes to nothing
+     * (`chrome/TopBar.tsx` never evaluates the subscribe on that branch), so this is a counter bump
+     * and no render at all. The gate stays on the READ rather than moving into `publishClip`: a
+     * hidden pane keeps `data-terminal-clip`, which is what the DOM contract in
+     * `docs/terminal-surface.md` section 5.1 says it holds.
+     */
+    useEffect(() => {
+        notifyTerminalPanes();
+    }, [visible]);
 
     // ── the engine's textarea, told it is talking to a software keyboard (C2) ───────
     //
@@ -2196,6 +2271,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                rather than an inference from a CSS variable assigned somewhere else entirely. */
             data-terminal-theme-bg={theme?.background ?? ''}
             data-terminal-theme-fg={theme?.foreground ?? ''}
+            /* #178 - `<cols>x<rows>` of the owner's grid this box is CUTTING OFF while it
+               mirrors (#166), absent when nothing is. The mirror attribute above says what the
+               canvas is; this says how much of it the user cannot see. */
+            data-terminal-clip={clip === null ? undefined : `${String(clip.cols)}x${String(clip.rows)}`}
             /*
              * §TERM-036 — the pane IS the accessibility element (`SurfaceView.swift:703-715`).
              *
@@ -2265,6 +2344,43 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 data-terminal-host=""
                 {...{ [PANE_SURFACE_ATTR]: '' }}
             />
+            {/*
+              * #178 - the clipped EDGE, on the side that is clipped.
+              *
+              * A mirrored canvas that is bigger than this box is cut off by the root's
+              * `overflow-hidden` with nothing to say so, and the report this answers is "my
+              * terminal is broken": the owner's right-hand columns are simply missing. A wash
+              * into the pane's own border colour plus a hairline is the smallest honest mark
+              * that says the screen continues past the edge. `pointer-events-none` and
+              * `aria-hidden` because it is a hint about the canvas, not a control and not
+              * content - the count itself is on the take-size-control chip, which is the thing
+              * that can undo the clip, and on `data-terminal-clip` for the audit.
+              *
+              * Rendered only while `clip` is non-null, so a pane that is not mirroring, and a
+              * mirror that fits, keep exactly the DOM they had.
+              */}
+            {clip !== null && clip.cols > 0 ? (
+                <div
+                    aria-hidden
+                    data-testid={`terminal-clip-right-${paneID}`}
+                    className="pointer-events-none absolute top-0 right-0 bottom-0 w-2"
+                    style={{
+                        background: 'linear-gradient(to right, transparent, var(--kelpi-border, #24242B))',
+                        borderRight: '1px solid var(--kelpi-fg-tertiary, #6A6A72)'
+                    }}
+                />
+            ) : null}
+            {clip !== null && clip.rows > 0 ? (
+                <div
+                    aria-hidden
+                    data-testid={`terminal-clip-bottom-${paneID}`}
+                    className="pointer-events-none absolute right-0 bottom-0 left-0 h-2"
+                    style={{
+                        background: 'linear-gradient(to bottom, transparent, var(--kelpi-border, #24242B))',
+                        borderBottom: '1px solid var(--kelpi-fg-tertiary, #6A6A72)'
+                    }}
+                />
+            ) : null}
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
                 // is now the last stop on the retry path, not a dead end. The pane root still

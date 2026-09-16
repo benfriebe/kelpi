@@ -53,11 +53,23 @@
  * pulled would render before the first handle existed and never look again. Hence
  * {@link subscribeTerminalPanes} and {@link terminalPanesVersion} - one counter, bumped on every
  * register, release and {@link notifyTerminalPanes}, which is a `useSyncExternalStore` away from a
- * component that re-reads. Nothing subscribes on a desktop (the host does not subscribe unless the
- * form factor is phone), so a desktop window pays for none of it.
+ * component that re-reads. The bar's host does not subscribe unless the form factor is phone, and
+ * the one other reader - the top bar's clipped-columns line (#178) - does not subscribe unless
+ * this window is a NON-owner, so a desktop window that sizes its own PTY pays for none of it.
  */
 
 import type { TerminalKeyInit } from './renderer';
+
+/**
+ * #178 - how much of a MIRRORED canvas this pane's box cannot show, in whole cells.
+ *
+ * Zero on both axes is reported as `null`, because "nothing is clipped" is the state every
+ * pane that sizes its own PTY is in forever and no affordance may appear for it.
+ */
+export interface TerminalMirrorClip {
+    readonly cols: number;
+    readonly rows: number;
+}
 
 export interface TerminalPaneHandle {
     /**
@@ -120,6 +132,15 @@ export interface TerminalPaneHandle {
      * because it is the only thing on this handle that moves without the engine moving.
      */
     focusedOnScreen(): boolean;
+    /**
+     * #178 - the owner's columns and rows this pane is clipping off, or null when it fits (or
+     * is not mirroring at all). Optional, like the other reads a replacement renderer may not
+     * answer: a pane that does not publish one simply never contributes to the chip's line.
+     *
+     * A live read, announced through {@link notifyTerminalPanes} when the answer changes,
+     * because the chip that says it is in another component entirely.
+     */
+    mirrorClip?(): TerminalMirrorClip | null;
 }
 
 const handles = new Map<string, TerminalPaneHandle>();
@@ -183,6 +204,45 @@ export function terminalPanesVersion(): number {
 export function paneHandle(paneID: string | null | undefined): TerminalPaneHandle | null {
     if (paneID === null || paneID === undefined) return null;
     return handles.get(paneID) ?? null;
+}
+
+/**
+ * #178 - the WORST clip across every mirrored pane in this window, or null when none is clipped.
+ *
+ * The window's take-size-control chip is one control for every pane, and taking size control
+ * un-clips all of them at once, so the honest number to put beside it is the largest: a viewer
+ * told "12 columns hidden" while one pane hides 36 would take the offer and still be surprised.
+ *
+ * The maximum is taken PER AXIS and independently, so with one pane clipping columns and another
+ * clipping rows the pair describes no single pane on screen. That is deliberate: the reading is
+ * "this is what the window is hiding", and on both axes it is the worst case rather than an
+ * understatement, which is the only direction this number is allowed to be wrong in.
+ */
+export function mirroredPaneClip(): TerminalMirrorClip | null {
+    let cols = 0;
+    let rows = 0;
+    for (const handle of handles.values()) {
+        const clip = handle.mirrorClip?.() ?? null;
+        if (clip === null) continue;
+        cols = Math.max(cols, clip.cols);
+        rows = Math.max(rows, clip.rows);
+    }
+    return cols === 0 && rows === 0 ? null : { cols, rows };
+}
+
+/**
+ * #178 - a clip as a noun phrase: "36 columns and 10 rows", "1 column", "7 rows".
+ *
+ * Both surfaces that say the number compose a different sentence around it (the desktop chip's
+ * tooltip, the phone menu row's label), and neither should be the place the pluralisation lives.
+ * Never called with a zero on both axes: {@link mirroredPaneClip} answers null instead.
+ */
+export function mirrorClipPhrase(clip: TerminalMirrorClip): string {
+    const parts = [
+        ...(clip.cols > 0 ? [`${String(clip.cols)} column${clip.cols === 1 ? '' : 's'}`] : []),
+        ...(clip.rows > 0 ? [`${String(clip.rows)} row${clip.rows === 1 ? '' : 's'}`] : [])
+    ];
+    return parts.join(' and ');
 }
 
 /** How many panes are registered. Test seam only. */

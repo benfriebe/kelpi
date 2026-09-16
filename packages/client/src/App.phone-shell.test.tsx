@@ -26,6 +26,7 @@ import {
 } from './phone';
 import { createFakePhoneWindow } from './phone/testing';
 import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
+import { registerTerminalPane, type TerminalPaneHandle } from './terminal';
 import { createFakePtyApi, createFakeRendererFactory, type FakePtyApi, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -572,6 +573,53 @@ describe('the overflow menu', () => {
         });
         tap('phone-more');
         expect(screen.queryByTestId('phone-menu-take-size-control')).toBeNull();
+    });
+
+    it('counts the hidden cells on the Take size control row (#178)', () => {
+        /*
+         * The desktop puts this number in the chip's `title`, which a touch device can never show,
+         * and the phone is the narrowest box an owner's grid is mirrored into - so the row that
+         * undoes the clip carries the count itself.
+         *
+         * The clip is published by the panes on their registry handles (`terminal/pane-registry.ts`),
+         * so a handle is registered here rather than a whole clipped phone pane being staged: what
+         * this case is about is the shell reading that report and saying it, and the arithmetic
+         * behind the report is pinned in `terminal/TerminalPane.mirror.test.tsx`.
+         */
+        const h = setup();
+        act(() => {
+            h.socket().emit({ type: 'size-control', ownerClientID: 'another-window' });
+        });
+        tap('phone-more');
+        expect(screen.getByTestId('phone-menu-take-size-control').textContent).not.toContain('hidden');
+        tap('phone-menu-header-close');
+
+        const clipped: TerminalPaneHandle = {
+            selection: () => '',
+            write: () => undefined,
+            root: () => null,
+            dispatchKey: () => false,
+            pasteText: () => false,
+            showKeyboard: () => undefined,
+            hideKeyboard: () => undefined,
+            cellHeight: () => 0,
+            focusedOnScreen: () => false,
+            mirrorClip: () => ({ cols: 36, rows: 2 })
+        };
+        let release = (): void => undefined;
+        act(() => {
+            release = registerTerminalPane('clipped-pane', clipped);
+        });
+        try {
+            tap('phone-more');
+            expect(screen.getByTestId('phone-menu-take-size-control').textContent).toContain(
+                '36 columns and 2 rows hidden'
+            );
+        } finally {
+            act(() => {
+                release();
+            });
+        }
     });
 
     it('renames through a prompt that shows the current name', () => {

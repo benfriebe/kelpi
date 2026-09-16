@@ -115,11 +115,10 @@ export function isPaneSurfaceCaret(element: Element | null): boolean {
  * what makes it a correction rather than a new rule: `focusedPaneID` still says WHICH pane, and
  * this says whether the keyboard is with it at all.
  */
-export function chromeCaretHeld(target?: Document): boolean {
-    if (target === undefined && typeof document === 'undefined') return false;
-    const owningDocument = target ?? document;
-    const active = owningDocument.activeElement;
-    if (active === null || active === owningDocument.body) return false;
+export function chromeCaretHeld(): boolean {
+    if (typeof document === 'undefined') return false;
+    const active = document.activeElement;
+    if (active === null || active === document.body) return false;
     if (!isEditable(active)) return false;
     return !isPaneSurfaceCaret(active);
 }

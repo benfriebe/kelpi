@@ -600,6 +600,39 @@ describe('PaneGrid focus', () => {
         vi.restoreAllMocks();
     });
 
+    /**
+     * Issue #174, round 2 - the window term does not apply to a focused WEB pane.
+     *
+     * Its page is a native `WebContentsView` composited over this document, so the keyboard is
+     * in this app and simply not in this renderer: the shell measured `client.hasFocus=false`
+     * with `view.isFocused=true` (`packages/shell/src/webhost/index.ts`) and the same after an
+     * ordinary page load (`packages/shell/src/webhost/view-focus.ts`). Dimming there would be
+     * the reported defect inverted, on the one pane that certainly has the keys.
+     */
+    it('does not dim a focused WEB pane when the renderer reports no window focus', () => {
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+        const panes = [testPane('a'), testPane('b', { type: 'web' })];
+        renderGrid({ focusedPaneID: 'b', panes });
+        act(() => {
+            window.dispatchEvent(new Event('blur'));
+        });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('false');
+        expect(screen.getByTestId('pane-b').getAttribute('data-focused')).toBe('true');
+        vi.restoreAllMocks();
+    });
+
+    /** ...and the exemption is about the WEB pane, not about the window term going away. */
+    it('still dims a focused terminal pane beside a web one', () => {
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+        const panes = [testPane('a'), testPane('b', { type: 'web' })];
+        renderGrid({ focusedPaneID: 'a', panes });
+        act(() => {
+            window.dispatchEvent(new Event('blur'));
+        });
+        expect(screen.getByTestId('focus-ring').getAttribute('data-dimmed')).toBe('true');
+        vi.restoreAllMocks();
+    });
+
     it('fires the dwell clear once for a non-idle focused pane', () => {
         vi.useFakeTimers();
         const onDwellClear = vi.fn();

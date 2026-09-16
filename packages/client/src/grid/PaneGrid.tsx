@@ -623,10 +623,11 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 
-    const focusedStatus = useMemo(
-        () => panes.find((pane) => pane.id === focusedPaneID)?.status ?? null,
+    const focusedPane = useMemo(
+        () => panes.find((pane) => pane.id === focusedPaneID) ?? null,
         [panes, focusedPaneID]
     );
+    const focusedStatus = focusedPane?.status ?? null;
 
     /*
      * Issue #174 - the ring's two missing terms, read once for the whole grid.
@@ -647,7 +648,22 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      */
     const windowFocused = useWindowFocused();
     const chromeCaret = useChromeCaret();
-    const ringDimmed = chromeCaret || !windowFocused;
+    /*
+     * ...with one subtraction the terminal does not need: a focused WEB pane HAS the keyboard
+     * while `document.hasFocus()` reads false.
+     *
+     * Its page is a native `WebContentsView` composited over this document, so the keys are in
+     * this app and simply not in this renderer. The shell measured both halves of that:
+     * `packages/shell/src/webhost/index.ts` records `client.hasFocus=false` with
+     * `view.isFocused=true` after a pane takes focus, and
+     * `packages/shell/src/webhost/view-focus.ts` records the same after an ordinary page load.
+     * Dimming there would be the reported defect inverted, on the one pane that certainly is
+     * the keyboard target. The terminal keeps the unqualified window term
+     * (`terminal/TerminalPane.tsx`), and that is right: while the view has the keys, no
+     * terminal surface does.
+     */
+    const keyboardInWebPane = focusedPane?.type === 'web';
+    const ringDimmed = chromeCaret || (!windowFocused && !keyboardInWebPane);
 
     useFocusDwell({
         paneID: focusedPaneID,

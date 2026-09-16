@@ -68,8 +68,11 @@ function terms(): HTMLElement {
 }
 
 describe('the ring’s window terms (#174)', () => {
-    // jsdom reports `document.hasFocus()` as false for every test document, which would pin the
-    // window term on. The window under test is the foreground one unless a test says otherwise.
+    // jsdom answers `document.hasFocus()` with "is anything other than <body> focused", so a
+    // test that has not focused anything yet reads the window as backgrounded (which is why the
+    // pre-existing `TerminalPane` surface-focus cases, where the engine grabs the caret first,
+    // need no mock). These cases are about one term at a time, so the window is pinned to the
+    // foreground unless the test says otherwise.
     beforeEach(() => {
         vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     });
@@ -118,6 +121,42 @@ describe('the ring’s window terms (#174)', () => {
         } finally {
             chrome.remove();
         }
+    });
+
+    /**
+     * Issue #174, round 2 - the case `focusin`/`focusout` cannot see.
+     *
+     * Removing a focused element dispatches neither `focusout` nor `blur` in any engine, and
+     * the sidebar rename does exactly that: Enter calls `commit()`, the parent clears the
+     * rename state, and the focused `<input>` unmounts. Driven by the event pair alone the
+     * answer stuck on "a chrome field has the caret", so the focused pane kept a dimmed ring
+     * and a hollow cursor indefinitely - the reported defect with the sign flipped.
+     *
+     * Deliberately NOT through `InlineEditor`: this is the class, and the blur that component
+     * now makes on its way out is only the instance.
+     */
+    it('lets go when the chrome field is REMOVED while it holds the caret', async () => {
+        const chrome = document.createElement('input');
+        document.body.append(chrome);
+        render(<Terms />);
+        act(() => {
+            chrome.focus();
+        });
+        expect(terms().getAttribute('data-dimmed')).toBe('true');
+
+        const seen: string[] = [];
+        for (const type of ['focusout', 'blur'] as const) {
+            document.addEventListener(type, () => seen.push(type), true);
+        }
+        await act(async () => {
+            chrome.remove();
+            await Promise.resolve();
+        });
+
+        // No event said so; the answer is right anyway.
+        expect(seen).toEqual([]);
+        expect(terms().getAttribute('data-chrome-caret')).toBe('false');
+        expect(terms().getAttribute('data-dimmed')).toBe('false');
     });
 
     it('dims while the window is in the background', () => {

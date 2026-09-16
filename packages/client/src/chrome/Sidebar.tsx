@@ -815,10 +815,30 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
         ref.current?.focus();
         ref.current?.select();
     }, []);
+    /**
+     * Issue #174 - let the caret GO before the input goes away.
+     *
+     * Enter calls `commit()` directly and the parent's handler clears the rename state, which
+     * unmounts this focused `<input>`. Removing a focused element dispatches no `focusout` and
+     * no `blur`, so anything tracking who owns the caret (`app/caret-visuals.ts`, the focus
+     * ring's `isFirstResponder` term) would be told nothing at all. That module no longer
+     * depends on being told, which is the real fix; blurring first is the cheap half, and it
+     * is also what the Swift's editors do when they resign first responder.
+     *
+     * `done` is what makes it safe: `blur()` runs `onBlur={commit}` synchronously, and without
+     * the latch the commit would be made twice.
+     */
+    const done = useRef(false);
+    const finish = (run: () => void): void => {
+        if (done.current) return;
+        done.current = true;
+        ref.current?.blur();
+        run();
+    };
     const commit = (): void => {
         const trimmed = value.trim();
-        if (trimmed.length === 0 || trimmed === props.value) props.onCancel();
-        else props.onCommit(trimmed);
+        if (trimmed.length === 0 || trimmed === props.value) finish(props.onCancel);
+        else finish(() => props.onCommit(trimmed));
     };
     return (
         <input
@@ -849,7 +869,7 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     event.stopPropagation();
-                    props.onCancel();
+                    finish(props.onCancel);
                 }
             }}
         />

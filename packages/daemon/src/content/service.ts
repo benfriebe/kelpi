@@ -711,6 +711,10 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         stopWatch(entry);
         cancelMarkdown(entry);
         cancelRender(entry);
+        // A buffer whose save was DECLINED stays dirty (`editor.ts`), so this is also the line
+        // that keeps such an entry alive. `forget` is the escape hatch and the only one: it
+        // flushes and deletes unconditionally on `pane-removed`, which is the same event that
+        // makes `saveScratchpad` decline in the first place.
         if (editor.isDirty(entry.paneID)) return;
         cancelDiff(entry); // §CONT-107: nothing is watching, so nothing wants the answer.
         editor.drop(entry.paneID);

@@ -2099,8 +2099,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // agree - about the truth this time.
     //
     // `useChromeCaret` is the re-decision the old comment was avoiding, and it is cheap for the
-    // reason that objection missed: it is ONE pair of document listeners for the window, shared
-    // by every pane and by the grid, and the engine's own transient blurs are inside
+    // reason that objection missed: `app/caret-visuals.ts` keeps ONE pair of document listeners
+    // for the window behind a `useSyncExternalStore` store, so N panes plus the grid share one
+    // answer rather than computing N+1 of them, and the engine's own transient blurs are inside
     // `[data-pane-surface]`, so they do not move the answer at all.
     const windowFocused = useWindowFocused();
     const chromeCaret = useChromeCaret();

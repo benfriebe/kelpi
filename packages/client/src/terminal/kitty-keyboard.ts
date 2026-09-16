@@ -56,6 +56,13 @@
  * decides which, defaulting to ghostty's own answer (compose). See {@link KittyOptionRule} for the
  * whole of it, and #171 for the report: ⌥⇧- reached Codex as `CSI 8212;4u` instead of an em dash.
  *
+ * That setting is about a LAYOUT, which gives the rule for everything it does not cover: **a key
+ * somebody synthesized carries the modifiers its sender meant**, because there is no layout
+ * underneath it to have spent them. The on-screen key bar's ⌥ latch is the case that matters (it
+ * is the only keyboard an iPad has), and the caller states it: `TerminalPane`'s `sendKey` flags
+ * every key it raises and passes `optionAsAlt: true` for the duration, so a latched ⌥ is Alt at
+ * either setting value while a typed ⌥ still composes.
+ *
  * **A sixth, of the same kind as the fourth:** the five chords the PLATFORM owns (⌘H, ⌥⌘H,
  * ⌃⌘F, ⌘M, ⌘Q) are never encoded either. They are stated once, in `@kelpi/core/config` ▸
  * `PLATFORM_CHORDS`, so the shell's application menu and this encoder cannot disagree about the
@@ -268,7 +275,7 @@ export function kittyModifiers(event: KittyKeyEventLike): number {
  *
  *   - **`optionAsAlt: false`** (the shipped default, ghostty's own): ⌥ alone is the layout's.
  *     A text key loses the alt bit, so the composed character is what the terminal receives.
- *     ⌥b / ⌥f / ⌥d stop being readline's meta-word chords.
+ *     ⌥b / ⌥f / ⌥d go from an alt bit beside a composed glyph to that glyph as text.
  *   - **`optionAsAlt: true`**: alt is reported, beside whatever glyph the layout produced, and
  *     nothing is typed. That is what this module did before #171 and what every fixture written
  *     before it still asserts; it is NOT ghostty's `true`, which gets the unmodified letter back
@@ -277,6 +284,10 @@ export function kittyModifiers(event: KittyKeyEventLike): number {
  * `macLike` is the platform read, passed in rather than sniffed here (`chrome/keys.ts` owns the
  * one read of `navigator.platform`). Off macOS the rule never applies: no layout composes from
  * Alt there, so an Alt bit that arrived is one the user meant.
+ *
+ * The same sentence is why a caller raising a SYNTHESIZED key passes `optionAsAlt: true` for the
+ * duration however the setting is set (`TerminalPane` ▸ `sendKey`): nothing composed it, so its
+ * Alt is the Alt its sender meant. See the header's fifth limit.
  */
 export interface KittyOptionRule {
     /** True: ⌥ is Alt (pre-#171 behaviour). False: ⌥ composes, and a text key drops the bit. */

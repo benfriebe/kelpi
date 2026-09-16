@@ -1281,9 +1281,17 @@ is where it applies:
   platform.
 - **macOS only**, by `CLIENT_MAC_LIKE` (config-keybindings.md section 3.5), which the pane passes
   in rather than the encoder sniffing for itself.
+- **typed keys only.** A key the pane SYNTHESIZES carries the modifiers its sender meant, because
+  no layout composed it: `sendKey` flags every dispatch it makes and the encoder reads ⌥ as Alt
+  for its duration, so the on-screen key bar's ⌥ latch still encodes a chord at either value.
+  That funnel covers `PhoneKeyBar`, the plugin `dispatchKey` action and the shortcut interrupt.
 
 The value rides the settings snapshot and reaches the pane as a prop read live, so a Settings
-toggle governs the next keystroke rather than the next pane.
+toggle governs the next keystroke rather than the next pane. **In the assembly's own panes only:**
+the remote-workspace views (`client/src/app/RemoteWorkspaceView.tsx`,
+`client/src/phone/PhoneRemoteWorkspace.tsx`) pass no settings at all, so a pane attached to a
+remote daemon takes the shipped default and composes, exactly as it takes the default font family
+and padding.
 
 ### 10.3 The macOS line-editing chords (#82)
 

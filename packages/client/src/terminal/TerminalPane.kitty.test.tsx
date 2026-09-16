@@ -21,6 +21,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalPane } from './TerminalPane';
+import { paneHandle } from './pane-registry';
 import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from './testing';
 
 /** jsdom reports 0×0 for everything; the pane takes its box through this seam. */
@@ -301,6 +302,45 @@ describe('TerminalPane — kitty keyboard protocol', () => {
             expect(h.pty.last().input).toEqual([]);
             expect(h.pty.last().directInput).toEqual([]);
             expect(h.engineEvents).toEqual(['keydown', 'keydown']);
+            cleanup();
+        }
+    });
+
+    /**
+     * #171, review finding 1: the on-screen key bar's ⌥ latch is not composition.
+     *
+     * The bar builds `{key, code, altKey: latch.alt, …}` and raises it through the pane's
+     * `dispatchKey` (`KeyBar.tsx`, `PhoneKeyBar`, the plugin action and `terminal-shortcuts` all
+     * funnel through the same `sendKey`), which is a real `keydown` on a node under the host, so
+     * the interceptor cannot tell it from a physical key by looking at it. It does not have to:
+     * the SENDER knows, and says so for the duration of the dispatch. Nothing composed that key,
+     * so its Alt is the Alt the person tapped, at either setting value.
+     *
+     * Both halves in one case, because the pairing is the point: the same pane, the same flags,
+     * the same default setting, a typed ⌥ and a raised one.
+     */
+    it('keeps a SYNTHESIZED ⌥ as Alt while a typed one composes, at the default setting (#171)', async () => {
+        const h = await kittyHarness(1);
+
+        // Typed: the layout composed the glyph, so the encoder declines and the engine types it.
+        fireEvent.keyDown(h.engine, OPTION_SHIFT_MINUS);
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.engineEvents).toEqual(['keydown']);
+
+        // Raised by the bar: no layout, so the latch is the modifier and the chord is encoded.
+        expect(paneHandle('pane-1')?.dispatchKey({ key: 'c', code: 'KeyC', altKey: true })).toBe(true);
+        expect(h.pty.last().input).toEqual([esc('[99;3u')]);
+    });
+
+    it('…and the bar keeps its ⌥ latch on the clients that have no other keyboard (#171)', async () => {
+        // The same assertion with the setting explicitly on: the marker is not a second setting,
+        // it is the rule that a synthesized key carries what its sender meant, so both values of
+        // `macos-option-as-alt` answer the same way for a raised key.
+        for (const macosOptionAsAlt of [false, true]) {
+            const h = await kittyHarness(1, { macosOptionAsAlt });
+            paneHandle('pane-1')?.dispatchKey({ key: 'c', code: 'KeyC', altKey: true });
+            paneHandle('pane-1')?.dispatchKey({ key: 'f', code: 'KeyF', altKey: true });
+            expect(h.pty.last().input).toEqual([esc('[99;3u'), esc('[102;3u')]);
             cleanup();
         }
     });

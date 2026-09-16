@@ -1024,8 +1024,15 @@ settles it with `macos-option-as-alt`; Kelpi ships the same key name and the sam
 
 | value | what ⌥ does | what it costs |
 |---|---|---|
-| `false` (default, ghostty's) | belongs to the keyboard layout: the composed character is typed | the alt bit on ⌥b / ⌥f / ⌥d, which is how an application recognises a meta chord |
-| `true` | reported as the Alt modifier, which is what panes did before this key existed | every ⌥-composed character; ⌥⇧- sends `CSI 8212;4u` instead of typing an em dash |
+| `false` (default, ghostty's) | belongs to the keyboard layout: the composed character is typed | the alt bit on ⌥+letter, so an application that reads one as a chord stops seeing it |
+| `true` | reported as a held modifier BESIDE whatever the layout composed, and nothing is typed: the bytes panes sent before this key existed, which is all it promises | every ⌥-composed character; ⌥⇧- sends `CSI 8212;4u` instead of typing an em dash |
+
+**What `true` is not.** It does not make ⌥b a readline meta chord, and nothing in Kelpi ever did.
+A legacy pane has always typed `∫` (the utf8 rule above), and a kitty pane has always sent
+`CSI 8747;3u`, the alt bit beside `∫` rather than beside `b`; no readline binding matches either.
+So what `false` actually costs, end to end, is that ⌥+letter on a kitty-negotiating application
+goes from an unbindable alt-plus-glyph to that glyph as text. The rest of the ⌥ vocabulary is
+byte-identical at both values (points 2 and 3 below).
 
 Written by Settings ▸ Workspaces ▸ Panes ▸ "Option as Alt", or by hand in
 `~/.config/kelpi/config`. Four facts about the scope, each of them measured rather than assumed:
@@ -1051,9 +1058,29 @@ Two honest limits, because they are the difference between this port and ghostty
   option modifier and hands ghostty the `b` under ⌥b; a browser reports only the composed glyph,
   so `true` reports alt beside THAT glyph (`CSI 8747;3u` for ⌥b on a US layout). Those are the
   bytes Kelpi sent before this key existed, which is all `true` promises: today's behaviour.
+  Recovering the `b` is possible on a US layout by reading `event.code`, and a `code` to
+  base-character table already exists one module over (`KeyBar.tsx` ▸ `characterKey`). It is
+  declined here as policy, not as physics: such a table is wrong for AZERTY, QWERTZ and Dvorak,
+  where `code: 'KeyQ'` is not `q`, and being wrong there means silently sending the wrong letter.
+  A follow-up, not an impossibility.
 - **No `left` / `right`.** Ghostty's key also takes those, and a `KeyboardEvent` for a composed
   character says only that alt was down, never which one. A value this port cannot honour is
   better refused than half-kept, so anything other than `true` reads as `false`.
+
+Three more facts worth stating because each one has surprised somebody:
+
+- **A key the on-screen key bar raises keeps its ⌥.** The bar's Alt latch is not composition:
+  nothing was typed on a layout, so the modifier is the one the person tapped. The pane flags
+  every key it synthesizes (`TerminalPane` ▸ `sendKey`) and the encoder reads ⌥ as Alt for those,
+  at either value. That is what keeps the latch working on an iPad, where the bar is the only
+  keyboard there is.
+- **Under `report all keys` the Shift bit survives a composition that spent it.** ⌥⇧- reports
+  `CSI 8212;2u`: alt is dropped as spent, shift is not, although shift was just as much a part of
+  composing U+2014 on a US layout. That is the same divergence the encoder already documents for
+  shifted punctuation (it reports the produced glyph, not the layout's base key), not an oversight.
+- **A pane attached to a REMOTE daemon takes the shipped default** and composes, whatever either
+  config file says. The remote-workspace views thread no settings at all, exactly as they thread
+  no font family or padding today.
 
 Bindings are unaffected either way. The window dispatcher matches on `event.code` (section 7.2)
 and runs before any pane, so the four shipped ⌥ bindings (`alt+super+left` / `right` / `up` /

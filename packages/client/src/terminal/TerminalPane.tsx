@@ -530,8 +530,30 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //
     // Declared here, above the mount effect, because that effect is what registers them.
 
+    /**
+     * True for exactly as long as a SYNTHESIZED key is travelling this pane (#171).
+     *
+     * A key somebody raised carries the modifiers its sender meant, because there is no keyboard
+     * layout underneath it to have spent them: the bar's Alt latch is Alt, not an ⌥ that just
+     * composed a glyph. `sendKey` is the one funnel every synthesized key goes through (the
+     * window's key bar, `PhoneKeyBar`, the plugin `dispatchKey` action, `terminal-shortcuts`'
+     * interrupt), and `dispatchEvent` is synchronous, so a flag set around it is exact for the
+     * whole capture-phase path the event takes, the kitty interceptor included.
+     */
+    const barKeyRef = useRef(false);
     /** A bar key, raised at the engine exactly as a physical one arrives (C1's routing decision). */
-    const sendKey = useCallback((init: TerminalKeyInit): boolean => rendererRef.current?.dispatchKey(init) ?? false, []);
+    const sendKey = useCallback((init: TerminalKeyInit): boolean => {
+        // Save and restore rather than set-then-clear: a handler reached by this dispatch may
+        // dispatch again (the bar re-raises a cancelled keydown), and a bare `false` at the end of
+        // the inner call would unset the outer one mid-flight.
+        const outer = barKeyRef.current;
+        barKeyRef.current = true;
+        try {
+            return rendererRef.current?.dispatchKey(init) ?? false;
+        } finally {
+            barKeyRef.current = outer;
+        }
+    }, []);
     /**
      * Dismiss the software keyboard by letting the caret go, which is what `releasePaneCaret` does
      * and what `renderer.blur()` does NOT: ghostty-web's `blur()` blurs the CONTAINER
@@ -730,8 +752,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             // #171: the ⌥ rule, off `latest` rather than closed over, so a Settings toggle
             // governs the very next keystroke. The platform read is `chrome/keys.ts`'s single
             // one, and off macOS the rule never fires whatever the setting says.
+            //
+            // `barKeyRef` is the exception that keeps the on-screen bar's ⌥ latch working on the
+            // clients that have no other keyboard (iPhone, iPad, any Safari reporting MacIntel):
+            // a synthesized key composed nothing, so its Alt is always the Alt its sender meant.
             option: () => ({
-                optionAsAlt: latest.current.macosOptionAsAlt ?? false,
+                optionAsAlt: barKeyRef.current || (latest.current.macosOptionAsAlt ?? false),
                 macLike: CLIENT_MAC_LIKE
             }),
             // §8.2 mirrors only the press that carries the input; a kitty release (`:3u`) is the

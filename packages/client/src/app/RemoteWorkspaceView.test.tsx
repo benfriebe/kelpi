@@ -13,7 +13,10 @@ import { createFakePtyApi } from '../terminal/testing';
 import { RemoteWorkspaceView } from './RemoteWorkspaceView';
 import { contentState } from '../content/testing';
 
-afterEach(cleanup);
+afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+});
 
 const WS = 'AAAAAAAA-0000-0000-0000-000000000001';
 const SHELL = 'BBBBBBBB-0000-0000-0000-000000000001';
@@ -287,17 +290,24 @@ describe('RemoteWorkspaceView (§1.7)', () => {
         expect(screen.getByTestId(`pane-title-${SHELL}`).textContent).toBe('~/src/kelpi');
     });
 
-    it('focuses a remote pane on hover when the remote daemon has focus-follows-mouse on (#216)', () => {
+    it("focuses a remote pane on hover, after the REMOTE daemon's own delay (#216)", () => {
+        vi.useFakeTimers();
         const { runtime, calls } = remoteRuntime();
-        runtime.store.getState().applySettings({ general: { focusFollowsMouse: true, focusFollowsMouseDelay: 0 } });
+        runtime.store
+            .getState()
+            .applySettings({ general: { focusFollowsMouse: true, focusFollowsMouseDelay: 200 } });
         render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />);
         // React synthesises enter/leave from pointerover at the root container, as
-        // `PaneGrid.test.tsx` does for the primary mount. `NOTE` is the unfocused pane.
+        // `PaneGrid.test.tsx:592-620` does for the primary mount. `NOTE` is the unfocused pane.
         act(() =>
             screen
                 .getByTestId(`pane-${NOTE}`)
                 .dispatchEvent(new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }))
         );
+        // The DELAY is the remote daemon's 200 ms, not the grid's own `focusFollowsMouseDelayMs`
+        // default of 0: a dropped delay prop would have focused on the pointer event above.
+        expect(calls).not.toContain(`focus:${WS}:${NOTE}`);
+        act(() => vi.advanceTimersByTime(200));
         expect(calls).toContain(`focus:${WS}:${NOTE}`);
     });
 

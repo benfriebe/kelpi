@@ -22,9 +22,10 @@
  * moment this client takes size control the engine comes back to its own box.
  */
 
-import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { TopBar } from '../chrome/TopBar';
 import { TERMINAL_MIRROR_ATTRIBUTE, TerminalPane } from './TerminalPane';
 import {
     createFakePtyApi,
@@ -546,5 +547,106 @@ describe('the pane that owns sizing, and the daemon that cannot say (#166)', () 
         expect(moves(renderer)).toContain('reset');
         expect(moves(renderer)).not.toContain('resize 0x0');
         expect({ cols: renderer.cols, rows: renderer.rows }).toEqual({ cols: 120, rows: 30 });
+    });
+});
+
+/**
+ * #178 - a mirrored pane that cannot show the whole owner grid SAYS SO, on the clipped side.
+ *
+ * The state #166 leaves behind, filed as a product decision rather than a defect: a viewer
+ * narrower than the owner mirrors the owner's grid, the engine draws cols×rows, and the root's
+ * `overflow-hidden` cuts the surplus off with nothing on screen to say it is there. The user
+ * reading that is "my terminal is broken" - the right-hand columns are simply gone, and the one
+ * control that gets them back (the take-size-control chip) does not mention them either.
+ *
+ * So: an edge on the clipped side, the count on the chip's tooltip, and - the half that matters
+ * as much - NOTHING AT ALL when nothing is clipped, which is every pane that sizes its own PTY
+ * and every mirror that fits. Option 2 of the ticket (panning the mirrored canvas) is a separate
+ * change; these cases pin only what is discoverable today.
+ */
+describe('a mirrored pane marks the edge it is clipping (#178)', () => {
+    /** Which edge indicators the pane is drawing. */
+    function edges(root: HTMLElement): { right: boolean; bottom: boolean } {
+        return {
+            right: root.querySelector('[data-testid="terminal-clip-right-pane-1"]') !== null,
+            bottom: root.querySelector('[data-testid="terminal-clip-bottom-pane-1"]') !== null
+        };
+    }
+
+    /** The window's chip, rendered against whatever the mounted panes are reporting. */
+    function chipTooltip(): string {
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" sizeControlledElsewhere />);
+        return screen.getByTestId('take-size-control').title;
+    }
+
+    it('marks the right edge and counts the hidden columns when the owner is wider', async () => {
+        // 840×600 at a 10×20 cell is 84×30; the owner is at 120×30, so 36 columns are cut off.
+        const mounted = await mount({ ownsSize: false, width: 840, height: 600 });
+        expect(edges(mounted.root)).toEqual({ right: false, bottom: false });
+
+        mounted.pty.last().replay('wide-owner-screen', { cols: 120, rows: 30 });
+        await settle();
+
+        expect(mounted.root.getAttribute(TERMINAL_MIRROR_ATTRIBUTE)).toBe('120x30');
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBe('36x0');
+        // Only the side that is actually clipped: the rows fit exactly, so no bottom edge.
+        expect(edges(mounted.root)).toEqual({ right: true, bottom: false });
+        expect(chipTooltip()).toContain("36 columns of the owner's screen are hidden");
+    });
+
+    it('marks the bottom edge as well when the owner is taller', async () => {
+        // 840×400 is 84×20 against an owner at 120×30: 36 columns and 10 rows.
+        const mounted = await mount({ ownsSize: false, width: 840, height: 400 });
+
+        mounted.pty.last().replay('big-owner-screen', { cols: 120, rows: 30 });
+        await settle();
+
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBe('36x10');
+        expect(edges(mounted.root)).toEqual({ right: true, bottom: true });
+        expect(chipTooltip()).toContain("36 columns and 10 rows of the owner's screen are hidden");
+    });
+
+    it('shows nothing for a mirror that FITS - the letterbox is not a clip', async () => {
+        // The other direction of #166's letterbox: a 1200×600 viewer mirroring a 73×19 owner has
+        // the whole screen plus background beside it. Nothing is hidden, so nothing is drawn and
+        // the chip keeps the one line it has always had.
+        const mounted = await mount({ ownsSize: false, width: 1200, height: 600 });
+
+        mounted.pty.last().replay('screen', { cols: 73, rows: 19 });
+        await settle();
+
+        expect(mounted.root.getAttribute(TERMINAL_MIRROR_ATTRIBUTE)).toBe('73x19');
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBeNull();
+        expect(edges(mounted.root)).toEqual({ right: false, bottom: false });
+        expect(chipTooltip()).not.toContain('hidden');
+    });
+
+    it('opens when the viewer shrinks below the owner, and closes when it takes size control', async () => {
+        // The box is the other half of the sum, so a window drag has to move the answer as a
+        // replay does - and taking size control, which puts the engine back on this box, must
+        // leave no edge behind.
+        const mounted = await mount({ ownsSize: false, width: 1200, height: 600 });
+        mounted.pty.last().replay('screen', { cols: 73, rows: 19 });
+        await settle();
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBeNull();
+
+        await mounted.update({ measure: box(400, 400) });
+        await act(async () => {
+            observers.trigger();
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+
+        // 400×400 is 40×20; the owner's 73×19 loses 33 columns and no rows.
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBe('33x0');
+        expect(edges(mounted.root)).toEqual({ right: true, bottom: false });
+
+        await mounted.update({ ownsSize: true, measure: box(400, 400) });
+
+        expect(mounted.root.getAttribute(TERMINAL_MIRROR_ATTRIBUTE)).toBeNull();
+        expect(mounted.root.getAttribute('data-terminal-clip')).toBeNull();
+        expect(edges(mounted.root)).toEqual({ right: false, bottom: false });
     });
 });

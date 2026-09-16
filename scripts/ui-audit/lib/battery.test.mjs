@@ -10,18 +10,29 @@
  * These run under the ROOT vitest through the `harness` project in `vitest.config.ts`, beside
  * `verify-plan.test.mjs`, for the reason that file's header gives.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
     FAILED,
     FAILED_TWICE,
+    LOAD_SENSITIVE,
     NOT_RUN,
+    ORDERING_DEPENDENT,
     PASSED,
     PASSED_ON_RETRY,
     failedScenariosFromResults,
     failedTestFilesFromVitestJson,
     formatBatterySummary,
-    runBattery
+    readRetryHistory,
+    recordRetryHistory,
+    retryVerdicts,
+    runBattery,
+    scenarioObservations,
+    writeRetryHistory
 } from './battery.mjs';
 
 /**
@@ -263,5 +274,125 @@ describe('the summary table', () => {
         expect(text).toContain('retried alone: packages/daemon/src/b.test.ts');
         // A green component never explains itself: the table stays readable when nothing is wrong.
         expect(text).not.toContain('red alone as well');
+    });
+});
+
+describe('the retry history tells an ordering failure from a wobble, across batteries (#215)', () => {
+    /** One full lane's `results.json`: `[name, failedChecks]` in run order, plus who leaked. */
+    const lane = (rows, leakedBy = []) => ({
+        stamp: '2026-09-16T08-00-00-000Z',
+        windowPlacement: 'hidden',
+        summaries: rows.map(([name, failed]) => ({ name, checks: 11, failed, ms: 9000 })),
+        leaks: leakedBy.map((name) => ({ name, leaked: ["the phone's remembered place is still set"] }))
+    });
+
+    /** The lane that #205 lived in: a producer that leaks, and the scenario that runs into it. */
+    const laneThatLeaks = lane(
+        [
+            ['confirm-dialog-keys', 0],
+            ['plugin-browser-features', 0],
+            ['plugin-document-features', 3]
+        ],
+        ['plugin-browser-features']
+    );
+
+    const afterBatteries = (count, { stillRed = [] } = {}) => {
+        let history = { version: 1, scenarios: {} };
+        for (let index = 0; index < count; index += 1) {
+            history = recordRetryHistory(history, scenarioObservations(laneThatLeaks, { stillRed }), {
+                at: `2026-09-1${String(index + 1)}T08:00:00.000Z`
+            });
+        }
+        return history;
+    };
+
+    /** The component the battery actually ran: red lane, green isolated retry of that scenario. */
+    const retriedLane = async () =>
+        runBattery({
+            components: [fake('scenarios (all, hidden)', { ok: false, retryOk: true, retryOf: ['plugin-document-features'] }).component]
+        });
+
+    it('reads each scenario of the lane with what ran before it and who the leak report blames', () => {
+        expect(scenarioObservations(laneThatLeaks)).toEqual([
+            { name: 'confirm-dialog-keys', failedLane: false, retryPassed: null, predecessor: null, leakedBy: null },
+            { name: 'plugin-browser-features', failedLane: false, retryPassed: null, predecessor: 'confirm-dialog-keys', leakedBy: null },
+            {
+                name: 'plugin-document-features',
+                failedLane: true,
+                retryPassed: true,
+                predecessor: 'plugin-browser-features',
+                leakedBy: 'plugin-browser-features'
+            }
+        ]);
+        // The retry could not save it, so it is not a green-alone at all and gets no verdict later.
+        expect(scenarioObservations(laneThatLeaks, { stillRed: ['plugin-document-features'] })[2].retryPassed).toBe(false);
+    });
+
+    it('calls a scenario that failed ONE lane and passed alone load-sensitive, as before', async () => {
+        const verdicts = retryVerdicts(afterBatteries(1));
+        expect(verdicts).toEqual([
+            { name: 'plugin-document-features', verdict: LOAD_SENSITIVE, lanes: 1, predecessor: 'plugin-browser-features', leakedBy: 'plugin-browser-features' }
+        ]);
+
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('plugin-document-features: load-sensitive (red in 1 full lane, green alone)');
+        expect(table).not.toContain(ORDERING_DEPENDENT);
+    });
+
+    it('calls it ordering-dependent after two consecutive lanes, and names the scenario before it', async () => {
+        const verdicts = retryVerdicts(afterBatteries(2));
+        expect(verdicts.map((verdict) => [verdict.name, verdict.verdict, verdict.lanes])).toEqual([
+            ['plugin-document-features', ORDERING_DEPENDENT, 2]
+        ]);
+
+        const table = formatBatterySummary((await retriedLane()).records, verdicts).join('\n');
+        expect(table).toContain('plugin-document-features: ordering-dependent (red in 2 full lanes in a row, green in every isolated retry)');
+        expect(table).toContain('it runs after plugin-browser-features');
+        // The runner's leak post-condition already named the predecessor; the battery says so on
+        // the same line, because that name is the whole difference between a flake and a cause.
+        expect(table).toContain("the lane's leak post-condition named plugin-browser-features as leaving state behind");
+        expect(table).not.toContain(LOAD_SENSITIVE);
+    });
+
+    it('takes N from the caller: three lanes deep is still load-sensitive when N is four', () => {
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 4 })[0].verdict).toBe(LOAD_SENSITIVE);
+        expect(retryVerdicts(afterBatteries(3), { consecutive: 3 })[0].verdict).toBe(ORDERING_DEPENDENT);
+    });
+
+    it('says nothing about a scenario whose retry was red, or one the lane never failed', () => {
+        // Red twice is the battery's own failure under its own name, not a history question.
+        expect(retryVerdicts(afterBatteries(2, { stillRed: ['plugin-document-features'] }))).toEqual([]);
+        // A green lane ends the streak: the next fail starts again at one.
+        const green = recordRetryHistory(afterBatteries(2), scenarioObservations(lane([['plugin-browser-features', 0], ['plugin-document-features', 0]])), {
+            at: '2026-09-13T08:00:00.000Z'
+        });
+        expect(retryVerdicts(green)).toEqual([]);
+        const again = recordRetryHistory(green, scenarioObservations(laneThatLeaks), { at: '2026-09-14T08:00:00.000Z' });
+        expect(retryVerdicts(again)[0]).toMatchObject({ verdict: LOAD_SENSITIVE, lanes: 1 });
+    });
+
+    it('survives a round trip through the store, and reads an absent store as no history', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'battery-history-'));
+        const file = path.join(dir, 'nested', 'battery-retry-history.json');
+        try {
+            // Nothing recorded yet: a first battery must read an empty history, not crash on one.
+            expect(readRetryHistory(file)).toEqual({ version: 1, scenarios: {} });
+            expect(retryVerdicts(readRetryHistory(file))).toEqual([]);
+
+            writeRetryHistory(file, afterBatteries(1));
+            // The second battery is a different process: it can only see what the file kept.
+            const reloaded = recordRetryHistory(readRetryHistory(file), scenarioObservations(laneThatLeaks), { at: '2026-09-15T08:00:00.000Z' });
+            writeRetryHistory(file, reloaded);
+
+            expect(readRetryHistory(file)).toEqual(reloaded);
+            expect(readRetryHistory(file).scenarios['plugin-document-features']).toHaveLength(2);
+            expect(retryVerdicts(readRetryHistory(file))[0]).toMatchObject({
+                verdict: ORDERING_DEPENDENT,
+                lanes: 2,
+                predecessor: 'plugin-browser-features'
+            });
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

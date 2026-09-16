@@ -24,6 +24,9 @@
  * its own, off the load the rest of the battery was making; green on that retry passes the
  * component, and the summary says which ones needed it. Red on the retry fails the battery and
  * names the check. The rules and the four promotes that bought them are in `ui-audit/lib/battery.mjs`.
+ * A scenario the retry has saved in N consecutive full lanes is printed as ordering-dependent
+ * rather than load-sensitive, with the scenario it runs after, out of a small history kept under
+ * `docs/audit/` (#215).
  *
  * THE MAP IS MAINTAINED, NOT INFERRED. When a new audit step lands, add it to the surface
  * that owns it; when a new source dir appears, map it or it escalates by default (unmapped
@@ -44,10 +47,17 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+    CONSECUTIVE_LANE_FAILS,
+    ORDERING_DEPENDENT,
     failedScenariosFromResults,
     failedTestFilesFromVitestJson,
     formatBatterySummary,
-    runBattery
+    readRetryHistory,
+    recordRetryHistory,
+    retryVerdicts,
+    runBattery,
+    scenarioObservations,
+    writeRetryHistory
 } from './ui-audit/lib/battery.mjs';
 import { buildAll } from './ui-audit/lib/stack.mjs';
 import { SCENARIO_PREFIX, planScenarios } from './ui-audit/lib/verify-plan.mjs';
@@ -498,6 +508,8 @@ const batteryDir = path.join(reportDir, 'battery');
 fs.rmSync(batteryDir, { recursive: true, force: true });
 fs.mkdirSync(batteryDir, { recursive: true });
 const artifact = (name) => path.join(batteryDir, `${name.replace(/[^a-z0-9-]+/gi, '-')}.json`);
+/** What the full lane did to each scenario this run, or `null` when no full lane ran (#215). */
+let laneObservations = null;
 
 /**
  * For every battery component that drives a daemon (the audit and the smokes): any `kelpi`
@@ -627,9 +639,17 @@ const scenarioComponent = (label, names) => ({
         const status = spawn(`node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(out)} ${names.join(' ')}`.trim(), {
             env: SANDBOX_GUARD
         });
-        if (status === 0) return { ok: true };
+        // Only the WHOLE lane feeds the history (#215). A scoped run is a different order, and a
+        // different order is a different question: "it failed after X" means nothing when X was
+        // not in the run.
+        const wholeLane = names.length === 0;
+        const results = () => readJson(path.join(out, 'results.json'));
+        if (status === 0) {
+            if (wholeLane) laneObservations = scenarioObservations(results());
+            return { ok: true };
+        }
 
-        const failedScenarios = failedScenariosFromResults(readJson(path.join(out, 'results.json')));
+        const failedScenarios = failedScenariosFromResults(results());
         if (failedScenarios.length === 0) {
             return { ok: false, detail: `exit ${String(status)} with no failed scenario named in ${rel(path.join(out, 'results.json'))} (the lane itself did not come up)` };
         }
@@ -648,6 +668,7 @@ const scenarioComponent = (label, names) => ({
                     });
                     if (retryStatus !== 0) stillRed.push(name);
                 }
+                if (wholeLane) laneObservations = scenarioObservations(results(), { stillRed });
                 return stillRed.length === 0 ? { ok: true } : { ok: false, detail: `red alone as well: ${stillRed.join(', ')}` };
             }
         };
@@ -719,10 +740,25 @@ if (full) {
 const started = Date.now();
 const battery = await runBattery({ components, log });
 
+/*
+ * The retry history (#215): what the full lane did to each scenario, kept across batteries beside
+ * the run's own output under the gitignored `docs/audit/`, and deliberately NOT under
+ * `verify-latest/battery/`, which every run empties. Without it each battery re-decides in
+ * ignorance and an isolated retry can call a deterministic ordering failure load-sensitive
+ * forever, which is what #205 did for a fortnight. N is `KELPI_ORDERING_LANES`, default 2.
+ */
+const historyFile = path.join(repoRoot, 'docs', 'audit', 'battery-retry-history.json');
+let verdicts = [];
+if (laneObservations !== null) {
+    const history = recordRetryHistory(readRetryHistory(historyFile), laneObservations);
+    writeRetryHistory(historyFile, history);
+    verdicts = retryVerdicts(history, { consecutive: Number(process.env.KELPI_ORDERING_LANES ?? CONSECUTIVE_LANE_FAILS) });
+}
+
 // The table is the point of running everything: one red battery now says which checks failed,
 // which wobbled and came back green alone, and what each cost.
 log('── battery summary ──────────────────────────────────────────────────────');
-for (const line of formatBatterySummary(battery.records)) log(`  ${line}`);
+for (const line of formatBatterySummary(battery.records, verdicts)) log(`  ${line}`);
 
 const minutes = Number(((Date.now() - started) / 60000).toFixed(2));
 if (!battery.ok) {
@@ -745,6 +781,12 @@ if (retried.length > 0) {
     // Never a quiet pass: a component that needed its retry is a check worth looking at, even
     // though it did not stop the run.
     log(`  ⚠ ${String(retried.length)} component(s) were red under the battery and green alone: ${retried.map((record) => `${record.label} [${(record.retryOf ?? []).join(', ')}]`).join('; ')}`);
+}
+const ordering = verdicts.filter((verdict) => verdict.verdict === ORDERING_DEPENDENT);
+if (ordering.length > 0) {
+    // Louder than the retry warning above it, because this one is not weather: the retry is
+    // covering for a scenario that goes red every time it runs where it runs in the lane (#215).
+    log(`  ⚠ ORDERING-DEPENDENT, not load-sensitive: ${ordering.map((verdict) => `${verdict.name} (after ${verdict.predecessor ?? 'nothing'})`).join('; ')}`);
 }
 if (rule.optOut !== null && rule.uiFiles.length > 0) {
     // Last line of the run, not just the first: the opt-out has to survive a long scrollback.

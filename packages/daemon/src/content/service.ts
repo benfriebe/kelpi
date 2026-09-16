@@ -342,14 +342,26 @@ export function createContentService(options: ContentServiceOptions): ContentSer
 
     const editor: EditorBuffers = createEditorBuffers({
         saveScratchpad: (paneID, text) => {
-            const entry = entries.get(paneID);
-            if (entry === undefined) return;
+            /*
+             * Issue #106 - the STORE says whether this pane exists, not the entry map.
+             *
+             * Resolving the workspace through `entries` made the save conditional on a cache
+             * that `releaseIfIdle` is entitled to clear: a debounce that fired after the last
+             * subscriber left dispatched nothing, silently, while `editor.save` marked the
+             * buffer clean around it. The entry is still consulted first because it is the
+             * cheap answer and it is the right one whenever there is an entry at all.
+             */
+            const workspaceID =
+                entries.get(paneID)?.workspaceID ??
+                findPaneAnywhere(store.getState(), paneID)?.workspaceID;
+            if (workspaceID === undefined) return false;
             store.dispatch({
                 type: 'scratchpad-content-changed',
-                workspaceID: entry.workspaceID,
+                workspaceID,
                 paneID,
                 content: text
             });
+            return true;
         },
         onSaved: (paneID, text) => {
             const entry = entries.get(paneID);
@@ -651,13 +663,58 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (applied) emit(entry);
     };
 
+    /**
+     * Issue #106 - commands parked inside `ensure()`, per pane.
+     *
+     * `ws` emits every frame of a received chunk from one synchronous loop, so a client that
+     * flushes its debounce and unsubscribes in the same call (`content/client.ts` ▸
+     * `unsubscribe`, which is every workspace switch out of a scratchpad the user was typing
+     * in) puts `content-set-text` and `content-unsubscribe` on the daemon with no microtask
+     * between them. `setText` parks at `await ensure(paneID)`; `content-unsubscribe` is
+     * handled synchronously and `releaseIfIdle` found the buffer not yet dirty, deleted the
+     * entry, and the parked command resumed into `assertLive`'s throw. The edit was rejected
+     * and lost outright, and the client voids that promise, so nothing said so.
+     *
+     * A command that has STARTED holds its pane open until it finishes, and makes the release
+     * the unsubscribe asked for on its way out: the check is deferred, never skipped. Counted
+     * rather than a flag because two commands can be in flight on one pane at once.
+     *
+     * `setText` and `save` take it. They are the two that can lose a document, and `setText` is
+     * the one nothing reports: `ws` dispatches it fire and forget (`ws/sync.ts`) and the client
+     * voids the promise (`content/client.ts`). The read-only commands park on the same `ensure`
+     * and a rejection there costs a reply the caller is awaiting, not an edit.
+     */
+    const pinned = new Map<string, number>();
+
+    const pin = async <T>(paneID: string, run: () => Promise<T>): Promise<T> => {
+        pinned.set(paneID, (pinned.get(paneID) ?? 0) + 1);
+        try {
+            return await run();
+        } finally {
+            const left = (pinned.get(paneID) ?? 1) - 1;
+            if (left > 0) pinned.set(paneID, left);
+            else {
+                pinned.delete(paneID);
+                const entry = entries.get(paneID);
+                // The release the unsubscribe asked for, made now that the answer is knowable.
+                if (entry !== undefined) releaseIfIdle(entry);
+            }
+        }
+    };
+
     /** Drop an entry once nothing watches it AND its buffer holds nothing unsaved. */
     function releaseIfIdle(entry: Entry): void {
         if (entries.get(entry.paneID) !== entry) return;
         if (entry.listeners.size > 0) return;
+        // #106: a command is mid-flight on this pane; it finishes the question.
+        if ((pinned.get(entry.paneID) ?? 0) > 0) return;
         stopWatch(entry);
         cancelMarkdown(entry);
         cancelRender(entry);
+        // A buffer whose save was DECLINED stays dirty (`editor.ts`), so this is also the line
+        // that keeps such an entry alive. `forget` is the escape hatch and the only one: it
+        // flushes and deletes unconditionally on `pane-removed`, which is the same event that
+        // makes `saveScratchpad` decline in the first place.
         if (editor.isDirty(entry.paneID)) return;
         cancelDiff(entry); // §CONT-107: nothing is watching, so nothing wants the answer.
         editor.drop(entry.paneID);
@@ -804,32 +861,38 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         },
 
         async setText(paneID, text, guard) {
-            const entry = await ensure(paneID);
-            checkDocument(entry, guard);
-            if (guard && !entry.loaded) throw new Error('Document has not loaded successfully.');
-            if (entry.type === 'diff') throw new Error(`pane '${paneID}' is a read-only diff pane`);
-            if (entry.type === 'markdown' && entry.mode !== 'edit') {
-                throw new Error(`pane '${paneID}' is not in edit mode`);
-            }
-            cancelMarkdown(entry);
-            entry.content = text;
-            cancelRender(entry);
-            // Subscribers are notified on SAVE, not per keystroke: the debounced write is what
-            // other clients follow (port note 7), and the typist already has the text.
-            editor.set(paneID, targetOf(entry), text);
-            // A second editor must observe this write before autosave emits its notification.
-            advanceRevision(entry);
-            return snapshot(entry);
+            // #106: pinned, so an unsubscribe arriving in the same chunk cannot delete the entry
+            // out from under this edit while it is parked in `ensure`.
+            return pin(paneID, async () => {
+                const entry = await ensure(paneID);
+                checkDocument(entry, guard);
+                if (guard && !entry.loaded) throw new Error('Document has not loaded successfully.');
+                if (entry.type === 'diff') throw new Error(`pane '${paneID}' is a read-only diff pane`);
+                if (entry.type === 'markdown' && entry.mode !== 'edit') {
+                    throw new Error(`pane '${paneID}' is not in edit mode`);
+                }
+                cancelMarkdown(entry);
+                entry.content = text;
+                cancelRender(entry);
+                // Subscribers are notified on SAVE, not per keystroke: the debounced write is
+                // what other clients follow (port note 7), and the typist already has the text.
+                editor.set(paneID, targetOf(entry), text);
+                // A second editor must observe this write before autosave emits its notification.
+                advanceRevision(entry);
+                return snapshot(entry);
+            });
         },
 
         async save(paneID, guard) {
-            const entry = await ensure(paneID);
-            checkDocument(entry, guard);
-            cancelMarkdown(entry);
-            editor.flush(paneID);
-            if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save content');
-            await awaitRendering(entry);
-            return snapshot(entry);
+            return pin(paneID, async () => {
+                const entry = await ensure(paneID);
+                checkDocument(entry, guard);
+                cancelMarkdown(entry);
+                editor.flush(paneID);
+                if (editor.isDirty(paneID)) throw new Error(entry.error ?? 'Could not save content');
+                await awaitRendering(entry);
+                return snapshot(entry);
+            });
         },
 
         async refresh(paneID, guard) {

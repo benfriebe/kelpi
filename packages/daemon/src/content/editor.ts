@@ -65,8 +65,14 @@ export function writeFileAtomic(filePath: string, text: string): void {
 }
 
 export interface EditorOptions {
-    /** Scratchpad save target — the store dispatch. */
-    readonly saveScratchpad: (paneID: string, text: string) => void;
+    /**
+     * Scratchpad save target: the store dispatch.
+     *
+     * Returns whether the text was actually dispatched. Issue #106: a target that silently
+     * declined (the service could not find the pane) still had its buffer marked clean here,
+     * so an edit could be "saved" with nothing written anywhere and no error raised.
+     */
+    readonly saveScratchpad: (paneID: string, text: string) => boolean;
     /** Defaults to `writeFileAtomic`. */
     readonly writeFile?: ((filePath: string, text: string) => void) | undefined;
     /** Called after a successful save (the service re-renders + notifies subscribers). */
@@ -124,7 +130,16 @@ export function createEditorBuffers(options: EditorOptions): EditorBuffers {
         if (!buffer.dirty) return false;
         try {
             if (buffer.target.kind === 'file') writeFile(buffer.target.path, buffer.text);
-            else options.saveScratchpad(paneID, buffer.text);
+            /*
+             * #106 - a declined save leaves the buffer DIRTY.
+             *
+             * The clean flag and `onSaved` used to be unconditional, so a scratchpad whose
+             * entry had gone away was marked saved around a dispatch that never happened; the
+             * text then survived only in memory and vanished with the buffer. Dirty is the
+             * truthful state and it is also the recoverable one: the shutdown flush and the
+             * pane's own `forget` both try again.
+             */
+            else if (!options.saveScratchpad(paneID, buffer.text)) return false;
             buffer.dirty = false;
             options.onSaved?.(paneID, buffer.text);
             return true;

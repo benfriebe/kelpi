@@ -10,9 +10,12 @@
  * Two rules are worth naming:
  *
  *   - **The typist wins.** An incoming buffer (another client's autosave echoing back, the
- *     daemon re-reading the file) is adopted only while the field is unfocused. Mid-keystroke
- *     adoption would move the caret and lose characters, and §4.2 is explicit that the last
- *     writer wins rather than the two being merged.
+ *     daemon re-reading the file) is refused while this field holds the caret AND has unsaved
+ *     local edits in it. Mid-keystroke adoption would move the caret and lose characters, and
+ *     §4.2 is explicit that the last writer wins rather than the two being merged. Issue #106
+ *     is why the rule names both halves: keyed on focus alone it also refused the FIRST
+ *     snapshot of a pane that had been handed the caret before its text arrived, which is a
+ *     document dropped rather than a keystroke protected.
  *   - **⌘E is handled here.** The app's key interceptor deliberately ignores pane bindings while
  *     a text field has focus, so the editor answers the toggle itself — otherwise ⌘E would work
  *     going into edit mode and not coming back out.
@@ -137,17 +140,34 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     const [value, setValue] = useState(incoming);
     const externalRef = useRef(incoming);
     const hasFocusRef = useRef(false);
+    /**
+     * Issue #106 - "the typist wins" is about UNSAVED LOCAL EDITS, not about the caret.
+     *
+     * Holding the caret was standing in for having typed, and the two come apart exactly where
+     * the bug lived: a pane that remounts after a workspace switch can be handed the caret
+     * before its first snapshot arrives (its own mount claim, or `focusPaneSurface` from
+     * `handCaretToPaneWhenReady`), and the buffer it is guarding at that moment is the empty
+     * one `useState(incoming)` seeded. Refusing the snapshot there is refusing the document -
+     * and since the daemon emits only on save, nothing ever re-delivers it, so the first
+     * keystroke goes out as the whole file.
+     *
+     * Set once, on the first local edit of this mount, and never cleared: from then on this is
+     * the rule it always was, which is what keeps the "two clients typing" behaviour
+     * (`MarkdownPane.test.tsx`) intact. Before it, a focused field with nothing typed into it
+     * has nothing to lose by adopting, and everything to lose by refusing.
+     */
+    const typedRef = useRef(false);
 
     const latest = useRef(props);
     useEffect(() => {
         latest.current = props;
     });
 
-    // Adopt the daemon's buffer only when the user is not typing into this one.
+    // Adopt the daemon's buffer unless the user has typed into this one and still holds it.
     useEffect(() => {
         if (incoming === externalRef.current) return;
         externalRef.current = incoming;
-        if (hasFocusRef.current) return;
+        if (hasFocusRef.current && typedRef.current) return;
         setValue(incoming);
     }, [incoming]);
 
@@ -576,6 +596,8 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                 }}
                 onChange={(event) => {
                     const next = event.target.value;
+                    // #106: the local buffer now holds an edit the daemon has not confirmed.
+                    typedRef.current = true;
                     setValue(next);
                     latest.current.onChange(next);
                 }}
@@ -619,6 +641,7 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         area.setSelectionRange(start + 1, start + 1);
                     }
                     const next = area.value;
+                    typedRef.current = true;
                     setValue(next);
                     latest.current.onChange(next);
                 }}

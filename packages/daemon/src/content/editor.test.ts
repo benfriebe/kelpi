@@ -21,7 +21,7 @@ interface Harness {
     readonly errors: string[];
 }
 
-function harness(overrides: { failWrite?: boolean } = {}): {
+function harness(overrides: { failWrite?: boolean; declineScratchpad?: boolean } = {}): {
     readonly buffers: ReturnType<typeof createEditorBuffers>;
     readonly log: Harness;
 } {
@@ -31,7 +31,12 @@ function harness(overrides: { failWrite?: boolean } = {}): {
             if (overrides.failWrite === true) throw new Error('EACCES');
             log.writes.push({ path: filePath, text });
         },
-        saveScratchpad: (paneID, text) => log.scratch.push({ paneID, text }),
+        saveScratchpad: (paneID, text) => {
+            // #106: a target that cannot dispatch says so, and the buffer stays dirty.
+            if (overrides.declineScratchpad === true) return false;
+            log.scratch.push({ paneID, text });
+            return true;
+        },
         onSaved: (paneID, text) => log.saved.push({ paneID, text }),
         onError: (error) => log.errors.push(error.message)
     });
@@ -70,6 +75,25 @@ describe('createEditorBuffers', () => {
         vi.advanceTimersByTime(EDITOR_AUTOSAVE_DEBOUNCE_MS);
         expect(log.scratch).toEqual([{ paneID: 'p2', text: 'note' }]);
         expect(log.writes).toEqual([]);
+    });
+
+    /**
+     * Issue #106 - a save that dispatched nothing must not report itself as saved.
+     *
+     * `buffer.dirty = false` and `onSaved` used to run unconditionally around the scratchpad
+     * target, so an edit could be marked clean with nothing written anywhere. Dirty is both the
+     * truthful state and the recoverable one: `flushAll` and `forget` try again.
+     */
+    it('leaves the buffer dirty when the scratchpad target declines the save (#106)', () => {
+        vi.useFakeTimers();
+        const { buffers, log } = harness({ declineScratchpad: true });
+        buffers.set('p2', SCRATCH, 'note');
+        vi.advanceTimersByTime(EDITOR_AUTOSAVE_DEBOUNCE_MS);
+
+        expect(log.scratch).toEqual([]);
+        expect(log.saved).toEqual([]);
+        expect(buffers.isDirty('p2')).toBe(true);
+        expect(buffers.flush('p2')).toBe(false);
     });
 
     it('flush writes immediately and cancels the pending timer', () => {

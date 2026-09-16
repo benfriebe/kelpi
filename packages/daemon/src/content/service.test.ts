@@ -115,6 +115,12 @@ function openScratchpad(f: Fixture): void {
     f.store.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: SCRATCH, now: NOW });
 }
 
+/** What the STORE holds for the scratchpad - the only copy that survives a release. */
+function scratchpadText(f: Fixture): string | null {
+    const workspace = workspaceByID(f.store.state(), W1);
+    return workspace === null ? null : (visiblePane(workspace, SCRATCH)?.scratchpadContent ?? null);
+}
+
 afterEach(() => {
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -407,6 +413,58 @@ describe('scratchpad panes', () => {
         const workspace = workspaceByID(f.store.state(), W1)!;
         expect(visiblePane(workspace, SCRATCH)?.scratchpadContent).toBe('typed');
         expect(fs.readdirSync(f.dir)).toEqual(['note.md']);
+        f.dispose();
+    });
+
+    /**
+     * Issue #106 - the last burst of typing before a workspace switch.
+     *
+     * `ContentClient.unsubscribe` flushes the pending text and sends `content-unsubscribe` in
+     * one synchronous call, and `ws` emits every frame of a received chunk from a single
+     * receiver loop, so the two commands reach the service with no microtask between them.
+     * `setText` parks at `await ensure(paneID)` while the synchronous `content-unsubscribe`
+     * runs `releaseIfIdle` against a buffer that is not dirty yet; the entry was deleted and
+     * the parked edit resumed into `assertLive`'s throw, rejecting a promise the client voids.
+     * The edit was gone with nothing saying so.
+     */
+    it('saves an edit that raced the unsubscribe into the same tick (#106)', async () => {
+        const f = fixture();
+        openScratchpad(f);
+        const subscription = await f.service.subscribe(SCRATCH, () => {});
+        await f.service.setText(SCRATCH, 'first draft');
+        await tick(60);
+        expect(scratchpadText(f)).toBe('first draft');
+
+        const pending = f.service.setText(SCRATCH, 'typed while leaving');
+        subscription.unsubscribe();
+        await expect(pending).resolves.toMatchObject({ text: 'typed while leaving' });
+        await tick(60);
+
+        expect(scratchpadText(f)).toBe('typed while leaving');
+        // And it is in the STORE, not only in a buffer a later release would drop: another
+        // subscriber sees it even after the entry has been let go.
+        const again = await f.service.subscribe(SCRATCH, () => {});
+        expect(again.state.text).toBe('typed while leaving');
+        again.unsubscribe();
+        f.dispose();
+    });
+
+    /**
+     * The scratchpad half of "keeps an unsaved buffer alive after the last subscriber leaves".
+     *
+     * Issue #106 pairs two changes here: `editor.save` now trusts what the save target reports
+     * and leaves the buffer dirty when it declines, so `saveScratchpad` must not decline merely
+     * because the entry cache was cleared - it resolves the pane through the STORE. This is the
+     * behaviour those two have to keep producing together.
+     */
+    it('saves a debounced edit made by a subscriber that has already left', async () => {
+        const f = fixture();
+        openScratchpad(f);
+        const subscription = await f.service.subscribe(SCRATCH, () => {});
+        await f.service.setText(SCRATCH, 'still unsaved');
+        subscription.unsubscribe();
+        await tick(60);
+        expect(scratchpadText(f)).toBe('still unsaved');
         f.dispose();
     });
 });

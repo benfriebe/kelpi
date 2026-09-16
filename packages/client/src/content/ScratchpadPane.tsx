@@ -35,8 +35,35 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
     const { paneID, content } = props;
     const { state, error } = useContent(content, paneID);
 
-    if (state === null && error !== null) {
-        return <ContentStatus paneID={paneID} text={error} tone="error" />;
+    if (state === null) {
+        /*
+         * Issue #106 - no editor at all before the daemon's snapshot, which is what
+         * `MarkdownPane` has always done (`MarkdownPane.tsx` ▸ `state === null`) and why the
+         * markdown editor was never reachable by this bug.
+         *
+         * A workspace switch unmounts the pane and a return remounts it, so the text arrives one
+         * round trip after the first render. While an empty textarea existed in that window it
+         * could take the caret - from its own mount claim, and (the route `857f70f`'s
+         * `focused={props.focused && state !== null}` did not close) from `focusPaneSurface`,
+         * which queries the DOM for a textarea and knows nothing about this component's props.
+         * `PlainTextEditor` then read the field as focused and refused the snapshot, leaving a
+         * blank editable pane whose first keystroke overwrote the daemon's copy for every
+         * client. `readOnly` guarded the keystrokes BEFORE the snapshot; it could not guard a
+         * snapshot arriving into an already-focused field.
+         *
+         * With no textarea there is nothing to focus and nothing to type into: `useState(incoming)`
+         * seeds from the real text on the first mount that has it, and the caret still lands
+         * because `handCaretToPaneWhenReady` keeps asking for 1.5 s (`app/pane-focus.ts`).
+         *
+         * §L45's empty string rather than "Loading…", for the same reason the markdown pane
+         * uses one: on a local pane this is a frame or two, and a centred placeholder reads as
+         * a flash rather than as information.
+         */
+        return error === null ? (
+            <ContentStatus paneID={paneID} text="" />
+        ) : (
+            <ContentStatus paneID={paneID} text={error} tone="error" />
+        );
     }
 
     return (
@@ -45,14 +72,11 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             // §L46: a scratchpad has no file behind it, so this is the kind plus a
             // four-character id — never the raw UUID a screen reader would spell out in full.
             ariaLabel={contentPaneLabel('scratchpad', paneID)}
-            value={state?.text ?? ''}
-            isDark={state?.isDark ?? true}
-            focused={props.focused && state !== null}
+            value={state.text ?? ''}
+            isDark={state.isDark}
+            focused={props.focused}
             visible={props.visible}
             background={props.background}
-            // Read-only until the first snapshot: a keystroke into the empty pre-load buffer
-            // would go out as a `content-set-text` that wipes the restored scratchpad.
-            readOnly={state === null}
             onChange={(text) => content.setText(paneID, text)}
             onFlush={() => void content.flush(paneID)}
             onFocusRequest={props.onFocusRequest}

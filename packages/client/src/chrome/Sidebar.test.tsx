@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { useChromeCaret } from '../app/caret-visuals';
 import { Sidebar } from './index';
 import type { ChromePane, ChromeSidebarEntry, ChromeWorkspace } from './types';
 
@@ -75,6 +77,11 @@ function menuLabels(scope: HTMLElement): string[] {
     return [...scope.querySelectorAll('[data-menu-item]')].map((el) =>
         (el.textContent ?? '').trim().replace(/^[✓✔–]\s*/, '')
     );
+}
+
+/** Reads the focus ring's `isFirstResponder` term, so a test can assert who owns the caret. */
+function ChromeCaretProbe(): ReactElement {
+    return <span data-testid="chrome-caret" data-held={useChromeCaret() ? 'true' : 'false'} />;
 }
 
 function rowIDs(): string[] {
@@ -448,6 +455,73 @@ describe('context menus (portal-based)', () => {
         fireEvent.change(input, { target: { value: 'platform' } });
         fireEvent.keyDown(input, { key: 'Enter' });
         expect(onRenameGroup).toHaveBeenCalledWith(G1, 'platform');
+    });
+
+    /**
+     * Issue #174 - committing the rename hands the caret back, so the focused pane does not
+     * keep a dimmed ring and a hollow cursor.
+     *
+     * Enter calls `commit()` directly and the parent's `commitWorkspaceRename` clears the
+     * rename state, which UNMOUNTS the focused `<input>`. Removing a focused element dispatches
+     * no `focusout` and no `blur`, so the ring's `isFirstResponder` term
+     * (`app/caret-visuals.ts`) used to stick on "a chrome field has the caret" until something
+     * unrelated took focus. Two things answer it now and this pins both: the editor blurs
+     * before it unmounts (asserted as a real `focusout` on the input), and the term notices a
+     * holder that has left the DOM (asserted one microtask after Enter, which is the frame the
+     * user sees - the `focusout` path's own answer is deliberately one task later, so it
+     * cannot stand in for the removal watch here). `grid/FocusRing.test.tsx` pins the removal
+     * watch on its own, without an `InlineEditor` in the picture.
+     */
+    it('leaves no chrome caret behind when a rename commits on Enter (#174)', async () => {
+        const onRenameWorkspace = vi.fn();
+        render(
+            <>
+                <ChromeCaretProbe />
+                <Sidebar {...noopProps()} entries={entries()} onRenameWorkspace={onRenameWorkspace} />
+            </>
+        );
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.click(screen.getByText('Rename…'));
+
+        const input = screen.getByLabelText('Rename alpha') as HTMLInputElement;
+        // The editor focuses itself on mount (§5.4), so this is a real caret, not a stub.
+        expect(document.activeElement).toBe(input);
+        expect(screen.getByTestId('chrome-caret').getAttribute('data-held')).toBe('true');
+
+        fireEvent.change(input, { target: { value: 'renamed' } });
+        const released: string[] = [];
+        const watch = (event: Event): void => {
+            if (event.target === input) released.push(event.type);
+        };
+        document.addEventListener('focusout', watch, true);
+        await act(async () => {
+            fireEvent.keyDown(input, { key: 'Enter' });
+            await Promise.resolve();
+        });
+        document.removeEventListener('focusout', watch, true);
+
+        expect(onRenameWorkspace).toHaveBeenCalledExactlyOnceWith(W1, 'renamed');
+        // The editor let the caret go on its way out, rather than vanishing with it.
+        expect(released).toEqual(['focusout']);
+        expect(screen.queryByTestId('inline-editor')).toBeNull();
+        expect(document.activeElement).toBe(document.body);
+        expect(screen.getByTestId('chrome-caret').getAttribute('data-held')).toBe('false');
+    });
+
+    it('commits an Escaped rename exactly once, and lets the caret go (#174)', () => {
+        const onRenameWorkspace = vi.fn();
+        render(<Sidebar {...noopProps()} entries={entries()} onRenameWorkspace={onRenameWorkspace} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.click(screen.getByText('Rename…'));
+
+        const input = screen.getByLabelText('Rename alpha') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'renamed' } });
+        fireEvent.keyDown(input, { key: 'Escape' });
+
+        // The blur on the way out must not turn a cancel into a commit.
+        expect(onRenameWorkspace).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('inline-editor')).toBeNull();
+        expect(document.activeElement).toBe(document.body);
     });
 
     // ── §WS-049: the row menu's "Profile ▸" ─────────────────────────────────────────

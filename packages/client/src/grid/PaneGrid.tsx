@@ -63,6 +63,7 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import { FocusRing, useFocusDwell } from './FocusRing';
@@ -622,10 +623,47 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
     // ── focus ───────────────────────────────────────────────────────────────────────
 
-    const focusedStatus = useMemo(
-        () => panes.find((pane) => pane.id === focusedPaneID)?.status ?? null,
+    const focusedPane = useMemo(
+        () => panes.find((pane) => pane.id === focusedPaneID) ?? null,
         [panes, focusedPaneID]
     );
+    const focusedStatus = focusedPane?.status ?? null;
+
+    /*
+     * Issue #174 - the ring's two missing terms, read once for the whole grid.
+     *
+     * `focusedPaneID` answers WHICH pane wears the ring and nothing here changes that: a
+     * workspace always has a focused pane, every explicit focus verb writes it, and
+     * `docs/shell-ui.md` §4.1 is what the border means. What the reporter saw is the other
+     * half - the ring said "keys come here" while the caret was in a chrome text field, and it
+     * said the same thing with the window in the background. Both are facts the CURSOR already
+     * knew (`terminal/TerminalPane.tsx` ▸ `surfaceFocused`, §N20's port of
+     * `ghostty_surface_set_focus`) and the ring did not, so the two disagreed.
+     *
+     * Dimming rather than clearing, because the pane IS still the keyboard target the moment
+     * the field lets go or the window comes back - `undoSurfaceAutoFocus` hands the caret to
+     * `[data-pane-id][data-focused="true"]` by name, and an armed claim collects it
+     * (`app/pane-focus.ts`). `data-focused` is untouched, so every audit selector still reads
+     * the same thing.
+     */
+    const windowFocused = useWindowFocused();
+    const chromeCaret = useChromeCaret();
+    /*
+     * ...with one subtraction the terminal does not need: a focused WEB pane HAS the keyboard
+     * while `document.hasFocus()` reads false.
+     *
+     * Its page is a native `WebContentsView` composited over this document, so the keys are in
+     * this app and simply not in this renderer. The shell measured both halves of that:
+     * `packages/shell/src/webhost/index.ts` records `client.hasFocus=false` with
+     * `view.isFocused=true` after a pane takes focus, and
+     * `packages/shell/src/webhost/view-focus.ts` records the same after an ordinary page load.
+     * Dimming there would be the reported defect inverted, on the one pane that certainly is
+     * the keyboard target. The terminal keeps the unqualified window term
+     * (`terminal/TerminalPane.tsx`), and that is right: while the view has the keys, no
+     * terminal surface does.
+     */
+    const keyboardInWebPane = focusedPane?.type === 'web';
+    const ringDimmed = chromeCaret || (!windowFocused && !keyboardInWebPane);
 
     useFocusDwell({
         paneID: focusedPaneID,
@@ -830,7 +868,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             focus ring and the resize badge painting above it, as the Swift's later
                             `.overlay` modifiers do (`:379`, `:387`). */}
                         {props.renderPaneOverlay?.(pane.id) ?? null}
-                        <FocusRing focused={focused} />
+                        <FocusRing focused={focused} dimmed={ringDimmed} />
                         {/*
                           * §N26's matrix, for the record: this badge is over the page area of a
                           * WEB pane too, and there it is invisible — a native `WebContentsView`

@@ -156,12 +156,15 @@ export {
 } from './kitty-keyboard';
 
 export {
+    mirrorClipPhrase,
+    mirroredPaneClip,
     notifyTerminalPanes,
     paneHandle,
     registerTerminalPane,
     registeredPaneCount,
     subscribeTerminalPanes,
     terminalPanesVersion,
+    type TerminalMirrorClip,
     type TerminalPaneHandle
 } from './pane-registry';
 

@@ -1129,7 +1129,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 focusedOnScreen: () => latest.current.focused && latest.current.visible,
                 // #178: what this pane is clipping off the owner's grid, for the one chip that
                 // can undo it. A live read, like `selection` above, announced by `publishClip`.
-                mirrorClip: () => clipRef.current
+                //
+                // Null while the pane is HIDDEN, for the same reason `syncGeometry` idles there: a
+                // pane in an unselected workspace, or behind a modal, stays mounted and registered
+                // with its last clip intact, and counting it would put a number on the chip for a
+                // clip the user is not looking at.
+                mirrorClip: () => (latest.current.visible ? clipRef.current : null)
             });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies

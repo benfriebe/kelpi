@@ -51,7 +51,7 @@
  * content pane on screen leaves the bar off and gives its 45 px back to the pane.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from 'zustand';
 
@@ -68,7 +68,14 @@ import { tokens } from '../chrome/tokens';
 import type { ChromeWorkspace } from '../chrome/types';
 import { PaneGrid, paneDisplayTitle, type PaneGridProps, type RenderPane } from '../grid';
 import type { KelpiRuntime, KelpiState } from '../state';
-import { PhoneKeyBar, type TerminalRendererFactory } from '../terminal';
+import {
+    PhoneKeyBar,
+    mirrorClipPhrase,
+    mirroredPaneClip,
+    subscribeTerminalPanes,
+    terminalPanesVersion,
+    type TerminalRendererFactory
+} from '../terminal';
 import { usePhoneHosts } from './hosts';
 import { originHostName } from './hosts';
 import { ORIGIN_HOST_KEY, type PhoneHostModel, type PhoneWorkspaceSelection } from './model';
@@ -329,6 +336,35 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
 
     const atLanding = view.atLanding;
 
+    /*
+     * #178 - the hidden-cell count, on the row rather than in a tooltip.
+     *
+     * The desktop says this in the chip's `title` (`chrome/TopBar.tsx`), and a `title` is the one
+     * affordance a touch device has no way to reach - while the phone is the viewer the ticket
+     * names as worst affected, because it is the narrowest box the owner's grid gets mirrored
+     * into. So the phone gets the same number where it can read it: in the label of the row that
+     * undoes the clip.
+     *
+     * Same gated read as the chip's, which is the same one `PhoneKeyBar` uses to follow panes from
+     * another tree: subscribed only while another client owns sizing, which is the only state a
+     * mirror can exist in, so a phone that owns its own PTY sizing subscribes to nothing. The
+     * label is derived to a STRING here rather than inside the memo below, because a fresh clip
+     * object every render would defeat that memo's dependency list.
+     */
+    const sizeOwnedElsewhere =
+        props.state.daemon.sizeControlOwnerID !== null &&
+        props.state.daemon.clientID !== null &&
+        props.state.daemon.sizeControlOwnerID !== props.state.daemon.clientID;
+    const subscribeClip = useCallback(
+        (onChange: () => void): (() => void) =>
+            sizeOwnedElsewhere ? subscribeTerminalPanes(onChange) : () => undefined,
+        [sizeOwnedElsewhere]
+    );
+    useSyncExternalStore(subscribeClip, terminalPanesVersion, terminalPanesVersion);
+    const clip = sizeOwnedElsewhere ? mirroredPaneClip() : null;
+    const takeSizeControlLabel =
+        clip === null ? 'Take size control' : `Take size control (${mirrorClipPhrase(clip)} hidden)`;
+
     const menuItems = useMemo<readonly PhoneMenuItem[]>(() => {
         const items: PhoneMenuItem[] = [];
         // The landing page has no workspace and no pane, so it offers only what the whole app
@@ -360,7 +396,9 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             if (owner !== null && client !== null && owner !== client) {
                 items.push({
                     id: 'take-size-control',
-                    label: 'Take size control',
+                    // #178: with the count when there is one, which is what the desktop chip's
+                    // tooltip says and a phone cannot be shown.
+                    label: takeSizeControlLabel,
                     onSelect: () => props.runtime.commands.takeSizeControl()
                 });
             }
@@ -371,7 +409,7 @@ export function PhoneShell(props: PhoneShellProps): ReactElement {
             items.push({ id: 'close-pane', label: 'Close pane', danger: true, onSelect: () => verbs.closePane(shownPane.id) });
         }
         return items;
-    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime]);
+    }, [workspace, shownPane, remoteHost, verbs, actions, atLanding, props.state.daemon.sizeControlOwnerID, props.state.daemon.clientID, props.runtime, takeSizeControlLabel]);
 
     // ── render ──────────────────────────────────────────────────────────────────────
 

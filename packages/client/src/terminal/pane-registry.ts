@@ -212,6 +212,11 @@ export function paneHandle(paneID: string | null | undefined): TerminalPaneHandl
  * The window's take-size-control chip is one control for every pane, and taking size control
  * un-clips all of them at once, so the honest number to put beside it is the largest: a viewer
  * told "12 columns hidden" while one pane hides 36 would take the offer and still be surprised.
+ *
+ * The maximum is taken PER AXIS and independently, so with one pane clipping columns and another
+ * clipping rows the pair describes no single pane on screen. That is deliberate: the reading is
+ * "this is what the window is hiding", and on both axes it is the worst case rather than an
+ * understatement, which is the only direction this number is allowed to be wrong in.
  */
 export function mirroredPaneClip(): TerminalMirrorClip | null {
     let cols = 0;
@@ -223,6 +228,21 @@ export function mirroredPaneClip(): TerminalMirrorClip | null {
         rows = Math.max(rows, clip.rows);
     }
     return cols === 0 && rows === 0 ? null : { cols, rows };
+}
+
+/**
+ * #178 - a clip as a noun phrase: "36 columns and 10 rows", "1 column", "7 rows".
+ *
+ * Both surfaces that say the number compose a different sentence around it (the desktop chip's
+ * tooltip, the phone menu row's label), and neither should be the place the pluralisation lives.
+ * Never called with a zero on both axes: {@link mirroredPaneClip} answers null instead.
+ */
+export function mirrorClipPhrase(clip: TerminalMirrorClip): string {
+    const parts = [
+        ...(clip.cols > 0 ? [`${String(clip.cols)} column${clip.cols === 1 ? '' : 's'}`] : []),
+        ...(clip.rows > 0 ? [`${String(clip.rows)} row${clip.rows === 1 ? '' : 's'}`] : [])
+    ];
+    return parts.join(' and ');
 }
 
 /** How many panes are registered. Test seam only. */

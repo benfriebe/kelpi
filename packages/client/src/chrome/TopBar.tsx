@@ -19,11 +19,12 @@ import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore, t
 
 import type { ConnectionStatus } from '../connection';
 import {
+    mirrorClipPhrase,
     mirroredPaneClip,
     subscribeTerminalPanes,
     terminalPanesVersion,
     type TerminalMirrorClip
-} from '../terminal/pane-registry';
+} from '../terminal';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
@@ -216,12 +217,9 @@ export function identityDotColor(
  * columns back. Never rendered with a zero on either axis: `mirroredPaneClip` answers null.
  */
 function hiddenCellsLine(clip: TerminalMirrorClip): string {
-    const parts = [
-        ...(clip.cols > 0 ? [`${String(clip.cols)} column${clip.cols === 1 ? '' : 's'}`] : []),
-        ...(clip.rows > 0 ? [`${String(clip.rows)} row${clip.rows === 1 ? '' : 's'}`] : [])
-    ];
-    const verb = parts.length === 1 && Math.max(clip.cols, clip.rows) === 1 ? 'is' : 'are';
-    return `${parts.join(' and ')} of the owner's screen ${verb} hidden past this window's edge.`;
+    // One axis clipped by exactly one cell is the only singular subject there is.
+    const verb = (clip.cols === 0 || clip.rows === 0) && Math.max(clip.cols, clip.rows) === 1 ? 'is' : 'are';
+    return `${mirrorClipPhrase(clip)} of the owner's screen ${verb} hidden past this window's edge.`;
 }
 
 export function TopBar(props: TopBarProps): ReactElement {

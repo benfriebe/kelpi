@@ -12,10 +12,12 @@
  * reason, and the list is compared exactly: adding a new callback to `App`, or closing one of
  * these gaps, has to come past this test.
  *
- * Scope, so nobody over-trusts it: this covers the `on*` commit callbacks ONLY. Parity of the
- * VALUE props is deliberately not checked, and the remote mount is genuinely missing several
- * (`homeDirectory`, `focusFollowsMouse`, `syncActive`, …). Those are their own bugs with their
- * own answers, not gestures the grid silently swallows.
+ * #216 widened it to the VALUE props, which turned out to be the same failure wearing another
+ * hat: `homeDirectory` unpassed printed a raw `/Users/…` in every remote pane header, and
+ * `focusFollowsMouse` unpassed left hover-focus dead on a remote daemon's workspace. They get
+ * the same treatment: a second list, `VALUE_GAPS`, compared exactly in both directions, so a
+ * value prop added to the primary mount forces a decision here rather than being inherited by
+ * one mount and silently not the other.
  */
 
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
@@ -69,6 +71,27 @@ const REMOTE_GAPS: readonly string[] = [
     'onDwellClear'
 ];
 
+/**
+ * The VALUE props the remote view does not pass, each with the reason it is not a bug (#216).
+ * Same contract as `REMOTE_GAPS`: an entry here is a decision, and a gap that quietly closes
+ * has to be struck from the list.
+ */
+const VALUE_GAPS: readonly string[] = [
+    // The §AGNT-056 gate on the 600 ms dwell clear. Inert without `onDwellClear`, which is
+    // itself a listed gap, and it reads THIS window's `shell-activation`, which says nothing
+    // about a remote daemon.
+    'dwellEnabled',
+    // Terminal cols/rows for the resize badge. Needs a per-pane geometry registry fed by the
+    // panes' own `onDimensionsChange`; absent, the badge degrades to pixels (`resizeBadgeText`).
+    'getPaneDimensions',
+    // "Open the inline rename field", raised by the context menu's Rename…, and the menu
+    // (`onPaneContextMenu`) is a listed handler gap, so nothing here can raise the request.
+    'renameRequest',
+    // The terminal search overlay, drawn from the workspace's `searchingPaneID` and wired to the
+    // window's search verbs; the remote CommandClient has no search spelling yet.
+    'renderPaneOverlay'
+];
+
 /** One workspace, one pane: enough for either mount to render its grid. */
 function snapshotState(): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
@@ -96,6 +119,18 @@ function lastMount(): Record<string, unknown> {
 function handlers(props: Record<string, unknown>): string[] {
     return Object.keys(props)
         .filter((name) => /^on[A-Z]/.test(name) && typeof props[name] === 'function')
+        .sort();
+}
+
+/**
+ * Every prop that is NOT an `on*` handler: the data and render slots the grid draws from.
+ *
+ * Presence, not value: `homeDirectory={daemon.info?.home}` is a real pass even when the fixture
+ * daemon sent no home, and a mount that stops passing the prop is what this is watching for.
+ */
+function values(props: Record<string, unknown>): string[] {
+    return Object.keys(props)
+        .filter((name) => !/^on[A-Z]/.test(name))
         .sort();
 }
 
@@ -159,6 +194,20 @@ describe('PaneGrid mount parity (#144)', () => {
         expect(missing).toEqual([...REMOTE_GAPS].sort());
         // Nothing in the gap list may quietly stop being a gap without being struck from it.
         expect(remote.filter((name) => REMOTE_GAPS.includes(name))).toEqual([]);
+    });
+
+    it('gives the remote workspace every grid VALUE prop the primary window has, bar the listed gaps (#216)', () => {
+        const primary = values(renderPrimary());
+        cleanup();
+        const remote = values(renderRemote());
+
+        // The two the issue was filed for, so this cannot pass by both mounts dropping them.
+        expect(primary).toContain('homeDirectory');
+        expect(primary).toContain('focusFollowsMouse');
+        const missing = primary.filter((name) => !remote.includes(name));
+        expect(missing).toEqual([...VALUE_GAPS].sort());
+        // Nothing in the gap list may quietly stop being a gap without being struck from it.
+        expect(remote.filter((name) => VALUE_GAPS.includes(name))).toEqual([]);
     });
 
     it('commits the direct-manipulation gestures on BOTH mounts', () => {

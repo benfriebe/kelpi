@@ -25,10 +25,15 @@ const TILE = [
     'DDDDDDDD-0000-0000-0000-000000000004'
 ] as const;
 const SIZE = { width: 800, height: 600 };
+/** The REMOTE machine's home, as its handshake reports it (#216). */
+const HOME = '/home/remote';
 
 interface Shape {
     readonly panes: Record<string, unknown>[];
     readonly layout: Record<string, unknown>;
+    /** Sync input, as the mirror spells it on the wire (#216's `syncActive` pair). */
+    readonly syncActive?: boolean;
+    readonly syncExcluded?: readonly string[];
 }
 
 /** `a | b`: the default fixture, one shell and one content pane side by side. */
@@ -67,13 +72,19 @@ const TILED_2X2: Shape = {
     }
 };
 
-function pane(id: string, type: string): Record<string, unknown> {
+/** One shell pane whose cwd sits UNDER the remote home, so `~/…` is visible (#216). */
+const UNDER_HOME: Shape = {
+    panes: [pane(SHELL, 'shell', `${HOME}/src/kelpi`)],
+    layout: { kind: 'leaf', paneID: SHELL }
+};
+
+function pane(id: string, type: string, workingDirectory = HOME): Record<string, unknown> {
     return {
         id,
         type,
         label: null,
         title: null,
-        workingDirectory: '/home/remote',
+        workingDirectory,
         gitBranch: null,
         status: 'idle',
         agentSessionID: null,
@@ -100,8 +111,8 @@ function remoteRuntime(shape: Shape = SIDE_BY_SIDE): { runtime: KelpiRuntime; ca
                 webPanes: {},
                 focusedPaneID: shape.panes[0]?.['id'] as string,
                 zoomedPaneID: null,
-                isSyncInputActive: false,
-                syncExcludedPaneIDs: [],
+                isSyncInputActive: shape.syncActive ?? false,
+                syncInputExcluded: shape.syncExcluded ?? [],
                 parkedPaneIDs: [],
                 panes: shape.panes,
                 layout: shape.layout
@@ -256,6 +267,45 @@ describe('RemoteWorkspaceView (§1.7)', () => {
         const { runtime } = remoteRuntime();
         render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID="nope" />);
         expect(screen.getByTestId('remote-workspace-missing').textContent).toContain('Connecting to werk');
+    });
+
+    /**
+     * #216: the grid's VALUE props, which this mount inherited less of than the primary one.
+     *
+     * `homeDirectory` and the focus-follows-mouse pair both come from THIS daemon's handshake:
+     * the paths on screen are the remote machine's, so `~` needs the remote machine's home
+     * (§APP-069), and the config that describes this workspace is the one that rode its own
+     * `welcome`. Unpassed, the header printed a raw `/home/remote/…` and hover-focus was dead.
+     */
+    it("abbreviates a remote pane header's path against the REMOTE daemon's home (#216)", () => {
+        const { runtime } = remoteRuntime(UNDER_HOME);
+        runtime.store
+            .getState()
+            .setDaemonIdentity('client-1', { version: '0.1.0', build: 'test', pid: 4242, home: HOME });
+        render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />);
+        // Not `/home/remote/src/kelpi`, which is what an empty `homeDirectory` falls back to.
+        expect(screen.getByTestId(`pane-title-${SHELL}`).textContent).toBe('~/src/kelpi');
+    });
+
+    it('focuses a remote pane on hover when the remote daemon has focus-follows-mouse on (#216)', () => {
+        const { runtime, calls } = remoteRuntime();
+        runtime.store.getState().applySettings({ general: { focusFollowsMouse: true, focusFollowsMouseDelay: 0 } });
+        render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />);
+        // React synthesises enter/leave from pointerover at the root container, as
+        // `PaneGrid.test.tsx` does for the primary mount. `NOTE` is the unfocused pane.
+        act(() =>
+            screen
+                .getByTestId(`pane-${NOTE}`)
+                .dispatchEvent(new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }))
+        );
+        expect(calls).toContain(`focus:${WS}:${NOTE}`);
+    });
+
+    it("wears the remote workspace's own SYNC badges (#216)", () => {
+        const { runtime } = remoteRuntime({ ...SIDE_BY_SIDE, syncActive: true, syncExcluded: [NOTE] });
+        render(<RemoteWorkspaceView daemonName="werk" runtime={runtime} workspaceID={WS} />);
+        expect(screen.getByTestId(`pane-sync-badge-${SHELL}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-sync-off-badge-${NOTE}`)).toBeTruthy();
     });
 
     it('renders remote pane contributions from their own live state and dispatches only to that runtime', async () => {

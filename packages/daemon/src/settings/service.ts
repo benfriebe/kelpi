@@ -334,7 +334,10 @@ export function buildSettingsSnapshot(
             // §TERM-046: the OSC 52 write gate. Enforced DAEMON-side — `handlers/app/clipboard.ts`
             // reads it through this snapshot at event time, so a Settings toggle governs the very
             // next sequence — and carried here because Settings ▸ Workspaces renders it.
-            clipboardWrite: general.clipboardWrite
+            clipboardWrite: general.clipboardWrite,
+            // #171: the ⌥ rule. The one general key on this snapshot the daemon never enforces
+            // itself: the pane's kitty encoder is the only reader, and it lives in the client.
+            macosOptionAsAlt: general.macosOptionAsAlt
         },
         appearance: {
             // §APP-014: the theme's own background when the config names none — the "resolved

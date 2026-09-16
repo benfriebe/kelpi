@@ -137,6 +137,7 @@ export {
     KITTY_MODIFIER_KEYS,
     KITTY_MOD_ALT,
     KITTY_MOD_CTRL,
+    KITTY_OPTION_IS_ALT,
     KITTY_MOD_SHIFT,
     KITTY_MOD_SUPER,
     KITTY_REPORT_ALL_KEYS,
@@ -152,7 +153,8 @@ export {
     type KittyKeyEventLike,
     type KittyKeyForm,
     type KittyKeyboard,
-    type KittyKeyboardOptions
+    type KittyKeyboardOptions,
+    type KittyOptionRule
 } from './kitty-keyboard';
 
 export {

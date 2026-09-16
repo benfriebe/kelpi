@@ -60,7 +60,7 @@ interface KittyHarness {
     setFlags(flags: number): void;
 }
 
-async function kittyHarness(flags = 0): Promise<KittyHarness> {
+async function kittyHarness(flags = 0, props: { macosOptionAsAlt?: boolean } = {}): Promise<KittyHarness> {
     const pty = createFakePtyApi();
     const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
     const view = render(
@@ -69,6 +69,7 @@ async function kittyHarness(flags = 0): Promise<KittyHarness> {
             ptyApi={pty}
             focused
             visible
+            {...(props.macosOptionAsAlt === undefined ? {} : { macosOptionAsAlt: props.macosOptionAsAlt })}
             createRenderer={renderers.factory}
             measure={box(800, 480)}
         />
@@ -244,6 +245,71 @@ describe('TerminalPane — kitty keyboard protocol', () => {
         fireEvent.keyDown(h.engine, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
         fireEvent.keyDown(h.engine, { key: 'h', code: 'KeyH', metaKey: true, ctrlKey: true });
         expect(h.pty.last().input).toEqual([esc('[109;10u'), esc('[104;13u')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    /**
+     * #171, at the pane rather than in the encoder's byte matrix.
+     *
+     * The two presses are the ones the ticket and the decision name, in the shape a browser on
+     * macOS raises them: `key` is the glyph the LAYOUT composed, `altKey` is still true, `code` is
+     * the physical key. jsdom reports an empty `navigator.platform`, which `chrome/keys.ts` reads
+     * as mac-like on purpose, so `CLIENT_MAC_LIKE` is true here and the setting is the only
+     * variable.
+     *
+     * What is asserted is the whole user-visible difference: WHO gets the keystroke. Declined, it
+     * reaches the engine, which writes the composed character as text (the legacy path, measured
+     * against the real engine in `KeyBar.test.tsx`); encoded, it is bytes on the pane's stream and
+     * the engine never sees it.
+     */
+    const OPTION_SHIFT_MINUS = { key: '\u2014', code: 'Minus', altKey: true, shiftKey: true };
+    const OPTION_B = { key: '\u222B', code: 'KeyB', altKey: true };
+
+    it('lets the LAYOUT keep ⌥ by default, so a composed character reaches the engine (#171)', async () => {
+        const h = await kittyHarness(1);
+        fireEvent.keyDown(h.engine, OPTION_SHIFT_MINUS);
+        fireEvent.keyDown(h.engine, OPTION_B);
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.pty.last().directInput).toEqual([]);
+        expect(h.engineEvents).toEqual(['keydown', 'keydown']);
+    });
+
+    it('…and the same two keys with macos-option-as-alt on are chords, as they were before (#171)', async () => {
+        const h = await kittyHarness(1, { macosOptionAsAlt: true });
+        fireEvent.keyDown(h.engine, OPTION_SHIFT_MINUS);
+        fireEvent.keyDown(h.engine, OPTION_B);
+        // `CSI 8212;4u` is the byte sequence #171 reported: the em dash, as alt+shift+glyph.
+        expect(h.pty.last().input).toEqual([esc('[8212;4u'), esc('[8747;3u')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    it('reports the glyph without the alt bit under report-all-keys, where the engine has no text to write (#171)', async () => {
+        const h = await kittyHarness(11);
+        fireEvent.keyDown(h.engine, OPTION_SHIFT_MINUS);
+        fireEvent.keyDown(h.engine, OPTION_B);
+        expect(h.pty.last().input).toEqual([esc('[8212;2u'), esc('[8747u')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    it('changes nothing on a pane with no protocol negotiated, at either setting (#171)', async () => {
+        // The legacy path is not gated by this setting and never was: with the flags at zero the
+        // encoder declines every key, so both panes hand the composed character to the engine.
+        for (const macosOptionAsAlt of [false, true]) {
+            const h = await kittyHarness(0, { macosOptionAsAlt });
+            fireEvent.keyDown(h.engine, OPTION_SHIFT_MINUS);
+            fireEvent.keyDown(h.engine, OPTION_B);
+            expect(h.pty.last().input).toEqual([]);
+            expect(h.pty.last().directInput).toEqual([]);
+            expect(h.engineEvents).toEqual(['keydown', 'keydown']);
+            cleanup();
+        }
+    });
+
+    it('leaves ⌥ word motion alone, whatever the setting says (#171)', async () => {
+        const h = await kittyHarness(1, { macosOptionAsAlt: false });
+        fireEvent.keyDown(h.engine, { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true });
+        fireEvent.keyDown(h.engine, { key: 'ArrowRight', code: 'ArrowRight', altKey: true });
+        expect(h.pty.last().input).toEqual([esc('[1;3D'), esc('[1;3C')]);
         expect(h.engineEvents).toEqual([]);
     });
 

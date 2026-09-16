@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     KITTY_DISAMBIGUATE,
+    KITTY_OPTION_IS_ALT,
     KITTY_REPORT_ALL_KEYS,
     KITTY_REPORT_EVENT_TYPES,
     createKittyKeyboard,
@@ -23,7 +24,8 @@ import {
     kittyModifiers,
     kittyTextCodepoint,
     sanitizeKittyFlags,
-    type KittyKeyEventLike
+    type KittyKeyEventLike,
+    type KittyOptionRule
 } from './kitty-keyboard';
 
 /** The three flag sets an application realistically negotiates. */
@@ -434,6 +436,135 @@ describe('encodeKittyKey: the chords the platform owns (#95)', () => {
         expect(keyboard.key(event('keydown', 'm', { code: 'KeyM', meta: true }))).toBe(false);
         expect(keyboard.key(event('keyup', 'h', { code: 'KeyH', meta: true }))).toBe(false);
         expect(written).toEqual([]);
+    });
+});
+
+// ── #171: the ⌥ key on macOS (`macos-option-as-alt`) ────────────────────────────────
+
+/**
+ * The report: an em dash typed with ⌥⇧- reached Codex as `CSI 8212;4u` rather than as the
+ * character, and Codex's composer drops a key event it cannot insert.
+ *
+ * The events below are the shape a browser on macOS actually raises, which is the whole reason
+ * this is a setting and not a fix: `key` is the COMPOSED glyph (the layout has already been
+ * applied when the browser fills it in), `altKey` is still true, and `code` is the physical key.
+ * There is no second reading available. Cocoa can re-translate the keystroke WITHOUT the option
+ * modifier and recover the `b` under ⌥b, which is how ghostty serves `macos-option-as-alt = true`;
+ * a `KeyboardEvent` cannot, so the only question left is whether alt is REPORTED beside the glyph
+ * or spent producing it.
+ */
+const EM_DASH = '\u2014'; // ⌥⇧- on a US layout
+const INTEGRAL = '\u222B'; // ⌥b on the same layout
+
+/** The three answers: the two settings on macOS, and every other platform. */
+const COMPOSES: KittyOptionRule = { optionAsAlt: false, macLike: true };
+const OPTION_IS_ALT: KittyOptionRule = { optionAsAlt: true, macLike: true };
+const OFF_MAC: KittyOptionRule = { optionAsAlt: false, macLike: false };
+
+function pressAs(
+    rule: KittyOptionRule,
+    key: string,
+    flags: number,
+    mods: Parameters<typeof event>[2] = {}
+): string | null {
+    const bytes = encodeKittyKey(event('keydown', key, mods), flags, rule);
+    return bytes === null ? null : decoder.decode(bytes);
+}
+
+function releaseAs(
+    rule: KittyOptionRule,
+    key: string,
+    flags: number,
+    mods: Parameters<typeof event>[2] = {}
+): string | null {
+    const bytes = encodeKittyKey(event('keyup', key, mods), flags, rule);
+    return bytes === null ? null : decoder.decode(bytes);
+}
+
+describe('encodeKittyKey: macos-option-as-alt (#171)', () => {
+    it('ON, ⌥ is the Alt modifier and the composed glyph is a chord: the bytes #171 reported', () => {
+        expect(pressAs(OPTION_IS_ALT, EM_DASH, DISAMBIGUATE, { code: 'Minus', alt: true, shift: true })).toBe(
+            '\x1b[8212;4u'
+        );
+        expect(pressAs(OPTION_IS_ALT, INTEGRAL, DISAMBIGUATE, { code: 'KeyB', alt: true })).toBe('\x1b[8747;3u');
+        // Unchanged under every flag set, because nothing about the key became text.
+        expect(pressAs(OPTION_IS_ALT, EM_DASH, EVERYTHING, { code: 'Minus', alt: true, shift: true })).toBe(
+            '\x1b[8212;4u'
+        );
+        expect(releaseAs(OPTION_IS_ALT, INTEGRAL, EVERYTHING, { code: 'KeyB', alt: true })).toBe(
+            '\x1b[8747;3:3u'
+        );
+    });
+
+    it('OFF, the encoder declines and the ENGINE types the character', () => {
+        // `null` is the fix. The pane does not consume the event, so it reaches the engine, which
+        // writes `key` as text exactly as it does on a pane with no protocol negotiated.
+        expect(pressAs(COMPOSES, EM_DASH, DISAMBIGUATE, { code: 'Minus', alt: true, shift: true })).toBeNull();
+        expect(pressAs(COMPOSES, INTEGRAL, DISAMBIGUATE, { code: 'KeyB', alt: true })).toBeNull();
+        expect(pressAs(COMPOSES, EM_DASH, WITH_EVENTS, { code: 'Minus', alt: true, shift: true })).toBeNull();
+    });
+
+    it('OFF under report-all-keys, where there is no text to leave: the glyph, WITHOUT the alt bit', () => {
+        // `report all keys` says every key is an escape code, so the character cannot simply be
+        // left to the engine. What the ⌥ bought is reported instead of the ⌥ itself.
+        expect(pressAs(COMPOSES, EM_DASH, EVERYTHING, { code: 'Minus', alt: true, shift: true })).toBe(
+            '\x1b[8212;2u'
+        );
+        expect(pressAs(COMPOSES, INTEGRAL, EVERYTHING, { code: 'KeyB', alt: true })).toBe('\x1b[8747u');
+        expect(releaseAs(COMPOSES, INTEGRAL, EVERYTHING, { code: 'KeyB', alt: true })).toBe('\x1b[8747;1:3u');
+    });
+
+    it('is macOS-only: nothing composes from Alt anywhere else, so the bit stands', () => {
+        expect(pressAs(OFF_MAC, 'b', DISAMBIGUATE, { code: 'KeyB', alt: true })).toBe('\x1b[98;3u');
+        expect(pressAs(OFF_MAC, EM_DASH, DISAMBIGUATE, { code: 'Minus', alt: true, shift: true })).toBe(
+            '\x1b[8212;4u'
+        );
+    });
+
+    it('needs ⌥ ALONE: a ⌃⌥ or ⌥⌘ chord is not composition on any layout', () => {
+        expect(pressAs(COMPOSES, INTEGRAL, DISAMBIGUATE, { code: 'KeyB', alt: true, ctrl: true })).toBe(
+            '\x1b[8747;7u'
+        );
+        expect(pressAs(COMPOSES, 'b', DISAMBIGUATE, { code: 'KeyB', alt: true, meta: true })).toBe(
+            '\x1b[98;11u'
+        );
+        // …and ⌥⌘H is still the platform's, which is the rule this one must not reach past (#95).
+        expect(pressAs(COMPOSES, 'h', EVERYTHING, { code: 'KeyH', alt: true, meta: true })).toBeNull();
+    });
+
+    it('touches TEXT keys only: word motion, Enter, the keypad and ⌥ itself are unmoved', () => {
+        // A deliberate narrowing of ghostty's own rule: none of these produces a character, so
+        // there is nothing for the layout to have composed and the alt bit is the user's.
+        expect(pressAs(COMPOSES, 'ArrowLeft', DISAMBIGUATE, { code: 'ArrowLeft', alt: true })).toBe('\x1b[1;3D');
+        expect(pressAs(COMPOSES, 'Enter', DISAMBIGUATE, { code: 'Enter', alt: true })).toBe('\x1b[13;3u');
+        expect(pressAs(COMPOSES, '5', EVERYTHING, { code: 'Numpad5', alt: true })).toBe('\x1b[57404;3u');
+        expect(pressAs(COMPOSES, 'Alt', EVERYTHING, { alt: true, location: 1 })).toBe('\x1b[57443;3u');
+        // Mid-composition the browser says `Dead`, which is not a scalar and never was ours.
+        expect(pressAs(COMPOSES, 'Dead', EVERYTHING, { code: 'KeyE', alt: true })).toBeNull();
+    });
+
+    it('defaults to ⌥-is-Alt when no rule is passed, so every older call site is byte-identical', () => {
+        expect(press(EM_DASH, DISAMBIGUATE, { code: 'Minus', alt: true, shift: true })).toBe('\x1b[8212;4u');
+        expect(press('a', EVERYTHING, { alt: true })).toBe('\x1b[97;3u');
+        expect(KITTY_OPTION_IS_ALT).toEqual({ optionAsAlt: true, macLike: false });
+    });
+
+    it('reads the rule per EVENT, so a Settings toggle governs the very next keystroke', () => {
+        const written: string[] = [];
+        let rule = COMPOSES;
+        const keyboard = createKittyKeyboard({
+            flags: () => DISAMBIGUATE,
+            option: () => rule,
+            write: (bytes) => written.push(decoder.decode(bytes))
+        });
+        const emDash = event('keydown', EM_DASH, { code: 'Minus', alt: true, shift: true });
+
+        expect(keyboard.key(emDash)).toBe(false);
+        expect(written).toEqual([]);
+
+        rule = OPTION_IS_ALT;
+        expect(keyboard.key(emDash)).toBe(true);
+        expect(written).toEqual(['\x1b[8212;4u']);
     });
 });
 

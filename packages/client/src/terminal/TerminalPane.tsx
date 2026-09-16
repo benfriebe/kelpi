@@ -42,6 +42,7 @@ import {
 import { restartUI } from '../app/reload';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
+import { CLIENT_MAC_LIKE } from '../chrome/keys';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { offerSelection } from '../state/clipboard';
 import { dispatchPaste } from './KeyBar';
@@ -364,6 +365,19 @@ export interface TerminalPaneProps {
      * deliberately the same answer the chip gives: no chip, no mirror.
      */
     readonly ownsSize?: boolean | undefined;
+    /**
+     * `macos-option-as-alt` (#171), the user's setting, read live: omitted means **false**, the
+     * shipped default, which is ghostty's.
+     *
+     * False lets the macOS layout keep ⌥, so ⌥⇧- types an em dash and every other ⌥-composed
+     * character arrives as text; true reports ⌥ as the Alt modifier instead, which is what this
+     * pane did before the setting existed and what an application reads as a meta chord. It
+     * reaches exactly one layer, the kitty encoder (`kitty-keyboard.ts` ▸ `KittyOptionRule`):
+     * the legacy engine path has always typed the composed character and is untouched either
+     * way. Assembly passes `settings.general.macosOptionAsAlt`; the remote-workspace render
+     * sites pass nothing and take the default, exactly as they do for the font and padding.
+     */
+    readonly macosOptionAsAlt?: boolean | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
     /**
@@ -713,6 +727,13 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     if (kittyRef.current === null) {
         kittyRef.current = createKittyKeyboard({
             flags: () => modesRef.current.kittyKeyboardFlags ?? 0,
+            // #171: the ⌥ rule, off `latest` rather than closed over, so a Settings toggle
+            // governs the very next keystroke. The platform read is `chrome/keys.ts`'s single
+            // one, and off macOS the rule never fires whatever the setting says.
+            option: () => ({
+                optionAsAlt: latest.current.macosOptionAsAlt ?? false,
+                macLike: CLIENT_MAC_LIKE
+            }),
             // §8.2 mirrors only the press that carries the input; a kitty release (`:3u`) is the
             // keyUp the legacy path never produced, so it takes the un-mirrored frame (#51).
             write: (data, release) =>

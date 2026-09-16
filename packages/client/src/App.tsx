@@ -2223,6 +2223,12 @@ function Shell(props: AppProps): ReactElement {
         ]
     );
 
+    /**
+     * #171's ⌥ rule, straight off the snapshot: no memo, because it is one boolean and the pane
+     * reads it live rather than rebuilding anything when it changes.
+     */
+    const optionAsAlt = settings.general.macosOptionAsAlt;
+
     // ── pane dimensions (the grid's resize badge) ───────────────────────────────────
 
     const dimensionsRef = useRef(new Map<string, TerminalGeometry>());
@@ -3333,6 +3339,8 @@ function Shell(props: AppProps): ReactElement {
                         {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
                         {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                         {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
+                        // #171: whether ⌥ composes a character or is the Alt modifier.
+                        macosOptionAsAlt={optionAsAlt}
                         onFocusRequest={onTerminalFocus}
                         onDimensionsChange={onDimensionsChange}
                         reveal={null}
@@ -3434,6 +3442,8 @@ function Shell(props: AppProps): ReactElement {
                             {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
                             {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
                             {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
+                            // #171: whether ⌥ composes a character or is the Alt modifier.
+                            macosOptionAsAlt={optionAsAlt}
                             onFocusRequest={onTerminalFocus}
                             onDimensionsChange={onDimensionsChange}
                             reveal={searchReveal?.paneID === paneID ? searchReveal : null}
@@ -3466,6 +3476,8 @@ function Shell(props: AppProps): ReactElement {
             paneFill,
             contentDocumentFill,
             terminalFont,
+            // #171: a Settings toggle has to reach the pane that is already mounted.
+            optionAsAlt,
             onTerminalFocus,
             onDimensionsChange,
             createRenderer,

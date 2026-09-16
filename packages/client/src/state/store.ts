@@ -495,7 +495,11 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             // the point: a daemon that predates the field sends nothing, the shipped default
             // (OFF) stands, and the toggle renders unchecked rather than claiming an openness
             // that daemon does not have.
-            clipboardWrite: bool(general['clipboardWrite'], fallbackGeneral.clipboardWrite)
+            clipboardWrite: bool(general['clipboardWrite'], fallbackGeneral.clipboardWrite),
+            // #171's ⌥ rule, additive in the same way: a daemon that predates the field sends
+            // nothing and the shipped default (OFF, so ⌥ composes) stands, which is the answer
+            // ghostty gives and the one a pane on an older daemon should give too.
+            macosOptionAsAlt: bool(general['macosOptionAsAlt'], fallbackGeneral.macosOptionAsAlt)
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this

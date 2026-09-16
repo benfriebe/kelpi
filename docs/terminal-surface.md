@@ -1261,6 +1261,30 @@ reach: the live menu carries the five role rows with these accelerators, and the
 the end of dispatch with `defaultPrevented === false` and nothing on the PTY. Its header records
 the measurement.
 
+#### 10.2.3 The ⌥ key: `macos-option-as-alt` (#171)
+
+macOS composes a character from ⌥ (⌥⇧- is an em dash, ⌥8 a bullet, ⌥l `@` on a German layout)
+and the browser hands that composed glyph over as `KeyboardEvent.key` with `altKey` still true.
+The encoder cannot report alt AND let the character through, so which one happens is the user's
+choice, spelled as ghostty spells it: `macos-option-as-alt`, default **false** (the layout keeps
+⌥, the character is typed), `true` for the pre-#171 behaviour where alt is reported and ⌥⇧- sends
+`CSI 8212;4u`. The rule and its limits are config-keybindings.md section 7.5; what belongs here
+is where it applies:
+
+- **only this encoder reads it.** The legacy path already typed the composed character, because
+  the vendored engine puts `KeyboardEvent.key` in the key's utf8 and nothing sets
+  `ALT_ESC_PREFIX`. A pane with `flags === 0` is byte-identical at either value.
+- **text keys only**, so ⌥← / ⌥→ stay `CSI 1;3D` / `CSI 1;3C` and ⌥Enter, the keypad and the ⌥
+  key itself under `report all keys` are untouched. Ghostty clears the modifier for every key;
+  this port deliberately does not.
+- **⌥ alone**, so ⌃⌥ and ⌥⌘ chords are untouched and section 10.2.2's ⌥⌘H still reaches the
+  platform.
+- **macOS only**, by `CLIENT_MAC_LIKE` (config-keybindings.md section 3.5), which the pane passes
+  in rather than the encoder sniffing for itself.
+
+The value rides the settings snapshot and reaches the pane as a prop read live, so a Settings
+toggle governs the next keystroke rather than the next pane.
+
 ### 10.3 The macOS line-editing chords (#82)
 
 Three ⌘ chords are mapped to terminal bytes in the **binding layer**, above everything in

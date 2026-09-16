@@ -23,6 +23,12 @@
  *     which is stricter than the shipped app (ghostty's own `clipboard-write` defaults to
  *     `allow`, and `GhosttyApp.swift:114-123` honours every write it is handed), and the row
  *     states the half no toggle governs — clipboard *reads* are refused outright.
+ *   - **Option as Alt**, `macos-option-as-alt` (#171): the second row here that borrows a
+ *     ghostty key name, and the only one whose two values are a straight trade rather than a
+ *     safe default and a risk: off, the macOS layout keeps ⌥ and composes characters with it
+ *     (⌥⇧- is an em dash); on, ⌥ is the Alt modifier and ⌥b / ⌥f / ⌥d stay readline's word
+ *     chords. The caption says both costs because the row cannot recommend either. Ghostty's
+ *     own default is off and this ships the same, which is the decision recorded on #171.
  *
  * Values are read straight off the daemon snapshot; a change is a verb, and the broadcast that
  * follows is what moves the control. There is no optimistic local state, so two windows cannot

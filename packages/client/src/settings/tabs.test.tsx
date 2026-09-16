@@ -251,6 +251,36 @@ describe('Settings ▸ Workspaces', () => {
         expect(screen.getByTestId('clipboard-write-row').textContent ?? '').toContain('never READ');
     });
 
+    /**
+     * #171. The other control here whose default IS the behaviour, and the only one where both
+     * values cost something: off (ghostty's default) the macOS layout keeps ⌥ and composes, on
+     * it is reported as the Alt modifier. So the assertions are the shipped answer, the write,
+     * and that the caption names both costs rather than recommending one.
+     */
+    it('ships the ⌥ rule OFF, writes it as a general setting, and states both costs', () => {
+        const bound = actions();
+        const view = render(
+            <WorkspacesTab settings={snapshot()} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />
+        );
+        const toggle = screen.getByTestId('macos-option-as-alt-toggle') as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        fireEvent.click(toggle);
+        expect(bound.general).toEqual([{ key: 'macos-option-as-alt', value: 'true' }]);
+        // No local echo here either: the switch moves when the daemon's snapshot says so.
+        expect((screen.getByTestId('macos-option-as-alt-toggle') as HTMLInputElement).checked).toBe(false);
+        view.rerender(
+            <WorkspacesTab
+                settings={snapshot({ general: { ...DEFAULT_WS_SETTINGS.general, macosOptionAsAlt: true } })}
+                actions={bound}
+                paths={DEFAULT_SETTINGS_PATHS}
+            />
+        );
+        expect((screen.getByTestId('macos-option-as-alt-toggle') as HTMLInputElement).checked).toBe(true);
+        const row = screen.getByTestId('macos-option-as-alt-row').textContent ?? '';
+        expect(row).toContain('em dash');
+        expect(row).toContain('types nothing');
+    });
+
     it('reflects the daemon’s value rather than a local echo', () => {
         const bound = actions();
         const view = render(

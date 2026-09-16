@@ -112,6 +112,33 @@ export interface GeneralSettings {
      * them on (`daemon/src/term/osc52.ts` says why).
      */
     readonly clipboardWrite: boolean;
+    /**
+     * `macos-option-as-alt` (config-keybindings.md §7.5, #171), default **false**, which is
+     * ghostty's own default for the key of the same name.
+     *
+     * FALSE: ⌥ belongs to the keyboard LAYOUT. macOS composes a character from it (⌥⇧- is an em
+     * dash, ⌥l is `@` on the German layout, ⌥8 is a bullet), the browser reports that character
+     * as `KeyboardEvent.key`, and a terminal pane sends it as text.
+     *
+     * TRUE: ⌥ is the Alt modifier, which is what every pane did before this key existed. A
+     * kitty-protocol application is told alt was held (`CSI 8212;4u` for that em dash, which is
+     * #171's report) and the composed character is never typed.
+     *
+     * The cost is stated in both directions because it is a real trade, not a bug fix: `false`
+     * costs the alt bit on ⌥b / ⌥f / ⌥d, which is how an application recognises a meta chord;
+     * `true` costs every ⌥-composed character. Shipping ghostty's default is the decision
+     * recorded on #171. (A web client cannot do what ghostty does for `true` and re-translate
+     * the keystroke without ⌥ to recover the `b` under ⌥b: the browser hands over the composed
+     * glyph and nothing else, so `true` reports alt beside THAT glyph. Its bytes are exactly the
+     * ones panes sent before this key existed, which is what "today's behaviour" means here.)
+     *
+     * Read by the CLIENT (`client/src/terminal/kitty-keyboard.ts`) and macOS-only: everywhere
+     * else Alt is Alt and no layout composes from it.
+     *
+     * Strict parsing, like `clipboard-write` and unlike the default-true flags above: only the
+     * literal `true` turns it on.
+     */
+    readonly macosOptionAsAlt: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -132,7 +159,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     newGroupPlacement: 'end-of-list',
     inheritGroupOnNewWorkspace: true,
     expandGroupOnWorkspaceDrop: true,
-    clipboardWrite: false
+    clipboardWrite: false,
+    macosOptionAsAlt: false
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -218,6 +246,12 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 // §TERM-046: default OFF, so only the literal `true` opens it — the opposite
                 // rule from the default-true flags above, and the right way round for a gate.
                 settings = { ...settings, clipboardWrite: lowered === 'true' };
+                break;
+            case 'macos-option-as-alt':
+                // #171: ghostty's default is `false` (⌥ composes), so this is the same gate rule
+                // as `clipboard-write` above rather than the lenient default-true one: only the
+                // literal `true` hands ⌥ to the encoder as a modifier.
+                settings = { ...settings, macosOptionAsAlt: lowered === 'true' };
                 break;
             default:
                 break;

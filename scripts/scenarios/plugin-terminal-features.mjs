@@ -432,9 +432,11 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await inside(remoteSiblingID, `void kelpi.layout.zoom('${remoteSiblingID}'); true`);
         rec.check('revealing the hidden pane preserves its original iframe identity', await check(remote.paneID, `terminalLab.presentation.visible && globalThis.__terminalScenarioIdentity === 'kept-while-hidden'`) && alive(remote));
         await remoteCLI.ok(['pane', 'close', '--target', remoteSiblingID]);
-        // Touch emulation FIRST (#235): the phone layout is chosen on `(pointer: coarse)` as well
-        // as on width, so overriding the metrics first makes the app commit a desktop layout at
-        // 390px and remount into the phone one frame later, on the path already under test.
+        // Touch emulation FIRST (#235): the phone layout is an AND of the narrow side being under
+        // 768px and `(pointer: coarse)`, so overriding the metrics first made the app commit a real
+        // desktop layout at 390px and remount into the phone one frame later, on the path already
+        // under test. This order has no transient at the natural 1280x820 lane window, whose narrow
+        // side is 820, and the wait below is what keeps that true for a window that is shorter.
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
         /*
@@ -447,13 +449,27 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
          * React teardown leaves behind. `phoneAlive` is the second reading, and it is named.
          */
         const phoneAlive = async where => {
-            if (!await page.eval('document.body.innerText.length > 0')) throw new Error(`the phone shell rendered nothing at ${where}`);
+            // Settled, not a single read: `tapPhone` asks before the wait for its control, so the
+            // first call lands while the app is still switching form factor, and `innerText` is
+            // layout-dependent enough that a frame taken mid-transition can answer '' on a page
+            // that is perfectly alive. `childElementCount` is the reading that actually means "the
+            // root unmounted". Two seconds costs a blank page two seconds and a live page nothing,
+            // because `settle` evaluates before it sleeps.
+            if (!await d.settle(async () => await page.eval('document.body.childElementCount > 0 && document.body.innerText.length > 0'), { ceilingMs: 2_000 }))
+                throw new Error(`the phone shell rendered nothing at ${where}`);
         };
         const tapPhone = async (selector, what) => {
             await phoneAlive(what);
             if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(selector)})`)) throw new Error(`the phone shell never showed ${what}`);
             await page.click(selector);
         };
+        // And wait for the answer rather than assuming the frame, which is what makes the order of
+        // the two emulation calls above stop mattering: `bindFormFactorAttribute` publishes the
+        // form factor the app actually resolved, and the resolution is an AND of the narrow side
+        // being under 768px and `(pointer: coarse)`, so a lane window shorter than that would
+        // otherwise flip the whole app to phone at full width for a frame.
+        if (!await d.settleDom(page, `document.documentElement.dataset.formFactor === 'phone'`))
+            throw new Error('the window never resolved to the phone form factor');
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${remote.workspaceID}"]`;
         const viewToggle = '[data-testid="phone-view-toggle"]';
         await tapPhone(phoneRow, 'the remote workspace row');

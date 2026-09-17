@@ -147,6 +147,12 @@ process.on('SIGINT', () => {
     void t.stop().finally(() => process.exit(130));
 });
 
+/*
+ * Armed before the first scenario runs, so nothing that happens between boot and the first line of
+ * the first scenario is invisible. See `watchRendererErrors`.
+ */
+const laneErrors = await watchRendererErrors(t.page);
+
 // ── the post-condition: what a scenario must hand on unchanged ──────────────────────
 
 /**
@@ -252,6 +258,14 @@ const extras = (now, then) => (now ?? []).filter((item) => !(then ?? []).include
  * arrived. Per scenario rather than per run for exactly that reason - a shared sandbox runs many,
  * and an error belongs to the one that caused it.
  *
+ * ARMED AT BOOT, not per scenario. `Runtime.enable` does not replay what was reported before it
+ * (unlike `Log.enable`, which buffers), so a watcher armed inside the loop cannot see a React root
+ * that died while mounting, a failed first render, or anything thrown between two scenarios. That
+ * is the same class of bug this exists to catch, one phase earlier. One watcher per page therefore
+ * subscribes once and accumulates, and each scenario TAKES the lines that have arrived since the
+ * last one took theirs. Boot-time errors land on the first scenario, which is the right place for
+ * them: it is the first thing that could have noticed.
+ *
  * `Runtime.enable` is idempotent, and a session that refuses it is reported as itself rather than
  * quietly watching nothing: "no errors seen" and "nobody looked" must not read the same.
  */
@@ -263,30 +277,31 @@ async function watchRendererErrors(page) {
     } catch (error) {
         enableError = error instanceof Error ? error.message : String(error);
     }
-    const offs =
-        enableError !== null
-            ? []
-            : [
-                  page.on('Runtime.exceptionThrown', (params) => {
-                      const details = params.exceptionDetails ?? {};
-                      seen.push(`uncaught: ${String(details.exception?.description ?? details.text ?? '?')}`);
-                  }),
-                  page.on('Runtime.consoleAPICalled', (params) => {
-                      if (params.type !== 'error') return;
-                      seen.push(`console.error: ${(params.args ?? []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' ')}`);
-                  })
-              ];
+    if (enableError === null) {
+        page.on('Runtime.exceptionThrown', (params) => {
+            const details = params.exceptionDetails ?? {};
+            seen.push(`uncaught: ${String(details.exception?.description ?? details.text ?? '?')}`);
+        });
+        page.on('Runtime.consoleAPICalled', (params) => {
+            if (params.type !== 'error') return;
+            seen.push(`console.error: ${(params.args ?? []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' ')}`);
+        });
+    }
     return {
-        /** Stop watching and record the verdict. Never throws: this is the reporter, not a step. */
+        /**
+         * Take everything seen since the last call and record the verdict for this scenario.
+         *
+         * Never throws: this is the reporter, not a step. The subscriptions stay, because the page
+         * outlives the scenario and the next one wants the same watch without a gap.
+         */
         finish(rec) {
-            for (const off of offs) off();
             if (enableError !== null) {
                 rec.check('the renderer was watched for errors', false, `Runtime.enable: ${enableError}`);
                 return;
             }
             // Distinct, because one teardown produces the same line from every pane that echoes
             // it, and sixty copies of it would bury the checks it is meant to explain.
-            const unique = [...new Set(seen.map((line) => line.slice(0, 2000)))];
+            const unique = [...new Set(seen.splice(0).map((line) => line.slice(0, 2000)))];
             rec.check('the renderer threw nothing and logged no error', unique.length === 0, unique.slice(0, 5).join(' | '));
         }
     };
@@ -397,7 +412,9 @@ for (const file of files) {
     log(`▶ ${name}  [window ${String(placement ?? 'attached')}${dedicated === null ? '' : ', its own instance'}]`);
     if (resolved.warning !== null) log(`⚠ ${name}: ${resolved.warning}`);
     const rec = driver.recorder({ name, outDir, placement });
-    const rendererErrors = await watchRendererErrors(instance.page);
+    // The lane's watcher has been running since boot; an instance of its own gets one the moment
+    // it exists, which is before anything has been driven on it.
+    const rendererErrors = dedicated === null ? laneErrors : await watchRendererErrors(dedicated.page);
     const started = Date.now();
     try {
         if (importError !== null) throw importError;

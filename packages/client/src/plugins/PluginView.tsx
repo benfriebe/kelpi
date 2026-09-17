@@ -166,9 +166,13 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 if (typeof data['type'] === 'string' && data['type'].startsWith('terminal-')) {
                     if (!terminalScope) return;
                     try {
+                        const cellHeightBefore = terminalScope.cellHeight;
                         terminalScope.receive(data);
                         if (!terminalScope.attached) releaseTerminal();
-                        if (data['type'] === 'terminal-metrics') notifyTerminalPanes();
+                        // #235: the registry's contract is that a MOVED answer is announced. A
+                        // renderer that re-reports the cell height it already reported has moved
+                        // nothing, and every announcement re-renders the phone's key bar.
+                        if (data['type'] === 'terminal-metrics' && terminalScope.cellHeight !== cellHeightBefore) notifyTerminalPanes();
                         if (data['type'] === 'terminal-input' && data['direct'] === false && latest.current.visible !== false) frame.current?.dispatchEvent(new Event('kelpi-terminal-input'));
                     } catch (error) { fail(error); }
                     return;
@@ -305,9 +309,38 @@ export function PluginView(props: PluginViewProps): ReactElement {
         }).catch(fail);
         return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); browserScope?.dispose(); browser.current = null; navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); settingsFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
     }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome, hasTerminal, hasBrowser, hasPresenter]);
+    /**
+     * #235 - the pane's presentation, keyed by its VALUE rather than by the prop object's identity.
+     *
+     * `TerminalFeaturePane` builds `terminal={{ ...props, ownsSize }}` fresh on every render
+     * (`features/TerminalFeaturePane.tsx`), so an identity dependency here read "every render", and
+     * every render announced to the pane registry. On a phone that closes a cycle: `PhoneKeyBar`
+     * subscribes whenever the form factor is phone (`terminal/PhoneKeyBar.tsx`), the bar pads the
+     * content row, every pane in the grid shrinks through the ResizeObserver it already has, this
+     * view re-renders with a new object, and the effect announces again. `phone/PhoneShell.tsx` is
+     * a second closing edge while another client owns sizing. React counts the nested updates,
+     * throws #185 (Maximum update depth exceeded) and unmounts the whole root - the blank phone
+     * `plugin-terminal-features` kept catching in four different downstream shapes. The desktop
+     * never tripped because its only subscriber (`chrome/TopBar.tsx`) is a sibling of the grid.
+     *
+     * So the dependency is the presentation itself. `TerminalPresentation` is the JSON that crosses
+     * the frame boundary and `terminalPresentation` emits its keys in a fixed order, so stringifying
+     * it is a value comparison and nothing more. A render that changes nothing now notifies nobody,
+     * which is exactly what `terminal/pane-registry.ts` says an announcement means.
+     *
+     * Memoising `paneProps` at the call site is NOT an alternative: `props` there is itself a fresh
+     * object every render, so a memo would have nothing stable to key on either. Nor does the scope
+     * miss an update by being told less often: it is CREATED with the presentation of the moment
+     * (`createTerminalScope` above), so the only thing left for this effect to carry is a change.
+     */
+    const presented = props.terminal === undefined ? null : terminalPresentation(props.terminal);
+    const presentedKey = presented === null ? '' : JSON.stringify(presented);
     useEffect(() => {
-        if (props.terminal) { terminal.current?.update(terminalPresentation(props.terminal)); notifyTerminalPanes(); }
-    }, [props.terminal]);
+        if (presented === null) return;
+        terminal.current?.update(presented);
+        notifyTerminalPanes();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the key IS the value
+    }, [presentedKey]);
     useLayoutEffect(() => { if (props.browser) browser.current?.update(browserPresentation(props.browser)); });
     useEffect(() => {
         if (!hasBrowser) return;

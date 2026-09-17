@@ -3,9 +3,6 @@
  *
  * shell-ui.md §4.1: the focused pane gets a 2px inner border in `theme.paneFocus` around
  * the WHOLE pane (header included) — focus is never shown by tinting the header.
- * Issue #174 adds the one qualification: the border is drawn at reduced alpha while the pane
- * is focused but the keyboard is elsewhere (a chrome text field has the caret, or the window
- * is in the background), so the ring never claims keystrokes it is not receiving.
  * shell-ui.md §4.6 / agent-lifecycle.md §5.8: focusing a pane also schedules a 600 ms timer
  * that clears that pane's status back to idle, so an "awaiting input" badge auto-dismisses
  * shortly after the user attends to it. The timer is rescheduled (cancelling the old one) on
@@ -22,44 +19,23 @@ import { tokens } from './tokens';
 export const FOCUS_RING_WIDTH = 2;
 /** shell-ui.md §4.6 — the delay that lets the user see what is being acknowledged. */
 export const FOCUS_DWELL_MS = 600;
-/**
- * Issue #174 - the ring's alpha while the pane wears it but does NOT have the keyboard.
- *
- * Opacity rather than a second colour token: `theme.paneFocus` is independently themable, and
- * the dim state has to stay recognisably the same border in whatever colour the user picked.
- */
-export const FOCUS_RING_DIM_OPACITY = 0.4;
 
 export interface FocusRingProps {
     readonly focused: boolean;
-    /**
-     * Issue #174 - the pane is the workspace's `focusedPaneID`, but the keystrokes are not
-     * going there: a chrome text field holds the caret (a rename, the palette, the pane search
-     * bar, a Settings field), or the window itself is in the background.
-     *
-     * The ring is still drawn, because its documented meaning (shell-ui.md §4.1) is unchanged -
-     * this pane is where typing resumes the moment the field lets go or the window comes back.
-     * Drawing it at reduced alpha is the ring saying "not right now", which is exactly what the
-     * shipped app does to the cursor through ghostty's `isFirstResponder` /
-     * `isKeyWindow` terms.
-     */
-    readonly dimmed?: boolean | undefined;
     readonly radius?: number | undefined;
 }
 
 /** An inset, non-interactive border overlay. Renders nothing when the pane isn't focused. */
-export function FocusRing({ focused, dimmed = false, radius = 0 }: FocusRingProps): ReactElement | null {
+export function FocusRing({ focused, radius = 0 }: FocusRingProps): ReactElement | null {
     if (!focused) return null;
     return (
         <div
             data-testid="focus-ring"
-            data-dimmed={dimmed ? 'true' : 'false'}
             aria-hidden="true"
             className="pointer-events-none absolute inset-0"
             style={{
                 border: `${FOCUS_RING_WIDTH}px solid ${tokens.paneFocus}`,
-                borderRadius: radius,
-                opacity: dimmed ? FOCUS_RING_DIM_OPACITY : 1
+                borderRadius: radius
             }}
         />
     );

@@ -820,10 +820,9 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
      *
      * Enter calls `commit()` directly and the parent's handler clears the rename state, which
      * unmounts this focused `<input>`. Removing a focused element dispatches no `focusout` and
-     * no `blur`, so anything tracking who owns the caret (`app/caret-visuals.ts`, the focus
-     * ring's `isFirstResponder` term) would be told nothing at all. That module no longer
-     * depends on being told, which is the real fix; blurring first is the cheap half, and it
-     * is also what the Swift's editors do when they resign first responder.
+     * no `blur`, so anything tracking who owns the caret would be told nothing at all and
+     * would go on believing this field still has it. Blurring on the way out is what the
+     * Swift's editors do when they resign first responder, and it costs nothing here.
      *
      * `done` is what makes it safe: `blur()` runs `onBlur={commit}` synchronously, and without
      * the latch the commit would be made twice.

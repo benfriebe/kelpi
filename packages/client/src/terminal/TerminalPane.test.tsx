@@ -636,55 +636,6 @@ describe('TerminalPane — input and focus', () => {
         expect(renderer.surfaceFocuses.at(-1)).toBe(true);
     });
 
-    /**
-     * Issue #174 - and ghostty's THIRD term, `isFirstResponder`, which the port left out.
-     *
-     * A sidebar rename, the command palette or the pane search bar taking the caret means the
-     * keystrokes are not this surface's, so the Swift app draws a hollow cursor. Kelpi used to
-     * keep the blinking one (and a full-strength ring) throughout, which is the misleading
-     * indicator the report is about.
-     */
-    it('hollows the cursor while a CHROME text field holds the caret (#174)', async () => {
-        const renderers = createFakeRendererFactory();
-        const pty = createFakePtyApi();
-
-        render(
-            <TerminalPane
-                paneID="pane-1"
-                ptyApi={pty}
-                focused
-                visible
-                createRenderer={renderers.factory}
-                measure={box(800, 480)}
-            />
-        );
-        await settle();
-        const renderer = renderers.last();
-        expect(renderer.surfaceFocuses.at(-1)).toBe(true);
-
-        const rename = document.createElement('input');
-        document.body.append(rename);
-        try {
-            act(() => {
-                rename.focus();
-            });
-            expect(renderer.surfaceFocuses.at(-1)).toBe(false);
-
-            // The rename ends; the pane is still the focused one, so the cursor comes back.
-            act(() => {
-                rename.blur();
-            });
-            // `focusout` lands with the caret already dropped to `<body>`; the answer is taken
-            // one task later so a move between two chrome fields does not flash it back.
-            act(() => {
-                vi.advanceTimersByTime(1);
-            });
-            expect(renderer.surfaceFocuses.at(-1)).toBe(true);
-        } finally {
-            rename.remove();
-        }
-    });
-
     it('reports process exit, bell and title to the host', async () => {
         const renderers = createFakeRendererFactory();
         const pty = createFakePtyApi();

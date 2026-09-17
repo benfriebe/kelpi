@@ -39,7 +39,6 @@ import {
     shouldGrabFocus,
     undoSurfaceAutoFocus
 } from '../app/pane-focus';
-import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { restartUI } from '../app/reload';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from '../chrome/form-factor';
 import { readKeyboardViewportMode } from '../chrome/keyboard-viewport';
@@ -2211,24 +2210,31 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // has NO blinking cursor in it. `window` focus/blur is the browser's `isKeyWindow`, and
     // `document.hasFocus()` seeds it for a pane that mounts into an already-background window.
     //
-    // ghostty's THIRD term is `isFirstResponder`, so in the Swift app a sidebar rename or the
-    // palette taking the caret also hollows the pane's cursor. This port used to leave it out -
-    // "the pane's own focus is used instead, so an overlay that borrows the caret leaves the ring
-    // and the cursor agreeing with each other" - and issue #174 is the bill for that: the two
-    // agreed with each other and both lied, drawing a full-strength ring and a blinking cursor
-    // over a pane that was receiving nothing while the user typed into a rename field. The ring
-    // now carries the same two terms (`grid/PaneGrid.tsx` ▸ `ringDimmed`), so the pair still
-    // agree - about the truth this time.
-    //
-    // `useChromeCaret` is the re-decision the old comment was avoiding, and it is cheap for the
-    // reason that objection missed: `app/caret-visuals.ts` keeps ONE pair of document listeners
-    // for the window behind a `useSyncExternalStore` store, so N panes plus the grid share one
-    // answer rather than computing N+1 of them, and the engine's own transient blurs are inside
-    // `[data-pane-surface]`, so they do not move the answer at all.
-    const windowFocused = useWindowFocused();
-    const chromeCaret = useChromeCaret();
+    // One deliberate simplification, recorded so it reads as a decision: ghostty's third term is
+    // `isFirstResponder`, so in the Swift app a sidebar rename or the palette taking the caret
+    // ALSO hollows the pane's cursor. Here the pane's own focus is used instead — the same input
+    // the focus RING is drawn from — so an overlay that borrows the caret leaves the ring and the
+    // cursor agreeing with each other. Following the DOM's `activeElement` instead would mean
+    // re-deciding on every focusin/focusout, including the transient blurs the engine's own copy
+    // path performs, for a difference visible only while a chrome field is mid-edit.
+    const [windowFocused, setWindowFocused] = useState<boolean>(() =>
+        typeof document === 'undefined' ? true : document.hasFocus()
+    );
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const gained = (): void => setWindowFocused(true);
+        const lost = (): void => setWindowFocused(false);
+        window.addEventListener('focus', gained);
+        window.addEventListener('blur', lost);
+        // Re-seed on mount: the window may have lost focus between the initial state and here.
+        setWindowFocused(document.hasFocus());
+        return () => {
+            window.removeEventListener('focus', gained);
+            window.removeEventListener('blur', lost);
+        };
+    }, []);
 
-    const surfaceFocused = focused && visible && windowFocused && !chromeCaret;
+    const surfaceFocused = focused && visible && windowFocused;
     useEffect(() => {
         // `status` is in the deps for the same reason the focus effect has it: a restart builds
         // a FRESH engine (which defaults to focused), and it has to be told again.

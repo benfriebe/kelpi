@@ -351,12 +351,7 @@ Each pane = vertical stack of **header** + **body**, clamped and clipped to its 
 frame, with these overlays:
 
 - **Focus ring**: when the pane is the workspace's `focusedPaneID`, a 2pt inner border in
-  `theme.paneFocus` around the whole pane (header + body). The ring marks the pane keys go to,
-  so it is drawn **dimmed** (reduced alpha, same colour) while the keyboard is momentarily
-  elsewhere: a chrome text field holds the caret (a rename, the command palette, the pane
-  search bar, a Settings field), or the window is not the key window. `focusedPaneID` does not
-  change in either case - the pane is still where typing resumes - and the terminal cursor goes
-  hollow on exactly the same two terms (ghostty's `isKeyWindow` / `isFirstResponder`).
+  `theme.paneFocus` around the whole pane (header + body).
 - **Search overlay** (top-trailing, see §4.5) when this pane is the searching pane.
 - **Resize dimensions overlay** (centered, see §4.4) while `isResizing`.
 - **Drag translucency**: the pane being header-dragged renders at 50% opacity.

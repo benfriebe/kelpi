@@ -168,7 +168,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('phone panes report desktop chrome unavailable instead of exposing hidden sidebar controls', await check(remoteFrame, `kelpi.ui.getChrome().then(() => false, error => error.message.includes('unavailable'))`));
         // Back to the landing page BEFORE the window widens again, while the shell is still
         // mounted: it is the one tap that forgets where this scenario took the phone.
-        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
+        if (!await phoneToLanding(page, d, { note: rec.note })) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: originalURL }); await ready();
@@ -194,10 +194,13 @@ export default async function ({ page, cli, sandbox, rec, d }) {
             try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
         };
         observer?.close();
+        // First, while the shell is still mounted and the host it is on is still configured: the
+        // config restore below takes that host out of the navigation and the widening after it
+        // unmounts the shell, and neither can be undone from here (#205, `lib/workbench.mjs`).
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         // The app settings this scenario wrote (`show-system-stats`) live in the config file, so
         // putting the file back is what reverts them; the daemon watches it (§1.4).
         await safely('the config file goes back', () => fs.writeFileSync(sandbox.configPath, config));
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
         await safely('the window returns to the shell this runner launched', async () => {

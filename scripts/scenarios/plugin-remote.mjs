@@ -83,7 +83,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
          * instead of on the host picker this scenario's own first check reads (#205).
          */
         try {
-            if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page');
+            if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page');
         } catch (error) {
             rec.note(`cleanup: the phone shell never reached its landing page — ${error instanceof Error ? error.message : String(error)}`);
         }

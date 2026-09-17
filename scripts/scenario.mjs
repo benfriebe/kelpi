@@ -234,6 +234,64 @@ async function readWorld() {
 
 const extras = (now, then) => (now ?? []).filter((item) => !(then ?? []).includes(item));
 
+// ── the renderer's own errors ───────────────────────────────────────────────────────
+
+/**
+ * Watch the page for uncaught exceptions and console errors, for one scenario (#235).
+ *
+ * WHY THIS EXISTS. `plugin-terminal-features` spent a week being triaged as four unrelated
+ * phone flakes - a `phone-view-toggle` that matched nothing, a renderer that "did not attach",
+ * a missing key bar, and a modifier that never reached the renderer. All four were one thing:
+ * the client tore its entire React root down with error #185, the page went blank, and whichever
+ * phone step came next reported the blankness in its own words. Nothing in this runner was
+ * listening to the renderer, so the one line that named the bug was the only line never written
+ * down. A scenario asserts about the DOM, and a page with no DOM left cannot fail honestly.
+ *
+ * So the runner listens for itself, and the result goes through the scenario's OWN recorder:
+ * into `results.json` beside the checks, under the name of the scenario that was running when it
+ * arrived. Per scenario rather than per run for exactly that reason - a shared sandbox runs many,
+ * and an error belongs to the one that caused it.
+ *
+ * `Runtime.enable` is idempotent, and a session that refuses it is reported as itself rather than
+ * quietly watching nothing: "no errors seen" and "nobody looked" must not read the same.
+ */
+async function watchRendererErrors(page) {
+    const seen = [];
+    let enableError = null;
+    try {
+        await page.send('Runtime.enable');
+    } catch (error) {
+        enableError = error instanceof Error ? error.message : String(error);
+    }
+    const offs =
+        enableError !== null
+            ? []
+            : [
+                  page.on('Runtime.exceptionThrown', (params) => {
+                      const details = params.exceptionDetails ?? {};
+                      seen.push(`uncaught: ${String(details.exception?.description ?? details.text ?? '?')}`);
+                  }),
+                  page.on('Runtime.consoleAPICalled', (params) => {
+                      if (params.type !== 'error') return;
+                      seen.push(`console.error: ${(params.args ?? []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' ')}`);
+                  })
+              ];
+    return {
+        /** Stop watching and record the verdict. Never throws: this is the reporter, not a step. */
+        finish(rec) {
+            for (const off of offs) off();
+            if (enableError !== null) {
+                rec.check('the renderer was watched for errors', false, `Runtime.enable: ${enableError}`);
+                return;
+            }
+            // Distinct, because one teardown produces the same line from every pane that echoes
+            // it, and sixty copies of it would bury the checks it is meant to explain.
+            const unique = [...new Set(seen.map((line) => line.slice(0, 2000)))];
+            rec.check('the renderer threw nothing and logged no error', unique.length === 0, unique.slice(0, 5).join(' | '));
+        }
+    };
+}
+
 /** The lane this run opened, or `undefined` for the shipped window and for `--attach`. */
 const lanePlacement = t.windowPlacement;
 
@@ -339,6 +397,7 @@ for (const file of files) {
     log(`▶ ${name}  [window ${String(placement ?? 'attached')}${dedicated === null ? '' : ', its own instance'}]`);
     if (resolved.warning !== null) log(`⚠ ${name}: ${resolved.warning}`);
     const rec = driver.recorder({ name, outDir, placement });
+    const rendererErrors = await watchRendererErrors(instance.page);
     const started = Date.now();
     try {
         if (importError !== null) throw importError;
@@ -371,6 +430,9 @@ for (const file of files) {
             /* the page may be gone */
         }
     } finally {
+        // Before the instance goes: the scenario's own verdict on the renderer, recorded whether
+        // it passed or failed so a clean console is in the file rather than merely implied.
+        rendererErrors.finish(rec);
         if (dedicated !== null) {
             try { await dedicated.stop(); } catch { /* a sandbox that will not stop is not this run's verdict */ }
         }

@@ -432,21 +432,43 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await inside(remoteSiblingID, `void kelpi.layout.zoom('${remoteSiblingID}'); true`);
         rec.check('revealing the hidden pane preserves its original iframe identity', await check(remote.paneID, `terminalLab.presentation.visible && globalThis.__terminalScenarioIdentity === 'kept-while-hidden'`) && alive(remote));
         await remoteCLI.ok(['pane', 'close', '--target', remoteSiblingID]);
-        await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+        // Touch emulation FIRST (#235): the phone layout is chosen on `(pointer: coarse)` as well
+        // as on width, so overriding the metrics first makes the app commit a desktop layout at
+        // 390px and remount into the phone one frame later, on the path already under test.
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+        await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+        /*
+         * #235: the phone steps say what went wrong themselves.
+         *
+         * Every one of these used to report somebody else's problem. The row wait SKIPPED its
+         * click when the row never came, so a missing row surfaced as a later check; both toggle
+         * clicks let `page.click` throw its selector message; and none of them could tell a
+         * control that had not arrived yet from a page with nothing on it at all, which is what a
+         * React teardown leaves behind. `phoneAlive` is the second reading, and it is named.
+         */
+        const phoneAlive = async where => {
+            if (!await page.eval('document.body.innerText.length > 0')) throw new Error(`the phone shell rendered nothing at ${where}`);
+        };
+        const tapPhone = async (selector, what) => {
+            await phoneAlive(what);
+            if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(selector)})`)) throw new Error(`the phone shell never showed ${what}`);
+            await page.click(selector);
+        };
         const phoneRow = `[data-testid="phone-shell"] [data-workspace-id="${remote.workspaceID}"]`;
-        if (await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)})`)) await page.click(phoneRow);
+        const viewToggle = '[data-testid="phone-view-toggle"]';
+        await tapPhone(phoneRow, 'the remote workspace row');
         rec.check('phone remote workspace mounts the same replacement contract', await ready(remote.paneID) && alive(remote));
-        await page.click('[data-testid="phone-view-toggle"]'); if (!await ready(remote.paneID)) throw new Error('Phone layout renderer did not attach');
-        await page.click('[data-testid="phone-view-toggle"]');
+        await tapPhone(viewToggle, 'its view toggle'); if (!await ready(remote.paneID)) throw new Error('Phone layout renderer did not attach');
+        await tapPhone(viewToggle, 'its view toggle');
         rec.check('phone remote pane/layout toggles preserve the process and screen', await ready(remote.paneID) && alive(remote) && await sameScreen(remote, 'HIDDEN-QUERY-COMPLETE'));
         const key = `[data-testid="terminal-key-left-${remote.paneID}"]`;
+        await phoneAlive('the phone key bar');
         if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(key)})`)) throw new Error('Remote terminal has no phone key bar');
         offset = input(remote).length; await page.click(key);
         rec.check('phone key bar dispatches application cursor keys through the plugin renderer', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1bOD'))));
         await focus(remote.paneID);
         const ctrl = `[data-testid="terminal-key-ctrl-${remote.paneID}"]`;
-        await page.click(ctrl);
+        await tapPhone(ctrl, 'its Control key');
         if (!await check(remote.paneID, `terminalLab.modifiers.ctrl === true`)) throw new Error('Phone Control latch did not reach the renderer');
         offset = input(remote).length;
         await page.key('KeyC', { key: 'c', text: 'c', keyCode: 67 });
@@ -455,7 +477,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('the following phone key is unmodified', await d.settle(() => input(remote).subarray(offset).equals(Buffer.from([3, 99]))));
         const alt = `[data-testid="terminal-key-alt-${remote.paneID}"]`;
         for (const [modifier, character, expected] of [['ctrl', '[', '\x1b'], ['ctrl', '\\', '\x1c'], ['alt', '/', '\x1b/'], ['alt', 'X', '\x1bX']]) {
-            await page.click(modifier === 'ctrl' ? ctrl : alt);
+            await tapPhone(modifier === 'ctrl' ? ctrl : alt, `its ${modifier} key`);
             if (!await check(remote.paneID, `terminalLab.modifiers.${modifier} === true`)) throw new Error('Phone modifier did not reach the renderer');
             offset = input(remote).length;
             // Text insertion exercises beforeinput without inventing a physical key code.

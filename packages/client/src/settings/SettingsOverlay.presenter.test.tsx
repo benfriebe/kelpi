@@ -429,6 +429,35 @@ describe('a selected Settings presenter', () => {
     });
 
     /**
+     * #235: the same containment, and the same re-entry it must not make.
+     *
+     * This handler is `interaction/presenter-slot.tsx`'s copied, so it had the identical defect:
+     * `focus()` dispatches `focusin` synchronously, the capture listener on `window` sees a target
+     * still outside the container, and unguarded it recurses until `RangeError: Maximum call stack
+     * size exceeded` kills containment. Only luck decided which of the two copies blew up first in
+     * the live scenarios.
+     *
+     * jsdom focuses the iframe ELEMENT and reports it as the event target, so the browser's
+     * re-entry is modelled: this `focus()` dispatches the `focusin` the browser dispatches, from a
+     * target still outside the container. Without the guard the count below runs into the
+     * thousands.
+     */
+    it('contains focus once instead of re-entering itself until the stack overflows', () => {
+        setup();
+        const frame = screen.getByTitle('presenter frame');
+        const outside = document.createElement('button');
+        document.body.append(outside);
+        const focus = vi.spyOn(frame, 'focus').mockImplementation(() => {
+            outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        });
+        act(() => {
+            outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        });
+        expect(focus).toHaveBeenCalledTimes(1);
+        outside.remove();
+    });
+
+    /**
      * A peer that was ALREADY up when the presenter started painting.
      *
      * The reason the peer test is against the host's own registration rather than a baseline

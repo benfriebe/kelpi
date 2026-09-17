@@ -1,17 +1,18 @@
 import { MessageChannel, type MessagePort } from 'node:worker_threads';
+import { useSyncExternalStore, type ComponentType, type ReactElement } from 'react';
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodePluginManifest, decodePtyFrame, encodePtyFrame, encodeResizePayload, PTY_FRAME_TYPES, type JsonObject, type PluginInfo } from '@kelpi/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { createKelpiRuntime, createKelpiStore } from '../state';
 import { completeHandshake, createFakeSocketFactory } from '../connection/testing';
-import { paneHandle } from '../terminal/pane-registry';
-import { PluginView } from './PluginView';
+import { paneHandle, subscribeTerminalPanes, terminalPanesVersion } from '../terminal/pane-registry';
+import { PluginView, type PluginViewProps } from './PluginView';
 import { usePlugins } from './client';
 
 const PANE = 'AAAAAAAA-2222-4333-8444-555555555555', VIEW = 'terminal.test.renderer';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-async function setup(granted = true) {
+async function setup(granted = true, Host?: ComponentType<PluginViewProps>) {
     vi.stubGlobal('MessageChannel', MessageChannel);
     const sockets = createFakeSocketFactory();
     const runtime = createKelpiRuntime({ store: createKelpiStore(), url: `ws://${crypto.randomUUID()}.test/ws`, socketFactory: sockets.factory, notifications: null });
@@ -32,7 +33,7 @@ async function setup(granted = true) {
     const onError = vi.fn();
     const props = { runtime, pluginID: manifest.id, viewID: VIEW, paneID: PANE, workspaceID: 'W', onError, visible: true, focused: true,
         ...(granted ? { terminal: { paneID: PANE, ptyApi: runtime.pty, focused: true, visible: true } } : {}) };
-    const view = render(<PluginView {...props} />);
+    const view = render(Host === undefined ? <PluginView {...props} /> : <Host {...props} />);
     await waitFor(() => expect(screen.getByTitle('Test terminal').getAttribute('srcdoc')).toContain('kelpi-plugin-ready'));
     const frame = screen.getByTitle('Test terminal') as HTMLIFrameElement;
     const nonce = /"nonce":"([^"]+)"/.exec(frame.srcdoc)![1];
@@ -187,6 +188,76 @@ describe('selected terminal renderer through its private view port', () => {
             h.view.rerender(<PluginView {...h.props} terminal={{ ...h.props.terminal!, ownsSize: false }} />);
             await waitFor(() => expect(h.received.some(item => item.frame?.type === 'presentation' && item.frame.value.ownsSize === false)).toBe(true));
             expect(h.sockets.last().lastOfType('resize-pane')).toMatchObject({ paneID: PANE, cols: 100, rows: 30, force: true });
+        } finally { h.dispose(); }
+    });
+});
+
+/*
+ * #235 - the phone's blank page.
+ *
+ * `TerminalFeaturePane` hands this view `{ ...props, ownsSize }`, a new object every render, and the
+ * presentation effect used to depend on that object's identity: every render announced to the pane
+ * registry. On a phone `PhoneKeyBar` subscribes to the registry, pads the content row by its own
+ * height and so resizes every pane in the grid, which re-renders the pane, which builds another
+ * object - a cycle React ended by throwing #185 and unmounting the root, which is why the scenario's
+ * phone section kept failing in four different shapes with nothing on screen.
+ *
+ * `renders` counts how often the host was asked to render, so the cycle is visible as itself rather
+ * than only as whatever React does when it gives up.
+ */
+let hostRenders = 0;
+/** A host shaped like the phone's: it subscribes like `PhoneKeyBar` and rebuilds the object. */
+function RegistryHost(props: PluginViewProps): ReactElement {
+    useSyncExternalStore(subscribeTerminalPanes, terminalPanesVersion, terminalPanesVersion);
+    hostRenders += 1;
+    return <PluginView {...props} terminal={props.terminal === undefined ? undefined : { ...props.terminal }} />;
+}
+
+describe('the pane registry is told about presentation changes, not about renders (#235)', () => {
+    it('announces once per presentation change however many times the host re-renders', async () => {
+        const h = await setup();
+        try {
+            await h.attach();
+            const before = terminalPanesVersion();
+            for (let round = 0; round < 25; round += 1) {
+                // Exactly what `TerminalFeaturePane` does: same values, new object.
+                await act(async () => { h.view.rerender(<PluginView {...h.props} terminal={{ ...h.props.terminal! }} />); });
+            }
+            expect(terminalPanesVersion()).toBe(before);
+            // …and a real change is still announced, which is the half that must not be lost.
+            await act(async () => { h.view.rerender(<PluginView {...h.props} terminal={{ ...h.props.terminal!, focused: false }} />); });
+            expect(terminalPanesVersion()).toBe(before + 1);
+            await act(async () => { h.view.rerender(<PluginView {...h.props} terminal={{ ...h.props.terminal!, focused: false, visible: false }} />); });
+            expect(terminalPanesVersion()).toBe(before + 2);
+        } finally { h.dispose(); }
+    });
+
+    it('does not turn a subscriber that re-renders the host into a registry cycle', async () => {
+        hostRenders = 0;
+        const h = await setup(true, RegistryHost);
+        try {
+            await h.attach();
+            const version = terminalPanesVersion(), renders = hostRenders;
+            await act(async () => { h.view.rerender(<RegistryHost {...h.props} />); });
+            // Let every scheduled bump land: a cycle needs no further push from the test.
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+            expect(terminalPanesVersion()).toBe(version);
+            expect(hostRenders - renders).toBeLessThanOrEqual(2);
+        } finally { h.dispose(); }
+    });
+
+    it('announces a cell height the renderer reports only when it moves', async () => {
+        const h = await setup();
+        try {
+            await h.attach();
+            const before = terminalPanesVersion();
+            h.child.postMessage({ type: 'terminal-metrics', session: 'one', cellHeight: 21 });
+            await waitFor(() => expect(terminalPanesVersion()).toBe(before + 1));
+            for (let round = 0; round < 5; round += 1) h.child.postMessage({ type: 'terminal-metrics', session: 'one', cellHeight: 21 });
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+            expect(terminalPanesVersion()).toBe(before + 1);
+            h.child.postMessage({ type: 'terminal-metrics', session: 'one', cellHeight: 24 });
+            await waitFor(() => expect(terminalPanesVersion()).toBe(before + 2));
         } finally { h.dispose(); }
     });
 });

@@ -416,6 +416,35 @@ describe('a selected prompts presenter', () => {
         expect(modalPresenceCount()).toBe(0);
     });
 
+    /**
+     * #235: containment must not re-enter itself.
+     *
+     * `focus()` dispatches `focusin` SYNCHRONOUSLY, this slot's listener is on `window` in the
+     * capture phase, and the target it sees is still outside the container, so unguarded the
+     * handler calls itself for as many frames as the stack holds and dies with `RangeError:
+     * Maximum call stack size exceeded` - which kills containment altogether, the opposite of what
+     * the effect is for. The scenario runner's renderer-error check (`scripts/scenario.mjs`)
+     * caught it on `plugin-interaction-presenters`, where it was 51/52 every run.
+     *
+     * jsdom focuses the iframe ELEMENT and reports it as the event target, so the browser's
+     * re-entry is modelled here rather than waited for: this `focus()` dispatches the `focusin` the
+     * browser dispatches, from a target still outside the container. That is the sequence the
+     * RangeError came from, and without the guard the count below runs into the thousands.
+     */
+    it('contains focus once instead of re-entering itself until the stack overflows', () => {
+        const outside = document.createElement('button');
+        document.body.append(outside);
+        const { scope } = setupSelected();
+        act(() => { void scope.request('ui.showInput', { title: 'Owned by the presenter' }).catch(() => null); });
+        const frame = screen.getByTitle('presenter frame');
+        const focusFrame = vi.spyOn(frame, 'focus').mockImplementation(() => {
+            outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        });
+        act(() => { outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); });
+        expect(focusFrame).toHaveBeenCalledTimes(1);
+        outside.remove();
+    });
+
     it('fails the placement when the presenter never reports that it painted', () => {
         vi.useFakeTimers();
         const { surface, scope } = setupSelected();

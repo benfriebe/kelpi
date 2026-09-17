@@ -323,10 +323,26 @@ export function InteractionPresenterSlot(props: InteractionPresenterSlotProps): 
     useLayoutEffect(() => {
         if (!painted || peerModal) return;
         props.captureFocus?.();
+        /*
+         * `containing` is the re-entry guard, and it is not belt and braces: without it this
+         * handler calls itself until the stack overflows (#235's scenario watcher found it).
+         * `focus()` dispatches `focusin` SYNCHRONOUSLY, this capture listener on `window` sees it
+         * before it has reached the iframe, and `container.contains(event.target)` is still false
+         * for the element that had the caret, so the containment fires again, and again, for as
+         * many frames as the stack holds. It ends in `RangeError: Maximum call stack size
+         * exceeded`, which kills the handler and so kills containment altogether - the failure is
+         * the opposite of what this effect is for.
+         *
+         * A flag rather than a target test, because the honest statement is "one containment at a
+         * time": whatever the nested event says, this refocus is already in flight. Containment
+         * still runs on the NEXT real `focusin`, which is the one that carries new information.
+         */
+        let containing = false;
         const onFocusIn = (event: FocusEvent): void => {
             const container = wrapper.current;
-            if (container === null || !(event.target instanceof Node) || container.contains(event.target)) return;
-            container.querySelector('iframe')?.focus();
+            if (containing || container === null || !(event.target instanceof Node) || container.contains(event.target)) return;
+            containing = true;
+            try { container.querySelector('iframe')?.focus(); } finally { containing = false; }
         };
         window.addEventListener('focusin', onFocusIn, true);
         return () => window.removeEventListener('focusin', onFocusIn, true);

@@ -380,11 +380,17 @@ export function SettingsPresenterSlot(props: SettingsPresenterSlotProps): ReactE
      */
     useLayoutEffect(() => {
         if (!painted || peerModal) return;
+        // The same re-entry guard, for the same reason, as `interaction/presenter-slot.tsx`: this
+        // handler is that one copied, and `focus()` dispatches `focusin` synchronously at a moment
+        // when the target is still outside the container, so unguarded it recurses until the stack
+        // overflows and containment dies with it. Only luck decided which copy blew up first.
+        let containing = false;
         const onFocusIn = (event: FocusEvent): void => {
             const container = wrapper.current;
-            if (container === null || !(event.target instanceof Node) || container.contains(event.target))
+            if (containing || container === null || !(event.target instanceof Node) || container.contains(event.target))
                 return;
-            container.querySelector('iframe')?.focus();
+            containing = true;
+            try { container.querySelector('iframe')?.focus(); } finally { containing = false; }
         };
         window.addEventListener('focusin', onFocusIn, true);
         return () => window.removeEventListener('focusin', onFocusIn, true);

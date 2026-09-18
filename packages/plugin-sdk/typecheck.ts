@@ -5,6 +5,7 @@ import './tests/service-fixtures.js';
 import './ui.typecheck.js';
 import './interaction.typecheck.js';
 import './settings.typecheck.js';
+import './pane-chrome.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
 

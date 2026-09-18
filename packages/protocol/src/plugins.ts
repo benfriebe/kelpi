@@ -5,7 +5,17 @@ import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, plugi
 
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
-export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
+/**
+ * `pane.chrome` is DECLARED here and mounted by nothing.
+ *
+ * Phase A of pane chrome composition builds the shared model, the height authority and the
+ * projection; the presenter host arrives in phase B. Naming the placement now is additive and
+ * inert: a manifest that declares a view for it validates, and the slot is deliberately absent
+ * from the client's `ROOT_SLOTS`, so it has no bundled default, no Settings row and no way in -
+ * `ui.selectView` answers "Workbench slot is not registered." exactly as it does for a custom slot
+ * nobody contributed. Plugin API version stays 1.
+ */
+export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
 /**
  * The three presented interaction surfaces, in one place.
@@ -293,6 +303,11 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         // route back from a broken presenter. A container there would put that route behind a
         // slot-picker header inside the dialog.
         if (places.includes('settings.window')) throw new Error('containers cannot present the Settings window; a Settings presenter owns the whole dialog body');
+        // A pane chrome presenter owns one 24 px band per pane, and a container's own chrome is a
+        // slot-picker header. There is no room for it, and the panes it would pick for are the
+        // grid's, not the container's: the same refusal the interaction placements make, one
+        // surface smaller.
+        if (places.includes('pane.chrome')) throw new Error('containers cannot present pane chrome; a pane chrome presenter owns each pane band');
         const layout = container['layout'];
         if (layout !== 'row' && layout !== 'column' && layout !== 'tabs') throw new Error('container layout must be row, column, or tabs');
         const containerID = contributionID(container['id']);

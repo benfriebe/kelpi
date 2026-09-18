@@ -478,10 +478,188 @@ on plugin reload or rollback, on a selection change, and on **Retry presenter** 
 Plugins → Workbench views. `kelpi.window.openSettings`, `openPlugins`, `openPalette`, `openHelp`
 and `restartUI`, `⌘,`, the native menu and the palette never route through a presenter.
 
+## Pane chrome
+
+Every pane wears a 24 px header: a status dot or a type glyph, a label chip, a middle-truncated
+title, the ZOOM and SYNC badges, an agent badge, a git branch chip, the per-kind controls, the
+split controls and the close ✕. The placement that will replace it is `pane.chrome`, one presenter
+for every pane kind, and **this release ships phase A of it: the shared model, the height
+authority, parking and the projection. No presenter is mounted.** The placement is declared so a
+manifest can name it; it has no bundled default and no Settings row, so `ui.selectView` answers
+"Workbench slot is not registered." and nothing can be selected into it until phase B.
+
+### The shared model
+
+`packages/client/src/pane-chrome/` is the pane-header sibling of the shared settings model. One
+closure-free descriptor per pane carries everything the bundled header draws - the pane id, kind
+and status, the title and the split that middle-truncates it, the home-abbreviated directory, the
+label, the branch and its change counts, the agent's kind, elapsed and background tasks, the zoom,
+sync and focus flags, the painted band height, the size-control state (which badges this width
+seated and how many controls folded), the trailing control row, and other plugins' `pane.header`
+items as descriptors. One surface owns every action the header performs: focus, split, zoom,
+rename, close, run a control, run an item, open the pane menu. Ids in, no closures out, and every
+call re-resolved against a fresh model, so a control that went disabled or disappeared between the
+render and the click refuses instead of running.
+
+The bundled `PaneHeader` draws from that descriptor and acts through that surface and nothing else.
+Its DOM, its class names and every `data-testid` are unchanged, which the PaneHeader and grid
+suites assert unmodified.
+
+Three things stay host-drawn, for the reasons the Settings dialog keeps its native sections: the
+inline rename FIELD (the caret is the host's), the pane context menu and the `•••` (portals with
+their own overlay registration), and the box another plugin's items are rendered into as text.
+`renamePane` opens the host's field; `closePane` routes through the host's existing confirmation.
+A presenter never draws a host-owned text input or a destructive confirmation.
+
+### Height authority
+
+The band is the one thing a presenter declares that the host has to act on, so it follows the
+notification box's rule exactly: **the presenter declares, the host clamps, and the native value
+applies until something is declared.**
+
+| Ceiling | Value | Why |
+| --- | --- | --- |
+| Fixed | 96 px | Four native bands. Enough for the two-line header a real plugin asks for, nowhere near enough to take a terminal's visible lines. |
+| Pane | 25% of that pane's height | A 96 px band over a 140 px pane is a pane that is mostly chrome, so the same declaration is honoured in full on a tall pane and cut down on a short one rather than refused. |
+
+The smaller of the two wins and the floor is 0. `paneChromeHeight(null, …)` returns the host's own
+band **without** consulting a ceiling, which is the one deliberate difference from
+`notificationBoxHeight`: a short pane's ceiling is below 24, so clamping the undeclared default
+would shrink the bundled header - and resize the PTY under it - on a pane nobody has asked anything
+of.
+
+`setPaneChromeHeight(paneID, pixels)` has three inputs and three answers, and the store and the
+clamp give the same ones:
+
+| Declared | Answer |
+| --- | --- |
+| `null` | Withdrawn. The pane is back on the native band next frame, and a presenter can hand one back without being torn down. |
+| A negative number | 0, which is a legal band. The clamp already said `[0, ceiling]`, so this agrees with it rather than inventing a second rule. |
+| NaN or an infinity | Refused; the current band stands. They are not heights, there is nothing to clamp them to, and treating them as a withdrawal would make one arithmetic slip inside a presenter look exactly like a deliberate hand-back. |
+
+A declaration also goes back on its own. Every pane withdraws its band when its chrome unmounts,
+and the whole store is emptied when the grid changes the workspace it is showing or goes away
+(a workspace switch, a remote workspace selected, the mirror emptying under a dropped connection).
+Without that a closed pane's entry would outlive it forever, and the cost is not a map entry: the
+daemon can hand a new pane the id a closed one had, and a workspace switched away from and back
+would apply the stale band on the first frame, before any presenter could re-declare, which is a
+live PTY resized against a band nobody asked for.
+
+The host owns the declarations in a per-pane store, and `PaneGrid`'s body rect uses the clamped
+value. Everything downstream follows the band without being told: the header is a fixed-height row
+and the body is the `flex-1` under it, so a terminal's cols and rows (the body box divided by the
+cell size) and a web pane's native DIP bounds both move with it. A declaration belongs to the view
+that made it - a reload, a different selection or a fallback drops every one of them at once, which
+is what keeps decision 8's all-or-nothing fallback from leaving a PTY sized against a dead header.
+
+### Web panes and parking
+
+Nothing in the document composites above a native `WebContentsView`, so a band drawn into pixels
+the page still holds is invisible. A declared band taller than the native one over a web pane
+therefore enrols itself in the host's overlay registry, and the pane parks its page exactly as it
+does for the `•••` menu.
+
+Only a band that is **on screen** enrols. `PaneGrid` never unmounts a pane to hide it: a zoomed-out
+pane, and every pane of a workspace the window is not showing, keeps its DOM at its last known rect
+under `visibility: hidden`, and that rect is still what the overlay registry would measure. With
+two web panes both declaring a band and one of them zoomed, an unconditional registration would put
+the hidden pane's band inside the visible pane's page hole and park the page the user is actually
+looking at, for the whole length of the zoom. A band nobody can see covers nothing, so it registers
+nothing.
+
+At rest the two boxes are adjacent rather than overlapping - the page hole begins where the band
+ends - so the registration costs nothing once the geometry settles. Measured with a temporary 96 px
+declaration on a live web pane: the band grew from 24 px to 96 px, the body moved down by exactly
+72 px, the native view moved from `753,88 525×706` to `753,160 525×634` in one `moved` placement
+with **zero parks**, the page stayed live throughout (`data-visible="true"`,
+`data-overlay-covered="false"`), a click in the page area still reached the pane, and withdrawing
+the declaration restored both the 24 px band and the original bounds. Decision 5's fallback - web
+panes keeping the native header - is therefore not needed.
+
+### The frame
+
+One frame carries every visible pane of the displayed workspace, with the focused and zoomed pane
+named once at the top, bounded at 256 KiB like every other frame. A pane's title is whatever its
+shell last wrote to the terminal's OSC, so a workspace can overrun the budget; an oversized frame
+is undeliverable and an undeliverable frame fails the placement, which would latch the user's
+chosen presenter out over somebody else's window title. So the frame **stops at the first pane that
+does not fit** and counts that pane and every pane after it in `withheld`. The panes carried are
+always a prefix of the workspace, in its own order, so `withheld` means "everything after these" -
+a presenter can draw a header row from that, and could not from an arbitrary subset with one wide
+pane dropped and a narrow one three places later carried. A withheld pane keeps its native header,
+exactly as a withheld notice keeps its expiry clock.
+
+Withheld: absolute paths beyond the home abbreviation, PTY handles and pids, agent session ids,
+every other plugin's `pluginID`, the command behind any control or item, connection URLs and a web
+pane's page URL, every run closure, and the `data-testid` of every control.
+
+A control and an item are a display name, an icon, an enabled flag and an opaque **ref**. The ref
+is what makes the rest of that list true: a contribution id is `<pluginID>.<name>`, so publishing a
+control under its own key would name the owner and the verb in the same breath as saying they are
+withheld. Refs are minted per frame and scoped to their pane, the host keeps the mapping privately
+(exactly as `settings/sections.ts` keeps a field's write target), and a ref from an older frame,
+from another pane or invented resolves to nothing. Both halves of the row are reachable and each
+only through its own call: `activatePaneControl(paneID, ref)` presses a control - the host's own
+`copy`, `edit`, `refresh`, the splits, the globe and the ✕, or another plugin's `pane.header`
+command button - and `runPaneHeaderItem(paneID, ref)` activates one of the chips in the host's box.
+Whatever a ref resolves to is then re-resolved against a fresh model before it runs, so a control
+that went disabled or disappeared between the frame and the press refuses rather than firing.
+
+Native by decision, whatever is selected: the focus ring, the pane context menu, the rename field,
+every destructive confirmation, the dividers, the resize badge, the terminal's mirror clip wash and
+the find bar. Pane chrome presenters will be desktop-only: a phone window keeps its own header,
+which owns the software-keyboard inset a presenter cannot read, so a frame reports
+`formFactor: 'desktop'`.
+
+The [public types](../packages/plugin-sdk/pane-chrome.d.ts) describe the frame and the presenter
+calls (`focusPane`, `splitPane`, `toggleZoom`, `renamePane`, `closePane`, `activatePaneControl`,
+`runPaneHeaderItem`, `openPaneMenu`, `setPaneChromeHeight`, `reportPresenterReady`). They are types
+only in this release: `WindowPaneChromeAPI` is deliberately not part of `ViewAPI.ui` yet.
+
+A container cannot declare `pane.chrome`, for the reason the interaction placements refuse one: a
+presenter owns one 24 px band per pane, a container's own chrome is a slot-picker header, and there
+is no room for it in a band that size.
+
+### Review follow-up
+
+An independent review of phase A landed seven changes on top of the first cut, each recorded here
+because each was a rule stated one way and implemented another:
+
+- **A hidden pane's band no longer parks a visible pane's page.** The enrolment was unconditional
+  and `PaneGrid` keeps hidden panes mounted at their last rect, so a zoomed-out web pane's band lay
+  inside the zoomed one's page hole.
+- **The frame's refs are opaque.** A control's key and an item's id were published verbatim, and
+  for another plugin's contribution both of those name the owner - the one thing the withheld list
+  promises they do not.
+- **Controls have an activation path.** Only `items` had a call behind it, so every host control
+  and every plugin command button was published with no way to press it; `activatePaneControl` is
+  the other half.
+- **Declarations are withdrawn.** The store only ever grew, so a closed pane's band outlived it and
+  came back on a workspace switch.
+- **Containers cannot declare `pane.chrome`**, as they cannot declare the other presented
+  placements.
+- **The store and the clamp agree** on what a negative and a non-finite declaration mean, and the
+  contract has `null` for withdrawal.
+- **The budget cut is a prefix**, not a subset.
+
+Two more were cleanups rather than defects: the `pane.header` items are resolved once per pane per
+render instead of twice (the grid re-resolves on every render, divider drags included), and the
+contributions box takes its presence and its count from the one list rather than from the rendered
+node and the list separately.
+
+### What phase B adds
+
+The presenter host itself: the `pane.chrome` slot registered and selectable in Settings → Plugins →
+Workbench views, the frame published and acknowledged on the interaction presenters' budgets, the
+all-or-nothing fallback keyed `viewID:revision:instanceID` with its watchdog and failure toast, the
+`ui.*` calls wired through `browser.js`, and a Pane Lab example with the crash and stall hooks a
+live scenario needs to prove the fallback.
+
 ## Automated validation
 
 `pnpm check` covers schema validation, ownership, lifecycle resets, settings races, SDK
-contracts, retained actions and prompt behavior. `node scripts/scenario.mjs plugin-ui-services --window hidden`
+contracts, retained actions, prompt behavior and the pane chrome model, height clamp, parking
+predicate and frame bound. `node scripts/scenario.mjs plugin-ui-services --window hidden`
 exercises UI Lab through a private daemon and real Electron window, and
 `node scripts/scenario.mjs plugin-interaction-presenters --window hidden` drives Interaction Lab
 as the selected palette and prompts presenter, including a second plugin's prompts, presenter

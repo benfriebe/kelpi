@@ -53,6 +53,17 @@ describe('public plugin protocol', () => {
         expect(decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements: ['settings'] }],
             containers: [{ id: 'sample.board.stack', title: 'Stack', placements: ['settings'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }] } }).contributes.containers).toHaveLength(1);
     });
+    it('accepts the pane chrome placement and refuses a container in it', () => {
+        const placements = ['pane.chrome'];
+        const views = [{ ...manifest.contributes.views[0], placements }];
+        expect(decodePluginManifest({ ...manifest, contributes: { views } }).contributes.views[0]?.placements).toEqual(placements);
+        // A presenter owns one 24 px band per pane; a container would want a slot-picker header in it.
+        const containers = [{ id: 'sample.board.stack', title: 'Stack', placements: ['pane.chrome'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }];
+        expect(() => decodePluginManifest({ ...manifest, contributes: { views, containers } })).toThrow(/pane chrome/);
+        // `pane` is the pane BODY and a different placement; it has its own, older refusal.
+        expect(() => decodePluginManifest({ ...manifest, contributes: { views: [{ ...manifest.contributes.views[0], placements: ['pane'] }],
+            containers: [{ id: 'sample.board.stack', title: 'Stack', placements: ['pane'], layout: 'tabs', slots: [{ id: 'sample.board.stack.main', title: 'Main' }] }] } })).toThrow(/workbench placements/);
+    });
     it.each([
         { apiVersion: 9 }, { trust: 'sandbox' }, { id: 'kelpi.board' }, { id: '../escape' },
         { backend: '../code.js' }, { backend: 'ui/code.js' },

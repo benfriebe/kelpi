@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Pane chrome shared model](#pane-chrome-shared-model-2026-09-18).
 - [Lane hygiene: phone remote-workspace flake and the remembered-place leak](#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18).
 - [Selectable notification presenter](#selectable-notification-presenter-2026-09-13).
 - [Daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
@@ -50,6 +51,100 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Pane chrome shared model (2026-09-18)
+
+Phase A of pane chrome composition, implemented on `feature/plugin-pane-chrome-model` (based on
+merged main `5831fa2`, first cut committed as `e56ce6d`). Tested revision: **`74efce9`** (`e56ce6d` plus the review follow-up). Full verification battery: `node scripts/verify.mjs --full` **passed unretried at `e56ce6d` in 24.6 min and again at `74efce9` in 24.7 min** (typecheck, root tests 8,172 passed with 1 skipped, shell tests, build bundles, all scenarios hidden, full audit, packaged smoke 69/69); the only leak warnings are the three inert workbench-slot ones.
+The worktree was bootstrapped from the verified vendor bundle at the same revision
+(`vendor-engine.test.ts` 20/20) with the node_modules already in place; private sandboxes only.
+Plugin API version stays **1** and wire generation stays **2**: the protocol changes are the
+additive `pane.chrome` entry in `PLUGIN_PLACEMENTS` and the container refusal that comes with it.
+The placement validates in a manifest, has no bundled default, no `ROOT_SLOTS` entry and no
+Settings row, so nothing can be selected into it, and a container cannot declare it at all. No
+presenter is mounted in this phase.
+
+An independent review of the first cut found seven rules stated one way and implemented another,
+and two cleanups; all nine are in the tree this record measures. They are listed under
+[Review follow-up](#review-follow-up) below and in
+[the guide](plugin-ui.md#review-follow-up).
+
+| Check | Result |
+| --- | --- |
+| `pnpm check` | All typechecks pass (protocol, core, daemon, cli, plugin-sdk, client, shell). Root vitest **8,172 passed, 1 skipped** (the existing optional database skip); shell **870 passed**. The new tests add exactly **51** (**8,121** before them): `pane-chrome/contract` (12), `model` (8), `surface` (10), `height` (12), `projection` (8, including a 200-pane workspace of maximal titles that really does overrun the budget), plus one `protocol/plugins` case for the container refusal. |
+| PaneHeader and grid suites | `npx vitest run packages/client/src/grid` **12 files, 208 tests, 0 failed**, byte-for-byte the base tree's count, with not one test file modified. |
+| SDK artifact | `node scripts/verify-plugin-sdk.mjs` passes with `pane-chrome.d.ts` in the published `files`: browser types, Node-only backend types and runtime imports all check. `pane-chrome.typecheck.ts` asserts the withheld list at the type level (no `command`, no `testID`, no `pluginID`, no absolute `workingDirectory`, no `agentSessionID`, no page `url`, no name on `renamePane`, and neither a control's `key` nor an item's `id` - both are addressed by opaque ref). |
+| Geometry and web panes, hidden | `node scripts/scenario.mjs plugin-terminal-geometry plugin-terminal-features web-pane-comes-back-after-hide --window hidden`: **31/31**, **59/59** and **8/8**, 0 failed, run again unchanged after the review follow-up. The terminal still measures 132x47 in a 1048x708 body and the web pane's native view still lands at `753,88 525x706`, which is what "nothing declares a height, so nothing moved" means in numbers. `web-batch-pickup` is a UI-audit step rather than a scenario (and a pre-existing failure of that battery), so the nearest web-pane scenario was run in its place. |
+| Header fidelity, onscreen | A temporary capture scenario built the same three-pane grid (a labelled shell pane, a second shell pane, a web pane) on the base tree and on this one at `--window onscreen`, dumping each header's `outerHTML` with pane ids normalised. **All three headers are byte-identical across the two runs** (10,405 bytes compared) and the three header boxes are identical (`264x24`, `529x24`, `264x24` at y=32). The screenshot pair differs in **684 of 4,198,400 pixels (0.016%)**, all of them inside one 140x9 CSS-pixel box in the status footer: the live system stats, which read `26% / 59% / 4.45` in the first run and `17% / 58% / 4.22` in the second. Nothing in the pane-header band differs at all. |
+| Parking measurement | Below. |
+
+### The parking measurement (ratified decision 5)
+
+A temporary `setPaneChromeHeight` hook was exposed on `globalThis`, a scenario declared **96 px**
+(the clamp ceiling) on a live web pane, and the shell's own placement line was the instrument,
+because a native `WebContentsView` is composited by the window and a screenshot of the hole shows
+nothing either way. **9/9 checks.** The hook has been removed.
+
+| Measurement | Before | With a 96 px band |
+| --- | --- | --- |
+| Header box | `529x24` at y=32 | `529x96` at y=32 |
+| Body box | y=56, h=740 | y=128, h=668 (down exactly 72 px) |
+| Page hole (DOM) | `529x708` at y=88 | `529x636` at y=160 |
+| Native view | `753,88 525x706`, owner `main` | `753,160 525x634`, owner `main`, reason `moved` |
+| Park transitions | n/a | **0 parks, 1 re-attach** |
+| `data-visible` / `data-overlay-covered` | `true` / `false` | `true` / `false` |
+| Band settled | n/a | 2 ms from the declaration to the painted 96 px |
+| Click in the page area | n/a | still focuses the pane, view still in the window |
+| Withdrawing the declaration | n/a | back to `529x24` and `753,88 525x706` |
+
+The page never parked. The band and the page hole are **adjacent, not overlapping** (the hole
+begins where the band ends), so the enrolled rect never intersected the pane's hole and
+`overlayCovers` never reported a cover; the shell moved the view down in a single `moved`
+placement rather than parking and re-attaching it. The measurement was taken before the review's
+visibility gate and still holds: the measured pane was on screen throughout, so the gate returns
+exactly what it returned, and the change can only ever remove a registration. The registration costs one overlay entry and
+one re-render of the window's web panes per band change, and buys the frames between the band
+growing and the shell following it, which is the window in which the new chrome would otherwise be
+sliced by a live page. **Decision 5's fallback - web panes keeping the native header in phase one -
+is not needed, and the frame does not have to say so per pane.**
+
+### What this phase contains
+
+- `packages/client/src/pane-chrome/`: `contract.ts` (vocabulary, budgets, the height clamp, the
+  parking predicate), `model.ts` (the per-pane descriptor and the private run-target table, plus
+  the display strings and both width ladders moved unchanged out of `PaneHeader.tsx`),
+  `surface.ts` (one write path, every call re-resolved against a fresh model), `height.ts` (the
+  per-pane band store and the parking enrolment), `projection.ts` (the bounded frame), `index.ts`,
+  and five test files.
+- `grid/PaneHeader.tsx` draws from the descriptor and acts through the surface, and re-exports the
+  moved functions so every existing import still resolves. `grid/PaneGrid.tsx` reads the band store
+  once for the whole grid and lays each pane's body out under that pane's own band.
+- `packages/plugin-sdk/pane-chrome.d.ts` plus its typecheck: types only, exported from `index.d.ts`
+  and deliberately **not** on `ViewAPI.ui`.
+- One defect closed on the way: the two new grid props were primary-window only, which
+  `App.remote-grid-parity.test.tsx` (#144/#216) refuses. Rather than listing them as gaps they were
+  wired into `RemoteWorkspaceView` too, which already resolves and runs `pane.header` contributions
+  through its own `usePluginCommands`. The third new prop, `workspaceID`, went into both mounts for
+  the same reason.
+
+### Review follow-up
+
+Nine changes on top of `e56ce6d`, each with the test that would have caught it:
+
+| Finding | What it was | Now |
+| --- | --- | --- |
+| Hidden pane parks a visible one | The band enrolled in the overlay registry unconditionally, and `PaneGrid` keeps a hidden pane mounted at its last rect. Two web panes declaring a band with one zoomed put the hidden one's band inside the visible one's page hole and parked the page being looked at, for the length of the zoom. | `paneChromeParks` takes `visible`, `PaneGrid` passes each pane's own visibility, and a band nobody can see registers nothing. `contract.test.ts` covers the predicate, `height.test.tsx` the hook across a zoom in and out. |
+| The frame's ref was the command id | A control's `key` and an item's `id` were published verbatim, and for another plugin's contribution both are `<pluginID>.<name>` - the owner's namespace and the command's name, which the header and the docs both list as withheld. | The frame carries a per-frame, pane-scoped `ref`; the mapping back is a private table that leaves with the frame. A recursive key-and-value scan in `projection.test.ts` asserts no `example.board` string and no `key` field survives, and that a ref from another pane or an invented one resolves to nothing. |
+| Controls had no activation path | `runItem` resolved `descriptor.items` only, so `copy`, `edit`, `refresh`, both splits, the globe, the ✕ and every plugin `pane.header` command button were published with no call that could press them. | `activatePaneControl(paneID, ref)` in the SDK and `surface.activateRef` behind it, resolved against the frame's table and then re-resolved against a fresh model. Two calls rather than one, so a control ref cannot reach an item or the reverse. |
+| Declarations were never withdrawn | The store only ever grew on a closed pane; a workspace switched away from and back would re-apply the stale band on the first frame, resizing a live PTY. | Every pane withdraws on unmount (`usePaneChromeWithdrawal`), and the store is emptied when the grid changes workspace or goes (`usePaneChromeScope`, wired in both grid mounts). Both unit-tested. |
+| Containers could declare `pane.chrome` | The refusal list named the interaction placements and `settings.window` and stopped there. | Refused, with the test beside the `settings.window` one. |
+| The store and the clamp disagreed | The store refused a negative declaration while `contract.ts` documented it as 0, so what -40 meant depended on which you read. | One rule: `null` withdraws, negative is 0, non-finite is refused and the previous band stands. `setPaneChromeHeight` in the SDK takes `number | null`, so withdrawal is in the contract. |
+| The budget cut was not a prefix | `continue` let a smaller later pane be carried after a bigger one was dropped, while the frame promised "the panes that fit, in order, and a count of the rest". | `break`, `withheld` counts the dropped pane and everything after it, and a test with a wide pane between narrow ones proves it. |
+| Items resolved twice per pane per render | Both grid mounts asked `resolveContributionItems` separately for the chips and for the descriptors, and `PaneGrid` calls those accessors on every render, divider drags included. | One `usePaneHeaderContributions` cache keyed on the resolver's own identity, so it cannot outlive the facts it resolved from. |
+| The contributions box had two sources | Presence came from the rendered node, the count from `items.length`. | Both from the items. An empty list is no box and no charge, which is what the host's own renderer already did with one. |
+
+Not established here: physical devices; the full UI audit battery; and phase B (a selectable
+`pane.chrome` presenter, its fallback and watchdog, and a Pane Lab example), which is not started.
 
 ## Lane hygiene: phone remote-workspace flake and the remembered-place leak (2026-09-18)
 

@@ -226,10 +226,13 @@ the commands registered during activation.
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
 `document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
-`interaction.notifications`, and `settings.window`. A view can support several placements or a
+`interaction.notifications`, and `settings.window`. `pane.chrome` validates as well and draws
+nothing yet: its presenter host arrives in phase B (see
+[Pane chrome](plugin-ui.md#pane-chrome)), so the slot is not registered and nothing can be
+selected into it. A view can support several placements or a
 declared custom slot. Document, terminal and browser placements accept isolated views, not
-containers. Neither do the palette, prompts, notifications and Settings presenter placements: a
-presenter owns its whole surface.
+containers. Neither do the palette, prompts, notifications, Settings presenter and pane chrome
+placements: a presenter owns its whole surface.
 Workbench chrome placement controls apply to the desktop layout.
 Plugin panes and document, terminal and browser renderers also work in phone and secondary-daemon workspaces.
 Browser controls target the owning daemon; native page display requires its Electron host window.

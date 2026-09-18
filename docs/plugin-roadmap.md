@@ -1,6 +1,6 @@
 # Plugin roadmap and progress
 
-Last reviewed: **2026-09-13**, against merged main `fd2a216`. This is the current plan for
+Last reviewed: **2026-09-18**, against merged main `24eab65`. This is the current plan for
 Kelpi extensibility. The [architecture audit](plugin-extensibility-audit.md) preserves the
 original design; the [plugin guide](plugins.md) defines the implemented API; the
 [validation record](plugin-validation.md) records what was checked at each revision.
@@ -77,18 +77,10 @@ version remains **1** and wire protocol generation remains **2**.
 | Additional domain access | Typed services and command/event access cover the implemented domains; backend-only, primary-window and native-host requirements are explicit. | Add missing operations with documented ownership, cancellation and failure semantics when real plugins need them. |
 | Physical devices | Every phone result on record is Electron emulation: the audit's phone steps, `phone-settings-sheet` and the scenarios' phone sections. | Run the phone-shell and presenter paths on real hardware and record that coverage separately from emulation. |
 
-In progress on `fix/new-workspace-and-lane-leaks`:
-[#201](https://github.com/benfriebe/kelpi/issues/201), File > New Workspace and Cmd+N doing
-nothing while a plugin view replaces the Workspaces sidebar, and the scenario lane leaks
-[#205](https://github.com/benfriebe/kelpi/issues/205) and
-[#198](https://github.com/benfriebe/kelpi/issues/198). The other open triage issues from the
-two batteries are [#192](https://github.com/benfriebe/kelpi/issues/192),
-[#202](https://github.com/benfriebe/kelpi/issues/202),
-[#203](https://github.com/benfriebe/kelpi/issues/203),
-[#204](https://github.com/benfriebe/kelpi/issues/204),
-[#206](https://github.com/benfriebe/kelpi/issues/206) and
-[#207](https://github.com/benfriebe/kelpi/issues/207); they are audit-step and lane defects, not
-plugin contract gaps.
+The only triage issues still open from the two batteries are
+[#206](https://github.com/benfriebe/kelpi/issues/206), a web-batch-pickup click that made no pick,
+and [#207](https://github.com/benfriebe/kelpi/issues/207), a paste chord missed once; both are
+audit-side or lane flakes rather than plugin contract gaps.
 
 These are follow-up scopes, not currently running branches or promised release dates. Later work
 can be reprioritized without marking unimplemented contracts complete.
@@ -100,6 +92,7 @@ and untrusted execution have different boundaries and should not be counted as e
 ## Validation status
 
 Each merged phase has its own dated record with the exact tested revision, commands and counts:
+[lane hygiene](plugin-validation.md#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18),
 [daemon disconnect coverage](plugin-validation.md#daemon-disconnect-coverage-2026-09-13),
 [selectable notification presenter](plugin-validation.md#selectable-notification-presenter-2026-09-13),
 [terminal SDK geometry parity](plugin-validation.md#terminal-sdk-geometry-parity-2026-09-12),
@@ -110,27 +103,53 @@ Each merged phase has its own dated record with the exact tested revision, comma
 [selectable Settings presenter](plugin-validation.md#selectable-settings-presenter-2026-09-12)
 and [Settings Lab](plugin-validation.md#settings-lab-and-live-acceptance-2026-09-12).
 
-Two full verification batteries cover the merged work. Neither was rerun at `fd2a216`.
+Six full verification batteries are on record. The first two carry the presenter phases and stay
+as history: neither was rerun, and the audit-step and lane defects they found have since been
+fixed. The four below them ran on the branches that merged into this baseline.
 
 | Battery | Tested revision | Result |
 | --- | --- | --- |
 | [Interaction Lab branch](plugin-validation.md#full-verification-battery-at-54ef523), carrying the contracts and presenters steps | `54ef523` | Passed in 25.7 minutes. Typecheck, root tests, shell tests and bundle build passed. The scenario lane passed on the battery's isolated retry. The full UI audit completed with **132 steps, 1,653 assertions, 5 failed, 4 step errors, 113 need eyes**. The packaged smoke repackaged and passed **61 checks**. |
 | [Settings Lab branch](plugin-validation.md#full-verification-battery-at-c4001f3), carrying the settings contracts and presenter phases | `c4001f3` | Passed in 27.1 minutes. Typecheck, root tests, shell tests and bundle build passed; root vitest **7,904 passed, 1 skipped** (the existing optional database skip) and shell **868 passed**. The scenario lane passed on the battery's isolated retry. The full UI audit completed with **132 steps, 1,653 assertions, 6 failed, 4 step errors, 113 need eyes**, every `settings-*` and `phone-settings-sheet` step green. The packaged smoke repackaged and passed **61 checks**. |
+| [Daemon disconnect coverage](plugin-validation.md#daemon-disconnect-coverage-2026-09-13), carrying [#213](https://github.com/benfriebe/kelpi/pull/213)'s restart arms | `59cbba2` | Passed in 24.0 minutes with no component retried: typecheck, root tests, shell tests, bundle build, all scenarios (hidden, 5.2 min), the full audit (18.0 min) with no failed step, and a packaged smoke of **69 checks**. |
+| [Selectable notification presenter](plugin-validation.md#selectable-notification-presenter-2026-09-13), carrying [#214](https://github.com/benfriebe/kelpi/pull/214) | `4377290` | Passed in 24.4 minutes with no component retried: the scenario lane hidden in 5.6 min, the full audit in 18.0 min with no failed step, and a packaged smoke of **69 checks**. Three non-fatal leak warnings, identical to #213's. |
+| [Daemon shutdown bound](plugin-validation.md#the-shutdown-stall-this-exposed-212), carrying [#218](https://github.com/benfriebe/kelpi/pull/218) | `ec8a928` | Passed in 24.0 minutes with no component retried: scenarios hidden in 5.3 min, the full audit in 17.8 min and a packaged smoke of **69 checks**; the lane's two daemon restarts stopped in 14 and 10 ms. The same battery at `2a82f8c`, before the amendments, passed in 24.9 minutes, also unretried. |
+| [Lane hygiene](plugin-validation.md#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18), carrying [#240](https://github.com/benfriebe/kelpi/pull/240) | `165230b` and `2b46ba0` | Passed in 25.1 and 24.8 minutes, neither retried: scenarios hidden in 5.4 min, the full audit in 18.7 min and a packaged smoke of **69 checks**. No remembered-place warning in either run; the only leak warnings left are the three inert workbench-slot ones. |
 
-The audit failures and step errors in both runs are the same pre-existing `web-batch-pickup`,
-`appearance-system-stats`, `agent-start`, `agent-lifecycle`, `footer-git-stats`,
-`sidebar-remaining` and `workspace-edges` findings, now tracked as issues
-[#192](https://github.com/benfriebe/kelpi/issues/192),
+The audit failures and step errors in those first two runs are the same pre-existing
+`web-batch-pickup`, `appearance-system-stats`, `agent-start`, `agent-lifecycle`,
+`footer-git-stats`, `sidebar-remaining` and `workspace-edges` findings, tracked at the time as
+issues [#192](https://github.com/benfriebe/kelpi/issues/192),
 [#202](https://github.com/benfriebe/kelpi/issues/202),
 [#203](https://github.com/benfriebe/kelpi/issues/203),
 [#204](https://github.com/benfriebe/kelpi/issues/204) and
-[#206](https://github.com/benfriebe/kelpi/issues/206). The scenarios that go red under a battery
-lane and green alone are tracked as [#198](https://github.com/benfriebe/kelpi/issues/198),
+[#206](https://github.com/benfriebe/kelpi/issues/206). All but #206 have since been fixed in the
+audit steps themselves: [#219](https://github.com/benfriebe/kelpi/pull/219) settled the
+agent-lifecycle dwell, [#227](https://github.com/benfriebe/kelpi/pull/227) cleaned poster-swap's
+workspace up and aimed the sidebar right-click,
+[#223](https://github.com/benfriebe/kelpi/pull/223) matched the batch header through readline's
+redraw and [#224](https://github.com/benfriebe/kelpi/pull/224) opened every context menu from a
+measured height (closing #204 on 2026-09-16). That is why the four later batteries complete the
+full audit with no failed step, and why the counts of 5 and 6 failed steps above describe the two
+historical batteries only. The scenarios that went red under a battery lane and green alone were
+tracked as [#198](https://github.com/benfriebe/kelpi/issues/198),
 [#205](https://github.com/benfriebe/kelpi/issues/205) and
-[#207](https://github.com/benfriebe/kelpi/issues/207); they are leaked sandbox state, not load.
+[#207](https://github.com/benfriebe/kelpi/issues/207); they were leaked sandbox state, not load.
+#198 and #205 are closed by [#211](https://github.com/benfriebe/kelpi/pull/211) and
+[#240](https://github.com/benfriebe/kelpi/pull/240), and #207 is still open.
 
-Not established anywhere in this record: physical devices, and daemon disconnect and reconnect
-inside the presenter scenarios. Phone coverage is Electron emulation. The
+Since #211 the runner checks a post-condition after every scenario and prints a named leak warning
+attributed to the scenario that left the state behind. The #213, #214 and #218 batteries each
+printed three, one of them the phone's remembered place left by `plugin-document-features`; #240
+removed that one, and the three that remain are all the same inert workbench-slot warning, a lab
+view still named in the store of a second daemon the scenario has already stopped and deleted.
+Since [#230](https://github.com/benfriebe/kelpi/pull/230) a full lane also appends its per-scenario
+outcomes to a retry history, so a scenario its isolated retry rescues in consecutive lanes is named
+as ordering-dependent rather than passed off as load-sensitive.
+
+Not established anywhere in this record: physical devices. Daemon disconnect and reconnect inside
+the presenter scenarios, the other gap this section used to name, is established since #213. Phone
+coverage is Electron emulation. The
 [validation record](plugin-validation.md) distinguishes revisions, earlier full UI-audit
 findings, packaged smoke coverage and physical-device limits; some older logs existed only under
 an implementation worktree's `out/` directory and are labelled there as local artifacts rather

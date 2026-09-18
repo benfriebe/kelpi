@@ -66,6 +66,7 @@ import {
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
+import { paneChromeBand, usePaneChromeHeights } from '../pane-chrome';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
 import { PANE_HEADER_HEIGHT, PaneHeader } from './PaneHeader';
@@ -186,6 +187,22 @@ function absolute(rect: Rect): CSSProperties {
     return { position: 'absolute', left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px` };
 }
 
+/**
+ * The pane's body rect: its frame, less the chrome band above it.
+ *
+ * The band is PER PANE now (pane chrome phase A, ratified decision 4): `headerHeight` is the
+ * host's own default and `pane-chrome/height.ts` is where a declaration, clamped against that
+ * pane's own height, overrides it. Nothing declares one yet, so every pane passes the same 24 px
+ * it always did, which matters more here than anywhere else in the file, because this number
+ * reaches a live shell: `terminal/TerminalPane.tsx` divides the body box by the cell size to get
+ * cols and rows, and `shell/src/webhost/geometry.ts` turns it into the DIP bounds of a native
+ * `WebContentsView`. A band that was wrong, or one frame stale, would resize somebody's session.
+ *
+ * Both of those consumers measure the DOM box rather than this rect, so they follow the band
+ * automatically: the header is a `shrink-0` row of the stated height and the body is the `flex-1`
+ * under it. This rect is the same answer computed from the layout, for the renderers that want it
+ * without a measurement.
+ */
 function bodyFrame(frame: Rect, headerHeight: number): Rect {
     return {
         x: frame.x,
@@ -717,6 +734,15 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     // ── render ──────────────────────────────────────────────────────────────────────
 
     const excluded = useMemo(() => new Set(syncExcludedPaneIDs ?? []), [syncExcludedPaneIDs]);
+    /*
+     * The chrome band each pane is wearing (pane chrome phase A, ratified decision 4).
+     *
+     * One subscription for the whole grid rather than a hook per pane: a hook per pane is not a
+     * thing a `.map()` can do, and the store publishes a stable map precisely so that a render
+     * anywhere else in the window does not re-measure every terminal in this one. Empty until
+     * something declares a height, and nothing does in this phase.
+     */
+    const bands = usePaneChromeHeights();
     const zoomAvailable = panes.length > 1;
     const dropRect =
         dropTarget === null
@@ -763,6 +789,8 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                 const visible = frame !== undefined && props.visible !== false;
                 const rect = frame ?? lastFramesRef.current.get(pane.id) ?? bounds;
                 const focused = visible && pane.id === focusedPaneID;
+                // The declaration, clamped against THIS pane's height, or the host's own band.
+                const band = paneChromeBand(bands, pane.id, rect.height, headerHeight);
                 return (
                     <div
                         key={pane.id}
@@ -817,6 +845,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             pane={pane}
                             headerCommands={props.headerCommandsFor?.(pane.id) ?? props.headerCommands}
                             headerExtras={props.headerExtras}
+                            {...(props.headerItemsFor === undefined
+                                ? {}
+                                : { headerItems: props.headerItemsFor(pane.id) })}
                             focused={focused}
                             // `PaneHeaderView.swift:279` — `.onTapGesture { onFocus() }` on the
                             // header itself, which every control inside it shadows.
@@ -826,7 +857,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             syncActive={syncActive}
                             syncExcluded={excluded.has(pane.id)}
                             homeDirectory={homeDirectory}
-                            height={headerHeight}
+                            height={band}
                             // §S8: the header's own width, which the grid already holds as the
                             // pane's frame. `badgeFit` reads it to decide whether a user-data
                             // badge has room to be drawn at all, rather than letting the flex
@@ -844,13 +875,14 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             onSetFontSize={props.onSetFontSize}
                             onRestartAgent={props.onRestartAgent}
                             onNewWebPane={props.onNewWebPane}
+                            onRunHeaderItem={props.onRunHeaderItem}
                             onPaneContextMenu={props.onPaneContextMenu}
                         />
                         <div
                             data-testid={`pane-body-${pane.id}`}
                             className="relative min-h-0 flex-1"
                         >
-                            {renderPane(pane.id, bodyFrame(rect, headerHeight), focused, {
+                            {renderPane(pane.id, bodyFrame(rect, band), focused, {
                                 visible,
                                 zoomed: zoomed === pane.id,
                                 dragging: draggingPaneID === pane.id

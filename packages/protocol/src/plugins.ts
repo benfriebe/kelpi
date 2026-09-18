@@ -5,7 +5,17 @@ import { decodePluginWhen, decodePluginItemPatch, pluginContributionOrder, plugi
 
 export const PLUGIN_API_VERSION = 1;
 export const PLUGIN_MAX_JSON_BYTES = 256 * 1024;
-export const PLUGIN_PLACEMENTS = ['pane', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
+/**
+ * `pane.chrome` is DECLARED here and mounted by nothing.
+ *
+ * Phase A of pane chrome composition builds the shared model, the height authority and the
+ * projection; the presenter host arrives in phase B. Naming the placement now is additive and
+ * inert: a manifest that declares a view for it validates, and the slot is deliberately absent
+ * from the client's `ROOT_SLOTS`, so it has no bundled default, no Settings row and no way in -
+ * `ui.selectView` answers "Workbench slot is not registered." exactly as it does for a custom slot
+ * nobody contributed. Plugin API version stays 1.
+ */
+export const PLUGIN_PLACEMENTS = ['pane', 'pane.chrome', 'sidebar.primary', 'sidebar.secondary', 'panel.bottom', 'topbar', 'statusbar', 'workspace', 'settings', 'document.markdown', 'document.scratchpad', 'document.diff', 'terminal', 'browser', 'interaction.palette', 'interaction.prompts', 'interaction.notifications', 'settings.window'] as const;
 export type PluginBuiltinPlacement = (typeof PLUGIN_PLACEMENTS)[number];
 /**
  * The three presented interaction surfaces, in one place.

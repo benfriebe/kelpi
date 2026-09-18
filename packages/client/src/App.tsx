@@ -13,6 +13,7 @@ import { settingsPresenterChords } from './settings/presenter-slot';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
+import { paneChromeItemDescriptors } from './plugins/contributions';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
 import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
 import { createWorkspacesActions } from './features/workspaces-actions';
@@ -176,6 +177,7 @@ import {
     type FontSizeStep
 } from './content';
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
+import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
     DEFAULT_SETTINGS_TAB,
     SettingsOverlay,
@@ -2876,6 +2878,9 @@ function Shell(props: AppProps): ReactElement {
         return items.length ? <PluginContributionItems items={items} paneID={paneID} compact={placement === 'pane.header'}
             execute={(_command, target, itemID) => { if (itemID) pluginCommands.runItem(placement, itemID, target); }} /> : null;
     };
+    /** The same items, as pane chrome descriptors: the projection half of decision 7. */
+    const paneChromeItems = (paneID: string): readonly PaneChromeItemDescriptor[] =>
+        paneChromeItemDescriptors(pluginCommands.items('pane.header', paneID));
 
     /**
      * The palette's universe and its dispatch, in one registry outside the assembly.
@@ -3801,6 +3806,8 @@ function Shell(props: AppProps): ReactElement {
                         homeDirectory={daemon.info?.home}
                         headerCommandsFor={paneID => pluginCommands.menu('pane.header', paneID)}
                         headerExtras={paneID => contributionItems('pane.header', paneID)}
+                        headerItemsFor={paneChromeItems}
+                        onRunHeaderItem={(paneID, itemID) => { pluginCommands.runItem('pane.header', itemID, paneID); }}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}

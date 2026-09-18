@@ -15,6 +15,9 @@ export * from './ui.js';
 export * from './chrome.js';
 export * from './interaction.js';
 export * from './settings.js';
+// Types only in this release: `pane.chrome` is declared and nothing is mounted into it, so
+// `WindowPaneChromeAPI` is deliberately NOT part of `ViewAPI['ui']` yet (phase B adds the host).
+export * from './pane-chrome.js';
 export * from './documents.js';
 export * from './terminal.js';
 export * from './browser-pane.js';

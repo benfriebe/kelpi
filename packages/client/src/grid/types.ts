@@ -9,6 +9,7 @@
 import type { DropZone, Pane, Rect, SplitDirection } from '@kelpi/core/layout';
 import type { MouseEvent, ReactNode } from 'react';
 
+import type { PaneChromeItemDescriptor } from '../pane-chrome';
 import type { DividerRatioCommit } from './divider';
 
 /**
@@ -70,6 +71,24 @@ export interface PaneActions {
     readonly headerCommands?: readonly { readonly id: string; readonly title: string; readonly enabled?: boolean; run(paneID: string): void }[] | undefined;
     readonly headerCommandsFor?: ((paneID: string) => NonNullable<PaneActions['headerCommands']>) | undefined;
     readonly headerExtras?: ((paneID: string) => ReactNode) | undefined;
+    /**
+     * The same `pane.header` items `headerExtras` draws, as descriptors (ratified decision 7).
+     *
+     * The host keeps drawing them - they are another plugin's text, rendered as text inside a box
+     * the host measures - and this adds nothing to the screen. It adds them to the shared model,
+     * so the projection a pane chrome presenter receives carries the items themselves rather than
+     * only a count of them, which is what lets a replaced header keep somebody else's extension
+     * point instead of deleting it.
+     */
+    readonly headerItemsFor?: ((paneID: string) => readonly PaneChromeItemDescriptor[]) | undefined;
+    /**
+     * Activate one of those items by its opaque ref (ratified decision 7).
+     *
+     * The host already runs them from its own box; this is the same run reached by ID rather than
+     * by closure, which is what `pane-chrome/surface.ts` offers and what a presenter will call
+     * through `runPaneHeaderItem`. Unwired, an item is simply not activatable that way.
+     */
+    readonly onRunHeaderItem?: ((paneID: string, itemID: string) => void) | undefined;
     readonly onFocusPane?: ((paneID: string) => void) | undefined;
     readonly onClosePane?: ((paneID: string) => void) | undefined;
     /** Inline rename commit (Enter / blur). Empty string clears the label. */

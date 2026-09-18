@@ -4,6 +4,7 @@ import {
     type PluginContextValue, type PluginContributionInfo, type PluginContributionState, type PluginInfo,
     type PluginItemDefinition, type PluginItemTone, type PluginMenuDefinition, type PluginWhen
 } from '@kelpi/protocol';
+import type { PaneChromeItemDescriptor } from '../pane-chrome';
 import type { KelpiRuntime } from '../state';
 import type { KelpiState } from '../state/store';
 import { selectActiveWorkspaceID } from '../state/selectors';
@@ -205,6 +206,24 @@ export function resolveContributionItems(plugins: readonly PluginInfo[], states:
                 enabled: patch.enabled !== false && matchesWhen(item.enablement, context) && matchesWhen(command?.enablement, context) && (!item.command || command !== undefined), order: item.order ?? 0 }];
         });
     }).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+/**
+ * `pane.header` items as pane chrome descriptors (ratified decision 7).
+ *
+ * The host keeps DRAWING them - they are another plugin's text, rendered as text inside a box the
+ * host measures - and this is the projection half: display name, tooltip, badge, tone, enabled
+ * flag and the item's own id, with the owning `pluginID` and the command behind it left where they
+ * are. Total on purpose: every field a `ResolvedContributionItem` may omit becomes an explicit
+ * null, so a descriptor is plain JSON with no absent keys for a frame to disagree about.
+ *
+ * It lives here, beside `resolveContributionItems`, because both windows that mount a pane grid
+ * need it and neither should own a second spelling of it.
+ */
+export function paneChromeItemDescriptors(items: readonly ResolvedContributionItem[]): readonly PaneChromeItemDescriptor[] {
+    return items.map(item => ({
+        id: item.id, text: item.text, tooltip: item.tooltip ?? null, badge: item.badge ?? null,
+        tone: item.tone, enabled: item.enabled
+    }));
 }
 export interface ResolvedContributionMenu {
     readonly id: string;

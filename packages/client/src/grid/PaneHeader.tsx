@@ -9,6 +9,26 @@
  * every second (shell-ui.md §4.2 "Menu-stability requirement"), so nothing here may own
  * state that a tick would blow away — the only local state is the inline-rename draft, and
  * a tick cannot touch it because the header re-renders in place rather than remounting.
+ *
+ * ── What this file is, since the shared model (pane chrome phase A) ─────────────────
+ *
+ * It is the PAINTER, and only the painter. Every fact it draws comes out of one closure-free
+ * `PaneChromeDescriptor` (`../pane-chrome/model.ts`) and every action it performs goes through one
+ * `PaneChromeSurface` (`../pane-chrome/surface.ts`): the strings, the middle-truncation split, the
+ * badge ladder, the overflow fold and the trailing control row are all model, and the props below
+ * are the model's INPUT rather than eleven callbacks read straight out of the JSX. That is what
+ * makes the header replaceable without making it different: the DOM, the class names and every
+ * `data-testid` are unchanged, which the PaneHeader and grid suites assert unmodified.
+ *
+ * Three things stay host-drawn here by decision, and none of them is a fact a projection could
+ * carry: the inline rename FIELD (the caret is the host's, `app/pane-focus.ts`), the `•••` and
+ * context menus (portals with their own overlay registration), and the box another plugin's
+ * `pane.header` items are rendered into as text (`plugins/contributions-ui.tsx`).
+ *
+ * The display functions this file used to own (`homeAbbreviated`, `basename`,
+ * `splitHeaderTitle`, `paneDisplayTitle`, `agentBadge`, `headerChrome`, `badgeFit`,
+ * `headerOverflowCount`) moved to `../pane-chrome/model.ts` unchanged and are re-exported below,
+ * so every existing import of them still resolves here.
  */
 
 import {
@@ -24,13 +44,50 @@ import {
 } from 'react';
 
 import { ContextMenu, type MenuItemSpec } from '../chrome/ContextMenu';
+import {
+    createPaneChromeSurface,
+    paneChromeGlyph,
+    paneChromeModel,
+    paneChromeRow,
+    usePaneChromeParking,
+    type PaneChromeActions,
+    type PaneChromeControlDescriptor,
+    type PaneChromeDescriptor,
+    type PaneChromeItemDescriptor,
+    type PaneChromeModel,
+    type PaneChromeSurface
+} from '../pane-chrome';
 
-import { chromeElapsedLabel, useSecondsTicker } from './elapsed';
+import { useSecondsTicker } from './elapsed';
 import { Icon, type IconName, type IconWeight } from './icons';
 import { pill, tokens } from './tokens';
 import type { PaneActions, PaneModel } from './types';
 
-/** Header content 20px + 2px vertical padding each side (shell-ui.md §4.2). */
+export {
+    BADGE_COST,
+    HEADER_TAIL_MAX,
+    agentBadge,
+    badgeFit,
+    basename,
+    headerChrome,
+    headerOverflowCount,
+    homeAbbreviated,
+    paneDisplayTitle,
+    splitHeaderTitle,
+    type AgentBadgeModel,
+    type AgentBadgeTone,
+    type BadgeFit,
+    type BadgeFitInput,
+    type OverflowFitInput,
+    type TruncatedTitle
+} from '../pane-chrome';
+
+/**
+ * Header content 20px + 2px vertical padding each side (shell-ui.md §4.2).
+ *
+ * The same number as `PANE_CHROME_LIMITS.nativeHeight`, which is where it is CLAMPED; this is
+ * where it is painted. `pane-chrome/contract.test.ts` asserts the two never drift apart.
+ */
 export const PANE_HEADER_HEIGHT = 24;
 
 /**
@@ -57,267 +114,6 @@ export const TITLE_SHRINK = 100;
  * and lets `PaneGridView.swift:354-355`'s `.clipped()` cut it, rather than compressing a chip).
  */
 export const BADGE_TEXT_FLOOR = '2.5ch';
-
-/** Which of the three user-data badges a header this wide can afford (`badgeFit`). */
-export interface BadgeFit {
-    readonly label: boolean;
-    readonly agent: boolean;
-    readonly branch: boolean;
-}
-
-/** What `badgeFit` needs: the width, what the pane WANTS to show, and the row's button count. */
-export interface BadgeFitInput extends BadgeFit {
-    readonly paneWidth: number | undefined;
-    /** Trailing `HeaderButton`s this header renders — 4 shared, plus the per-type ones. */
-    readonly buttons: number;
-}
-
-/**
- * §S8 — the header's fixed cost, in px, before a badge or a character of path is drawn.
- *
- * Measured on the running app and then written as its parts, so a change to any of them keeps
- * the ladder honest: `px-2`'s 16 px, the 10 px status dot / type glyph, one 20 px box per
- * trailing button, and a 4 px `gap-1` between every adjacent pair of the children that are
- * always there (dot, title, spacer, buttons). A shell pane's four buttons come out at **130**,
- * a markdown pane's six (copy + edit) at **178**.
- */
-export function headerChrome(buttons: number): number {
-    return 16 + 10 + buttons * 20 + (2 + buttons) * 4;
-}
-
-/**
- * §S8 — what a badge costs at its floor: its own box, plus the one extra `gap-1` it adds.
- *
- * 8 px of `px-1`, the glyph and its 2 px inner gap where there is one (8 for the tag, 9 for the
- * branch), and `BADGE_TEXT_FLOOR`'s ~15 px of text.
- */
-export const BADGE_COST = { label: 37, agent: 27, branch: 38 } as const;
-
-/**
- * §S8 — the badge fit ladder.
- *
- * The floor is only half the fix: flooring a badge that has no room pushes the trailing buttons
- * further past the pane edge (at 130.75 px the ✕ already overhung by 27.25 px), and a header
- * that drops its close button before a git branch is the wrong trade. So a badge that cannot be
- * seated at its floor is not drawn at all — hiding beats a stub, and it beats an ellipsis whose
- * chip costs more than the ✕ it displaces.
- *
- * It is arithmetic rather than a table of widths on purpose: the answer depends on how many
- * badges the pane actually wants and how many buttons its type draws, so a markdown pane whose
- * only badge is a branch keeps it far longer than a shell pane carrying all three. Measured
- * examples: a shell pane with label + agent + branch seats all three from 232 px, the label and
- * agent alone from 194, the label alone from 167; a markdown pane's lone branch chip survives
- * to 216 px, where a fixed ladder would have dropped it at 250 with 60 px of room to spare.
- *
- * The drop order is by what else carries the same fact. The branch goes first: the status
- * footer and the inspector both show it. The agent badge goes next: the 10 px status dot beside
- * the path is already painted from `pane.status`, so "an agent is running here" survives it.
- * The label chip goes last, because nothing else in a narrow header names the pane.
- */
-export function badgeFit(input: BadgeFitInput): BadgeFit {
-    const fit = { label: input.label, agent: input.agent, branch: input.branch };
-    // No width to reason about (a standalone render, a test that does not care about the
-    // ladder) draws everything the pane asked for, which is the pre-S8 behaviour.
-    if (input.paneWidth === undefined || !Number.isFinite(input.paneWidth)) return fit;
-
-    const budget = input.paneWidth - headerChrome(input.buttons);
-    let cost =
-        (fit.label ? BADGE_COST.label : 0) +
-        (fit.agent ? BADGE_COST.agent : 0) +
-        (fit.branch ? BADGE_COST.branch : 0);
-    for (const key of ['branch', 'agent', 'label'] as const) {
-        if (cost <= budget) break;
-        if (!fit[key]) continue;
-        fit[key] = false;
-        cost -= BADGE_COST[key];
-    }
-    return fit;
-}
-
-/**
- * §S40 — how many of the header's trailing buttons fold into the overflow `•••`
- * (OWNER-DIRECTED divergence from `PaneHeaderView.swift:222-272`, taken 2026-08-29).
- *
- * The Swift draws its whole button tail unconditionally and lets `PaneGridView.swift:354-355`'s
- * `.clipped()` cut whatever overruns; the port transcribed that exactly (`gap-1 px-2`, `h-5 w-5`,
- * the pane wrapper's `overflow-hidden`), so the row is parity rather than drift. It is also the
- * wrong trade in a multiplexer, because the control the clip reaches FIRST is the destructive
- * one: measured, a markdown pane's six-button tail had +8 px of clearance at a 199 px header,
- * **−1 at 169, −21 at 149 and −41 at 129** — the ✕ gone, then the globe with it. A real 4-pane
- * grid at 1280 reaches those widths (`run-AE` step 94 measured a **134 px** markdown pane), so
- * this is the ordinary case, not a pathological one.
- *
- * What folds, in order — `globe`, `split-down`, `split-right`, then the pane's own type buttons
- * from the right — is the row read from the ✕ inward, with the ✕ itself never foldable. That
- * ordering is a rule rather than a taste: the buttons that survive are always a PREFIX of the
- * Swift's own row, so nothing ever moves sideways as a pane narrows — a control either stays
- * where it is or leaves. And leaving is cheap here in a way §S8's dropped badges are not: every
- * folded button is in the `•••` menu one click away, with the label and the chord hint it had.
- *
- * **The first fold is two buttons deep, and has to be.** The `•••` is itself a 20 px box plus a
- * 4 px gap — exactly one button — so folding a single control costs precisely what it saves and
- * hides one for nothing. The register named two (`globe` and `split-down`) for that reason;
- * the arithmetic below re-derives it rather than hard-coding it.
- *
- * It engages strictly BELOW §S8: the badge cost passed in is what `badgeFit` has already seated,
- * and `badgeFit` only seats a badge when `headerChrome(allButtons) + cost <= paneWidth` — which
- * is the same inequality this returns 0 for. So at every width where a badge is drawn, this is
- * provably a no-op, and §S8's measured thresholds (all three from 232 px, the label alone from
- * 167, a markdown pane's lone branch to 216) are untouched.
- *
- * Owner-directed: do not re-report. The parity value is a tail that never folds, and a ✕ that
- * is the first control off the pane rather than the last.
- */
-export interface OverflowFitInput {
-    /** The pane's width; omitted (a standalone render) means "no fold", the pre-S40 behaviour. */
-    readonly paneWidth: number | undefined;
-    /** Every trailing button the header would draw, the close ✕ included. */
-    readonly buttons: number;
-    /** What `badgeFit` seated, in px — `BADGE_COST` summed over the badges still drawn. */
-    readonly badgeCost: number;
-}
-
-export function headerOverflowCount(input: OverflowFitInput): number {
-    const { paneWidth, buttons, badgeCost } = input;
-    /*
-     * A width of 0 is "not measured yet", not "fold everything". The grid computes pane frames
-     * from a `ResizeObserver` on its container, so the first render — and every render under
-     * jsdom, which has no layout at all — reports 0. Folding on that would flash the whole tail
-     * into a `•••` for one frame on every mount, and it did exactly that in the two
-     * `App.test.tsx` cases that click the markdown edit toggle and the diff refresh.
-     */
-    if (paneWidth === undefined || !Number.isFinite(paneWidth) || paneWidth <= 0) return 0;
-    // The ✕ never folds, so it is never a candidate.
-    const foldable = Math.max(buttons - 1, 0);
-    const fits = (folded: number): boolean =>
-        headerChrome(buttons - folded + (folded > 0 ? 1 : 0)) + badgeCost <= paneWidth;
-    if (fits(0)) return 0;
-    // 1 is skipped deliberately: one folded button plus the `•••` is the same box count as the
-    // button it replaced, so it buys nothing and hides a control for nothing.
-    for (let folded = 2; folded <= foldable; folded++) {
-        if (fits(folded)) return folded;
-    }
-    return foldable;
-}
-
-// ── display strings ─────────────────────────────────────────────────────────────────
-
-/** `/Users/x` → `~`, `/Users/x/a` → `~/a`; unrelated paths pass through (shell-ui.md §2). */
-export function homeAbbreviated(path: string, home: string): string {
-    if (home.length === 0) return path;
-    const root = home.endsWith('/') ? home.slice(0, -1) : home;
-    if (path === root) return '~';
-    if (path.startsWith(`${root}/`)) return `~${path.slice(root.length)}`;
-    return path;
-}
-
-export function basename(path: string): string {
-    const parts = path.split('/').filter((part) => part.length > 0);
-    return parts.length === 0 ? path : (parts[parts.length - 1] as string);
-}
-
-/**
- * Split a header title so CSS can truncate it in the MIDDLE (§4.2 item 3).
- *
- * `text-overflow: ellipsis` only ever cuts the tail, which for a path throws away the only
- * informative part — the audit's `/var/folders/5x/k7q6qbys3p35wb8dcn0dl…` names a temp
- * directory and nothing else (run-B m9), while the status footer, describing the same pane,
- * middle-truncates. A character budget cannot be used here: the pane header's width is whatever
- * the split left it. So the string is split into a head that may ellipsize and a tail that
- * never does — the last path segment (with its separator), capped so a single monstrous segment
- * cannot eat the whole line. Titles with no separator, and short ones, keep the plain behaviour.
- *
- * M19 — the cap **clamps** the tail; it does not abandon it. The first version returned
- * `{ head: title, tail: '' }` for any segment longer than the budget, which handed the whole
- * string back to plain tail-ellipsis in exactly the case middle truncation exists for:
- * `~/code/some-really-long-directory-name` threw away the directory name and kept `~/code/some-r…`.
- * Over budget, the tail becomes the LAST `tailMax` characters of the title and the head is
- * everything before them — so the head still ellipsizes from its right and the informative end
- * survives, which is what `.truncationMode(.middle)` does. The two spans are adjacent, so when
- * the header is wide enough they still read as one unbroken string.
- */
-export interface TruncatedTitle {
-    readonly head: string;
-    readonly tail: string;
-}
-
-export const HEADER_TAIL_MAX = 24;
-
-export function splitHeaderTitle(title: string, tailMax = HEADER_TAIL_MAX): TruncatedTitle {
-    const cut = title.lastIndexOf('/');
-    // Nothing to protect: no separator, or the separator is the very first/last character.
-    if (cut <= 0 || cut === title.length - 1) return { head: title, tail: '' };
-    const tail = title.slice(cut);
-    // M19: over budget, keep the tail's END rather than dropping the tail entirely — a long last
-    // segment is the case middle truncation is FOR. `title.length > tailMax` is guaranteed here
-    // (`tail` is a suffix of `title` and is itself longer than the budget), so the split is safe.
-    if (tail.length > tailMax) {
-        return { head: title.slice(0, title.length - tailMax), tail: title.slice(title.length - tailMax) };
-    }
-    return { head: title.slice(0, cut), tail };
-}
-
-/** The header's path/title string, by pane type (shell-ui.md §4.2 item 3). */
-export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
-    switch (pane.type) {
-        case 'plugin':
-            return pane.label ?? pane.title ?? 'Plugin view';
-        case 'scratchpad':
-            return 'Scratchpad';
-        case 'markdown':
-            return basename(pane.filePath ?? pane.workingDirectory);
-        case 'diff': {
-            // §L48: empty-as-unscoped, the Swift's own test (`PaneHeaderView.swift:496-502` reads
-            // `target.isEmpty`, not `target == nil`). `??` alone keeps an empty STRING, and a diff
-            // pane whose scope the daemon stored as `''` titled itself `diff: ` — the repo's
-            // directory name is what the shipped app falls back to.
-            const target = pane.filePath ?? '';
-            return `diff: ${basename(target === '' ? pane.workingDirectory : target)}`;
-        }
-        case 'shell':
-        case 'web':
-            return homeAbbreviated(pane.title ?? pane.workingDirectory, homeDirectory);
-    }
-}
-
-const TYPE_GLYPHS: Record<Exclude<PaneModel['type'], 'shell'>, IconName> = {
-    markdown: 'document',
-    scratchpad: 'note',
-    diff: 'plusminus',
-    plugin: 'document',
-    web: 'globe'
-};
-
-// ── agent badge ─────────────────────────────────────────────────────────────────────
-
-export type AgentBadgeTone = 'running' | 'waiting';
-
-export interface AgentBadgeModel {
-    readonly text: string;
-    readonly tone: AgentBadgeTone;
-}
-
-/**
- * The right-aligned agent badge (agent-lifecycle.md §5.9 / §9.4). Shell panes with an
- * attached session only: running → `<kind>[ · <elapsed>][ · N running]` in amber,
- * waiting → `awaiting input` in blue, idle → nothing.
- *
- * `pane.agentStartedAt` is epoch **milliseconds** (the agent state machine stamps it with the
- * handler's `Date.now()`), while the shared ticker publishes whole **seconds** — the mismatch
- * is converted here, not in the formatter, which stays unit-agnostic.
- */
-export function agentBadge(pane: PaneModel, nowSeconds: number): AgentBadgeModel | null {
-    if (pane.type !== 'shell') return null;
-    if (pane.agentSessionID === null) return null;
-    if (pane.status === 'waitingForInput') return { text: 'awaiting input', tone: 'waiting' };
-    if (pane.status !== 'running') return null;
-    let text: string = pane.agentKind ?? 'claude';
-    if (pane.agentStartedAt !== null) {
-        text += ` · ${chromeElapsedLabel(pane.agentStartedAt / 1000, nowSeconds)}`;
-    }
-    if (pane.backgroundTaskCount > 0) text += ` · ${pane.backgroundTaskCount} running`;
-    return { text, tone: 'running' };
-}
 
 function statusDotColor(status: PaneModel['status']): string {
     switch (status) {
@@ -537,6 +333,59 @@ function HeaderButton({
     );
 }
 
+/**
+ * The controls whose DRAWING is a fidelity metric rather than a default.
+ *
+ * `settings/FieldRenderer.tsx`'s `TEXT_PRESENTATION` keeps the same kind of table for the same
+ * reason: "9 pt semibold" is not something a control MEANS, it is how this row draws it, so it
+ * belongs beside the painting and not in a descriptor a presenter reads.
+ *
+ *   L25 - every button in `PaneHeaderView.swift:177-273` is `.font(.system(size: 10))` **except**
+ *   close, which is deliberately `.font(.system(size: 9, weight: .semibold))` (`:265`): smaller
+ *   and bolder than the split icons it sits beside, which is how a row of five same-sized glyphs
+ *   still ends in a ✕ that reads as the one destructive control.
+ *
+ *   The globe is the one control with an alternate gesture: ⇧-click splits down instead of right.
+ *   The `•••` row it becomes when it folds has no modifier to read, which is why the flag is on
+ *   the CALL rather than on the control.
+ */
+const CONTROL_PRESENTATION: Readonly<
+    Record<string, { readonly iconSize?: number; readonly iconWeight?: IconWeight; readonly alternate?: true }>
+> = {
+    close: { iconSize: 9, iconWeight: 'semibold' },
+    'new-web': { alternate: true }
+};
+
+/** One control descriptor, drawn as one `HeaderButton` and run through the surface. */
+function ControlButton({
+    control,
+    surface,
+    paneID
+}: {
+    readonly control: PaneChromeControlDescriptor;
+    readonly surface: PaneChromeSurface;
+    readonly paneID: string;
+}): ReactElement {
+    const presentation = CONTROL_PRESENTATION[control.key] ?? {};
+    return (
+        <HeaderButton
+            testID={control.testID}
+            label={control.label}
+            icon={control.icon}
+            {...(presentation.iconSize === undefined ? {} : { iconSize: presentation.iconSize })}
+            {...(presentation.iconWeight === undefined ? {} : { iconWeight: presentation.iconWeight })}
+            disabled={!control.enabled}
+            onClick={(event) =>
+                surface.runControl(
+                    paneID,
+                    control.key,
+                    presentation.alternate === true ? { alternate: event.shiftKey } : undefined
+                )
+            }
+        />
+    );
+}
+
 // ── the header ──────────────────────────────────────────────────────────────────────
 
 export interface PaneHeaderProps extends PaneActions {
@@ -568,11 +417,28 @@ export interface PaneHeaderProps extends PaneActions {
      * first edit was committed.
      */
     readonly renameToken?: number | undefined;
+    /**
+     * Another plugin's `pane.header` ITEMS, as descriptors (ratified decision 7).
+     *
+     * The host still draws them itself, through `headerExtras`, and this changes nothing on
+     * screen: the descriptors go into the model so the projection carries a pane's contributed
+     * items rather than only the count of them, which is what lets a pane chrome presenter render
+     * another plugin's extension point instead of deleting it. Omitted (every standalone render,
+     * and every host that has not wired it) means an empty list.
+     */
+    readonly headerItems?: readonly PaneChromeItemDescriptor[] | undefined;
     /** The grid's pane-move drag hook (shell-ui.md §4.3). */
     readonly onHeaderPointerDown?: ((paneID: string, event: PointerEvent<HTMLElement>) => void) | undefined;
 }
 
 function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
+    /*
+     * The props are the MODEL's input now, not a bag of verbs read from the JSX.
+     *
+     * Only the ones the model folds in, plus the three host-owned gestures, are destructured
+     * here; every callback the controls used to close over goes to the surface through `latest`
+     * below, untouched and un-renamed, so assembly binds exactly what it always bound.
+     */
     const {
         pane,
         focused,
@@ -586,15 +452,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         paneWidth,
         renameToken = 0,
         onHeaderPointerDown,
-        onFocusPane,
-        onClosePane,
-        onRenamePane,
-        onSplitPane,
-        onToggleZoom,
-        onToggleMarkdownEdit,
-        onRefreshDiff,
         onCopyDocument,
-        onNewWebPane,
         onPaneContextMenu
     } = props;
 
@@ -603,6 +461,16 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const wantsTick = running && pane.agentStartedAt !== null && nowSeconds === undefined;
     const ticked = useSecondsTicker(wantsTick);
     const now = nowSeconds ?? ticked;
+
+    /*
+     * §N26 / ratified decision 5 - a band taller than the native one over a web pane parks the page.
+     *
+     * At the native 24 px this registers nothing at all: `paneChromeParks` is false, the hook is
+     * inert, and no web pane's geometry changes. It earns its keep only once something declares a
+     * taller band, which nothing does in phase A. See `../pane-chrome/height.ts`.
+     */
+    const headerRef = useRef<HTMLDivElement | null>(null);
+    usePaneChromeParking(headerRef, pane.type, height);
 
     // `null` = not renaming; a string is the live draft. Commit is idempotent, so the
     // blur that follows an Enter (or an unmount) can never fire the callback twice.
@@ -633,7 +501,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const commitRename = (): void => {
         if (renameDraft === null) return;
         setRenameDraft(null);
-        onRenamePane?.(pane.id, renameDraft.trim());
+        // The surface owns the trim, and the field owns nothing but the draft (decision 6).
+        surface.renamePane(pane.id, renameDraft);
     };
 
     const cancelRename = (): void => setRenameDraft(null);
@@ -650,139 +519,72 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         }
     };
 
-    const badge = agentBadge(pane, now);
-    const title = paneDisplayTitle(pane, homeDirectory);
-    const titleParts = splitHeaderTitle(title);
-
     /*
-     * §S8 — what this header wants, and what its width can seat.
+     * The model. Everything below draws from `chrome` and acts through `surface`.
      *
-     * `showCopyButton` is read twice on purpose: once here, once by the JSX below, so the
-     * button count the ladder reserves for can never drift from the row it is reserving for.
-     * The other five trailing buttons are the two type ones and the four shared ones.
+     * `headerExtras` is read once, here, and its PRESENCE is what the width ladders are charged
+     * four button-widths for (`PaneHeader.tsx`'s original `headerExtras ? 4 : 0`): the host
+     * cannot measure what a plugin draws, so it reserves a fixed box. Passing the node's presence
+     * rather than `items.length` keeps that charge exactly where it was: a standalone render that
+     * supplies the descriptors but no node is charged nothing, as it always was.
      */
-    const showCopyButton = pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined;
     const headerExtras = props.headerExtras?.(pane.id);
-    const buttonCount =
-        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0) + (props.headerCommands?.length ?? 0) + (headerExtras ? 4 : 0);
-    const fit = badgeFit({
+    const model = paneChromeModel({
+        pane,
+        focused,
+        zoomed,
+        zoomAvailable,
+        syncActive,
+        syncExcluded,
+        homeDirectory,
+        nowSeconds: now,
+        height,
         paneWidth,
-        label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
-        agent: badge !== null,
-        branch: pane.gitBranch !== null && pane.gitBranch.length > 0,
-        buttons: buttonCount
+        renaming,
+        ...(props.headerCommands === undefined ? {} : { commands: props.headerCommands }),
+        ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
+        contributions: Boolean(headerExtras),
+        canCopyDocument: onCopyDocument !== undefined
     });
+    const chrome: PaneChromeDescriptor = model.descriptor;
+    const { inline, overflow, pinned } = paneChromeRow(chrome);
+    const glyph = paneChromeGlyph(chrome.kind);
 
     /*
-     * §S40 — the trailing button row, as data, so the fold has one list to read.
+     * The surface, created once and reading the latest render through a ref.
      *
-     * Row order is `PaneHeaderView.swift:177-272`'s: the per-type buttons, then split-right,
-     * split-down, the globe, and the ✕ (which is not in this list — it never folds). Every entry
-     * carries both an `onClick` for the button and an `onSelect` for the `•••` menu row it
-     * becomes when it folds, because the two are not always the same gesture: the globe's button
-     * reads `event.shiftKey` to choose the split direction, and a menu row has no modifier.
+     * The ref is `settings/surface.ts`'s indirection in miniature and exists for the same reason:
+     * a surface rebuilt whenever a callback changed identity would hand every control a new
+     * closure on every render, which is the shape this refactor exists to remove. The re-resolve
+     * inside every call is what makes a click on a stale row refuse instead of running.
+     *
+     * Assigned during RENDER rather than from an effect, and deliberately: the model a call
+     * re-resolves against has to be the model that is on screen, and an effect-written ref is one
+     * commit behind on the frame that matters most - the first one. The last assignment is always
+     * the render React kept, because an abandoned render is followed by the one that replaces it,
+     * and every value in here is derived from props, so there is no state to lose either way.
      */
-    const tail: readonly {
-        readonly key: string;
-        readonly testID: string;
-        readonly label: string;
-        readonly icon: IconName;
-        readonly disabled?: boolean;
-        readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-        readonly onSelect: () => void;
-    }[] = [
-        ...(props.headerCommands ?? []).map(command => ({
-            key: command.id,
-            testID: `pane-command-${command.id}-${pane.id}`,
-            label: command.title,
-            icon: 'plugin' as const,
-            disabled: command.enabled === false,
-            onClick: () => command.run(pane.id),
-            onSelect: () => command.run(pane.id)
-        })),
-        ...(showCopyButton
-            ? [
-                  {
-                      key: 'copy',
-                      testID: `pane-copy-${pane.id}`,
-                      // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim. It
-                      // was the one header tooltip the port had reworded — every other string in
-                      // this row is already the Swift's — and the rewrite also became the button's
-                      // accessible name, so a screen reader read a label the shipped app does not
-                      // have. Which two formats the menu then offers is the MENU's business.
-                      label: 'Copy whole file',
-                      icon: 'copy' as const,
-                      onClick: () => onCopyDocument(pane.id),
-                      onSelect: () => onCopyDocument(pane.id)
-                  }
-              ]
-            : []),
-        ...(pane.type === 'markdown'
-            ? [
-                  {
-                      key: 'edit',
-                      testID: `pane-edit-toggle-${pane.id}`,
-                      label: pane.isEditing === true ? 'Preview (⌘E)' : 'Edit (⌘E)',
-                      icon: (pane.isEditing === true ? 'eye' : 'pencil') as IconName,
-                      onClick: () => onToggleMarkdownEdit?.(pane.id),
-                      onSelect: () => onToggleMarkdownEdit?.(pane.id)
-                  }
-              ]
-            : []),
-        ...(pane.type === 'diff'
-            ? [
-                  {
-                      key: 'refresh',
-                      testID: `pane-refresh-${pane.id}`,
-                      label: 'Refresh diff',
-                      icon: 'refresh' as const,
-                      onClick: () => onRefreshDiff?.(pane.id),
-                      onSelect: () => onRefreshDiff?.(pane.id)
-                  }
-              ]
-            : []),
-        {
-            key: 'split-right',
-            testID: `pane-split-right-${pane.id}`,
-            label: 'Split right (⌘D)',
-            icon: 'split-right',
-            onClick: () => onSplitPane?.(pane.id, 'horizontal'),
-            onSelect: () => onSplitPane?.(pane.id, 'horizontal')
-        },
-        {
-            key: 'split-down',
-            testID: `pane-split-down-${pane.id}`,
-            label: 'Split down (⌘⇧D)',
-            icon: 'split-down',
-            onClick: () => onSplitPane?.(pane.id, 'vertical'),
-            onSelect: () => onSplitPane?.(pane.id, 'vertical')
-        },
-        {
-            key: 'new-web',
-            testID: `pane-new-web-${pane.id}`,
-            label: 'New web pane (⇧-click splits down)',
-            icon: 'globe',
-            onClick: (event) => onNewWebPane?.(pane.id, event.shiftKey ? 'vertical' : 'horizontal'),
-            onSelect: () => onNewWebPane?.(pane.id, 'horizontal')
-        }
-    ];
+    const latest = useRef({ actions: props as PaneChromeActions, model, paneID: pane.id });
+    latest.current = { actions: props as PaneChromeActions, model, paneID: pane.id };
+    const surfaceRef = useRef<PaneChromeSurface | null>(null);
+    if (surfaceRef.current === null) {
+        surfaceRef.current = createPaneChromeSurface({
+            actions: () => latest.current.actions,
+            model: (paneID) => (paneID === latest.current.paneID ? latest.current.model : null)
+        });
+    }
+    const surface = surfaceRef.current;
 
-    // §S40: fold from the ✕ inward. `tail` is in row order, so the survivors are its prefix.
-    const folded = headerOverflowCount({
-        paneWidth,
-        buttons: buttonCount,
-        badgeCost:
-            (fit.label ? BADGE_COST.label : 0) +
-            (fit.agent ? BADGE_COST.agent : 0) +
-            (fit.branch ? BADGE_COST.branch : 0)
-    });
-    const inlineTail = folded === 0 ? tail : tail.slice(0, Math.max(tail.length - folded, 0));
-    const overflowTail = folded === 0 ? [] : tail.slice(Math.max(tail.length - folded, 0));
-    const overflowItems: readonly MenuItemSpec[] = overflowTail.map((entry) => ({
+    const fit = chrome.size.badges;
+    const badge = chrome.agent;
+    const titleParts = chrome.titleParts;
+
+    const overflowItems: readonly MenuItemSpec[] = overflow.map((entry) => ({
         id: entry.key,
+        // A `•••` row is the button it replaced: same label, same enablement, same call.
+        disabled: entry.enabled ? undefined : true,
         label: entry.label,
-        disabled: entry.disabled,
-        onSelect: entry.onSelect
+        onSelect: () => surface.runControl(pane.id, entry.key)
     }));
     // §S40: widening the pane un-folds the row, and a menu anchored to a `•••` that is no longer
     // drawn would be a menu floating under nothing. `useDismissable` cannot see this — it
@@ -794,14 +596,15 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
 
     return (
         <div
-            data-testid={`pane-header-${pane.id}`}
-            data-focused={focused ? 'true' : 'false'}
+            ref={headerRef}
+            data-testid={`pane-header-${chrome.paneID}`}
+            data-focused={chrome.focused ? 'true' : 'false'}
             // M17: `HStack(spacing: 4)` + `.padding(.horizontal, 8)` (`PaneHeaderView.swift:52,274`).
             // The port's `gap-1.5` was 6 px — 50% wider, across a button tail plus three or four
             // badges, which is why this header ran out of room sooner than the shipped one.
             className="flex w-full shrink-0 select-none items-center gap-1 px-2"
             style={{
-                height,
+                height: chrome.height,
                 background: tokens.headerBackground,
                 /*
                  * §S30 — the hairline is PAINTED, not laid out.
@@ -815,64 +618,69 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                  * — measured 24.00 / 24.00 after, with the buttons at 2.0 / 2.0.
                  */
                 boxShadow: `inset 0 -1px 0 ${tokens.divider}`,
-                cursor: renaming ? 'text' : 'default'
+                cursor: chrome.renaming ? 'text' : 'default'
             }}
             onPointerDown={(event) => {
                 // shell-ui.md §4.1: clicking anywhere in a pane focuses it.
-                onFocusPane?.(pane.id);
-                if (renaming) return;
-                onHeaderPointerDown?.(pane.id, event);
+                surface.focusPane(chrome.paneID);
+                if (chrome.renaming) return;
+                // The pane-move drag is the GRID's gesture, raised from the header; it is not a
+                // pane action and does not belong on the surface (see `surface.ts`'s header).
+                onHeaderPointerDown?.(chrome.paneID, event);
             }}
             onDoubleClick={(event) => {
-                if (renaming) return;
+                if (chrome.renaming) return;
                 event.preventDefault();
-                onToggleZoom?.(pane.id);
+                surface.toggleZoom(chrome.paneID);
             }}
             onContextMenu={(event) => {
                 if (onPaneContextMenu === undefined) return;
                 event.preventDefault();
-                onPaneContextMenu(pane.id, event);
+                surface.openPaneMenu(chrome.paneID, event);
             }}
         >
             {/* 1 — type glyph / status dot */}
-            {pane.type === 'shell' ? (
+            {glyph === null ? (
                 <span
-                    data-testid={`pane-status-dot-${pane.id}`}
-                    data-status={pane.status}
+                    data-testid={`pane-status-dot-${chrome.paneID}`}
+                    data-status={chrome.status}
                     className="h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-300"
                     style={{
-                        background: statusDotColor(pane.status),
-                        opacity: pane.status === 'idle' && !focused ? 0.5 : 1
+                        background: statusDotColor(chrome.status),
+                        opacity: chrome.status === 'idle' && !chrome.focused ? 0.5 : 1
                     }}
                 />
             ) : (
                 <span className="shrink-0" style={{ color: tokens.textSecondary }}>
-                    <Icon name={TYPE_GLYPHS[pane.type]} size={10} />
+                    <Icon name={glyph} size={10} />
                 </span>
             )}
 
             {/* 2 — label chip (§S8: last of the three to go) */}
-            {fit.label && pane.label !== null ? (
+            {fit.label && chrome.label !== null ? (
                 <Badge
-                    testID={`pane-label-${pane.id}`}
+                    testID={`pane-label-${chrome.paneID}`}
                     // M13: `PaneHeaderView.swift:88,91` is `Color.accentColor` — the macOS system
                     // accent, not the chrome theme's `accent`. See `tokens.ts` for the seam and
                     // the standing divergence.
                     color={tokens.systemAccent}
                     fill={12}
                     icon="tag"
-                    text={pane.label}
+                    text={chrome.label}
                     shrinkable
                 />
             ) : null}
 
             {/* 3 — path / title, or the inline rename field */}
-            {renaming ? (
+            {chrome.renaming ? (
                 <input
-                    data-testid={`pane-rename-input-${pane.id}`}
+                    data-testid={`pane-rename-input-${chrome.paneID}`}
                     aria-label="Pane name"
                     autoFocus
-                    value={renameDraft}
+                    // `chrome.renaming` IS `renameDraft !== null` (the model was built from it),
+                    // so the fallback is unreachable; it is here because the condition is now the
+                    // descriptor's and the compiler can no longer see the two are the same fact.
+                    value={renameDraft ?? ''}
                     className="min-w-0 flex-1 rounded px-1 font-mono text-[11px] leading-none outline-none"
                     style={{ background: tokens.surfaceBackground, color: tokens.textPrimary }}
                     onChange={(event) => setRenameDraft(event.target.value)}
@@ -882,7 +690,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 />
             ) : (
                 <span
-                    data-testid={`pane-title-${pane.id}`}
+                    data-testid={`pane-title-${chrome.paneID}`}
                     // M11 — no `flex-1`. The Swift's `Text(displayPath)` sizes to its content and
                     // the free space belongs to the `Spacer()` at `PaneHeaderView.swift:157`,
                     // AFTER the ZOOM and SYNC badges; a `flex-1` title absorbed every pixel of
@@ -902,7 +710,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     // answered a hover, which implied the truncation was recoverable here and
                     // nowhere else. The full path is still in the status footer and the
                     // inspector, which is where the shipped app puts it.
-                    style={{ color: focused ? tokens.textPrimary : tokens.textSecondary, flexShrink: TITLE_SHRINK }}
+                    style={{ color: chrome.focused ? tokens.textPrimary : tokens.textSecondary, flexShrink: TITLE_SHRINK }}
                 >
                     <span className="min-w-0 truncate">{titleParts.head}</span>
                     {titleParts.tail === '' ? null : <span className="shrink-0">{titleParts.tail}</span>}
@@ -910,9 +718,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             )}
 
             {/* 4 — ZOOM badge */}
-            {zoomed && zoomAvailable ? (
+            {chrome.zoom.zoomed && chrome.zoom.available ? (
                 <Badge
-                    testID={`pane-zoom-badge-${pane.id}`}
+                    testID={`pane-zoom-badge-${chrome.paneID}`}
                     // L27: `.orange` (`PaneHeaderView.swift:109,112`), as a token — the hex that
                     // was here was the only colour in the grid outside `--kelpi-*`, so it ignored
                     // the light/dark swap.
@@ -922,14 +730,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     icon="zoom"
                     text="ZOOM"
                     title="Toggle zoom"
-                    onClick={() => onToggleZoom?.(pane.id)}
+                    onClick={() => surface.toggleZoom(chrome.paneID)}
                 />
             ) : null}
 
             {/* 5 — SYNC badges */}
-            {syncActive && !syncExcluded ? (
+            {chrome.sync.active && !chrome.sync.excluded ? (
                 <Badge
-                    testID={`pane-sync-badge-${pane.id}`}
+                    testID={`pane-sync-badge-${chrome.paneID}`}
                     // L27: `.orange` too (`PaneHeaderView.swift:134,137`) — the SAME orange as
                     // ZOOM. Painted with `--kelpi-agent` it was the agent amber, so a synced pane
                     // read as a pane with an agent running in it.
@@ -941,9 +749,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     title="Synchronise input is on - keystrokes mirror to peer panes"
                 />
             ) : null}
-            {syncActive && syncExcluded ? (
+            {chrome.sync.active && chrome.sync.excluded ? (
                 <Badge
-                    testID={`pane-sync-off-badge-${pane.id}`}
+                    testID={`pane-sync-off-badge-${chrome.paneID}`}
                     color={tokens.textTertiary}
                     fill={10}
                     strong
@@ -966,12 +774,12 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 panes and extracts pane ids with `[data-testid^="pane-header-"]` in eleven places
                 (`scripts/ui-audit/audit.mjs:530,533`), so a second element under that prefix would
                 read as a second pane in every one of them. */}
-            {renaming ? null : <div data-testid={`pane-spacer-${pane.id}`} aria-hidden="true" className="flex-1" />}
+            {chrome.renaming ? null : <div data-testid={`pane-spacer-${chrome.paneID}`} aria-hidden="true" className="flex-1" />}
 
             {/* 7 — agent badge (§S8: dropped before the label; the status dot keeps the state) */}
             {badge === null || !fit.agent ? null : (
                 <Badge
-                    testID={`pane-agent-badge-${pane.id}`}
+                    testID={`pane-agent-badge-${chrome.paneID}`}
                     color={badge.tone === 'running' ? tokens.activeAgent : tokens.statusWaiting}
                     fill={14}
                     text={badge.text}
@@ -980,16 +788,16 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             )}
 
             {/* 8 — git branch (§S8: first to go; the footer and the inspector both show it) */}
-            {!fit.branch || pane.gitBranch === null ? null : (
+            {!fit.branch || chrome.branch === null ? null : (
                 <Badge
-                    testID={`pane-branch-${pane.id}`}
+                    testID={`pane-branch-${chrome.paneID}`}
                     color={tokens.textSecondary}
                     fill={10}
                     icon="branch"
                     // L28: the one badge glyph the Swift draws at 9 (`PaneHeaderView.swift:166`);
                     // the other four are 8.
                     iconSize={9}
-                    text={pane.gitBranch}
+                    text={chrome.branch}
                     shrinkable
                 />
             )}
@@ -1032,21 +840,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 every width where the whole row fits this is the same JSX it always was, in the
                 same order; below it the trailing entries become the `•••` menu instead, so the
                 ✕ is the last control the pane loses rather than the first. */}
-            {headerExtras ? <div className="flex min-w-0 max-w-[96px] shrink items-center overflow-hidden" data-testid={`pane-contributions-${pane.id}`}>{headerExtras}</div> : null}
-            {inlineTail.map((entry) => (
-                <HeaderButton
-                    key={entry.key}
-                    testID={entry.testID}
-                    label={entry.label}
-                    icon={entry.icon}
-                    disabled={entry.disabled}
-                    onClick={entry.onClick}
-                />
+            {chrome.contributions === null ? null : <div className="flex min-w-0 max-w-[96px] shrink items-center overflow-hidden" data-testid={chrome.contributions.testID}>{headerExtras}</div>}
+            {inline.map((entry) => (
+                <ControlButton key={entry.key} control={entry} surface={surface} paneID={chrome.paneID} />
             ))}
             {overflowItems.length === 0 ? null : (
                 <HeaderButton
                     buttonRef={overflowRef}
-                    testID={`pane-overflow-${pane.id}`}
+                    testID={`pane-overflow-${chrome.paneID}`}
                     label="More pane actions"
                     icon="ellipsis"
                     expanded={overflowAt !== null}
@@ -1070,15 +871,13 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     }}
                 />
             )}
-            {/* L25: the one button in the row that is not 10 pt regular — 9 pt semibold. */}
-            <HeaderButton
-                testID={`pane-close-${pane.id}`}
-                label="Close pane (⌘W)"
-                icon="close"
-                iconSize={9}
-                iconWeight="semibold"
-                onClick={() => onClosePane?.(pane.id)}
-            />
+            {/* The pinned tail: the ✕, and by construction only the ✕ (§S40). It is drawn from
+                the same row the fold reads, so a control can never be pinned in the model and
+                foldable on screen. L25 is in `CONTROL_PRESENTATION`: 9 pt semibold, the one
+                button in the row that is not 10 pt regular. */}
+            {pinned.map((entry) => (
+                <ControlButton key={entry.key} control={entry} surface={surface} paneID={chrome.paneID} />
+            ))}
             {overflowAt === null || overflowItems.length === 0 ? null : (
                 <ContextMenu
                     x={overflowAt.x}

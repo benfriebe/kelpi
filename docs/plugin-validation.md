@@ -56,7 +56,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 The runner's leak post-condition ([#205](https://github.com/benfriebe/kelpi/issues/205)) and the
 lane's share of the phone flake ([#235](https://github.com/benfriebe/kelpi/issues/235)), implemented
 on `fix/lane-phone-flakes`, based on merged main `b4a966a` and shipped as
-[#240](https://github.com/benfriebe/kelpi/pull/240). Tested revision: **`165230b`** (`pnpm check` on that tree: root vitest **8,116 passed, 1 skipped**, shell **870 passed**; both scenario chains green with only the three inert workbench-slot warnings).
+[#240](https://github.com/benfriebe/kelpi/pull/240). Tested revision: **`2b46ba0`** (the lane fixes `165230b` plus the review follow-up `2b46ba0`; `pnpm check` on the final tree: root vitest **8,121 passed, 1 skipped** including the new harness suite, shell **870 passed**; both scenario chains green with only the three inert workbench-slot warnings).
 This branch is lane-only. It changes eight harness files and no product file:
 `scripts/ui-audit/lib/workbench.mjs`, and the `plugin-browser-features`, `plugin-chrome-features`,
 `plugin-document-features`, `plugin-terminal-features`, `plugin-interaction-presenters`,
@@ -159,7 +159,7 @@ rather than as the ordering fault it is.
 | --- | --- | --- |
 | The chain, four times | `node scripts/scenario.mjs plugin-document-features plugin-remote --window hidden --no-build` | **4 of 4 with no remembered-place warning**, `plugin-document-features` 28/28 in 7.9 to 8.1 s (the leaking runs took 12.8 to 13.1 s) and `plugin-remote` 12/12 every time. The only warning left is the workbench slot below. |
 | The four named scenarios | `node scripts/scenario.mjs plugin-terminal-features plugin-document-features plugin-terminal-geometry plugin-remote --window hidden --no-build` | **58/58 + 28/28 + 30/30 + 12/12, all green.** Three leak warnings, all of them the workbench-slot one below: `plugin-terminal-features` and `plugin-terminal-geometry` on `terminal` naming `example.terminal-lab.terminal`, `plugin-document-features` on `document.markdown` naming `example.document-lab.editor`, each in a stopped remote daemon's store. No remembered-place warning, no viewport, focus, overlay, workspace or web-pane warning. Before the fixes the same command left `plugin-document-features` leaking the place and `plugin-remote` red at 10/12. |
-| Full verification battery | `node scripts/verify.mjs --full` | **Passed at `165230b` in 25.1 min with no component retried**: typecheck, root tests, shell tests, build bundles, all scenarios (hidden, 5.4 min), full audit (18.7 min) and the packaged smoke (69/69). No remembered-place warning; the only leak warnings are the three inert workbench-slot ones. |
+| Full verification battery | `node scripts/verify.mjs --full` | **Passed at `165230b` in 25.1 min and again at `2b46ba0` in 24.8 min, no component retried either time**: typecheck, root tests, shell tests, build bundles, all scenarios (hidden, 5.4 min), full audit (18.7 min) and the packaged smoke (69/69). No remembered-place warning; the only leak warnings are the three inert workbench-slot ones. |
 
 ### Review follow-up (same day)
 

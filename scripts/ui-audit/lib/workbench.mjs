@@ -190,9 +190,17 @@ export async function restoreBundledSlots(page, d, slots, { daemonID = null, att
  *
  * A retry that nobody can see is a fix that stops being true quietly: a first tap that is ALWAYS
  * eaten would read as a clean run forever, and the thing this exists to catch would be back with
- * no symptom at all. So `note` is called whenever the landing page took more than one round, and
- * every caller passes its recorder's, which puts the count in the run's notes beside the rest of
- * its cleanup. Nothing is written for the ordinary one-round case.
+ * no symptom at all. So `note` is called whenever more than one tap was DELIVERED, and every
+ * caller passes its recorder's, which puts the count in the run's notes beside the rest of its
+ * cleanup. Nothing is written for the ordinary single-tap case.
+ *
+ * Taps, not rounds. A round can end without tapping at all, because the button had not painted
+ * inside that round's ceiling, and counting those would report a phone that was merely slow as a
+ * phone whose taps were being swallowed: two different faults, one of which is not a fault. The
+ * count is therefore incremented at the `page.click` and nowhere else, and the sentence names the
+ * cause this guard exists for (a sheet's scrim over the Hosts button) as the known one rather than
+ * asserting it was observed, since from here a swallowed tap and a tap that reached a button which
+ * did nothing look identical.
  *
  * ## Bounded, because this runs in a cleanup
  *
@@ -208,6 +216,7 @@ const LANDING_BUDGET_MS = 12_000;
 export async function phoneToLanding(page, d, { note = null } = {}) {
     const deadline = Date.now() + LANDING_BUDGET_MS;
     const left = (ceilingMs) => Math.min(ceilingMs, deadline - Date.now());
+    let taps = 0;
     for (let round = 0; round < LANDING_ROUND_MS.length; round += 1) {
         if (!await page.eval(`!!document.querySelector('[data-testid="phone-shell"]')`)) return true;
         if (await page.eval(`!!document.querySelector('[data-testid="phone-landing"]')`)) return true;
@@ -215,10 +224,11 @@ export async function phoneToLanding(page, d, { note = null } = {}) {
         if (ceilingMs <= 0) break;
         if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-open-landing"]')`, { ceilingMs })) continue;
         await page.click('[data-testid="phone-open-landing"]');
+        taps += 1;
         const landingMs = left(LANDING_ROUND_MS[round]);
         if (landingMs > 0 && await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: landingMs })) {
-            if (round > 0) {
-                note?.(`the phone took ${String(round + 1)} taps to reach its landing page; the earlier ones went to something drawn over the Hosts button`);
+            if (taps > 1) {
+                note?.(`the phone took ${String(taps)} taps to reach its landing page; the earlier ones reached the Hosts button and did nothing, which is what a sheet's scrim over it looks like from here`);
             }
             return true;
         }

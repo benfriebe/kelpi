@@ -35,9 +35,13 @@ export default defineConfig({
         // `windowsVirtualKeyCode: 0` (wrong on the wire, and invisible to anything that reads it),
         // and one `text` field in that table is a single control byte that a rewrite can delete
         // without a diff showing anything. Only an assertion holds either of those down.
+        // `workbench.test.mjs` is the newest on that rule: `phoneToLanding` retries a tap and
+        // counts what it did, and both halves fail silently by construction, a miscount reading as
+        // a fault that is not there and an unbounded retry reading as nothing at all until a
+        // cleanup starts eating half a minute.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs', 'scripts/ui-audit/lib/workbench.test.mjs'],
         },
       },
     ],

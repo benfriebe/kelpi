@@ -75,18 +75,21 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await page.click(`[data-testid="phone-pane-show-${pane.paneID}"]`);
         rec.check('phone single-pane mode renders the remote plugin and its saved state', await ready() && await page.evalInFrame(frame, `kelpi.state.filter === 'remote remembered'`));
     } finally {
-        fs.writeFileSync(sandbox.configPath, previousConfig);
         /*
-         * Back to the landing page BEFORE the window widens, while the phone shell is still
-         * mounted: `phone/place.ts` remembers `{host, workspaceID}` and a remembered place means
-         * the NEXT phone window opens there - on a remote host this block is about to stop -
-         * instead of on the host picker this scenario's own first check reads (#205).
+         * Back to the landing page FIRST, before the config restore below and before the window
+         * widens, while the phone shell is still mounted and the host it is on is still
+         * configured: `phone/place.ts` remembers `{host, workspaceID}` and a remembered place
+         * means the NEXT phone window opens there - on a remote host this block is about to stop -
+         * instead of on the host picker this scenario's own first check reads (#205). This
+         * scenario is the one that goes red when the place is left behind, so it is also the one
+         * that must not leave it.
          */
         try {
             if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page');
         } catch (error) {
             rec.note(`cleanup: the phone shell never reached its landing page — ${error instanceof Error ? error.message : String(error)}`);
         }
+        fs.writeFileSync(sandbox.configPath, previousConfig);
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: originalURL });

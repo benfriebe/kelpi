@@ -166,14 +166,28 @@ rather than as the ordering fault it is.
 An independent review of the lane work asked for three things, all applied here. `phoneToLanding`
 now takes a `note` callback and every one of its thirteen call sites passes its recorder's, so a
 first tap that is always eaten shows up in the run's notes instead of being absorbed silently; its
-rounds are 5 s then 2 s then 2 s under a 12 s cap, so a cleanup whose button never appears no longer
-burns 15 s of settle ahead of the config restore. The byte-identical private copies of the pre-fix
-helper in `plugin-settings-presenter.mjs` and `plugin-interaction-presenters.mjs` are gone, both now
-importing the shared one. The browser, terminal and chrome feature scenarios restored the config
-before going home, the same hazard the document scenario's comment describes, so the landing call is
-now the first step of all four cleanups, and that comment says what was unique to the document one
-(this was the one that ran after the widening, on a host its own body had already stopped and
-restarted).
+rounds are 5 s then 2 s then 2 s under a 12 s cap, so the worst case rises from about 10 s (main's
+single round of a 5 s button settle plus a 5 s landing settle) to the 12 s cap, paid only by a
+cleanup whose button never appears. The byte-identical private copies of the pre-fix helper in
+`plugin-settings-presenter.mjs` and `plugin-interaction-presenters.mjs` are gone, both now importing
+the shared one; those two tapped through their own hit-tested `clickHost`, so a Hosts button covered
+by a sheet used to THROW out of the cleanup and redden the run, and now costs a second tap and a
+note. The browser, terminal and chrome feature scenarios restored the config before going home, the
+same hazard the document scenario's comment describes, and a second review round found
+`plugin-remote` doing it too, which matters most there because that is the scenario the leak
+reddens; the landing call is now the first step of every phone scenario's cleanup, and the document
+scenario's comment says what was unique to it (this was the one that ran after the widening, on a
+host its own body had already stopped and restarted).
+
+That second round also corrected the note and pinned the helper. The count was of ROUNDS, so a
+button that painted at 6 s and then took one successful tap reported "2 taps ... drawn over the
+Hosts button": wrong count, and a cause it had not observed. It counts `page.click` calls now,
+writes nothing below two, and names the scrim as the known case this guards rather than as
+something it saw. `scripts/ui-audit/lib/workbench.test.mjs` holds both halves down against a fake
+page and a fake clock, so neither can drift without a red: a late button with one tap writes
+nothing, an eaten first tap writes a note saying two, a button that never paints gives up in 9 s
+having tapped nothing, and a phone that eats every tap stops exactly at the 12 s cap with its last
+round clamped. It is in the `harness` vitest project beside the other lib suites.
 
 Re-verified on the review tree: `node scripts/scenario.mjs plugin-terminal-features --no-build
 --window hidden` **10 of 10 green at 58/58**, 17.3 to 17.8 s, no clipboard red this time; the
@@ -183,6 +197,17 @@ and nothing else; and the four scenarios this follow-up edited but the chain abo
 plugin-interaction-presenters plugin-browser-features --window hidden --no-build`, **34/34 + 34/34 +
 51/51 + 66/66 with zero leak warnings**. No run printed the new multi-tap note, so the first tap
 landed in all of them.
+
+After the second round, on the rebase onto `b4a966a` (lane only; the product fix is main's, from
+[#238](https://github.com/benfriebe/kelpi/pull/238)): the harness suites **10 files, 122 passing**,
+which is the new `workbench.test.mjs` and the nine that were there; `node scripts/scenario.mjs
+plugin-document-features plugin-remote --window hidden` **29/29 + 13/13 green**, no
+remembered-place warning, the workbench slot the only one left; and `node scripts/scenario.mjs
+plugin-terminal-features --window hidden --no-build` **59/59 green**. That last run is the first to
+print the note this branch added, from the in-body tap: `the phone took 2 taps to reach its landing
+page`. A tap really was eaten there, the retry recovered it, and the run stayed green and said so,
+which before this branch would have been a silent remembered-place leak handed to whatever ran
+next.
 
 ### The remaining workbench-slot warnings are left as they are
 

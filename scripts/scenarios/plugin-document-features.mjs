@@ -183,7 +183,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('document controls fit the phone viewport', await check(remotePane.id, `document.documentElement.scrollWidth <= document.documentElement.clientWidth`));
         await rec.shot(page, 'document-phone-ready');
         // Back to the landing page BEFORE the window widens again, while the shell is still mounted.
-        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
+        if (!await phoneToLanding(page, d, { note: rec.note })) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         const beforeRestart = JSON.parse(await remoteCLI.ok(['document', 'get', remotePane.id]));
         await remoteDaemon.stop(); remoteDaemon = startDaemon(remote, { repoRoot }); await waitForHealthz(remote.base);
@@ -201,9 +201,23 @@ export default async function ({ page, cli, sandbox, rec, d }) {
     } catch (error) { await rec.shot(page, 'failure-live'); throw error; }
     finally {
         watcher?.kill('SIGTERM');
+        /*
+         * The phone goes home FIRST, before anything else in this block (#205). Every phone
+         * scenario's cleanup now opens this way; what was unique here is how far out of order it
+         * had drifted.
+         *
+         * The remembered place is `{host, workspaceID}` and the only gesture that forgets it is a
+         * tap on the landing page (`phone/place.ts`, `phone/view.ts`), which needs the shell
+         * MOUNTED - i.e. the viewport still narrow - to exist at all. Its siblings called this
+         * after the config restore alone, which is one hazard; this one called it after the
+         * WIDENING, so the shell it needed had already been unmounted and the call could only
+         * no-op. And the host the place names had by then been stopped and restarted once by the
+         * body's own daemon-restart arm, so the window a failed phone section handed on opened on
+         * a remote host whose panes this sandbox was about to delete.
+         */
+        try { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); } catch { /* the window may be mid-navigation */ }
         fs.writeFileSync(sandbox.configPath, config);
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
-        try { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); } catch { /* the window may be mid-navigation */ }
         await page.send('Page.navigate', { url: originalURL }).catch(() => {});
         await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 }).catch(() => {});
         // The three document slots are the WINDOW's and outlive `plugin remove` (#205, #201).

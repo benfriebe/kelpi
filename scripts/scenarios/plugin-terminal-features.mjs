@@ -512,7 +512,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         } }, 'terminal-lab-phone');
         // Back to the landing page BEFORE the window widens again, while the shell is still
         // mounted: it is the one tap that forgets where this scenario took the phone (#205).
-        if (!await phoneToLanding(page, d)) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
+        if (!await phoneToLanding(page, d, { note: rec.note })) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await page.send('Page.navigate', { url: `${remoteSandbox.base}/?token=${token}` });
         await choose(remote.paneID); rec.check('direct browser attachment preserves the remote process', await ready(remote.paneID) && alive(remote) && await sameScreen(remote, 'HIDDEN-QUERY-COMPLETE'));
@@ -536,9 +536,12 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         sizeObserver?.close(); sizeObserver = null;
         await diagnostics('final').catch(() => {});
         for (const off of offWire) off();
+        // First, while the shell is still mounted and the host it is on is still configured: the
+        // config restore below takes that host out of the navigation and the widening after it
+        // unmounts the shell, and neither can be undone from here (#205, `lib/workbench.mjs`).
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         fs.writeFileSync(sandbox.configPath, originalConfig);
         await harness.clipboardWrite(originalClipboard).catch(() => {});
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d)) rec.note('cleanup: the phone shell never reached its landing page'); });
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
         await page.send('Emulation.setUserAgentOverride', originalAgent).catch(() => {});

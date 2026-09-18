@@ -85,6 +85,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
  * `examples/plugins/settings-lab/` is the example this drives; `settings/` is the surface, the
@@ -427,22 +428,6 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const resetField = fieldID => inFrame(`(() => { void kelpi.ui.resetSettingsField(${JSON.stringify(fieldID)}); return true; })()`);
     /** A refused call's message, or `'resolved'` if the host let it through. */
     const refusal = expression => inFrame(`${expression}.then(() => 'resolved', error => error.message)`);
-
-    /**
-     * Put the phone shell back on its landing page.
-     *
-     * `phone/place.ts` remembers `{host, workspaceID}` for whatever workspace the phone last had on
-     * screen, and a remembered place means the next phone window opens THERE instead of on the
-     * landing page, which is the host picker `plugin-remote` starts from. Going back to the landing
-     * page clears it. A no-op on a desktop window and on the landing page itself.
-     */
-    const phoneToLanding = async () => {
-        if (!await page.eval(`!!document.querySelector('[data-testid="phone-shell"]')`)) return true;
-        if (await page.eval(`!!document.querySelector('[data-testid="phone-landing"]')`)) return true;
-        if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-open-landing"]')`, { ceilingMs: 5_000 })) return false;
-        await clickHost('[data-testid="phone-open-landing"]');
-        return await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: 5_000 });
-    };
 
     // Where the window was before this scenario took it, and what the file held: both restored at
     // the end, because the sandbox and its window are shared with whatever runs next.
@@ -883,7 +868,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await closeSettings();
         // Back to the landing page BEFORE the window widens again, while the shell is still
         // mounted: it is the one tap that forgets where this scenario took the phone.
-        if (!await phoneToLanding()) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
+        if (!await phoneToLanding(page, d, { note: rec.note })) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         await openSettings();
@@ -1010,7 +995,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const safely = async (what, step) => {
             try { await step(); } catch (error) { rec.note(`cleanup: ${what} - ${error instanceof Error ? error.message : String(error)}`); }
         };
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding()) rec.note('cleanup: the phone shell never reached its landing page'); });
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
         // Check 11's recorder, if a throw landed between installing it and reading it: an observer

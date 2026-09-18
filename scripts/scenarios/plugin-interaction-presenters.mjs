@@ -87,6 +87,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 /*
  * `examples/plugins/interaction-lab/` is the example this drives; `interaction/` is the surface and
@@ -314,24 +315,6 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
      * Anything that clicks the lower right of the window waits for it first.
      */
     const toastsGone = (ceilingMs = 12_000) => d.settleDom(page, `!document.querySelector('[data-testid="toast-stack"]')`, { ceilingMs });
-    /**
-     * Put the phone shell back on its landing page.
-     *
-     * `phone/place.ts` remembers `{host, workspaceID}` in `localStorage` for whatever workspace the
-     * phone last had on screen, and a remembered place means the next phone window opens THERE
-     * instead of on the landing page - which is the host picker every other phone scenario starts
-     * from (`plugin-remote`, `plugin-terminal-features`, `plugin-chrome-features`). Going back to
-     * the landing page is what clears it (`phone/view.ts`), so this is the undo for check 9's two
-     * taps rather than a poke at storage. A no-op on a desktop window and on the landing page,
-     * where the button is deliberately not drawn.
-     */
-    const phoneToLanding = async () => {
-        if (!await page.eval(`!!document.querySelector('[data-testid="phone-shell"]')`)) return true;
-        if (await page.eval(`!!document.querySelector('[data-testid="phone-landing"]')`)) return true;
-        if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-open-landing"]')`, { ceilingMs: 5_000 })) return false;
-        await clickHost('[data-testid="phone-open-landing"]');
-        return await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: 5_000 });
-    };
     /**
      * Answer the BUNDLED dialog's input.
      *
@@ -978,7 +961,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
             `palette ${String(phonePalette)}, prompt ${String(phonePrompt)}, notice ${String(phoneNotice)}`);
         // Back to the landing page BEFORE the window widens again, while the shell is still mounted:
         // it is the one tap that forgets where this scenario took the phone.
-        if (!await phoneToLanding()) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
+        if (!await phoneToLanding(page, d, { note: rec.note })) rec.note('the phone shell did not return to its landing page; the next phone scenario may open where this one left it');
         await page.send('Emulation.clearDeviceMetricsOverride');
         await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
         rec.check('returning to the desktop form factor re-attaches every plugin presenter',
@@ -1219,7 +1202,7 @@ export default async function ({ page, cli, rec, d, sleep, daemon }) {
         const safely = async (what, step) => {
             try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
         };
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding()) rec.note('cleanup: the phone shell never reached its landing page'); });
+        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
         // Check 11's recorder, if a throw landed between installing it and reading it: an observer

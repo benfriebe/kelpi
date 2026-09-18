@@ -163,11 +163,75 @@ export async function restoreBundledSlots(page, d, slots, { daemonID = null, att
  *
  * Call it BEFORE the device metrics are cleared: once the window is wide again the phone shell is
  * unmounted, nothing is listening, and the remembered place stays where it was.
+ *
+ * ## Why it taps more than once
+ *
+ * The button is at the top-left corner of the header, and a phone sheet is a `fixed inset-0`
+ * overlay whose scrim covers exactly that corner (`phone/ui.tsx`: the scrim is what "tap outside"
+ * hits). So a scenario that reaches this with a sheet still on screen spends its first tap closing
+ * that sheet and none on the button, silently: the tap is consumed by a real control, the shell
+ * stays where it was, and the only symptom is the note the caller writes and a phone place the
+ * next scenario opens on (#205).
+ *
+ * Measured rather than supposed. In a `plugin-document-features plugin-remote` chain on
+ * 2026-09-18, one run in four read `document.elementFromPoint` at the button's own centre as
+ * `phone-pane-sheet-scrim` with `phone-pane-sheet` still in the DOM; after the tap the sheet was
+ * gone, the button was the hit-test target again, and the shell was still on the pane screen with
+ * the place still set. The same scenario alone passed six runs out of six, which is what made this
+ * look like a flake for as long as it did.
+ *
+ * A person whose tap dismissed a sheet taps again, so this does too: up to three rounds of "wait
+ * for the button, tap it, wait for the landing page", each round re-checking the two states that
+ * mean the work is already done. The cost is paid only by a round that fails, and the alternative
+ * (waiting for the button to be the hit-test target before tapping at all) would deadlock against
+ * exactly the case this exists for, since nothing else in the cleanup path closes that sheet.
+ *
+ * ## …and says so when it did
+ *
+ * A retry that nobody can see is a fix that stops being true quietly: a first tap that is ALWAYS
+ * eaten would read as a clean run forever, and the thing this exists to catch would be back with
+ * no symptom at all. So `note` is called whenever more than one tap was DELIVERED, and every
+ * caller passes its recorder's, which puts the count in the run's notes beside the rest of its
+ * cleanup. Nothing is written for the ordinary single-tap case.
+ *
+ * Taps, not rounds. A round can end without tapping at all, because the button had not painted
+ * inside that round's ceiling, and counting those would report a phone that was merely slow as a
+ * phone whose taps were being swallowed: two different faults, one of which is not a fault. The
+ * count is therefore incremented at the `page.click` and nowhere else, and the sentence names the
+ * cause this guard exists for (a sheet's scrim over the Hosts button) as the known one rather than
+ * asserting it was observed, since from here a swallowed tap and a tap that reached a button which
+ * did nothing look identical.
+ *
+ * ## Bounded, because this runs in a cleanup
+ *
+ * Rounds get shorter ({@link LANDING_ROUND_MS}) and the whole call is capped at
+ * {@link LANDING_BUDGET_MS}. Three full-length rounds would have been 30 s of settle in a block
+ * that still has a config to restore, a window to navigate and a daemon to stop after it: the
+ * first round can afford to wait for a phone that is still painting, and a button that is not
+ * there by then is not going to be there in another five seconds either.
  */
-export async function phoneToLanding(page, d) {
-    if (!await page.eval(`!!document.querySelector('[data-testid="phone-shell"]')`)) return true;
-    if (await page.eval(`!!document.querySelector('[data-testid="phone-landing"]')`)) return true;
-    if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-open-landing"]')`, { ceilingMs: 5_000 })) return false;
-    await page.click('[data-testid="phone-open-landing"]');
-    return await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: 5_000 });
+const LANDING_ROUND_MS = [5_000, 2_000, 2_000];
+const LANDING_BUDGET_MS = 12_000;
+
+export async function phoneToLanding(page, d, { note = null } = {}) {
+    const deadline = Date.now() + LANDING_BUDGET_MS;
+    const left = (ceilingMs) => Math.min(ceilingMs, deadline - Date.now());
+    let taps = 0;
+    for (let round = 0; round < LANDING_ROUND_MS.length; round += 1) {
+        if (!await page.eval(`!!document.querySelector('[data-testid="phone-shell"]')`)) return true;
+        if (await page.eval(`!!document.querySelector('[data-testid="phone-landing"]')`)) return true;
+        const ceilingMs = left(LANDING_ROUND_MS[round]);
+        if (ceilingMs <= 0) break;
+        if (!await d.settleDom(page, `document.querySelector('[data-testid="phone-open-landing"]')`, { ceilingMs })) continue;
+        await page.click('[data-testid="phone-open-landing"]');
+        taps += 1;
+        const landingMs = left(LANDING_ROUND_MS[round]);
+        if (landingMs > 0 && await d.settleDom(page, `document.querySelector('[data-testid="phone-landing"]')`, { ceilingMs: landingMs })) {
+            if (taps > 1) {
+                note?.(`the phone took ${String(taps)} taps to reach its landing page; the earlier ones reached the Hosts button and did nothing, which is what a sheet's scrim over it looks like from here`);
+            }
+            return true;
+        }
+    }
+    return false;
 }

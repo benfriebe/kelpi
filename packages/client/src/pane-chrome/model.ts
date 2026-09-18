@@ -322,16 +322,19 @@ export interface PaneChromeInput {
     readonly paneWidth?: number | undefined;
     readonly renaming?: boolean | undefined;
     readonly commands?: readonly PaneChromeCommandInput[] | undefined;
-    readonly items?: readonly PaneChromeItemDescriptor[] | undefined;
     /**
-     * Whether the host has a contributions box to draw for this pane.
+     * Another plugin's `pane.header` items, and the ONLY source for the contributions box.
      *
-     * A boolean rather than `items.length > 0`, because the box's presence is what the width
-     * ladder is charged four buttons for, and the host decides that from the node it is about to
-     * render. Deriving it from the descriptor list instead would change the charge in every
-     * render that has the items but not the node, which is every standalone header test.
+     * Presence and count both come from this list. They used to come from two places - the box was
+     * drawn when the host's rendered node was truthy, and `count` was `items.length` - which is
+     * two answers to one question and they can disagree: a host that publishes the descriptors but
+     * draws nothing charges the width ladder for a box that is not there, and one that draws
+     * without publishing reports a count of zero for a box that is. Both bundled hosts resolve one
+     * list and derive both from it, and `plugins/contributions-ui.tsx` renders nothing for an
+     * empty list, so this is what they were already agreeing on.
      */
-    readonly contributions?: boolean | undefined;
+    readonly items?: readonly PaneChromeItemDescriptor[] | undefined;
+
     readonly changes?: PaneChromeChanges | null | undefined;
     /** The markdown copy control exists only where the host bound a handler for it. */
     readonly canCopyDocument?: boolean | undefined;
@@ -403,7 +406,7 @@ export function paneChromeModel(input: PaneChromeInput): PaneChromeModel {
     const badge = agentBadge(pane, input.nowSeconds);
     const commandInputs = input.commands ?? [];
     const items = input.items ?? [];
-    const contributions = input.contributions === true;
+    const contributions = items.length > 0;
 
     // Read once and used twice, exactly as the header reads it: the count the ladder reserves for
     // can never drift from the row it is reserving for.

@@ -12,7 +12,7 @@ declare const snapshot: PaneChromeSnapshot;
 
 const placement: PaneChromePlacement = snapshot.placement;
 const control: PaneChromeControl = {
-    key: 'split-right',
+    ref: 'c3',
     kind: 'action',
     label: 'Split right (⌘D)',
     icon: 'split-right',
@@ -20,7 +20,7 @@ const control: PaneChromeControl = {
     pinned: false
 };
 const item: PaneChromeItem = {
-    id: 'example.board.status',
+    ref: 'i0',
     text: 'Ready',
     tooltip: null,
     badge: '3',
@@ -42,6 +42,8 @@ async function present(): Promise<void> {
     await ui.reportPresenterReady();
     // One band for every pane this presenter draws; the host clamps each against its own pane.
     for (const pane of current.panes) await ui.setPaneChromeHeight(pane.paneID, 48);
+    // And a pane it would rather leave to the bundled header keeps it.
+    for (const pane of current.panes) if (pane.kind === 'web') await ui.setPaneChromeHeight(pane.paneID, null);
     const pane: PaneChromePane | undefined = current.panes[0];
     if (pane !== undefined) {
         await ui.focusPane(pane.paneID);
@@ -49,8 +51,9 @@ async function present(): Promise<void> {
         if (pane.zoom.available) await ui.toggleZoom(pane.paneID);
         // The host draws the field and the confirmation; the presenter only asks.
         if (!pane.renaming) await ui.renamePane(pane.paneID);
-        for (const entry of pane.controls) if (entry.enabled && !entry.pinned) void entry.key;
-        for (const other of pane.items) if (other.enabled) await ui.runPaneHeaderItem(pane.paneID, other.id);
+        // Both halves of the row are reachable, and each only through its own call.
+        for (const entry of pane.controls) if (entry.enabled && !entry.pinned) await ui.activatePaneControl(pane.paneID, entry.ref);
+        for (const other of pane.items) if (other.enabled) await ui.runPaneHeaderItem(pane.paneID, other.ref);
         await ui.openPaneMenu(pane.paneID);
         await ui.closePane(pane.paneID);
     }
@@ -58,8 +61,12 @@ async function present(): Promise<void> {
 }
 void present;
 
-// @ts-expect-error A control carries no write target: the presenter sends a key, the host owns the verb.
+// @ts-expect-error A control carries no write target: the presenter sends a ref, the host owns the verb.
 void snapshot.panes[0]?.controls[0]?.command;
+// @ts-expect-error A control is addressed by an opaque ref, never by its host-side key.
+void snapshot.panes[0]?.controls[0]?.key;
+// @ts-expect-error An item is addressed by an opaque ref, never by its contribution id.
+void snapshot.panes[0]?.items[0]?.id;
 // @ts-expect-error Audit selectors stay host-side; a projection carries no testID.
 void snapshot.panes[0]?.controls[0]?.testID;
 // @ts-expect-error An item is a display name and an opaque ref, never a plugin identity.

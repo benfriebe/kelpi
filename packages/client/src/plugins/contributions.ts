@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import {
     decodePluginItemPatch, isPluginContextKey, isPluginID, PLUGIN_MAX_CONTRIBUTION_BYTES, pluginObject, pluginRecord,
     type PluginContextValue, type PluginContributionInfo, type PluginContributionState, type PluginInfo,
@@ -207,6 +207,52 @@ export function resolveContributionItems(plugins: readonly PluginInfo[], states:
         });
     }).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }
+/**
+ * The `pane.header` items for a pane, resolved ONCE per render and read twice.
+ *
+ * A pane header needs its contributed items in two shapes: the resolved items, which the host
+ * renders itself as native chips, and the pane chrome descriptors, which go into the shared model.
+ * Both bundled grids were asking for them separately, so `resolveContributionItems` walked every
+ * installed plugin's manifest twice per pane - and `PaneGrid` calls those accessors on EVERY
+ * render, divider drags and resize badges included, for every pane in the workspace. A four-pane
+ * grid under a drag was re-resolving eight times a frame to produce two values that are the same
+ * value.
+ *
+ * The cache is keyed on the resolver's own identity and nothing else, which is what makes it
+ * correct rather than merely fast: `usePluginCommands` rebuilds `items` whenever the plugins,
+ * their contribution states or the mirror change, so a stale entry cannot outlive the facts it was
+ * resolved from - and when none of those changed, a re-render of the grid alone would have
+ * resolved to the same answer anyway.
+ */
+export interface PaneHeaderContributions {
+    /** The resolved items, for the host's own rendering. */
+    items(paneID: string): readonly ResolvedContributionItem[];
+    /** The same items, as the descriptors the shared pane chrome model carries. */
+    descriptors(paneID: string): readonly PaneChromeItemDescriptor[];
+}
+
+export function usePaneHeaderContributions(
+    resolve: (placement: PluginItemDefinition['placement'], paneID?: string) => readonly ResolvedContributionItem[]
+): PaneHeaderContributions {
+    return useMemo(() => {
+        const resolved = new Map<string, readonly ResolvedContributionItem[]>();
+        const projected = new Map<string, readonly PaneChromeItemDescriptor[]>();
+        const items = (paneID: string): readonly ResolvedContributionItem[] => {
+            let entry = resolved.get(paneID);
+            if (entry === undefined) { entry = resolve('pane.header', paneID); resolved.set(paneID, entry); }
+            return entry;
+        };
+        return {
+            items,
+            descriptors: (paneID: string): readonly PaneChromeItemDescriptor[] => {
+                let entry = projected.get(paneID);
+                if (entry === undefined) { entry = paneChromeItemDescriptors(items(paneID)); projected.set(paneID, entry); }
+                return entry;
+            }
+        };
+    }, [resolve]);
+}
+
 /**
  * `pane.header` items as pane chrome descriptors (ratified decision 7).
  *

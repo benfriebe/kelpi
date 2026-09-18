@@ -90,6 +90,8 @@ export {
     usePaneChromeDeclaration,
     usePaneChromeHeights,
     usePaneChromeParking,
+    usePaneChromeScope,
+    usePaneChromeWithdrawal,
     type PaneChromeHeights
 } from './height';
 
@@ -99,6 +101,10 @@ export {
     projectPaneChrome,
     type PaneChromeFrame,
     type PaneChromeFrameControl,
+    type PaneChromeFrameItem,
     type PaneChromeFramePane,
-    type PaneChromeProjectionInput
+    type PaneChromeProjection,
+    type PaneChromeProjectionInput,
+    type PaneChromeRefTable,
+    type PaneChromeRefTarget
 } from './projection';

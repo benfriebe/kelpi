@@ -41,6 +41,7 @@ import type { MouseEvent } from 'react';
 
 import { PANE_CHROME_SPLITS, type PaneChromeModel } from './model';
 import { isPaneChromeActionID, type PaneChromeControlDescriptor } from './contract';
+import type { PaneChromeRefTable } from './projection';
 
 /**
  * The host verbs, as the grid already binds them.
@@ -92,8 +93,23 @@ export interface PaneChromeSurface {
     closePane(paneID: string): void;
     /** Run one of the trailing controls by key - a host action or another plugin's command. */
     runControl(paneID: string, key: string, options?: PaneChromeControlOptions): void;
-    /** Run one of another plugin's `pane.header` items by its opaque ref. */
+    /** Run one of another plugin's `pane.header` items by its host-side contribution id. */
     runItem(paneID: string, itemID: string): void;
+    /**
+     * Run whatever a published frame's ref names: a control or an item, either one.
+     *
+     * The single entry point for anything a PRESENTER activates, and the reason the two halves of
+     * the row are reachable at all - a frame publishes `controls` and `items`, and before this
+     * only the second had a call behind it, so `copy`, `edit`, `refresh` and every one of another
+     * plugin's `pane.header` command buttons were drawn in a projection with no way to press them.
+     *
+     * Two resolutions, neither of them trust: the ref is looked up in the table that left with the
+     * frame it came from (so a ref from another frame, another pane or a forged string names
+     * nothing), and the id it yields is then re-resolved against a FRESH model by `runControl` /
+     * `runItem` (so a control that went disabled or disappeared in between refuses). The table is
+     * passed in rather than held, because it belongs to one frame and this surface outlives them.
+     */
+    activateRef(refs: PaneChromeRefTable, paneID: string, ref: string): void;
     openPaneMenu(paneID: string, event: MouseEvent<HTMLElement>): void;
 }
 
@@ -181,6 +197,15 @@ export function createPaneChromeSurface(config: PaneChromeSurfaceConfig): PaneCh
             const item = model.descriptor.items.find((entry) => entry.id === itemID);
             if (item === undefined || !item.enabled) return;
             config.actions().onRunHeaderItem?.(paneID, itemID);
+        },
+        activateRef(refs, paneID, ref) {
+            const target = refs.resolve(paneID, ref);
+            if (target === undefined || target.paneID !== paneID) return;
+            if (target.what === 'control') {
+                surface.runControl(paneID, target.id);
+                return;
+            }
+            surface.runItem(paneID, target.id);
         },
         openPaneMenu(paneID, event) {
             if (resolve(paneID) === null) return;

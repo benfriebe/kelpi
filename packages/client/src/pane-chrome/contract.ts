@@ -381,8 +381,22 @@ export function paneChromeHeight(
  * growing and the shell moving the view down. At rest the two boxes are adjacent rather than
  * overlapping (the hole starts where the band ends), so `overlayCovers` stops parking on its own
  * the moment the geometry settles; see `height.ts` for the enrolment and the measurement.
+ *
+ * **`visible` is not a nicety; without it a hidden pane parks a visible one.** `PaneGrid` never
+ * unmounts a pane to hide it (that is its third invariant: a zoomed-out pane, and every pane of a
+ * workspace the window is not showing, keeps its DOM at its LAST known rect under
+ * `visibility: hidden`). `getBoundingClientRect` still reports that rect, and
+ * `chrome/modal-presence.ts` registers boxes rather than elements, so an invisible band would be
+ * registered at a real box - and with two web panes declaring a band and one of them zoomed, the
+ * hidden one's box lies inside the visible one's page hole and parks it for the length of the
+ * zoom. A band nobody can see covers nothing, so it registers nothing.
  */
-export function paneChromeParks(kind: PaneChromeKind, height: number): boolean {
+export function paneChromeParks(
+    kind: PaneChromeKind,
+    height: number,
+    visible: boolean = true
+): boolean {
+    if (!visible) return false;
     if (kind !== 'web') return false;
     if (!Number.isFinite(height)) return false;
     return height > PANE_CHROME_LIMITS.nativeHeight;

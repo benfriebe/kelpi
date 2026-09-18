@@ -66,7 +66,7 @@ import {
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
-import { paneChromeBand, usePaneChromeHeights } from '../pane-chrome';
+import { paneChromeBand, usePaneChromeHeights, usePaneChromeScope } from '../pane-chrome';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
 import { PANE_HEADER_HEIGHT, PaneHeader } from './PaneHeader';
@@ -125,6 +125,17 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
      */
     readonly renameRequest?: { readonly paneID: string; readonly seq: number } | null | undefined;
     readonly headerHeight?: number | undefined;
+    /**
+     * Which workspace this grid is showing, for the chrome band store only.
+     *
+     * A declared band belongs to the view that declared it and to the workspace it was declared
+     * against. A pane closing withdraws its own (`usePaneChromeWithdrawal` on the header), and
+     * this is the sweep for the case that withdrawal cannot see: the grid keeping its wrappers
+     * while the thing it is showing is replaced wholesale, which is a workspace switch, a remote
+     * workspace being selected, and the mirror emptying under a dropped connection. Omitted (a
+     * standalone render, a fixture) means the store is left alone.
+     */
+    readonly workspaceID?: string | undefined;
     /** Fixed size instead of measuring — tests and any non-DOM host. */
     readonly size?: PaneGridSize | undefined;
     /** Terminal cols/rows for the resize badge; falls back to pixels when absent. */
@@ -743,6 +754,8 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      * something declares a height, and nothing does in this phase.
      */
     const bands = usePaneChromeHeights();
+    // Every declaration goes back when the displayed workspace changes, and when this grid goes.
+    usePaneChromeScope(props.workspaceID);
     const zoomAvailable = panes.length > 1;
     const dropRect =
         dropTarget === null
@@ -858,6 +871,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             syncExcluded={excluded.has(pane.id)}
                             homeDirectory={homeDirectory}
                             height={band}
+                            // §N26: a hidden pane's band must not park a visible pane's page. The
+                            // wrapper below keeps a hidden pane mounted at its last rect, which is
+                            // a real box to the overlay registry.
+                            visible={visible}
                             // §S8: the header's own width, which the grid already holds as the
                             // pane's frame. `badgeFit` reads it to decide whether a user-data
                             // badge has room to be drawn at all, rather than letting the flex

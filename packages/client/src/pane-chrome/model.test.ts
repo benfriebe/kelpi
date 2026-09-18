@@ -97,7 +97,6 @@ describe('paneChromeModel', () => {
                     enabled: true
                 }
             ],
-            contributions: true,
             canCopyDocument: true
         });
         const encoded: unknown = JSON.parse(JSON.stringify(model.descriptor));
@@ -192,28 +191,32 @@ describe('paneChromeModel', () => {
         ]);
     });
 
-    it('charges the contributions box four button widths, as the header always has', () => {
+    /**
+     * One source, so presence and count cannot disagree. They used to come from two: the box was
+     * drawn when the host's rendered node was truthy and the count was `items.length`, which is a
+     * charge for a box that may not be there and a count of zero for one that is.
+     */
+    it('charges the contributions box four button widths, from the items and nothing else', () => {
         const without = paneChromeModel({ pane: testPane('s'), focused: false, nowSeconds: NOW }).descriptor;
         const with_ = paneChromeModel({
             pane: testPane('s'),
             focused: false,
             nowSeconds: NOW,
-            contributions: true,
-            items: [{ id: 'i', text: 'Ready', tooltip: null, badge: null, tone: 'default', enabled: true }]
+            items: [
+                { id: 'i', text: 'Ready', tooltip: null, badge: null, tone: 'default', enabled: true },
+                { id: 'j', text: 'Busy', tooltip: null, badge: null, tone: 'warning', enabled: false }
+            ]
         }).descriptor;
         expect(without.size.buttons).toBe(4);
         expect(with_.size.buttons).toBe(8);
         expect(without.contributions).toBeNull();
-        expect(with_.contributions).toEqual({ testID: 'pane-contributions-s', count: 1 });
-        // Descriptors alone never charge the box: the host decides from the node it is drawing.
-        const descriptorsOnly = paneChromeModel({
-            pane: testPane('s'),
-            focused: false,
-            nowSeconds: NOW,
-            items: with_.items
-        }).descriptor;
-        expect(descriptorsOnly.size.buttons).toBe(4);
-        expect(descriptorsOnly.contributions).toBeNull();
+        expect(with_.contributions).toEqual({ testID: 'pane-contributions-s', count: 2 });
+        // An empty list is no box and no charge, which is what the host's own renderer does with
+        // one (`plugins/contributions-ui.tsx` returns null), so the two can never disagree.
+        const empty = paneChromeModel({ pane: testPane('s'), focused: false, nowSeconds: NOW, items: [] }).descriptor;
+        expect(empty.contributions).toBeNull();
+        expect(empty.size.buttons).toBe(4);
+        expect(with_.contributions?.count).toBe(with_.items.length);
     });
 
     it('carries the two width ladders as size-control state rather than re-deriving them', () => {

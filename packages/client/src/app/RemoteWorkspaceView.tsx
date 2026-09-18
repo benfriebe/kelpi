@@ -3,7 +3,7 @@ import { BrowserFeaturePane } from '../features/BrowserFeaturePane';
 import { PluginView } from '../plugins/PluginView';
 import { DocumentPane, isDocumentPane } from '../features/DocumentPane';
 import { PluginContributionItems } from '../plugins/contributions-ui';
-import { paneChromeItemDescriptors } from '../plugins/contributions';
+import { usePaneHeaderContributions } from '../plugins/contributions';
 import { usePluginCommands } from '../plugins/commands';
 /**
  * A REMOTE daemon's workspace, rendered in this window (multi-daemon groups, §1.7).
@@ -47,6 +47,8 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
     // These controls belong to the remote pane. The primary shell owns window shortcuts,
     // top/status bars and shared prompts, so this host never dispatches a window shortcut.
     const contributions = usePluginCommands(runtime, NO_WINDOW_CHORDS, blockWindowShortcuts);
+    // One `pane.header` resolution per pane per render, read as chips and as descriptors.
+    const paneHeaderItems = usePaneHeaderContributions(contributions.items);
     const workspace = useStore(runtime.store, (state) =>
         state.daemon.state.workspaces.find((entry) => entry.id === workspaceID)
     );
@@ -147,18 +149,19 @@ export function RemoteWorkspaceView(props: RemoteWorkspaceViewProps): ReactEleme
             syncActive={workspace.isSyncInputActive}
             syncExcludedPaneIDs={workspace.syncInputExcluded}
             homeDirectory={homeDirectory}
+            workspaceID={workspaceID}
             headerCommandsFor={paneID => contributions.menu('pane.header', paneID)}
             headerExtras={paneID => {
-                const items = contributions.items('pane.header', paneID);
+                const items = paneHeaderItems.items(paneID);
                 return items.length ? <PluginContributionItems items={items} paneID={paneID} compact
                     execute={(_command, target, itemID) => { if (itemID) contributions.runItem('pane.header', itemID, target); }} /> : null;
             }}
-            /* The projection half of the same items, and the run reached by id rather than by
+            /* The projection half of the same resolution, and the run reached by id rather than by
                closure (pane chrome phase A, ratified decision 7). The remote view resolves and
                runs `pane.header` contributions through its own `usePluginCommands` already, so
                there is no reason for its panes' chrome model to be the poorer of the two - and
                #144's parity guard is what says so. */
-            headerItemsFor={paneID => paneChromeItemDescriptors(contributions.items('pane.header', paneID))}
+            headerItemsFor={paneHeaderItems.descriptors}
             onRunHeaderItem={(paneID, itemID) => { contributions.runItem('pane.header', itemID, paneID); }}
             renderPane={renderPane}
             onFocusPane={(paneID) => runtime.focusPane(workspaceID, paneID)}

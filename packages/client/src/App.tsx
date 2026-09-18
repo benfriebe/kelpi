@@ -13,7 +13,7 @@ import { settingsPresenterChords } from './settings/presenter-slot';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
-import { paneChromeItemDescriptors } from './plugins/contributions';
+import { usePaneHeaderContributions } from './plugins/contributions';
 import { bindInspectorFeature, createInspectorActions, useInspectorFeature } from './features/inspector';
 import { WorkspacesCreateSheetHost, bindWorkspacesFeature, useWorkspacesFeatureLifecycle, useWorkspacesFeatureModel } from './features/workspaces';
 import { createWorkspacesActions } from './features/workspaces-actions';
@@ -2874,13 +2874,15 @@ function Shell(props: AppProps): ReactElement {
         createSheetOpenRef.current || anyModalMounted || remoteSelectionRef.current !== null);
     const allViewChords = useMemo(() => [...contentPaneChords, ...pluginCommands.chords], [contentPaneChords, pluginCommands.chords.join('|')]);
     const contributionItems = (placement: 'statusbar' | 'workspace.header' | 'pane.header', paneID?: string): ReactNode => {
-        const items = pluginCommands.items(placement, paneID);
+        const items = placement === 'pane.header' && paneID !== undefined ? paneHeaderItems.items(paneID) : pluginCommands.items(placement, paneID);
         return items.length ? <PluginContributionItems items={items} paneID={paneID} compact={placement === 'pane.header'}
             execute={(_command, target, itemID) => { if (itemID) pluginCommands.runItem(placement, itemID, target); }} /> : null;
     };
-    /** The same items, as pane chrome descriptors: the projection half of decision 7. */
-    const paneChromeItems = (paneID: string): readonly PaneChromeItemDescriptor[] =>
-        paneChromeItemDescriptors(pluginCommands.items('pane.header', paneID));
+    /**
+     * One resolution per pane per render, read as chips by the host and as descriptors by the
+     * shared model. The two used to walk every manifest separately, on every grid render.
+     */
+    const paneHeaderItems = usePaneHeaderContributions(pluginCommands.items);
 
     /**
      * The palette's universe and its dispatch, in one registry outside the assembly.
@@ -3804,9 +3806,12 @@ function Shell(props: AppProps): ReactElement {
                         // `/Users/…` path while the footer, describing the same pane, prints
                         // `~/…` (`PaneHeaderView.swift:503` abbreviates unconditionally).
                         homeDirectory={daemon.info?.home}
+                        // Which workspace the bands in the chrome store belong to: switching away
+                        // from one hands every declaration back (`usePaneChromeScope`).
+                        {...(workspace === null ? {} : { workspaceID: workspace.id })}
                         headerCommandsFor={paneID => pluginCommands.menu('pane.header', paneID)}
                         headerExtras={paneID => contributionItems('pane.header', paneID)}
-                        headerItemsFor={paneChromeItems}
+                        headerItemsFor={paneHeaderItems.descriptors}
                         onRunHeaderItem={(paneID, itemID) => { pluginCommands.runItem('pane.header', itemID, paneID); }}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}

@@ -50,6 +50,7 @@ import {
     paneChromeModel,
     paneChromeRow,
     usePaneChromeParking,
+    usePaneChromeWithdrawal,
     type PaneChromeActions,
     type PaneChromeControlDescriptor,
     type PaneChromeDescriptor,
@@ -418,6 +419,17 @@ export interface PaneHeaderProps extends PaneActions {
      */
     readonly renameToken?: number | undefined;
     /**
+     * Is this pane's chrome actually on screen?
+     *
+     * `PaneGrid` never unmounts a pane to hide it: a zoomed-out pane, and every pane of a
+     * workspace the window is not showing, keeps its DOM at its last known rect under
+     * `visibility: hidden`. That box is still what `getBoundingClientRect` reports, so a band that
+     * enrolled itself in the overlay registry while invisible would park a web pane it cannot
+     * possibly be covering. Nothing else in this component reads it, and it defaults to true, so a
+     * standalone render behaves exactly as it always has.
+     */
+    readonly visible?: boolean | undefined;
+    /**
      * Another plugin's `pane.header` ITEMS, as descriptors (ratified decision 7).
      *
      * The host still draws them itself, through `headerExtras`, and this changes nothing on
@@ -451,6 +463,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         height = PANE_HEADER_HEIGHT,
         paneWidth,
         renameToken = 0,
+        visible = true,
         onHeaderPointerDown,
         onCopyDocument,
         onPaneContextMenu
@@ -468,9 +481,15 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
      * At the native 24 px this registers nothing at all: `paneChromeParks` is false, the hook is
      * inert, and no web pane's geometry changes. It earns its keep only once something declares a
      * taller band, which nothing does in phase A. See `../pane-chrome/height.ts`.
+     *
+     * `visible` is the third argument and not an optimisation: a hidden pane keeps its DOM at its
+     * last rect, so without it the band of a zoomed-out web pane sits inside the zoomed one's page
+     * hole and parks it for the length of the zoom.
      */
     const headerRef = useRef<HTMLDivElement | null>(null);
-    usePaneChromeParking(headerRef, pane.type, height);
+    usePaneChromeParking(headerRef, pane.type, height, visible);
+    // A declaration belongs to the view that made it, and this pane's chrome is going away.
+    usePaneChromeWithdrawal(pane.id);
 
     // `null` = not renaming; a string is the live draft. Commit is idempotent, so the
     // blur that follows an Enter (or an unmount) can never fire the callback twice.
@@ -522,11 +541,12 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     /*
      * The model. Everything below draws from `chrome` and acts through `surface`.
      *
-     * `headerExtras` is read once, here, and its PRESENCE is what the width ladders are charged
-     * four button-widths for (`PaneHeader.tsx`'s original `headerExtras ? 4 : 0`): the host
-     * cannot measure what a plugin draws, so it reserves a fixed box. Passing the node's presence
-     * rather than `items.length` keeps that charge exactly where it was: a standalone render that
-     * supplies the descriptors but no node is charged nothing, as it always was.
+     * `headerItems` is the single source for the contributions box: it decides whether there is
+     * one, how many chips it reports, and therefore the four button-widths the width ladders are
+     * charged for (`PaneHeader.tsx`'s original `headerExtras ? 4 : 0`) because the host cannot
+     * measure what a plugin draws. `headerExtras` is the host's RENDERING of that same list, read
+     * once here and drawn inside the box the descriptor names. A host that resolves the items
+     * twice, or publishes one list and draws another, was the shape this replaced.
      */
     const headerExtras = props.headerExtras?.(pane.id);
     const model = paneChromeModel({
@@ -543,7 +563,6 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         renaming,
         ...(props.headerCommands === undefined ? {} : { commands: props.headerCommands }),
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
-        contributions: Boolean(headerExtras),
         canCopyDocument: onCopyDocument !== undefined
     });
     const chrome: PaneChromeDescriptor = model.descriptor;

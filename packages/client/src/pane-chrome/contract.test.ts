@@ -150,4 +150,20 @@ describe('paneChromeParks (ratified decision 5)', () => {
         expect(paneChromeParks('markdown', 96)).toBe(false);
         expect(paneChromeParks('web', Number.NaN)).toBe(false);
     });
+
+    /**
+     * The zoom case, which is the one that bites.
+     *
+     * `PaneGrid` never unmounts a pane to hide it: a zoomed-out pane keeps its DOM at its last
+     * rect under `visibility: hidden`, and `getBoundingClientRect` still reports that rect. With
+     * two web panes both declaring a band and one of them zoomed, the hidden one's band lies
+     * inside the visible one's page hole, and an unconditional registration parks the page the
+     * user is actually looking at for the whole length of the zoom.
+     */
+    it('registers nothing for a band nobody can see', () => {
+        expect(paneChromeParks('web', 96, false)).toBe(false);
+        expect(paneChromeParks('web', 96, true)).toBe(true);
+        // The default is the visible case, so a standalone render behaves as it always has.
+        expect(paneChromeParks('web', 96)).toBe(true);
+    });
 });

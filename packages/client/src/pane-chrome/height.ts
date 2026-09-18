@@ -33,7 +33,7 @@
  * `paneChromeParks` for the predicate and the validation record for the measured cost.
  */
 
-import { useCallback, useSyncExternalStore, type RefObject } from 'react';
+import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react';
 
 import { useOverlayPresence } from '../chrome/modal-presence';
 
@@ -71,15 +71,23 @@ function subscribe(listener: () => void): () => void {
 }
 
 /**
- * Declare (or withdraw) a pane's band.
+ * Declare (or withdraw) a pane's band. Three inputs, three answers, and no fourth case:
  *
- * `null` withdraws, which is what a reload, a fallback or a pane closing does: the pane goes back
- * to the host's own band on the next frame. The value is stored RAW and clamped at read, because
- * the ceiling is a fraction of a pane height this module cannot see - the same split the
- * notification box makes between `setNotificationBoxHeight` and `notificationBoxHeight`.
+ *   - **`null` withdraws.** The pane goes back to the host's own band on the next frame. It is
+ *     what a reload, a fallback, a workspace change and a closing pane all do, and it is in the
+ *     plugin contract too (`setPaneChromeHeight(paneID, pixels | null)`) so a presenter can hand
+ *     a band back without waiting to be torn down.
+ *   - **A negative number is 0.** `contract.ts` clamps a declaration to `[0, ceiling]`, so the
+ *     floor belongs to the clamp and this agrees with it rather than inventing a second answer.
+ *     A presenter that asks for -40 is asking for nothing, and nothing is a legal band.
+ *   - **A non-finite number is refused, and the previous band stands.** NaN and the infinities
+ *     are not heights at all; there is nothing to clamp them to, and the alternative (treating
+ *     them as a withdrawal) would make one arithmetic slip inside a presenter look exactly like a
+ *     deliberate hand-back.
  *
- * A non-finite or negative declaration is refused outright rather than stored as 0: it is not a
- * height, and storing it would make the withdrawal path ambiguous.
+ * The value is stored RAW and clamped at read, because the ceiling is a fraction of a pane height
+ * this module cannot see - the same split the notification box makes between
+ * `setNotificationBoxHeight` and `notificationBoxHeight`.
  */
 export function setPaneChromeHeight(paneID: string, pixels: number | null): void {
     if (pixels === null) {
@@ -87,8 +95,8 @@ export function setPaneChromeHeight(paneID: string, pixels: number | null): void
         republish();
         return;
     }
-    if (!Number.isFinite(pixels) || pixels < 0) return;
-    const value = Math.round(pixels);
+    if (!Number.isFinite(pixels)) return;
+    const value = Math.max(0, Math.round(pixels));
     if (declarations.get(paneID) === value) return;
     declarations.set(paneID, value);
     republish();
@@ -155,9 +163,10 @@ export function paneChromeBand(
 export function usePaneChromeParking(
     ref: RefObject<Element | null>,
     kind: PaneChromeKind,
-    height: number
+    height: number,
+    visible: boolean = true
 ): void {
-    useOverlayPresence(ref, paneChromeParks(kind, height));
+    useOverlayPresence(ref, paneChromeParks(kind, height, visible));
 }
 
 /**
@@ -168,4 +177,49 @@ export function usePaneChromeParking(
  */
 export function usePaneChromeDeclaration(paneID: string): (pixels: number | null) => void {
     return useCallback((pixels: number | null) => setPaneChromeHeight(paneID, pixels), [paneID]);
+}
+
+/**
+ * Withdraw this pane's band when its chrome goes away.
+ *
+ * The store is a module-level map keyed by pane id, so without this an entry outlives the pane
+ * that owns it forever - and the cost is not a leaked map entry, it is a RESIZE. Close a web pane
+ * that had declared 96 px, open another, and the daemon can hand the new one the same id; switch
+ * away from a workspace and back, and the stale declaration is applied on the first frame, before
+ * any presenter has had a chance to re-declare, which is a live PTY resized against a band nobody
+ * asked for. A declaration belongs to the view that made it, and a pane whose header has unmounted
+ * has no view.
+ *
+ * Mounted on the header rather than the grid because the header is what unmounts when a pane
+ * closes, and `PaneGrid` deliberately keeps a HIDDEN pane mounted: a zoomed-out pane must keep its
+ * band, because it is coming straight back.
+ */
+export function usePaneChromeWithdrawal(paneID: string): void {
+    useEffect(
+        () => () => {
+            setPaneChromeHeight(paneID, null);
+        },
+        [paneID]
+    );
+}
+
+/**
+ * Drop every declaration when the grid changes what it is showing.
+ *
+ * The per-pane withdrawal above covers a pane that goes; this covers the window that moves. The
+ * displayed workspace changing, a remote workspace being selected, the daemon connection dropping
+ * and the grid itself unmounting all end the session a declaration belonged to, and each of them
+ * either unmounts every pane wrapper (in which case this is a no-op the store absorbs) or - the
+ * case that matters - leaves the wrappers up while their contents are replaced wholesale.
+ *
+ * `scope` is whatever the host calls "the thing being shown": `PaneGrid` passes its workspace id.
+ * `undefined` opts out, for a host that has no such notion and for every standalone render.
+ */
+export function usePaneChromeScope(scope: string | undefined): void {
+    useEffect(() => {
+        if (scope === undefined) return undefined;
+        return () => {
+            clearPaneChromeHeights();
+        };
+    }, [scope]);
 }

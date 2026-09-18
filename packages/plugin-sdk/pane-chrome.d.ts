@@ -20,8 +20,14 @@
  * host), PTY handles and pids, agent session ids, every other plugin's `pluginID`, the command
  * name behind any control or item, connection URLs and the URL of a web pane's page, every run
  * closure, and the `data-testid` of every control (the bundled header's handle on its own DOM is
- * not API). A control and an item are a display name, an icon, an enabled flag and an opaque ref;
- * they are activated by id, and the host owns the mapping.
+ * not API).
+ *
+ * A control and an item are a display name, an icon, an enabled flag and an opaque `ref`. The ref
+ * is the whole of that promise: a contribution id is `<pluginID>.<name>`, so publishing a control
+ * under its own key would name the owner and the verb in the same breath as saying they are
+ * withheld. Refs are minted per frame, scoped to their pane, and mean nothing outside the frame
+ * they arrived in; the host keeps the mapping and re-resolves it against a fresh model before
+ * anything runs, so a ref from an older frame, from another pane, or invented, activates nothing.
  *
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
@@ -112,8 +118,8 @@ export type PaneChromeControlKind = 'action' | 'item';
 
 /** One trailing control: the host's own, or another plugin's `pane.header` command. */
 export interface PaneChromeControl {
-    /** The opaque ref `runPaneHeaderItem` and the host's own actions are addressed by. */
-    readonly key: string;
+    /** The opaque, pane-scoped ref `activatePaneControl` takes back. Never a contribution id. */
+    readonly ref: string;
     readonly kind: PaneChromeControlKind;
     readonly label: string;
     /** An SF Symbol-style name. The presenter supplies its own drawing. */
@@ -131,7 +137,8 @@ export type PaneChromeItemTone = 'default' | 'info' | 'success' | 'warning' | 'e
  * owner's rule. Draw these, or a replaced header deletes somebody else's extension point.
  */
 export interface PaneChromeItem {
-    readonly id: string;
+    /** The opaque, pane-scoped ref `runPaneHeaderItem` takes back. Never a contribution id. */
+    readonly ref: string;
     readonly text: string;
     readonly tooltip: string | null;
     readonly badge: string | null;
@@ -215,8 +222,21 @@ export interface WindowPaneChromeAPI {
     renamePane(paneID: string): Promise<void>;
     /** Routes through the host's existing confirmation. A presenter never draws one. */
     closePane(paneID: string): Promise<void>;
-    /** Activate another plugin's `pane.header` item or command by its opaque ref. */
-    runPaneHeaderItem(paneID: string, itemID: string): Promise<void>;
+    /**
+     * Press one of the pane's trailing controls: the host's own (`copy`, `edit`, `refresh`, the
+     * splits, the globe, the ✕) or another plugin's `pane.header` command button.
+     *
+     * Two calls rather than one, because the frame has two lists and they are not the same kind of
+     * thing: `controls` is the button ROW a presenter redraws, and `items` is the box of another
+     * plugin's chips beside it, which the host keeps drawing itself. A control's ref activates
+     * only through this call and an item's only through `runPaneHeaderItem`, so neither list can
+     * be used to reach into the other.
+     *
+     * `close` routes through the host's confirmation like every other close.
+     */
+    activatePaneControl(paneID: string, ref: string): Promise<void>;
+    /** Activate one of another plugin's `pane.header` items by its opaque ref. */
+    runPaneHeaderItem(paneID: string, ref: string): Promise<void>;
     /** Opens the host's own pane context menu, which stays native. */
     openPaneMenu(paneID: string): Promise<void>;
     /**
@@ -228,9 +248,14 @@ export interface WindowPaneChromeAPI {
      * declaration belongs to the view that made it: a reload, a different selection or a fallback
      * drops every one of them at once.
      *
+     * `null` withdraws: the pane goes back to the native band on the next frame, and a presenter
+     * that wants a pane to keep the bundled header can say so without being torn down. A negative
+     * number is 0, which is a legal band; a non-finite one is refused and the current band stands.
+     *
      * Over a WEB pane a declared band taller than the native one enrols in the host's overlay
      * registry and parks the page while the two overlap, because nothing in the document can
-     * composite above a native page view.
+     * composite above a native page view. A band on a pane that is not on screen (zoomed out, or
+     * in a workspace the window is not showing) registers nothing at all.
      */
-    setPaneChromeHeight(paneID: string, pixels: number): Promise<void>;
+    setPaneChromeHeight(paneID: string, pixels: number | null): Promise<void>;
 }

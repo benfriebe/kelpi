@@ -303,6 +303,11 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         // route back from a broken presenter. A container there would put that route behind a
         // slot-picker header inside the dialog.
         if (places.includes('settings.window')) throw new Error('containers cannot present the Settings window; a Settings presenter owns the whole dialog body');
+        // A pane chrome presenter owns one 24 px band per pane, and a container's own chrome is a
+        // slot-picker header. There is no room for it, and the panes it would pick for are the
+        // grid's, not the container's: the same refusal the interaction placements make, one
+        // surface smaller.
+        if (places.includes('pane.chrome')) throw new Error('containers cannot present pane chrome; a pane chrome presenter owns each pane band');
         const layout = container['layout'];
         if (layout !== 'row' && layout !== 'column' && layout !== 'tabs') throw new Error('container layout must be row, column, or tabs');
         const containerID = contributionID(container['id']);

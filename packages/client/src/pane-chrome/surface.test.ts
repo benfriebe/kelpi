@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { testPane } from '../grid/testing';
 
 import { paneChromeModel, type PaneChromeCommandInput, type PaneChromeModel } from './model';
+import { projectPaneChrome } from './projection';
 import { createPaneChromeSurface, type PaneChromeActions } from './surface';
 
 const NOW = 1_000_000;
@@ -160,6 +161,56 @@ describe('the pane chrome surface', () => {
         h.surface.runItem('p1', 'sample.board.missing');
         h.surface.runItem('p2', 'sample.board.status');
         expect(h.actions.onRunHeaderItem).toHaveBeenCalledExactlyOnceWith('p1', 'sample.board.status');
+    });
+
+    /**
+     * The activation path a published frame actually has.
+     *
+     * Before this, `runItem` resolved `descriptor.items` and nothing resolved `controls`, so a
+     * presenter was handed `copy`, `edit`, `refresh`, both split controls, the globe, the ✕ and
+     * every one of another plugin's `pane.header` command buttons with no call that could press
+     * any of them. A ref addresses both lists, and it is resolved TWICE: once against the table
+     * that left with the frame, once against a fresh model.
+     */
+    it('activates either half of a published frame by ref, and refuses a ref that names nothing', () => {
+        const run = vi.fn();
+        const h = harness({
+            type: 'markdown',
+            commands: [{ id: 'example.board.inspect', title: 'Inspect', run }],
+            items: [{ id: 'example.board.status', text: 'Ready', tooltip: null, badge: null, tone: 'default', enabled: true }]
+        });
+        const { frame, refs } = projectPaneChrome({
+            workspaceID: 'ws-1',
+            formFactor: 'desktop',
+            panes: [paneChromeModel({
+                pane: testPane('p1', { type: 'markdown', filePath: '/repo/NOTES.md' }),
+                focused: false,
+                nowSeconds: NOW,
+                paneWidth: 900,
+                canCopyDocument: true,
+                commands: [{ id: 'example.board.inspect', title: 'Inspect', run }],
+                items: [{ id: 'example.board.status', text: 'Ready', tooltip: null, badge: null, tone: 'default', enabled: true }]
+            }).descriptor]
+        });
+        const control = (label: string): string =>
+            frame.panes[0]?.controls.find((entry) => entry.label === label)?.ref ?? '';
+
+        h.surface.activateRef(refs, 'p1', control('Inspect'));
+        expect(run).toHaveBeenCalledExactlyOnceWith('p1');
+        h.surface.activateRef(refs, 'p1', control('Copy whole file'));
+        expect(h.actions.onCopyDocument).toHaveBeenCalledExactlyOnceWith('p1');
+        h.surface.activateRef(refs, 'p1', control('Close pane (⌘W)'));
+        expect(h.actions.onClosePane).toHaveBeenCalledExactlyOnceWith('p1');
+        h.surface.activateRef(refs, 'p1', frame.panes[0]?.items[0]?.ref ?? '');
+        expect(h.actions.onRunHeaderItem).toHaveBeenCalledExactlyOnceWith('p1', 'example.board.status');
+
+        // A forged ref, a ref for another pane, and a ref whose control has since gone.
+        h.surface.activateRef(refs, 'p1', 'c999');
+        h.surface.activateRef(refs, 'p2', control('Inspect'));
+        expect(run).toHaveBeenCalledTimes(1);
+        h.publish(paneChromeModel({ pane: testPane('p1'), focused: false, nowSeconds: NOW, paneWidth: 900 }));
+        h.surface.activateRef(refs, 'p1', control('Inspect'));
+        expect(run).toHaveBeenCalledTimes(1);
     });
 
     it('is inert where the host bound nothing, rather than throwing at a control', () => {

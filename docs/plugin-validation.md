@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Lane hygiene: phone remote-workspace flake and the remembered-place leak](#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18).
 - [Selectable notification presenter](#selectable-notification-presenter-2026-09-13).
 - [Daemon disconnect coverage](#daemon-disconnect-coverage-2026-09-13).
 - [Settings Lab and live acceptance](#settings-lab-and-live-acceptance-2026-09-12).
@@ -49,6 +50,156 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Lane hygiene: phone remote-workspace flake and the remembered-place leak (2026-09-18)
+
+The runner's leak post-condition ([#205](https://github.com/benfriebe/kelpi/issues/205)) and the
+lane's share of the phone flake ([#235](https://github.com/benfriebe/kelpi/issues/235)), implemented
+on `fix/lane-phone-flakes`, based on merged main `b4a966a` and shipped as
+[#240](https://github.com/benfriebe/kelpi/pull/240). Tested revision: **`165230b`** (`pnpm check` on that tree: root vitest **8,116 passed, 1 skipped**, shell **870 passed**; both scenario chains green with only the three inert workbench-slot warnings).
+This branch is lane-only. It changes eight harness files and no product file:
+`scripts/ui-audit/lib/workbench.mjs`, and the `plugin-browser-features`, `plugin-chrome-features`,
+`plugin-document-features`, `plugin-terminal-features`, `plugin-interaction-presenters`,
+`plugin-settings-presenter` and `plugin-remote` scenarios. Plugin API version stays **1** and wire
+protocol generation stays **2**. The product fix for #235 shipped separately in
+[#238](https://github.com/benfriebe/kelpi/pull/238) and is already in the `b4a966a` this branch sits
+on; what is left here is the shared `phoneToLanding` retry with its recorder note and bounded rounds,
+the cleanup ordering in four scenarios, two private helper copies replaced by the shared one, and
+the analysis of the three inert workbench-slot warnings below. Private sandboxes only, never the
+user's daemon; the vendored engine bundle was verified first (`pnpm vitest run vendor-engine`, 20
+passing) and the four bundles were rebuilt from this tree before any scenario ran, so `--no-build`
+below always drove the source under test. The per-scenario check counts recorded below were taken
+before the rebase and so predate the named renderer-error check #238 added to every scenario; the
+totals a scenario reports on `b4a966a` are higher by that check.
+
+### #235, reached independently here and fixed in #238
+
+This lane's investigation arrived at the same diagnosis as #238 ("Notify the pane registry when a
+plugin terminal's presentation changes, not on every render, and make a renderer exception a named
+scenario failure", merged 2026-09-17, closing #235), by its own route, and is recorded as
+corroboration rather than as work this branch does.
+
+What the lane saw. Ten lone runs of `plugin-terminal-features` at `f9c8598` were **0 of 10 green**,
+eight of them in the #235 shape (`click: no element matches [data-testid="phone-view-toggle"]`,
+`Phone layout renderer did not attach`, `Remote terminal has no phone key bar`). The failure
+diagnostics said the same thing from the other side: in every red run `failure-diagnostics.json`
+recorded `host.text` as the empty string, `host.terminals` as `[]`, and every pane's renderer as
+`unavailable: evalInFrame: no iframe matches [data-testid="plugin-view-<paneID>"] iframe`, i.e. no
+body at all rather than one pane that had not finished mounting. The four PTYs behind those panes
+were still alive in the same reading, so nothing about the daemon or the processes was involved.
+
+The mechanism the lane traced. `features/TerminalFeaturePane.tsx` builds the terminal props fresh on
+every render, so `PluginView`'s effect on `[props.terminal]` was keyed on "this rendered again"
+rather than on "the presentation moved", and `notifyTerminalPanes()` went out unconditionally,
+bumping the version every `useSyncExternalStore` reader of `terminal/pane-registry.ts` had
+snapshotted. The reader that closes the loop is the take-size-control read
+[#231](https://github.com/benfriebe/kelpi/pull/231) added to `phone/PhoneShell.tsx`, an ANCESTOR of
+the pane (it renders `PhoneRemoteWorkspace`, which renders `TerminalFeaturePane` with no memo
+between them), so each announcement re-rendered the pane and the re-rendered pane announced again,
+until React cut the cycle off at fifty nested updates and the throw took the window down to a blank
+page. `terminal/PhoneKeyBar.tsx` reads the same registry but is a sibling of the grid, which is why
+the desktop and the split grid never showed this. Load is not the cause and only decides how many
+turns of the crank land in one commit cascade, which is why the rate reads as one run in five on an
+idle machine and as eight in ten here. #238 keyed the effect on the presentation's value and gated
+the `terminal-metrics` announcement on the cell height moving; nothing on this branch touches that
+code or its tests.
+
+The before and after counts below are evidence that this gate works, not a measurement of the
+merged tree: the after runs were taken on this branch when it still carried its own equivalent
+of #238's guard, and the rebase dropped that in favour of the shipped one.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Reproduction, before any fix | `node scripts/scenario.mjs plugin-terminal-features --no-build --window hidden`, ten runs at `f9c8598` | **0 of 10 green.** Eight reds have the #235 shape: `click: no element matches [data-testid="phone-view-toggle"]` (runs 1, 3, 8, 9), `Phone layout renderer did not attach` (runs 4, 10) and `Remote terminal has no phone key bar` (runs 6, 7), each 31.2 to 36.4 s and 44 or 45 checks of 46 or 47. The other two (runs 2 and 5) passed the phone section whole and failed a clipboard check instead, at 57/58 in 18.2 and 22.5 s: `cleared selection cannot copy a stale cached value` and `remote platform Copy resolves the remote renderer selection`. Those two are a separate, pre-existing shape. |
+| After the gate, on this branch's own copy of it | `node scripts/scenario.mjs plugin-terminal-features --no-build --window hidden`, ten runs, then ten more | **Zero reds of the #235 shape in 20 runs**, and the second block of ten was **10 of 10 green at 58/58**, 17.3 to 18.6 s. The first block was 9 of 10: its run 8 failed the same pre-existing clipboard check the before-block's run 5 did (`remote platform Copy resolves the remote renderer selection`, 57/58 at 22.8 s), having passed the whole phone section. That shape is independent of the #235 fix, reproduces identically either side of it, and belongs with [#207](https://github.com/benfriebe/kelpi/issues/207)'s family rather than here. |
+
+### The remembered-place leak in `plugin-document-features`
+
+`phone/place.ts` remembers one `{host, workspaceID}` in `kelpi.phone.last-place`, and the only
+gesture that forgets it is a tap on the Hosts button, which needs the shell mounted (the viewport
+still narrow) and the host it names still present. When the tap does not land, the runner prints
+`scenario plugin-document-features leaked: the phone's remembered place is still set
+({"host":"configured:DocumentRemote", ...})` and the next phone scenario pays for it: in every run
+recorded here where the warning appeared, `plugin-remote` then went red at **10/12** on `the phone
+host picker includes the plugin workspace`, because its phone opened on a remote host
+`plugin-document-features` had already shut down. That is #205's shape exactly, and it is what the
+post-condition exists to name.
+
+Two scenario faults, no product defect. The host does offer the gesture while a remote host is
+configured, and the scenario's own body proves it on the runs that pass.
+
+**The tap was being spent on a sheet.** `scripts/ui-audit/lib/workbench.mjs` tapped
+`phone-open-landing` once and then waited five seconds for the landing page. The button sits in the
+top-left corner of the phone header, and a phone sheet is a `fixed inset-0` overlay whose scrim
+covers that corner (`phone/ui.tsx`: the scrim is what "tap outside" hits), so a scenario that
+arrives with a sheet still on screen spends its one tap closing the sheet and none on the button.
+Measured, not supposed: in one instrumented chain run of four, `document.elementFromPoint` at the
+button's own centre answered `phone-pane-sheet-scrim` with `phone-pane-sheet` still in the DOM;
+after the tap the sheet was gone, the button was the hit-test target again, the shell was still on
+the pane screen and the place was still set. `phoneToLanding` now does up to three rounds of "wait
+for the button, tap it, wait for the landing page", re-checking on each round the two states that
+mean the work is already done. A person whose tap dismissed a sheet taps again. Waiting for the
+button to be the hit-test target INSTEAD of tapping would deadlock on this very case, since nothing
+else in a cleanup path closes that sheet.
+
+**And the cleanup could never have caught it.** `plugin-document-features`'s `finally` restored the
+config (dropping `DocumentRemote` out of the navigation), cleared the device metrics (unmounting
+the shell) and only then called `phoneToLanding`, which by that point could only no-op. It is now
+the first statement in the block, before the config restore, before the widening and before
+`remoteDaemon.stop()`, which is the order the comment there now states and the reason for each
+step.
+
+How often it was: **3 of 8** multi-scenario runs at this revision left the place set (one of two
+`plugin-document-features plugin-remote` chains, one of four instrumented chains, and the
+four-scenario run), each costing about 4.5 s of scenario time, which is the one five-second ceiling
+expiring. The same scenario alone left it set in **0 of 6** runs, which is why it reads as a flake
+rather than as the ordering fault it is.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| The chain, four times | `node scripts/scenario.mjs plugin-document-features plugin-remote --window hidden --no-build` | **4 of 4 with no remembered-place warning**, `plugin-document-features` 28/28 in 7.9 to 8.1 s (the leaking runs took 12.8 to 13.1 s) and `plugin-remote` 12/12 every time. The only warning left is the workbench slot below. |
+| The four named scenarios | `node scripts/scenario.mjs plugin-terminal-features plugin-document-features plugin-terminal-geometry plugin-remote --window hidden --no-build` | **58/58 + 28/28 + 30/30 + 12/12, all green.** Three leak warnings, all of them the workbench-slot one below: `plugin-terminal-features` and `plugin-terminal-geometry` on `terminal` naming `example.terminal-lab.terminal`, `plugin-document-features` on `document.markdown` naming `example.document-lab.editor`, each in a stopped remote daemon's store. No remembered-place warning, no viewport, focus, overlay, workspace or web-pane warning. Before the fixes the same command left `plugin-document-features` leaking the place and `plugin-remote` red at 10/12. |
+| Full verification battery | `node scripts/verify.mjs --full` | **Passed at `165230b` in 25.1 min with no component retried**: typecheck, root tests, shell tests, build bundles, all scenarios (hidden, 5.4 min), full audit (18.7 min) and the packaged smoke (69/69). No remembered-place warning; the only leak warnings are the three inert workbench-slot ones. |
+
+### Review follow-up (same day)
+
+An independent review of the lane work asked for three things, all applied here. `phoneToLanding`
+now takes a `note` callback and every one of its thirteen call sites passes its recorder's, so a
+first tap that is always eaten shows up in the run's notes instead of being absorbed silently; its
+rounds are 5 s then 2 s then 2 s under a 12 s cap, so a cleanup whose button never appears no longer
+burns 15 s of settle ahead of the config restore. The byte-identical private copies of the pre-fix
+helper in `plugin-settings-presenter.mjs` and `plugin-interaction-presenters.mjs` are gone, both now
+importing the shared one. The browser, terminal and chrome feature scenarios restored the config
+before going home, the same hazard the document scenario's comment describes, so the landing call is
+now the first step of all four cleanups, and that comment says what was unique to the document one
+(this was the one that ran after the widening, on a host its own body had already stopped and
+restarted).
+
+Re-verified on the review tree: `node scripts/scenario.mjs plugin-terminal-features --no-build
+--window hidden` **10 of 10 green at 58/58**, 17.3 to 17.8 s, no clipboard red this time; the
+four-scenario chain **58/58 + 28/28 + 30/30 + 12/12** with the same three workbench-slot warnings
+and nothing else; and the four scenarios this follow-up edited but the chain above did not run,
+`node scripts/scenario.mjs plugin-chrome-features plugin-settings-presenter
+plugin-interaction-presenters plugin-browser-features --window hidden --no-build`, **34/34 + 34/34 +
+51/51 + 66/66 with zero leak warnings**. No run printed the new multi-tap note, so the first tap
+landed in all of them.
+
+### The remaining workbench-slot warnings are left as they are
+
+`plugin-terminal-features` and `plugin-terminal-geometry` both end with `cleanup: a stopped
+daemon's store still holds terminal=example.terminal-lab.terminal`, the runner reports the same
+fact as a leak, and `plugin-document-features` has the identical one for `document.markdown`. None
+of the three is a reorder away. The key is `kelpi.workbench.v1:<remote daemonID>` in the PRIMARY
+window's storage, written when a scenario picks a plugin renderer for a REMOTE pane, and the only
+two surfaces that can write it back are that pane's own renderer picker and Settings ▸ Plugins,
+both of which act on the daemon whose workspace the window is looking at
+(`scripts/ui-audit/lib/workbench.mjs` header). By the time any of those `finally` blocks reaches
+its `restoreBundledSlots` the window has navigated back to the local shell and the remote host's
+config line has been removed, so silencing the warning means re-selecting the remote host and
+workspace during cleanup and driving Settings a second time against it: a new multi-step sequence
+with its own settle ceilings in the path that runs after a failure, not a reordering of steps that
+are already there. The warning names a store nothing can read again, since that sandbox is stopped
+and deleted on the way out, so all three are left in place and reported.
 
 ## Selectable notification presenter (2026-09-13)
 

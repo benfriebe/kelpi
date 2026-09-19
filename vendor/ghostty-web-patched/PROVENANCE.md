@@ -1,7 +1,7 @@
-# ghostty-web 0.4.0-nex.13 (vendored)
+# ghostty-web 0.4.0-nex.14 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus twelve
+review in the orchestrating session and explicit user authorization to integrate both, plus thirteen
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
@@ -9,7 +9,8 @@ focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that ca
 repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM storage; `-nex.10`:
 every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
 `-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
-`-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped).
+`-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-nex.14`: selected conversation
+rows remain anchored when older history is trimmed).
 
 **`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
@@ -33,6 +34,51 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-nex.11` | output pins a scrolled viewport to its lines instead of snapping it to the bottom; a keystroke scrolls to the bottom |
 | `0.4.0-nex.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-nex.10`, its WASM instance) can be collected |
 | `0.4.0-nex.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
+| `0.4.0-nex.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
+
+## Kelpi adaptation: selection follows retained history (`0.4.0-nex.14`, 2026-09-19)
+
+The original #170 remote Codex report has not been independently reproduced. Its remote copy
+dispatch gate was already fixed by #226 and is unchanged here. The residual trim hypothesis does
+reproduce against the installed `-nex.13` engine: at an 80×10 grid, write 1,100 numbered conversation
+rows, scroll up 100 rows, Shift-drag rows 2–3, then write another 100 rows. The 1,178th line causes
+the native engine to discard its oldest 589-row page. Both selected rows still exist, but the
+JavaScript absolute indices now point past the buffer and `getSelection()` returns an empty
+string. A larger output chunk can hide the trim behind a net increase in history length, so a
+before/after length subtraction cannot fix it.
+
+`ghostty-vt-selection.patch` adds two WASM exports to the pinned C adapter:
+`ghostty_terminal_track_selection` installs the current endpoints as a native `Screen.selection`
+with tracked `PageList` pins; `ghostty_terminal_read_selection` consumes their updated coordinates
+and releases both pins, including on an inactive screen. This uses the native page manager's
+existing trim accounting, not output-byte counting or content matching. Tracking runs only while
+the JavaScript manager has endpoints, including a drag still in progress, and pins live only for
+one synchronous `Terminal.writeInternal` call. If either pin is garbage, the screen changed, or
+the terminal reset, the JavaScript manager clears the selection and its highlight. ED3 explicitly
+clears a selection touching history before the native erase: `PageList.eraseRows` otherwise moves
+erased pins to row zero without marking them garbage. Active-screen selections survive ED3.
+
+`clearSelection` now stops drag autoscroll and emits its change once; `deselect` does not emit a
+second notification. Copy still pulls the live renderer on demand. Native selection tracking
+does not change the pre-existing viewport pinning policy or the clipboard dispatch path.
+
+Regression coverage is in `packages/client/src/terminal/selection-scrollback.wasm.test.ts` against
+the installed bundle and real WASM, with real selection mouse listeners and fake canvas metrics.
+`scripts/scenarios/terminal-selection-trim.mjs` drives Shift-drag and Cmd-C through a real private
+Kelpi pane with mouse reporting enabled, crosses a trim boundary measured from the same engine,
+and poisons a page-local clipboard sink after copy-on-select. The reporter's exact Codex session,
+remote machine, and installed version remain unknown; passing these checks proves the trim fix,
+not that this was the only cause of that report.
+
+Rebuild with the existing pinned source/toolchain recipe below, applying the upstream WASM API
+patch, `ghostty-vt-wrap-linkage.patch`, and then `ghostty-vt-selection.patch`. The upstream-only
+baseline was reproduced byte for byte with Zig 0.15.2 before adding either local patch. Rebuild the
+TypeScript bundle with `pnpm vendor:build` and commit the WASM, both bundles, declarations and
+package version together (the existing file override does not need a lockfile change).
+
+The shipped WASM is 424,960 bytes, SHA-256
+`bf31722ad17178b20dfb2fe0c3abb3afad9f2aa22c6bb0165d7eb86b734ca97b`.
+The bundle rebuild resolved Vite 4.5.14, vite-plugin-dts 4.5.4 and TypeScript 5.9.3.
 
 ## Nex adaptation: an erased row forgets it was wrapped (`0.4.0-nex.13`, 2026-09-11)
 
@@ -266,6 +312,7 @@ git checkout -q FETCH_HEAD
 # then reverts it; we apply both by hand so the tree can be rebuilt and diffed.
 git apply ../patches/ghostty-wasm-api.patch        # warns about trailing whitespace; fine
 git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-wrap-linkage.patch
+git apply <repo>/vendor/ghostty-web-patched/ghostty-vt-selection.patch
 
 zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall   # ~20 s cold, ~3 s warm
 cp zig-out/bin/ghostty-vt.wasm <repo>/vendor/ghostty-web-patched/ghostty-vt.wasm

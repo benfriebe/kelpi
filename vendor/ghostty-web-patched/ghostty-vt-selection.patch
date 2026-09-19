@@ -1,0 +1,108 @@
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -167,6 +167,8 @@
+         @export(&c.terminal_get_mode, .{ .name = "ghostty_terminal_get_mode" });
+
+         // Scrollback API
++        @export(&c.terminal_track_selection, .{ .name = "ghostty_terminal_track_selection" });
++        @export(&c.terminal_read_selection, .{ .name = "ghostty_terminal_read_selection" });
+         @export(&c.terminal_get_scrollback_length, .{ .name = "ghostty_terminal_get_scrollback_length" });
+         @export(&c.terminal_get_scrollback_line, .{ .name = "ghostty_terminal_get_scrollback_line" });
+         @export(&c.terminal_get_scrollback_grapheme, .{ .name = "ghostty_terminal_get_scrollback_grapheme" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -80,6 +80,8 @@
+ pub const terminal_get_mode = terminal.getMode;
+
+ // Scrollback API
++pub const terminal_track_selection = terminal.trackSelection;
++pub const terminal_read_selection = terminal.readSelection;
+ pub const terminal_get_scrollback_length = terminal.getScrollbackLength;
+ pub const terminal_get_scrollback_line = terminal.getScrollbackLine;
+ pub const terminal_get_scrollback_grapheme = terminal.getScrollbackGrapheme;
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -18,6 +18,7 @@
+ const builtin = @import("builtin");
+
+ const Terminal = @import("../Terminal.zig");
++const Selection = @import("../Selection.zig");
+ const stream = @import("../stream.zig");
+ const Action = stream.Action;
+ const render = @import("../render.zig");
+@@ -101,7 +102,17 @@
+             .erase_display_below => self.terminal.eraseDisplay(.below, value),
+             .erase_display_above => self.terminal.eraseDisplay(.above, value),
+             .erase_display_complete => self.terminal.eraseDisplay(.complete, value),
+-            .erase_display_scrollback => self.terminal.eraseDisplay(.scrollback, value),
++            .erase_display_scrollback => {
++                // eraseRows intentionally re-points deleted pins without marking garbage.
++                // A selection touching erased history must not become unrelated screen text.
++                const screen = self.terminal.screens.active;
++                if (screen.selection) |sel| {
++                    if (screen.pages.pointFromPin(.active, sel.start()) == null or screen.pages.pointFromPin(.active, sel.end()) == null) {
++                        screen.clearSelection();
++                    }
++                }
++                self.terminal.eraseDisplay(.scrollback, value);
++            },
+             .erase_display_scroll_complete => self.terminal.eraseDisplay(.scroll_complete, value),
+             .erase_line_right => self.terminal.eraseLine(.right, value),
+             .erase_line_left => self.terminal.eraseLine(.left, value),
+@@ -1002,3 +1013,53 @@
+     try std.testing.expectEqual(@as(u32, 'l'), cells[3].codepoint);
+     try std.testing.expectEqual(@as(u32, 'o'), cells[4].codepoint);
+ }
++
++
++// A JS selection uses buffer row indices, which change when PageList prunes history.
++// Track its endpoints natively for the duration of a write, then consume their new
++// positions. The JS selection remains the authority outside that synchronous write.
++fn clearTrackedSelection(wrapper: *TerminalWrapper) void {
++    inline for (.{ .primary, .alternate }) |key| {
++        if (wrapper.terminal.screens.get(key)) |screen| screen.clearSelection();
++    }
++}
++
++pub fn trackSelection(
++    ptr: ?*anyopaque,
++    start_x: c_int,
++    start_y: c_int,
++    end_x: c_int,
++    end_y: c_int,
++) callconv(.c) bool {
++    const wrapper: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
++    clearTrackedSelection(wrapper);
++    const screen = wrapper.terminal.screens.active;
++    const pages = &screen.pages;
++    if (start_x < 0 or end_x < 0 or start_y < 0 or end_y < 0) return false;
++    if (start_x >= pages.cols or end_x >= pages.cols) return false;
++    if (start_y >= pages.total_rows or end_y >= pages.total_rows) return false;
++    const start = pages.pin(.{ .screen = .{ .x = @intCast(start_x), .y = @intCast(start_y) } }) orelse return false;
++    const end = pages.pin(.{ .screen = .{ .x = @intCast(end_x), .y = @intCast(end_y) } }) orelse return false;
++    screen.select(Selection.init(start, end, false)) catch return false;
++    return true;
++}
++
++/// Writes start column/row, end column/row, in absolute buffer coordinates.
++/// False means an endpoint was removed, the screen switched, or the VT reset.
++/// Always releases the pins, including those on a screen that became inactive.
++pub fn readSelection(ptr: ?*anyopaque, out: [*]u32) callconv(.c) bool {
++    const wrapper: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
++    defer clearTrackedSelection(wrapper);
++    const screen = wrapper.terminal.screens.active;
++    const sel = screen.selection orelse return false;
++    const start = sel.start();
++    const end = sel.end();
++    if (start.garbage or end.garbage) return false;
++    const a = screen.pages.pointFromPin(.screen, start) orelse return false;
++    const b = screen.pages.pointFromPin(.screen, end) orelse return false;
++    out[0] = a.coord().x;
++    out[1] = a.coord().y;
++    out[2] = b.coord().x;
++    out[3] = b.coord().y;
++    return true;
++}

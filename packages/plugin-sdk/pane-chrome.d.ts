@@ -56,9 +56,11 @@
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
  * The focus ring, the pane context menu, the inline rename FIELD, every destructive confirmation,
- * the dividers, the resize badge, the terminal's mirror clip wash and the find bar. A presenter
- * never draws a host-owned text input and never draws a destructive confirmation: `renamePane`
- * opens the host's field and `closePane` routes through the host's confirmation.
+ * the dividers, the resize badge and the terminal's mirror clip wash. A presenter never draws a
+ * host-owned text input and never draws a destructive confirmation: `renamePane` opens the host's
+ * field and `closePane` routes through the host's confirmation. The find bar is not yours either,
+ * and it has a placement of its own - `pane.search`, in `pane-search.d.ts` - whose frame is drawn
+ * ABOVE a presented band.
  *
  * Pane chrome presenters are desktop-only in this release. A phone window keeps its own header,
  * which owns the software-keyboard inset and the sheet navigation a presenter cannot read, so a

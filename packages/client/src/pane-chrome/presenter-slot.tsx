@@ -38,7 +38,9 @@
  * when the pane goes. On top of that the focus ring (which is why the presenter's rectangle is
  * inset by `FOCUS_RING_WIDTH` on three sides, exactly as a web pane's page hole is), the dividers,
  * the resize badge, the pane context menu, the inline rename field, every destructive confirmation,
- * the terminal's mirror clip wash and the find bar.
+ * the terminal's mirror clip wash, and the find bar - which is now its own placement,
+ * `pane-search/`, whose frame sits ABOVE this one at z 4 for the same reason the native bar sits
+ * above a band inside its wrapper.
  *
  * ── The recovery floor ──────────────────────────────────────────────────────────────
  *
@@ -353,7 +355,16 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
      * headers on one pane. The frame is mounted and fed either way, which is what lets it paint and
      * report in the first place.
      */
-    const shown = painted && usePaneChromePainted(generation);
+    /*
+     * Read UNCONDITIONALLY, then combined. A hook behind a `&&` is skipped on every render where
+     * the left side is false, so the first render that flips it adds a hook to the list and React
+     * tears the tree down mid-commit. `painted` flips on a selection change, a dropped connection
+     * and the grid being hidden, so the order was only ever stable by luck; `pane-search` hit it on
+     * its first live run, because a search opening and closing flips the same kind of flag several
+     * times a session.
+     */
+    const paintedGeneration = usePaneChromePainted(generation);
+    const shown = painted && paintedGeneration;
 
     /** Everything the model's stable callbacks need from the latest render. */
     const latest = useRef(props);

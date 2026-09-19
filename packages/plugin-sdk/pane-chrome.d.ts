@@ -14,6 +14,10 @@
  * narrow pane gives up relative to its neighbours. Selection will be Settings-only, as the
  * interaction and Settings presenters are.
  *
+ * **Phase B mounts it.** A view selected for `pane.chrome` in Settings ▸ Plugins ▸ Workbench views
+ * now draws every visible pane's header band, `WindowPaneChromeAPI` is part of `ViewAPI.ui`, and
+ * `ui.selectView` refuses the placement exactly as it refuses the interaction and Settings ones.
+ *
  * ── What is withheld ────────────────────────────────────────────────────────────────
  *
  * Absolute paths beyond the home abbreviation (`directory` is `~/…`; the real path stays with the
@@ -47,6 +51,24 @@ export type PaneChromePlacement = 'pane.chrome';
 export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
 
 export type PaneChromeStatus = 'idle' | 'running' | 'waitingForInput';
+
+/**
+ * Where a pane's band is, inside the presenter's own frame.
+ *
+ * The host mounts ONE view over the whole pane grid and clips it to the bands it is drawing, so a
+ * presenter positions a header at each of these rectangles - `position: absolute` with these four
+ * numbers, in CSS px, with the origin at the grid's top-left. The clip is the host's: pixels
+ * outside these rectangles are removed from paint and from hit testing, so a presenter cannot draw
+ * over a pane body and a click below a band reaches whatever is under it.
+ *
+ * `null` in a frame taken before the grid has measured itself. Draw nothing for such a pane.
+ */
+export interface PaneChromeRect {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
 
 /**
  * The title, split where the host middle-truncates it.
@@ -164,6 +186,8 @@ export interface PaneChromePane {
     readonly sync: PaneChromeSync;
     /** The band this pane is painting at right now, already clamped. */
     readonly height: number;
+    /** The rectangle inside that band the presenter may draw in, or null before a first layout. */
+    readonly rect: PaneChromeRect | null;
     readonly size: PaneChromeSize;
     readonly controls: readonly PaneChromeControl[];
     readonly items: readonly PaneChromeItem[];
@@ -186,6 +210,12 @@ export interface PaneChromeSnapshot {
     readonly placement: PaneChromePlacement;
     /** Always `desktop` in a frame a presenter receives. */
     readonly formFactor: 'desktop' | 'phone';
+    /**
+     * This presenter is painting right now. `false` means present nothing: the window is showing
+     * another workspace, the grid is hidden, or the bundled header has the bands back. Every
+     * mutating call is refused while it is false.
+     */
+    readonly visible: boolean;
     readonly workspaceID: string;
     readonly focusedPaneID: string | null;
     readonly zoomedPaneID: string | null;
@@ -215,7 +245,14 @@ export interface WindowPaneChromeAPI {
     ): () => void;
     /** Confirms this presenter has painted. Required within 5 seconds of the first frame. */
     reportPresenterReady(): Promise<void>;
-    focusPane(paneID: string): Promise<void>;
+    /**
+     * Focus a pane.
+     *
+     * `focusChromePane` and not `focusPane`, which `ViewAPI.ui` already has in its two-argument
+     * workspace form: one name with two arities would have made a plugin that passed the wrong
+     * number of arguments call the other verb silently.
+     */
+    focusChromePane(paneID: string): Promise<void>;
     splitPane(paneID: string, direction: PaneChromeSplitDirection): Promise<void>;
     toggleZoom(paneID: string): Promise<void>;
     /** Opens the HOST's inline rename field on that pane. It never takes a name. */

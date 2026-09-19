@@ -51,7 +51,9 @@ import {
     paneChromeRow,
     usePaneChromeParking,
     usePaneChromeWithdrawal,
+    usePublishedPaneChrome,
     type PaneChromeActions,
+    type PaneChromeChanges,
     type PaneChromeControlDescriptor,
     type PaneChromeDescriptor,
     type PaneChromeItemDescriptor,
@@ -439,6 +441,31 @@ export interface PaneHeaderProps extends PaneActions {
      * and every host that has not wired it) means an empty list.
      */
     readonly headerItems?: readonly PaneChromeItemDescriptor[] | undefined;
+    /**
+     * The working tree's change counts for this pane, as the status footer computes them
+     * (`chrome/StatusFooter.tsx` ▸ `footerGitStats`, matched by working directory).
+     *
+     * It goes into the MODEL and therefore into a presenter's frame; the bundled header draws a
+     * branch chip and no counts, exactly as it always has, so nothing on screen moves. Omitted
+     * (every standalone render, and a host with no repository associations) means null.
+     */
+    readonly changes?: PaneChromeChanges | null | undefined;
+    /**
+     * A selected `pane.chrome` presenter is drawing this pane's header (phase B).
+     *
+     * The band itself is still the HOST's - it is the row `PaneGrid` lays the body out under, and
+     * the fill, the hairline, the overlay enrolment and the pane-move drag all live on it - so what
+     * stands down is the CONTENT: the glyph, the badges, the title, the contributions box and the
+     * whole trailing control row, which the presenter is drawing over this band instead.
+     *
+     * The model is still built and still published (`pane-chrome/registry.ts`), because it is what
+     * the presenter's frame is projected FROM: the frame a presenter receives is provably the
+     * header that would otherwise have been drawn, rather than a second computation of it.
+     *
+     * The inline rename field is the exception and is drawn whoever is presenting - `PaneGrid`
+     * stands the presenter's clip off a renaming pane, because the caret is the host's (decision 6).
+     */
+    readonly presented?: boolean | undefined;
     /** The grid's pane-move drag hook (shell-ui.md §4.3). */
     readonly onHeaderPointerDown?: ((paneID: string, event: PointerEvent<HTMLElement>) => void) | undefined;
 }
@@ -464,6 +491,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         paneWidth,
         renameToken = 0,
         visible = true,
+        presented = false,
         onHeaderPointerDown,
         onCopyDocument,
         onPaneContextMenu
@@ -563,6 +591,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         renaming,
         ...(props.headerCommands === undefined ? {} : { commands: props.headerCommands }),
         ...(props.headerItems === undefined ? {} : { items: props.headerItems }),
+        ...(props.changes === undefined ? {} : { changes: props.changes }),
         canCopyDocument: onCopyDocument !== undefined
     });
     const chrome: PaneChromeDescriptor = model.descriptor;
@@ -594,6 +623,17 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     }
     const surface = surfaceRef.current;
 
+    /*
+     * The model, published for whoever is drawing the bands.
+     *
+     * Unconditional, and deliberately: a header that published only while a presenter was selected
+     * would leave the store empty on the commit the selection landed in, and every pane would spend
+     * that commit with no header at all. `pane-chrome/registry.ts` compares by content and
+     * `PaneGrid` subscribes only while a presenter is up, so the cost of publishing into an empty
+     * room is one `JSON.stringify` of a few hundred bytes per header render.
+     */
+    usePublishedPaneChrome(chrome.paneID, { descriptor: chrome, surface });
+
     const fit = chrome.size.badges;
     const badge = chrome.agent;
     const titleParts = chrome.titleParts;
@@ -613,10 +653,57 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         if (overflowOpen && overflowItems.length === 0) setOverflowAt(null);
     }, [overflowOpen, overflowItems.length]);
 
+    /*
+     * §4.2 / phase B - the band stands down, and the band STAYS.
+     *
+     * A presenter draws over this row; it does not replace it. `PaneGrid` lays the body out under a
+     * fixed-height header row, so removing the row would hand the body the whole pane and put the
+     * presenter's own pixels over the terminal. What goes is everything the header PAINTS - the
+     * glyph, the chips, the title, the spacer, the contributions box and the entire trailing
+     * control row, each of which the presenter is drawing instead - and what stays is the box, its
+     * fill, its hairline, its overlay enrolment, the pane-move drag and the focus-on-press.
+     *
+     * The test id is unchanged on purpose. `scripts/ui-audit/audit.mjs` counts panes and extracts
+     * pane ids with `[data-testid^="pane-header-"]` in eleven places, so a band that renamed itself
+     * while a presenter was selected would read as a window with no panes. `data-presented` is what
+     * says who is painting, and the absence of `pane-title-…`, `pane-close-…` and the rest is what
+     * says the native header is not.
+     */
+    if (presented && !chrome.renaming) {
+        return (
+            <div
+                ref={headerRef}
+                data-testid={`pane-header-${chrome.paneID}`}
+                data-presented="true"
+                data-focused={chrome.focused ? 'true' : 'false'}
+                className="flex w-full shrink-0 select-none items-center"
+                style={{
+                    height: chrome.height,
+                    background: tokens.headerBackground,
+                    boxShadow: `inset 0 -1px 0 ${tokens.divider}`
+                }}
+                onPointerDown={(event) => {
+                    // The presenter's frame covers all of this band but the focus ring's gutter and
+                    // the hairline, so this fires for a press in those slivers - and for every band
+                    // the presenter's clip does not reach. shell-ui.md §4.1 either way: clicking
+                    // anywhere in a pane focuses it.
+                    surface.focusPane(chrome.paneID);
+                    onHeaderPointerDown?.(chrome.paneID, event);
+                }}
+                onContextMenu={(event) => {
+                    if (onPaneContextMenu === undefined) return;
+                    event.preventDefault();
+                    surface.openPaneMenu(chrome.paneID, event);
+                }}
+            />
+        );
+    }
+
     return (
         <div
             ref={headerRef}
             data-testid={`pane-header-${chrome.paneID}`}
+            data-presented="false"
             data-focused={chrome.focused ? 'true' : 'false'}
             // M17: `HStack(spacing: 4)` + `.padding(.horizontal, 8)` (`PaneHeaderView.swift:52,274`).
             // The port's `gap-1.5` was 6 px — 50% wider, across a button tail plus three or four

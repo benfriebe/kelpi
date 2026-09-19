@@ -10,6 +10,9 @@ import { createPaletteFeatureSource, type PaletteFeatureHost } from './features/
 import { InteractionHost, InteractionPaletteSlot } from './interaction/InteractionHost';
 import { interactionPresenterChords } from './interaction/presenter-slot';
 import { settingsPresenterChords } from './settings/presenter-slot';
+// §APP-071's change counts, shared rather than recomputed: the pane chrome frame carries the same
+// `doc N +A -B` the status footer draws, resolved by the same longest-worktree-path match.
+import { footerGitStats } from './chrome/StatusFooter';
 import { useInteractionSurface } from './interaction/use-interaction';
 import { createUIServiceAdapter } from './plugins/ui-services';
 import { PluginContributionItems } from './plugins/contributions-ui';
@@ -3813,6 +3816,35 @@ function Shell(props: AppProps): ReactElement {
                         headerExtras={paneID => contributionItems('pane.header', paneID)}
                         headerItemsFor={paneHeaderItems.descriptors}
                         onRunHeaderItem={(paneID, itemID) => { pluginCommands.runItem('pane.header', itemID, paneID); }}
+                        /*
+                         * Pane chrome phase B: this is the DESKTOP grid, so a selected
+                         * `pane.chrome` presenter may draw its header bands. The phone renders its
+                         * own grid through `PhoneShell` and never passes this, which is ratified
+                         * decision 8's "phone keeps its own header" said in one prop.
+                         */
+                        paneChromePresenter
+                        /*
+                         * §APP-071's counts, for a presenter's frame only: the same
+                         * `footerGitStats` the status footer draws `doc N +A -B` from, matched
+                         * per pane by working directory against the workspace's associations. The
+                         * bundled header draws a branch chip and no counts, exactly as before.
+                         */
+                        changesFor={paneID => {
+                            const target = paneByID.get(paneID);
+                            if (target === undefined) return null;
+                            /*
+                             * `workingDirectoryReal` is a wire-derived projection rather than a
+                             * stored pane column (`daemon/src/ws/serialize.ts` adds it on the way
+                             * out), so the store's type does not carry it while the object does.
+                             * `chrome/types.ts` ▸ `ChromePane` declares the same field optional for
+                             * the same reason, and `footerGitStats` falls back to the literal path
+                             * when it is absent - which is what a hand-built fixture gets.
+                             */
+                            const canonical = (target as { readonly workingDirectoryReal?: string }).workingDirectoryReal;
+                            return footerGitStats(inspectorData.associations, target.workingDirectory, canonical);
+                        }}
+                        onRequestRename={startPaneRename}
+                        onPaneChromeFailure={detail => notifyFailureRef.current('Pane header presenter', detail)}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}

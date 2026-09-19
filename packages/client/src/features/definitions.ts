@@ -45,6 +45,21 @@ export const INTERACTION_NOTIFICATIONS_FEATURE = { id: 'kelpi.interaction.notifi
  */
 export const SETTINGS_WINDOW_FEATURE = { id: 'kelpi.settings.window', title: 'Settings', placements: ['settings.window'] } as const satisfies BundledFeatureDefinition;
 
+/**
+ * The fourth presented surface: every pane's header band.
+ *
+ * A definition with no binding, for the same reason as the four above: `grid/PaneGrid.tsx` mounts
+ * it through `pane-chrome/presenter-slot.tsx`, never `WorkbenchSlot`, so
+ * `host.features.get('kelpi.pane.chrome')` is never consulted. Being a definition is what puts it in
+ * `DEFAULT_SLOTS`, which is what makes the bundled header impossible to select away - and a pane
+ * with no header is a pane with no close button, so that floor is worth more here than the empty
+ * select the escape hatch would otherwise allow.
+ *
+ * The title is "Pane header" rather than "Pane chrome": it is what the thing is called on screen,
+ * and `optionTitle` appends "(bundled)" to it in the select, which is the route back.
+ */
+export const PANE_CHROME_FEATURE = { id: 'kelpi.pane.chrome', title: 'Pane header', placements: ['pane.chrome'] } as const satisfies BundledFeatureDefinition;
+
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
     TERMINAL_FEATURE,
@@ -60,6 +75,7 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     INTERACTION_PROMPTS_FEATURE,
     INTERACTION_NOTIFICATIONS_FEATURE,
     SETTINGS_WINDOW_FEATURE,
+    PANE_CHROME_FEATURE,
     { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
     { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }
 ];

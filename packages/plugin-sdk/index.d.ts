@@ -5,6 +5,7 @@ import type { WindowUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
 import type { WindowInteractionAPI } from './interaction.js';
 import type { WindowSettingsAPI } from './settings.js';
+import type { WindowPaneChromeAPI } from './pane-chrome.js';
 import type { DocumentsAPI, ViewDocumentsAPI } from './documents.js';
 import type { ViewTerminalAPI } from './terminal.js';
 import type { BrowserAPI, ViewBrowserAPI } from './browser-pane.js';
@@ -15,8 +16,6 @@ export * from './ui.js';
 export * from './chrome.js';
 export * from './interaction.js';
 export * from './settings.js';
-// Types only in this release: `pane.chrome` is declared and nothing is mounted into it, so
-// `WindowPaneChromeAPI` is deliberately NOT part of `ViewAPI['ui']` yet (phase B adds the host).
 export * from './pane-chrome.js';
 export * from './documents.js';
 export * from './terminal.js';
@@ -101,7 +100,7 @@ export interface ViewAPI extends KelpiAPI {
     /** Runs after ready, then on context/theme/visibility/state updates. Disposal also cancels queued deliveries. */
     onContext(listener: (value: ViewEnvironment) => void | Promise<void>): Dispose;
     setState(state: Data): Promise<void>;
-    ui: KelpiAPI['ui'] & WindowUIServices & WindowChromeAPI & WindowInteractionAPI & WindowSettingsAPI & {
+    ui: KelpiAPI['ui'] & WindowUIServices & WindowChromeAPI & WindowInteractionAPI & WindowSettingsAPI & WindowPaneChromeAPI & {
         activateWorkspace(workspaceID: string): Promise<void>;
         focusPane(workspaceID: string, paneID: string): Promise<void>;
         notify(message: string): Promise<void>;

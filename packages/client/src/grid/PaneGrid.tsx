@@ -31,6 +31,7 @@ import {
     useRef,
     useState,
     type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
     type ReactElement,
     type ReactNode
@@ -66,7 +67,22 @@ import {
 import { useChromeCaret, useWindowFocused } from '../app/caret-visuals';
 import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
-import { paneChromeBand, usePaneChromeHeights, usePaneChromeScope } from '../pane-chrome';
+import {
+    PaneChromePresenterSlot,
+    paneChromeBand,
+    paneChromeDeclaration,
+    paneChromeEntry,
+    paneChromeFrameRect,
+    paneChromeHeight,
+    projectPaneChrome,
+    usePaneChromeHeights,
+    usePaneChromeRegistry,
+    usePaneChromeScope,
+    usePaneChromeSelection,
+    type PaneChromeChanges,
+    type PaneChromeFrameRect,
+    type PaneChromeProjection
+} from '../pane-chrome';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
 import { PANE_HEADER_HEIGHT, PaneHeader } from './PaneHeader';
@@ -136,6 +152,35 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
      * standalone render, a fixture) means the store is left alone.
      */
     readonly workspaceID?: string | undefined;
+    /**
+     * A selected `pane.chrome` presenter may draw this grid's header bands (phase B).
+     *
+     * Off by default, which is what keeps every standalone render and every existing suite exactly
+     * as it was: with this false nothing is projected, no store is subscribed to and the bundled
+     * header is the only header there is. `App` passes true for a DESKTOP window; the phone keeps
+     * its own header (ratified decision 8) and never mounts this grid at all.
+     */
+    readonly paneChromePresenter?: boolean | undefined;
+    /**
+     * The working tree's change counts for one pane, as the status footer computes them.
+     *
+     * A function rather than a map, and resolved by the caller rather than here, because the
+     * matching is the footer's (`chrome/StatusFooter.tsx` ▸ `footerGitStats`: longest worktree
+     * path containing the pane's canonical cwd) and the associations are `App`'s. The counts go
+     * into the shared model and therefore into a presenter's frame; the bundled header draws a
+     * branch chip and no counts, exactly as before.
+     */
+    readonly changesFor?: ((paneID: string) => PaneChromeChanges | null) | undefined;
+    /**
+     * "Open the inline rename field on this pane", asked for from outside the header.
+     *
+     * What a presenter's `renamePane` reaches: the FIELD is the host's (ratified decision 6), so
+     * the call opens it and returns. `App` bumps `renameRequest`, which is the same route the pane
+     * context menu's Rename… already takes.
+     */
+    readonly onRequestRename?: ((paneID: string) => void) | undefined;
+    /** A pane chrome presenter failed and every pane is back on its native header. */
+    readonly onPaneChromeFailure?: ((detail: string) => void) | undefined;
     /** Fixed size instead of measuring — tests and any non-DOM host. */
     readonly size?: PaneGridSize | undefined;
     /** Terminal cols/rows for the resize badge; falls back to pixels when absent. */
@@ -704,6 +749,36 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         ...(dwellMs === undefined ? {} : { delayMs: dwellMs })
     });
 
+    /**
+     * The host's own pane context menu, opened for a presenter that asked for it.
+     *
+     * The menu is a portal and needs VIEWPORT coordinates, while everything a presenter is handed
+     * is in the grid's space, so the two are joined here - the one place holding both the container
+     * and the pane's frame. Anchored under the pane's band, which is where the header's own
+     * right-click menu drops from, so the menu appears in the same place whoever is painting.
+     */
+    const openPaneMenuForPresenter = useCallback((paneID: string): void => {
+        const current = latest.current;
+        const box = containerRef.current?.getBoundingClientRect();
+        const frame = framesRef.current.get(paneID);
+        if (box === undefined || frame === undefined) return;
+        const band = paneChromeHeight(
+            paneChromeDeclaration(paneID),
+            frame.height,
+            current.headerHeight ?? PANE_HEADER_HEIGHT
+        );
+        /*
+         * `onPaneContextMenu` is typed for a React mouse event because the header raises it from
+         * one; `App`'s handler reads `clientX`/`clientY` and nothing else (`menuAnchorFromEvent`).
+         * The cast is the seam between the two and is the only one in this file: widening the prop
+         * would flip the variance on every existing host that passes a real handler.
+         */
+        current.onPaneContextMenu?.(paneID, {
+            clientX: box.x + frame.x + 8,
+            clientY: box.y + frame.y + band
+        } as unknown as ReactMouseEvent<HTMLElement>);
+    }, []);
+
     const cancelHover = useCallback((): void => {
         if (hoverTimerRef.current === null) return;
         clearTimeout(hoverTimerRef.current);
@@ -757,6 +832,97 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     // Every declaration goes back when the displayed workspace changes, and when this grid goes.
     usePaneChromeScope(props.workspaceID);
     const zoomAvailable = panes.length > 1;
+
+    /*
+     * ── the pane chrome presenter (phase B) ─────────────────────────────────────────
+     *
+     * Resolved here rather than inside the slot because two readers need the same answer in the
+     * same commit: the slot, to decide whether to mount, and the loop below, to decide which
+     * headers stand down. A grid that stood a header down while the slot mounted nothing would be
+     * a pane with no header at all.
+     */
+    const chromeEnabled = props.paneChromePresenter === true;
+    const chromeSelection = usePaneChromeSelection(chromeEnabled);
+    const chromeActive = chromeEnabled && !chromeSelection.bundled;
+    // Only while a presenter is up: headers publish unconditionally, so a subscription here with
+    // nothing selected would re-measure every terminal in the grid on every agent tick.
+    const chromeVersion = usePaneChromeRegistry(chromeActive);
+    const gridVisible = props.visible !== false;
+
+    /**
+     * This render's frame, the bands it may be drawn in, and which headers therefore stand down.
+     *
+     * Built from the registry rather than from a second `paneChromeModel` call: the descriptors in
+     * it are the ones `PaneHeader` is drawing from, so the frame is provably the header that would
+     * otherwise have been on screen (`pane-chrome/registry.ts`). In the workspace's OWN order -
+     * `panes`, never `orderedPanes`, which is sorted by id so React never moves a terminal's node -
+     * because the frame's pane list is a prefix of the workspace and `withheld` means "everything
+     * after these".
+     */
+    const chrome = useMemo<{
+        readonly projection: PaneChromeProjection;
+        readonly presented: ReadonlySet<string>;
+        readonly renaming: ReadonlySet<string>;
+        readonly rects: readonly PaneChromeFrameRect[];
+    } | null>(() => {
+        if (!chromeActive) return null;
+        // Referenced so this recomputes when a header republishes; the registry is read
+        // imperatively below because there is one read per pane and hooks do not go in loops.
+        void chromeVersion;
+        const descriptors = [];
+        const rects: Record<string, PaneChromeFrameRect> = {};
+        const renaming = new Set<string>();
+        for (const pane of panes) {
+            const frame = gridVisible ? frames.get(pane.id) : undefined;
+            const entry = paneChromeEntry(pane.id);
+            // A pane with no frame is hidden (zoomed out, or in a workspace this window is not
+            // showing) and a pane with no entry has no mounted header: neither is a visible pane of
+            // the displayed workspace, so neither is in the frame and both keep the native header.
+            if (frame === undefined || entry === undefined) continue;
+            if (entry.descriptor.renaming) renaming.add(pane.id);
+            descriptors.push(entry.descriptor);
+            rects[pane.id] = paneChromeFrameRect(
+                frame,
+                paneChromeBand(bands, pane.id, frame.height, headerHeight)
+            );
+        }
+        const projection = projectPaneChrome({
+            workspaceID: props.workspaceID ?? '',
+            // `PaneGrid` is the desktop grid; the phone has its own header and never mounts it.
+            formFactor: 'desktop',
+            focusedPaneID,
+            zoomedPaneID: zoomed,
+            panes: descriptors,
+            rects
+        });
+        /*
+         * A carried pane's header stands down - unless its rename field is up.
+         *
+         * The field is the host's and so is the caret (decision 6), so the pane goes back to its
+         * native header for the length of the rename and the presenter's clip is stood off that
+         * band entirely. The frame still says `renaming: true`, which is how the presenter knows
+         * the title is not its to draw.
+         */
+        const carried = projection.frame.panes.map((pane) => pane.paneID);
+        const presented = new Set(carried.filter((paneID) => !renaming.has(paneID)));
+        return {
+            projection,
+            presented,
+            renaming,
+            rects: [...presented].map((paneID) => rects[paneID]!)
+        };
+    }, [
+        chromeActive,
+        chromeVersion,
+        panes,
+        frames,
+        bands,
+        headerHeight,
+        gridVisible,
+        focusedPaneID,
+        zoomed,
+        props.workspaceID
+    ]);
     const dropRect =
         dropTarget === null
             ? null
@@ -818,7 +984,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             visibility: visible ? 'visible' : 'hidden',
                             pointerEvents: visible ? 'auto' : 'none',
                             opacity: draggingPaneID === pane.id ? 0.5 : 1,
-                            // L31: one plane for every visible pane. `PaneGridView.swift:104-111`
+                            // L31 with one addition: the pane whose rename field is up is lifted
+                            // ABOVE the presenter's frame (which sits at 2), because that field is
+                            // the host's and a caret under an iframe is a caret nobody can reach.
+                            // Everything else is unchanged. `PaneGridView.swift:104-111`
                             // paints the panes with a plain `ForEach` inside a `ZStack` and never
                             // reorders on focus, so where a 2 px focus ring meets a neighbour's
                             // edge the shipped app lets paint order decide — it does not lift the
@@ -826,7 +995,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             // id rather than the `panes` array, which is a deliberate, separate
                             // choice: it keeps React from moving a terminal's node when the tree
                             // is rearranged.)
-                            zIndex: visible ? 1 : 0
+                            zIndex: chrome?.renaming.has(pane.id) === true ? 3 : visible ? 1 : 0
                             /*
                              * §N17 — and NO fill on the wrapper either.
                              *
@@ -880,6 +1049,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             // badge has room to be drawn at all, rather than letting the flex
                             // squeeze collapse one to a colour stub.
                             paneWidth={rect.width}
+                            // Phase B: a selected presenter is drawing this pane's band, so the
+                            // header keeps the box and gives up everything it painted in it.
+                            presented={chrome?.presented.has(pane.id) === true}
+                            changes={props.changesFor?.(pane.id) ?? null}
                             renameToken={props.renameRequest?.paneID === pane.id ? props.renameRequest.seq : 0}
                             onHeaderPointerDown={startPaneDrag}
                             onClosePane={props.onClosePane}
@@ -937,6 +1110,33 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     </div>
                 );
             })}
+
+            {/*
+              * The pane chrome presenter: ONE frame over the whole grid, clipped to the bands it
+              * was given.
+              *
+              * Inside this container rather than beside it, so the frame's own coordinate space is
+              * the grid's and the rectangles in the projection need no translation. Above the pane
+              * wrappers (z 2 against their 1) and below a renaming pane's (3), and clipped, so a
+              * press anywhere but a carried band reaches whatever the grid put there - a terminal,
+              * a web pane, a divider. Rendered only while a presenter is selected, connected and
+              * unlatched; otherwise this is `null` and the grid is exactly what it was.
+              */}
+            {chrome === null ? null : (
+                <PaneChromePresenterSlot
+                    selection={chromeSelection}
+                    visible={gridVisible}
+                    formFactor="desktop"
+                    projection={chrome.projection}
+                    rects={chrome.rects}
+                    surface={(paneID) => paneChromeEntry(paneID)?.surface ?? null}
+                    onRename={(paneID) => props.onRequestRename?.(paneID)}
+                    onMenu={openPaneMenuForPresenter}
+                    {...(props.onPaneChromeFailure === undefined
+                        ? {}
+                        : { onFailure: props.onPaneChromeFailure })}
+                />
+            )}
 
             {dividers.map((info) => (
                 <Divider

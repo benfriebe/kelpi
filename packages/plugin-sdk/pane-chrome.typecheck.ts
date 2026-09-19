@@ -34,6 +34,9 @@ async function present(): Promise<void> {
     const stop = ui.onPaneChrome(
         value => {
             void value.withheld;
+            // `visible: false` is "present nothing"; a rect is where this pane's band actually is.
+            if (!value.visible) return;
+            for (const entry of value.panes) if (entry.rect !== null) void entry.rect.width;
         },
         error => {
             void error.message;
@@ -46,7 +49,7 @@ async function present(): Promise<void> {
     for (const pane of current.panes) if (pane.kind === 'web') await ui.setPaneChromeHeight(pane.paneID, null);
     const pane: PaneChromePane | undefined = current.panes[0];
     if (pane !== undefined) {
-        await ui.focusPane(pane.paneID);
+        await ui.focusChromePane(pane.paneID);
         await ui.splitPane(pane.paneID, 'vertical');
         if (pane.zoom.available) await ui.toggleZoom(pane.paneID);
         // The host draws the field and the confirmation; the presenter only asks.
@@ -77,5 +80,7 @@ void snapshot.panes[0]?.workingDirectory;
 void snapshot.panes[0]?.agent?.agentSessionID;
 // @ts-expect-error A web pane's page URL is not pane chrome.
 void snapshot.panes[0]?.url;
+// @ts-expect-error The workspace focus verb keeps its own name; a presenter's takes one argument.
+void ui.focusPane('pane-1');
 // @ts-expect-error The rename field is the host's: a presenter asks for it, it does not send a name.
 void ui.renamePane('pane-1', 'api');

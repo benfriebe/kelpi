@@ -68,7 +68,18 @@ const REMOTE_GAPS: readonly string[] = [
     'onSetFontSize',
     // Agent-status verbs: restart and the 600 ms focus-dwell clear (agent-lifecycle.md §5.8).
     'onRestartAgent',
-    'onDwellClear'
+    'onDwellClear',
+    /*
+     * Pane chrome phase B. A `pane.chrome` presenter is ONE view per window with one frame, one
+     * acknowledgement stream and one all-or-nothing failure latch; a remote workspace is a second
+     * grid of a second daemon's panes inside the same window, so hosting one there would be a
+     * second presenter for a placement the whole window has exactly one selection for. The remote
+     * grid therefore keeps the bundled header, and these two are inert without it: the rename
+     * request is raised by `onRequestRename` into `renameRequest`, which is itself a listed value
+     * gap, and the failure toast has no presenter to report on.
+     */
+    'onRequestRename',
+    'onPaneChromeFailure'
 ];
 
 /**
@@ -89,7 +100,11 @@ const VALUE_GAPS: readonly string[] = [
     'renameRequest',
     // The terminal search overlay, drawn from the workspace's `searchingPaneID` and wired to the
     // window's search verbs; the remote CommandClient has no search spelling yet.
-    'renderPaneOverlay'
+    'renderPaneOverlay',
+    // One presenter per window (see `onRequestRename` above): the remote grid draws the bundled
+    // header, so it neither opts into the placement nor feeds it the footer's change counts.
+    'paneChromePresenter',
+    'changesFor'
 ];
 
 /** One workspace, one pane: enough for either mount to render its grid. */

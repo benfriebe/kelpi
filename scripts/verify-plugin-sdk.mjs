@@ -31,7 +31,7 @@ export function activate(api: BackendAPI) {
     api.browser.attach({});
     return () => { void state; };
 }`,
-        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type SettingsPresenterSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
+        view: `import { getKelpi, type ViewAPI, type BrowserSurface, type InteractionSnapshot, type PaneChromeSnapshot, type SettingsPresenterSnapshot, type TerminalGrid, type TerminalSession } from '@kelpi/plugin-sdk';
 const api: ViewAPI = getKelpi();
 let mirror: TerminalGrid | null = null;
 async function mount(element: HTMLElement) {
@@ -70,6 +70,22 @@ async function mount(element: HTMLElement) {
     await api.ui.closeSettings();
     // @ts-expect-error A field carries no write target: the presenter sends an id, the host owns the key.
     void settings.fields[0]?.configKey;
+    // A pane chrome presenter reads one frame for every visible pane, presses a control by its
+    // opaque ref and declares the band it needs. Nothing it holds names a verb, an owner or a path.
+    const chrome: PaneChromeSnapshot = await api.ui.getPaneChrome();
+    if (chrome.visible) for (const pane of chrome.panes) {
+        if (pane.rect !== null) await api.ui.setPaneChromeHeight(pane.paneID, Math.min(48, pane.rect.width));
+        for (const entry of pane.controls) if (entry.enabled && !entry.pinned) await api.ui.activatePaneControl(pane.paneID, entry.ref);
+        for (const other of pane.items) if (other.enabled) await api.ui.runPaneHeaderItem(pane.paneID, other.ref);
+        if (!pane.renaming) await api.ui.renamePane(pane.paneID);
+        await api.ui.focusChromePane(pane.paneID);
+    }
+    const stopChrome = api.ui.onPaneChrome(frame => { void frame.withheld; });
+    stopChrome();
+    // @ts-expect-error A control is addressed by an opaque ref, never by its host-side key.
+    void chrome.panes[0]?.controls[0]?.key;
+    // @ts-expect-error The rename field is the host's: a presenter asks for it, it does not send a name.
+    void api.ui.renamePane('pane-1', 'api');
     browser.dispose(); terminal.dispose();
 }
 void mount;

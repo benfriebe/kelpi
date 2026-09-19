@@ -68,6 +68,26 @@ import {
     type PaneChromeZoom
 } from './contract';
 
+/**
+ * Where a pane's band is, in the presenter frame's own coordinate space.
+ *
+ * Added in phase B, and it is what the chosen geometry rests on: ONE presenter view draws every
+ * carried pane's header, so it has to be told where each one goes. The host positions a single
+ * frame over the whole grid and clips it to the union of the carried bands (`presenter-slot.tsx`),
+ * and the presenter absolutely positions a header at each of these rectangles inside it.
+ *
+ * It carries nothing the window is not already showing: the same rectangle the user is looking at,
+ * in CSS px, with the origin at the grid's top-left rather than the screen's - so it says nothing
+ * about where the window is, how big the display is, or what else is on it. `null` in a projection
+ * built without a layout (every unit test, and the first render before the grid has measured).
+ */
+export interface PaneChromeFrameRect {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
+
 /** A trailing control, as a presenter sees it: no test id, no verb, no owner. */
 export interface PaneChromeFrameControl {
     /**
@@ -112,6 +132,8 @@ export interface PaneChromeFramePane {
     readonly zoom: PaneChromeZoom;
     readonly sync: PaneChromeSync;
     readonly height: number;
+    /** The band's rectangle inside the presenter's frame, or null in a projection with no layout. */
+    readonly rect: PaneChromeFrameRect | null;
     readonly size: PaneChromeSize;
     readonly controls: readonly PaneChromeFrameControl[];
     readonly items: readonly PaneChromeFrameItem[];
@@ -146,6 +168,14 @@ export interface PaneChromeProjectionInput {
     readonly zoomedPaneID?: string | null | undefined;
     /** The visible panes of the displayed workspace, in the workspace's own order. */
     readonly panes: readonly PaneChromeDescriptor[];
+    /**
+     * Each pane's band rectangle in the presenter frame's coordinate space, by pane id.
+     *
+     * Optional, and absent everywhere there is no layout to state: `projectPaneChrome` is a pure
+     * function over a model and the grid is the only thing that has measured a box. A pane with no
+     * entry gets `rect: null` rather than a guess.
+     */
+    readonly rects?: Readonly<Record<string, PaneChromeFrameRect>> | undefined;
 }
 
 /**
@@ -208,9 +238,23 @@ export function paneChromeBytes(value: unknown): number {
 export const PANE_CHROME_FRAME_BUDGET =
     PANE_CHROME_LIMITS.payloadBytes - PANE_CHROME_LIMITS.frameMargin;
 
+/** Whole CSS px, and nothing that is not a number. A rect that cannot be trusted is no rect. */
+function frameRect(value: PaneChromeFrameRect | undefined): PaneChromeFrameRect | null {
+    if (value === undefined) return null;
+    const { x, y, width, height } = value;
+    if (![x, y, width, height].every((part) => Number.isFinite(part))) return null;
+    return {
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.max(0, Math.round(width)),
+        height: Math.max(0, Math.round(height))
+    };
+}
+
 function framePane(
     descriptor: PaneChromeDescriptor,
-    mint: (target: PaneChromeRefTarget, ref: string) => void
+    mint: (target: PaneChromeRefTarget, ref: string) => void,
+    rect: PaneChromeFrameRect | undefined
 ): PaneChromeFramePane {
     return {
         paneID: descriptor.paneID,
@@ -227,6 +271,7 @@ function framePane(
         zoom: descriptor.zoom,
         sync: descriptor.sync,
         height: descriptor.height,
+        rect: frameRect(rect),
         size: descriptor.size,
         controls: descriptor.controls.map((control, index) => {
             const ref = mintRef('control', index);
@@ -284,7 +329,11 @@ export function projectPaneChrome(input: PaneChromeProjectionInput): PaneChromeP
     let withheld = 0;
     for (const [index, descriptor] of input.panes.entries()) {
         const staged = new Map<string, PaneChromeRefTarget>();
-        const pane = framePane(descriptor, (target, ref) => staged.set(key(target.paneID, ref), target));
+        const pane = framePane(
+            descriptor,
+            (target, ref) => staged.set(key(target.paneID, ref), target),
+            input.rects?.[descriptor.paneID]
+        );
         // `+ 1` for the comma that joins it to the pane before it. Cheap, and it keeps the sum an
         // over-estimate rather than an under-estimate, which is the side to be wrong on.
         const cost = paneChromeBytes(pane) + 1;

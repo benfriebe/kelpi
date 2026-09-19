@@ -80,7 +80,31 @@ export const PANE_CHROME_LIMITS = {
      * the workspace id, the focused pane and the withheld count - so the pane list is measured
      * against what is actually left for it.
      */
-    frameMargin: 2 * 1024
+    frameMargin: 2 * 1024,
+    /**
+     * The presenter's call budget, per rolling second. The interaction and Settings numbers
+     * verbatim (`settings/contract.ts`, `interaction/contract.ts`), so the four replaceable
+     * surfaces cannot come to disagree about what a runaway presenter is.
+     *
+     * A breach FAILS the placement as well as rejecting the call: a call loop is not a recoverable
+     * error, and with pane chrome it is a call loop holding every pane's band.
+     */
+    presenterCalls: 240,
+    presenterCallWindowMs: 1_000,
+    /** How long a newly mounted presenter has to report that it has painted. */
+    presenterReadyMs: 5_000,
+    /** How long it has to acknowledge a frame that moves the user (a pane added, removed or renamed). */
+    presenterAckMs: 5_000,
+    /**
+     * The inset, in px, between a declared band and the presenter's own frame over it.
+     *
+     * `webpane/WebPageSurface.tsx` insets its page hole by the same 2 px for the same reason: the
+     * focus ring is painted on the pane WRAPPER, around the band and the body together, so a
+     * presenter frame drawn edge to edge over the band would paint over the ring's top and side
+     * runs. The host keeps the band itself (its fill, its hairline and the ring around it) and
+     * hands the presenter the rectangle inside the ring.
+     */
+    frameInset: 2
 } as const;
 
 // ── what a pane IS, for chrome's purposes ───────────────────────────────────────────

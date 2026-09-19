@@ -351,8 +351,8 @@ export interface ServeProxy {
  * Matching is deliberately BROAD on the target side — any scheme (tailscale writes
  * `https+insecure://…` for TLS-skipping proxies) and bare `host:port` forwards — because rule
  * 1 (never clobber foreign config) means over-detecting an occupied :443 is safe and
- * under-detecting it takes someone's service down. The structured pass is what pins listener
- * ports; a generic whole-document sweep backstops shapes this code has not met.
+ * under-detecting it takes someone's service down. These targets are diagnostics only;
+ * inspectServeConfig independently proves absence or a usable root route before any action.
  */
 export function parseServeProxies(json: string): ServeProxy[] {
     const proxies: ServeProxy[] = [];
@@ -365,10 +365,18 @@ export function parseServeProxies(json: string): ServeProxy[] {
     };
     const target = (value: unknown): { host: LoopbackHost; port: number } | undefined => {
         if (typeof value !== 'string') return undefined;
-        const match = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/i.exec(value.trim());
-        if (match === null) return undefined;
-        const host = match[1]!.toLowerCase();
-        return { host: (host === '[::1]' ? '::1' : host) as LoopbackHost, port: Number(match[2]) };
+        try {
+            const raw = value.trim();
+            const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
+            if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return undefined;
+            const port = url.port !== '' ? Number(url.port)
+                : url.protocol === 'http:' ? 80
+                : url.protocol === 'https:' || url.protocol === 'https+insecure:' ? 443 : undefined;
+            if (port === undefined) return undefined;
+            return { host: (url.hostname === '[::1]' ? '::1' : url.hostname) as LoopbackHost, port };
+        } catch {
+            return undefined;
+        }
     };
     const sweep = (value: unknown, listenPort: number | undefined): void => {
         const address = target(value);
@@ -406,6 +414,65 @@ export function parseServeProxies(json: string): ServeProxy[] {
 /** The loopback ports fronted, whatever their listeners (compat surface for callers/tests). */
 export function parseServeProxyPorts(json: string): number[] {
     return [...new Set(parseServeProxies(json).map((proxy) => proxy.targetPort))].sort((a, b) => a - b);
+}
+
+export type ServeInspection =
+    | { readonly kind: 'empty' | 'unverified' }
+    | { readonly kind: 'serving'; readonly listenPort: number };
+
+function object(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function emptyMap(value: unknown): boolean {
+    return value === undefined || value === null || (object(value) && Object.keys(value).length === 0);
+}
+
+/**
+ * The mutation/URL safety decision, shared by pairing and the status dashboard. No diagnostic
+ * target sweep can establish absence or ownership. Accept only Tailscale's known empty shape
+ * (including its null config) or an explicit HTTPS listener for this DNS name whose sole root
+ * handler proxies HTTP to Kelpi's IPv4 loopback port. Other paths can intercept assets or /ws;
+ * localhost can resolve to a different IPv6 service; neither is equivalent to that route.
+ * Unknown configuration and foreground/service indirection require manual inspection.
+ */
+export function inspectServeConfig(json: string, dnsName: string, port: number): ServeInspection {
+    let config: unknown;
+    try { config = JSON.parse(json); }
+    catch { return { kind: 'unverified' }; }
+    if (config === null) return { kind: 'empty' };
+    if (!object(config)) return { kind: 'unverified' };
+    const fields = ['TCP', 'Web', 'AllowFunnel', 'Foreground', 'Services'];
+    if (Object.keys(config).some((key) => !fields.includes(key))) return { kind: 'unverified' };
+    if (Object.values(config).every(emptyMap)) return { kind: 'empty' };
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { kind: 'unverified' };
+    if (!emptyMap(config['Foreground']) || !emptyMap(config['Services'])) return { kind: 'unverified' };
+    const web = config['Web'];
+    const tcp = config['TCP'];
+    const funnel = config['AllowFunnel'];
+    if (!object(web) || !object(tcp) || (!emptyMap(funnel) && !object(funnel))) return { kind: 'unverified' };
+    let found: number | undefined;
+    for (const [hostPort, server] of Object.entries(web)) {
+        const listenPort = Number(hostPort.slice(hostPort.lastIndexOf(':') + 1));
+        if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535 || hostPort !== `${dnsName}:${listenPort}`) continue;
+        const listener = tcp[String(listenPort)];
+        if (!object(listener) || listener['HTTPS'] !== true ||
+            (listener['HTTP'] !== undefined && listener['HTTP'] !== false) ||
+            Object.keys(listener).some((key) => key !== 'HTTPS' && key !== 'HTTP')) continue;
+        if (object(funnel) && funnel[hostPort] !== undefined && funnel[hostPort] !== false) continue;
+        if (!object(server) || Object.keys(server).length !== 1) continue;
+        const handlers = server['Handlers'];
+        if (!object(handlers) || Object.keys(handlers).length !== 1) continue;
+        const root = handlers['/'];
+        if (!object(root) || Object.keys(root).length !== 1) continue;
+        // Match the stored HTTP root form exactly. URL normalization would also accept e.g.
+        // /app/.., whose upstream path need not be treated the same way by the proxy backend.
+        const expected = `http://127.0.0.1:${port}`;
+        if (root['Proxy'] !== expected && root['Proxy'] !== `${expected}/`) continue;
+        if (listenPort === 443) return { kind: 'serving', listenPort };
+        found ??= listenPort;
+    }
+    return found === undefined ? { kind: 'unverified' } : { kind: 'serving', listenPort: found };
 }
 
 /** The URL a remote browser opens — carrying the listener when it is not the default :443. */
@@ -553,13 +620,12 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             ]
         };
     }
-    const proxies = parseServeProxies(serveStatus.stdout);
-    const ours = proxies.filter((proxy) => proxy.targetPort === options.port);
-    const foreign = proxies.filter((proxy) => proxy.targetPort !== options.port);
+    const inspection = inspectServeConfig(serveStatus.stdout, identity.dnsName, options.port);
     let listenPort = 443;
-    if (ours.length === 0) {
-        if (foreign.length > 0) {
-            const unique = [...new Map(foreign.map((proxy) => [`${proxy.targetHost}:${proxy.targetPort}`, proxy])).values()];
+    if (inspection.kind !== 'serving') {
+        if (inspection.kind !== 'empty') {
+            const proxies = parseServeProxies(serveStatus.stdout);
+            const unique = [...new Map(proxies.map((proxy) => [`${proxy.targetHost}:${proxy.targetPort}`, proxy])).values()];
             const probe = options.probeTarget ?? probeForwardTarget;
             // Bound socket count as well as wall time; unusually large configs still fail closed.
             const details = await Promise.all(unique.slice(0, 16).map(async (proxy) => {
@@ -579,7 +645,9 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             }
             return {
                 kind: 'error',
-                message: `tailscale serve fronts a different target from Kelpi's current 127.0.0.1:${String(options.port)}: ${details.join('; ')}. Forwarding was left untouched.`,
+                message: `tailscale serve could not be verified as an HTTPS root route to Kelpi's current 127.0.0.1:${String(options.port)}. ` +
+                    (details.length > 0 ? `${details.join('; ')}. ` : 'The existing configuration is occupied or unrecognized. ') +
+                    'Forwarding was left untouched.',
                 repair:
                     `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`tailscale serve --bg ${String(options.port)}\` ` +
                     '(this replaces the :443 root handler), then try again.',
@@ -641,7 +709,7 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
     } else {
         // Honour the listener the config actually names — a `--https=8443` serve would make
         // a bare :443 URL a connection refused reported as success.
-        listenPort = ours.find((proxy) => proxy.listenPort !== undefined)?.listenPort ?? 443;
+        listenPort = inspection.listenPort;
         notes.push(
             `tailscale serve: already fronting 127.0.0.1:${String(options.port)} on :${String(listenPort)}`
         );

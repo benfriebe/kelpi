@@ -424,9 +424,17 @@ The token is stored in `localStorage` and stripped from the address bar, so late
 `https://$host/` just work until the daemon's run dir is recreated.
 
 `kelpid url --tailnet`, `kelpid pair --tailnet`, and Settings → Remote configure forwarding
-when no loopback target is configured. If forwarding points to another port, Kelpi checks
-that target with a TCP connection (without sending application data) before refusing to
-replace it. The diagnosis distinguishes an accepting listener, refused connections
+only when Tailscale reports a recognized empty configuration. Malformed or unfamiliar
+configuration, file servers, and other occupied handlers are left untouched. Existing
+forwarding is reused only for an HTTPS listener on this machine's tailnet DNS name with
+a single `/` handler targeting `http://127.0.0.1:<Kelpi port>` (an optional trailing `/`
+is accepted). Matching port numbers on another address, host, protocol, or path do not
+establish that the URL reaches Kelpi. Mixed paths, foreground/service indirection, and
+Funnel-enabled routes require manual inspection. Settings status uses the same rule.
+
+When existing forwarding cannot be reused, Kelpi checks recognized loopback targets with
+TCP connections (without sending application data) before refusing to replace it.
+The diagnosis distinguishes an accepting listener, refused connections
 (possibly stale forwarding), and an inconclusive check such as a timeout or permission error.
 It shows Kelpi's current port and the command to use after inspecting `tailscale serve status`.
 A refused connection does not establish ownership, so replacement remains an explicit action.

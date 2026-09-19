@@ -115,6 +115,14 @@ describe('parseServeProxyPorts', () => {
         });
         expect(parseServeProxyPorts(config)).toEqual([]);
     });
+
+    it('finds loopback targets with paths and default ports for read-only diagnostics', () => {
+        const config = JSON.stringify({ targets: [
+            'http://127.0.0.1:3000/app?view=1', 'https+insecure://[::1]:8443/',
+            'http://localhost/', 'https://127.0.0.1/'
+        ] });
+        expect(parseServeProxyPorts(config)).toEqual([80, 443, 3000, 8443]);
+    });
 });
 
 describe('stale forwarding diagnosis', () => {
@@ -219,6 +227,97 @@ describe('tailnetClientURL', () => {
 });
 
 describe('resolveTailnetURL', () => {
+    const rootConfig = (handler: unknown) => JSON.stringify({
+        TCP: { '443': { HTTPS: true } },
+        Web: { 'werk.taila5f942.ts.net:443': { Handlers: { '/': handler } } }
+    });
+
+    it.each([
+        ['trailing-slash proxy', rootConfig({ Proxy: 'http://127.0.0.1:3000/' })],
+        ['proxy with an upstream path', rootConfig({ Proxy: 'http://127.0.0.1:3000/app' })],
+        ['static file', rootConfig({ Path: '/tmp/foreign-site' })],
+        ['text handler', rootConfig({ Text: 'another service' })],
+        ['redirect', rootConfig({ Redirect: 'https://example.com' })],
+        ['non-loopback proxy', rootConfig({ Proxy: 'http://192.168.1.10:3000' })],
+        ['malformed JSON', '{"Web":'],
+        ['array', '[]'],
+        ['primitive', '42'],
+        ['empty output', ''],
+        ['unknown shape', '{"FutureConfig":{}}']
+    ])('leaves an occupied or unrecognized %s untouched', async (_name, config) => {
+        const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
+        const result = await resolveTailnetURL({ port: 61154, token: 'secret', run, probeTarget: async () => 'refused' });
+        expect(result.kind).toBe('error');
+        expect(JSON.stringify(result)).not.toContain('secret');
+        expect(calls).toEqual([['status', '--json'], ['serve', 'status', '--json']]);
+    });
+
+    it.each([
+        ['IPv6', rootConfig({ Proxy: 'http://[::1]:61154' })],
+        ['ambiguous localhost', rootConfig({ Proxy: 'http://localhost:61154' })],
+        ['TLS backend', rootConfig({ Proxy: 'https://127.0.0.1:61154' })],
+        ['upstream subpath', rootConfig({ Proxy: 'http://127.0.0.1:61154/app' })],
+        ['normalized dot path', rootConfig({ Proxy: 'http://127.0.0.1:61154/app/..' })],
+        ['foreign root and Kelpi subpath', JSON.stringify({ TCP: { '443': { HTTPS: true } }, Web: {
+            'werk.taila5f942.ts.net:443': { Handlers: {
+                '/': { Proxy: 'http://127.0.0.1:3000' }, '/kelpi/': { Proxy: 'http://127.0.0.1:61154' }
+            } }
+        } })],
+        ['Kelpi root and foreign websocket path', JSON.stringify({ TCP: { '443': { HTTPS: true } }, Web: {
+            'werk.taila5f942.ts.net:443': { Handlers: {
+                '/': { Proxy: 'http://127.0.0.1:61154' }, '/ws': { Proxy: 'http://127.0.0.1:3000' }
+            } }
+        } })],
+        ['wrong DNS host', rootConfig({ Proxy: 'http://127.0.0.1:61154' }).replace('werk.taila5f942.ts.net', 'other.tail.ts.net')],
+        ['HTTP listener', rootConfig({ Proxy: 'http://127.0.0.1:61154' }).replace('"HTTPS":true', '"HTTP":true')],
+        ['missing TCP listener', JSON.stringify({ Web: {
+            'werk.taila5f942.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:61154' } } }
+        } })],
+        ['raw TCP forward', JSON.stringify({ TCP: { '443': { TCPForward: '127.0.0.1:61154' } } })],
+        ['unplaced target', JSON.stringify({ target: 'http://127.0.0.1:61154' })],
+        ['invalid listener port', rootConfig({ Proxy: 'http://127.0.0.1:61154' }).replaceAll('443', '0')],
+        ['oversized listener port', rootConfig({ Proxy: 'http://127.0.0.1:61154' }).replaceAll('443', '65536')],
+        ['public Funnel route', JSON.stringify({ ...JSON.parse(serveConfig(61154)), AllowFunnel: { 'werk.taila5f942.ts.net:443': true } })],
+        ['foreground indirection', JSON.stringify({ Foreground: { session: JSON.parse(serveConfig(61154)) } })],
+        ['ambiguous foreground override', JSON.stringify({ ...JSON.parse(serveConfig(61154)), Foreground: { session: JSON.parse(serveConfig(3000)) } })],
+        ['unknown config extension', JSON.stringify({ ...JSON.parse(serveConfig(61154)), FutureConfig: {} })],
+        ['ambiguous handler', rootConfig({ Proxy: 'http://127.0.0.1:61154', Text: 'foreign' })]
+    ])('does not emit a token URL for a matching port on %s', async (_name, config) => {
+        const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
+        const result = await resolveTailnetURL({ port: 61154, token: 'secret', run, probeTarget: async () => 'listening' });
+        expect(result.kind).toBe('error');
+        expect(JSON.stringify(result)).not.toContain('secret');
+        expect(calls).toEqual([['status', '--json'], ['serve', 'status', '--json']]);
+    });
+
+    it.each(['{}', 'null', '{"TCP":{},"Web":{},"AllowFunnel":{},"Foreground":{},"Services":null}'])(
+        'configures a positively empty configuration: %s', async (config) => {
+            const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
+            expect((await resolveTailnetURL({ port: 61154, token: 't', run })).kind).toBe('ok');
+            expect(calls).toContainEqual(['serve', '--bg', '61154']);
+        }
+    );
+
+    it('accepts the verified IPv4 HTTP root with a trailing slash', async () => {
+        const { run, calls } = scripted({ serveStatus: { code: 0, stdout: rootConfig({ Proxy: 'http://127.0.0.1:61154/' }) } });
+        expect(await resolveTailnetURL({ port: 61154, token: 't', run })).toMatchObject({
+            kind: 'ok', url: 'https://werk.taila5f942.ts.net/?token=t'
+        });
+        expect(calls).toHaveLength(2);
+    });
+
+    it('reuses a verified alternate listener without replacing a foreign :443 handler', async () => {
+        const config = JSON.stringify({ TCP: { '443': { HTTPS: true }, '8443': { HTTPS: true } }, Web: {
+            'werk.taila5f942.ts.net:443': { Handlers: { '/': { Path: '/tmp/foreign-site' } } },
+            'werk.taila5f942.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:61154' } } }
+        } });
+        const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
+        expect(await resolveTailnetURL({ port: 61154, token: 't', run })).toMatchObject({
+            kind: 'ok', url: 'https://werk.taila5f942.ts.net:8443/?token=t'
+        });
+        expect(calls).toHaveLength(2);
+    });
+
     it('says tailscale is not installed when the binary is missing', async () => {
         const run: TailscaleRunner = () => Promise.resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
         const result = await resolveTailnetURL({ port: 61154, token: 't', run });

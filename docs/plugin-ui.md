@@ -385,6 +385,15 @@ views list. A selected view draws the rail and the panel inside the host's Setti
 host keeps the dialog frame and backdrop, modal presence, Escape and Close, the Tab trap, focus
 capture and release, the reopen focus rule and the native sections.
 
+Settings search also belongs to the host: its input stays above the rail when a custom presenter
+is selected. Searching temporarily shows section-grouped results; choosing a result opens the
+bundled control, expands its disclosures, moves keyboard focus and briefly highlights it.
+Unavailable controls explain their prerequisite without changing settings. **Done searching**
+returns to the selected presenter, preserving the surface's drafts and the user's view selection.
+On phones, search appears on the tab-list screen. The navigation index contains labels,
+descriptions and optional field/group keywords, never write targets or readers; collection actions
+lead to the native list where the user selects the repository, profile, label, favourite or device.
+
 The placement appears in `ui.getWorkbench().slots` for discovery and `ui.selectView` refuses it:
 Settings is where a broken presenter is recovered from, so the choice stays the user's. A
 container cannot declare it, because a presenter owns the whole dialog body.

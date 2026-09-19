@@ -1,7 +1,7 @@
 /**
  * The Settings action catalog (config-keybindings.md §4, §13.1).
  *
- * The 56 bindable actions, their display names, and the categories the Keybindings table
+ * The 59 bindable actions, their display names, and the categories the Keybindings table
  * renders as sections — in the fixed order §13.1 names: `Pane Management, Navigation,
  * Workspaces, View, Files, Search, Clipboard, Terminal`. The eleven `web_*` actions are catalogued too but marked
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
@@ -104,6 +104,11 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'kill_line_backward', category: 'Terminal', label: 'Delete to Line Start' },
     { action: 'move_to_line_start', category: 'Terminal', label: 'Move to Line Start' },
     { action: 'move_to_line_end', category: 'Terminal', label: 'Move to Line End' },
+    // #175. "Text size" rather than "font size" because what they move is the Appearance tab's
+    // terminal Font size slider, daemon-wide, for every session at once.
+    { action: 'increase_terminal_font_size', category: 'Terminal', label: 'Increase Terminal Text Size' },
+    { action: 'decrease_terminal_font_size', category: 'Terminal', label: 'Decrease Terminal Text Size' },
+    { action: 'reset_terminal_font_size', category: 'Terminal', label: 'Reset Terminal Text Size' },
 
     { action: 'web_focus_url_bar', category: 'Web Pane', label: 'Web: Focus URL Bar' },
     { action: 'web_back', category: 'Web Pane', label: 'Web: Back' },

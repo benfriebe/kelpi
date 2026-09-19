@@ -34,7 +34,7 @@ describe('the keybinding table', () => {
             'Terminal'
         ]);
         const rows = sections.flatMap((section) => section.rows);
-        expect(rows).toHaveLength(45);
+        expect(rows).toHaveLength(48);
         expect(rows.every((row) => row.label.length > 0)).toBe(true);
     });
 
@@ -44,6 +44,21 @@ describe('the keybinding table', () => {
             .find((candidate) => candidate.action === 'focus_next_pane');
         expect(row?.triggers.map((chip) => chip.config)).toEqual(['alt+super+right', 'super+]']);
         expect(row?.triggers.map((chip) => chip.display)).toEqual(['⌥⌘→', '⌘]']);
+    });
+
+    // #175. The Keybindings tab is where the three text-size chords are SHOWN and rebound,
+    // since their View menu rows deliberately carry no accelerator (`shell/src/menu.ts`).
+    it('shows the terminal text-size rows with their chords, ⌘+ included', () => {
+        const rows = keybindingSections(DEFAULT_KEYBINDINGS).flatMap((section) => section.rows);
+        const row = (action: string) => rows.find((candidate) => candidate.action === action);
+        expect(row('increase_terminal_font_size')?.triggers.map((chip) => chip.config)).toEqual([
+            'shift+super+=',
+            'super+='
+        ]);
+        expect(row('decrease_terminal_font_size')?.triggers.map((chip) => chip.display)).toEqual(['⌘-']);
+        expect(row('reset_terminal_font_size')?.triggers.map((chip) => chip.display)).toEqual(['⌘0']);
+        // …and the three markdown rows now show as unbound, which is what they are.
+        expect(row('increase_markdown_font_size')?.triggers).toEqual([]);
     });
 
     it('shows an unbound action as having no triggers', () => {

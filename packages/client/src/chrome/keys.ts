@@ -41,6 +41,7 @@ import {
     actionForTrigger,
     applyKeybindOverrides,
     canonicalKeyBindingsForPlatform,
+    displayTriggerForAction,
     keyTriggerDisplayStringForPlatform,
     macLikePlatform,
     makeKeyTrigger,
@@ -76,6 +77,18 @@ export const CODE_TO_KEY_CODE: ReadonlyMap<string, number> = new Map([
     ['BracketLeft', 33], ['BracketRight', 30], ['Semicolon', 41], ['Quote', 39],
     ['Backquote', 50], ['Comma', 43], ['Period', 47], ['Slash', 44], ['Backslash', 42],
     ['Minus', 27], ['Equal', 24],
+    /*
+     * The keypad, aliased onto the character keys it types (#175).
+     *
+     * `NumpadEnter` above is already this decision, shipped: the keypad's Return is given
+     * `Enter`'s key code so ⇧⌘Return works from either key, because the config file's §3.4 table
+     * has no name for a keypad key and inventing one would grow the file's vocabulary for three
+     * keys. The same three lines make ⌘+ / ⌘- / ⌘0 work from the keypad, and they do it WITHOUT
+     * a fourth default trigger: a keypad press resolves to the very binding `super+=` names, so
+     * an `unbind` or a rebind of that line moves the keypad with it, which a separate default
+     * line could not have promised.
+     */
+    ['NumpadAdd', 24], ['NumpadSubtract', 27], ['Numpad0', 29],
     ['F1', 122], ['F2', 120], ['F3', 99], ['F4', 118], ['F5', 96], ['F6', 97],
     ['F7', 98], ['F8', 100], ['F9', 101], ['F10', 109], ['F11', 103], ['F12', 111]
 ]);
@@ -169,14 +182,19 @@ export function displayKeyTrigger(trigger: KeyTrigger, macLike: boolean = CLIENT
  * `undefined` when nothing is bound to it. `triggersForAction` sorts by `configString`, so a
  * multiply-bound action shows the same hint on every launch rather than whichever trigger the
  * map happened to iterate first.
+ *
+ * With ONE display-only preference (#175), and it is `displayTriggerForAction`'s rather than
+ * this module's so the Help overlay, the palette hints and the shell's menu accelerators cannot
+ * disagree: when the list holds both spellings of a two-spelling chord, the hint names the
+ * unshifted one. Core states the rule and why it moves no other action's chord.
  */
 export function shortcutForAction(
     bindings: KeyBindingMap,
     action: KelpiAction,
     macLike: boolean = CLIENT_MAC_LIKE
 ): string | undefined {
-    const trigger = triggersForAction(bindings, action)[0];
-    return trigger === undefined ? undefined : keyTriggerDisplayStringForPlatform(trigger, macLike);
+    const trigger = displayTriggerForAction(bindings, action);
+    return trigger === null ? undefined : keyTriggerDisplayStringForPlatform(trigger, macLike);
 }
 
 // ── dispatch ────────────────────────────────────────────────────────────────────────

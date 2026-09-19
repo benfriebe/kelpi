@@ -175,8 +175,8 @@ Parsing (per matching line, in file order, accumulated into a list of overrides)
    verified `key == "keybind"` — so e.g. `keybindx = ...` is skipped).
 2. The value (`super+shift+d=split_down`) is split at its LAST `=`:
    text before = trigger string, text after = action string. (Last-`=` split is what lets
-   the `=` key itself be bound: `keybind = super+==increase_markdown_font_size` →
-   trigger `super+=`, action `increase_markdown_font_size`.)
+   the `=` key itself be bound: `keybind = super+==increase_terminal_font_size` →
+   trigger `super+=`, action `increase_terminal_font_size`.)
    No `=` in the value → warn + skip.
 3. Trigger string parsed per section 3.2; unknown key/modifier → warn + skip line.
 4. Action string must be a known `KelpiAction` raw value (section 4) or `unbind`;
@@ -203,6 +203,13 @@ not yet exist) and re-reads it together with `~/.config/ghostty/config` on any c
 the resulting snapshot differs. Hand-edits to `keybind` lines therefore apply live in every
 attached client; no restart is needed. Settings-UI edits write through the daemon to the file
 and arrive back the same way; there is no in-memory map a hand-edit could contradict.
+
+**One chord, two spellings** (#175). A line claiming either `super+=` or `shift+super+=` drops
+the other spelling's shipped default, so an `unbind` or a rebind of ⌘+ moves the whole chord
+rather than half of it. The rule is derived from the default map and is scoped to two DEFAULT
+bindings that share a key code and an action and differ by exactly `shift`; it therefore never
+touches an action whose triggers are genuinely different shortcuts (`focus_next_pane`'s ⌘] and
+⌥⌘→). Section 7.6 states it in full.
 
 ### 1.5 `profile` lines
 
@@ -311,7 +318,7 @@ interface KeyTrigger {
   modifiers: ModSet;    // set of "super" | "shift" | "alt" | "ctrl"
 }
 
-type KelpiActionId = string;  // one of the 56 raw values in section 4, or "unbind"
+type KelpiActionId = string;  // one of the 59 raw values in section 4, or "unbind"
 
 // trigger -> action dictionary. One action per trigger; an action may own
 // multiple triggers.
@@ -436,6 +443,13 @@ concatenated (no separator), then the key: uppercased character, or display name
 `Tab`, `Esc`, `Delete`, `Space`, `Fwd Del`, `←`, `→`, `↓`, `↑`, `F1`…`F12`), or `?` for
 unknown. Example: the chord ⌘⇧D renders as `⇧⌘D`; ⌃⌥Space renders as `⌃⌥Space`.
 
+**The one-chord hint prefers the unshifted spelling** (#175). Where an action holds both halves
+of a two-spelling chord (`super+=` and `shift+super+=`, section 7.6), the single chord a Help row,
+a palette entry or a menu row shows is the unshifted one, even though the shifted spelling sorts
+first by config string. Display only, scoped to that same-key ±shift pair, and shared by every
+reader through `displayTriggerForAction` so a menu glyph and a Help row cannot disagree. The full
+trigger list is untouched: Settings ▸ Keybindings shows every chip.
+
 ### 3.4 Complete key-name → macOS keyCode table
 
 (These are the ANSI-layout macOS virtual key codes; parsing accepts every name below;
@@ -495,7 +509,7 @@ is platform-independent and always spells what the user wrote.
 
 ## 4. KelpiAction: the complete action list
 
-56 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
+59 bindable actions + the pseudo-action `unbind` (config-file only; removes a default
 trigger, never appears in UI lists). `KELPI_ACTIONS` and `MENU_BAR_ACTIONS` in
 `packages/core/src/config/actions.ts`; the handlers are the `keyActions` table in
 `packages/client/src/App.tsx`.
@@ -507,8 +521,9 @@ Legend:
 - **Condition** — extra runtime condition in the monitor before the action fires; when the
   condition fails the keystroke is NOT consumed and falls through (usually to the
   terminal).
-- Actions listed with default `—` ship UNBOUND (13 of them): `open_diff`,
-  `toggle_sync_input`, and all 11 `web_*` per-pane actions.
+- Actions listed with default `unbound` ship UNBOUND (16 of them): `open_diff`,
+  `toggle_sync_input`, the three `*_markdown_font_size` actions (#175 spent ⌘= / ⌘- / ⌘0 on
+  the terminal set; see section 7.6), and all 11 `web_*` per-pane actions.
 
 ### Category "Pane Management" (visible in Settings)
 
@@ -525,7 +540,7 @@ Legend:
 | `move_pane_up` | Move Pane Up | ⌃⇧↑ | monitor | unconditional |
 | `move_pane_down` | Move Pane Down | ⌃⇧↓ | monitor | unconditional |
 | `create_scratchpad` | New Scratchpad | ⌘⇧N | monitor | unconditional |
-| `toggle_sync_input` | Toggle Synchronise Input | — | monitor | toggles workspace-wide input sync |
+| `toggle_sync_input` | Toggle Synchronise Input | unbound | monitor | toggles workspace-wide input sync |
 | `open_web_pane` | Open Web Pane | ⌘⇧O | menu | opens a fresh web pane with a blank URL, URL bar focused |
 
 ### Category "Navigation" (visible)
@@ -560,10 +575,10 @@ Legend:
 |---|---|---|---|---|
 | `open_file` | Preview Markdown | ⌘O | menu | opens file picker filtered to markdown |
 | `toggle_markdown_edit` | Toggle Markdown Edit | ⌘E | monitor | only when focused pane is a markdown pane; else falls through |
-| `increase_markdown_font_size` | Increase Markdown Font Size | ⌘= | monitor | only when focused pane is markdown AND not in edit mode; else falls through |
-| `decrease_markdown_font_size` | Decrease Markdown Font Size | ⌘- | monitor | same condition |
-| `reset_markdown_font_size` | Reset Markdown Font Size | ⌘0 | monitor | same condition |
-| `open_diff` | Open Diff | — | monitor | needs a focused pane; opens a diff pane for that pane's working directory |
+| `increase_markdown_font_size` | Increase Markdown Font Size | unbound | monitor | only when focused pane is markdown AND not in edit mode; else falls through. Ships UNBOUND since #175: ⌘= / ⌘- / ⌘0 are the Terminal rows below, and those offer a focused preview this same font size first, so the preview's behaviour on the three chords is unchanged (section 7.6) |
+| `decrease_markdown_font_size` | Decrease Markdown Font Size | unbound | monitor | same condition, same note |
+| `reset_markdown_font_size` | Reset Markdown Font Size | unbound | monitor | same condition, same note |
+| `open_diff` | Open Diff | unbound | monitor | needs a focused pane; opens a diff pane for that pane's working directory |
 
 ### Category "Search" (visible)
 
@@ -604,6 +619,9 @@ fixed. ⌃C is the interrupt and is untouched.
 | `kill_line_backward` | Delete to Line Start | ⌘⌫ | monitor | writes `0x15` (⌃U) to the focused terminal pane; falls through when the focused pane has no terminal renderer |
 | `move_to_line_start` | Move to Line Start | ⌘← | monitor | writes `0x01` (⌃A); same condition |
 | `move_to_line_end` | Move to Line End | ⌘→ | monitor | writes `0x05` (⌃E); same condition |
+| `increase_terminal_font_size` | Increase Terminal Text Size | ⌘= and ⌘⇧= (one chord, two spellings; the keypad's `+` too) | monitor | steps the DAEMON-WIDE ghostty `font-size` up by the Appearance row's own step, clamped to its maximum; a focused markdown preview gets its own font size instead (section 7.6) |
+| `decrease_terminal_font_size` | Decrease Terminal Text Size | ⌘- (the keypad's `-` too) | monitor | the same, down, clamped to the minimum |
+| `reset_terminal_font_size` | Reset Terminal Text Size | ⌘0 (the keypad's `0` too) | monitor | writes the Appearance row's shipped default (13) |
 
 **Ghostty's macOS defaults, matched exactly** (#82). `ghostty-org/ghostty`,
 `src/config/Config.zig:7315-7334`, darwin branch of `Keybinds.init`, under the comment "Natural
@@ -693,9 +711,10 @@ applying(overrides: [trigger, action][])  // section 1.4 semantics
 ```
 
 One trigger maps to at most one action. One action may own any number of triggers
-(defaults give `focus_next_pane`/`focus_previous_pane` two each).
+(defaults give `focus_next_pane`/`focus_previous_pane` two each, and
+`increase_terminal_font_size` two that are one chord in two spellings, section 7.6).
 
-### 5.2 The default map (45 triggers)
+### 5.2 The default map (46 triggers)
 
 Exactly the defaults listed in section 4's tables. (`super` here is the primary chord
 modifier — ⌘ on macOS, Ctrl on Windows/Linux; §3.5.)
@@ -710,8 +729,9 @@ super+]=focus_next_pane              alt+super+right=focus_next_pane
 super+[=focus_previous_pane          alt+super+left=focus_previous_pane
 alt+super+down=next_workspace        alt+super+up=previous_workspace
 shift+super+r=rename_workspace       super+e=toggle_markdown_edit
-super+==increase_markdown_font_size  super+-=decrease_markdown_font_size
-super+0=reset_markdown_font_size     shift+super+return=toggle_zoom
+super+==increase_terminal_font_size  shift+super+==increase_terminal_font_size
+super+-=decrease_terminal_font_size  super+0=reset_terminal_font_size
+shift+super+return=toggle_zoom
 shift+super+t=reopen_closed_pane     super+f=toggle_search
 escape=close_search                  shift+super+space=cycle_layout
 super+p=command_palette              shift+super+n=create_scratchpad
@@ -1088,6 +1108,118 @@ Three more facts worth stating because each one has surprised somebody:
 Bindings are unaffected either way. The window dispatcher matches on `event.code` (section 7.2)
 and runs before any pane, so the four shipped ⌥ bindings (`alt+super+left` / `right` / `up` /
 `down`) still fire with ⌥ composing, and an arrow composes nothing in the first place.
+
+### 7.6 Terminal text size (⌘= / ⌘- / ⌘0, #175)
+
+The report was "⌘+ and ⌘- do not change the terminal text size in a remote session". The cause
+was smaller and wider than that: **there was no terminal font-size action at all**, on any
+client. Terminal text size existed only as the Appearance tab's Font size row, and the three
+chords resolved to the markdown preview's own font size, whose handler declines for a terminal
+and lets the keystroke fall through, to nothing, because ghostty-web's input handler
+`preventDefault`s every mapped chord, so the browser's own zoom never fired either.
+
+**The owner's scope decision (2026-09-15) is the shape of the fix.** Terminal text size stays
+ONE DAEMON-WIDE setting (the ghostty `font-size` key Settings ▸ Appearance already writes) and
+the chords become three ordinary `KelpiAction`s that change it through the ordinary settings
+write. Not per pane, and not per viewer. So every session on that daemon follows, a second
+window agrees without being told, and a remote kelpi-to-kelpi session can drive it.
+
+| | |
+|---|---|
+| The setting | `font-size` in `~/.config/ghostty/config`, written by `set-ghostty-setting` (section 12's allowlist still applies) |
+| The row | Settings ▸ Appearance ▸ Terminal ▸ Font size, `data-testid="terminal-font-size"`: min 8, max 32, step 1, default 13 |
+| The write path | `client/src/settings/surface.ts` ▸ `stepField` / `restoreFieldDefault`, both of which go through `commitField`: the same re-resolve, the same two validation funnels and the same at-most-once queue a dragged slider uses |
+| Increase | steps up by the row's own step, clamped to its maximum. At the bound it is a NO-OP: nothing written, nothing refused, no toast |
+| Decrease | the same, down, clamped to the minimum |
+| Reset | writes the row's shipped **default** (13), which is also the value the row shows when the key is absent. It does not delete the key: the row's encoder has no null to write (unlike Font family, where a blank field removes it), and making 13 mean "remove" would change what dragging the slider to 13 does |
+
+**Repeats compose, and that is not free.** Between a press and the `settings-changed` that
+answers it, the daemon's snapshot still holds the OLD number. A step computed from the snapshot
+would ask for the same value ten times for ten presses, the write queue would dedup them as the
+same ask, and a held-down ⌘= would move the size by one. `stepField` starts each step from the
+newest value the queue has been ASKED for instead (its `desired`, else its in-flight value, else
+the snapshot), so ten presses land ten steps and the config file is written twice: once for the
+first press and once for the coalesced remainder.
+
+**⌘+ is a shifted `=`.** `shift+super+=` is a second default trigger for
+`increase_terminal_font_size`, which is the same reading the web-pane priority layer gives it
+(section 7.3). Settings ▸ Keybindings shows both chips; the Help overlay's one-chord hint shows
+`⇧⌘=`, because `triggersForAction` sorts by config string and every multiply-bound action is
+shown that way already (⌥⌘→ for Focus Next Pane).
+
+**A focused markdown preview still wins its own chord.** `increase/decrease/reset_terminal_font_size`
+offer the focused pane's preview font size first and step the daemon's only when that declines,
+which is the same precedence `toggle_search` uses to route ⌘F by pane type. So nothing a person can see
+changed for a markdown pane when the three chords moved to these actions. The three
+`*_markdown_font_size` actions stay in the vocabulary, stay in Settings and ship unbound; binding
+one by hand gives a chord that is the preview's alone, and it really is alone, because a line
+claiming either spelling of ⌘+ takes the other spelling's default with it (below).
+
+**The two spellings of ⌘+ go together.** `super+=` and `shift+super+=` are not two shortcuts;
+they are one chord typed on one physical key, split in two only because ⌘+ on a US layout is a
+shifted `=` and the map matches the physical key. So a `keybind` line that claims EITHER spelling
+drops the other spelling's default: `keybind = super+==unbind` really does take ⌘+ away, and
+`keybind = super+==increase_markdown_font_size` gives the whole chord back to the preview rather
+than leaving ⇧⌘= still resizing every terminal on the daemon. The rule is derived, not listed
+(`core/config/bindings.ts` ▸ `shiftTwinBinding`): two DEFAULT bindings pair when they carry the
+same key code and the same action and their modifier sets differ by exactly `shift`. It therefore
+cannot touch an action whose triggers are genuinely different shortcuts, which is the case it
+exists to be distinguished from: unbinding `focus_next_pane`'s ⌘] leaves ⌥⌘→ exactly where it was.
+A user who spells BOTH lines out keeps both, because the twin is dropped only while it is still
+the shipped binding.
+
+Section 3.3's one-chord hint (the Help overlay, the palette, a menu row) prefers the unshifted
+half of such a pair, so Increase Terminal Text Size is shown as ⌘= rather than the ⇧⌘= that sorts
+first by config string. It is display only: Settings ▸ Keybindings still shows both chips, and no
+action whose triggers are two different shortcuts moves (`displayTriggerForAction`).
+
+**The keypad works, by aliasing rather than by a fourth default.** `NumpadAdd`, `NumpadSubtract`
+and `Numpad0` are given the key codes of `Equal`, `Minus` and `Digit0` in the client's
+`CODE_TO_KEY_CODE` table, exactly as `NumpadEnter` has always been given `Enter`'s. A keypad press
+therefore resolves to the very binding `super+=` names, so an `unbind` or a rebind of that line
+moves the keypad with it, which a separate default line could not have promised. Section 3.4's
+key-name table is unchanged: the config file still has no name for a keypad key, and did not need
+one.
+
+**A non-US layout is a known limit, and it is the whole map's, not this feature's.** Triggers are
+matched on the PHYSICAL key (section 3.1), so on a German or Nordic layout the key that types `+`
+is physically `BracketRight` (which the shipped map spends on `focus_next_pane`) and the key that
+types `-` is physically `Slash` (unbound), and ⌘+ / ⌘- therefore do not reach these actions there.
+That is true of every punctuation binding in section 5.2 and is tracked as **issue #245**; it is
+not redesigned here. The workaround in the meantime is the one the grammar already offers: a
+`keybind` line naming the physical key that carries `+` on that layout.
+
+**What each surface does with them:**
+
+- **Chrome text field** (sidebar filter, an inline rename, the palette): they do NOT fire. They
+  are not in `MENU_BAR_ACTIONS`, deliberately, because that is the one set that survives a
+  focused text field (section 7.1), and a ⌘- typed into the filter must stay a `-`.
+- **The Settings window**, recorder included: the dispatcher stands down entirely while it is
+  open (`isPaletteOpen`), so the recorder can capture ⌘= and rebind the action to something else.
+- **A focused web pane**: unchanged. The priority layer of section 7.3 claims ⌘= / ⌘⇧= / ⌘- / ⌘0
+  as the page's zoom and runs BEFORE the map, so a web pane zooms and never resizes a terminal.
+- **The shell's View menu** carries Increase / Decrease / Reset Terminal Text Size as relay rows
+  that **show the chord and do not register it** (`registerAccelerator: false`). The glyph is the
+  LIVE one, derived through `menuAccelerators` like every other row (#47), so a rebind moves it
+  and an `unbind` removes it; the unshifted spelling is preferred, because ⌘= is what is on the
+  keycap. Not registering is what keeps one press one step: whether a macOS accelerator ALSO
+  reaches the renderer "is not observable from inside the app"
+  (`client/src/app/shell-close.ts`), which is why File ▸ Close needs N14's 400 ms coalescing
+  bridge, and a registered ⌘= here would owe the same bridge and would fire again while a focused
+  web pane zooms its page on the same chord. The three actions are still NOT in
+  `MENU_BAR_ACTIONS`: the derivation reads `MENU_ACCELERATOR_ACTIONS` instead, which is that set
+  plus these three, so a row may display a chord the dispatch layer does not claim. Electron
+  documents the flag as Linux/Windows only, so `scripts/scenarios/terminal-text-size-shortcuts.mjs`
+  measures it on a real window: it reads the accelerator off the live menu and asserts a single
+  ⌘= moved the daemon's `font-size` by exactly one step.
+- **An embedded remote workspace** (`RemoteWorkspaceView`, a second daemon paired in Settings ▸
+  Remote): they do nothing, exactly as ⌘D and ⌘W do nothing there, because the window dispatcher stands
+  down while a remote workspace fills the pane area (section 1.7's rule, `hasActiveWorkspace`).
+  The window's settings surface holds the PRIMARY daemon's snapshot and verbs and there is no
+  per-remote settings surface, so firing there would resize the wrong daemon's terminals. The
+  case the report describes, a browser or a second Kelpi attached **directly** to the remote
+  daemon over a tailnet, is unaffected: that daemon is the primary runtime for that window, so
+  the chord changes its daemon-wide size and every session on it follows.
 
 ---
 
@@ -1646,7 +1778,7 @@ lives now:
    state never enter a trigger, and the exact remaining modifier set is compared
    (section 3.1).
 4. **Two dispatch layers collapse into one** in the client (a browser tab has no OS menu
-   bar). All 56 actions go through a single keydown interceptor, and three behaviors of the
+   bar). All 59 actions go through a single keydown interceptor, and three behaviors of the
    original split survive: (a) shortcuts do not fire while a modal/palette/secondary
    surface has focus (the one exception is the `close_pane` chord, which closes the
    overlay, section 7.2); (b) conditional actions FALL THROUGH to the terminal when their
@@ -1707,8 +1839,8 @@ lives now:
     differing from default), reset-all, and the profiles master-detail editor with the
     locked `KELPI_PROFILE` row, `:`/`=` input stripping, reserved `default` name, and
     write-through (on blur, Enter and structural change) against the config file.
-14. **Count sanity for tests**: 57 enum cases total; 56 bindable (excludes `unbind`);
-    13 ship unbound (`open_diff`, `toggle_sync_input`, 11 `web_*`); the default map has
-    exactly 45 trigger entries (43 distinct actions bound; focus next/prev own two
-    triggers each). The Settings table shows 45 actions (56 minus the 11 hidden web
-    actions).
+14. **Count sanity for tests**: 60 enum cases total; 59 bindable (excludes `unbind`);
+    16 ship unbound (`open_diff`, `toggle_sync_input`, the three `*_markdown_font_size`,
+    11 `web_*`); the default map has exactly 46 trigger entries (43 distinct actions
+    bound; focus next/prev and `increase_terminal_font_size` own two triggers each). The
+    Settings table shows 48 actions (59 minus the 11 hidden web actions).

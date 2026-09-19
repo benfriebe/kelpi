@@ -674,7 +674,13 @@ export const KEYS = {
     Minus: { key: '-', keyCode: 189 },
     Slash: { key: '/', keyCode: 191 },
     BracketLeft: { key: '[', keyCode: 219 },
-    BracketRight: { key: ']', keyCode: 221 }
+    BracketRight: { key: ']', keyCode: 221 },
+    // The keypad keys the client aliases onto `=`, `-` and `0` (#175, `chrome/keys.ts`), so a
+    // scenario can press ⌘+ on the numeric keypad the way a person with a full keyboard does.
+    // `NumpadEnter` above is the same arrangement, shipped.
+    NumpadAdd: { key: '+', keyCode: 107, text: '+' },
+    NumpadSubtract: { key: '-', keyCode: 109, text: '-' },
+    Numpad0: { key: '0', keyCode: 96, text: '0' }
 };
 
 function codeForCharacter(character) {

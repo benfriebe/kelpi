@@ -20,8 +20,24 @@ describe('the action catalog', () => {
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 
-    it('is the 56 actions the spec counts', () => {
-        expect(ACTION_CATALOG).toHaveLength(56);
+    it('is the 59 actions the spec counts', () => {
+        expect(ACTION_CATALOG).toHaveLength(59);
+    });
+
+    // #175. They are Terminal rows, so Settings ▸ Keybindings and the Help overlay both list
+    // them (the overlay renders exactly `VISIBLE_CATEGORIES` off this table).
+    it('lists the three terminal text-size actions under Terminal', () => {
+        expect(actionsInCategory('Terminal')).toEqual([
+            'kill_line_backward',
+            'move_to_line_start',
+            'move_to_line_end',
+            'increase_terminal_font_size',
+            'decrease_terminal_font_size',
+            'reset_terminal_font_size'
+        ]);
+        expect(actionLabel('increase_terminal_font_size')).toBe('Increase Terminal Text Size');
+        expect(actionLabel('decrease_terminal_font_size')).toBe('Decrease Terminal Text Size');
+        expect(actionLabel('reset_terminal_font_size')).toBe('Reset Terminal Text Size');
     });
 
     it('keeps §13.1’s fixed section order and excludes the web-pane category', () => {
@@ -42,7 +58,7 @@ describe('the action catalog', () => {
         const visible = VISIBLE_CATEGORIES.flatMap((category) => actionsInCategory(category));
         expect(visible.filter((action) => action.startsWith('web_'))).toEqual([]);
         expect(actionsInCategory('Web Pane')).toHaveLength(11);
-        expect(visible).toHaveLength(56 - 11);
+        expect(visible).toHaveLength(59 - 11);
     });
 
     it('uses §4’s display names, including the ones that are not the raw value', () => {

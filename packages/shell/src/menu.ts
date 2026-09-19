@@ -31,11 +31,11 @@ import type { MenuItemConstructorOptions } from 'electron';
 
 import {
     MENU_BAR_ACTIONS,
+    displayTriggerForAction,
     isKelpiAction,
     parseKeybindValue,
     platformChordsForRoles,
     resolveKeyBindings,
-    triggersForAction,
     type KelpiAction,
     type PlatformChordRole
 } from '@kelpi/core/config';
@@ -64,6 +64,14 @@ export const COMMAND_PALETTE_COMMAND = 'command-palette';
 export const SELECT_ALL_WORKSPACES_COMMAND = 'select-all-workspaces';
 /** §WS-151 — the client answers by clearing the sidebar's workspace multi-selection. */
 export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
+/**
+ * #175: the three terminal text-size rows. The client answers with the same handler its
+ * `increase/decrease/reset_terminal_font_size` key actions run, which offers a focused markdown
+ * preview its own size first and otherwise steps the daemon-wide ghostty `font-size`.
+ */
+export const INCREASE_TEXT_SIZE_COMMAND = 'increase-terminal-text-size';
+export const DECREASE_TEXT_SIZE_COMMAND = 'decrease-terminal-text-size';
+export const RESET_TEXT_SIZE_COMMAND = 'reset-terminal-text-size';
 
 /**
  * §WS-151's "Switch to Workspace N" rows: `switch-workspace-1` … `switch-workspace-9`.
@@ -134,6 +142,23 @@ export function switchWorkspaceAccelerator(position: number): string {
 export type MenuAccelerators = Readonly<Partial<Record<KelpiAction, string>>>;
 
 /**
+ * The actions a menu row shows a chord for: the 16 `MENU_BAR_ACTIONS`, plus #175's three
+ * text-size actions.
+ *
+ * Those three are NOT menu-bar actions and must not become them - that set is the one that still
+ * fires while a chrome text field has the caret, and a ⌘- typed into the sidebar filter has to
+ * stay a `-`. What they are is rows that DISPLAY a chord they do not register
+ * (`registerAccelerator: false`, see `TEXT_SIZE_ROWS`), so the derivation has to reach them while
+ * the dispatch layer does not. Keeping the two lists separate is what says that out loud.
+ */
+export const MENU_ACCELERATOR_ACTIONS: readonly KelpiAction[] = [
+    ...MENU_BAR_ACTIONS,
+    'increase_terminal_font_size',
+    'decrease_terminal_font_size',
+    'reset_terminal_font_size'
+];
+
+/**
  * §7.1: "shortcut = FIRST trigger of the action, in configString sort order", read from the
  * binding map, and "Menu shortcuts update live when bindings change (they read the current map)".
  *
@@ -155,9 +180,13 @@ export function menuAccelerators(keybindLines: readonly string[]): MenuAccelerat
         .filter((override): override is NonNullable<typeof override> => override !== null);
     const map = resolveKeyBindings(overrides);
     const result: Partial<Record<KelpiAction, string>> = {};
-    for (const action of MENU_BAR_ACTIONS) {
-        const trigger = triggersForAction(map, action)[0];
-        if (trigger === undefined) continue;
+    for (const action of MENU_ACCELERATOR_ACTIONS) {
+        // `displayTriggerForAction`, not `triggersForAction[0]`: it is §7.1's configString order
+        // with one display-only preference, the unshifted half of a two-spelling chord (#175).
+        // The client's Help overlay and palette hints read the same function, so a row's glyph
+        // and the hint beside the same action cannot say different things.
+        const trigger = displayTriggerForAction(map, action);
+        if (trigger === null) continue;
         const accelerator = acceleratorForTrigger(trigger);
         if (accelerator !== null) result[action] = accelerator;
     }
@@ -173,7 +202,7 @@ export const DEFAULT_MENU_ACCELERATORS: MenuAccelerators = menuAccelerators([]);
  * writes (a theme, a profile, the quit prompt) move no chord at all.
  */
 export function sameMenuAccelerators(a: MenuAccelerators, b: MenuAccelerators): boolean {
-    for (const action of MENU_BAR_ACTIONS) {
+    for (const action of MENU_ACCELERATOR_ACTIONS) {
         if (a[action] !== b[action]) return false;
     }
     return true;
@@ -186,7 +215,7 @@ export function sameMenuAccelerators(a: MenuAccelerators, b: MenuAccelerators): 
  */
 export function menuAcceleratorsLogLine(accelerators: MenuAccelerators): string {
     const moved: string[] = [];
-    for (const action of MENU_BAR_ACTIONS) {
+    for (const action of MENU_ACCELERATOR_ACTIONS) {
         const current = accelerators[action];
         if (current === DEFAULT_MENU_ACCELERATORS[action]) continue;
         moved.push(`${action}=${current ?? '(none)'}`);
@@ -411,6 +440,52 @@ export const RECOVER_INTERFACE_LABEL = 'Recover Interface';
 export const RECOVER_INTERFACE_ACCELERATOR = 'CommandOrControl+Alt+Control+R';
 export const RECOVER_INTERFACE_COMMAND = 'recover-interface';
 
+export const INCREASE_TEXT_SIZE_LABEL = 'Increase Terminal Text Size';
+export const DECREASE_TEXT_SIZE_LABEL = 'Decrease Terminal Text Size';
+export const RESET_TEXT_SIZE_LABEL = 'Reset Terminal Text Size';
+
+/**
+ * #175's three rows show their chord and do NOT register it (`registerAccelerator: false`).
+ *
+ * The chord is the binding map's, and it has to stay the binding map's: whether a macOS
+ * accelerator ALSO reaches the renderer "is not observable from inside the app"
+ * (`client/app/shell-close.ts`), which is why File ▸ Close needed N14's 400 ms coalescing bridge
+ * to keep one ⌘W from closing two panes. A registered ⌘= here would owe the same bridge, and
+ * would fire again while a focused WEB pane is zooming its page on ⌘= through the renderer's own
+ * priority layer. So the row registers nothing: every press of ⌘= is the client dispatcher's,
+ * once, and clicking the row sends the same `menu-command` it always would.
+ *
+ * What the flag buys is the glyph, which is the whole reason a menu row exists: a person opens
+ * View to find out what the shortcut IS. And it is the LIVE chord, derived through
+ * `menuAccelerators` like every other row (#47), so a rebind moves it, an `unbind` removes it,
+ * and the unshifted spelling is preferred over ⇧⌘= because that is the one on the keycap.
+ *
+ * These three are deliberately NOT in `MENU_BAR_ACTIONS` - that set is the dispatch layer that
+ * still fires while a chrome text field has the caret - which is why the derivation reads
+ * `MENU_ACCELERATOR_ACTIONS` instead.
+ *
+ * The flag is documented `@platform linux,win32` in Electron's typings and ignored on macOS, so
+ * a macOS build could still register the chord. That is exactly what `scripts/scenarios/
+ * terminal-text-size-shortcuts.mjs` measures: it presses ⌘= over a real window and asserts the
+ * daemon's font-size moved by exactly ONE step, and four presses by exactly four, which a second
+ * menu-routed step would break.
+ */
+const TEXT_SIZE_ROWS: readonly (readonly [string, string, KelpiAction])[] = [
+    [INCREASE_TEXT_SIZE_LABEL, INCREASE_TEXT_SIZE_COMMAND, 'increase_terminal_font_size'],
+    [DECREASE_TEXT_SIZE_LABEL, DECREASE_TEXT_SIZE_COMMAND, 'decrease_terminal_font_size'],
+    [RESET_TEXT_SIZE_LABEL, RESET_TEXT_SIZE_COMMAND, 'reset_terminal_font_size']
+];
+
+/** A relay row that DISPLAYS a chord without taking it from the page. See {@link TEXT_SIZE_ROWS}. */
+function shownOnlyRow(
+    deps: MenuRelayDeps,
+    label: string,
+    accelerator: string | undefined,
+    command: string
+): MenuItemConstructorOptions {
+    return { ...relayRow(deps, label, accelerator, command), registerAccelerator: false };
+}
+
 /**
  * The View submenu: the two *product* toggles first, in the shipped app's own order, then the
  * web-contents roles the shell has always carried.
@@ -428,6 +503,11 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         { role: 'reload' },
         { role: 'forceReload', accelerator: FORCE_RELOAD_ACCELERATOR },
         { role: 'toggleDevTools' },
+        { type: 'separator' },
+        // #175: the terminal text size, in the menu every platform puts a text-size group in.
+        // Inserted BEFORE full screen rather than appended, so `Recover Interface` stays the last
+        // row of the View menu, which is where #79 deliberately put it.
+        ...TEXT_SIZE_ROWS.map(([label, command, action]) => shownOnlyRow(deps, label, accel[action], command)),
         { type: 'separator' },
         { role: 'togglefullscreen' },
         { type: 'separator' },
@@ -734,7 +814,10 @@ export const VIEW_MENU_LOG_FRAGMENT =
     `View ▸ ${TOGGLE_SIDEBAR_LABEL} (⌘⇧S) + ${TOGGLE_INSPECTOR_LABEL} (⌘I)` +
     // Issue #79, appended for the same reason the inspector toggle was: `sidebar-remaining`
     // asserts the prefix above as a substring, so the third row goes on the end.
-    ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)`;
+    ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)` +
+    // #175. No chord beside them, because these three carry no accelerator on purpose; see
+    // TEXT_SIZE_ROWS. Appended, like every row before them, so the prefix stays assertable.
+    ` + ${INCREASE_TEXT_SIZE_LABEL} / ${DECREASE_TEXT_SIZE_LABEL} / ${RESET_TEXT_SIZE_LABEL}`;
 
 /**
  * `File ▸ …`, as `main.ts` logs it.

@@ -407,6 +407,59 @@ function bounded(
     return value;
 }
 
+// ── stepping ────────────────────────────────────────────────────────────────────────
+
+/**
+ * How many decimals a value has to be rounded to so it lands exactly on a field's grid.
+ *
+ * `min + n * step` is binary arithmetic: 0.1 + 15 * 0.05 is 0.8500000000000001, which
+ * {@link validateSettingsWrite}'s epsilon would forgive but which would then be WRITTEN, read
+ * back as a different number, and shown beside a control that cannot represent it. The grid's
+ * own spelling is the answer: a 0.05 step is two decimals, a 1 step is none.
+ */
+function gridDecimals(value: number): number {
+    const text = String(value);
+    const point = text.indexOf('.');
+    if (point < 0) return 0;
+    // Exponent spellings ("5e-7") are not a step any field in the catalog declares; treating one
+    // as zero decimals is the safe answer because the clamp below still bounds the result.
+    return text.length - point - 1;
+}
+
+/**
+ * A number/slider field's value moved by whole steps of its OWN step, clamped to its own bounds.
+ *
+ * The one piece of arithmetic behind ⌘= / ⌘- (#175), kept here rather than in the surface so it
+ * can be asserted against a descriptor with no window, no store and no socket - and so the
+ * stepping, the clamp and the grid are the same three rules {@link validateSettingsWrite}
+ * enforces on the way out, rather than a second opinion about them.
+ *
+ * `current` is clamped and snapped to the grid before the step, because it may be a number a
+ * hand-edited config file put there (a `font-size = 7` under an 8 minimum, a `font-size = 13.5`
+ * off a 1 grid). At a bound the answer is the bound itself, which is what makes the action a
+ * no-op there rather than an error.
+ */
+export function steppedSettingsValue(
+    field: SettingsNumberFieldDescriptor | SettingsSliderFieldDescriptor,
+    current: number,
+    steps: number
+): number {
+    const declared = field.step;
+    const size = declared !== undefined && declared > 0 ? declared : 1;
+    const decimals = Math.max(gridDecimals(size), gridDecimals(field.min));
+    const round = (value: number): number => Number(value.toFixed(decimals));
+    // The last whole grid point at or below `max`: a field whose range is not a whole number of
+    // steps (none ship that way, but nothing stops one) must never be stepped past its maximum.
+    const lastIndex = Math.max(0, Math.floor((field.max - field.min) / size + 1e-6));
+    // Into range FIRST, then onto the grid, then step. The order matters for a value the field
+    // cannot represent: from a hand-written `font-size = 7` under an 8 minimum, ⌘- must leave the
+    // size at 8 rather than stepping the out-of-range number by one and clamping afterwards.
+    const from = Number.isFinite(current) ? Math.min(field.max, Math.max(field.min, current)) : field.min;
+    const startIndex = Math.min(lastIndex, Math.max(0, Math.round((from - field.min) / size)));
+    const index = Math.min(lastIndex, Math.max(0, startIndex + Math.round(steps)));
+    return round(field.min + index * size);
+}
+
 // ── projection ──────────────────────────────────────────────────────────────────────
 
 /**

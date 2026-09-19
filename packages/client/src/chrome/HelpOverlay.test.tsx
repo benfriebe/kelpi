@@ -38,6 +38,41 @@ describe('HelpOverlay (APP-027 / APP-063)', () => {
         );
     });
 
+    /**
+     * #175. The Help overlay is where the three terminal text-size chords are SHOWN, because
+     * their View menu rows deliberately carry no accelerator (`shell/src/menu.ts` says why). So
+     * this is not a formality: it is the surface the decision leans on.
+     *
+     * ⌘= rather than ⇧⌘= for Increase is `displayTriggerForAction`'s one display-only preference:
+     * `shift+super+=` sorts first by config string, but the unshifted half of a two-spelling chord
+     * is the one on the keycap. The preference is scoped to that same-key ±shift relation, so an
+     * action with two genuinely different shortcuts is untouched, which the Focus Next Pane case
+     * below is here to prove.
+     */
+    it('lists the three terminal text-size actions with their live chords', () => {
+        renderHelp();
+        const shortcut = (action: string): string | null | undefined =>
+            document
+                .querySelector(`[data-help-action="${action}"]`)
+                ?.querySelector('[data-help-shortcut]')
+                ?.getAttribute('data-help-shortcut');
+        expect(shortcut('increase_terminal_font_size')).toBe('⌘=');
+        // The rule moved nothing else: ⌥⌘→ still wins over ⌘] for Focus Next Pane, because those
+        // are two shortcuts rather than two spellings of one.
+        expect(shortcut('focus_next_pane')).toBe('⌥⌘→');
+        expect(shortcut('decrease_terminal_font_size')).toBe('⌘-');
+        expect(shortcut('reset_terminal_font_size')).toBe('⌘0');
+        const terminal = document.querySelector('[data-help-category="Terminal"]')?.textContent ?? '';
+        expect(terminal).toContain('Increase Terminal Text Size');
+        expect(terminal).toContain('Decrease Terminal Text Size');
+        expect(terminal).toContain('Reset Terminal Text Size');
+
+        // …and they move with a rebind like every other row, because the rows read the map.
+        cleanup();
+        renderHelp(['super+0=unbind', 'ctrl+alt+0=reset_terminal_font_size']);
+        expect(shortcut('reset_terminal_font_size')).toBe('⌃⌥0');
+    });
+
     it('draws a dash for an action nothing is bound to', () => {
         renderHelp(['super+d=unbind']);
         const row = document.querySelector('[data-help-action="split_right"]');

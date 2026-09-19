@@ -283,6 +283,15 @@ appearance. Writing is `writeRemoteDaemons` — `writeProfiles`' twin, full-repl
 every unrelated line preserved — reached over the WS as `set-remote-daemons`
 (`setProfiles`' twin; names must be non-blank and colon-free, URLs non-blank).
 
+Navigation trust is opt-in per saved host. Settings ▸ Remote's **Trust plugins with navigation**
+checkbox persists `remote-daemon-navigation-trust = <name>:<url>` beside the corresponding
+`remote-daemon` line. Both the name and complete pairing URL must match; an old grant does not
+trust a replacement endpoint. The full-replacement writer removes obsolete grants along with
+host records. `remoteDaemons` entries and `set-remote-daemons` accept the optional boolean
+`trustedForNavigation`; only `true` grants access, omission/false clears it, and non-booleans
+are rejected on writes. The permission lets that host's plugin views read/watch and select
+this window's navigation, without granting chrome or shared window UI access.
+
 The registry rides the settings snapshot (`remoteDaemons`, additive — older daemons omit
 it and the hydrator fills `[]`). The client builds one full runtime per entry — its own
 connection, command RPC, PTY streams and store mirror (`app/remote-daemons.ts`) — and:

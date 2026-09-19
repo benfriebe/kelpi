@@ -153,7 +153,7 @@ import {
 import { createFrameTick, type FrameTick } from './app/frame-tick';
 import { createTextSizeStep } from './app/text-size';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
-import { useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
+import { navigationTrustedRuntimes, useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
 import { defaultFormFactorWindow, useFormFactor, type FormFactorWindow } from './chrome/form-factor';
 import { PhoneShell, phoneVisiblePaneIDs, usePhoneView } from './phone';
@@ -3623,7 +3623,7 @@ function Shell(props: AppProps): ReactElement {
             blocked: () => surface.blocksWindowInput() || settingsOpenRef.current || helpOpenRef.current || createSheetOpenRef.current,
             globalHotkey: terminalGlobalHotkey ? canonicalTriggerForPlatform(terminalGlobalHotkey, /Mac|iPhone|iPad/.test(navigator.platform)) : null,
             onError: notifyFailure }}>
-        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} services={uiServices} chrome={phoneActive ? null : pluginChrome}
+        <WorkbenchProvider layout={{ ...workbench, select: selectWorkbench }} runtime={runtime} workspaceID={workspace?.id} chords={allViewChords} navigation={pluginNavigation} navigationTrustedRuntimes={navigationTrustedRuntimes(settings.remoteDaemons, remoteDaemonRuntimes)} services={uiServices} chrome={phoneActive ? null : pluginChrome}
             features={[
                 bindWorkspacesFeature({
                     model: workspacesModel, actions: act, lifecycle: workspacesLifecycle, store,

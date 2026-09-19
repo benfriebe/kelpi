@@ -467,3 +467,25 @@ describe('the Daemons registry card (§1.7)', () => {
         expect((screen.getByTestId('remote-daemon-add-button') as HTMLButtonElement).disabled).toBe(true);
     });
 });
+
+it('sets and clears per-host navigation trust without changing other hosts, and replacement starts untrusted', async () => {
+    const save = vi.fn();
+    const entries = [{ name: 'werk', url: 'https://werk/?token=secret' }, { name: 'other', url: 'https://other/', trustedForNavigation: true }];
+    const remoteActions = actions();
+    const view = render(<RemoteTab actions={remoteActions} daemons={entries} onSaveDaemons={save} />);
+    await waitFor(() => expect(screen.getByTestId('remote-daemon-row-werk')).toBeTruthy());
+    const checkbox = () => screen.getByRole('checkbox', { name: 'Trust werk plugins with window navigation' }) as HTMLInputElement;
+    expect(checkbox().checked).toBe(false);
+    fireEvent.click(checkbox());
+    expect(save).toHaveBeenLastCalledWith([{ ...entries[0], trustedForNavigation: true }, entries[1]]);
+    view.rerender(<RemoteTab actions={remoteActions} daemons={save.mock.calls.at(-1)![0]} onSaveDaemons={save} />);
+    expect(checkbox().checked).toBe(true);
+    fireEvent.click(checkbox());
+    expect(save).toHaveBeenLastCalledWith([{ ...entries[0], trustedForNavigation: false }, entries[1]]);
+    fireEvent.change(screen.getByTestId('remote-daemon-add-name'), { target: { value: 'werk' } });
+    fireEvent.change(screen.getByTestId('remote-daemon-add-url'), { target: { value: 'https://replacement/' } });
+    fireEvent.click(screen.getByTestId('remote-daemon-add-button'));
+    expect(save).toHaveBeenLastCalledWith([entries[1], { name: 'werk', url: 'https://replacement/' }]);
+    view.rerender(<RemoteTab actions={remoteActions} daemons={entries} />);
+    expect(checkbox().disabled).toBe(true);
+});

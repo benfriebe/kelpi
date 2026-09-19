@@ -101,6 +101,7 @@ describe('Settings search in the host', () => {
         ['Browse for folder', 'repo-browse', 'repo-path', 'Enter a repository path'],
         ['Labels not defined here', 'label-orphans', 'label-presets', 'no workspace labels'],
         ['Rename repository', 'repo-list', 'repo-path', 'Add a repository'],
+        ['Trust plugins with navigation', 'remote-daemon-navigation-trust', 'remote-daemon-add-name', 'Add a remote daemon'],
         ['Rename favourite', 'settings-favourites', 'settings-favourites', 'Save a web favourite']
     ])('explains availability for %s and reveals its prerequisite', (query, hit, target, message) => {
         setup();
@@ -203,4 +204,16 @@ describe('rendered Settings index completeness', () => {
                 `Missing Reset destination: ${button.getAttribute('data-testid')}`).toBe(true);
         }
     });
+});
+
+it('finds, reveals and focuses the saved host navigation trust control', () => {
+    const save = vi.fn();
+    setup({ settings: { ...DEFAULT_WS_SETTINGS, remoteDaemons: [{ name: 'werk', url: 'https://werk/?token=secret' }] },
+        actions: { ...NOOP_ACTIONS, setRemoteDaemons: save } });
+    search('Trust plugins with navigation', 'remote-daemon-navigation-trust');
+    const input = screen.getByTestId('remote-daemon-navigation-trust-werk');
+    expect(document.activeElement).toBe(input);
+    expect(input.dataset['settingsSearchHit']).toBe('true');
+    fireEvent.click(input);
+    expect(save).toHaveBeenCalledWith([{ name: 'werk', url: 'https://werk/?token=secret', trustedForNavigation: true }]);
 });

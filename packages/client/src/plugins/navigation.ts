@@ -108,7 +108,8 @@ function navigationChanged(state: KelpiState, previous: KelpiState): boolean {
 
 /**
  * A window's bounded navigation model. Construct once for its primary runtime; only
- * primary-owned views may access it (the host UI bridge enforces runtime identity).
+ * primary-owned and explicitly trusted remote views may access it (the host UI bridge
+ * enforces runtime identity and the saved per-host permission).
  * This object never sends daemon commands or exposes connection URLs/credentials.
  * Store subscriptions are lazy, so construction during a React render has no effects.
  */

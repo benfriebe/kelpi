@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createDaemon } from './boot/index.js';
 import { openSqliteDatabase } from './db/index.js';
 import { createDeviceValidator, loadDevices, mintDevice, type TailscaleRunner } from './lifecycle/index.js';
+import { readForwardingRecord } from './lifecycle/tailnet-forwarding.js';
 import { helpText, parseKelpidArgs, resolveEntry, runKelpid, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -312,6 +313,31 @@ describe('with no daemon running', () => {
 });
 
 describe('with a daemon running', () => {
+    it.each(['url', 'pair'])('records successful %s --tailnet forwarding beside this instance port file', async (command) => {
+        const paths = scratch();
+        const daemon = createDaemon({
+            env: {}, home: paths.home, runDir: paths.runDir,
+            controlSocketPath: paths.socketPath, dbPath: paths.dbPath,
+            configPath: paths.configPath, httpPort: 0, settleMs: 0
+        });
+        cleanups.push(() => daemon.stop());
+        const info = await daemon.start();
+        const env = { KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath,
+            KELPID_DEVICES_PATH: path.join(paths.root, 'devices.json') };
+        const captured: CliIO & Captured = {
+            ...io(env),
+            tailscaleRunner: async (args) => ({ code: 0, stderr: '', binary: '/private/fake-tailscale',
+                stdout: args[0] === 'status' ? JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'host.tail.ts.net.' } }) : '{}' })
+        };
+        const args = command === 'pair' ? ['pair', '--name', 'phone', '--tailnet'] : ['url', '--tailnet'];
+        expect(await runKelpid(args, captured)).toBe(0);
+        expect(captured.stdout).toHaveLength(1);
+        expect(captured.stdout[0]).toMatch(/^https:\/\/host\.tail\.ts\.net\/\?token=/);
+        expect(readForwardingRecord(path.join(paths.runDir, 'tailscale-serve.json'))).toMatchObject({
+            port: info.httpPort, dnsName: 'host.tail.ts.net', binary: '/private/fake-tailscale'
+        });
+    });
+
     it('pairs a device end to end: URL on stdout, validator accepts, rollback leaves nothing', async () => {
         const paths = scratch();
         const devicesPath = path.join(paths.root, 'devices.json');

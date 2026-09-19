@@ -771,7 +771,10 @@ async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
         return 0;
     }
 
-    const result = await resolveTailnetURL({ port, token, run: io.tailscaleRunner });
+    const result = await resolveTailnetURL({
+        port, token, run: io.tailscaleRunner,
+        forwardingFile: nodePath.join(paths.dir, 'tailscale-serve.json')
+    });
     if (result.kind === 'error') {
         io.err(result.message);
         if (result.repair !== undefined) io.err(`Repair: ${result.repair}`);
@@ -866,7 +869,10 @@ async function commandPair(
 
     let url: string;
     if (tailnet) {
-        const result = await resolveTailnetURL({ port, token: minted.token, run: io.tailscaleRunner });
+        const result = await resolveTailnetURL({
+            port, token: minted.token, run: io.tailscaleRunner,
+            forwardingFile: nodePath.join(paths.dir, 'tailscale-serve.json')
+        });
         if (result.kind === 'error') {
             // Delete, not revoke: the token was never printed, so there is nothing to keep a
             // record of, and a revoked ghost per failed attempt would clutter `devices`.

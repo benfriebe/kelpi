@@ -11,8 +11,8 @@
  *
  *  1. **Foreign config is never touched.** `tailscale serve --bg <port>` overwrites the
  *     tailnet's :443 handler. If serve is already fronting some OTHER local port — another
- *     service the owner put there on purpose — this module refuses and prints the exact
- *     command to run by hand, because clobbering it silently would take that service down.
+ *     service or a stale target — this module probes it, refuses and prints the exact
+ *     command to run by hand. A refused connection does not establish ownership.
  *  2. **Nothing is silent.** Configuring serve is reported (on stderr, via `notes`) so the
  *     one-command path still says what it changed.
  *  3. **stdout stays pure.** This module never prints; it returns a result the caller
@@ -23,6 +23,14 @@
  */
 
 import { execFile } from 'node:child_process';
+
+import {
+    probeForwardTarget,
+    readForwardingRecord,
+    writeForwardingRecord,
+    type ForwardTargetProbe,
+    type LoopbackHost
+} from './tailnet-forwarding.js';
 
 /** One candidate binary's answer to one invocation. */
 export interface TailscaleAttempt {
@@ -51,7 +59,7 @@ export interface TailscaleResult {
 
 /** One `tailscale <args>` invocation. Injected for tests; production shells out. */
 export interface TailscaleRunner {
-    (args: readonly string[]): Promise<TailscaleResult>;
+    (args: readonly string[], options?: { /** Absolute deadline shared across invocations. */ readonly deadline?: number }): Promise<TailscaleResult>;
 }
 
 /** The Mac App Store Tailscale ships its CLI inside the bundle and puts NOTHING on PATH. */
@@ -65,7 +73,8 @@ const MAC_APP_BUNDLE_CLI = '/Applications/Tailscale.app/Contents/MacOS/Tailscale
  * A search that outlives it produces a diagnosis nobody ever sees, because the client replaces
  * the whole reply with "command 'remote-status' timed out" - and an unresponsive tailscaled is
  * precisely the failure this diagnosis exists for. So widening the candidate list must not
- * multiply wall clock, and these two numbers move together or not at all.
+ * multiply wall clock. Remote status additionally passes one earlier deadline across both
+ * invocations, reserving time for its reply to reach the client.
  */
 const SEARCH_TIMEOUT_MS = 15_000;
 
@@ -126,6 +135,8 @@ function execTailscale(
     args: readonly string[],
     timeoutMs: number
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+    // execFile treats zero as unlimited, so an exhausted budget must never reach it.
+    if (timeoutMs <= 0) return Promise.resolve({ code: -1, stdout: '', stderr: 'Tailscale probe deadline exceeded' });
     return new Promise((resolve) => {
         execFile(binary, [...args], { encoding: 'utf8', timeout: timeoutMs }, (error, stdout, stderr) => {
             if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -164,8 +175,8 @@ function execTailscale(
  *     `serve --bg` against up to three more binaries on a refusal. A refusal from the pinned
  *     binary is an answer, not a reason to go looking for a binary that says yes.
  *
- * The pin is dropped only when the pinned binary reports the ENOENT sentinel (uninstalled, or
- * upgraded out from under us), which starts a fresh search.
+ * The pin is dropped when the binary cannot run (including a timeout). ENOENT restarts the
+ * search within the remaining budget; other failures leave re-searching to the next call.
  *
  * `budgetMs` is ONE deadline for the whole search rather than one per candidate: see
  * `SEARCH_TIMEOUT_MS`. Candidates the budget does not reach are not tried and are not listed.
@@ -180,10 +191,13 @@ export function defaultTailscaleRunner(
 ): TailscaleRunner {
     /** The candidate that answered, with the search that found it. */
     let pinned: { binary: string; attempts: readonly TailscaleAttempt[] } | undefined;
-    return async (args) => {
+    return async (args, options) => {
+        const deadline = Math.min(Date.now() + budgetMs, options?.deadline ?? Infinity);
+        const remaining = (): number => Math.max(0, deadline - Date.now());
+        if (remaining() <= 0) return { code: -1, stdout: '', stderr: 'Tailscale probe deadline exceeded', attempts: [] };
         if (pinned !== undefined) {
             const binary = pinned.binary;
-            const result = await execTailscale(binary, args, budgetMs);
+            const result = await execTailscale(binary, args, remaining());
             // The search is the pinning one, with THIS invocation's outcome standing in for the
             // pinned binary's entry. Handing back the frozen search records the binary that just
             // failed at code 0, which drops the stderr naming the cause and puts the card back to
@@ -198,13 +212,11 @@ export function defaultTailscaleRunner(
                       );
             // `-1` is absent OR could not be run, a timeout included: either way this binary has
             // stopped being an answer, so the pin goes and the NEXT invocation searches afresh.
-            // Not this one. Re-searching here would spend a second full budget, and sharing one
-            // budget would leave the loop with nothing tried and report a wedged install as
-            // "tailscale is not installed".
+            // Not this one: a hung binary has already spent its budget. ENOENT alone can
+            // restart the search immediately, still within the original deadline.
             if (result.code === -1) pinned = undefined;
             if (!missing(result)) return { ...result, binary, attempts };
         }
-        const deadline = Date.now() + budgetMs;
         const attempts: TailscaleAttempt[] = [];
         let failure: { code: number; stdout: string; stderr: string; binary: string } | undefined;
         for (const binary of candidates) {
@@ -218,7 +230,7 @@ export function defaultTailscaleRunner(
             }
             if (failure === undefined || (missing(failure) && !missing(result))) failure = { ...result, binary };
         }
-        if (failure === undefined) return { code: -1, stdout: '', stderr: 'ENOENT', attempts };
+        if (failure === undefined) return { code: -1, stdout: '', stderr: 'Tailscale probe deadline exceeded', attempts };
         return { ...failure, attempts };
     };
 }
@@ -326,6 +338,8 @@ export function parseTailscaleStatus(json: string): TailnetIdentity {
 export interface ServeProxy {
     /** The tailnet-side HTTPS listener (`Web` key `host:port`); undefined when unplaced. */
     readonly listenPort: number | undefined;
+    /** Preserve the address family when probing a different target. */
+    readonly targetHost: LoopbackHost;
     /** The loopback port being fronted. */
     readonly targetPort: number;
 }
@@ -343,24 +357,23 @@ export interface ServeProxy {
 export function parseServeProxies(json: string): ServeProxy[] {
     const proxies: ServeProxy[] = [];
     const seen = new Set<string>();
-    const add = (listenPort: number | undefined, targetPort: number): void => {
-        const key = `${String(listenPort)}:${String(targetPort)}`;
+    const add = (listenPort: number | undefined, targetHost: LoopbackHost, targetPort: number): void => {
+        const key = `${String(listenPort)}:${targetHost}:${String(targetPort)}`;
         if (seen.has(key)) return;
         seen.add(key);
-        proxies.push({ listenPort, targetPort });
+        proxies.push({ listenPort, targetHost, targetPort });
     };
-    const targetPort = (value: unknown): number | undefined => {
+    const target = (value: unknown): { host: LoopbackHost; port: number } | undefined => {
         if (typeof value !== 'string') return undefined;
-        const trimmed = value.trim();
-        const withScheme = /^[a-z][a-z0-9+.-]*:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/i.exec(trimmed);
-        if (withScheme !== null) return Number(withScheme[1]);
-        const bare = /^(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/.exec(trimmed);
-        return bare === null ? undefined : Number(bare[1]);
+        const match = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/i.exec(value.trim());
+        if (match === null) return undefined;
+        const host = match[1]!.toLowerCase();
+        return { host: (host === '[::1]' ? '::1' : host) as LoopbackHost, port: Number(match[2]) };
     };
     const sweep = (value: unknown, listenPort: number | undefined): void => {
-        const port = targetPort(value);
-        if (port !== undefined) {
-            add(listenPort, port);
+        const address = target(value);
+        if (address !== undefined) {
+            add(listenPort, address.host, address.port);
             return;
         }
         if (Array.isArray(value)) {
@@ -454,13 +467,17 @@ export interface ResolveTailnetOptions {
     /** The run dir's token; rides the URL exactly as `kelpid url` prints it. */
     readonly token: string;
     readonly run?: TailscaleRunner | undefined;
+    /** Persistent diagnostic history; callers supply their own run directory. */
+    readonly forwardingFile?: string | undefined;
+    /** Read-only TCP liveness check; never an ownership test. */
+    readonly probeTarget?: ForwardTargetProbe | undefined;
 }
 
 /**
  * status → identity checks → serve status → (configure when unfronted) → the URL.
  *
- * Refuses rather than repairs in exactly one case: serve already fronts a *different* local
- * port. That config is someone's working service; see the module note.
+ * Different local targets are probed before refusing: a dead target may be stale, but
+ * neither liveness nor our historical port record proves who owns its configuration.
  */
 export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise<TailnetUrlResult> {
     // `0` asks the kernel for ANY port. As a serve target it is a proxy to nothing that
@@ -542,18 +559,34 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
     let listenPort = 443;
     if (ours.length === 0) {
         if (foreign.length > 0) {
-            const fronted = [...new Set(foreign.map((proxy) => proxy.targetPort))];
+            const unique = [...new Map(foreign.map((proxy) => [`${proxy.targetHost}:${proxy.targetPort}`, proxy])).values()];
+            const probe = options.probeTarget ?? probeForwardTarget;
+            // Bound socket count as well as wall time; unusually large configs still fail closed.
+            const details = await Promise.all(unique.slice(0, 16).map(async (proxy) => {
+                const host = proxy.targetHost === '::1' ? '[::1]' : proxy.targetHost;
+                const address = `${host}:${String(proxy.targetPort)}`;
+                let state: Awaited<ReturnType<ForwardTargetProbe>>;
+                try { state = await probe(proxy.targetHost, proxy.targetPort); }
+                catch { state = 'unknown'; }
+                if (state === 'listening') return `${address} accepts TCP connections (service identity unknown)`;
+                if (state === 'refused') return `${address} refused TCP connections (possibly stale forwarding)`;
+                return `${address} could not be checked (liveness unknown)`;
+            }));
+            if (unique.length > 16) details.push(`${String(unique.length - 16)} additional targets were not probed`);
+            const history = options.forwardingFile === undefined ? undefined : readForwardingRecord(options.forwardingFile);
+            if (history !== undefined) {
+                details.push(`Kelpi last configured tailscale serve for ${history.dnsName} at 127.0.0.1:${String(history.port)} on ${history.configuredAt}; this history does not establish current ownership`);
+            }
             return {
                 kind: 'error',
-                message:
-                    `tailscale serve already fronts 127.0.0.1:${fronted.join(', 127.0.0.1:')} - another service, ` +
-                    'left untouched.',
+                message: `tailscale serve fronts a different target from Kelpi's current 127.0.0.1:${String(options.port)}: ${details.join('; ')}. Forwarding was left untouched.`,
                 repair:
-                    `Move it aside yourself if the daemon should own :443: \`tailscale serve --bg ${String(options.port)}\` ` +
-                    '(this REPLACES the current serve config), then re-run `kelpid url --tailnet`.',
+                    `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`tailscale serve --bg ${String(options.port)}\` ` +
+                    '(this replaces the :443 root handler), then try again.',
                 steps: [
-                    `Something else already answers on :443 (127.0.0.1:${fronted.join(', 127.0.0.1:')}), and kelpi will not take it over.`,
-                    `To hand kelpi :443 anyway, run \`tailscale serve --bg ${String(options.port)}\` yourself - it REPLACES the current serve config.`
+                    ...details,
+                    'Run `tailscale serve status` and confirm which service should own :443. A refused connection alone does not identify the owner.',
+                    `To forward :443 to Kelpi's current port, run \`tailscale serve --bg ${String(options.port)}\` yourself - it replaces the :443 root handler.`
                 ]
             };
         }
@@ -594,6 +627,17 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             };
         }
         notes.push(`tailscale serve --bg ${String(options.port)}: configured (was not serving anything)`);
+        if (options.forwardingFile !== undefined) {
+            try {
+                writeForwardingRecord(options.forwardingFile, {
+                    version: 1, dnsName: identity.dnsName, port: options.port,
+                    configuredAt: new Date().toISOString(), binary: serve.binary
+                });
+            } catch (error) {
+                // The forwarding succeeded. A diagnostic write failure must not revoke a usable pair.
+                notes.push(`Could not record the last tailscale serve port: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
     } else {
         // Honour the listener the config actually names — a `--https=8443` serve would make
         // a bare :443 URL a connection refused reported as success.

@@ -167,6 +167,12 @@ export const windowPlacement = 'offscreen';
 
 The placement each scenario ran at is printed beside its name (`▶ name  [window offscreen, its own instance]`) and written into `results.json`. A scenario on its own instance cannot leak into the shared sandbox, so the runner records its post-condition as `leaked: null` rather than as an empty list. Declare it only from a measurement: the cost is a 20 s boot, and `offscreen` also halves the screenshots' resolution.
 
+### An audit flow can declare the placement it needs
+
+The full audit normally uses one visible `default` window because its screenshots are visual evidence. That window can still be covered, which makes Chromium drop CDP input sent to a native `WebContentsView`. A flow declares its floor in `lib/shards.mjs`; `web-batch-pickup`, `web-batch-internals`, and `web-console-frames` declare `offscreen` after #206's reproduced occlusion evidence.
+
+When the audit is at `default` or `hidden`, the parent runs those declarations in one private offscreen process and runs each chain writer there as setup. The aggregate retains the normal process's writer entry, so `results.json` remains one canonical report with no duplicate `web-pane` result. An audit already requested at `offscreen` or `onscreen` is not split; those placements cannot be covered, and `onscreen` keeps its higher-fidelity screenshots.
+
 ### What was measured
 
 One second of each, per placement, blurred as well as focused, because `dock-bounce-stop-only` blurs the window on purpose (`BrowserWindow.blur()` is `orderBack:` on macOS):

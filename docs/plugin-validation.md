@@ -31,6 +31,7 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 
 ## Phase index
 
+- [Selectable pane chrome presenter](#selectable-pane-chrome-presenter-2026-09-19).
 - [Pane chrome shared model](#pane-chrome-shared-model-2026-09-18).
 - [Lane hygiene: phone remote-workspace flake and the remembered-place leak](#lane-hygiene-phone-remote-workspace-flake-and-the-remembered-place-leak-2026-09-18).
 - [Selectable notification presenter](#selectable-notification-presenter-2026-09-13).
@@ -51,6 +52,180 @@ every UI-audit assertion passed. Phone emulation is distinct from physical-devic
 - [Foundation](#initial-implementation-2026-09-08) and [extended contracts](#extensibility-follow-up-2026-09-09).
 - [Bundled sidebars](#bundled-sidebar-features-and-window-navigation-2026-09-09), [shared UI](#reactive-contributions-and-shared-window-ui-2026-09-09) and [their integrated PR checks](#pr-publication-validation-2026-09-10).
 - [Reproduction commands](#reproduce).
+
+## Selectable pane chrome presenter (2026-09-19)
+
+Phase B of pane chrome composition, implemented on `feature/plugin-pane-chrome-presenter` (based on
+merged main `fde1c35`, which is phase A as [#243](https://github.com/benfriebe/kelpi/pull/243)).
+Tested revision: **`1a5fe5d`** (the presenter host `bd9cd3e`, Pane Lab and the scenario `8549556`, the review follow-up `3467866`, the host drag grip `6d70e6e` and presenter-declared drag regions `1a5fe5d`). Full verification battery: `node scripts/verify.mjs --full` **passed unretried at `1a5fe5d` in 25.3 min** (typecheck, root tests 8,228 passed with 1 skipped, shell tests, build bundles, all scenarios hidden 5.8 min, full audit 18.7 min, packaged smoke 69/69) with nothing else running on the machine; the only leak warnings are the three inert workbench-slot ones. Earlier batteries on this branch, kept for the record: `3467866` passed unretried in 25.2 min; the first cut `8549556` passed in a lane that needed the isolated retry (`plugin-pane-chrome`, `plugin-browser-features`, `terminal-scrollback-resize` and `dock-bounce-stop-only` red together once and green alone); and `6d70e6e` **failed**: its scenario lane went red twice on `dock-bounce-stop-only` and `plugin-browser-features` (plus one `plugin-terminal-features` clipboard check) while the owner was actively testing a second Kelpi window on the same machine, with `plugin-pane-chrome` green in both lanes. Both scenarios passed alone minutes later and in the quiet run at `1a5fe5d`, so the failure is attributed to competition for window focus and native input, not to the branch; that attribution is an inference, not a measurement. Two rounds of manual testing by the owner on a private instance found the drag defects recorded in the follow-up table; the third round passed.
+bundle with the node_modules already in place; private sandboxes only. Plugin API version stays **1**
+and wire generation stays **2**: everything added is additive - a `ROOT_SLOTS` entry, a bundled
+feature definition, eleven `ui.*` methods behind one placement grant, and two fields on a frame
+nothing was reading yet. `origin/main` was at `fde1c35` when this was written and again when it was
+reported, with no parallel change to the pane chrome module, `PaneHeader`, `PaneGrid`, the presenter
+hosts or the plugin placements.
+
+| Check | Result |
+| --- | --- |
+| `pnpm check` | All typechecks pass (protocol, core, daemon, cli, plugin-sdk, client, shell). Root vitest **8,228 passed, 1 skipped** (the existing optional database skip); shell **870 passed**. The new tests add exactly **56** (**8,172** before them, which is phase A's own number): `pane-chrome/presenter` (22: the band rectangle's three-sided ring inset and its short-band floor, the clip path's union and its empty case, the window's failure and painted latches, `retainPaneChromeHeights`, the grip never overlapping the presenter's rectangle at any width and standing down on a band with no room for both, the drag region's clamp, its empty and non-finite refusals and its band containment, the declaration store handing regions back on every path a band goes back on, and the ref minter's per-key stability, list separation, pane scoping and opacity), `features/pane-lab` (29, the shipped example driven through the real presenter host over the real projection and the real per-pane surface), and `plugin-sdk/tests/pane-chrome` (5, the packaged `browser.js` marshalling every call, keeping `ui.focusPane`'s two-argument form, and staying independent of the settings feed). |
+| PaneHeader and grid suites | `npx vitest run packages/client/src/grid` **12 files, 208 tests, 0 failed**, byte-for-byte phase A's count, with not one grid test file modified. |
+| SDK artifact | `node scripts/verify-plugin-sdk.mjs` passes. Its external view fixture now reads a frame, declares a band from a pane's own rect, presses a control and an item by ref, opens the host's rename field, and asserts at the type level that a control has no `key` and that `renamePane` takes no name. |
+| Live acceptance, hidden | `node scripts/scenario.mjs plugin-pane-chrome --window hidden --no-build`: **41/41**, 0 failed, in 26.3 s. The scenario declares `windowPlacement = 'offscreen'`, so a hidden run gives it its own instance at that placement: check 5 drives a real native `WebContentsView`, and `ui-audit/lib/placement.mjs` records that a zero-opacity frame with anything in front of it has its native views' input dropped. |
+| The pair, twice | `node scripts/scenario.mjs plugin-pane-chrome plugin-remote --window hidden --no-build` run twice: **41/41 + 13/13** and **41/41 + 13/13**, 0 failed, with the runner's leak post-condition clean both times. |
+| The native path is unchanged | `node scripts/scenario.mjs plugin-terminal-geometry plugin-terminal-features --window hidden --no-build`: **31/31** and **59/59**, 0 failed. Nothing declares a band with no presenter selected, so the bundled header, the body rect and every PTY are exactly what they were. |
+| Onscreen | `node scripts/scenario.mjs plugin-pane-chrome --window onscreen --no-build`: **41/41**, nine screenshots read, including one of a pane dragged by its title. Reading them caught one presentation defect in the EXAMPLE and nothing in the host: Pane Lab drew another plugin's items on its second line, which a one-line 21 px band clips away, so a narrow pane's header silently lost somebody else's extension point. The items moved to the first line beside the controls and the second line now exists only on a band tall enough to have one. |
+| The geometry measurement | Below. |
+
+### The geometry choice, measured
+
+The brief named two shapes. An absolutely positioned iframe per pane cannot be drawn by one view, so
+the second is N view instances.
+
+| | One frame over the grid, host-clipped (**chosen**) | One frame per pane |
+| --- | --- | --- |
+| View instances | **1**, measured live: `document.querySelectorAll('[data-testid="pane-chrome-presenter"] iframe').length === 1` in a six-pane workspace | one per visible pane |
+| Plugin attaches, leases, sandboxed documents, feeds | **1** | N |
+| Readiness watchdogs and failure latches | **1** | N, coordinated for an all-or-nothing fallback |
+| A narrow pane's header can take its neighbours into account | yes, one frame carries them all | no |
+| Whole live scenario (attach, 41 checks, two failure-and-retry cycles, a daemon restart, a phone round trip) | **22.1 s hidden / 22.5 s onscreen** | not measured; by construction one attach, one document and one feed per pane |
+
+Chosen: **one frame, host-clipped per pane**. `PaneGrid` mounts one `PluginView` inside its own
+container, so the frame's coordinate space is the grid's; each pane's band rectangle travels in the
+frame and the host builds a `clip-path` from those same rectangles, which removes the frame from
+paint and from hit testing everywhere else. The two costs, both stated in the guide: the frame
+carries the band rectangles (the layout the user is already looking at), and the pane-move drag,
+which is raised from the bundled header's `onPointerDown`, is unavailable while a presenter draws a
+band.
+
+Measured live with a **96 px** declaration (the clamp ceiling) on a focused shell pane and on a web
+pane, in the same run:
+
+| Measurement | Before | With a 96 px band |
+| --- | --- | --- |
+| Header band | 24 px | 96 px |
+| Body rect top | y=56 | y=128 (down exactly 72 px, the difference) |
+| The shell's own `stty size` | **47** rows | **44** rows at 15 cols |
+| Web pane's page hole | `64x708` at y=88 | `64x636` at y=160 (down exactly 72 px) |
+| Web pane `data-visible` / `data-overlay-covered` | `true` / `false` | `true` / `false` |
+| A click in the page area | n/a | still reaches the pane, page still live |
+| Band on a HIDDEN (zoomed-out) pane | n/a | the call is **refused** (the frame does not carry it), the band does not move and no page's `data-visible` changes |
+
+The PTY measurement is the shell's own answer rather than a DOM readout: the scenario echoes a
+marker with `stty size` through `kelpi pane send` and reads it back with `kelpi pane capture`, so
+what is asserted is what the process inside the pane believes after the SIGWINCH.
+
+### The live acceptance, check by check
+
+`scripts/scenarios/plugin-pane-chrome.mjs`, 27 checks. Pane Lab is the presenter and UI Lab is
+installed beside it so there is another plugin's `pane.header` item to activate, another plugin's id
+to be absent, and an ordinary plugin frame to call `ui.getWorkbench` and `ui.selectView` from.
+
+- **Selection.** The `pane.chrome` select offers the lab and names its bundled entry
+  **"Pane header (bundled)"**; the lab attaches as **one** isolated view for the whole grid and
+  reports it has painted. `ui.getWorkbench().slots` lists the placement and `ui.selectView` refuses
+  it with "Workbench slot is not registered."
+- **Every pane drawn, one withheld.** Every visible pane carries a Pane Lab band with the bundled
+  header's content gone (`data-presented="true"`, no `pane-title-…`, no `pane-close-…`, no
+  `pane-split-right-…`) while the band itself stays. A six-pane workspace whose shells each wrote a
+  40 KiB OSC title overruns the 256 KiB frame: the panes the budget could not carry are counted in
+  `withheld` and keep their bundled header in full, which the onscreen shot shows as three Pane Lab
+  bands beside three bundled ones.
+- **The gestures.** A press on a band focuses that pane; a double click zooms it; the host's
+  split-right control activated **by ref** adds a pane through the host's own verb; UI Lab's
+  `pane.header` item activated **by ref** reaches UI Lab's backend with the right `paneID` and its
+  counter moves; `renamePane` opens the **host's** inline field and the name typed into it reaches
+  the daemon; `openPaneMenu` opens the **host's** own pane menu.
+- **Withholding.** Neither the sandbox's paths, nor any `/Users/` path, nor the other plugin's id,
+  nor the command name behind its item, nor the bundled header's test ids, nor the daemon's pid
+  appear anywhere in the presenter's document or in any frame; a pane entry carries no
+  `workingDirectory`, `url`, `pid` or `testID`, and an agent carries no session id. A forged ref, an
+  invented ref, a cross-pane ref, an item ref used as a control ref and a control ref used as an
+  item ref are all refused, with the pane count unchanged.
+- **Failure.** `crash('uncaught')` puts the bundled header back on **every** pane in the same
+  commit, with every declared band dropped (each header measured back at 24 px) and a failure toast
+  reading "Pane header presenter". Settings reports `Failed: …` on the `pane.chrome` row, keeps the
+  selection, and **Retry presenter** brings the presenter back. `stall()` then does the same through
+  the acknowledgement watchdog.
+- **Lifecycle.** Disable, enable and reload each keep the selection and end with the lab drawing.
+  A real primary-daemon restart hands every band back while the window is disconnected and the lab
+  re-attaches afterwards with nothing latched. A phone window keeps its own header with the lab
+  still selected.
+
+Two limits are on the record in the scenario's own notes. The **240-calls-per-second budget breach**
+is not pressed live, because driving 240 calls through the frame from CDP measures the harness;
+`features/pane-lab.test.ts` owns it. And the **workspace-delete confirmation** is on the ⌘W path
+(`closeFocused`, the last pane of a workspace with running agents), not on the header ✕ a presenter
+activates: both headers reach the same `act.closePane`, so ratified decision 6 is kept by
+inheritance - the presenter draws no dialog of its own and gets exactly the host's behaviour, which
+the scenario asserts by counting dialogs inside the presenter frame.
+
+### One contract name had to change
+
+Phase A's `pane-chrome.d.ts` declared the focus call as `focusPane(paneID)`. `ViewAPI['ui']` already
+has `focusPane(workspaceID, paneID)`, so intersecting the two would have produced one name with two
+overloads and left `browser.js` dispatching on argument count - a plugin that passed one argument by
+mistake would silently have called the other verb. The presenter's call is **`focusChromePane`** for
+that reason, and only that one: nothing else in the contract collides.
+
+
+### Phase B review follow-up
+
+An independent review of phase B, plus one finding from the onscreen screenshots, landed the changes
+below. Each row names the test that now holds it, because a defect without one is a defect waiting
+to come back.
+
+| Found | What it was | Held by |
+| --- | --- | --- |
+| **H1** Declared bands survived every stand-down | The slot is mounted only while a presenter is selected, so the stand-down that dropped the declarations lived in a render branch that could never run. Choosing the bundled header, disabling or uninstalling the plugin left every pane wearing the band its departed presenter had declared, bundled 24 px header floating inside it, every PTY still sized against it. The declarations now go back in the slot's unmount cleanup. | Scenario: "choosing the bundled header hands every declared band back, and the PTY with it" (the band and the shell's own `stty size` both measured back), and "disable, enable and reload …" measures the band after a disable. |
+| **H2** Every carried pane was headerless from selection until the first paint | The header stood down the moment a plugin was selected, so every pane lost its title, close, split and zoom for the plugin's boot, its attach and its first frame - and for the whole 5 s readiness window if the view never painted, which is the case the fallback exists for. The swap now waits for the presenter's own readiness report, per generation. | `pane-chrome/presenter.test.ts` "the window painted latch"; scenario: "no pane is ever headerless while a reloading presenter boots", which samples the reload at ~30 ms and asserts every sample taken before the swap still had a native title. |
+| **H3** The terminal find bar was painted over by the band | `PaneSearchOverlay` is `absolute right-2 top-2 z-30` inside a pane wrapper at `zIndex: 1`, which cannot reach past the presenter's frame at 2: covered at the native band, invisible and dead under a declared one. A pane carrying an overlay is now lifted, exactly as a renaming one is. The pane menu is a body-level portal and was never affected; the mirror clip wash lives in the pane BODY, under the band. | Scenario: "the terminal find bar is on top of a declared band, clickable, and counts its matches" - an `elementFromPoint` hit test on the bar under a 96 px band, then a real type and a real match count. |
+| **M4** Focus that landed in the iframe was a dead end | The slot grants no chords and the presenter answers none, so after clicking a control every keystroke was swallowed until the user clicked the pane body. The host now hands the caret back to the focused pane on the window blur that moving focus into the frame causes. | Scenario: "the caret goes back to the pane after a click on the presenter's own control", and the find bar check immediately after it, which only opens if ⌘F reaches the host again. |
+| **M5** A stale ref replay ran a different command | Refs were row POSITIONS, and a click is always painted from a frame at least one commit old, so a plugin command arriving at the head of the row made a press on Split right run Close. The comments claimed a refusal that did not exist. Tokens are now assigned per (pane, key) and kept for the pane's life. | `pane-chrome/presenter.test.ts` "createPaneChromeRefs" (4 cases); `features/pane-lab.test.ts` "replays a stale ref onto the control it was minted for"; scenario: "a ref painted from an older frame still names the control it was drawn on", which disables UI Lab to shorten the row live. |
+| **M6** A band could never be withdrawn once its pane left the frame | Every call for a non-carried pane was refused, the hand-back included. A withdrawal now needs only a pane with a live header, and the host withdraws on its own account for every pane the frame does not carry. | `pane-chrome/presenter.test.ts` "retainPaneChromeHeights"; `features/pane-lab.test.ts` "lets a band be handed back for a pane that has LEFT the frame" and "refuses a hand-back for a pane with no header left at all". |
+| **M7** Several scenario checks were vacuous | "Selection retained" and "nothing latched" read Settings controls after the dialog had closed; the web-input check re-read the host's own attribute; the hidden-pane parking pair enumerated web panes before one existed and never re-measured after the unzoom; all three "ref" cases were the same forgery with `#` appended; the fallback's `every` had no length floor; the toast check asserted only presence; `agentShape` was empty on a plain shell. Every one is now an assertion with something behind it. | The scenario itself: Settings rows read with the dialog open, the web click proved by the caret leaving the host document and the focus arriving at the web pane, the parking pair measured before, during and after the zoom, refusals asserted by MESSAGE with UI Lab's counter re-read to prove nothing ran, a `>= 3` floor on the fallback list, the toast's text matched, and the withheld walk over every key of the whole frame. |
+| **L8** A failure latch survived switching to bundled | It was cleared in the slot, which unmounts on exactly that move, so the Settings row read `Failed` forever. Cleared in `usePaneChromeSelection`, which the grid calls whatever is selected. | Scenario: "the pane.chrome row reports Bundled once the placement is handed back". |
+| **L10** The frame was rebuilt on every grid render | A projection, a `pluginJSON` round trip, a deep freeze and a `JSON.stringify` per render, at pointer rate during a divider drag. The host now compares the projection, form factor and paint decision by identity and returns before building anything when none has moved. | Covered by construction (`PaneGrid` memoises the projection on the facts it is built from); no test asserts the saving, which is stated rather than claimed. |
+| **DRAG** The pane-move gesture was lost | Reported as an unavoidable cost of the geometry; it is not, but the first answer was wrong and the user's manual test found it (row below). | See the row below. |
+| **Onscreen shot 02** The withheld notice was painted over a pane's title | The lab drew "N panes on the bundled header" as a floating element, and the host clips the frame to the bands - so it landed on whichever band was under it. It is now a chip in the first carried band's own row. | `features/pane-lab.test.ts` "prints the withheld count inside the first carried band, never over it"; the onscreen shot `02-withheld-pane` shows it beside the title rather than on it. |
+| **Found by the user's manual test, round two** A 12 px grip at the edge is not where anyone reaches | The routing fix was right and the affordance was not: the user grabbed the header itself, as they would on a bundled pane, and the reserved strip is not where a hand goes. A presenter now declares which parts of its band behave like a title bar (`setPaneDragRegions`, up to eight band-local rectangles, the same idea as Electron's draggable app regions) and the host lays its own transparent surfaces over them; the grip stays as the floor for a presenter that declares nothing. Also in that round: the text highlight the user still saw was the private instance running the OLD installed copy of Pane Lab, which is now a sentence in the example's README and in `plugin-development.md`. | `pane-chrome/presenter.test.ts` "paneChromeDragRegion" (4 cases: clamping, dropping an empty rectangle, refusing a non-number, and never leaving the band) and "the declaration store, bands and regions together" (2); `features/pane-lab.test.ts` "declares a drag region that covers its title and no control or item", "clamps a region that reaches outside the band, and refuses more than eight", "hands its regions back for a pane whose header is still mounted"; scenario: "a drag from the middle of the lab's title moves the pane, in the daemon's own order" (with the drop zone seen mid-drag), "a double click on the title zooms the pane and un-zooms it", "a right click on the title opens the host's own pane menu", "a lab control is still pressable: the declared region does not cover the row", "a region reaching outside the band is clamped to it, and a ninth is refused by message", and "the fallback leaves no drag surface behind". |
+| **Found by the user's manual test** Dragging a band selected text and moved no pane | Two defects. Pane Lab's band had no `user-select: none` and did not default its press away, so the browser started a native text selection across the header. And `beginPaneDrag(paneID)` - a presenter saying "this press started a move", with the host taking pointer events off every frame and waiting for the next one - **cannot work**: Chromium settles where a mouse gesture is routed when the button goes DOWN, so a press inside the presenter's iframe keeps every later move and the release inside that iframe's document, and a host acting on a message about the press is acting after the routing was decided. The call is withdrawn; the host now reserves a 12 px grip at the leading edge of every presented band, cut out of the rectangle the presenter is given, and raises the bundled header's own gesture from a press there. | `pane-chrome/presenter.test.ts` "never overlaps the grip, at any width the two have to share" and "gives the header the band when there is no room for both"; `features/pane-lab.test.ts` "starts no text selection from a press on a band, and asks for no drag call"; `plugin-sdk/tests/pane-chrome` "offers no pane-move verb"; scenario: "a press inside the presenter's frame selects nothing and moves no pane" and "a drag from the host's grip moves the pane, and leaves no selection in the frame", the second measured as the daemon's own pane ORDER changing. |
+| **Doc nit** | The roadmap said twelve presenter calls and eleven pane chrome methods; `ui.reportPresenterReady` pre-existed and `beginPaneDrag` has since been withdrawn, so ten are new. | The roadmap now says so. |
+
+**Why the first drag check passed against a design a real mouse could not drive**, recorded because
+it is a trap for any live check over an iframe: `Input.dispatchMouseEvent` hit-tests every
+synthesized event on its own and keeps no per-frame capture, so a CDP pointer teleports between
+documents where a real one cannot. Measured here after a real press sequence inside the frame: the
+frame saw **0** moves with the button down, the host's gesture armed **false**, the pane moved
+**false**, selection **empty**. The cross-document capture itself is therefore NOT reproducible
+through this harness and is not asserted; what the scenario asserts is that a press in the frame
+selects nothing and moves nothing, and that a press on the host's grip moves the pane, with the drop
+zone shown and the daemon's pane order changed.
+
+Two further presentation defects were caught by the checks themselves rather than by the review, and
+both are in the EXAMPLE: Pane Lab drew other plugins' items on a second line that a one-line band
+clips away (so a narrow pane silently lost somebody else's extension point), and its drag grip
+squeezed to zero width on a 131 px pane (so that pane could not be dragged by its header at all).
+The items moved to the first row and the grip now has a floor.
+
+### What this phase contains
+
+- `packages/client/src/pane-chrome/`: `presenter.ts` (the frame DTO, the twelve `ui.*` methods, the
+  per-call re-validation, the 240-call budget and the window's failure latch), `presenter-slot.tsx`
+  (the mount, the band rectangle and clip-path geometry, the two watchdogs and the recovery floor),
+  `registry.ts` (where each header publishes its descriptor and its surface, so the frame is
+  provably the header that would otherwise have been drawn rather than a second computation of it),
+  plus `rect` and the per-key ref minter on the projection, `retainPaneChromeHeights` on the height
+  store, the drag regions beside the bands in the same store, and the presenter budgets, the grip's
+  width and the drag region clamp on the contract.
+- `grid/PaneHeader.tsx` gains `presented` (the band keeps the box and gives up everything it
+  painted) and `changes`; `grid/PaneGrid.tsx` builds the projection, decides which headers stand
+  down, mounts the slot and lifts a renaming pane above it.
+- `plugins/Workbench.tsx` registers the slot and its status row with Retry;
+  `features/definitions.ts` adds the bundled `kelpi.pane.chrome` recovery floor;
+  `plugins/PluginView.tsx` grants the host and runs the `pane-chrome` feed.
+- `plugin-sdk`: `WindowPaneChromeAPI` on `ViewAPI.ui`, the calls in `browser.js`, `rect` and
+  `visible` on the frame, and the renamed focus call.
+- `examples/plugins/pane-lab/` and `scripts/scenarios/plugin-pane-chrome.mjs`.
 
 ## Pane chrome shared model (2026-09-18)
 

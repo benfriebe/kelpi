@@ -1,0 +1,124 @@
+/*
+ * A header band and nothing else.
+ *
+ * The document canvas is transparent for the reason Interaction Lab's and Settings Lab's are:
+ * `color-scheme: dark` makes the UA paint the canvas its own opaque colour, and this frame is
+ * stretched over the WHOLE pane grid - an opaque canvas here would paint every terminal in the
+ * window out for the frames before the host's clip settles. The host clips this frame to the bands
+ * it granted, so only the rectangles below are ever on screen, and everything between them has to
+ * be nothing at all.
+ *
+ * Every colour is a host theme variable, so the bands follow the window's appearance setting rather
+ * than restating a palette the user did not choose. The two exceptions are declared once as
+ * `--lab-agent` and `--lab-warn`, per colour scheme, because the host does not publish a token for
+ * either and an amber readable on a dark band is not the amber readable on a light one.
+ */
+/*
+ * Nothing in a band is selectable.
+ *
+ * A header is chrome, and a press dragged across chrome should move the pane rather than highlight
+ * its title. Without this the browser starts a native text selection on the first press and the
+ * user gets a blue smear across the band; `pane-chrome.js` calls `preventDefault` on the same
+ * press, and the two together are what "a band holds no text you can select" means.
+ */
+:root {
+    color-scheme: dark light;
+    user-select: none;
+    -webkit-user-select: none;
+    font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--kelpi-fg);
+    background: transparent;
+    --lab-agent: var(--kelpi-agent, #c98a2b);
+    --lab-warn: var(--kelpi-yellow, #8a6d1f);
+}
+@media (prefers-color-scheme: dark) {
+    :root { --lab-agent: var(--kelpi-agent, #e0b25c); --lab-warn: var(--kelpi-yellow, #d8c07a); }
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; overflow: hidden; background: transparent; }
+[hidden] { display: none !important; }
+
+.root { position: absolute; inset: 0; }
+
+/* -- one pane's band ------------------------------------------------------------- */
+
+/*
+ * Positioned from the frame's own `rect`, which is where the host has clipped a hole for it. The
+ * band paints its own surface: the host's fill is under it, but a presenter that painted nothing
+ * would read as a gap rather than as chrome.
+ */
+.band {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+    overflow: hidden;
+    padding: 0 6px;
+    background: var(--kelpi-surface);
+    color: var(--kelpi-fg-secondary);
+}
+.band[data-focused="true"] { background: color-mix(in srgb, var(--kelpi-accent) 14%, var(--kelpi-surface)); color: var(--kelpi-fg); }
+.band[data-tall="true"] { justify-content: space-evenly; }
+
+.line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.line-one, .line-two { width: 100%; }
+.line-two { color: var(--kelpi-fg-tertiary); }
+/*
+ * The facts box gives ground first, but never all of it.
+ *
+ * It is also the drag handle (`lab-pane-grip`), and a handle squeezed to zero width on a narrow
+ * pane is a pane nobody can drag by its header - which is exactly what a 131 px pane did. The
+ * floor is one chip's worth; the other plugins' items give ground after it, and the controls never
+ * do, because a header that drops its close ✕ before its title is the wrong trade.
+ */
+.facts { flex: 1 1 auto; min-width: 28px; overflow: hidden; }
+.items { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.controls { flex: 0 0 auto; }
+
+.dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--kelpi-fg-tertiary); }
+.dot[data-status="running"] { background: var(--lab-agent); }
+.dot[data-status="waitingForInput"] { background: var(--kelpi-accent); }
+
+.kind { flex: 0 0 auto; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--kelpi-fg-tertiary) 22%, transparent); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* The middle-truncation split travels with the fact: the head may ellipsize, the tail never does. */
+.title { display: flex; min-width: 0; flex: 1 1 auto; cursor: default; }
+.title-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-tail { flex: 0 0 auto; white-space: nowrap; }
+
+.chip { flex: 0 0 auto; max-width: 40%; overflow: hidden; padding: 0 3px; border-radius: 3px; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.chip[data-chip="label"] { background: color-mix(in srgb, var(--kelpi-accent) 20%, transparent); color: var(--kelpi-accent); }
+.chip[data-chip="branch"] { background: color-mix(in srgb, var(--kelpi-fg-tertiary) 18%, transparent); }
+.chip[data-chip="changes"] { background: color-mix(in srgb, var(--lab-warn) 22%, transparent); color: var(--lab-warn); }
+.chip[data-chip="agent"] { background: color-mix(in srgb, var(--lab-agent) 22%, transparent); color: var(--lab-agent); }
+.chip[data-chip="zoom"], .chip[data-chip="sync"] { background: color-mix(in srgb, var(--lab-warn) 26%, transparent); color: var(--lab-warn); font-weight: 600; }
+.chip[data-chip="dir"] { background: transparent; color: var(--kelpi-fg-tertiary); padding: 0; }
+/* The count of panes this frame could not carry, in the first band's own row rather than floating
+   over the grid: the host clips this frame to the bands, so anything outside one is either clipped
+   away or painted straight over whichever band happens to be under it. */
+.chip[data-chip="withheld"] { background: color-mix(in srgb, var(--lab-warn) 26%, transparent); color: var(--lab-warn); }
+
+.spacer { flex: 1 1 auto; min-width: 0; }
+
+.control, .item {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 15px;
+    padding: 0 4px;
+    border: 1px solid var(--kelpi-border);
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    font-size: 9px;
+    line-height: 1;
+}
+.control:disabled, .item:disabled { cursor: default; opacity: 0.35; }
+.control[data-pinned="true"] { border-color: color-mix(in srgb, var(--kelpi-fg-tertiary) 60%, transparent); }
+.item { border-style: dashed; }
+.item[data-tone="error"] { color: var(--lab-warn); }
+
+.error { position: absolute; left: 4px; bottom: 4px; margin: 0; max-width: 60vw; overflow: hidden; padding: 2px 4px; border-radius: 3px; background: var(--kelpi-surface); color: var(--lab-warn); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }

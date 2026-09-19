@@ -43,10 +43,10 @@
  *
  * So the frame carries a `ref` instead, and the mapping back is a private table that leaves with
  * the frame and is never published: `settings/sections.ts` keeps a field's write target private in
- * exactly this shape, and takes an id back. A ref is scoped to its pane and to the ROW POSITION
- * inside it, so it carries nothing about the owner and it changes the moment the row does - which
- * is what makes a stale activation refuse rather than hit whatever moved into that slot, the same
- * guarantee `surface.ts` gets from re-resolving a key against a fresh model.
+ * exactly this shape, and takes an id back. A ref is scoped to its pane and assigned per KEY rather
+ * than per row position, so it carries nothing about the owner and it never comes to name a
+ * different control: a click painted from a frame one commit old activates the control it was drawn
+ * on, or nothing at all. See `createPaneChromeRefs` for what the positional version got wrong.
  */
 
 import type { IconName } from '../grid/icons';
@@ -67,6 +67,26 @@ import {
     type PaneChromeTitleParts,
     type PaneChromeZoom
 } from './contract';
+
+/**
+ * Where a pane's band is, in the presenter frame's own coordinate space.
+ *
+ * Added in phase B, and it is what the chosen geometry rests on: ONE presenter view draws every
+ * carried pane's header, so it has to be told where each one goes. The host positions a single
+ * frame over the whole grid and clips it to the union of the carried bands (`presenter-slot.tsx`),
+ * and the presenter absolutely positions a header at each of these rectangles inside it.
+ *
+ * It carries nothing the window is not already showing: the same rectangle the user is looking at,
+ * in CSS px, with the origin at the grid's top-left rather than the screen's - so it says nothing
+ * about where the window is, how big the display is, or what else is on it. `null` in a projection
+ * built without a layout (every unit test, and the first render before the grid has measured).
+ */
+export interface PaneChromeFrameRect {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
 
 /** A trailing control, as a presenter sees it: no test id, no verb, no owner. */
 export interface PaneChromeFrameControl {
@@ -112,6 +132,8 @@ export interface PaneChromeFramePane {
     readonly zoom: PaneChromeZoom;
     readonly sync: PaneChromeSync;
     readonly height: number;
+    /** The band's rectangle inside the presenter's frame, or null in a projection with no layout. */
+    readonly rect: PaneChromeFrameRect | null;
     readonly size: PaneChromeSize;
     readonly controls: readonly PaneChromeFrameControl[];
     readonly items: readonly PaneChromeFrameItem[];
@@ -146,6 +168,14 @@ export interface PaneChromeProjectionInput {
     readonly zoomedPaneID?: string | null | undefined;
     /** The visible panes of the displayed workspace, in the workspace's own order. */
     readonly panes: readonly PaneChromeDescriptor[];
+    /**
+     * Each pane's band rectangle in the presenter frame's coordinate space, by pane id.
+     *
+     * Optional, and absent everywhere there is no layout to state: `projectPaneChrome` is a pure
+     * function over a model and the grid is the only thing that has measured a box. A pane with no
+     * entry gets `rect: null` rather than a guess.
+     */
+    readonly rects?: Readonly<Record<string, PaneChromeFrameRect>> | undefined;
 }
 
 /**
@@ -183,18 +213,74 @@ export interface PaneChromeProjection {
 }
 
 /**
- * Mint a ref for a row position.
+ * Mint a ref for one control or item of one pane.
  *
- * Position-scoped rather than random: a random ref would be no more opaque (there is nothing to
- * guess - the presenter is holding the list) and would churn every frame, so a click landing one
- * frame late would always miss. This one is stable for exactly as long as the row is, and the
- * moment a control appears, disappears or moves, the refs after it shift and a stale activation
- * resolves to the wrong slot - which the surface's own re-resolve against a fresh model is what
- * finally refuses. `c` and `i` keep the two lists apart so an item's ref cannot activate a
+ * ── Why this is not the row POSITION ────────────────────────────────────────────────
+ *
+ * It was, and that was a defect rather than a trade. A positional ref (`c0` = "whatever is first
+ * in this row") means the same string names a different control the moment the row changes shape -
+ * a plugin command appearing at the head of the row, the markdown copy button coming back when the
+ * editor closes - and a presenter's click is always painted from a frame at least one commit old.
+ * So a click on Split right, landing after a control appeared in front of it, resolved to Close.
+ * The comment here used to claim the surface's re-resolve refused that; it cannot, because the
+ * re-resolve only asks whether the key it was handed exists and is enabled, and Close does.
+ *
+ * ── What it is instead ──────────────────────────────────────────────────────────────
+ *
+ * A token assigned per (pane, key) the FIRST time that key is seen, and kept for as long as the
+ * table lives. `c3` then means one control of one pane for that pane's life: a ref from an older
+ * frame either resolves to exactly the control it was minted for - which `surface.runControl` then
+ * re-resolves against a fresh model and refuses if it has gone or gone disabled - or is absent from
+ * the delivered frame's table entirely, which the host refuses outright.
+ *
+ * Still opaque, which is the other half of the contract: the number is an ordinal in a private
+ * table, so it carries no `pluginID`, no command name and nothing a presenter could read the
+ * owner's namespace out of. `c` and `i` keep the two lists apart so an item's ref cannot activate a
  * control.
  */
-function mintRef(what: 'control' | 'item', index: number): string {
-    return `${what === 'control' ? 'c' : 'i'}${String(index)}`;
+export interface PaneChromeRefMinter {
+    mint(paneID: string, what: 'control' | 'item', id: string): string;
+    /** Forget every pane not in this set. A pane that has gone will never use its tokens again. */
+    retain(paneIDs: Iterable<string>): void;
+    /** How many panes hold tokens. Test seam. */
+    readonly panes: number;
+}
+
+export function createPaneChromeRefs(): PaneChromeRefMinter {
+    const tokens = new Map<string, Map<string, string>>();
+    const next = new Map<string, { control: number; item: number }>();
+    return {
+        mint(paneID, what, id) {
+            let pane = tokens.get(paneID);
+            if (pane === undefined) {
+                pane = new Map();
+                tokens.set(paneID, pane);
+                next.set(paneID, { control: 0, item: 0 });
+            }
+            // The list is part of the key: a control and an item of the same pane may share an id
+            // (a `pane.header` command and a `pane.header` item of the same plugin do), and they
+            // must not share a token.
+            const slot = `${what}\u0000${id}`;
+            const existing = pane.get(slot);
+            if (existing !== undefined) return existing;
+            const counters = next.get(paneID)!;
+            const index = what === 'control' ? counters.control++ : counters.item++;
+            const ref = `${what === 'control' ? 'c' : 'i'}${String(index)}`;
+            pane.set(slot, ref);
+            return ref;
+        },
+        retain(paneIDs) {
+            const keep = paneIDs instanceof Set ? paneIDs : new Set(paneIDs);
+            for (const paneID of [...tokens.keys()]) {
+                if (keep.has(paneID)) continue;
+                tokens.delete(paneID);
+                next.delete(paneID);
+            }
+        },
+        get panes() {
+            return tokens.size;
+        }
+    };
 }
 
 const encoder = new TextEncoder();
@@ -208,9 +294,24 @@ export function paneChromeBytes(value: unknown): number {
 export const PANE_CHROME_FRAME_BUDGET =
     PANE_CHROME_LIMITS.payloadBytes - PANE_CHROME_LIMITS.frameMargin;
 
+/** Whole CSS px, and nothing that is not a number. A rect that cannot be trusted is no rect. */
+function frameRect(value: PaneChromeFrameRect | undefined): PaneChromeFrameRect | null {
+    if (value === undefined) return null;
+    const { x, y, width, height } = value;
+    if (![x, y, width, height].every((part) => Number.isFinite(part))) return null;
+    return {
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.max(0, Math.round(width)),
+        height: Math.max(0, Math.round(height))
+    };
+}
+
 function framePane(
     descriptor: PaneChromeDescriptor,
-    mint: (target: PaneChromeRefTarget, ref: string) => void
+    refs: PaneChromeRefMinter,
+    mint: (target: PaneChromeRefTarget, ref: string) => void,
+    rect: PaneChromeFrameRect | undefined
 ): PaneChromeFramePane {
     return {
         paneID: descriptor.paneID,
@@ -227,9 +328,10 @@ function framePane(
         zoom: descriptor.zoom,
         sync: descriptor.sync,
         height: descriptor.height,
+        rect: frameRect(rect),
         size: descriptor.size,
-        controls: descriptor.controls.map((control, index) => {
-            const ref = mintRef('control', index);
+        controls: descriptor.controls.map((control) => {
+            const ref = refs.mint(descriptor.paneID, 'control', control.key);
             mint({ paneID: descriptor.paneID, what: 'control', id: control.key }, ref);
             return {
                 ref,
@@ -240,8 +342,8 @@ function framePane(
                 pinned: control.pinned
             };
         }),
-        items: descriptor.items.map((item, index) => {
-            const ref = mintRef('item', index);
+        items: descriptor.items.map((item) => {
+            const ref = refs.mint(descriptor.paneID, 'item', item.id);
             mint({ paneID: descriptor.paneID, what: 'item', id: item.id }, ref);
             return {
                 ref,
@@ -267,7 +369,16 @@ function framePane(
  * with an empty pane list, so a frame with no room for even one pane still reports its workspace,
  * its focus and a withheld count rather than being undeliverable.
  */
-export function projectPaneChrome(input: PaneChromeProjectionInput): PaneChromeProjection {
+export function projectPaneChrome(
+    input: PaneChromeProjectionInput,
+    /*
+     * The token table, which OUTLIVES one frame on purpose (see `createPaneChromeRefs`). A caller
+     * with no table of its own gets a fresh one, which makes a single projection identical to what
+     * a positional minter produced; the host keeps one per presenter generation, which is what
+     * makes a ref mean the same control from one frame to the next.
+     */
+    refs: PaneChromeRefMinter = createPaneChromeRefs()
+): PaneChromeProjection {
     const table = new Map<string, PaneChromeRefTarget>();
     const key = (paneID: string, ref: string): string => `${paneID}\u0000${ref}`;
     const envelope: PaneChromeFrame = {
@@ -284,7 +395,12 @@ export function projectPaneChrome(input: PaneChromeProjectionInput): PaneChromeP
     let withheld = 0;
     for (const [index, descriptor] of input.panes.entries()) {
         const staged = new Map<string, PaneChromeRefTarget>();
-        const pane = framePane(descriptor, (target, ref) => staged.set(key(target.paneID, ref), target));
+        const pane = framePane(
+            descriptor,
+            refs,
+            (target, ref) => staged.set(key(target.paneID, ref), target),
+            input.rects?.[descriptor.paneID]
+        );
         // `+ 1` for the comma that joins it to the pane before it. Cheap, and it keeps the sum an
         // over-estimate rather than an under-estimate, which is the side to be wrong on.
         const cost = paneChromeBytes(pane) + 1;

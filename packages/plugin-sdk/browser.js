@@ -94,6 +94,7 @@
     const chromeFeed = createWindowSubscription('chrome', 'ui.getChrome');
     const interactionFeed = createWindowSubscription('interaction', 'ui.getInteraction');
     const settingsFeed = createWindowSubscription('settings', 'ui.getSettingsPresentation');
+    const paneChromeFeed = createWindowSubscription('pane-chrome', 'ui.getPaneChrome');
     const request = (method, args = {}, cancelled, cancellationMessage = 'Terminal session is disposed.') => {
         if (pending.size >= 64) throw new Error('too many pending Kelpi calls');
         if (new TextEncoder().encode(JSON.stringify(args)).length > 256 * 1024) throw new Error('Kelpi call exceeds 256 KiB');
@@ -436,6 +437,7 @@
             else if (data.type === 'chrome' || data.type === 'chrome-error') await chromeFeed.receive(data);
             else if (data.type === 'interaction' || data.type === 'interaction-error') await interactionFeed.receive(data);
             else if (data.type === 'settings' || data.type === 'settings-error') await settingsFeed.receive(data);
+            else if (data.type === 'pane-chrome' || data.type === 'pane-chrome-error') await paneChromeFeed.receive(data);
             else if (data.type === 'terminal-frame') await receiveTerminalFrame(data);
             else if (data.type === 'terminal-action') await receiveTerminalAction(data);
             else if (data.type === 'browser-presentation') await receiveBrowserPresentation(data);
@@ -500,6 +502,24 @@
             commitSettingsField: async fieldID => { await base.call('ui.commitSettingsField', { fieldID }); },
             resetSettingsField: async fieldID => { await base.call('ui.resetSettingsField', { fieldID }); },
             closeSettings: async () => { await base.call('ui.closeSettings'); },
+            // The pane chrome presenter. Every one of these is refused unless THIS view is the one
+            // selected into `pane.chrome`, and every id is re-resolved host-side against the frame
+            // that was published: a pane the current frame does not carry, a ref from an older
+            // frame, from another pane or invented, and a control that has gone or gone disabled
+            // all do nothing. `focusChromePane` is spelled apart from `ui.focusPane` above on
+            // purpose - see `pane-chrome.d.ts`.
+            getPaneChrome: () => base.call('ui.getPaneChrome'),
+            onPaneChrome: paneChromeFeed.subscribe,
+            focusChromePane: async paneID => { await base.call('ui.focusChromePane', { paneID }); },
+            splitPane: async (paneID, direction) => { await base.call('ui.splitPane', { paneID, direction }); },
+            toggleZoom: async paneID => { await base.call('ui.toggleZoom', { paneID }); },
+            renamePane: async paneID => { await base.call('ui.renamePane', { paneID }); },
+            closePane: async paneID => { await base.call('ui.closePane', { paneID }); },
+            activatePaneControl: async (paneID, ref) => { await base.call('ui.activatePaneControl', { paneID, ref }); },
+            runPaneHeaderItem: async (paneID, ref) => { await base.call('ui.runPaneHeaderItem', { paneID, ref }); },
+            openPaneMenu: async paneID => { await base.call('ui.openPaneMenu', { paneID }); },
+            setPaneChromeHeight: async (paneID, pixels) => { await base.call('ui.setPaneChromeHeight', { paneID, pixels: pixels === null ? null : pixels }); },
+            setPaneDragRegions: async (paneID, regions) => { await base.call('ui.setPaneDragRegions', { paneID, regions: regions === null ? null : [...regions].map(region => ({ x: region.x, y: region.y, width: region.width, height: region.height })) }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),
@@ -510,7 +530,7 @@
     addEventListener('error', event => reportError(event.message ?? 'Plugin resource failed to load'), true);
     addEventListener('unhandledrejection', event => reportError(event.reason?.message ?? event.reason));
     addEventListener('pagehide', () => {
-        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose(); settingsFeed.dispose();
+        navigationFeed.dispose(); chromeFeed.dispose(); interactionFeed.dispose(); settingsFeed.dispose(); paneChromeFeed.dispose();
         terminalDisposed = true; terminalSession?.dispose();
         browserDisposed = true; browserSession?.dispose();
     });

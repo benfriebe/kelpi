@@ -80,8 +80,106 @@ export const PANE_CHROME_LIMITS = {
      * the workspace id, the focused pane and the withheld count - so the pane list is measured
      * against what is actually left for it.
      */
-    frameMargin: 2 * 1024
+    frameMargin: 2 * 1024,
+    /**
+     * The presenter's call budget, per rolling second. The interaction and Settings numbers
+     * verbatim (`settings/contract.ts`, `interaction/contract.ts`), so the four replaceable
+     * surfaces cannot come to disagree about what a runaway presenter is.
+     *
+     * A breach FAILS the placement as well as rejecting the call: a call loop is not a recoverable
+     * error, and with pane chrome it is a call loop holding every pane's band.
+     */
+    presenterCalls: 240,
+    presenterCallWindowMs: 1_000,
+    /** How long a newly mounted presenter has to report that it has painted. */
+    presenterReadyMs: 5_000,
+    /** How long it has to acknowledge a frame that moves the user (a pane added, removed or renamed). */
+    presenterAckMs: 5_000,
+    /**
+     * The inset, in px, between a declared band and the presenter's own frame over it.
+     *
+     * `webpane/WebPageSurface.tsx` insets its page hole by the same 2 px for the same reason: the
+     * focus ring is painted on the pane WRAPPER, around the band and the body together, so a
+     * presenter frame drawn edge to edge over the band would paint over the ring's top and side
+     * runs. The host keeps the band itself (its fill, its hairline and the ring around it) and
+     * hands the presenter the rectangle inside the ring.
+     */
+    frameInset: 2,
+    /**
+     * The host's own drag grip at the left of every presented band, in px.
+     *
+     * Reserved for the same reason the focus ring's gutter is, one problem further along: **a mouse
+     * press that lands inside an iframe keeps every later move and the release in that iframe's
+     * document.** Chromium decides where a mouse gesture is routed when the button goes DOWN, so a
+     * host that flips the frame to `pointer-events: none` on hearing about the press is already too
+     * late - the routing was settled before the message arrived. A presenter therefore cannot start
+     * a host gesture from its own pixels at all, whatever call it is given, and the window's
+     * pane-move drag would be lost for as long as a presenter is drawing.
+     *
+     * So the press has to happen in the HOST's document from the start. The host keeps a thin strip
+     * at the leading edge of every presented band, paints a grip in it, and starts the same gesture
+     * the bundled header raises. The presenter's rectangle begins after it, so nothing a presenter
+     * draws can cover it and nothing it does can take it away.
+     *
+     * 12 px is the narrowest strip that reads as a handle beside a 10 px glyph and still leaves a
+     * 131 px pane a usable header.
+     *
+     * It is the FLOOR rather than the whole answer. A user reaches for the header itself, the way
+     * they do on a bundled pane, and a faint strip at the edge is not where anyone reaches - so a
+     * presenter declares the regions of its own band that behave like a title bar
+     * (`setPaneDragRegions`) and the host lays its surfaces over those. The grip is what a presenter
+     * that declares nothing still gets.
+     */
+    gripWidth: 12,
+    /**
+     * How many drag regions one pane may declare.
+     *
+     * Eight, because a header is a row of a few boxes: a title area, a directory line, maybe a gap
+     * between two clusters. A presenter wanting more than that is describing something other than a
+     * title bar, and every region is a host surface with its own hit testing over somebody's
+     * terminal - a list with no ceiling is a way to spend the window's input budget.
+     */
+    maxDragRegions: 8
 } as const;
+
+/**
+ * One rectangle of a pane's band that behaves like a title bar, in BAND-LOCAL pixels.
+ *
+ * The origin is the presenter's own band rectangle for that pane (`rect` in the frame), which is
+ * what keeps a declaration from going stale: a pane that moves, resizes or changes its band moves
+ * its rectangle with it, and the regions travel along. Only the PRESENTER's own layout can
+ * invalidate one, which is why a presenter re-declares from its own resize observer.
+ */
+export interface PaneChromeDragRegion {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
+
+/**
+ * Clamp one declared region into the band it belongs to, or refuse it.
+ *
+ * Every number is treated as hostile, because one of them arrives over a plugin call: a region is
+ * clamped to the band's own box, so a presenter cannot put a host surface over a terminal, a web
+ * page's hole, a divider or another pane by declaring a rectangle that reaches outside its own
+ * header. A rectangle with no area left after the clamp is dropped rather than drawn, because a
+ * surface nobody can press is a surface that only costs hit testing.
+ */
+export function paneChromeDragRegion(
+    region: PaneChromeDragRegion,
+    band: { readonly width: number; readonly height: number }
+): PaneChromeDragRegion | null {
+    const { x, y, width, height } = region;
+    if (![x, y, width, height].every((part) => Number.isFinite(part))) return null;
+    if (!Number.isFinite(band.width) || !Number.isFinite(band.height)) return null;
+    const left = Math.max(0, Math.min(Math.round(x), Math.floor(band.width)));
+    const top = Math.max(0, Math.min(Math.round(y), Math.floor(band.height)));
+    const right = Math.max(left, Math.min(Math.round(x + width), Math.floor(band.width)));
+    const bottom = Math.max(top, Math.min(Math.round(y + height), Math.floor(band.height)));
+    if (right - left <= 0 || bottom - top <= 0) return null;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+}
 
 // ── what a pane IS, for chrome's purposes ───────────────────────────────────────────
 

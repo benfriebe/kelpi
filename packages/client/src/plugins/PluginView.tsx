@@ -18,6 +18,7 @@ import type { KeyEventLike } from '../chrome/keys';
 import { createBrowserScope, type BrowserScope, type BrowserSurfaceState } from './browser';
 import { INTERACTION_UI_METHODS, type InteractionPresenterHost } from '../interaction/presenter';
 import { SETTINGS_UI_METHODS, type SettingsPresenterHost } from '../settings/presenter';
+import { PANE_CHROME_UI_METHODS, type PaneChromePresenterHost } from '../pane-chrome/presenter';
 import { browserFrameBounds, browserPresentation, PluginBrowserSurface, type BrowserViewHost } from './browser-pane';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from '../webpane/priority';
 import { isOkReply, replyError } from '../connection';
@@ -44,6 +45,8 @@ export interface PluginViewProps {
     readonly presenter?: InteractionPresenterHost | undefined;
     /** Granted only by the Settings host for the view selected into `settings.window`. */
     readonly settingsPresenter?: SettingsPresenterHost | undefined;
+    /** Granted only by the pane grid for the view selected into `pane.chrome`. */
+    readonly paneChromePresenter?: PaneChromePresenterHost | undefined;
 }
 const themeVariables = ['--kelpi-bg', '--kelpi-fg', '--kelpi-fg-secondary', '--kelpi-fg-tertiary', '--kelpi-surface', '--kelpi-border', '--kelpi-accent'];
 export function readPluginTheme(): Record<string, string> {
@@ -64,7 +67,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
     const browserUserFocus = useRef(false);
     const hasBrowser = props.browser !== undefined;
     // A presenter slot mounts its own view, so at most one of these grants is ever present.
-    const hasPresenter = props.presenter !== undefined || props.settingsPresenter !== undefined;
+    const hasPresenter = props.presenter !== undefined || props.settingsPresenter !== undefined || props.paneChromePresenter !== undefined;
     const [browserSurface, setBrowserSurface] = useState<BrowserSurfaceState | null>(null);
     const latest = useRef(props); latest.current = props;
     const hostUI = useContext(PluginHostUIContext);
@@ -86,10 +89,12 @@ export function PluginView(props: PluginViewProps): ReactElement {
         let chromeFeed: WindowFeed | undefined;
         let interactionFeed: WindowFeed | undefined;
         let settingsFeed: WindowFeed | undefined;
+        let paneChromeFeed: WindowFeed | undefined;
         // Set at attach, from the manifest, so an ungranted view's presenter calls are refused
         // by the same rule the terminal and browser grants use.
         let presenterHost: InteractionPresenterHost | undefined;
         let settingsHost: SettingsPresenterHost | undefined;
+        let paneChromeHost: PaneChromePresenterHost | undefined;
         let navigationFeed: PluginNavigationFeed | undefined;
         let uiScope: UIServiceScope | undefined;
         let terminalScope: TerminalScope | undefined;
@@ -106,7 +111,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
         const fail = (error: unknown): void => {
             if (disposed || failed) return;
             failed = true; clearTimeout(readinessTimer); port.current?.close(); port.current = null;
-            navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); settingsFeed?.dispose();
+            navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); settingsFeed?.dispose(); paneChromeFeed?.dispose();
             uiScope?.dispose();
             terminalScope?.dispose(); terminal.current = null; releaseTerminal();
             browserScope?.dispose(); browser.current = null;
@@ -159,6 +164,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 if (presenter && plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(presenter.placement))) presenterHost = presenter;
                 const settingsPresenter = latest.current.settingsPresenter;
                 if (settingsPresenter && plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(settingsPresenter.placement))) settingsHost = settingsPresenter;
+                const paneChromePresenter = latest.current.paneChromePresenter;
+                if (paneChromePresenter && plugin.manifest.contributes.views.some(view => view.id === viewID && view.placements.includes(paneChromePresenter.placement))) paneChromeHost = paneChromePresenter;
             } catch (error) { channel.port2.close(); fail(error); return; }
             channel.port1.onmessage = ({ data }) => {
                 if (disposed || failed || !pluginRecord(data)) return;
@@ -187,6 +194,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
                 // must not clear the placement's acknowledgement watchdog.
                 if (data['type'] === 'interaction-ack') { if (interactionFeed?.ack(data['sequence']) === true) presenterHost?.noteAcknowledged(); return; }
                 if (data['type'] === 'settings-ack') { if (settingsFeed?.ack(data['sequence']) === true) settingsHost?.noteAcknowledged(); return; }
+                if (data['type'] === 'pane-chrome-ack') { if (paneChromeFeed?.ack(data['sequence']) === true) paneChromeHost?.noteAcknowledged(); return; }
                 if (data['type'] === 'navigation-ack') { navigationFeed?.ack(data['sequence']); return; }
                 if (data['type'] === 'focus') {
                     if (latest.current.visible !== false && paneID && workspaceID) {
@@ -271,6 +279,15 @@ export function PluginView(props: PluginViewProps): ReactElement {
                     // `ui.reportPresenterReady` belongs to both presenter contracts, so it goes to
                     // whichever placement THIS view was granted; an ungranted view keeps the
                     // interaction refusal it already had.
+                    // `ui.reportPresenterReady` belongs to all three presenter contracts, so it
+                    // goes to whichever placement THIS view was granted; the order of these three
+                    // arms decides nothing else, because no other method is in two of them.
+                    if ((PANE_CHROME_UI_METHODS as readonly string[]).includes(String(data['method']))
+                        && (paneChromeHost !== undefined || data['method'] !== 'ui.reportPresenterReady')) {
+                        if (!paneChromeHost) throw new Error('Pane chrome is unavailable for this view.');
+                        if (data['method'] === 'ui.getPaneChrome') return pluginJSON(paneChromeHost.getPaneChrome());
+                        return Promise.resolve(paneChromeHost.call(String(data['method']), args)).then(() => null);
+                    }
                     if ((SETTINGS_UI_METHODS as readonly string[]).includes(String(data['method']))
                         && (settingsHost !== undefined || data['method'] !== 'ui.reportPresenterReady')) {
                         if (!settingsHost) throw new Error('Settings presentation is unavailable for this view.');
@@ -293,6 +310,8 @@ export function PluginView(props: PluginViewProps): ReactElement {
             if (granted) interactionFeed = createWindowFeed('interaction', (listener, onError) => granted.subscribe(listener, onError), message => channel.port1.postMessage(message));
             const grantedSettings = settingsHost;
             if (grantedSettings) settingsFeed = createWindowFeed('settings', (listener, onError) => grantedSettings.subscribe(listener, onError), message => channel.port1.postMessage(message));
+            const grantedPaneChrome = paneChromeHost;
+            if (grantedPaneChrome) paneChromeFeed = createWindowFeed('pane-chrome', (listener, onError) => grantedPaneChrome.subscribe(listener, onError), message => channel.port1.postMessage(message));
             if (navigation) navigationFeed = createPluginNavigationFeed(navigation, message => channel.port1.postMessage(message));
         };
         ownerWindow.addEventListener('message', handleReady);
@@ -307,7 +326,7 @@ export function PluginView(props: PluginViewProps): ReactElement {
             setDocumentHTML(pluginDocument(String(attached['html']), url.href, String(attached['entry']), { nonce, context: attached['context']!, state: attached['state']!, stateVersion: attached['stateVersion']!, theme: readPluginTheme(), visible: latest.current.visible ?? true, chords: latest.current.visible === false ? [] : [...latest.current.claimedChords ?? []] }));
             readinessTimer = setTimeout(() => fail(new Error('Plugin view did not connect. Retry to reload it.')), 10_000);
         }).catch(fail);
-        return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); browserScope?.dispose(); browser.current = null; navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); settingsFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
+        return () => { disposed = true; terminalScope?.dispose(); terminal.current = null; releaseTerminal(); browserScope?.dispose(); browser.current = null; navigationFeed?.dispose(); chromeFeed?.dispose(); interactionFeed?.dispose(); settingsFeed?.dispose(); paneChromeFeed?.dispose(); uiScope?.dispose(); clearTimeout(readinessTimer); ownerWindow.removeEventListener('message', handleReady); observer.disconnect(); offEvents(); port.current?.close(); port.current = null; if (lease) void pluginRequest(runtime, 'release', { lease }).catch(() => {}); };
     }, [runtime, pluginID, viewID, paneID, workspaceID, plugin?.revision, plugin?.instanceID, unavailable, connection, attempt, navigation, services, chrome, hasTerminal, hasBrowser, hasPresenter]);
     /**
      * #235 - the pane's presentation, keyed by its VALUE rather than by the prop object's identity.

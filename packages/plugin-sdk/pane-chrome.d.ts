@@ -14,6 +14,10 @@
  * narrow pane gives up relative to its neighbours. Selection will be Settings-only, as the
  * interaction and Settings presenters are.
  *
+ * **Phase B mounts it.** A view selected for `pane.chrome` in Settings ▸ Plugins ▸ Workbench views
+ * now draws every visible pane's header band, `WindowPaneChromeAPI` is part of `ViewAPI.ui`, and
+ * `ui.selectView` refuses the placement exactly as it refuses the interaction and Settings ones.
+ *
  * ── What is withheld ────────────────────────────────────────────────────────────────
  *
  * Absolute paths beyond the home abbreviation (`directory` is `~/…`; the real path stays with the
@@ -28,6 +32,26 @@
  * withheld. Refs are minted per frame, scoped to their pane, and mean nothing outside the frame
  * they arrived in; the host keeps the mapping and re-resolves it against a fresh model before
  * anything runs, so a ref from an older frame, from another pane, or invented, activates nothing.
+ *
+ * ── Dragging a presented pane ───────────────────────────────────────────────────────
+ *
+ * **A mouse press that lands inside an iframe keeps every later move and the release inside that
+ * iframe's document**, because Chromium settles where a gesture is routed when the button goes
+ * down. A presenter therefore cannot start the window's pane-move gesture from its own pixels,
+ * whatever call it is offered, and there is no such call.
+ *
+ * What there is instead is `setPaneDragRegions`: a presenter says which parts of its band behave
+ * like a title bar, and the HOST lays its own transparent surfaces over them. A press on one is a
+ * press in the host's document, so it does what the bundled header's empty title area does - focus
+ * the pane and start the move, double click to zoom, right click for the pane menu - with the
+ * window's own threshold, drop zones and commit.
+ *
+ * Nothing is forwarded back into the frame, so **a region placed over one of your own controls
+ * hides that control**. Declare the gaps and the title, not the buttons.
+ *
+ * A presenter that declares nothing still gets a narrow grip the host reserves at the LEADING EDGE
+ * of every band, before the `rect` it is given. Draw nothing there: it is outside your rectangle
+ * and the host clips it away.
  *
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
@@ -47,6 +71,24 @@ export type PaneChromePlacement = 'pane.chrome';
 export type PaneChromeKind = 'shell' | 'markdown' | 'scratchpad' | 'diff' | 'web' | 'plugin';
 
 export type PaneChromeStatus = 'idle' | 'running' | 'waitingForInput';
+
+/**
+ * Where a pane's band is, inside the presenter's own frame.
+ *
+ * The host mounts ONE view over the whole pane grid and clips it to the bands it is drawing, so a
+ * presenter positions a header at each of these rectangles - `position: absolute` with these four
+ * numbers, in CSS px, with the origin at the grid's top-left. The clip is the host's: pixels
+ * outside these rectangles are removed from paint and from hit testing, so a presenter cannot draw
+ * over a pane body and a click below a band reaches whatever is under it.
+ *
+ * `null` in a frame taken before the grid has measured itself. Draw nothing for such a pane.
+ */
+export interface PaneChromeRect {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
 
 /**
  * The title, split where the host middle-truncates it.
@@ -164,6 +206,14 @@ export interface PaneChromePane {
     readonly sync: PaneChromeSync;
     /** The band this pane is painting at right now, already clamped. */
     readonly height: number;
+    /**
+     * The rectangle inside that band the presenter may draw in, or null before a first layout.
+     *
+     * It already excludes the focus ring's gutter, the hairline under the header and the host's
+     * drag grip, so a presenter positions its header at exactly these four numbers and never has to
+     * reason about any of them.
+     */
+    readonly rect: PaneChromeRect | null;
     readonly size: PaneChromeSize;
     readonly controls: readonly PaneChromeControl[];
     readonly items: readonly PaneChromeItem[];
@@ -186,6 +236,12 @@ export interface PaneChromeSnapshot {
     readonly placement: PaneChromePlacement;
     /** Always `desktop` in a frame a presenter receives. */
     readonly formFactor: 'desktop' | 'phone';
+    /**
+     * This presenter is painting right now. `false` means present nothing: the window is showing
+     * another workspace, the grid is hidden, or the bundled header has the bands back. Every
+     * mutating call is refused while it is false.
+     */
+    readonly visible: boolean;
     readonly workspaceID: string;
     readonly focusedPaneID: string | null;
     readonly zoomedPaneID: string | null;
@@ -215,7 +271,14 @@ export interface WindowPaneChromeAPI {
     ): () => void;
     /** Confirms this presenter has painted. Required within 5 seconds of the first frame. */
     reportPresenterReady(): Promise<void>;
-    focusPane(paneID: string): Promise<void>;
+    /**
+     * Focus a pane.
+     *
+     * `focusChromePane` and not `focusPane`, which `ViewAPI.ui` already has in its two-argument
+     * workspace form: one name with two arities would have made a plugin that passed the wrong
+     * number of arguments call the other verb silently.
+     */
+    focusChromePane(paneID: string): Promise<void>;
     splitPane(paneID: string, direction: PaneChromeSplitDirection): Promise<void>;
     toggleZoom(paneID: string): Promise<void>;
     /** Opens the HOST's inline rename field on that pane. It never takes a name. */
@@ -239,6 +302,22 @@ export interface WindowPaneChromeAPI {
     runPaneHeaderItem(paneID: string, ref: string): Promise<void>;
     /** Opens the host's own pane context menu, which stays native. */
     openPaneMenu(paneID: string): Promise<void>;
+    /**
+     * Declare which parts of this pane's band behave like a title bar.
+     *
+     * Rectangles in BAND-LOCAL pixels, with the origin at the `rect` this pane carries in the
+     * frame - so a pane that moves, resizes or changes its band takes its regions with it and a
+     * declaration only goes stale when YOUR OWN layout changes. Re-declare from a resize observer
+     * over whatever you drew.
+     *
+     * The host clamps each rectangle into the band, drops one with no area left and refuses more
+     * than eight. `null` (or an empty list) withdraws, and the reserved grip is what remains.
+     *
+     * The host lays a transparent surface of its own over each region and takes the press there,
+     * which is the only way a pane move can start at all (see the note at the top of this file).
+     * Nothing is forwarded into your document, so a region over one of your own controls hides it.
+     */
+    setPaneDragRegions(paneID: string, regions: readonly PaneChromeRect[] | null): Promise<void>;
     /**
      * Declare how tall this presenter's band needs to be, in CSS pixels.
      *

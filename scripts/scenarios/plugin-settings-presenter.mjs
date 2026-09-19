@@ -35,6 +35,10 @@
  *      half-typed draft in it: the bundled dialog takes over on the same section still holding the
  *      draft, the presenter comes back with it, nothing latches, and neither config file changes;
  *  12. five screenshots for the eyes, each with a note saying what to look for.
+ *  13. Settings search (#173): real incremental keys keep the host input focused, keyboard
+ *      activation reveals visible native controls and opens disclosures, the flash expires,
+ *      unavailable controls explain their prerequisites without writes, and search hands back to
+ *      the selected presenter. The phone searches from its list and returns with Back.
  *
  * ── What it depends on ──────────────────────────────────────────────────────────────
  *
@@ -339,6 +343,151 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const configSettled = (pattern, ceilingMs = 10_000) => d.settle(() => pattern.test(readConfig()), { ceilingMs });
     const tail = (text, n = 240) => text.trim().slice(-n).replace(/\n/g, ' | ');
 
+    // Search is driven through the assembled App, including its real Settings surface. Keep a
+    // DOM reference only as an instrument: replacing the input after the first character must
+    // fail here, even if the replacement happens to acquire focus later.
+    const searchInput = '[data-testid="settings-search"]';
+    const searchFor = async (query, { phone = false } = {}) => {
+        if (phone) await page.tap(searchInput);
+        else await clickHost(searchInput);
+        await page.eval(`(() => { globalThis.__settingsSearchInput = document.querySelector('${searchInput}'); return true; })()`);
+        await selectAll();
+        await page.key('Backspace');
+        const cleared = await page.eval(`(() => {
+            const input = document.querySelector('${searchInput}');
+            return input === globalThis.__settingsSearchInput && input === document.activeElement && input.value === '';
+        })()`);
+        rec.check('search: clearing keeps the same focused host input', cleared);
+        if (!cleared) throw new Error('Settings search lost input or focus while clearing');
+        const trail = [];
+        for (const character of query) {
+            await page.key(character === ' ' ? 'Space' : `Key${character.toUpperCase()}`, {
+                key: character, text: character, keyCode: character.toUpperCase().charCodeAt(0)
+            });
+            trail.push(await page.eval(`(() => {
+                const input = document.querySelector('${searchInput}');
+                return { value: input?.value, same: input === globalThis.__settingsSearchInput,
+                    focused: input === document.activeElement };
+            })()`));
+        }
+        const ok = trail.every((state, index) => state.same && state.focused && state.value === query.slice(0, index + 1));
+        rec.check(`search: every real key in "${query}" retains the same focused input`, ok, JSON.stringify(trail));
+        if (!ok) throw new Error(`Settings search lost input or focus while typing ${query}`);
+    };
+    const chooseSearchWithKeyboard = async testID => {
+        const resultID = `settings-search-result-${testID}`;
+        const budget = await page.eval(`document.querySelectorAll('[data-testid="settings-window"] button').length + 2`);
+        let reached = false;
+        for (let count = 0; count < budget; count += 1) {
+            await page.key('Tab');
+            if (await page.eval(`document.activeElement?.getAttribute('data-testid') === ${JSON.stringify(resultID)}`)) {
+                reached = true;
+                break;
+            }
+        }
+        rec.check(`search: Tab reaches ${testID}`, reached);
+        if (!reached) throw new Error(`Search result ${testID} is not keyboard reachable`);
+        await page.key('Enter');
+    };
+    const searchTargetState = testID => page.eval(`(() => {
+        const target = document.querySelector('[data-testid="${testID}"]');
+        const panel = document.querySelector('[data-testid="settings-panel"]');
+        if (!target || !panel) return null;
+        const box = target.getBoundingClientRect(), clip = panel.getBoundingClientRect();
+        const style = getComputedStyle(target);
+        const visible = target.checkVisibility({ checkVisibilityCSS: true }) && box.width > 0 && box.height > 0
+            && box.top >= Math.max(0, clip.top) - 1 && box.bottom <= Math.min(innerHeight, clip.bottom) + 1
+            && box.left >= Math.max(0, clip.left) - 1 && box.right <= Math.min(innerWidth, clip.right) + 1;
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return { visible: visible && !!hit && target.contains(hit), focused: target.contains(document.activeElement),
+            highlighted: target.dataset.settingsSearchHit === 'true' && style.outlineStyle === 'solid' && style.outlineWidth === '2px',
+            outline: target.style.outline, offset: target.style.outlineOffset,
+            disclosure: target.closest('details')?.open ?? null, scrollTop: panel.scrollTop,
+            box: { top: box.top, bottom: box.bottom }, clip: { top: clip.top, bottom: clip.bottom } };
+    })()`);
+    const assertSearchTarget = async (testID, { disclosure = false } = {}) => {
+        // Observe the app's own smooth scroll; do not scroll the destination from the harness.
+        const revealed = await d.settle(async () => {
+            const state = await searchTargetState(testID);
+            return state?.visible && state.focused && state.highlighted && (!disclosure || state.disclosure === true);
+        }, { ceilingMs: 3_000, intervalMs: 25 });
+        rec.check(`search: ${testID} is visible, focused and highlighted${disclosure ? ' in an open disclosure' : ''}`,
+            revealed, JSON.stringify(await searchTargetState(testID)));
+        const expired = await d.settle(async () => {
+            const state = await searchTargetState(testID);
+            return state !== null && !state.highlighted && state.outline === '' && state.offset === '';
+        }, { ceilingMs: 3_000, intervalMs: 40 });
+        rec.check(`search: ${testID}'s temporary outline expires`, expired, JSON.stringify(await searchTargetState(testID)));
+    };
+    const searchEscape = async () => {
+        await page.key('Escape');
+        rec.check('search: Escape from the revealed control closes Settings',
+            await d.settleDom(page, `!document.querySelector('[data-testid="settings-window"]')`));
+    };
+
+    const exerciseBundledSearch = async () => {
+        const original = readConfig();
+        const fixtures = [['workspaces', 'focus-follows-mouse-toggle', false], ['appearance', 'stats-master-toggle', true]];
+        const initial = [];
+        try {
+            await openSettings();
+            for (const [section, testID, desired] of fixtures) {
+                await clickHost(`[data-testid="settings-tab-button-${section}"]`);
+                const selector = `[data-testid="${testID}"]`;
+                const value = await page.eval(`document.querySelector('${selector}')?.checked`);
+                if (typeof value !== 'boolean') throw new Error(`Missing fixture toggle ${testID}`);
+                initial.push([section, testID, value]);
+                if (value !== desired) await clickHost(selector);
+                if (!await d.settleDom(page, `document.querySelector('${selector}')?.checked === ${desired}`))
+                    throw new Error(`Fixture toggle ${testID} did not settle`);
+            }
+            const config = readConfig(), ghostty = readGhostty();
+            for (const query of ['group', 'fill']) {
+                await searchFor(query);
+                rec.check(`search: "${query}" discovers Group band fill under Appearance`, await page.eval(`(() => {
+                    const hit = document.querySelector('[data-testid="settings-search-result-sidebar-group-fill"]');
+                    return hit?.textContent.includes('Group band fill') && hit.closest('section')?.getAttribute('aria-label') === 'Appearance search results';
+                })()`));
+            }
+            await searchFor('group band fill');
+            await chooseSearchWithKeyboard('sidebar-group-fill');
+            await assertSearchTarget('sidebar-group-fill');
+            await searchEscape();
+
+            await openSettings();
+            await clickHost('[data-testid="settings-tab-button-appearance"]');
+            rec.check('search: the graph disclosure starts closed', await page.eval(`document.querySelector('[data-testid="stats-graphs"]')?.open === false`));
+            await searchFor('graph colour');
+            await chooseSearchWithKeyboard('sparkline-color');
+            await assertSearchTarget('sparkline-color', { disclosure: true });
+            await searchEscape();
+
+            await openSettings();
+            await searchFor('focus delay');
+            rec.check('search: the unavailable result explains its prerequisite', await page.eval(`document.querySelector('[data-testid="settings-search-result-focus-delay-row"]')?.textContent.includes('Enable Focus follows mouse')`));
+            await chooseSearchWithKeyboard('focus-delay-row');
+            await assertSearchTarget('focus-follows-mouse-row');
+            rec.check('search: the unavailable delay stays absent and the notice names its enabling control', await page.eval(`
+                !document.querySelector('[data-testid="focus-delay-row"]') &&
+                document.querySelector('[data-testid="focus-follows-mouse-toggle"]')?.checked === false &&
+                document.querySelector('[data-testid="settings-search-notice"]')?.textContent.includes('Enable Focus follows mouse')`));
+            rec.check('search: navigation and unavailable-control handling write neither config file',
+                readConfig() === config && readGhostty() === ghostty);
+            await searchEscape();
+        } finally {
+            if (readConfig() !== original) fs.writeFileSync(sandbox.configPath, original);
+            await closeSettings();
+            await openSettings();
+            for (const [section, testID, value] of initial) {
+                await clickHost(`[data-testid="settings-tab-button-${section}"]`);
+                rec.check(`search cleanup: ${testID} returns to its initial value`, await d.settleDom(page,
+                    `document.querySelector('[data-testid="${testID}"]')?.checked === ${value}`));
+            }
+            await closeSettings();
+            rec.check('search cleanup: fixture config is byte-identical to its starting file', readConfig() === original);
+        }
+    };
+
     // ── editing through the lab ─────────────────────────────────────────────────────
     const fieldRow = id => `[data-testid="lab-settings-field"][data-field-id="${id}"]`;
     /**
@@ -432,6 +581,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     // Where the window was before this scenario took it, and what the file held: both restored at
     // the end, because the sandbox and its window are shared with whatever runs next.
     const startingWorkspace = await page.eval(`document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null`);
+    const startingViewport = await page.eval('`${innerWidth}x${innerHeight}`');
     const originalConfig = readConfig();
     const workspace = await json(['workspace', 'create', '--name', 'Settings presenter', '--json']);
     const workspaceID = workspace.workspace_id;
@@ -440,6 +590,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     let seeded = false;
 
     try {
+        await exerciseBundledSearch();
         // ── 1 · the placement is offered, and the lab attaches ───────────────────────
         await cli.ok(['plugin', 'install', labPath, '--trust']);
         await cli.ok(['plugin', 'install', uiPath, '--trust']);
@@ -477,6 +628,19 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             await page.eval(`document.querySelector('[data-testid="settings-presenter"]')?.getAttribute('data-settings-presenter') === ${JSON.stringify(labView)}`)
             && await page.eval(`!document.querySelector('${bundledSlot}')`),
             String(await page.eval(`document.querySelector('[data-testid="settings-presenter"]')?.getAttribute('data-settings-presenter') ?? '<none>'`)));
+
+        const beforeSearch = [readConfig(), readGhostty()];
+        await searchFor('font size');
+        await chooseSearchWithKeyboard('terminal-font-size');
+        await assertSearchTarget('terminal-font-size');
+        rec.check('search: a selected presenter yields to the bundled destination', await drawsBundled());
+        await clickHost('[data-testid="settings-search-done"]');
+        rec.check('search: Done returns to the selected live presenter with the host input focused',
+            await attached() && await ready() && await painted() && await page.eval(`document.activeElement === document.querySelector('${searchInput}')`), await labState());
+        rec.check('search: presenter handoff and return do not write either config file',
+            readConfig() === beforeSearch[0] && readGhostty() === beforeSearch[1]);
+        // The next check measures a plugins -> general route as exactly one published frame.
+        await routeTo('plugins');
 
         // ── 2 · discoverable, never programmatically selectable ──────────────────────
         const slots = JSON.parse(await page.evalInFrame(uiFrame, `(async () => { const workbench = await kelpi.ui.getWorkbench(); return JSON.stringify(workbench.slots.filter(entry => entry.id === ${JSON.stringify(slot)})); })()`));
@@ -859,11 +1023,27 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (await d.settleDom(page, `document.querySelector(${JSON.stringify(phoneRow)})`, { ceilingMs: 12_000 })) await clickHost(phoneRow);
         await page.key('Comma', { modifiers: 4, key: ',' });
         const phoneSheet = await d.settleDom(page, `document.querySelector('[data-testid="settings-window"][data-phone-sheet="true"]')`, { ceilingMs: 10_000 });
+        rec.check('search: the phone opens its Settings tab-list screen', phoneSheet && await page.eval(`
+            !!document.querySelector('[data-testid="settings-phone-list"]') && !!document.querySelector('${searchInput}')`));
+        if (!phoneSheet) throw new Error('The phone did not open Settings for the search check');
+        const beforePhoneSearch = [readConfig(), readGhostty()];
+        await searchFor('group band fill', { phone: true });
+        await page.tap('[data-testid="settings-search-result-sidebar-group-fill"]');
+        await assertSearchTarget('sidebar-group-fill');
+        rec.check('search: the phone result replaces the list with the actual Appearance panel', await page.eval(`
+            !document.querySelector('${searchInput}') && !document.querySelector('[data-testid="settings-phone-list"]') &&
+            !!document.querySelector('[data-testid="settings-tab-appearance"]')`));
+        await page.tap('[data-testid="settings-phone-back"]');
+        rec.check('search: phone Back restores the empty search input, list focus and no stale notice',
+            await d.settleDom(page, `document.querySelector('${searchInput}')?.value === '' &&
+                document.querySelector('[data-testid="settings-phone-list"]')?.contains(document.activeElement) &&
+                !document.querySelector('[data-testid="settings-search-notice"]') && !document.querySelector('[data-testid="settings-panel"]')`));
+        rec.check('search: phone navigation does not write either config file',
+            readConfig() === beforePhoneSearch[0] && readGhostty() === beforePhoneSearch[1]);
         const noPresenter = await page.eval(`!document.querySelector('[data-settings-presenter]') && !document.querySelector('${presenterFrame}')`);
         const sheetDraws = await page.eval(`!!document.querySelector('[data-testid="settings-phone-list"]') || !!document.querySelector('[data-testid="settings-panel"]')`);
-        if (!phoneSheet) rec.note('SKIPPED: the sheet half of check 10 - \u2318, raised no Settings sheet in the phone shell, so only "no presenter is granted on a phone" is asserted below.');
         rec.check('a phone window keeps the bundled sheet with the lab still selected',
-            noPresenter && (phoneSheet === false || sheetDraws),
+            noPresenter && sheetDraws,
             `sheet ${String(phoneSheet)} · presenter nodes ${String(await page.eval(`document.querySelectorAll('[data-settings-presenter]').length`))} · list ${String(sheetDraws)}`);
         await closeSettings();
         // Back to the landing page BEFORE the window widens again, while the shell is still
@@ -995,6 +1175,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const safely = async (what, step) => {
             try { await step(); } catch (error) { rec.note(`cleanup: ${what} - ${error instanceof Error ? error.message : String(error)}`); }
         };
+        await safely('the search instrument is removed', () => page.eval('delete globalThis.__settingsSearchInput'));
         await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
@@ -1077,5 +1258,15 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             const now = readConfig();
             rec.note(`config file on the way out (${String(now.length)} bytes, started at ${String(originalConfig.length)}): ${tail(now) || '(empty)'}`);
         });
+        const searchCleanup = await page.eval(`(() => ({
+            closed: !document.querySelector('[data-testid="settings-window"]'),
+            instrumentGone: !Object.hasOwn(globalThis, '__settingsSearchInput'),
+            viewport: \`\${innerWidth}x\${innerHeight}\`, focused: document.hasFocus(),
+            presenterRemoved: !Object.keys(localStorage).filter(key => key.startsWith('kelpi.workbench.v1:'))
+                .some(key => JSON.parse(localStorage.getItem(key) ?? '{}')['settings.window'] === ${JSON.stringify(labView)})
+        }))()`);
+        rec.check('search cleanup: closed overlay, removed instrument/presenter selection, restored viewport and page focus',
+            searchCleanup.closed && searchCleanup.instrumentGone && searchCleanup.presenterRemoved &&
+            searchCleanup.viewport === startingViewport && searchCleanup.focused, JSON.stringify(searchCleanup));
     }
 }

@@ -147,3 +147,12 @@ describe('boot watches the first client navigation', () => {
         expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
     });
 });
+
+it('reports cleanup errors while still attempting every remaining owned resource', async () => {
+    state.shell.quit.mockRejectedValue(new Error('shell refused cleanup'));
+    const instance = await boot({ repoRoot: '/repo', build: false });
+    await expect(instance.stop()).rejects.toThrow('shell refused cleanup');
+    expect(state.daemon.stop).toHaveBeenCalledTimes(1);
+    expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
+    expect(instance.cleanup).toEqual({ attempted: true, completed: false, leaks: [], errors: ['shell process: shell refused cleanup'] });
+});

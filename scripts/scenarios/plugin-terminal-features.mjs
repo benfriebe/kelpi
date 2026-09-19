@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { armIncidentDiagnostics, redactFixtureText, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -96,15 +97,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         }, { ceilingMs: 5000 });
         if (!focused) throw new Error('Real pointer input did not focus Terminal Lab');
     };
-    /**
-     * The focus state the two clipboard chords need, recorded and repaired: `driver.mjs`.
-     *
-     * The helper is shared with `terminal-copy-paste-chords`, which presses the same two chords at
-     * the same two risks (#205, #207). What is local to this file is the two probes it takes: the
-     * caret this renderer wants is its own xterm textarea, which lives inside the plugin's frame
-     * and is unreachable from the top document, and putting it back means a real pointer click
-     * inside that frame rather than on the pane body.
-     */
+    // Read host and renderer focus without repairing either before the first clipboard input.
     const caretProbe = id => () => inside(id, `document.activeElement === terminalLab.terminal.textarea`);
     const caretNow = async id => JSON.stringify(await d.caretNow(page, id, { onTheRenderer: caretProbe(id) }));
     const clipboardCaret = async (label, id) =>
@@ -112,9 +105,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
             await d.clipboardCaret(page, harness, id, {
                 label,
                 note: message => rec.note(message),
-                onTheRenderer: caretProbe(id),
-                refocus: () => focus(id),
-                frameSelector: frame(id)
+                onTheRenderer: caretProbe(id)
             })
         );
     const selectWorkspace = (id, workspaceID, hostName) => inside(id, `void (async () => { const navigation = await kelpi.ui.getNavigation(); const host = navigation.hosts.find(host => ${hostName ? `host.name === ${JSON.stringify(hostName)}` : `host.kind === 'local'`}); await kelpi.ui.selectWorkspace(host.id, ${JSON.stringify(workspaceID)}); })(); true`);
@@ -122,13 +113,16 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         const items = [];
         for (const item of fixtures) {
             const renderer = await inside(item.paneID, `({ session: terminalLab.session.id, presentation: terminalLab.presentation, modes: terminalLab.modes, modifiers: terminalLab.modifiers, frameCount: terminalLab.frameCount, replayCount: terminalLab.replayCount, revealCount: terminalLab.revealCount, resync: document.body.dataset.resync, rows: terminalLab.terminal.rows, cols: terminalLab.terminal.cols, selection: terminalLab.terminal.getSelection(), focused: document.activeElement === terminalLab.terminal.textarea })`).catch(error => ({ unavailable: error.message }));
-            items.push({ paneID: item.paneID, workspaceID: item.workspaceID, state: state(item), alive: alive(item), inputBase64: input(item).toString('base64'), renderer });
+            if (typeof renderer.selection === 'string') renderer.selection = redactFixtureText(renderer.selection, ['KELPI']);
+            const bytes = input(item);
+            items.push({ paneID: item.paneID, workspaceID: item.workspaceID, state: state(item), alive: alive(item), inputBytes: bytes.length, inputSha256: createHash('sha256').update(bytes).digest('hex'), renderer });
         }
-        const host = await page.eval(`({ focused: document.hasFocus(), text: document.body.innerText.slice(-3500), terminals: Array.from(document.querySelectorAll('[data-terminal-pane]'), element => ({paneID:element.dataset.terminalPane, renderer:element.dataset.terminalRenderer, text:element.innerText})) })`).catch(error => ({ unavailable: error.message }));
+        const host = await page.eval(`({ focused: document.hasFocus(), terminals: Array.from(document.querySelectorAll('[data-terminal-pane]'), element => ({paneID:element.dataset.terminalPane, renderer:element.dataset.terminalRenderer})) })`).catch(error => ({ unavailable: error.message }));
         fs.writeFileSync(path.join(rec.outDir, `${label}-diagnostics.json`), JSON.stringify({ wire, items, host }, null, 2) + '\n');
     };
-    let remoteSandbox, remoteDaemon, local, sizeObserver;
+    let remoteSandbox, remoteDaemon, local, sizeObserver, incident;
     try {
+        incident = await armIncidentDiagnostics({ page, harness, rec, allowed: ['TERMINAL-PASTE-α', 'COPY-SENTINEL', 'KELPI', 'REMOTE-PASTE-β', 'REMOTE-COPY-SENTINEL', 'NON-MAC-COPY-SENTINEL', 'CLEARED-SELECTION'] });
         rec.note('Attaching an SDK-only terminal renderer to a persistent full-screen process');
         local = await create(cli, path.join(sandbox.root, 'terminal-fixture'), 'Terminal Lab');
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
@@ -137,26 +131,26 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         rec.check('isolated SDK-only terminal attaches to the existing full-screen process', alive(local) && await inside(local.paneID, `(() => { try { parent.document.body; return false; } catch { return true; } })()`) && !(await json(['plugin', 'list', '--json'])).find(item => item.manifest.id === pluginID).manifest.backend);
         rec.check('ANSI and Unicode viewport agrees exactly with daemon capture', await sameScreen(local, 'READY'));
         rec.check('application terminal modes cross the renderer bridge', await check(local.paneID, `terminalLab.modes.bracketedPaste && terminalLab.modes.applicationCursorKeys && terminalLab.modes.mouseTracking === 'drag' && terminalLab.modes.mouseFormat === 'sgr'`));
+        await incident.addRenderer('local terminal', expression => inside(local.paneID, expression), () => page.eval(`!!document.querySelector(${JSON.stringify(frame(local.paneID))})`));
         await focus(local.paneID);
         let offset = input(local).length;
         await page.key('KeyK', { key: 'k', text: 'k', keyCode: 75 });
         await page.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
         await page.insertText('日本語');
-        rec.check('real keyboard and IME commit reach the same raw process', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('k')) && input(local).subarray(offset).includes(Buffer.from('日本語'))));
+        rec.check('CDP keyboard and injected composition commit reach the same raw process', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('k')) && input(local).subarray(offset).includes(Buffer.from('日本語'))));
         offset = input(local).length;
         await harness.clipboardWrite('TERMINAL-PASTE-α');
         await clipboardCaret('platform paste', local.paneID);
         let caret = await caretNow(local.paneID);
         await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
-        rec.check('platform paste preserves the application bracketed-paste envelope', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~'))), `${JSON.stringify(input(local).subarray(offset).toString())} · at the press ${caret}`);
-        // The focus repair goes BEFORE the selection, never after it: it can end in a click, and a
-        // click inside a terminal clears the selection these two checks are about.
+        rec.check('platform paste preserves the application bracketed-paste envelope', await d.settle(() => input(local).subarray(offset).includes(Buffer.from('\x1b[200~TERMINAL-PASTE-α\x1b[201~'))), `${JSON.stringify(redactFixtureText(input(local).subarray(offset).toString(), ['\x1b[200~TERMINAL-PASTE-α\x1b[201~']))} · at the press ${caret}`);
+        // Observe the caret without repair; selection and first input remain the operation under test.
         await clipboardCaret('platform Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
         await harness.clipboardWrite('COPY-SENTINEL');
         caret = await caretNow(local.paneID);
         await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
-        rec.check('platform Copy obtains live renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'), `clipboard holds ${JSON.stringify(String((await harness.clipboardRead()).text).slice(0, 60))} · at the press ${caret}`);
+        rec.check('platform Copy obtains live renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'), `clipboard holds [see redacted incident evidence] · at the press ${caret}`);
         await clipboardCaret('cleared-selection Copy', local.paneID);
         await inside(local.paneID, `terminalLab.terminal.clearSelection(); true`);
         await harness.clipboardWrite('CLEARED-SELECTION');
@@ -164,6 +158,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta }); await sleep(120);
         rec.check('cleared selection cannot copy a stale cached value', String((await harness.clipboardRead()).text) === 'CLEARED-SELECTION', `at the press ${caret}`);
 
+        await incident.retireRenderer('local terminal');
         await choose(local.paneID, 'kelpi.shell');
         rec.check('returning to the bundled renderer preserves pane and operating-system PID', await native(local.paneID) && alive(local) && (await json(['pane', 'list', '--workspace', local.workspaceID, '--json'])).some(pane => pane.id === local.paneID));
         await choose(local.paneID); if (!await ready(local.paneID)) throw new Error('Terminal Lab did not reattach');
@@ -323,6 +318,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await diagnostics('synchronized-input');
         await cli.ok(['pane', 'sync', 'off', '--workspace', local.workspaceID]); await cli.ok(['pane', 'close', '--target', siblingID]);
 
+        await incident.retireRenderer('host');
         await page.send('Page.reload');
         rec.check('window reconnect preserves the process and restores the renderer preference', await ready(local.paneID) && alive(local) && await sameScreen(local, 'RESIZE-QUERY-COMPLETE'));
         await cli.ok(['plugin', 'disable', pluginID]);
@@ -408,15 +404,19 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await selectWorkspace(local.paneID, remote.workspaceID, 'TerminalRemote');
         await choose(remote.paneID); if (!await ready(remote.paneID)) throw new Error('Remote replacement did not attach');
         rec.check('embedded remote terminal replays through the remote runtime', await sameScreen(remote, 'READY') && alive(remote));
+        await incident.ensureHost();
+        await incident.addRenderer('remote terminal', expression => inside(remote.paneID, expression), () => page.eval(`!!document.querySelector(${JSON.stringify(frame(remote.paneID))})`));
         await focus(remote.paneID); offset = input(remote).length; const localBeforeRemoteInput = input(local).length;
         await page.key('KeyR', { key: 'r', text: 'r', keyCode: 82 });
         rec.check('remote keyboard input reaches only its owning daemon process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('r'))) && input(local).length === localBeforeRemoteInput);
         offset = input(remote).length;
         await harness.clipboardWrite('REMOTE-PASTE-β'); await page.key('KeyV', { key: 'v', modifiers: d.MOD.meta });
-        rec.check('remote platform paste targets only the remote process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1b[200~REMOTE-PASTE-β\x1b[201~'))) && input(local).length === localBeforeRemoteInput, JSON.stringify(input(remote).subarray(offset).toString()));
+        rec.check('remote platform paste targets only the remote process', await d.settle(() => input(remote).subarray(offset).includes(Buffer.from('\x1b[200~REMOTE-PASTE-β\x1b[201~'))) && input(local).length === localBeforeRemoteInput, JSON.stringify(redactFixtureText(input(remote).subarray(offset).toString(), ['\x1b[200~REMOTE-PASTE-β\x1b[201~'])));
         await inside(remote.paneID, `terminalLab.terminal.select(0, 0, 5); true`);
         await harness.clipboardWrite('REMOTE-COPY-SENTINEL'); await page.key('KeyC', { key: 'c', modifiers: d.MOD.meta });
         rec.check('remote platform Copy resolves the remote renderer selection', await d.settle(async () => String((await harness.clipboardRead()).text) === 'KELPI'));
+        await incident.retireRenderer('remote terminal');
+        await incident.retireRenderer('host');
         await remoteCLI.ok(['pane', 'split', '--target', remote.paneID, '--direction', 'horizontal']);
         const remoteSiblingID = (await json(['pane', 'list', '--workspace', remote.workspaceID, '--json'], remoteCLI)).find(pane => pane.id !== remote.paneID).id;
         if (!await ready(remoteSiblingID) || !await ready(remote.paneID)) throw new Error('Remote sibling renderers did not attach');
@@ -528,10 +528,12 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         await page.send('Page.navigate', { url: originalURL });
         rec.check('returning to the original window restores its local terminal process', await ready(local.paneID) && alive(local));
         rec.note('Physical mobile keyboards, actual OS IME candidate windows and two simultaneous native windows remain device/manual checks; this scenario used trusted CDP input and phone emulation.');
-    } catch (error) { await diagnostics('failure').catch(() => {}); await rec.shot(page, 'terminal-failure'); throw error; }
+    } catch (error) { rec.check('terminal scenario exception', false, error?.message ?? error, 'harness'); await rec.flushFirstFailure(); await incident?.freeze('exception'); await diagnostics('failure').catch(() => {}); await rec.shot(page, 'terminal-failure'); throw error; }
     finally {
+        await rec.flushFirstFailure();
+        await incident?.close();
         const safely = async (what, step) => {
-            try { await step(); } catch (error) { rec.note(`cleanup: ${what} — ${error instanceof Error ? error.message : String(error)}`); }
+            try { await step(); } catch (error) { rec.check(`cleanup: ${what}`, false, error instanceof Error ? error.message : String(error), 'cleanup'); }
         };
         sizeObserver?.close(); sizeObserver = null;
         await diagnostics('final').catch(() => {});
@@ -539,26 +541,29 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         // First, while the shell is still mounted and the host it is on is still configured: the
         // config restore below takes that host out of the navigation and the widening after it
         // unmounts the shell, and neither can be undone from here (#205, `lib/workbench.mjs`).
-        await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
-        fs.writeFileSync(sandbox.configPath, originalConfig);
-        await harness.clipboardWrite(originalClipboard).catch(() => {});
-        await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
-        await page.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
-        await page.send('Emulation.setUserAgentOverride', originalAgent).catch(() => {});
+        await safely('the phone returns to its landing page', async () => { rec.check('cleanup: phone returned to landing', await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) }), undefined, 'cleanup'); });
+        await safely('config restored', () => fs.writeFileSync(sandbox.configPath, originalConfig));
+        await safely('clipboard restored', () => harness.clipboardWrite(originalClipboard));
+        await safely('device metrics restored', () => page.send('Emulation.clearDeviceMetricsOverride'));
+        await safely('touch emulation restored', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
+        await safely('user agent restored', () => page.send('Emulation.setUserAgentOverride', originalAgent));
         await safely('the window returns to the shell this runner launched', async () => {
             await page.send('Page.navigate', { url: originalURL });
-            await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 });
+            if (!await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 })) throw new Error('original window did not reconnect');
         });
         await safely('the terminal placement goes back to bundled', async () => {
             const restored = await restoreBundledSlots(page, d, { terminal: 'kelpi.shell' }, { daemonID: daemonIDFromSandbox(sandbox) });
-            if (!restored.ok) rec.note(`cleanup: the terminal placement was not restored — ${String(restored.detail)}`);
-            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
+            rec.check('cleanup: terminal placement restored', restored.ok, restored.detail, 'cleanup');
+            if (remoteSandbox) await removeOwnedRemoteStore(page, daemonIDFromSandbox(remoteSandbox), rec);
         });
         await safely('the Settings overlay is closed', async () => {
             if (await page.eval(`!!document.querySelector('[data-testid="settings-close"]')`)) await page.click('[data-testid="settings-close"]');
         });
-        await cli.run(['plugin', 'remove', pluginID]);
-        for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
-        if (remoteDaemon) await remoteDaemon.stop(); remoteSandbox?.cleanup();
+        await safely('plugin removed', () => cli.ok(['plugin', 'remove', pluginID]));
+        await safely('fixture workspaces removed', async () => {
+            for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
+        });
+        await safely('remote daemon stopped', () => remoteDaemon?.stop());
+        await safely('remote sandbox removed', () => remoteSandbox?.cleanup());
     }
 }

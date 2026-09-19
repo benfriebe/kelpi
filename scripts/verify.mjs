@@ -1,47 +1,10 @@
 #!/usr/bin/env node
-/**
- * Impact-mapped verification: run exactly the checks the diff needs.
- *
- * The full battery (typecheck + ~6000 tests + five smokes + repackage + the 15.6-minute
- * audit) is the right gate for a handoff and the wrong tax for a one-column tweak. This
- * script reads the diff, maps each changed file to the audit steps and test dirs that cover
- * its surface, and runs precisely those. Files on SHARED surfaces (daemon core, protocol,
- * the shell, tokens/styles, the vendored engine) escalate to the full battery, because their
- * blast radius is the whole app — the tier is chosen by the diff, not by optimism.
- *
- *   node scripts/verify.mjs                # verify uncommitted changes (diff vs HEAD)
- *   node scripts/verify.mjs --since <ref>  # verify everything since a ref
- *   node scripts/verify.mjs --full         # the full battery, regardless of the diff
- *   node scripts/verify.mjs --plan         # print what would run, run nothing
- *   node scripts/verify.mjs --no-scenario "<reason>"   # ship a UI change with no scenario, on the record
- *
- * `self-upgrade.mjs` runs `--full` as its precondition: a promote cannot skip the battery.
- *
- * THE BATTERY RUNS TO THE END AND RETRIES ONCE (#109). Every component runs, whatever the one
- * before it did, and the run finishes with a table of what each component cost and how it ended.
- * A red vitest component re-runs only the FILES it failed on, a red scenario lane re-runs only
- * the SCENARIOS it failed, and the packaged smoke re-runs itself, each exactly once and each on
- * its own, off the load the rest of the battery was making; green on that retry passes the
- * component, and the summary says which ones needed it. Red on the retry fails the battery and
- * names the check. The rules and the four promotes that bought them are in `ui-audit/lib/battery.mjs`.
- * A scenario the retry has saved in N consecutive full lanes is printed as ordering-dependent
- * rather than load-sensitive, with the scenario it runs after, out of a small history kept under
- * `docs/audit/` (#215).
- *
- * THE MAP IS MAINTAINED, NOT INFERRED. When a new audit step lands, add it to the surface
- * that owns it; when a new source dir appears, map it or it escalates by default (unmapped
- * source = full battery, so forgetting the map costs time, never coverage).
- *
- * THE SCENARIO RULE (#65's README, enforced here). A change to a UI surface ships with a scenario
- * (or an audit step) that exercises it against the real app, and this script runs it. The rule
- * used to be social and it did not hold: #47, #53 and #55 were each fixed with unit tests alone
- * and each shipped broken, because a unit test pins the reducer and never presses the key. The
- * decision lives in `ui-audit/lib/verify-plan.mjs` (pure, unit-tested); this file supplies it the
- * diff and what is on disk, then runs what it selected. `--no-scenario "<reason>"` is the only way
- * past, and it is printed and written to the report rather than being a quiet no-op.
+/** Strict acceptance gate. Diagnostic retries never erase first-attempt failure.
+ * --since <ref> --acceptance <incident-manifest.json> binds the exact commit verdict.
+ * --plan executes nothing and exits unverified (2); reports are unique and retained.
  */
 
-import { execSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -62,6 +25,10 @@ import {
 import { buildAll } from './ui-audit/lib/stack.mjs';
 import { SCENARIO_PREFIX, planScenarios } from './ui-audit/lib/verify-plan.mjs';
 
+import { startRun, snapshot, resolveRef, readArtifact, writeAcceptance, digest } from './ui-audit/lib/acceptance-io.mjs';
+import { inspectResults, exitCode } from './ui-audit/lib/acceptance-results.mjs';
+import { acceptanceVerdict } from './ui-audit/lib/acceptance-verdict.mjs';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
@@ -80,12 +47,12 @@ const value = (flag) => {
 // shell's whole source tree. An entry may add `ui: true` to claim a path outside those two trees.
 
 const SURFACES = [
+    { prefix: 'vitest.config.ts', harness: true },
     // Pure documentation never needs a run.
     { prefix: 'docs/', skip: true },
     { prefix: 'README', skip: true },
 
-    // The harness itself: judged by its own diff discipline, not by product steps. Run the
-    // steps you changed by hand; verify.mjs only warns.
+    // Harness changes run registered targeted unit tests; product evidence remains explicit.
     { prefix: 'scripts/ui-audit/', harness: true },
     { prefix: 'scripts/', harness: true },
 
@@ -303,10 +270,40 @@ const SURFACES = [
 // ── the diff ────────────────────────────────────────────────────────────────────────
 
 const since = value('--since');
-const diffCmd = since ? `git diff --name-only ${since}` : 'git diff --name-only HEAD';
-const changed = has('--full')
-    ? []
-    : execSync(diffCmd, { cwd: repoRoot, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+const reference = since === undefined ? null : resolveRef(repoRoot, since);
+const gitOutput = (argv) => execFileSync('git', argv, { cwd: repoRoot, encoding: 'utf8' }).trim();
+const changed = has('--full') ? [] : [...new Set([
+    ...gitOutput(['diff', '--name-only', reference ?? 'HEAD', '--']).split('\n'),
+    ...gitOutput(['ls-files', '--others', '--exclude-standard']).split('\n')
+].filter(Boolean))];
+const acceptedFlags = new Set(['--since', '--acceptance', '--no-scenario', '--full', '--plan']);
+for (let i = 0; i < args.length; i++) {
+    if (!acceptedFlags.has(args[i])) throw new Error(`unsupported argument: ${args[i]}`);
+    if (['--since', '--acceptance', '--no-scenario'].includes(args[i])) {
+        if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${args[i]} requires a value`);
+        i++;
+    }
+}
+const acceptanceRun = has('--plan') ? null : startRun(repoRoot, { args, reference });
+const reportDir = acceptanceRun?.outDir;
+const policyReasons = [];
+let incidentManifest = null;
+if (value('--acceptance') && acceptanceRun) {
+    const evidence = readArtifact(path.resolve(value('--acceptance')), acceptanceRun, { startedAt: 0, kind: 'incident-manifest' });
+    incidentManifest = evidence.data;
+    acceptanceRun.manifestPath = path.resolve(value('--acceptance'));
+    if (evidence.error) policyReasons.push(`incident manifest: ${evidence.error}`);
+}
+const finish = (components = [], extraReasons = []) => {
+    const end = snapshot(repoRoot);
+    const result = acceptanceVerdict(acceptanceRun, { components, end, manifest: incidentManifest, policyReasons: [...policyReasons, ...extraReasons] });
+    acceptanceRun.artifacts.push(...result.incidentArtifacts);
+    const report = writeAcceptance(acceptanceRun, { ...result, end, components, manifest: incidentManifest, policyReasons: [...policyReasons, ...extraReasons], scope: 'commit' });
+    console.log(`[verify] ${report.verdict}: ${reportDir}/acceptance.json`);
+    for (const reason of report.reasons) console.log(`[verify]   ${reason}`);
+    process.exitCode = exitCode(report.verdict);
+    return report;
+};
 
 const plan = { tests: new Set(), steps: new Set(), smokes: new Set(), escalations: [], harness: [], skipped: [] };
 for (const file of changed) {
@@ -330,8 +327,9 @@ const full = has('--full') || plan.escalations.length > 0;
 const log = (line) => console.log(`[verify] ${line}`);
 
 if (changed.length === 0 && !has('--full')) {
-    log('no uncommitted changes — nothing to verify (use --since <ref> or --full).');
-    process.exit(0);
+    log('unverified: no changes selected; use --since <ref> or --full.');
+    if (acceptanceRun) finish([], ['no-op invocation does not establish commit acceptance']);
+    process.exit(2);
 }
 
 // ── the scenario rule ───────────────────────────────────────────────────────────────
@@ -356,13 +354,7 @@ for (const base of fs.existsSync(scenariosDir) ? fs.readdirSync(scenariosDir).fi
 // `git diff` cannot see an untracked file, so a brand-new scenario written beside the fix it
 // proves is invisible to the diff above. Without this the rule would refuse hardest exactly when
 // it was obeyed best.
-const untrackedScenarios = execSync(`git ls-files --others --exclude-standard -- ${SCENARIO_PREFIX}`, {
-    cwd: repoRoot,
-    encoding: 'utf8'
-})
-    .trim()
-    .split('\n')
-    .filter((file) => file.endsWith('.mjs'));
+const untrackedScenarios = gitOutput(['ls-files', '--others', '--exclude-standard', '--', SCENARIO_PREFIX]).split('\n').filter(file => file.endsWith('.mjs'));
 
 if (has('--no-scenario') && (value('--no-scenario') === undefined || value('--no-scenario').startsWith('--'))) {
     log('--no-scenario needs a reason: node scripts/verify.mjs --no-scenario "why this cannot be exercised"');
@@ -381,8 +373,8 @@ const rule = planScenarios({
 log(full ? 'tier: FULL BATTERY' : 'tier: impact-scoped');
 if (plan.escalations.length > 0) for (const reason of plan.escalations) log(`  escalated by: ${reason}`);
 if (plan.harness.length > 0) {
-    log('  harness files changed — verify.mjs does not judge harness diffs; run the changed');
-    log('  steps yourself and diff the assertions per the campaign discipline:');
+    log('  harness files changed — running actual targeted harness tests');
+    plan.tests.add('scripts/ui-audit/lib');
     for (const file of plan.harness) log(`    ${file}`);
 }
 if (!full) {
@@ -415,59 +407,25 @@ if (rule.optOut !== null && rule.uiFiles.length > 0) {
     for (const file of rule.uncovered) log(`    not exercised: ${file}`);
 }
 
-/**
- * The record of what this run decided, beside the audit's own output. It exists so an opt-out is
- * auditable after the fact: "which promote shipped a UI change with no scenario, and what did the
- * person say?" has to be answerable from disk, not from a terminal that has scrolled away.
- * `docs/audit/` is gitignored, so this never appears in a diff.
- */
-const reportDir = path.join(repoRoot, 'docs', 'audit', 'verify-latest');
-const writeReport = (extra) => {
-    if (has('--plan')) return; // --plan runs nothing and writes nothing.
-    try {
-        fs.mkdirSync(reportDir, { recursive: true });
-        fs.writeFileSync(
-            path.join(reportDir, 'verify-report.json'),
-            `${JSON.stringify(
-                {
-                    at: new Date().toISOString(),
-                    tier: full ? 'full' : 'scoped',
-                    changed,
-                    scenarioRule: {
-                        uiFiles: rule.uiFiles,
-                        uncovered: rule.uncovered,
-                        coverage: rule.coverage,
-                        scenariosRun: full ? 'all' : rule.run,
-                        noScenario: rule.optOut
-                    },
-                    ...extra
-                },
-                null,
-                2
-            )}\n`
-        );
-    } catch {
-        // The report is evidence, not a gate: never fail a run because a directory would not write.
-    }
-};
-
+if (rule.optOut !== null && rule.uiFiles.length > 0) policyReasons.push('UI --no-scenario is an evidence gap, not a waiver');
 if (!rule.ok) {
-    log(`✗ ${rule.message}`);
-    writeReport({ outcome: 'refused', refusal: 'scenario-rule' });
-    process.exit(1);
+    log(`unverified: ${rule.message}`);
+    if (acceptanceRun) finish([], ['scenario coverage rule unsatisfied']);
+    process.exit(2);
 }
-if (has('--plan')) process.exit(0);
+if (has('--plan')) { log('unverified: plan only, no acceptance evidence created'); process.exit(2); }
 
 // ── run ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Spawn one command and hand back its status. It does NOT exit: what a nonzero status means is
  * the battery runner's decision now (`ui-audit/lib/battery.mjs` has the two rules and the four
- * dead promotes that bought them), because a check that is red under the battery's own load and
- * green on its own must not end the run.
+ * failed checks do not hide independent evidence; retries remain diagnostic.
  */
+let lastExecution = null;
 const spawn = (command, options = {}) => {
-    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
+    const startedAt = Date.now();
+    const env = { ...process.env, KELPI_ACCEPTANCE_RUN_ID: acceptanceRun.runId, KELPI_ACCEPTANCE_HEAD: acceptanceRun.start.head, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
     // A battery launched from inside a Kelpi pane inherits that pane's injected route to the
     // LIVE daemon (KELPI_SOCKET, and NEX_SOCKET under the old name). No battery child may
     // carry it: anything that legitimately talks to a daemon pins its own sandbox route, and
@@ -480,7 +438,12 @@ const spawn = (command, options = {}) => {
         stdio: 'inherit',
         env
     });
-    return result.status ?? 1;
+    const receipt = { command, cwd: options.cwd ?? repoRoot, startedAt, finishedAt: Date.now(), exitStatus: result.status ?? 1, signal: result.signal, error: result.error?.message ?? null };
+    const file = path.join(reportDir, `command-${acceptanceRun.artifacts.length}-${startedAt}.json`);
+    fs.writeFileSync(file, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
+    acceptanceRun.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)), kind: 'command' });
+    lastExecution = { ...receipt, path: file };
+    return receipt.exitStatus;
 };
 
 /** Single-quote a path for `sh -c`: a worktree can live under a directory with a space in it. */
@@ -502,10 +465,7 @@ const readJson = (file) => {
  * gitignored, beside the verify report that cites it.
  */
 const batteryDir = path.join(reportDir, 'battery');
-// Emptied first, every run. A stale report here would be worse than none: if this run's vitest
-// died before its reporter wrote, the retry would read the PREVIOUS run's failed files and
-// re-run somebody else's flake instead of failing honestly.
-fs.rmSync(batteryDir, { recursive: true, force: true });
+// The run directory is new; first-attempt evidence is never deleted.
 fs.mkdirSync(batteryDir, { recursive: true });
 const artifact = (name) => path.join(batteryDir, `${name.replace(/[^a-z0-9-]+/gi, '-')}.json`);
 /** What the full lane did to each scenario this run, or `null` when no full lane ran (#215). */
@@ -539,8 +499,16 @@ const SCENARIO_LANE = '--no-build --window hidden';
  * not moved, so paying it here costs a warm run nothing and saves a cold one from driving a stale
  * or absent client.
  */
+const retainBuild = (exitStatus) => {
+    const receipt = { command: 'buildAll(repoRoot)', exitStatus, startedAt: Date.now(), finishedAt: Date.now() };
+    const file = path.join(reportDir, 'build-result.json');
+    fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
+    acceptanceRun.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)), kind: 'build' });
+    return { ...receipt, path: file };
+};
 const buildBundlesComponent = {
     label: 'build bundles',
+    kind: 'build', command: 'buildAll(repoRoot)',
     // Not a check: the three components after it DRIVE what it produces, so a red build makes
     // their verdicts meaningless rather than merely unknown. `battery.mjs` marks the rest "not run".
     precondition: true,
@@ -548,9 +516,9 @@ const buildBundlesComponent = {
         log('  (content-hashed; a no-op when the tree has not moved)');
         try {
             await buildAll(repoRoot, { log: (line) => log(`  ${line}`) });
-            return { ok: true };
+            return { ok: true, verdict: 'verified', execution: retainBuild(0) };
         } catch (error) {
-            return { ok: false, detail: String(error?.message ?? error) };
+            return { ok: false, detail: String(error?.message ?? error), execution: retainBuild(1) };
         }
     }
 };
@@ -594,33 +562,27 @@ const VITEST_MAX_WORKERS = 8;
  * run they always saw. `filters` is what the first run is scoped to (nothing for the full tier,
  * the plan's dirs for the scoped one); the retry is scoped to the failed files instead.
  */
+const structuredAttempt = (kind, reportPath, command, options = {}) => {
+    const startedAt = Date.now();
+    const status = spawn(command, options);
+    const finishedAt = Date.now();
+    const raw = readArtifact(reportPath, acceptanceRun, { startedAt, kind });
+    const evidence = { kind, path: reportPath, command, exitStatus: status, startedAt, finishedAt };
+    const checked = inspectResults(kind, raw.data, { ...evidence, runId: acceptanceRun.runId, head: acceptanceRun.start.head });
+    return { execution: lastExecution, ok: checked.verdict === 'verified', verdict: checked.verdict, detail: [...checked.failures, ...checked.missing, ...(raw.error ? [raw.error] : [])].join('; '), evidence };
+};
 const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
-    label,
+    label, kind: 'vitest', command: [command, ...filters.map(q), `--maxWorkers=${VITEST_MAX_WORKERS} --reporter=default --reporter=json --outputFile.json=${q(artifact(label))}`].join(' '), reportPath: artifact(label),
     run: () => {
         const report = artifact(label);
-        const flags = `--maxWorkers=${String(VITEST_MAX_WORKERS)} --reporter=default --reporter=json --outputFile.json=${q(report)}`;
-        const status = spawn([command, ...filters, flags].join(' '), { cwd });
-        if (status === 0) return { ok: true };
-
+        const flags = file => `--maxWorkers=${VITEST_MAX_WORKERS} --reporter=default --reporter=json --outputFile.json=${q(file)}`;
+        const outcome = structuredAttempt('vitest', report, [command, ...filters.map(q), flags(report)].join(' '), { cwd });
         const failedFiles = failedTestFilesFromVitestJson(readJson(report));
-        if (failedFiles.length === 0) {
-            // A nonzero status with no failed file named is a crash, a config error or a killed
-            // worker. There is nothing an isolated re-run could tell us, so it is not retried and
-            // it is not excused.
-            return { ok: false, detail: `exit ${String(status)} with no failed test file named in ${rel(report)} (a crash, a config error or a killed worker)` };
-        }
-        return {
-            ok: false,
-            retryOf: failedFiles.map(rel),
-            retry: () => {
-                const retryReport = artifact(`${label}-retry`);
-                const retryFlags = `--maxWorkers=${String(VITEST_MAX_WORKERS)} --reporter=default --reporter=json --outputFile.json=${q(retryReport)}`;
-                const retryStatus = spawn([command, ...failedFiles.map(q), retryFlags].join(' '), { cwd });
-                if (retryStatus === 0) return { ok: true };
-                const stillRed = failedTestFilesFromVitestJson(readJson(retryReport)).map(rel);
-                return { ok: false, detail: `red alone as well: ${stillRed.join(', ') || failedFiles.map(rel).join(', ')}` };
-            }
-        };
+        if (outcome.ok || failedFiles.length === 0) return outcome;
+        return { ...outcome, retryOf: failedFiles.map(rel), retry: () => {
+            const retryReport = artifact(`${label}-retry`);
+            return structuredAttempt('vitest', retryReport, [command, ...failedFiles.map(q), flags(retryReport)].join(' '), { cwd });
+        } };
     }
 });
 
@@ -633,69 +595,59 @@ const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
  * first run's evidence (screenshots, notes, per-check results) survives the second.
  */
 const scenarioComponent = (label, names) => ({
-    label,
+    label, kind: 'scenario', command: `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(path.join(batteryDir, 'scenarios'))} ${names.map(q).join(' ')}`, reportPath: path.join(batteryDir, 'scenarios/results.json'),
     run: () => {
         const out = path.join(batteryDir, 'scenarios');
-        const status = spawn(`node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(out)} ${names.join(' ')}`.trim(), {
-            env: SANDBOX_GUARD
-        });
-        // Only the WHOLE lane feeds the history (#215). A scoped run is a different order, and a
-        // different order is a different question: "it failed after X" means nothing when X was
-        // not in the run.
-        const wholeLane = names.length === 0;
-        const results = () => readJson(path.join(out, 'results.json'));
-        if (status === 0) {
-            if (wholeLane) laneObservations = scenarioObservations(results());
-            return { ok: true };
-        }
+        const outcome = structuredAttempt('scenario', path.join(out, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(out)} ${names.map(q).join(' ')}`, { env: SANDBOX_GUARD });
+        const results = readJson(path.join(out, 'results.json'));
+        if (names.length === 0) laneObservations = scenarioObservations(results, { stillRed: failedScenariosFromResults(results) });
+        const failedNames = failedScenariosFromResults(results);
+        if (outcome.ok || failedNames.length === 0) return outcome;
+        return { ...outcome, retryOf: failedNames, retry: () => {
+            const replayOut = path.join(batteryDir, 'scenario-prefix-replay');
+            const failureIndex = results?.sequence?.firstFailure?.index;
+            const replay = Number.isInteger(failureIndex) ? structuredAttempt('scenario', path.join(replayOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(replayOut)} --replay ${q(path.join(out, 'results.json'))} --through ${failureIndex}`, { env: SANDBOX_GUARD }) : { ok: false, verdict: 'unverified', detail: 'original failure sequence unavailable for replay' };
+            const isolated = failedNames.map((name, index) => {
+                const retryOut = path.join(batteryDir, `scenario-retry-${index}`);
+                return structuredAttempt('scenario', path.join(retryOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${q(name)}`, { env: SANDBOX_GUARD });
+            });
+            const stillRed = failedNames.filter((_, index) => !isolated[index].ok);
+            if (names.length === 0) laneObservations = scenarioObservations(results, { stillRed });
+            const attempts = [{ ...replay, mode: 'preceding-sequence-replay' }, ...isolated.map(a => ({ ...a, mode: 'isolated-retry' }))];
+            return { ok: attempts.every(a => a.ok), detail: 'diagnostic prefix replay and isolated retries; first failure retained', attempts };
+        } };
+    }
+});
 
-        const failedScenarios = failedScenariosFromResults(results());
-        if (failedScenarios.length === 0) {
-            return { ok: false, detail: `exit ${String(status)} with no failed scenario named in ${rel(path.join(out, 'results.json'))} (the lane itself did not come up)` };
-        }
-        return {
-            ok: false,
-            retryOf: failedScenarios,
-            retry: () => {
-                const stillRed = [];
-                for (const name of failedScenarios) {
-                    const retryOut = path.join(batteryDir, `scenario-retry-${name}`);
-                    // One process per scenario, so each gets its own sandbox and its own screen
-                    // conditions. That is precisely the isolation a person performs by hand after
-                    // a red lane, and it is what #109's three wobbles came back green under.
-                    const retryStatus = spawn(`node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${name}`, {
-                        env: SANDBOX_GUARD
-                    });
-                    if (retryStatus !== 0) stillRed.push(name);
-                }
-                if (wholeLane) laneObservations = scenarioObservations(results(), { stillRed });
-                return stillRed.length === 0 ? { ok: true } : { ok: false, detail: `red alone as well: ${stillRed.join(', ')}` };
-            }
-        };
+const auditComponent = (label, only = '') => ({
+    label, kind: 'audit', command: `node scripts/ui-audit/audit.mjs ${only ? `--only ${q(only)}` : ''} --out ${q(path.join(batteryDir, 'audit'))}`, reportPath: path.join(batteryDir, 'audit/results.json'),
+    run: () => {
+        const out = path.join(batteryDir, 'audit');
+        return structuredAttempt('audit', path.join(out, 'results.json'), `node scripts/ui-audit/audit.mjs ${only ? `--only ${q(only)}` : ''} --out ${q(out)}`, { env: SANDBOX_GUARD });
     }
 });
 
 /** A whole-command component with no way to isolate a part of it: run it, retry it once, done. */
 const retryWholeComponent = (label, command, options = {}) => ({
-    label,
+    label, kind: 'unsupported-smoke', command,
     run: () => {
-        if (spawn(command, options) === 0) return { ok: true };
+        if (spawn(command, options) === 0) return { ok: false, execution: lastExecution, verdict: 'unverified', detail: 'smoke has no supported structured assertion report' };
         return {
-            ok: false,
+            ok: false, execution: lastExecution,
             retryOf: ['the whole component (it has no per-check rerun)'],
-            retry: () => (spawn(command, options) === 0 ? { ok: true } : { ok: false, detail: 'red both times' })
+            retry: () => { const status = spawn(command, options); return { ok: false, verdict: status === 0 ? 'unverified' : 'failed', execution: lastExecution, detail: 'diagnostic smoke has no supported structured report' }; }
         };
     }
 });
 
 /** A component that is run once and judged once: no isolation is possible or wanted. */
 const plainComponent = (label, command, options = {}) => ({
-    label,
-    run: () => ({ ok: spawn(command, options) === 0 })
+    label, kind: 'command', command,
+    run: () => { const status = spawn(command, options); return { ok: status === 0, verdict: status === 0 ? 'verified' : 'failed', exitStatus: status, execution: lastExecution }; }
 });
 
 const shellPackage = path.join(repoRoot, 'packages', 'shell');
-const components = [plainComponent('typecheck', 'pnpm typecheck')];
+const components = full || changed.some(f => f.startsWith('packages/')) ? [plainComponent('typecheck', 'pnpm typecheck')] : [];
 
 if (full) {
     components.push(
@@ -706,11 +658,8 @@ if (full) {
         // from recurring on a tree where nobody's diff happened to touch the scenario that guards them.
         buildBundlesComponent,
         scenarioComponent(`scenarios (all, ${SCENARIO_LANE})`, []),
-        // No retry, on purpose: the audit's exit status is not its verdict. It exits 0 with failed
-        // assertions and 1 only when the harness itself broke, because the REPORT is the gate and
-        // it is read with `compare-runs` against the previous one. Re-running it would cost 15
-        // minutes to learn nothing the report has not already written down.
-        plainComponent('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest', { env: SANDBOX_GUARD }),
+        // Audit assertions, step errors, cleanup and visual review are interpreted from raw JSON.
+        auditComponent('full audit'),
         retryWholeComponent('packaged smoke (repackages + 69 checks)', 'pnpm run smoke:packaged', {
             cwd: shellPackage,
             env: SANDBOX_GUARD
@@ -727,9 +676,7 @@ if (full) {
         // No `buildBundles()` here: the audit runs its own (identical, content-hashed) `buildAll`
         // unless told `--no-build`, and it is not told that.
         components.push(
-            plainComponent('scoped audit', `node scripts/ui-audit/audit.mjs --only ${[...plan.steps].join(',')} --out docs/audit/verify-latest`, {
-                env: SANDBOX_GUARD
-            })
+            auditComponent('scoped audit', [...plan.steps].join(','))
         );
     }
     for (const smoke of plan.smokes) {
@@ -737,15 +684,20 @@ if (full) {
     }
 }
 
+const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}) })) };
+const planPath = path.join(reportDir, 'verification-plan.json');
+fs.writeFileSync(planPath, `${JSON.stringify(executionPlan, null, 2)}\n`, { flag: 'wx' });
+acceptanceRun.planPath = planPath;
+acceptanceRun.artifacts.push({ path: planPath, sha256: digest(fs.readFileSync(planPath)), kind: 'plan' });
+
 const started = Date.now();
 const battery = await runBattery({ components, log });
 
 /*
  * The retry history (#215): what the full lane did to each scenario, kept across batteries beside
  * the run's own output under the gitignored `docs/audit/`, and deliberately NOT under
- * `verify-latest/battery/`, which every run empties. Without it each battery re-decides in
- * ignorance and an isolated retry can call a deterministic ordering failure load-sensitive
- * forever, which is what #205 did for a fortnight. N is `KELPI_ORDERING_LANES`, default 2.
+ * each immutable run directory. History adds context only; original failures remain red.
+ * N is `KELPI_ORDERING_LANES`, default 2.
  */
 const historyFile = path.join(repoRoot, 'docs', 'audit', 'battery-retry-history.json');
 let verdicts = [];
@@ -769,35 +721,14 @@ if (laneObservations !== null && laneObservations.length > 0) {
 log('── battery summary ──────────────────────────────────────────────────────');
 for (const line of formatBatterySummary(battery.records, verdicts)) log(`  ${line}`);
 
-const minutes = Number(((Date.now() - started) / 60000).toFixed(2));
-if (!battery.ok) {
-    writeReport({
-        outcome: 'failed',
-        minutes,
-        // Kept under its old key so anything reading a previous report still finds the first red.
-        failedStep: battery.failed[0].label,
-        failedComponents: battery.failed.map((record) => record.label),
-        components: battery.records
-    });
-    log(`✗ verification FAILED in ${minutes.toFixed(1)} min: ${battery.failed.map((record) => `${record.label} (${record.state})`).join(', ')}`);
-    process.exit(1);
-}
-
-writeReport({ outcome: 'passed', minutes, components: battery.records });
-const retried = battery.records.filter((record) => record.retried);
-log(`✓ verification passed in ${minutes.toFixed(1)} min (${full ? 'full' : 'scoped'})`);
-if (retried.length > 0) {
-    // Never a quiet pass: a component that needed its retry is a check worth looking at, even
-    // though it did not stop the run.
-    log(`  ⚠ ${String(retried.length)} component(s) were red under the battery and green alone: ${retried.map((record) => `${record.label} [${(record.retryOf ?? []).join(', ')}]`).join('; ')}`);
-}
-const ordering = verdicts.filter((verdict) => verdict.verdict === ORDERING_DEPENDENT);
-if (ordering.length > 0) {
-    // Louder than the retry warning above it, because this one is not weather: the retry is
-    // covering for a scenario that goes red every time it runs where it runs in the lane (#215).
-    log(`  ⚠ ORDERING-DEPENDENT, not load-sensitive: ${ordering.map((verdict) => `${verdict.name} (after ${verdict.predecessor ?? 'nothing'})`).join('; ')}`);
-}
-if (rule.optOut !== null && rule.uiFiles.length > 0) {
-    // Last line of the run, not just the first: the opt-out has to survive a long scrollback.
-    log(`  ⚠ shipped with --no-scenario: ${rule.optOut.reason}`);
-}
+// Digest every retained first-attempt/retry diagnostic, including images and clipboard traces.
+const retainDirectory = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) retainDirectory(file);
+        else if (entry.isFile() && !acceptanceRun.artifacts.some(a => a.path === file)) acceptanceRun.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)), kind: 'diagnostic' });
+        else if (entry.isSymbolicLink()) policyReasons.push(`unretained symlink artifact: ${file}`);
+    }
+};
+retainDirectory(batteryDir);
+finish(battery.records);

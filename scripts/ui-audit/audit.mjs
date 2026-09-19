@@ -27,8 +27,7 @@
  * a run, so the screenshots always describe the working tree as it is at that moment, even
  * while other agents are editing it.
  *
- * Exit code is 0 unless the harness itself broke. A failed *assertion* is a finding, not a
- * harness failure — read `FINDINGS.md`.
+ * Failed assertions, step errors and incomplete cleanup all produce a nonzero exit.
  */
 
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
@@ -68,6 +67,8 @@ import { runDesktopTest, spawnDesktopHelper, listenDesktopServer } from './lib/d
  * wanted all along.
  */
 const isClientWindow = (target) => String(target?.url ?? '').includes('shellWindow=');
+import { captureProvenance } from './lib/incident-diagnostics-replay.mjs';
+import { cleanupSteps } from './lib/incident-diagnostics.mjs';
 import { createReport } from './lib/report.mjs';
 import {
     assertPackagedSignature,
@@ -111,6 +112,23 @@ function timestamp() {
 }
 
 const outDir = path.resolve(repoRoot, options.out ?? path.join('docs', 'audit', timestamp()));
+if (fs.existsSync(outDir) && fs.readdirSync(outDir).length > 0) throw new Error(`refusing to overwrite retained audit artifacts: ${outDir}`);
+let auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
+const auditCleanup = { attempted: false, completed: false, errors: [], leaks: [] };
+function retainAcceptanceFields() {
+    fs.mkdirSync(outDir, { recursive: true });
+    const file = path.join(outDir, 'results.json');
+    const output = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { steps: [] };
+    for (const step of output.steps ?? []) {
+        for (const assertion of step.assertions ?? []) {
+            if (assertion.ok !== true) assertion.failureClass ??= assertion.name.startsWith('fixture cleanup:') ? 'cleanup' : assertion.name.startsWith('fixture:') ? 'fixture' : 'product';
+        }
+        step.firstFailure ??= step.assertions?.find(assertion => assertion.ok !== true) ?? (step.error ? { failureClass: 'harness', detail: step.error } : null);
+    }
+    Object.assign(output, { provenance: auditProvenance, cleanup: auditCleanup });
+    fs.writeFileSync(file, JSON.stringify(output, null, 2) + '\n');
+}
+
 
 function gitCommit() {
     try {
@@ -1706,6 +1724,7 @@ async function runShardedParent() {
         if (options.packaged) await packageApp(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
     }
     if (options.packaged) await assertPackagedSignature(repoRoot);
+    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
 
     const plan = planShards(CANONICAL_ORDER, options.shards, shardPlanOptions(options));
     process.stdout.write(`${describePartition(plan)}\n\n`);
@@ -1790,7 +1809,17 @@ async function runShardedParent() {
         process.stdout.write(`⚠ ${String(broken.length)} shard(s) exited non-zero: ${broken.map((o) => String(o.index)).join(', ')}\n`);
     }
     process.stdout.write(`report: ${path.join(outDir, 'index.md')}\n`);
-    if (broken.length > 0) process.exitCode = 1;
+    auditCleanup.attempted = true;
+    for (const dir of shardDirs) {
+        const file = path.join(dir, 'results.json');
+        const child = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+        if (child?.cleanup?.attempted !== true || child.cleanup.completed !== true) auditCleanup.errors.push(`shard cleanup incomplete: ${dir}`);
+        auditCleanup.errors.push(...(child?.cleanup?.errors ?? []));
+        auditCleanup.leaks.push(...(child?.cleanup?.leaks ?? []));
+    }
+    auditCleanup.completed = auditCleanup.errors.length === 0;
+    retainAcceptanceFields();
+    if (broken.length > 0 || summary.failedAssertions > 0 || summary.errored > 0 || !auditCleanup.completed) process.exitCode = 1;
 }
 
 async function main() {
@@ -1811,6 +1840,7 @@ async function main() {
     // N22: a packaged bundle with a broken seal accepts CDP connections and answers none of
     // them, which reads as an unexplained 90-second timeout. Say so up front instead.
     if (options.packaged) await assertPackagedSignature(repoRoot);
+    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
 
     /*
      * Which client build the daemon serves.
@@ -2082,14 +2112,15 @@ async function main() {
             if (unique.length > 0) consoleStep.block('renderer console', unique.slice(0, 60).join('\n'));
         });
     } finally {
-        try {
-            runtime.page?.close();
-        } catch {
-            // already gone
-        }
-        await site.close();
-        if (runtime.shell !== null) await runtime.shell.quit();
-        if (runtime.daemon !== null) await runtime.daemon.stop();
+        auditCleanup.attempted = true;
+        // Preserve assertions before teardown; update with actual awaited cleanup outcomes.
+        report.write(); retainAcceptanceFields();
+        auditCleanup.errors.push(...await cleanupSteps([
+            ['CDP connection', () => runtime.page?.close()],
+            ['fixture site', () => site.close()],
+            ['shell process', () => runtime.shell?.quit()],
+            ['daemon process', () => runtime.daemon?.stop()]
+        ]));
         // The two process logs, kept with the artefact: the run-O leak hunt needed to know
         // which process minted two orphan panes, and both logs had been discarded.
         try {
@@ -2107,7 +2138,11 @@ async function main() {
         );
         process.stdout.write(`report: ${path.join(outDir, 'index.md')}\n`);
         if (options.keep) process.stdout.write(`sandbox kept: ${sandbox.root}\n`);
-        else sandbox.cleanup();
+        else auditCleanup.errors.push(...await cleanupSteps([['sandbox files', () => sandbox.cleanup()]]));
+        auditCleanup.completed = !options.keep && auditCleanup.errors.length === 0;
+        if (options.keep) auditCleanup.errors.push('sandbox retained by --keep');
+        retainAcceptanceFields();
+        if (summary.failedAssertions > 0 || summary.errored > 0 || !auditCleanup.completed) process.exitCode = 1;
     }
 }
 
@@ -33309,6 +33344,16 @@ function buildFlows(ctx) {
                 const shell = await widestShellPane(view, cli);
                 if (shell === null) throw new Error('phone-shell: no shell pane on screen to drive');
                 const paneID = shell.id;
+                // Own a terminal sibling: an arbitrary Markdown/document sibling has no grid.
+                const fixture = await cli.json(['pane', 'split', '--target', paneID, '--json']);
+                const sibling = String(fixture.pane_id ?? '');
+                if (!recorder.check('fixture: terminal sibling was created', sibling.length > 0, JSON.stringify(fixture))) throw new Error('phone-shell fixture did not create a sibling');
+                try {
+                const fixtureRoster = await cli.json(['pane', 'list', '--json']);
+                const siblingRecord = fixtureRoster.find(pane => pane.id === sibling);
+                const sourceRecord = fixtureRoster.find(pane => pane.id === paneID);
+                if (!recorder.check('fixture: sibling is a shell in the same workspace', siblingRecord?.type === 'shell' && sourceRecord?.type === 'shell' && siblingRecord.workspace_id === sourceRecord.workspace_id, JSON.stringify(siblingRecord))) throw new Error('phone-shell fixture sibling is not a terminal');
+                await view.waitFor(`document.querySelector('[data-pane-id="${sibling}"][data-terminal-status="live"]') !== null`, { timeoutMs: 10000, label: 'the explicit terminal sibling fixture' });
 
                 /** What the spine reads, either side of this step. */
                 const readRoster = async () =>
@@ -33382,7 +33427,7 @@ function buildFlows(ctx) {
                 recorder.note(
                     `the workspace on screen: ${rosterBefore.workspace || '(none marked active)'} with ${String(workspacePanes.length)} pane(s)`
                 );
-                const sibling = rosterBefore.panes.find((id) => id !== paneID) ?? null;
+                if (!recorder.check('fixture: both terminal panes are in the phone workspace roster', workspacePanes.includes(paneID) && workspacePanes.includes(sibling), JSON.stringify(workspacePanes))) throw new Error('phone-shell fixture roster is incomplete');
 
                 try {
                     /*
@@ -33674,6 +33719,17 @@ function buildFlows(ctx) {
                     JSON.stringify(rosterAfter) === JSON.stringify(rosterBefore),
                     `before=${JSON.stringify(rosterBefore)} after=${JSON.stringify(rosterAfter)}`
                 );
+                } finally {
+                    await cleanupSteps([
+                        ['phone emulation', () => clearPhoneEmulation(view)],
+                        ['terminal sibling', async () => {
+                            const closed = await cli.run(['pane', 'close', '--target', sibling]);
+                            if (closed.code !== 0) throw new Error(closed.stderr);
+                            const remaining = await cli.json(['pane', 'list', '--json']);
+                            recorder.check('fixture cleanup: terminal sibling was closed', !remaining.some(pane => pane.id === sibling));
+                        }]
+                    ], (label, detail) => recorder.check(`fixture cleanup: ${label}`, false, detail));
+                }
             }
         },
         /*
@@ -35333,6 +35389,11 @@ const needsPlacementChild = selectedForPlacement.some((id) =>
 const entry = options.shard === null && (options.shards > 1 || needsPlacementChild) ? runShardedParent : () => runDesktopTest(main);
 
 entry().catch((error) => {
+    retainAcceptanceFields();
+    const file = path.join(outDir, 'results.json');
+    const retained = JSON.parse(fs.readFileSync(file, 'utf8'));
+    retained.harnessFailure = { failureClass: 'harness', detail: String(error?.stack ?? error) };
+    fs.writeFileSync(file, JSON.stringify(retained, null, 2) + '\n');
     process.stderr.write(`\nAUDIT HARNESS FAILED: ${String(error?.stack ?? error)}\n`);
     process.exitCode = 1;
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { spawnDesktopHelper } from '../ui-audit/lib/desktop-lifecycle.mjs';
@@ -201,36 +202,26 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await rec.shot(page, 'document-lab-ready');
     } catch (error) { await rec.shot(page, 'failure-live'); throw error; }
     finally {
-        await watcher?.stop();
-        /*
-         * The phone goes home FIRST, before anything else in this block (#205). Every phone
-         * scenario's cleanup now opens this way; what was unique here is how far out of order it
-         * had drifted.
-         *
-         * The remembered place is `{host, workspaceID}` and the only gesture that forgets it is a
-         * tap on the landing page (`phone/place.ts`, `phone/view.ts`), which needs the shell
-         * MOUNTED - i.e. the viewport still narrow - to exist at all. Its siblings called this
-         * after the config restore alone, which is one hazard; this one called it after the
-         * WIDENING, so the shell it needed had already been unmounted and the call could only
-         * no-op. And the host the place names had by then been stopped and restarted once by the
-         * body's own daemon-restart arm, so the window a failed phone section handed on opened on
-         * a remote host whose panes this sandbox was about to delete.
-         */
-        try { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); } catch { /* the window may be mid-navigation */ }
-        fs.writeFileSync(sandbox.configPath, config);
-        await page.send('Emulation.clearDeviceMetricsOverride'); await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
-        await page.send('Page.navigate', { url: originalURL }).catch(() => {});
-        await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 }).catch(() => {});
-        // The three document slots are the WINDOW's and outlive `plugin remove` (#205, #201).
-        try {
-            const restored = await restoreBundledSlots(page, d, { 'document.markdown': 'kelpi.markdown', 'document.scratchpad': 'kelpi.scratchpad', 'document.diff': 'kelpi.diff' }, { daemonID: daemonIDFromSandbox(sandbox) });
-            if (!restored.ok) rec.note(`cleanup: the document placements were not restored — ${String(restored.detail)}`);
-            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
-        } catch (error) {
-            rec.note(`cleanup: the document placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
-        }
-        await cli.run(['plugin', 'remove', pluginID]);
-        for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
-        if (remoteDaemon) await remoteDaemon.stop(); remote?.cleanup();
+        await cleanupSteps([
+            ['plugin watcher', () => watcher?.stop()],
+            ['phone landing', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) throw new Error('phone did not return to landing'); }],
+            ['config restored', () => fs.writeFileSync(sandbox.configPath, config)],
+            ['device metrics', () => page.send('Emulation.clearDeviceMetricsOverride')],
+            ['original window', async () => {
+                await page.send('Page.navigate', { url: originalURL });
+                if (!await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 })) throw new Error('original window did not reconnect');
+            }],
+            ['workbench placements', async () => {
+                const restored = await restoreBundledSlots(page, d, { 'document.markdown': 'kelpi.markdown', 'document.scratchpad': 'kelpi.scratchpad', 'document.diff': 'kelpi.diff' }, { daemonID: daemonIDFromSandbox(sandbox) });
+                rec.check('cleanup: workbench placements restored', restored.ok, restored.detail, 'cleanup');
+            }],
+            ['private remote workbench store', async () => { if (remote) await removeOwnedRemoteStore(page, daemonIDFromSandbox(remote), rec); }],
+            ['plugin removed', () => cli.ok(['plugin', 'remove', pluginID])],
+            ['fixture workspaces removed', async () => {
+                for (const workspace of await json(['workspace', 'list', '--json'])) if (!initial.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
+            }],
+            ['remote daemon stopped', () => remoteDaemon?.stop()],
+            ['remote sandbox removed', () => remote?.cleanup()]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

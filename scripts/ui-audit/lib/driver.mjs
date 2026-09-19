@@ -44,6 +44,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './cdp.mjs';
+import { cleanupSteps } from './incident-diagnostics.mjs';
 import { watchRendererErrors } from './renderer-errors.mjs';
 import {
     buildAll,
@@ -360,7 +361,7 @@ export async function caretNow(page, paneID, { onTheRenderer } = {}) {
         await page.eval(
             `JSON.stringify({
                 hasFocus: document.hasFocus(),
-                active: String(document.activeElement?.outerHTML ?? document.activeElement?.nodeName ?? '<null>').slice(0, 90),
+                active: { tag: document.activeElement?.tagName ?? null, testID: document.activeElement?.getAttribute('data-testid') ?? null, role: document.activeElement?.getAttribute('role') ?? null },
                 appFocusedPane: document.querySelector(${header})?.getAttribute('data-focused') === 'true'
             })`
         )
@@ -371,78 +372,12 @@ export async function caretNow(page, paneID, { onTheRenderer } = {}) {
     return { ...host, onTheRenderer: await probe().catch(() => null) };
 }
 
-/**
- * The page's focus and the caret, read IMMEDIATELY before a clipboard chord, and repaired.
- *
- * A platform Copy or paste is the one kind of check that cannot be asserted through any path the
- * page does not have to be focused for. Chromium routes a CDP key event only to the focused
- * element of a FOCUSED page, and the product's own copy goes through `navigator.clipboard`, which
- * answers `NotAllowedError: Document is not focused` the instant the page is not. The lane's
- * window is never the key window by construction (#109), so `document.hasFocus()` is true only
- * while CDP focus emulation is on, and emulation is turned OFF by `harness.blur()`, which earlier
- * scenarios in the same sandbox use on purpose. One that forgets to turn it back on takes every
- * later clipboard chord with it, silently (#205, #207).
- *
- * So the state is RECORDED into the check's own detail either way - a failure that says
- * `hasFocus:false` names its reason instead of leaving it to be guessed - and, when the page has
- * been left believing it is not focused, repaired through the harness before the press. The repair
- * is honest about what it is: a focused window is the product's own precondition for a copy, the
- * lane can only supply it through emulation, and the runner's post-condition still names the
- * scenario that turned it off.
- *
- * `refocus` is how the caller puts the caret back, and it matters more than it looks: the default
- * clicks the pane body, which is right for a pane with nothing selected and WRONG immediately
- * after a drag, because a click inside a terminal clears the selection the Copy is about and the
- * engine's copy-on-select would overwrite the clipboard the paste is about. Call this BEFORE the
- * selection, or pass a `refocus` that stays off the grid.
- *
- * A repair that cannot be made is FATAL, after it has been recorded. `setFrameFocusEmulation` is
- * the one best-effort step (an Electron without the domain must not take a run down over a signal
- * that only ever improves the lane); a `refocus` that throws and a pane header that is not in the
- * DOM both mean the next chord would be pressed at nothing, so they are noted and then rethrown
- * rather than turned into a note under a green scenario.
+/** Observe the first clipboard attempt without changing its focus or selection.
+ * A failed precondition is evidence: repairing it here would test a different operation.
  */
-export async function clipboardCaret(page, harness, paneID, { label = 'the clipboard chord', note = () => {}, onTheRenderer, refocus, frameSelector } = {}) {
-    const read = () => caretNow(page, paneID, { onTheRenderer });
-    const putTheCaretBack = refocus ?? (() => focusPaneBody(page, paneID));
-    let state = await read();
-    if (state.hasFocus !== true || state.onTheRenderer !== true) {
-        note(`${label}: the page was not focused on the renderer (${JSON.stringify(state)}); restoring focus before the chord`);
-        await harness.focus();
-        if (frameSelector !== undefined) await setFrameFocusEmulation(page, frameSelector);
-        try {
-            await putTheCaretBack();
-        } catch (error) {
-            // Recorded, then rethrown. A repair that cannot reach the pane means the scenario is
-            // about to press a chord at nothing, and a scenario that carries on and goes green with
-            // a note nobody reads is the exact failure #205 was filed about.
-            note(`${label}: the focus repair could not reach the pane (${error instanceof Error ? error.message : String(error)})`);
-            throw error;
-        }
-        state = await read();
-        note(`${label}: after the harness repair ${JSON.stringify(state)}`);
-    }
-    if (state.hasFocus !== true) {
-        /*
-         * The focus-independent route, and the one the product itself uses. `app/clipboard.ts`
-         * reads the FOCUSED PANE from the app's own registry, not from the DOM, and asks that
-         * pane's live renderer for its selection across the frame boundary, so the chord works
-         * with the caret on the pane's header, where the top document holds it and
-         * `navigator.clipboard` is allowed to run. Measured: with the caret in a plugin's
-         * out-of-process textarea the top document answers `hasFocus() === false` and the write is
-         * refused; one click on the header and both chords land (#205).
-         */
-        try {
-            await clickPaneHeader(page, paneID);
-        } catch (error) {
-            // Recorded, then rethrown, for the reason above: this is the last route there is, and a
-            // chord pressed after it failed proves nothing about the product.
-            note(`${label}: the pane header is unreachable (${error instanceof Error ? error.message : String(error)})`);
-            throw error;
-        }
-        state = { ...(await read()), route: 'the pane header, so the host document holds the caret' };
-        note(`${label}: after taking the caret back into the host document ${JSON.stringify(state)}`);
-    }
+export async function clipboardCaret(page, _harness, paneID, { label = 'the clipboard chord', note = () => {}, onTheRenderer } = {}) {
+    const state = await caretNow(page, paneID, { onTheRenderer });
+    note(`${label}: observed without focus repair ${JSON.stringify(state)}`);
     return state;
 }
 
@@ -598,12 +533,34 @@ export function recorder({ name, outDir, placement }) {
     const results = [];
     const notes = [];
     let shots = 0;
+    let firstFailure = null;
+    const failureListeners = new Set(), pendingEvidence = [];
     return {
         name,
         outDir,
         results,
-        check(label, ok, detail) {
-            results.push({ label, ok: ok === true, ...(detail === undefined ? {} : { detail: String(detail) }) });
+        onFirstFailure(listener) {
+            failureListeners.add(listener);
+            return () => failureListeners.delete(listener);
+        },
+        async flushFirstFailure() { await Promise.all(pendingEvidence); },
+        check(label, ok, detail, failureClass = 'product') {
+            const result = { label, ok: ok === true, ...(detail === undefined ? {} : { detail: String(detail) }), ...(ok === true ? {} : { failureClass }) };
+            results.push(result);
+            if (ok !== true && firstFailure === null) {
+                firstFailure = { ...result, checkIndex: results.length - 1, monotonicMs: performance.now() };
+                for (const listener of failureListeners) {
+                    try {
+                        pendingEvidence.push(Promise.resolve(listener(firstFailure)).then(artifact => {
+                            if (typeof artifact === 'string') (firstFailure.artifacts ??= []).push(artifact);
+                        }).catch(error => {
+                            results.push({ label: 'first-failure evidence retained', ok: false, failureClass: 'harness', detail: String(error?.message ?? error) });
+                        }));
+                    } catch (error) {
+                        results.push({ label: 'first-failure evidence retained', ok: false, failureClass: 'harness', detail: String(error?.message ?? error) });
+                    }
+                }
+            }
             process.stdout.write(`    ${ok === true ? 'ok  ' : 'FAIL'} ${label}${detail === undefined || ok === true ? '' : `  (${String(detail).slice(0, 200)})`}\n`);
             return ok === true;
         },
@@ -630,6 +587,7 @@ export function recorder({ name, outDir, placement }) {
                 checks: results.length,
                 failed: results.filter((r) => !r.ok).length,
                 results,
+                firstFailure,
                 notes
             };
         }
@@ -762,12 +720,18 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
     let shell;
     let page;
     let rawHarness;
+    const cleanup = { attempted: false, completed: false, errors: [], leaks: [] };
     const { stop } = ownDesktopResource({ stop: async () => {
-        try { rawHarness?.close(); } catch { /* already gone */ }
-        try { page?.close(); } catch { /* already gone */ }
-        try { await shell?.quit(); } catch { /* already gone */ }
-        try { await daemon.stop(); } catch { /* already gone */ }
-        sandbox.cleanup();
+        cleanup.attempted = true;
+        cleanup.errors = await cleanupSteps([
+            ['harness connection', () => rawHarness?.close()],
+            ['CDP connection', () => page?.close()],
+            ['shell process', () => shell?.quit()],
+            ['daemon process', () => daemon.stop()],
+            ['sandbox files', () => sandbox.cleanup()]
+        ]);
+        cleanup.completed = cleanup.errors.length === 0;
+        if (!cleanup.completed) throw new Error(`sandbox cleanup failed: ${cleanup.errors.join('; ')}`);
     } });
     try {
         await daemon.start();
@@ -882,10 +846,12 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             windowPlacement: window ?? SHIPPED_WINDOW_PLACEMENT,
             windowLogLine,
             debugPort: sandbox.debugPort,
+            cleanup,
             stop
         };
     } catch (error) {
-        await stop();
+        try { await stop(); } catch (cleanupError) { error.cleanupError = String(cleanupError); }
+        error.cleanup = cleanup;
         throw error;
     }
 }

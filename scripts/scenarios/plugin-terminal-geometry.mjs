@@ -44,6 +44,7 @@
  */
 
 import fs from 'node:fs';
+import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
@@ -570,26 +571,28 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         await diagnostics('failure').catch(() => {});
         await rec.shot(page, 'terminal-geometry-failure').catch(() => {});
         throw error;
-    } finally {
-        await diagnostics('final').catch(() => {});
-        for (const socket of observers) { try { socket.close(); } catch { /* already gone */ } }
-        await sleep(200);
-        offReports?.();
-        fs.writeFileSync(sandbox.configPath, originalConfig);
-        await page.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
-        await page.send('Page.navigate', { url: originalURL }).catch(() => {});
-        // The workbench slots this scenario chose are the WINDOW's and outlive `plugin remove`,
-        // so they go back to their bundled views before the plugin does (#205, #201).
-        try {
-            const restored = await restoreBundledSlots(page, d, { terminal: 'kelpi.shell' }, { daemonID: daemonIDFromSandbox(sandbox) });
-            if (!restored.ok) rec.note(`cleanup: the workbench placements were not restored — ${String(restored.detail)}`);
-            if (restored.others !== null) rec.note(`cleanup: a stopped daemon's store still holds ${String(restored.others)}`);
-        } catch (error) {
-            rec.note(`cleanup: the workbench placements were not restored — ${error instanceof Error ? error.message : String(error)}`);
-        }
-        await cli.run(['plugin', 'remove', pluginID]);
-        for (const workspace of await json(['workspace', 'list', '--json'])) if (!initialWorkspaces.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
-        if (remoteDaemon) await remoteDaemon.stop();
-        remoteSandbox?.cleanup();
+    }    finally {
+        await cleanupSteps([
+            ['final diagnostics', () => diagnostics('final')],
+            ['geometry observers', () => { for (const socket of observers) socket.close(); }],
+            ['geometry reports', () => offReports?.()],
+            ['config restored', () => fs.writeFileSync(sandbox.configPath, originalConfig)],
+            ['device metrics', () => page.send('Emulation.clearDeviceMetricsOverride')],
+            ['original window', async () => {
+                await page.send('Page.navigate', { url: originalURL });
+                if (!await d.settleDom(page, `document.querySelector('[data-testid="kelpi-app"]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 20_000 })) throw new Error('original window did not reconnect');
+            }],
+            ['workbench placements', async () => {
+                const restored = await restoreBundledSlots(page, d, { terminal: 'kelpi.shell' }, { daemonID: daemonIDFromSandbox(sandbox) });
+                rec.check('cleanup: workbench placements restored', restored.ok, restored.detail, 'cleanup');
+            }],
+            ['private remote workbench store', async () => { if (remoteSandbox) await removeOwnedRemoteStore(page, daemonIDFromSandbox(remoteSandbox), rec); }],
+            ['plugin removed', () => cli.ok(['plugin', 'remove', pluginID])],
+            ['fixture workspaces removed', async () => {
+                for (const workspace of await json(['workspace', 'list', '--json'])) if (!initialWorkspaces.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
+            }],
+            ['remote daemon stopped', () => remoteDaemon?.stop()],
+            ['remote sandbox removed', () => remoteSandbox?.cleanup()]
+        ], (label, detail) => rec.check(`cleanup: ${label}`, false, detail, 'cleanup'));
     }
 }

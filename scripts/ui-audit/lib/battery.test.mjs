@@ -110,12 +110,12 @@ describe('the battery runs every component and decides at the end', () => {
     });
 });
 
-describe('a component that fails and comes back green alone passes, and says so', () => {
+describe('a first failure remains red when a diagnostic retry passes', () => {
     it('marks it retried and names what was re-run', async () => {
         const part = fake('root tests', { ok: false, retryOk: true, retryOf: ['packages/client/src/app/App.filemenu.test.tsx'] });
         const battery = await runBattery({ components: [part.component] });
 
-        expect(battery.ok).toBe(true);
+        expect(battery.ok).toBe(false);
         expect(battery.records[0].state).toBe(PASSED_ON_RETRY);
         expect(battery.records[0].retried).toBe(true);
         expect(battery.records[0].retryOf).toEqual(['packages/client/src/app/App.filemenu.test.tsx']);
@@ -270,7 +270,7 @@ describe('the summary table', () => {
         expect(text).toContain('typecheck');
         expect(text).toContain('30.0s');
         expect(text).toContain('4.5m');
-        expect(text).toContain('passed on retry');
+        expect(text).toContain('failed first attempt; retry passed');
         expect(text).toContain('retried alone: packages/daemon/src/b.test.ts');
         // A green component never explains itself: the table stays readable when nothing is wrong.
         expect(text).not.toContain('red alone as well');
@@ -516,5 +516,22 @@ describe('the retry history tells an ordering failure from a wobble, across batt
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+// Exceptions and empty plans must not disappear behind a report or green retry.
+describe('strict evidence preservation', () => {
+    it('retains both attempts and the original diagnostic', async () => {
+        const battery = await runBattery({ components: [{ label: 'copy', run: () => ({ ok: false, detail: 'clipboard first failure', retry: () => ({ ok: true, detail: 'passes alone' }) }) }] });
+        expect(battery.ok).toBe(false);
+        expect(battery.records[0].firstAttempt.detail).toBe('clipboard first failure');
+        expect(battery.records[0].retryAttempt.ok).toBe(true);
+        expect(battery.records[0].detail).toContain('clipboard first failure');
+    });
+    it('continues after a thrown check and refuses an empty battery', async () => {
+        const battery = await runBattery({ components: [{ label: 'throws', run: () => { throw new Error('broken report'); } }, { label: 'next', run: () => ({ ok: true }) }] });
+        expect(battery.records).toHaveLength(2);
+        expect(battery.ok).toBe(false);
+        expect((await runBattery({ components: [] })).ok).toBe(false);
     });
 });

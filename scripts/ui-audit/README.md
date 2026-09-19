@@ -265,14 +265,14 @@ A UI surface is everything under `packages/client/src/` and `packages/shell/src/
 - the diff edits `audit.mjs`, i.e. it added an audit step;
 - you opted out, out loud (below).
 
-Both tiers run scenarios at `--no-build --window hidden`, so a battery never takes the screen for them and never races another run:
+Both tiers run scenarios at `--no-build --window hidden`, so scenarios do not take the screen; the desktop lease still serializes shared clipboard and app state:
 
 | tier | what runs |
 |---|---|
 | `verify.mjs` (impact-scoped) | the scenario files the diff touched, plus every scenario whose `covers` intersects the diff. Before the scoped audit, because a scenario is seconds and the audit is minutes. |
 | `verify.mjs --full` | every scenario, after the shell tests and before the audit. `self-upgrade.mjs` runs `--full`, so this is on the path of every promote. |
 
-Bundles are built once by verify (content-hashed, ~0.05 s when the tree has not moved) because both the scenario step and the audit run `--no-build`, and `dist/` is gitignored.
+Verify builds bundles before scenarios, which run `--no-build`; the audit also uses the content-hashed build cache, so unchanged bundles are reused.
 
 ### `covers`
 
@@ -290,36 +290,103 @@ Entries are exact paths or directory prefixes (`packages/core/src/config/`), mat
 node scripts/verify.mjs --no-scenario "why this change cannot be exercised"
 ```
 
-Explicit, and never silent: the reason is printed when the plan is printed, printed again on the last line of the run, and written to `docs/audit/verify-latest/verify-report.json` beside the list of UI files it left unexercised. A reason is required; `--no-scenario` on its own exits 2.
+The reason is retained in the unique acceptance report. `--no-scenario` permits diagnostic execution but leaves UI acceptance **unverified**; it cannot waive missing evidence. A reason is required.
 
-**A pure refactor that touches UI files still needs it**, and that is the point rather than an oversight: "this one cannot break anything" is the sentence every diff says about itself, and a rule that accepts it exempts everything. What the flag buys is that the claim is on the record with a name against it.
+## Strict acceptance and diagnostic retries
 
-## The battery runs to the end, and retries once (#109)
+`verify.mjs` evaluates actual Vitest `testResults[].assertionResults`, audit `steps[].assertions` and step errors, and scenario `summaries[].results` (`label`, `ok`, `detail`). Summary counters must agree with those records. Exit zero with a failed assertion, a harness error, or a cleanup leak fails acceptance. Missing, malformed, stale, empty, skipped or unsupported evidence is unverified. Failed takes precedence over unverified, which takes precedence over verified. Only verified exits zero; failed exits 1 and unverified exits 2.
 
-`verify.mjs` used to exit on the first nonzero status, so one flaky check cost a 20-minute battery and, because `self-upgrade.mjs` gates a promote on `verify.mjs --full`, the release with it. Four promote attempts died that way on 2026-09-07 and 2026-09-08, each on a single wobble that passed in isolation minutes later: `dock-bounce-stop-only` (an occlusion precondition the environment could not meet), `stuck-drag-teardown` (a mid-gesture cursor read), `App.filemenu.test.tsx` at load average 37, and two daemon tests at load average 90.
+The battery still runs independent checks to completion and retains diagnostic retries. A scenario failure replays the recorded prefix through the first failure in a fresh sandbox, then runs isolated diagnostics; original first-attempt artifacts remain intact. A failed first attempt stays failed even when its retry passes. Both attempts are recorded, and a failed build precondition leaves downstream checks unrun. Retry history describes ordering observations; it never changes acceptance. Vitest still caps workers at eight.
 
-Two rules now, both in `lib/battery.mjs` and unit-tested there with a fake component runner:
+Each invocation owns `docs/audit/acceptance/<timestamp>-<uuid>/`: `acceptance.json`, `acceptance.md`, and `battery/` with raw first-attempt and retry reports and diagnostics. No previous invocation is deleted or read as an arbitrary “latest” result. Artifact paths and SHA256 digests, exact HEAD/reference commits, arguments, machine/runtime identity, and before/after Git status are retained. Dirty or untracked source prevents commit acceptance. A report-writing failure is fatal. `--plan` writes no acceptance report and exits 2; no-op runs also remain unverified.
 
-1. **Every component runs, whatever the one before it did**, and the run ends with a table of component, result, wall time and whether it was retried. The one exception is `build bundles`, which is a precondition rather than a check: the scenario lane, the audit and the smoke all drive what it produces, so past a red build the rest are marked `not run` instead of measuring a stale tree.
-2. **A red component is retried once, in isolation, and only what failed.** A vitest component re-runs the FILES it failed on, parsed out of the run's own `--reporter=json` report (never scraped from the terminal); the scenario lane re-runs the SCENARIOS it failed, one process and one sandbox each, read out of the lane's `results.json`; the packaged smoke re-runs itself. Green on that retry passes the component and the summary says which ones needed it. Red on the retry fails the battery and names the check that was red both times.
+Harness changes run their actual registered harness unit tests. A scoped green test run is useful local evidence, but it does not establish an original incident fix without a concrete regression receipt. Smokes without a supported structured assertion reporter currently leave acceptance unverified even when their process exits zero; this is an explicit remaining evidence gap.
 
-A retry cannot launder a regression: a deterministic failure fails alone too, and the retry runs once, never twice. What it removes is the class of failure that is a property of the battery's own load rather than of the tree.
+```bash
+node scripts/verify.mjs --since <baseline-commit> --acceptance /absolute/incident-manifest.json
+```
 
-**The one failure a single retry cannot judge is an ordering failure, so the lane keeps a history (#215).** A scenario that goes red only because of what ran before it passes alone every time, which is indistinguishable from a wobble inside one battery: that is how three deterministic ordering failures were filed as load-sensitive and laundered into passes for a fortnight (#205). So the FULL lane's per-scenario outcomes are appended to `docs/audit/battery-retry-history.json` (gitignored, kept beside the run's own output rather than inside `verify-latest/battery/`, which every run empties), and a scenario that has failed N consecutive full lanes and passed every isolated retry is printed as `ordering-dependent` instead of `load-sensitive`, naming the scenario that ran immediately before it and, when the runner's leak post-condition blamed one, the scenario it says left the state behind. N is `KELPI_ORDERING_LANES`, default 2, and anything that is not a positive integer reads as the default rather than silently turning the rule off or on. A green lane ends the streak, and a scoped `--only`-style scenario run records nothing: a different order is a different question.
+### Incident evidence contract (version 1)
 
-Housekeeping, so the file can be trusted after a rename: only the scenarios the lane actually ran are reported, a scenario the lane has not run for twelve folds is dropped from the store, the store is written to a temp file and renamed over (a torn read would otherwise parse as an empty history and get written back, resetting every streak), and a store that is corrupt, half-written or written by a later version reads as no history. A streak that fills the twelve-run window prints as "at least 12", and a streak whose predecessor changed between lanes keeps its verdict but says so: `it runs after c (it ran after b when the streak started)`.
+A reviewable manifest names the behavior and exact assertions. `scope: "synthetic-probe"` is supported as an honest limited claim and cannot establish original incident acceptance. Surface `covers` declarations only select checks; they do not prove an incident was reproduced.
 
-The battery also caps its vitest runs at `--maxWorkers=8`, and the reason is not the worker count. Every daemon a test boots builds an editor resolver (`boot/compose.ts` ▸ `content/external-editor.ts`, CONT-082/084) and that resolver asks the user's LOGIN shell, so each boot forks a full `zsh -l -i -c`. Measured on a 16-core machine, root suite, two passes per cap, machine idle before each (run queue 2 to 8, load 12 to 14):
+```json
+{
+  "schemaVersion": 1,
+  "incidents": [{
+    "id": "issue-123-copy",
+    "behavior": "Copy places exactly the selected terminal text on the clipboard after the recorded preceding scenarios",
+    "scope": "incident",
+    "assertions": ["clipboard equals selected text"],
+    "regressions": [{ "path": "/absolute/run/regression.json", "sha256": "<actual SHA256>" }],
+    "requiredEnvironments": ["local"],
+    "requiredVisuals": [],
+    "visualSignoffs": []
+  }],
+  "auditVisualSignoffs": []
+}
+```
 
-| cap | wall | peak run queue | peak 1-minute load | peak login-shell probes |
-|---|---|---|---|---|
-| default (16) | 27.6, 27.6 s | 84, 92 | 23.6, 28.6 | 59, 32 |
-| `--maxWorkers=8` | 29.5, 29.1 s | 43, 37 | 22.2, 18.0 | 35, 35 |
-| `--maxWorkers=4` | 48.0, 47.5 s | 57, 185 (a neighbour landed in that pass) | 16.8, 15.9 | 32, 24 |
+`regression` can name one receipt; `regressions` supports separate cases for multiple environments. Every case uses the exact baseline and candidate commits and the same immutable test/args within that case. Relevant environment kinds are `local`, `installed-tailscale`, `remote-codex`, `safari`, `physical-phone`, and `native-ime`. Both sides of each required environment case must identify the actual environment with `{id, kind, details}`. Local loopback, emulation, CDP, or synthetic IME events cannot substitute for a required real environment. Requirements are review inputs: reviewers must name all environments relevant to the incident; a validator cannot infer incident scope from prose.
 
-Eight is the knee: it halves the run queue for 1.7 s, 6% of the suite and 0.14% of a 20-minute battery, while four costs another 18 s for a reduction the battery does not need. The cap is on the battery's commands rather than in `vitest.config.ts`, because a person running `npx vitest run` by hand wants every core: it is the battery's concurrency, running beside a scenario sandbox and an Electron audit, that is the hazard.
+An incident visual signoff is `{id, head, reviewer, at, verdict:"passed", artifacts:[{path,sha256}]}`. Audit visual signoffs additionally require `runId` matching the actual raw audit run, `id` matching its step, review time after execution, and digests for every screenshot for that step. Missing/failed reviews cannot be waived. Keep reviewer identities and all raw clipboard/environment diagnostics private unless intentionally sanitized for publication.
 
-Its machine-readable evidence lands in `docs/audit/verify-latest/battery/` (the vitest JSON reports and the lane's results, emptied at the start of every run), and the per-component records go into `verify-report.json` under `components`.
+### Execute identical regression evidence
+
+Supply two explicit clean worktrees and one self-contained Node test. The runner retains immutable source, arguments, runner identity, raw assertion reports, stdout/stderr, and clean commit snapshots for both attempts. It does not modify either worktree or switch branches.
+
+```bash
+node scripts/acceptance-regression.mjs \
+  --baseline /absolute/original-worktree --candidate /absolute/fixed-worktree \
+  --test /absolute/incident-test.mjs --assertions 'clipboard equals selected text' \
+  --out /absolute/private-evidence -- identical test arguments
+```
+
+The test runs with its working directory at each worktree and receives `KELPI_REGRESSION_ROOT` and a unique `KELPI_REGRESSION_REPORT`. It must write a JSON object with `schemaVersion:1`, `assertions:[{name,ok}]`, `errors:[]`, `environment:{id,kind,details}`, and `cleanup:{attempted:true,completed:true,errors:[],leaks:[]}`. Exit 1 means completed named assertion failure; exit 0 means success. A baseline crash, signal, config/import error, missing report, or absent named failure is unverified, not a reproduced bug. Candidate failures fail. Assertion sets must match between baseline and candidate. A runner receipt verifies only its recorded regression case, not PR acceptance.
+
+The repository retains a reusable regression for the acceptance-gate defects themselves. It executes actual verifier/battery source bytes in a VM, substitutes only external I/O, and requires healthy structured controls before seven named adverse checks. This is evidence for gate behavior; it does not reproduce a pairing, Copy, or paste product incident. Use the final committed fixture bytes on both clean commits:
+
+```bash
+node scripts/acceptance-regression.mjs \
+  --baseline /absolute/original-worktree --candidate /absolute/fixed-worktree \
+  --test /absolute/fixed-worktree/scripts/ui-audit/fixtures/acceptance-regression.mjs \
+  --assertions 'first-failure-survives-passing-retry,failed-audit-assertion-blocks-success,forged-audit-summary-cannot-erase-failure,forged-scenario-summary-cannot-erase-failure,cleanup-leak-blocks-success,missing-required-report-blocks-success,final-report-write-failure-is-fatal' \
+  --out /absolute/private-gate-evidence
+```
+
+The fixture also accepts explicit `--repo` and absolute `--out` for exploratory runs. It requires the exact repository root, writes outside that source repository, and refuses an existing report. A mutable candidate pass is exploratory only; changing fixture bytes requires a new baseline/candidate pair.
+
+
+After collecting missing receipts or reviewing screenshots, re-evaluate the explicit original run in a new retained directory:
+
+```bash
+node scripts/acceptance-report.mjs --root /absolute/candidate-worktree \
+  --report /absolute/original-run/acceptance.json \
+  --manifest /absolute/completed-manifest.json --out /absolute/private-evidence
+```
+
+Re-evaluation cannot erase original first failures or dirty execution. It checks artifact digests again and keeps the original report.
+
+### First-failure diagnostics and replay
+
+Scenario and audit reports carry top-level `provenance` with actual `head`, requested head, run ID, ISO start time, dirty files, tracked-diff digest and executed bundle/scenario hashes. Scenario checks preserve `summaries[].results[] {label,ok,detail}` and add `failureClass` (`product`, `fixture`, `harness`, `cleanup`) for failures. Per-summary `firstFailure` retains its check index, monotonic observation time and artifact paths. Audit checks retain `steps[].assertions[] {name,ok,detail}` with corresponding first-failure information.
+
+A scenario report's `sequence.firstFailure` names the original index, selected file and preceding files. `--replay /absolute/original/results.json --through INDEX` runs that original prefix in a fresh sandbox; changed source, commit, bundle hashes, placement, attach/keep, replacement positionals and nonempty outputs are rejected. `replayOf` cites the preserved original. An instrumentation change needs a separately named comparison run and cannot be called equivalent replay.
+
+Copy/paste recording arms before input. Passive 256-entry rings capture selection calls, document/element focus, visibility, user activation, terminal write/reset/replay activity and clipboard operation outcomes. First-failure JSON is frozen before cleanup; restoration is recorded separately. Wrappers preserve original returns, promises and exceptions, and observer errors fail evidence as harness errors. Diagnostics never retry keys or repair selection/focus. Only exact allowlisted synthetic selection/clipboard strings are retained, capped at 160 characters; arbitrary content is redacted to length.
+
+The recorder adds timing overhead and diagnostic selection reads. Renderer/process clocks provide local order, not a global total order; navigation can lose older document histories. Passing instrumentation cannot explain an earlier failure. Cleanup explicitly distinguishes shared-sandbox postconditions from standalone/dedicated state removed at awaited teardown. Loopback remote daemons, viewport emulation and CDP composition still do not certify installed Tailscale, remote Codex, Safari, physical phones or native OS IME.
+
+### Exact-head publication
+
+Prepare a sanitized Markdown/JSON preview; this makes only a read-only GitHub request to confirm the open PR still has the exact report HEAD:
+
+```bash
+node scripts/acceptance-publish.mjs --report /absolute/run/acceptance.json \
+  --repo owner/repo --pr 123 --out /absolute/publication-preview
+```
+
+After publishing the sanitized report through an authorized workflow, add `--publish --target-url https://github.com/owner/repo/pull/123#issuecomment-123456` to send the `kelpi/acceptance` commit status. The command rechecks the PR HEAD immediately before the exact-SHA status write and recomputes the verdict from retained artifacts. Verified maps to success, failed to failure, and unverified to pending. A GitHub required-check policy is a separate repository setting. The publisher never uploads raw screenshots, clipboard content, local paths, environment identity, or diagnostic text.
 
 ## Where this stops
 
@@ -336,17 +403,17 @@ Its machine-readable evidence lands in `docs/audit/verify-latest/battery/` (the 
   left the key un-prevented (`terminal-leaves-platform-chords.mjs`).
 - The functional lane is scenarios only. The AUDIT is still one visible window per run: 107 of its 118 steps are `needs-eyes`, so a placement that costs the pictures costs it its product (`audit-window.ts` has that table; offscreen reproduced 113 of 118 steps and turned two green assertions red).
 - A scenario that opens an external editor must write its fixture at the shared path `<sandbox.root>/scenario-external-editor` before it presses "Open in $EDITOR". The daemon resolves `$VISUAL`/`$EDITOR` through a login shell and caches the answer for its whole lifetime (`daemon/src/content/external-editor.ts`, CONT-086), so in one sandbox the FIRST scenario to open an editor decides the command string every later one gets. `plugin-authoring` used to name a script inside the temp directory it deleted on the way out, and `plugin-terminal-features`' press then ran a file that no longer existed — its third lane failure, red in every full lane and green alone (#205). Sharing the path makes the cached command run whichever scenario is running.
-- A multi-scenario run checks a short post-condition after every scenario and NAMES the one that broke it: the active workspace, the phone's remembered place (`kelpi.phone.last-place`), any workbench slot still holding a plugin view, stray web panes and workspaces, an open Settings overlay, a lingering modal, whether the page still believes it is focused, the viewport, and the URL. It is a warning, never a failure — `⚠ scenario <name> leaked: <what>` in the log, per-scenario `leaked` and a top-level `leaks` array in `results.json`. It exists because three deterministic ordering failures were filed as load-sensitive flakes and laundered into passes by the battery's isolated retry for a fortnight (issue #205): a phone left on a shut-down remote host, an engine count leftover web panes could never reach, and a ⌘C that could not run because an earlier scenario had told the page it was not focused. A scenario on its own instance (`windowPlacement`) records `leaked: null`: its sandbox went with it, so there was nothing to check.
+- A multi-scenario run checks a short post-condition after every scenario and NAMES the one that broke it: the active workspace, the phone's remembered place (`kelpi.phone.last-place`), any workbench slot still holding a plugin view, stray web panes and workspaces, an open Settings overlay, a lingering modal, whether the page still believes it is focused, the viewport, and the URL. It is an enforced cleanup failure — `⚠ scenario <name> leaked: <what>` in the log, per-scenario `leaked` and a top-level `leaks` array in `results.json`. It exists because three deterministic ordering failures were filed as load-sensitive flakes and laundered into passes by the battery's isolated retry for a fortnight (issue #205): a phone left on a shut-down remote host, an engine count leftover web panes could never reach, and a ⌘C that could not run because an earlier scenario had told the page it was not focused. A scenario on its own instance (`windowPlacement`) records `leaked: null`: its sandbox went with it, so there was nothing to check.
 - Nothing enforces the lane's caveat. A scenario can still take a screenshot under `--window hidden` and assert on it; the note says the pixels are worthless, and no code stops you.
 - A scenario that needs an INACTIVE app has to drive the window there; no placement grants it. `harness.hide()` is the gesture (`app.hide()`, i.e. ⌘H), and a scenario that uses it restores the window before it returns because the battery runs every scenario in one sandbox. `dock-bounce-stop-only` is the worked example, and it now passes at all three placements (issue #109); before it, that scenario read the screen's weather and called it a product verdict.
 - The channel sees the notifications the SHELL posts. The browser client's own `Notification` (`client/src/state/notifications.ts`) is a different presenter on the other side of CDP, and §7.5's two halves withdraw on different triggers; a scenario that wants the client's toast asserts on the page.
 - The helpers in `driver.mjs` are copies of the audit's private ones, not shared with it. The audit can be pointed at the driver once the phone campaign stops touching `audit.mjs`.
-- **The rule checks that something exercises the surface, never that it exercises YOUR change.** A `covers` entry is a claim by whoever wrote it, and nothing verifies the claim: once `confirm-dialog-keys` covers `Sidebar.tsx`, every future `Sidebar.tsx` change is discharged by it, including the ones it does not press. That is the same bargain the surface map already makes (maintained, not inferred), and it is why the PR still says which scenario ran and what it asserted.
+- **The surface rule selects coverage; incident acceptance separately requires actual before/after assertions.** A `covers` entry is a claim by whoever wrote it, and nothing verifies the claim: once `confirm-dialog-keys` covers `Sidebar.tsx`, every future `Sidebar.tsx` change is discharged by it, including the ones it does not press. That is the same bargain the surface map already makes (maintained, not inferred), and it is why the PR still says which scenario ran and what it asserted.
 - Discharging is per DIFF, not per file: one scenario written anywhere in `scripts/scenarios/`, or one edit to `audit.mjs`, satisfies the rule for every UI file in that diff. `verify.mjs` prints the files no `covers` entry names, so the gap is visible; it does not refuse on it.
-- `git diff` drives all of this, so an untracked source file is invisible to the tier AND to the rule. Untracked SCENARIOS are looked up separately (that false refusal was worth the extra call); untracked client or shell files are a pre-existing hole in `verify.mjs`, unchanged here.
+- Untracked source is included in verification planning and prevents exact-commit acceptance until committed.
 - Nothing runs the rule at commit or push time. It is a `verify.mjs` gate, which means it is on the promote path (`--full`) and on the path of anyone who runs verify, and nowhere else.
-- The retry is per COMPONENT, not per check. A vitest run that dies without naming a failed file (a crash, a config error, an OOM-killed worker) has nothing to isolate, so it is not retried and it is not excused: the battery fails and the summary says the report named nothing. The full audit is not retried at all, because its exit status is not its verdict: it exits 0 with failed assertions, and the REPORT read against the previous one with `compare-runs` is the gate.
-- A retry that goes green is a pass, and nothing files an issue about it. The run says which components needed one, twice, and `verify-report.json` keeps the record, but a check that wobbles every battery will keep wobbling until a person reads that line. A scenario that keeps needing the retry is now named for what it is on the second consecutive lane (`ordering-dependent`, above), which is the one case where the wobble was never a wobble.
+- The retry is per COMPONENT, not per check. A vitest run that dies without naming a failed file (a crash, a config error, an OOM-killed worker) has nothing to isolate, so it is not retried and it is not excused: the battery fails and the summary says the report named nothing. The full audit is not retried; the strict verifier reads its raw assertions and step errors regardless of process status.
+- A green retry remains diagnostic evidence beside the failed first attempt. Investigating and fixing that failure requires a subsequent reviewed change; retries never authorize acceptance.
 
 The shell-spawned-daemon phases in `smoke.mjs` and `packaged-smoke.mjs` use a fresh private owner channel (`KELPI_TEST_OWNER_PORT` / `KELPI_TEST_OWNER_TOKEN`). The daemon authenticates before startup and consumes these variables so panes and plugins cannot inherit the capability. The channel outlives the shell: the test still exercises the real detached spawn and bundled Node selection, and quitting the app still leaves its daemon running. Cleanup requests shutdown through that live channel; foreground test daemons queue that request (and catchable signals) until startup settles, then await their own resource cleanup. They acknowledge successful teardown explicitly, including startup failures after cleanup and cancellation before boot. Startup and teardown never run concurrently: a stuck startup retains the slot rather than allowing resources to appear after cleanup. Ordinary daemon launches keep their existing signal handling. Logs and PID files remain diagnostic evidence and never authorize a kill. The runner requires the teardown receipt, channel closure and process disappearance; PID reuse can conservatively block cleanup but cannot cause an unrelated process to be signalled. If a shell launch dies before ownership can be established, cleanup reports the unknown state and retains the desktop slot; it does not guess that no daemon was started. This includes partial startup before the channel handshake. An unresponsive owned daemon likewise retains the slot instead of inviting a recovery PID kill.
 

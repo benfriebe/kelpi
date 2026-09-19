@@ -20,6 +20,7 @@
  */
 
 import fs from 'node:fs';
+import { armIncidentDiagnostics, redactFixtureText } from '../ui-audit/lib/incident-diagnostics.mjs';
 import path from 'node:path';
 
 /**
@@ -49,7 +50,10 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
     const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
+    const safeText = value => redactFixtureText(value, [MARK, LINE, LINE.slice(0, 25), POISON]);
+    let incident;
     try {
+        incident = await armIncidentDiagnostics({ page, harness, rec, allowed: [MARK, LINE, LINE.slice(0, 25), POISON] });
         /*
          * A workspace of this scenario's own, for the reason `workspace-switch-keeps-the-caret.mjs`
          * says out loud: "Default holds when this starts is whatever the scenarios before it left
@@ -164,17 +168,10 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
             await sleep(200);
         };
 
-        /*
-         * The focus repair goes BEFORE the drag, never after it: it can end in a click, and a click
-         * inside a terminal clears the selection ⌘C is about. What it repairs is the lane's own
-         * precondition. `harness.blur()` in an earlier scenario leaves the page believing it is not
-         * focused, and `navigator.clipboard` then refuses every call the two chords below make
-         * (#205, #207; driver.mjs ▸ clipboardCaret has the mechanism).
-         */
+        // Observe focus without changing it; the first operation retains predecessor state.
         await d.clipboardCaret(page, harness, paneA, {
             label: 'the ⌘C chord',
-            note: (message) => rec.note(message),
-            refocus: () => d.focusPaneBody(page, paneA)
+            note: (message) => rec.note(message)
         });
 
         await dragAlongRow3();
@@ -183,7 +180,7 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
 
         // ── the poison, then ⌘C ────────────────────────────────────────────────────────
         const poisoned = await writeClipboard(POISON);
-        rec.check('the clipboard was overwritten with the sentinel after the drag', poisoned === POISON, poisoned);
+        rec.check('the clipboard was overwritten with the sentinel after the drag', poisoned === POISON, JSON.stringify(safeText(poisoned)));
         if (poisoned !== POISON) {
             rec.note('the clipboard could not be written in this lane; the copy assertions cannot run');
             return;
@@ -194,11 +191,11 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
         await page.key('KeyC', { modifiers: d.MOD.meta, key: 'c' });
         await sleep(250);
         const copied = await readClipboard();
-        rec.note(`clipboard after ⌘C: ${JSON.stringify(copied.slice(0, 80))}`);
+        rec.note(`clipboard after ⌘C: ${JSON.stringify(safeText(copied))}`);
         rec.check(
             '⌘C put the terminal selection on the clipboard (#81)',
             copied.includes(MARK),
-            `holds ${JSON.stringify(copied.slice(0, 60))} · at the press ${JSON.stringify(caretAtCopy)}`
+            `holds ${JSON.stringify(safeText(copied))} · at the press ${JSON.stringify(caretAtCopy)}`
         );
         rec.check(
             'and the sentinel is gone, so nothing overwrote the copy afterwards (no Edit menu double-fire)',
@@ -237,25 +234,22 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
          * something that is not the copied text. So the caret, the clipboard one instruction before
          * the press, and the app's own error toast afterwards all go into the failure's detail.
          *
-         * `refocus` stays OFF the grid for the reason the ⌘] above exists: a click inside pane B is
-         * a mouse-up over a cell and copy-on-select would overwrite the clipboard this paste is
-         * about. The pane header is the route the product's own paste resolves through anyway.
+         * These are observations only: no focus or selection is changed by the probes.
          */
         await d.clipboardCaret(page, harness, paneB, {
             label: 'the ⌘V chord',
-            note: (message) => rec.note(message),
-            refocus: () => d.clickPaneHeader(page, paneB)
+            note: (message) => rec.note(message)
         });
         const clipboardAtPaste = await readClipboard();
         rec.check(
             'the copied text was still on the clipboard at the moment of ⌘V',
             clipboardAtPaste.includes(MARK),
-            `holds ${JSON.stringify(clipboardAtPaste.slice(0, 60))}`
+            `holds ${JSON.stringify(safeText(clipboardAtPaste))}`
         );
         const caretAtPaste = await d.caretNow(page, paneB);
         await page.key('KeyV', { modifiers: d.MOD.meta, key: 'v' });
         const pasted = await captureUntil(paneB, (text) => text.includes(MARK), 3_000);
-        rec.note(`pane B tail: ${JSON.stringify(pasted.slice(-200))}`);
+        rec.note(`pane B tail: ${JSON.stringify(safeText(pasted))}`);
         /*
          * The toast is read only when the sentinel is missing, and promptly: a refused or
          * unavailable clipboard is reported by the product itself (`App.tsx` ▸ `pasteClipboardInto`
@@ -267,16 +261,18 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
          * cut to a 160-character detail.
          */
         const landed = pasted.includes(MARK);
+        rec.check('the first paste operation delivered the synthetic marker', landed);
+        await rec.flushFirstFailure();
         const reading = landed
             ? null
             : {
                   caretAtPress: caretAtPaste,
-                  clipboardBeforePress: clipboardAtPaste.slice(0, 200),
-                  clipboardAfterPress: (await readClipboard()).slice(0, 200),
+                  clipboardBeforePress: safeText(clipboardAtPaste),
+                  clipboardAfterPress: safeText(await readClipboard()),
                   toast: String(
                       await page.eval(`(document.querySelector('[data-testid="toast-stack"]')?.textContent ?? '')`)
                   ).slice(0, 300),
-                  capture: pasted
+                  capture: safeText(pasted)
               };
         if (reading !== null) {
             const file = path.join(rec.outDir, `${rec.name}-paste-failure.json`);
@@ -287,8 +283,8 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
             'the ⌘V chord ALONE pasted the copied text into the focused pane (#81)',
             landed,
             landed
-                ? pasted.slice(-160)
-                : `tail ${JSON.stringify(pasted.slice(-120))} · toast ${JSON.stringify(reading.toast)} · clipboard at the press ${JSON.stringify(reading.clipboardBeforePress.slice(0, 60))} · and after ${JSON.stringify(reading.clipboardAfterPress.slice(0, 60))} · caret ${JSON.stringify(caretAtPaste)}`
+                ? JSON.stringify(safeText(pasted))
+                : `tail ${JSON.stringify(safeText(pasted))} · toast ${JSON.stringify(reading.toast)} · clipboard at the press ${JSON.stringify(reading.clipboardBeforePress)} · and after ${JSON.stringify(reading.clipboardAfterPress)} · caret ${JSON.stringify(caretAtPaste)}`
         );
         const occurrences = (pasted.match(new RegExp(MARK, 'g')) ?? []).length;
         rec.check(
@@ -324,9 +320,14 @@ export default async function ({ page, harness, cli, rec, d, sleep }) {
             await rec.shot(page, 'shift-drag-selection');
         }
         await cli.run(['pane', 'send-key', '--target', paneA, 'ctrl-c']);
+    } catch (error) {
+        rec.check('clipboard scenario exception', false, error?.message ?? error, 'harness');
+        throw error;
     } finally {
+        await rec.flushFirstFailure();
+        await incident?.close();
         for (const workspace of JSON.parse(await cli.ok(['workspace', 'list', '--json']))) {
-            if (!initialWorkspaceIDs.has(workspace.id)) await cli.run(['workspace', 'delete', workspace.id, '--force']);
+            if (!initialWorkspaceIDs.has(workspace.id)) await cli.ok(['workspace', 'delete', workspace.id, '--force']);
         }
         if (startingWorkspace !== null) {
             const row = `[data-testid="workspace-row"][data-workspace-id="${startingWorkspace}"]`;

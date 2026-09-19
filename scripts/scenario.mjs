@@ -59,6 +59,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { captureProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
 import { runDesktopTest, ownDesktopResource } from './ui-audit/lib/desktop-lifecycle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -72,7 +73,7 @@ const value = (flag) => {
     const index = args.indexOf(flag);
     return index >= 0 ? args[index + 1] : undefined;
 };
-const flagsWithValues = new Set(['--attach', '--harness', '--out', '--window']);
+const flagsWithValues = new Set(['--attach', '--harness', '--out', '--window', '--replay', '--through']);
 const positional = args.filter((a, i) => !a.startsWith('--') && !flagsWithValues.has(args[i - 1] ?? ''));
 
 const scenariosDir = path.join(repoRoot, 'scripts', 'scenarios');
@@ -82,7 +83,10 @@ const resolveScenario = (name) => {
     if (fs.existsSync(candidate)) return candidate;
     throw new Error(`no such scenario: ${name} (looked in ${scenariosDir})`);
 };
-const files =
+const replaySourcePath = value('--replay');
+const replaySource = replaySourcePath ? JSON.parse(fs.readFileSync(replaySourcePath, 'utf8')) : null;
+if (replaySource && (positional.length || has('--attach') || has('--keep'))) throw new Error('replay requires a fresh sandbox and the retained original order');
+const files = replaySource ? replayFiles(replaySource, value('--through')).map(resolveScenario) :
     positional.length > 0
         ? positional.map(resolveScenario)
         : fs.readdirSync(scenariosDir).filter((f) => f.endsWith('.mjs')).sort().map((f) => path.join(scenariosDir, f));
@@ -93,7 +97,7 @@ if (files.length === 0) {
 
 // Unset is the shipped window: the lane never opens and a run is exactly what it was before it
 // existed. See driver.mjs ▸ WINDOW_PLACEMENTS for why `onscreen` is not the default.
-const placement = value('--window');
+const placement = value('--window') ?? (replaySource?.windowPlacement === 'attached' ? undefined : replaySource?.windowPlacement);
 if (placement !== undefined && !driver.WINDOW_PLACEMENTS.includes(placement)) {
     console.error(`--window ${placement}: want ${driver.WINDOW_PLACEMENTS.join(' | ')}`);
     process.exit(2);
@@ -106,13 +110,25 @@ let outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios',
 // directory and the second would win. The pid is appended only when it is actually needed, so a
 // serial run's path shape is unchanged.
 if (value('--out') === undefined && fs.existsSync(outDir)) outDir = `${outDir}-${String(process.pid)}`;
+if (fs.existsSync(outDir) && fs.readdirSync(outDir).length > 0) throw new Error(`refusing to overwrite retained artifacts: ${outDir}`);
 fs.mkdirSync(outDir, { recursive: true });
+const resultsPath = path.resolve(outDir, 'results.json');
+let provenance = captureProvenance(repoRoot, replaySource?.files ?? files);
+const cleanup = { attempted: false, completed: false, errors: [], leaks: [] };
+if (replaySource) {
+    if (has('--window') && placement !== replaySource.windowPlacement) throw new Error('replay window placement differs from original');
+    if (!replaySource.provenance || replaySource.provenance.head !== provenance.head || replaySource.provenance.trackedDiffSha256 !== provenance.trackedDiffSha256) throw new Error('replay source revision differs; restore the recorded commit and source diff first');
+    for (const [file, hash] of Object.entries(replaySource.provenance.buildHashes)) {
+        if (provenance.buildHashes[file] !== hash) throw new Error(`replay build differs: ${file}`);
+    }
+}
 const log = (line) => console.log(`[scenario] ${line}`);
 
 // ── the instance ────────────────────────────────────────────────────────────────────
 
 // Across worktrees and visible audits too: a hidden window still uses the real clipboard.
 // Hold through teardown (or --keep); dedicated scenario instances belong to this same run.
+try {
 await runDesktopTest(async () => {
 let t;
 const attachPort = value('--attach');
@@ -129,7 +145,7 @@ if (attachPort !== undefined) {
     });
 } else {
     log(`booting a sandbox${has('--no-build') ? ' (no build)' : ' (building first; skip with --no-build)'}`);
-    t = await driver.boot({ repoRoot, label: 'scenario', build: !has('--no-build'), log, window: placement });
+    t = await driver.boot({ repoRoot, label: 'scenario', build: replaySource ? false : !has('--no-build'), log, window: placement });
     log(
         `up: ${t.sandbox.base}  debug ${String(t.debugPort)}  harness ${t.harness.path}  ` +
             `window ${t.windowPlacement}${
@@ -145,9 +161,19 @@ const stop = async () => {
         log(`--keep: leaving the sandbox up (debug ${String(t.debugPort)}, harness ${t.harness?.path ?? 'none'}); Ctrl-C to end`);
         await new Promise(() => {});
     }
-    await t.stop();
+    cleanup.attempted = true;
+    try { await t.stop(); cleanup.completed = cleanup.errors.length === 0; }
+    catch (error) { cleanup.errors.push(String(error?.message ?? error)); throw error; }
+    finally {
+        if (fs.existsSync(resultsPath)) {
+            const retained = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+            retained.cleanup = cleanup;
+            fs.writeFileSync(resultsPath, JSON.stringify(retained, null, 2) + '\n');
+        }
+    }
 };
 ownDesktopResource(t);
+provenance = captureProvenance(repoRoot, files);
 
 // ── the post-condition: what a scenario must hand on unchanged ──────────────────────
 
@@ -161,13 +187,9 @@ ownDesktopResource(t);
  * believing it was not focused. Each passed alone, every time, so the battery's isolated retry
  * laundered all three into "load-sensitive".
  *
- * So the runner reads a short invariant set after every scenario and NAMES the scenario that
- * broke it. It is deliberately not a failure: a warning that costs nothing is a warning that
- * survives, and a runner that failed a green scenario on its housekeeping would be turned off
- * within a week. It fires only in a multi-scenario run, which is the only place the state is
- * shared, and only what the scenario itself changed is reported (the diff is against the
- * PREVIOUS scenario's reading as well as the run's first one), so a leak is attributed once, to
- * the scenario that made it, rather than to everything that runs after it.
+ * Postconditions are enforced, classified cleanup failures. The first offending scenario keeps
+ * its attribution even when later scenarios happen to repair the state. Dedicated sandboxes
+ * cannot contaminate the shared one; their lifecycle teardown is still required to succeed.
  */
 const PAGE_STATE = `(() => {
     const selectors = ['[data-testid="plugin-ui-dialog"]', '[data-testid="command-palette"]', '[data-testid="confirm-dialog"]',
@@ -319,6 +341,7 @@ for (const file of files) {
     }
     const resolved = resolveScenarioPlacement(t.windowPlacement, mod?.windowPlacement);
     let dedicated = null;
+    let fixtureError = null;
     if (resolved.raised && importError === null && attachPort === undefined) {
         log(`▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
         try {
@@ -334,8 +357,8 @@ for (const file of files) {
                 window: resolved.placement
             }));
         } catch (error) {
-            log(`⚠ ${name}: the ${String(resolved.placement)} instance would not boot (${error instanceof Error ? error.message : String(error)}); running it in this lane instead`);
-            dedicated = null;
+            fixtureError = error;
+            log(`✗ ${name}: required ${String(resolved.placement)} fixture did not boot; scenario not run`);
         }
     }
     const instance = dedicated ?? t;
@@ -343,11 +366,16 @@ for (const file of files) {
     log(`▶ ${name}  [window ${String(placement ?? 'attached')}${dedicated === null ? '' : ', its own instance'}]`);
     if (resolved.warning !== null) log(`⚠ ${name}: ${resolved.warning}`);
     const rec = driver.recorder({ name, outDir, placement });
+    if (watchForLeaks && summaries.length === 0 && (startingWorld.pageError || startingWorld.cliError)) {
+        rec.check('fixture: initial shared sandbox state is readable', false, startingWorld.pageError ?? startingWorld.cliError, 'fixture');
+    }
     // Each instance owns its watcher, including everything observed during its first load.
     const rendererErrors = instance.rendererErrors;
     const started = Date.now();
     try {
-        if (importError !== null) throw importError;
+        if (importError !== null || fixtureError !== null) {
+            rec.check('required scenario fixture started', false, String(importError ?? fixtureError), 'fixture');
+        } else
         await mod.default({
             page: instance.page,
             harness: instance.harness,
@@ -370,7 +398,8 @@ for (const file of files) {
             repoRoot
         });
     } catch (error) {
-        rec.check('the scenario ran to completion', false, error instanceof Error ? error.stack ?? error.message : String(error));
+        rec.check('the scenario ran to completion', false, error instanceof Error ? error.stack ?? error.message : String(error), 'harness');
+        await rec.flushFirstFailure();
         try {
             await rec.shot(instance.page, 'on-error');
         } catch {
@@ -380,10 +409,12 @@ for (const file of files) {
         // Before the instance goes: the scenario's own verdict on the renderer, recorded whether
         // it passed or failed so a clean console is in the file rather than merely implied.
         rendererErrors.finish(rec);
+        await rec.flushFirstFailure();
         if (dedicated !== null) {
-            try { await dedicated.stop(); } catch { /* a sandbox that will not stop is not this run's verdict */ }
+            try { await dedicated.stop(); } catch (error) { cleanup.errors.push(String(error)); rec.check('dedicated sandbox stopped', false, String(error), 'cleanup'); }
         }
     }
+    cleanup.errors.push(...rec.failed.filter(check => check.failureClass === 'cleanup').map(check => `${name}: ${check.detail ?? check.label}`));
     const summary = { ...rec.summary(), ms: Date.now() - started, ...(dedicated === null ? {} : { ownInstance: true }) };
     summaries.push(summary);
     if (summary.failed > 0) anyFailed = true;
@@ -394,8 +425,7 @@ for (const file of files) {
         // own answer rather than as an empty list, which would read as "checked, and clean".
         summary.leaked = null;
     } else if (watchForLeaks) {
-        // Never fatal, and never allowed to end a run: this is housekeeping, and a reader that
-        // cannot be read is worth nothing. A failure here is recorded as itself.
+        // A failed read is a failed postcondition, never evidence of clean isolation.
         let leaked = [];
         try {
             leaked = leaksAgainst(await readWorld(), startingWorld);
@@ -406,9 +436,12 @@ for (const file of files) {
         // Attribution, not accumulation: what this scenario ADDED to the pile is what its name
         // goes on. A leak that was already there belongs to whoever made it.
         const fresh = leaked.filter((item) => !previousLeaks.includes(item));
-        if (fresh.length > 0) {
-            leakReport.push({ name, leaked: fresh });
-            log(`⚠ scenario ${name} leaked: ${fresh.join('; ')}`);
+        if (fresh.length > 0) { leakReport.push({ name, leaked: fresh }); cleanup.leaks.push({ name, leaked: fresh }); }
+        if (leaked.length > 0) {
+            rec.check('scenario cleanup postconditions', false, leaked.join('; '), 'cleanup');
+            Object.assign(summary, rec.summary());
+            anyFailed = true;
+            log(`✗ scenario ${name} leaked: ${fresh.join('; ')}`);
         }
         previousLeaks = leaked;
     }
@@ -424,10 +457,22 @@ if (watchForLeaks && leakReport.length > 0) {
 // that goes red behind a leak is only readable next to the scenario that made it (#205).
 fs.writeFileSync(
     path.join(outDir, 'results.json'),
-    `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, summaries, leaks: leakReport }, null, 2)}\n`
+    `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, provenance, cleanup, summaries, leaks: leakReport,
+        cleanupSemantics: watchForLeaks ? 'shared sandbox postconditions enforced' : 'standalone private sandbox state removed at teardown; no shared-state assertion',
+        replayOf: replaySourcePath ? path.resolve(replaySourcePath) : null,
+        sequence: firstFailureSequence({ files, summaries, resultsPath, windowPlacement: t.windowPlacement }) }, null, 2)}\n`
 );
 log(`results: ${path.join(outDir, 'results.json')}`);
 await stop();
 process.exitCode = anyFailed ? 1 : 0;
 });
+} catch (error) {
+    const retained = fs.existsSync(resultsPath) ? JSON.parse(fs.readFileSync(resultsPath, 'utf8')) : { stamp, files, provenance, summaries: [], leaks: [] };
+    if (error.cleanup) Object.assign(cleanup, error.cleanup);
+    retained.cleanup = cleanup;
+    retained.harnessFailure = { failureClass: 'harness', detail: String(error?.stack ?? error) };
+    fs.writeFileSync(resultsPath, JSON.stringify(retained, null, 2) + '\n');
+    console.error(error);
+    process.exitCode = 1;
+}
 process.exit(process.exitCode ?? 0);

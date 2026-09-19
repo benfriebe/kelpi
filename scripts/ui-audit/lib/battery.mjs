@@ -1,48 +1,11 @@
-/**
- * The battery runner: run every component, retry once in isolation what failed, then decide.
- *
- * WHY THIS EXISTS. `verify.mjs`'s old `run` helper called `process.exit` on the first nonzero
- * status, so one flaky check cost a 20-minute battery and, because `self-upgrade.mjs` gates a
- * promote on `verify.mjs --full`, the release with it. Four promote attempts died that way on
- * 2026-09-07 and 2026-09-08, each on a single wobble that passed in isolation minutes later:
- * `dock-bounce-stop-only` (a scenario whose occlusion precondition the environment could not
- * meet, #109), `stuck-drag-teardown` (a mid-gesture cursor read), `App.filemenu.test.tsx` (load
- * average 37) and two daemon tests (load average 90). The identical product tree had already
- * passed two hand-run full batteries, so every one of those four was the battery's weather and
- * not the tree.
- *
- * THE TWO RULES, and why each is safe.
- *
- * 1. RUN EVERYTHING, DECIDE AT THE END. Exiting early hides every other failure behind the
- *    first one, so a red battery told you about one problem per 20 minutes. Running the rest
- *    costs the time the run was always going to take when it was green, and buys the whole
- *    picture. The one exception is a component marked `precondition`: `build bundles` is not a
- *    check, it is what the scenario lane, the audit and the smoke DRIVE. Continuing past a
- *    failed build would run three components against a stale or absent `dist/` and report
- *    failures that say nothing about the tree, so the components after it are marked "not run".
- *
- * 2. RETRY ONCE, IN ISOLATION, ONLY WHAT FAILED. A retry is not a second chance for the same
- *    conditions: the failed test FILES (parsed from vitest's JSON report, never scraped from
- *    the terminal's colours) or the failed SCENARIOS (read from the lane's `results.json`) are
- *    re-run on their own, off the load the rest of the battery was making. That is exactly the
- *    isolation a person performs by hand after a red battery, and it is what every one of the
- *    four dead promotes was fixed by. A component that fails its retry fails the battery, and
- *    the summary names the check that was red both times, so this can never launder a real
- *    regression into a pass: a deterministic failure fails alone too.
- *    The one failure that shape CAN launder is a scenario that is red only because of what ran
- *    before it, which passes alone every time: the retry history below tells those apart across
- *    batteries rather than within one (#215).
- *
- * The runner is pure with respect to the world: `components` supply their own `run`, so
- * `battery.test.mjs` drives the whole decision with a fake component runner and no daemon.
- */
+/** Run all checks; retries are diagnostic and cannot erase a first failure. */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 /** A component's four possible ends. `retried` in the record says how a "passed" was reached. */
 export const PASSED = 'passed';
-export const PASSED_ON_RETRY = 'passed on retry';
+export const PASSED_ON_RETRY = 'failed first attempt; retry passed';
 /** Red, with nothing that could be isolated (a crash, a config error, a killed worker). */
 export const FAILED = 'failed';
 /** Red on the first run and red again alone: a real failure, not a wobble. */
@@ -50,7 +13,7 @@ export const FAILED_TWICE = 'failed twice';
 /** A precondition ahead of it failed, so running it would have measured nothing. */
 export const NOT_RUN = 'not run';
 
-const GREEN = new Set([PASSED, PASSED_ON_RETRY]);
+const GREEN = new Set([PASSED]);
 
 /**
  * Run the components in order and return every result.
@@ -67,9 +30,13 @@ export async function runBattery({ components, log = () => {}, now = () => Date.
     for (const [index, component] of components.entries()) {
         const started = now();
         log(`▶ ${component.label}`);
-        const outcome = (await component.run()) ?? {};
+        let outcome;
+        try { outcome = (await component.run()) ?? {}; }
+        catch (error) { outcome = { ok: false, detail: String(error?.stack ?? error) }; }
         const record = {
             label: component.label,
+            firstAttempt: { ...outcome, retry: undefined },
+            retryAttempt: null,
             state: outcome.ok === true ? PASSED : FAILED,
             retried: false,
             retryOf: null,
@@ -81,15 +48,18 @@ export async function runBattery({ components, log = () => {}, now = () => Date.
             record.retried = true;
             record.retryOf = outcome.retryOf ?? [];
             log(`  ✗ ${component.label} failed. Retrying once, in isolation: ${record.retryOf.join(', ') || 'the whole component'}`);
-            const again = (await outcome.retry()) ?? {};
+            let again;
+            try { again = (await outcome.retry()) ?? {}; }
+            catch (error) { again = { ok: false, detail: String(error?.stack ?? error) }; }
+            record.retryAttempt = again;
             record.state = again.ok === true ? PASSED_ON_RETRY : FAILED_TWICE;
-            if (again.detail !== undefined) record.detail = again.detail;
+            if (again.detail !== undefined) record.detail = [record.detail, `retry: ${again.detail}`].filter(Boolean).join('; ');
             record.ms = now() - started;
         }
 
         records.push(record);
         if (GREEN.has(record.state)) {
-            log(`✓ ${component.label}${record.state === PASSED_ON_RETRY ? ' (red under the battery, green alone: the retry saved this run)' : ''}`);
+            log(`✓ ${component.label}`);
             continue;
         }
 
@@ -110,7 +80,7 @@ export async function runBattery({ components, log = () => {}, now = () => Date.
     }
 
     const failed = records.filter((record) => !GREEN.has(record.state));
-    return { ok: failed.length === 0, records, failed };
+    return { ok: records.length > 0 && failed.length === 0, records, failed };
 }
 
 /**
@@ -147,8 +117,7 @@ export function failedScenariosFromResults(results) {
 // ── the retry history: what one isolated retry is not allowed to launder ────────────
 
 /**
- * WHY THIS EXISTS (#215, spun out of #205). Rule 2 passes a component whose isolated retry came
- * back green, and for a genuinely load-sensitive check that is the right call. For a scenario
+ * WHY THIS EXISTS (#215, spun out of #205). Historically a green retry passed a component; strict acceptance now retains the first failure. For a scenario
  * that fails whenever it runs after one particular predecessor and passes alone, it is the wrong
  * call every single time, and it is wrong quietly: three deterministic ordering failures were
  * filed as load-sensitive and laundered into passes for a fortnight that way.

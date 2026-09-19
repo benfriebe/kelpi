@@ -444,6 +444,14 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_terminal_get_mode(terminal: TerminalHandle, mode: number, isAnsi: boolean): number;
 
   // Scrollback API
+  ghostty_terminal_track_selection(
+    terminal: TerminalHandle,
+    startCol: number,
+    startRow: number,
+    endCol: number,
+    endRow: number
+  ): boolean;
+  ghostty_terminal_read_selection(terminal: TerminalHandle, outPtr: number): boolean;
   ghostty_terminal_get_scrollback_length(terminal: TerminalHandle): number;
   ghostty_terminal_get_scrollback_line(
     terminal: TerminalHandle,

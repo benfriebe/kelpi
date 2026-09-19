@@ -50,6 +50,28 @@ export function harnessSocketPath(env: Readonly<Record<string, string | undefine
     return value;
 }
 
+/** Hold the first client navigation until the driver's CDP error watcher is armed (#239).
+ * Both gates are required; ordinary shells and other harness callers load immediately.
+ * Release is one-shot, so reconnects and later windows keep their normal loading behavior.
+ */
+export function harnessLoadGate(env: Readonly<Record<string, string | undefined>>) {
+    let waiting = harnessSocketPath(env) !== null && env['KELPI_HARNESS_DEFER_LOAD'] === '1';
+    const pending: Array<() => void> = [];
+    return {
+        defer(load: () => void): boolean {
+            if (!waiting) return false;
+            pending.push(load);
+            return true;
+        },
+        release(): boolean {
+            if (!waiting) return false;
+            waiting = false;
+            for (const load of pending.splice(0)) load();
+            return true;
+        }
+    };
+}
+
 /**
  * Whether a recorded notification should also be SHOWN (#67).
  *
@@ -834,6 +856,7 @@ export function parseDialogArm(params: Readonly<Record<string, unknown>>): Dialo
 
 export const HARNESS_OPS = [
     'ping',
+    'load-client',
     'menu',
     'menu-click',
     'press',
@@ -908,6 +931,7 @@ export interface HarnessClipboard {
  * driven by a fake in tests and by the real `Menu`/`BrowserWindow`/`app` in `./harness.ts`.
  */
 export interface HarnessSurface<T extends MenuEntryLike<T>> {
+    readonly loadClient?: (() => boolean) | undefined;
     readonly platform: string;
     readonly pid: number;
     readonly version: () => string;
@@ -967,6 +991,8 @@ export function respond<T extends MenuEntryLike<T>>(request: HarnessRequest, sur
         switch (op as HarnessOp) {
             case 'ping':
                 return okResponse(id, { pid: surface.pid, version: surface.version() });
+            case 'load-client':
+                return okResponse(id, { released: surface.loadClient?.() ?? false });
             case 'menu':
                 return okResponse(id, { items: serialiseMenu(surface.menuItems()) });
             case 'menu-click': {

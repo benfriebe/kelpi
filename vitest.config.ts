@@ -41,7 +41,7 @@ export default defineConfig({
         // cleanup starts eating half a minute.
         test: {
           name: 'harness',
-          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/audit-options.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs', 'scripts/ui-audit/lib/workbench.test.mjs'],
+          include: ['scripts/ui-audit/lib/verify-plan.test.mjs', 'scripts/ui-audit/lib/battery.test.mjs', 'scripts/ui-audit/lib/build-cache.test.mjs', 'scripts/ui-audit/lib/placement.test.mjs', 'scripts/ui-audit/lib/shards.test.mjs', 'scripts/ui-audit/lib/audit-options.test.mjs', 'scripts/ui-audit/lib/web-batch.test.mjs', 'scripts/ui-audit/lib/aim.test.mjs', 'scripts/ui-audit/lib/cli-invocations.test.mjs', 'scripts/ui-audit/lib/cdp.test.mjs', 'scripts/ui-audit/lib/workbench.test.mjs', 'scripts/ui-audit/lib/renderer-errors.test.mjs', 'scripts/ui-audit/lib/driver.test.mjs', 'scripts/ui-audit/lib/scenario-runner.test.mjs'],
         },
       },
     ],

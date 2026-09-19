@@ -43,7 +43,7 @@ import {
 import {
     defaultTailscaleRunner,
     firstLine,
-    parseServeProxies,
+    inspectServeConfig,
     parseTailscaleStatus,
     resolveTailnetURL,
     tailscaleProbeDiagnostics,
@@ -262,7 +262,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 }
                 serving =
                     serveStatus.code === 0 &&
-                    parseServeProxies(serveStatus.stdout).some((proxy) => proxy.targetPort === port);
+                    inspectServeConfig(serveStatus.stdout, identity.dnsName, port).kind === 'serving';
             }
             return {
                 ok: true,

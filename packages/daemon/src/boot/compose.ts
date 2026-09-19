@@ -1452,7 +1452,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // listener BOUND (what the port file records), never `build`'s argument: that is
                 // `0` on a first boot and on the bind-failure fallback, and a pairing built from
                 // it configured `tailscale serve --bg 0`, a proxy to nothing (#130).
-                remote: createRemoteChannel({ env, port: () => ws?.port }),
+                remote: createRemoteChannel({ env, runDir: paths.dir, port: () => ws?.port }),
                 // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
                 // Finder. All three need the pane handler context (a PTY to spawn into, a
                 // `TerminalInput` for the reopened agent's resume command, the broadcast seam),

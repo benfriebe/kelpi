@@ -423,6 +423,25 @@ open "https://$host/?${url#*\?}"
 The token is stored in `localStorage` and stripped from the address bar, so later visits to
 `https://$host/` just work until the daemon's run dir is recreated.
 
+`kelpid url --tailnet`, `kelpid pair --tailnet`, and Settings → Remote configure forwarding
+when no loopback target is configured. If forwarding points to another port, Kelpi checks
+that target with a TCP connection (without sending application data) before refusing to
+replace it. The diagnosis distinguishes an accepting listener, refused connections
+(possibly stale forwarding), and an inconclusive check such as a timeout or permission error.
+It shows Kelpi's current port and the command to use after inspecting `tailscale serve status`.
+A refused connection does not establish ownership, so replacement remains an explicit action.
+IPv4 and IPv6 targets are checked separately; `localhost` checks both. Checks take at most
+one second and cover at most 16 distinct targets per diagnosis.
+
+After Kelpi successfully runs `tailscale serve --bg`, it records the target port, tailnet DNS
+name, timestamp, and CLI path when known in `<run dir>/tailscale-serve.json` (mode 0600).
+The record survives daemon restarts and is included in a conflicting-forward diagnosis;
+it is history, not proof of current ownership. Merely observing existing forwarding does not
+claim it, a failed configure does not replace the record, and manual Tailscale commands are
+not recorded. An unwritable history file produces a note without undoing successful pairing.
+Remote status shares a 12-second deadline across its two Tailscale invocations, leaving time
+for diagnostics to arrive within the client's 15-second timeout.
+
 Stop sharing with `tailscale serve reset`. Use `serve`, never `funnel` — `funnel` publishes to
 the open internet, and this port is a shell. Proxied requests arrive with Tailscale's identity
 headers (`Tailscale-User-Login`, `Tailscale-User-Name`), which is where per-user gating would

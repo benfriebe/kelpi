@@ -387,7 +387,10 @@ export function SettingsPresenterSlot(props: SettingsPresenterSlotProps): ReactE
         let containing = false;
         const onFocusIn = (event: FocusEvent): void => {
             const container = wrapper.current;
-            if (containing || container === null || !(event.target instanceof Node) || container.contains(event.target))
+            // Search, Close and native controls belong to the same host dialog, outside the
+            // plugin wrapper. Contain the whole modal without stealing their keyboard focus.
+            const boundary = container?.closest('[role="dialog"]') ?? container;
+            if (containing || container === null || !(event.target instanceof Node) || boundary?.contains(event.target))
                 return;
             containing = true;
             try { container.querySelector('iframe')?.focus(); } finally { containing = false; }

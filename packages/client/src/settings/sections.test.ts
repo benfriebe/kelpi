@@ -126,17 +126,24 @@ describe('the Settings search index', () => {
         }
     });
 
+    it('searches aliases inherited only from a group', () => {
+        expect(searchSettingsIndex('header border')).toContainEqual(
+            expect.objectContaining({ testID: 'sidebar-group-stroke' })
+        );
+    });
+
     it('is a complete navigation index, never a second write surface', () => {
         expect(SETTINGS_INDEX).toHaveLength(
             SETTINGS_FIELD_DEFINITIONS.length +
                 SETTINGS_INDEX_EXTRAS.length +
-                ACTION_CATALOG.filter((entry) => VISIBLE_CATEGORIES.includes(entry.category)).length
+                ACTION_CATALOG.filter((entry) => VISIBLE_CATEGORIES.includes(entry.category)).length * 2
         );
         for (const entry of SETTINGS_INDEX) {
             expect(entry.label).not.toBe('');
             expect(entry.testID).not.toBe('');
             expect('target' in entry).toBe(false);
             expect('read' in entry).toBe(false);
+            expect(Object.isFrozen(entry)).toBe(true);
         }
         for (const field of SETTINGS_FIELD_DEFINITIONS)
             expect(SETTINGS_INDEX).toContainEqual(
@@ -151,6 +158,7 @@ describe('the Settings search index', () => {
             'LabelsTab.tsx',
             'ProfilesTab.tsx',
             'KeybindingsTab.tsx',
+            'GlobalHotkeySection.tsx',
             'WebTab.tsx',
             'RemoteTab.tsx',
             'GeneralTab.tsx',
@@ -159,9 +167,9 @@ describe('the Settings search index', () => {
         const indexedLabels = new Set(SETTINGS_INDEX.map((entry) => entry.label));
         for (const file of tabFiles) {
             const source = readFileSync(resolve('packages/client/src/settings', file), 'utf8');
-            for (const match of source.matchAll(/(?<![-\w])label="([^"]+)"/g)) {
+            for (const match of source.matchAll(/(?:\blabel|aria-label|ariaLabel)=["']([^"']+)["']/g)) {
                 const label = match[1];
-                if (label !== undefined && label !== '') expect(indexedLabels).toContain(label);
+                if (label !== undefined && label !== '') expect.soft(indexedLabels, `${file}: ${label}`).toContain(label);
             }
         }
     });

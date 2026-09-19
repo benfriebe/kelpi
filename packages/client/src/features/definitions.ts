@@ -60,6 +60,21 @@ export const SETTINGS_WINDOW_FEATURE = { id: 'kelpi.settings.window', title: 'Se
  */
 export const PANE_CHROME_FEATURE = { id: 'kelpi.pane.chrome', title: 'Pane header', placements: ['pane.chrome'] } as const satisfies BundledFeatureDefinition;
 
+/**
+ * The fifth presented surface: the find bar over the pane the daemon is searching.
+ *
+ * A definition with no binding, for the same reason as the five above: `grid/PaneGrid.tsx` mounts it
+ * through `pane-search/presenter-slot.tsx`, never `WorkbenchSlot`, so
+ * `host.features.get('kelpi.pane.search')` is never consulted. Being a definition is what puts it in
+ * `DEFAULT_SLOTS`, which is what makes the native bar impossible to select away - and this one owns
+ * a text input and the caret, so an empty select would mean a ⌘F that opens a search with no field
+ * to type into.
+ *
+ * The title is "Pane search" because that is the placement said in words, and `optionTitle` appends
+ * "(bundled)" to it in the select, which is the route back.
+ */
+export const PANE_SEARCH_FEATURE = { id: 'kelpi.pane.search', title: 'Pane search', placements: ['pane.search'] } as const satisfies BundledFeatureDefinition;
+
 /** Discovery does not import React views or start feature subscriptions. */
 export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = [
     TERMINAL_FEATURE,
@@ -76,6 +91,7 @@ export const BUNDLED_FEATURE_DEFINITIONS: readonly BundledFeatureDefinition[] = 
     INTERACTION_NOTIFICATIONS_FEATURE,
     SETTINGS_WINDOW_FEATURE,
     PANE_CHROME_FEATURE,
+    PANE_SEARCH_FEATURE,
     { id: 'kelpi.workspace', title: 'Pane grid', placements: ['workspace'] },
     { id: 'kelpi.settings', title: 'Plugin settings', placements: ['settings'] }
 ];

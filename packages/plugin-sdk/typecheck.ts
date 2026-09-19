@@ -6,6 +6,7 @@ import './ui.typecheck.js';
 import './interaction.typecheck.js';
 import './settings.typecheck.js';
 import './pane-chrome.typecheck.js';
+import './pane-search.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
 

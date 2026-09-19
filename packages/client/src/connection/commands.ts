@@ -120,6 +120,17 @@ export interface TerminalSearchMatch {
     readonly linesFromBottom: number;
     readonly col: number;
     readonly length: number;
+    /**
+     * The match's absolute buffer line, as the daemon numbers it, or null when the reply did not
+     * state one.
+     *
+     * Nothing in the client scrolls by it - `linesFromBottom` is the coordinate that survives two
+     * buffers of different depths, which is the whole point of the field above. It is carried
+     * because `TerminalSearch` states it (`plugin-sdk/domain.d.ts`) and a `pane.search` presenter
+     * is handed the same match shape, and it is nullable because a reply without it is a reply
+     * this client can still act on.
+     */
+    readonly line: number | null;
 }
 
 export function replySearchMatch(reply: CommandReply): TerminalSearchMatch | null {
@@ -132,7 +143,8 @@ export function replySearchMatch(reply: CommandReply): TerminalSearchMatch | nul
     if (typeof linesFromBottom !== 'number' || typeof col !== 'number' || typeof length !== 'number') {
         return null;
     }
-    return { linesFromBottom, col, length };
+    const line = record['line'];
+    return { linesFromBottom, col, length, line: typeof line === 'number' ? line : null };
 }
 
 // ── payload construction ────────────────────────────────────────────────────────────

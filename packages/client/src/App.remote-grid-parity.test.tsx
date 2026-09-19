@@ -82,7 +82,16 @@ const REMOTE_GAPS: readonly string[] = [
     'onPaneChromeFailure',
     // The caret hand-back after a click inside the presenter's frame. Inert without a presenter,
     // and the remote grid has none.
-    'onReleaseChromeCaret'
+    'onReleaseChromeCaret',
+    /*
+     * Pane search. The same two arguments, and the second is the sharper one: a `pane.search`
+     * presenter is ONE view per window with one selection, one acknowledgement stream and one
+     * failure latch, so a second grid in the same window cannot host a second; and the remote
+     * CommandClient has no search spelling at all, which is why `renderPaneOverlay` is already a
+     * listed value gap. Both of these are inert without a search to report on.
+     */
+    'onPaneSearchFailure',
+    'onReleaseSearchCaret'
 ];
 
 /**
@@ -107,7 +116,16 @@ const VALUE_GAPS: readonly string[] = [
     // One presenter per window (see `onRequestRename` above): the remote grid draws the bundled
     // header, so it neither opts into the placement nor feeds it the footer's change counts.
     'paneChromePresenter',
-    'changesFor'
+    'changesFor',
+    /*
+     * The find bar's four, for the reason above `onPaneSearchFailure`: the remote grid has no
+     * search verbs to drive and no presenter to draw one, so it neither opts into the placement
+     * nor builds a session, a write path or a chord grant for it.
+     */
+    'paneSearchPresenter',
+    'search',
+    'searchActions',
+    'searchChords'
 ];
 
 /** One workspace, one pane: enough for either mount to render its grid. */

@@ -7,9 +7,11 @@
  * `selectSidebarEntries` over the remote store's mirror. A remote workspace or group is
  * therefore pixel-identical to a local one by construction: same avatars, status dots,
  * label chips, agent-count badges, group bands, nesting indents and §WS-007 guide rules,
- * with one implementation to drift from. What a remote row deliberately does NOT wire is
- * the local list's drag/multi-select/rename/context machinery — those callbacks are inert
- * (the house rule: an unwired gesture is inert, never half-working).
+ * with one implementation to drift from. Remote workspace rows also retain the local
+ * sidebar's basic reorder gesture: a drop among their current siblings sends the same
+ * `workspace-move` command through THAT daemon's client, then its mirror supplies the
+ * canonical new order. The local list's multi-select/rename/context machinery remains
+ * deliberately unwired here.
  *
  * The accordion header (status dot · name · chevron) collapses the whole host; that choice
  * is per-client convenience in `localStorage` (guarded — a blocked store defaults to
@@ -17,7 +19,7 @@
  * remote daemon's own connection: its persisted state, mirrored back live.
  */
 
-import { useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useStore } from 'zustand';
 
 import { hoverFill, hoverText, useHoverKey } from '../chrome/hover';
@@ -71,6 +73,58 @@ function writeCollapsed(name: string, collapsed: boolean): void {
 
 const noop = (): void => {};
 
+const REMOTE_DRAG_THRESHOLD_PX = 5;
+
+interface RemoteWorkspaceDrag {
+    readonly workspaceID: string;
+    /** `null` means the daemon's top-level workspace list. */
+    readonly groupID: string | null;
+    /** Post-remove command index that returns this row to its original slot. */
+    readonly sourceIndex: number;
+    /** The sibling ids as the remote mirror looked when the user pressed. */
+    readonly siblingIDs: readonly string[];
+    /** Each sibling's index in the daemon container before the dragged row is removed. */
+    readonly containerIndices: ReadonlyMap<string, number>;
+    readonly startY: number;
+    active: boolean;
+}
+
+/** The only list a remote drag may reorder: its source's current container. */
+function remoteSiblings(
+    entries: ReturnType<typeof selectSidebarEntries>,
+    workspaceID: string
+): {
+    readonly groupID: string | null;
+    readonly siblingIDs: readonly string[];
+    readonly containerIndices: ReadonlyMap<string, number>;
+} | null {
+    // `workspace-move` indexes the full top-level order, groups included. The rows we may
+    // reorder are only its workspace siblings, so retain both coordinate systems.
+    const topLevel: string[] = [];
+    const topLevelIndices = new Map<string, number>();
+    for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (entry?.kind !== 'workspace') continue;
+        topLevel.push(entry.workspace.id);
+        topLevelIndices.set(entry.workspace.id, index);
+    }
+    if (topLevel.includes(workspaceID)) {
+        return { groupID: null, siblingIDs: topLevel, containerIndices: topLevelIndices };
+    }
+    for (const entry of entries) {
+        if (entry.kind !== 'group') continue;
+        const siblingIDs = entry.workspaces.map((workspace) => workspace.id);
+        if (siblingIDs.includes(workspaceID)) {
+            return {
+                groupID: entry.group.id,
+                siblingIDs,
+                containerIndices: new Map(siblingIDs.map((id, index) => [id, index]))
+            };
+        }
+    }
+    return null;
+}
+
 function RemoteDaemonSection(props: {
     readonly held: RemoteDaemonRuntime;
     readonly selection: RemoteSelection | null;
@@ -83,6 +137,12 @@ function RemoteDaemonSection(props: {
     const connection = useStore(held.runtime.store, (state) => state.ui.connection);
     const [collapsed, setCollapsed] = useState(() => readCollapsed(held.name));
     const [hovered, hover] = useHoverKey();
+    const [draggingWorkspaceID, setDraggingWorkspaceID] = useState<string | null>(null);
+    const entriesRef = useRef(entries);
+    const rowElements = useRef(new Map<string, HTMLElement>());
+    const dragRef = useRef<RemoteWorkspaceDrag | null>(null);
+    const suppressActivateRef = useRef(false);
+    entriesRef.current = entries;
 
     const toggle = (): void => {
         setCollapsed((current) => {
@@ -92,8 +152,92 @@ function RemoteDaemonSection(props: {
     };
 
     const activate = (workspaceID: string): void => {
+        // Mouseup after a drag is followed by click on this same row. Reordering must not also
+        // navigate the remote workspace as a side effect of the drop.
+        if (suppressActivateRef.current) return;
         props.onSelect({ daemon: held.name, workspaceID });
     };
+
+    const dragStart = (workspaceID: string, event: React.MouseEvent): void => {
+        if (event.button !== 0) return;
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('input, button') !== null) return;
+        const source = remoteSiblings(entriesRef.current, workspaceID);
+        if (source === null || source.siblingIDs.length < 2) return;
+        const sourceIndex = source.containerIndices.get(workspaceID);
+        if (sourceIndex === undefined) return;
+        dragRef.current = {
+            workspaceID,
+            groupID: source.groupID,
+            sourceIndex,
+            siblingIDs: source.siblingIDs,
+            containerIndices: source.containerIndices,
+            startY: event.clientY,
+            active: false
+        };
+    };
+
+    useEffect(() => {
+        const insertionIndex = (drag: RemoteWorkspaceDrag, clientY: number): number | null => {
+            const remaining = drag.siblingIDs.filter((workspaceID) => workspaceID !== drag.workspaceID);
+            const commandIndex = (workspaceID: string, after: boolean): number | null => {
+                const beforeRemoval = drag.containerIndices.get(workspaceID);
+                if (beforeRemoval === undefined) return null;
+                const afterRemoval = beforeRemoval - (drag.sourceIndex < beforeRemoval ? 1 : 0);
+                return afterRemoval + (after ? 1 : 0);
+            };
+            let measured = false;
+            for (let index = 0; index < remaining.length; index += 1) {
+                const element = rowElements.current.get(`ws:${remaining[index]}`);
+                if (element === undefined) continue;
+                const rect = element.getBoundingClientRect();
+                if (rect.height <= 0) continue;
+                measured = true;
+                if (clientY < rect.top + rect.height / 2) return commandIndex(remaining[index] as string, false);
+            }
+            // A pointer below the last sibling appends. Without a measured sibling (the sidebar
+            // is hidden/unmounted), there is no trustworthy drop target and no command to send.
+            const last = remaining.at(-1);
+            return measured && last !== undefined ? commandIndex(last, true) : null;
+        };
+
+        const onMove = (event: MouseEvent): void => {
+            const drag = dragRef.current;
+            if (drag === null) return;
+            if (!drag.active) {
+                if (Math.abs(event.clientY - drag.startY) < REMOTE_DRAG_THRESHOLD_PX) return;
+                drag.active = true;
+                setDraggingWorkspaceID(drag.workspaceID);
+            }
+            event.preventDefault();
+        };
+
+        const onUp = (event: MouseEvent): void => {
+            const drag = dragRef.current;
+            dragRef.current = null;
+            setDraggingWorkspaceID(null);
+            if (drag === null || !drag.active) return;
+            suppressActivateRef.current = true;
+            // Retire only after the browser has delivered the click caused by this mouseup.
+            globalThis.setTimeout(() => {
+                suppressActivateRef.current = false;
+            }, 0);
+            const index = insertionIndex(drag, event.clientY);
+            if (index === null || index === drag.sourceIndex) return;
+            void held.runtime.commands.moveWorkspace({
+                workspace: drag.workspaceID,
+                ...(drag.groupID === null ? {} : { group: drag.groupID }),
+                index
+            });
+        };
+
+        globalThis.window.addEventListener('mousemove', onMove);
+        globalThis.window.addEventListener('mouseup', onUp);
+        return () => {
+            globalThis.window.removeEventListener('mousemove', onMove);
+            globalThis.window.removeEventListener('mouseup', onUp);
+        };
+    }, [held.runtime.commands]);
 
     const row = (
         workspace: ChromeWorkspace,
@@ -120,17 +264,20 @@ function RemoteDaemonSection(props: {
             bucket={props.bucket}
             presets={presets as readonly ChromeLabelPreset[]}
             renaming={false}
-            dragging={false}
+            dragging={draggingWorkspaceID === workspace.id}
             groupCaption={null}
             {...(options.guideColor === undefined ? {} : { guideColor: options.guideColor })}
             {...(options.guideExtendUp === undefined ? {} : { guideExtendUp: options.guideExtendUp })}
             {...(options.guideExtendDown === undefined ? {} : { guideExtendDown: options.guideExtendDown })}
             onActivate={activate}
             onContextMenu={noop}
-            onDragStart={noop}
+            onDragStart={dragStart}
             onCommitRename={noop}
             onCancelRename={noop}
-            registerRow={noop}
+            registerRow={(key, element) => {
+                if (element === null) rowElements.current.delete(key);
+                else rowElements.current.set(key, element);
+            }}
         />
     );
 

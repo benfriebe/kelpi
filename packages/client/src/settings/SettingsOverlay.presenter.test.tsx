@@ -215,6 +215,29 @@ afterEach(() => {
 });
 
 describe('a selected Settings presenter', () => {
+    it('keeps host search through a custom presenter and reveals a projected control natively', () => {
+        setup();
+        const input = screen.getByTestId('settings-search');
+        expect(drawnBy()).toBe(PRESENTER_VIEW);
+        input.focus();
+        for (const value of ['F', 'Fo', 'Font', 'Font size']) {
+            fireEvent.change(input, { target: { value } });
+            expect(screen.getByTestId('settings-search') === input).toBe(true);
+            expect(document.activeElement === input).toBe(true);
+        }
+        const result = screen.getByTestId('settings-search-result-terminal-font-size');
+        result.focus();
+        fireEvent.click(result);
+        expect(drawnBy()).toBe('bundled');
+        const control = screen.getByTestId('terminal-font-size');
+        expect(control.dataset['settingsSearchHit']).toBe('true');
+        expect(control.contains(document.activeElement)).toBe(true);
+        fireEvent.click(screen.getByTestId('settings-search-done'));
+        expect(drawnBy()).toBe(PRESENTER_VIEW);
+        expect(document.activeElement).toBe(input);
+        expect(control.dataset['settingsSearchHit']).toBeUndefined();
+    });
+
     it('draws the rail and the panel, and the host keeps the dialog', () => {
         setup();
         expect(drawnBy()).toBe(PRESENTER_VIEW);
@@ -715,9 +738,9 @@ describe('the recovery floor', () => {
             />
         );
         const dialog = screen.getByTestId('settings-window');
-        // [toolbar, the rail-and-panel row] - the row is what the wrapper wraps.
-        expect(dialog.children).toHaveLength(2);
-        expect(wrapped).toBe(dialog.children[1]?.outerHTML);
+        // [toolbar, host search, rail-and-panel row] - only the last is replaceable.
+        expect(dialog.children).toHaveLength(3);
+        expect(wrapped).toBe(dialog.children[2]?.outerHTML);
     });
 
     it('draws the bundled panel with no presenter selected, on a phone, and while disconnected', () => {

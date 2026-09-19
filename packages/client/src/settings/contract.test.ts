@@ -16,6 +16,7 @@ import {
     SETTINGS_SECTION_IDS,
     isSettingsSectionID,
     settingsFieldDescriptor,
+    settingsGroupDescriptor,
     validateSettingsDraft,
     validateSettingsWrite,
     type SettingsFieldDescriptor,
@@ -202,5 +203,26 @@ describe('the descriptor projection', () => {
         expect(Object.hasOwn(settingsFieldDescriptor(toggle), 'error')).toBe(false);
         expect(Object.hasOwn(settingsFieldDescriptor(toggle), 'draft')).toBe(false);
         expect(Object.hasOwn(settingsFieldDescriptor(toggle), 'rowTestID')).toBe(false);
+    });
+});
+
+
+describe('search keyword projection', () => {
+    it('copies and freezes keyword metadata without carrying private fields', () => {
+        const keywords = ['header background'];
+        const source = {
+            id: 'example', sectionID: 'appearance' as const, title: 'Example', hint: null,
+            testID: 'example', keywords, target: { key: 'PRIVATE-KEY' }, read: () => 'PRIVATE-VALUE'
+        };
+        const group = settingsGroupDescriptor(source);
+        const field = settingsFieldDescriptor({ ...toggle, keywords });
+        keywords.push('changed');
+        expect(group.keywords).toEqual(['header background']);
+        expect(field.keywords).toEqual(['header background']);
+        expect(Object.isFrozen(group.keywords)).toBe(true);
+        expect(Object.isFrozen(field.keywords)).toBe(true);
+        expect('target' in group).toBe(false);
+        expect('read' in group).toBe(false);
+        expect(JSON.stringify(group)).not.toContain('PRIVATE');
     });
 });

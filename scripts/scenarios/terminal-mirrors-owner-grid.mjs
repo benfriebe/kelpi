@@ -239,6 +239,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             return { x: host.scrollLeft, y: host.scrollTop,
                 maxX: host.scrollWidth - host.clientWidth, maxY: host.scrollHeight - host.clientHeight,
                 rootX: root.scrollLeft, rootY: root.scrollTop, clip: root.dataset.terminalClip,
+                focused: document.activeElement === host.querySelector('textarea'),
                 hostX: h.x, hostY: h.y, canvasX: c.x, canvasY: c.y,
                 width: c.width, height: c.height, cx: h.x + h.width / 2, cy: h.y + h.height / 2,
                 overflow: getComputedStyle(host).overflow,
@@ -264,6 +265,89 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check('panning keeps the owner grid', (await geometry(paneID))?.mirror === '120x30');
         await rec.shot(page, 'panned-to-owner-right-edge');
 
+        // #178: exercise the real engine input proxies as well as the canvas geometry.
+        const imeGeometry = () => page.eval(`(() => {
+            const root = document.querySelector('${paneRoot(paneID)}');
+            const canvas = root.querySelector('canvas');
+            const area = root.querySelector('textarea');
+            const host = root.querySelector('[data-terminal-host]');
+            const cb = canvas.getBoundingClientRect();
+            const ab = area.getBoundingClientRect();
+            const hb = host.getBoundingClientRect();
+            area.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true,data:'PAN'}));
+            const pre = root.querySelector('[data-ime-preedit]');
+            const pb = pre.getBoundingClientRect();
+            const result = {pan:[host.scrollLeft,host.scrollTop],canvas:[cb.x,cb.y],area:[ab.x,ab.y],
+                areaStyle:[area.style.left,area.style.top],canvasOffset:[canvas.offsetLeft,canvas.offsetTop],
+                host:[hb.x,hb.y],pre:[pb.x,pb.y],root:[root.scrollLeft,root.scrollTop]};
+            area.dispatchEvent(new CompositionEvent('compositionend', {bubbles:true,data:''}));
+            return result;
+        })()`);
+        const imeProbe = await imeGeometry();
+        rec.note('IME pan geometry '+JSON.stringify(imeProbe));
+        rec.check('IME caret follows the panned canvas',
+            Math.abs(imeProbe.area[0] - imeProbe.canvas[0] - parseFloat(imeProbe.areaStyle[0]) + imeProbe.canvasOffset[0]) < 1 &&
+            Math.abs(imeProbe.area[1] - imeProbe.canvas[1] - parseFloat(imeProbe.areaStyle[1]) + imeProbe.canvasOffset[1]) < 1 &&
+            imeProbe.pre[0] === imeProbe.area[0] && imeProbe.pre[1] === imeProbe.area[1],
+            JSON.stringify(imeProbe));
+        await page.eval(`document.querySelector('${paneRoot(paneID)} textarea').blur()`);
+        const clickBefore = await viewport();
+        await page.send('Input.dispatchMouseEvent', {type:'mousePressed',x:clickBefore.cx,y:clickBefore.cy,button:'left',clickCount:1});
+        await page.send('Input.dispatchMouseEvent', {type:'mouseReleased',x:clickBefore.cx,y:clickBefore.cy,button:'left',clickCount:1});
+        await sleep(100);
+        const clickAfter = await viewport();
+        rec.check('refocusing a panned canvas preserves the viewport',
+            clickAfter.focused && clickBefore.x===clickAfter.x && clickBefore.y===clickAfter.y && clickAfter.rootX===0 && clickAfter.rootY===0,
+            JSON.stringify({before:clickBefore,after:clickAfter}));
+
+        // Focus must not scroll the fixed root to expose an absolute caret beyond the viewer box.
+        await cli.ok(['pane','send','--target',paneID,"printf '\\033[20;110H'"]);
+        await sleep(150);
+        await page.eval(`document.querySelector('${paneRoot(paneID)} textarea').blur()`);
+        const farCaretBefore=await viewport();
+        await page.send('Input.dispatchMouseEvent',{type:'mousePressed',x:farCaretBefore.cx,y:farCaretBefore.cy,button:'left',clickCount:1});
+        await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',x:farCaretBefore.cx,y:farCaretBefore.cy,button:'left',clickCount:1});
+        await sleep(100);
+        const farCaretAfter=await viewport();
+        rec.check('refocus with a far-right cursor keeps pane root stationary',farCaretAfter.focused&&farCaretAfter.rootX===0&&farCaretAfter.rootY===0&&farCaretAfter.x===farCaretBefore.x&&farCaretAfter.y===farCaretBefore.y,
+            JSON.stringify({before:farCaretBefore,after:farCaretAfter}));
+        await cli.ok(['pane','send','--target',paneID,"printf '\\033[1;1H'"]);
+        // Restore a failed probe's root position so the remaining checks can still run.
+        await page.eval(`(() => {const r=document.querySelector('${paneRoot(paneID)}');r.scrollLeft=0;r.scrollTop=0;})()`);
+        await sleep(150);
+        // Resize within the same whole-column count: no wheel or scroll follows the shrink.
+        await page.send('Emulation.setDeviceMetricsOverride', {width:907,height:600,deviceScaleFactor:1,mobile:false});
+        await sleep(200);
+        const beforeSmallResize=await viewport();
+        await page.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:beforeSmallResize.cx,y:beforeSmallResize.cy,deltaX:2000,deltaY:0});
+        await sleep(100);
+        const atWideEdge=await viewport();
+        await page.send('Emulation.setDeviceMetricsOverride',{width:900,height:600,deviceScaleFactor:1,mobile:false});
+        await sleep(250);
+        const afterSmallResize=await viewport();
+        rec.check('a sub-cell shrink reveals the newly clipped right edge',
+            afterSmallResize.clip === atWideEdge.clip && afterSmallResize.x === atWideEdge.x &&
+            afterSmallResize.maxX > atWideEdge.maxX && afterSmallResize.right,
+            JSON.stringify({before:atWideEdge,after:afterSmallResize}));
+        await page.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:afterSmallResize.cx,y:afterSmallResize.cy,deltaX:2000,deltaY:0});
+
+        // Exercise real engine selection after an X pan, with a deterministic word in a hidden column.
+        await cli.ok(['pane','send','--target',paneID,"printf '\\033[10;90HREVIEWWORD\\033[1;1H'"]);
+        await sleep(200);
+        const wordGeometry=await geometry(paneID);
+        const wordView=await viewport();
+        const point={x:wordView.canvasX+91*wordGeometry.cellWidth,y:wordView.canvasY+9.5*wordGeometry.cellHeight};
+        await page.eval(`(() => {window.__reviewSavedClipboardWrite=navigator.clipboard.writeText;
+            navigator.clipboard.writeText=async text=>{window.__reviewCopied=text;};})()`);
+        try {
+            await page.send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:2});
+            await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:2});
+            await sleep(100);
+            const selection=await page.eval(`({copied:window.__reviewCopied,length:document.querySelector('${paneRoot(paneID)}').dataset.terminalSelection})`);
+            rec.check('real double-click selects the visible panned word',selection.copied==='REVIEWWORD',JSON.stringify({point,selection,viewport:await viewport()}));
+        } finally {
+            await page.eval(`navigator.clipboard.writeText=window.__reviewSavedClipboardWrite;delete window.__reviewSavedClipboardWrite;delete window.__reviewCopied`);
+        }
         // Real phone form factor and trusted two-finger input, not synthetic TouchEvents.
         const savedPlace = await page.eval(`localStorage.getItem('kelpi.phone.last-place')`);
         try {
@@ -292,6 +376,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             rec.check('two fingers pan both axes on a phone without moving the pane root',
                 phoneAfter.x > 40 && phoneAfter.y > 40 && phoneAfter.rootX === 0 && phoneAfter.rootY === 0 &&
                 (await geometry(paneID))?.mirror === '120x60', JSON.stringify(phoneAfter));
+            const phoneIme = await imeGeometry();
+            rec.check('IME caret and composition follow both phone pan axes',
+                Math.abs(phoneIme.area[0] - phoneIme.canvas[0] - parseFloat(phoneIme.areaStyle[0]) + phoneIme.canvasOffset[0]) < 1 &&
+                Math.abs(phoneIme.area[1] - phoneIme.canvas[1] - parseFloat(phoneIme.areaStyle[1]) + phoneIme.canvasOffset[1]) < 1 &&
+                phoneIme.pre[0] === phoneIme.area[0] && phoneIme.pre[1] === phoneIme.area[1], JSON.stringify(phoneIme));
             await rec.shot(page, 'phone-two-finger-pan');
         } finally {
             await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 });

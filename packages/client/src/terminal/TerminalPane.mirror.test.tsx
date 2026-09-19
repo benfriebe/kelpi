@@ -567,8 +567,8 @@ describe('the pane that owns sizing, and the daemon that cannot say (#166)', () 
  * and every mirror that fits. The pan cases also pin how the indicators follow the currently clipped side.
  */
 describe('a mirrored pane can pan without taking size control (#178)', () => {
-    async function viewer(height = 600, phone = false) {
-        const mounted = await mount({ ownsSize: false, width: 840, height, phone });
+    async function viewer(height = 600, phone = false, width = 840) {
+        const mounted = await mount({ ownsSize: false, width, height, phone });
         mounted.pty.last().replay('owner', { cols: 120, rows: 30 });
         await settle();
         const host = mounted.root.querySelector<HTMLElement>('[data-terminal-host]')!;
@@ -615,6 +615,34 @@ describe('a mirrored pane can pan without taking size control (#178)', () => {
         expect(seen).toEqual([[0, 25]]);
         fireEvent.wheel(canvas, { deltaY: -20 });
         expect(seen).toEqual([[0, 25], [0, -20]]);
+    });
+
+    it('forwards horizontal application wheel input when only the vertical axis pans', async () => {
+        const { host, canvas, pty } = await viewer(400, false, 1200);
+        act(() => pty.last().modes({ mouseTracking: 'vt200', mouseFormat: 'sgr' }));
+        const wheel = { deltaX: 1, deltaMode: 1, clientX: 45, clientY: 61 };
+        fireEvent.wheel(canvas, wheel);
+        expect(pty.last().directInput).toEqual(['\u001b[<67;5;4M']);
+        fireEvent.wheel(canvas, { ...wheel, deltaY: 1 });
+        expect([host.scrollLeft, host.scrollTop]).toEqual([0, 20]);
+        expect(pty.last().directInput).toEqual(['\u001b[<67;5;4M', '\u001b[<67;5;5M']);
+    });
+
+    it('refreshes edges on sub-cell resizes without reporting an unchanged grid', async () => {
+        const mounted = await viewer(409, false, 849);
+        fireEvent.wheel(mounted.canvas, { deltaX: 1000, deltaY: 1000 });
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([351, 191]);
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-right-pane-1"]')).toBeNull();
+        const resizes = [...mounted.pty.last().resizes];
+        await mounted.update({ measure: box(840, 400) });
+        await act(async () => {
+            observers.trigger();
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        });
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-right-pane-1"]')).not.toBeNull();
+        expect(mounted.root.querySelector('[data-testid="terminal-clip-bottom-pane-1"]')).not.toBeNull();
+        expect([mounted.host.scrollLeft, mounted.host.scrollTop]).toEqual([351, 191]);
+        expect(mounted.pty.last().resizes).toEqual(resizes);
     });
 
     it('pans before mouse reporting, but retains vertical reports and scroll-aware click cells', async () => {

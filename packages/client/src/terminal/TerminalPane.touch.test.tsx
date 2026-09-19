@@ -424,7 +424,7 @@ describe('a phone pane under an application that asked for the mouse (#123)', ()
 });
 
 describe('AND NOT ON DESKTOP', () => {
-    it('has no touch listener, no scroll attribute and the markup it has always had', async () => {
+    it('has no touch listener, no scroll attribute and the same host layout as a phone', async () => {
         // The same 390x844 window; a FINE pointer is what makes it a desktop, which is the
         // form-factor rule's own "a narrow window is still a desktop" case.
         const h = await mountPane({ coarse: false });
@@ -439,9 +439,9 @@ describe('AND NOT ON DESKTOP', () => {
         expect(move.defaultPrevented).toBe(false);
         expect(h.engineEvents).toEqual(['touchstart', 'touchmove', 'touchend']);
         expect(h.root.hasAttribute(TERMINAL_SCROLL_ATTRIBUTE)).toBe(false);
-        // …and the tree is the one C1 pinned: no class, no attribute, no extra node.
+        // Both form factors use the same positioned host (#178); touch adds no wrapper or class.
         expect(h.root.className).toBe('relative h-full w-full overflow-hidden ');
-        expect(h.host.className).toBe('h-full w-full');
+        expect(h.host.className).toBe('relative h-full w-full');
     });
 
     it('and a long press on a desktop selects nothing and offers nothing', async () => {

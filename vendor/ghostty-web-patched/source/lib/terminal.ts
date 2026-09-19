@@ -480,28 +480,32 @@ export class Terminal implements ITerminalCore {
         this.setPreedit('');
       });
 
+      // Focus never owns the embedder's scroll position (vendor 0.4.0-nex.15, #178).
+      // A mirrored canvas can be panned away from the terminal cursor; revealing the hidden
+      // textarea here would move it back before selection resolves the pointer's cell.
+      // preventScroll keeps the same caret/keyboard behavior without moving any ancestor.
       // Focus textarea on interaction - preventDefault before focus
       const textarea = this.textarea;
       // Desktop: mousedown on canvas
       this.canvas.addEventListener('mousedown', (ev) => {
         ev.preventDefault();
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       });
       // Mobile: touchend with preventDefault to suppress iOS caret
       this.canvas.addEventListener('touchend', (ev) => {
         ev.preventDefault();
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       });
       // Redirect focus from parent container to textarea
       // This ensures IME composition events always go to the textarea
       parent.addEventListener('mousedown', (ev) => {
         if (ev.target === parent) {
           ev.preventDefault();
-          textarea.focus();
+          textarea.focus({ preventScroll: true });
         }
       });
       parent.addEventListener('focus', () => {
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       });
 
       // Create renderer
@@ -897,12 +901,12 @@ export class Terminal implements ITerminalCore {
       // because composition events fire on the focused element.
       const target = this.textarea || this.element;
       if (target) {
-        target.focus();
+        target.focus({ preventScroll: true });
 
         // Also schedule a delayed focus as backup to ensure it sticks
         // (some browsers may need this if DOM isn't fully settled)
         setTimeout(() => {
-          target?.focus();
+          target?.focus({ preventScroll: true });
         }, 0);
       }
     }

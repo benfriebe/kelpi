@@ -1,8 +1,12 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createReport } from './report.mjs';
 
 import { describe, expect, it } from 'vitest';
 
 import {
+    requireVisiblePage,
     NO_COMMENT_TEXTAREA,
     OVERLAY_ATTRS,
     describePickGuards,
@@ -218,4 +222,33 @@ describe('OVERLAY_ATTRS', () => {
         expect(declared, 'OVERLAY_ATTRS is no longer declared as a literal array in scripts.ts').not.toBe(null);
         expect(OVERLAY_ATTRS).toEqual([...declared[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]));
     });
+});
+
+describe('native-page visibility precondition', () => {
+    for (const visibility of ['hidden', 'visible']) {
+        it(`records ${visibility} before allowing native input`, async () => {
+            const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-visibility-'));
+            try {
+                const report = createReport({ outDir, meta: {} });
+                const recorder = report.step('web-batch-pickup', { expect: 'real picks' });
+                let clicks = 0;
+                const view = { eval: async (source) => run(source, { document: { visibilityState: visibility } }) };
+                await report.guard(recorder, async () => {
+                    await requireVisiblePage(view, 'web-batch-pickup');
+                    clicks++;
+                    recorder.check('a pick opened', true);
+                });
+                if (visibility === 'hidden') {
+                    expect(clicks).toBe(0);
+                    expect(report.summary()).toMatchObject({ errored: 1, failedAssertions: 0, assertions: 0 });
+                    expect(recorder.entry.error).toContain('occlusion');
+                    expect(recorder.entry.error).toContain('document.visibilityState=hidden');
+                    expect(recorder.entry.error).toContain('node scripts/ui-audit/audit.mjs --only web-batch-pickup --window onscreen');
+                } else {
+                    expect(clicks).toBe(1);
+                    expect(report.summary()).toMatchObject({ errored: 0, failedAssertions: 0, assertions: 1 });
+                }
+            } finally { fs.rmSync(outDir, { recursive: true, force: true }); }
+        });
+    }
 });

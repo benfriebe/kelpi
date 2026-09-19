@@ -221,3 +221,14 @@ export function describePickGuards(probe) {
     }
     return `${guard} [${facets}]`;
 }
+
+/** Refuse native input while Chromium considers the page occluded (#206). */
+export async function requireVisiblePage(view, stepID) {
+    const visibility = await view.eval('document.visibilityState');
+    if (visibility !== 'visible') {
+        throw new Error(
+            `Native-page input blocked by occlusion: document.visibilityState=${String(visibility)} before ${stepID}. ` +
+            `Re-run: node scripts/ui-audit/audit.mjs --only ${stepID} --window onscreen`
+        );
+    }
+}

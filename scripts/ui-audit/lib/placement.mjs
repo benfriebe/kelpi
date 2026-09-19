@@ -72,3 +72,30 @@ export function resolveScenarioPlacement(runPlacement, declared) {
     if (rank(declared) <= rank(runPlacement)) return { placement: runPlacement, raised: false, warning: null };
     return { placement: declared, raised: true, warning: null };
 }
+
+/**
+ * Resolve an audit flow's placement floor.
+ *
+ * Unlike the scenario runner, the audit's `default` is a real, visible window rather than an
+ * absent lane. It can be covered by another app, and a covered native WebContentsView drops CDP
+ * input. Therefore `default` (like `hidden`) is weaker than an `offscreen` declaration here.
+ * `onscreen` and `offscreen` are both non-occludable placements; the ordering below preserves
+ * the caller's stronger `onscreen` request instead of needlessly lowering its pixel fidelity.
+ */
+export function resolveAuditPlacement(runPlacement, declared) {
+    if (declared === undefined || declared === null) return { placement: runPlacement, raised: false, warning: null };
+    if (rank(declared) < 0) {
+        return {
+            placement: runPlacement,
+            raised: false,
+            warning: `windowPlacement ${JSON.stringify(declared)} is not one of ${PLACEMENT_ORDER.join(' | ')}; ignored`
+        };
+    }
+    // The audit always has a window. Its old default may be covered, and hidden is explicitly
+    // coverable, so either needs a separate offscreen process for a native-page flow.
+    if (runPlacement === 'default' || runPlacement === 'hidden' || rank(runPlacement) < 0) {
+        return { placement: declared, raised: true, warning: null };
+    }
+    if (rank(declared) <= rank(runPlacement)) return { placement: runPlacement, raised: false, warning: null };
+    return { placement: declared, raised: true, warning: null };
+}

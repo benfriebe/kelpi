@@ -29,12 +29,13 @@ export function createReport({ outDir, meta }) {
         steps,
 
         /** Begin a step; returns a recorder the flow fills in as it goes. */
-        step(id, { expect, needsEyes = false, notes = [] } = {}) {
+        step(id, { expect, needsEyes = false, notes = [], support = false } = {}) {
             counter += 1;
             const index = String(counter).padStart(2, '0');
             const entry = {
                 index,
                 id,
+                ...(support ? { support: true } : {}),
                 slug: `${index}-${id}`,
                 expect: expect ?? '',
                 needsEyes,

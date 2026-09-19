@@ -82,7 +82,8 @@ import {
     startShell,
     waitForHealthz
 } from './lib/stack.mjs';
-import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards } from './lib/shards.mjs';
+import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards, windowPlacementOf } from './lib/shards.mjs';
+import { resolveAuditPlacement } from './lib/placement.mjs';
 import {
     describePickGuards,
     focusPageCommentSource,
@@ -1803,7 +1804,7 @@ async function runShardedParent() {
     }
     if (options.packaged) await assertPackagedSignature(repoRoot);
 
-    const plan = planShards(CANONICAL_ORDER, options.shards);
+    const plan = planShards(CANONICAL_ORDER, options.shards, { windowPlacement: options.window });
     process.stdout.write(`${describePartition(plan)}\n\n`);
 
     const shardsDir = path.join(outDir, 'shards');
@@ -1895,7 +1896,7 @@ async function runShardedParent() {
             commit: gitCommit(),
             shellMode: options.packaged ? 'packaged Kelpi.app' : 'dev electron (packages/shell)',
             windowPlacement: options.window,
-            shardCount: options.shards
+            shardCount: plan.groups.length
         }
     });
     process.stdout.write(
@@ -2012,8 +2013,10 @@ async function main() {
      * harness throws here (in every shard at once) instead of silently dropping steps from one.
      */
     let shardFilter = null;
+    let supportFilter = null;
     const skip = (id) =>
-        (options.only !== null && !options.only.includes(id)) || (shardFilter !== null && !shardFilter.has(id));
+        (options.only !== null && !options.only.includes(id)) ||
+        (shardFilter !== null && !shardFilter.has(id) && !supportFilter?.has(id));
 
     try {
         // The daemon's first pane should open in the fixture dir, so `ls` has content.
@@ -2129,6 +2132,13 @@ async function main() {
         await sleep(2500);
 
         const flows = buildFlows({ report, page, cli, sandbox, work, repo, site, consoleErrors, runtime, repoRoot, options });
+        const placementDrift = flows.find((flow) => flow.windowPlacement !== windowPlacementOf(flow.id));
+        if (placementDrift !== undefined) {
+            throw new Error(
+                `the ${placementDrift.id} flow declares ${String(placementDrift.windowPlacement)}, but ` +
+                `lib/shards.mjs declares ${String(windowPlacementOf(placementDrift.id))}; keep the parent plan and flow contract aligned`
+            );
+        }
         if (options.shard !== null) {
             /*
              * The partition is derived from the flows THIS process actually built, not from the
@@ -2136,7 +2146,7 @@ async function main() {
              * input, and a manifest that has drifted from the harness throws here (in every shard
              * at once) instead of silently dropping steps out of one of them.
              */
-            const plan = planShards(flows.map((flow) => flow.id), options.shards);
+            const plan = planShards(flows.map((flow) => flow.id), options.shards, { windowPlacement: options.window });
             if (plan.groups[options.shard] === undefined) {
                 throw new Error(
                     `--shard ${String(options.shard)} is out of range: the manifest partitions this run into ` +
@@ -2144,8 +2154,9 @@ async function main() {
                 );
             }
             shardFilter = new Set(plan.groups[options.shard]);
+            supportFilter = new Set(plan.supports?.[options.shard] ?? []);
             process.stdout.write(
-                `shard ${String(options.shard)}/${String(options.shards)} — ${String(shardFilter.size)} steps` +
+                `shard ${String(options.shard)}/${String(plan.groups.length)} — ${String(shardFilter.size)} steps` +
                     `${options.shard === 0 ? ' (spine, canonical order)' : ' (free)'}\n`
             );
         }
@@ -2185,7 +2196,11 @@ async function main() {
         await recordTimeline('(boot)');
         for (const flow of flows) {
             if (skip(flow.id)) continue;
-            const recorder = report.step(flow.id, { expect: flow.expect, needsEyes: flow.needsEyes === true });
+            const recorder = report.step(flow.id, {
+                expect: flow.expect,
+                needsEyes: flow.needsEyes === true,
+                support: supportFilter?.has(flow.id) === true
+            });
             await report.guard(recorder, () => flow.run(recorder));
             await recordTimeline(flow.id);
         }
@@ -6005,6 +6020,9 @@ function buildFlows(ctx) {
         },
         {
             id: 'web-batch-pickup',
+            // This drives the native page itself. Its declared floor is kept with the shard
+            // manifest, where the parent can plan a private process before Electron builds it.
+            windowPlacement: windowPlacementOf('web-batch-pickup'),
             expect:
                 'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; hiding the panel leaves the button wearing a numeric badge with the pending count; Send pastes one `# kelpi inspect batch` block into a shell pane.',
             needsEyes: true,
@@ -6306,6 +6324,7 @@ function buildFlows(ctx) {
         //    strip, and the focus handoff (index gaps #4, #9, #17) ────────────────────────
         {
             id: 'web-batch-internals',
+            windowPlacement: windowPlacementOf('web-batch-internals'),
             expect:
                 'The page half of the pickup session behaves: badges follow a scroll and a live re-query, hide when their element collapses or leaves the viewport, the popover carries `#<label> <selector>` and obeys its placement rules, a panel-side comment pushes into the textarea only while it is unfocused, Escape and ⌘-Return dismiss it, and a highlight that beats its sync is applied on the next one.',
             needsEyes: true,
@@ -8045,6 +8064,7 @@ function buildFlows(ctx) {
              * the hosting TAB's id.
              */
             id: 'web-console-frames',
+            windowPlacement: windowPlacementOf('web-console-frames'),
             expect:
                 'A cross-origin iframe\'s console.log AND its uncaught exception both reach `kelpi web console` for the pane that embeds it, attributed to that pane\'s tab (WEB-073).',
             needsEyes: true,
@@ -35433,9 +35453,15 @@ function buildFlows(ctx) {
     ];
 }
 
-// `--shards N` without `--shard i` is the parent: it fans out N copies of this same script and
-// folds their results. Everything else — including each of those copies — is the run itself.
-const entry = options.shards > 1 && options.shard === null ? runShardedParent : main;
+// A placement-sensitive native-page flow is also a parent run even at `--shards 1`: Electron
+// fixes placement at window construction, so its offscreen instance must be a second process.
+// `--only` has already gained its declared chain writers, which lets a narrow rerun avoid
+// starting an unrelated normal shard.
+const selectedForPlacement = options.only ?? CANONICAL_ORDER;
+const needsPlacementChild = selectedForPlacement.some((id) =>
+    resolveAuditPlacement(options.window, windowPlacementOf(id)).raised
+);
+const entry = options.shard === null && (options.shards > 1 || needsPlacementChild) ? runShardedParent : main;
 
 entry().catch((error) => {
     process.stderr.write(`\nAUDIT HARNESS FAILED: ${String(error?.stack ?? error)}\n`);

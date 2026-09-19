@@ -1403,16 +1403,27 @@ Two client-side paths write the clipboard, and until #81 only the first existed:
    (`packages/client/src/app/clipboard.ts`, reached through
    `packages/client/src/terminal/pane-registry.ts`).
 
-   **A live read, never a cached one.** The engine's `clearSelection()` fires no change event
-   (`selection-manager.ts:227`) and the mousedown that starts a new selection calls it directly
-   (`:439`), so a pushed-and-cached selection survives the click that visibly cleared it. The
-   registry exists so the app can pull the answer at the moment the chord is pressed.
+   **A live read, never a cached one.** The registry pulls the focused renderer's answer at
+   the moment the chord is pressed, including a remote embedded workspace through its selection
+   bridge (#226). Older engines did not announce `clearSelection()`, so a cached selection could
+   survive a click that visibly cleared it. Since `0.4.0-nex.14`, clearing announces the change,
+   but that notification is not the authority for copying.
 
    **It declines rather than swallows** in two cases, and a decline is the dispatcher's
    fall-through (docs/config-keybindings.md section 7.2 step 7): the focused pane has no live
    terminal renderer, or the selection is empty. The empty case is deliberately NOT an interrupt:
    mouse reporting clears the selection on every press (section 12.1's Shift+drag note below), so
    an agent pane meets it constantly. ⌃C remains the only interrupt.
+
+**Selection across output and history trimming** (`0.4.0-nex.14`, #170). Selection endpoints
+are tracked by native buffer pins during each output write, then the copy reader and highlight
+use those pins' updated coordinates. A retained conversation row stays selected when older
+scrollback pages are discarded, including a trim hidden by net growth in the same output chunk.
+If either endpoint is discarded, the whole selection clears and announces that change; it never
+silently selects the replacement rows. Resetting the VT, changing screens, and erasing selected
+history also clear the selection. This is a reproduced engine defect and regression fix, not
+confirmation that trimming caused the original remote Codex session's failure; that session
+still needs a retest after the already-merged remote dispatch fix and this engine update.
 
 The engine's own claim that `SelectionManager` handles ⌘C (`input-handler.ts:382-386`) is wrong:
 that class registers no `keydown` and no `copy` listener at all (`:420-661`). Before #81 the

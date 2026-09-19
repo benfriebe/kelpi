@@ -580,6 +580,15 @@ export declare class GhosttyTerminal {
         cols: number;
         rows: number;
     };
+    /** Track selection endpoints natively while a write can move or remove buffer rows. */
+    trackSelection(startCol: number, startRow: number, endCol: number, endRow: number): boolean;
+    /** Consume the native pins after a write; null when selected rows no longer exist. */
+    readTrackedSelection(): {
+        startCol: number;
+        startRow: number;
+        endCol: number;
+        endRow: number;
+    } | null;
     /** Get number of scrollback lines (history, not including active screen) */
     getScrollbackLength(): number;
     /**
@@ -709,6 +718,8 @@ declare interface GhosttyWasmExports extends WebAssembly.Exports {
     ghostty_terminal_is_alternate_screen(terminal: TerminalHandle): boolean;
     ghostty_terminal_has_mouse_tracking(terminal: TerminalHandle): number;
     ghostty_terminal_get_mode(terminal: TerminalHandle, mode: number, isAnsi: boolean): number;
+    ghostty_terminal_track_selection(terminal: TerminalHandle, startCol: number, startRow: number, endCol: number, endRow: number): boolean;
+    ghostty_terminal_read_selection(terminal: TerminalHandle, outPtr: number): boolean;
     ghostty_terminal_get_scrollback_length(terminal: TerminalHandle): number;
     ghostty_terminal_get_scrollback_line(terminal: TerminalHandle, offset: number, bufPtr: number, bufLen: number): number;
     ghostty_terminal_get_scrollback_grapheme(terminal: TerminalHandle, offset: number, col: number, bufPtr: number, bufLen: number): number;
@@ -1638,6 +1649,10 @@ export declare class SelectionManager {
      * Check if there's an active selection
      */
     hasSelection(): boolean;
+    /** Pin both endpoints before output can prune or move their buffer rows (#170). */
+    trackSelectionForWrite(): boolean;
+    /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
+    restoreSelectionAfterWrite(): void;
     /**
      * Clear the selection
      */

@@ -45,7 +45,7 @@
  * `KELPI_COMPAT_CLI=/path/to/kelpi` points it at another copy.
  */
 
-import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
+import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -302,6 +302,7 @@ async function makeSandbox(label) {
 }
 
 function startDaemon(sandbox) {
+    assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
         cwd: repoRoot,
@@ -322,7 +323,7 @@ function startDaemon(sandbox) {
         exited = true;
     });
 
-    return {
+    return ownDesktopResource({
         child,
         log: () => log.join(''),
         get exited() {
@@ -336,9 +337,10 @@ function startDaemon(sandbox) {
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
             releaseChild(child);
         }
-    };
+    }, 'stop');
 }
 
 async function waitForHealthz(base, timeoutMs = 20_000) {
@@ -367,6 +369,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const child = spawn(
         electronBinary(),
@@ -398,7 +401,7 @@ function startShell(sandbox) {
         exitCode = code ?? (signal === null ? null : -1);
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -425,9 +428,10 @@ function startShell(sandbox) {
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /**
@@ -1472,7 +1476,6 @@ async function main() {
         process.stdout.write(`skipped: the Swift kelpi CLI is not installed at ${KELPI_CLI}\n`);
         return;
     }
-    await holdDesktopTestSlot();
     await ensureBuilds();
 
     const logs = [];
@@ -1493,5 +1496,5 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await main();
+await runDesktopTest(main);
 process.exit(process.exitCode ?? 0);

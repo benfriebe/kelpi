@@ -32,7 +32,7 @@
  * Exit code 0 = every check passed. Requires zsh (macOS has it) and a GUI session.
  */
 
-import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
+import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -210,6 +210,7 @@ async function makeSandbox() {
 }
 
 function startDaemon(sandbox) {
+    assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
         cwd: repoRoot,
@@ -228,15 +229,16 @@ function startDaemon(sandbox) {
     child.on('exit', () => {
         exited = true;
     });
-    return {
+    return ownDesktopResource({
         log: () => log.join(''),
         async stop() {
             if (exited) return;
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), sleep(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
         }
-    };
+    }, 'stop');
 }
 
 function electronBinary() {
@@ -250,6 +252,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    assertDesktopActive();
     const child = spawn(
         electronBinary(),
         ['.', `--user-data-dir=${sandbox.userData}`, `--remote-debugging-port=${String(sandbox.debugPort)}`],
@@ -273,7 +276,7 @@ function startShell(sandbox) {
     child.on('exit', () => {
         exited = true;
     });
-    return {
+    return ownDesktopResource({
         async quit() {
             if (!exited) {
                 try {
@@ -289,8 +292,9 @@ function startShell(sandbox) {
                 /* already gone */
             }
             await sleep(300);
+            await waitForDesktopChildExit(child, { group: true });
         }
-    };
+    }, 'quit');
 }
 
 // ── CDP (the window is only inspectable from inside) ────────────────────────────────
@@ -478,7 +482,6 @@ async function ensureBuilds() {
 }
 
 async function main() {
-    await holdDesktopTestSlot();
     await ensureBuilds();
     if (options.outDir !== null) fs.mkdirSync(options.outDir, { recursive: true });
 
@@ -590,10 +593,10 @@ async function main() {
         `\n${String(results.length - failed.length)}/${String(results.length)} checks passed` +
             `${options.outDir === null ? '' : ` — screenshots in ${options.outDir}`}\n`
     );
-    process.exit(failed.length === 0 ? 0 : 1);
+    process.exitCode = failed.length === 0 ? 0 : 1;
 }
 
-main().catch((error) => {
+runDesktopTest(main).then(() => process.exit(process.exitCode ?? 0)).catch((error) => {
     process.stderr.write(`${String(error?.stack ?? error)}\n`);
     process.exit(1);
 });

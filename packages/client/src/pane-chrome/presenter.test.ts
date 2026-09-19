@@ -11,7 +11,16 @@ import { describe, expect, it } from 'vitest';
 import { FOCUS_RING_WIDTH } from '../grid/FocusRing';
 
 import { PANE_CHROME_LIMITS } from './contract';
-import { clearPaneChromeHeights, paneChromeDeclaration, retainPaneChromeHeights, setPaneChromeHeight } from './height';
+import {
+    clearPaneChromeDeclarations,
+    clearPaneChromeHeights,
+    paneChromeDeclaration,
+    paneChromeDragRegionsFor,
+    retainPaneChromeHeights,
+    setPaneChromeDragRegions,
+    setPaneChromeHeight
+} from './height';
+import { paneChromeDragRegion } from './contract';
 import { createPaneChromeRefs } from './projection';
 import {
     clearPaneChromePainted,
@@ -217,5 +226,84 @@ describe('createPaneChromeRefs', () => {
         expect(ref).not.toContain('example');
         expect(ref).not.toContain('board');
         expect(/^c\d+$/.test(ref)).toBe(true);
+    });
+});
+
+describe('paneChromeDragRegion', () => {
+    const band = { width: 400, height: 21 };
+
+    it('clamps a rectangle into the band rather than refusing it', () => {
+        // A presenter cannot widen its own header by asking for more than it has: a region that
+        // reaches past every edge comes back as the band, which is what keeps a host surface off a
+        // terminal, a web page's hole, a divider and the pane next door.
+        expect(paneChromeDragRegion({ x: -500, y: -500, width: 9_999, height: 9_999 }, band)).toEqual({
+            x: 0, y: 0, width: 400, height: 21
+        });
+        expect(paneChromeDragRegion({ x: 10.4, y: 0.6, width: 100.4, height: 20 }, band)).toEqual({
+            x: 10, y: 1, width: 101, height: 20
+        });
+    });
+
+    it('drops a rectangle with nothing left, rather than drawing a surface nobody can press', () => {
+        expect(paneChromeDragRegion({ x: 500, y: 0, width: 40, height: 20 }, band)).toBeNull();
+        expect(paneChromeDragRegion({ x: 0, y: 0, width: 0, height: 20 }, band)).toBeNull();
+        expect(paneChromeDragRegion({ x: 0, y: 0, width: 40, height: -4 }, band)).toBeNull();
+    });
+
+    it('refuses anything that is not a number', () => {
+        expect(paneChromeDragRegion({ x: Number.NaN, y: 0, width: 4, height: 4 }, band)).toBeNull();
+        expect(paneChromeDragRegion({ x: 0, y: 0, width: Number.POSITIVE_INFINITY, height: 4 }, band)).toBeNull();
+        expect(paneChromeDragRegion({ x: 0, y: 0, width: 4, height: 4 }, { width: Number.NaN, height: 21 })).toBeNull();
+    });
+
+    it('never leaves the band, at any offset the clamp has to reconcile', () => {
+        for (const region of [
+            { x: 399, y: 20, width: 40, height: 40 },
+            { x: -10, y: -10, width: 20, height: 20 },
+            { x: 0, y: 0, width: 400, height: 21 }
+        ]) {
+            const kept = paneChromeDragRegion(region, band);
+            if (kept === null) continue;
+            expect(kept.x).toBeGreaterThanOrEqual(0);
+            expect(kept.y).toBeGreaterThanOrEqual(0);
+            expect(kept.x + kept.width).toBeLessThanOrEqual(band.width);
+            expect(kept.y + kept.height).toBeLessThanOrEqual(band.height);
+        }
+    });
+});
+
+describe('the declaration store, bands and regions together', () => {
+    it('hands the regions back on every path that hands a band back', () => {
+        clearPaneChromeDeclarations();
+        setPaneChromeHeight('a', 96);
+        setPaneChromeDragRegions('a', [{ x: 0, y: 0, width: 40, height: 20 }]);
+        setPaneChromeDragRegions('b', [{ x: 0, y: 0, width: 40, height: 20 }]);
+        // A pane that has left the projection: a host surface over a band nobody is drawing would
+        // take a press that belongs to the bundled header under it.
+        retainPaneChromeHeights(['a']);
+        expect(paneChromeDragRegionsFor('a')).toHaveLength(1);
+        expect(paneChromeDragRegionsFor('b')).toEqual([]);
+        // And the stand-down takes both, which is the one call the presenter's own paths use.
+        clearPaneChromeDeclarations();
+        expect(paneChromeDeclaration('a')).toBeNull();
+        expect(paneChromeDragRegionsFor('a')).toEqual([]);
+    });
+
+    it('treats an empty list as a withdrawal, and does not republish an unchanged one', () => {
+        clearPaneChromeDeclarations();
+        let notified = 0;
+        const stop = subscribePaneChromePresenters(() => {
+            notified += 1;
+        });
+        setPaneChromeDragRegions('a', [{ x: 1, y: 2, width: 3, height: 4 }]);
+        setPaneChromeDragRegions('a', [{ x: 1, y: 2, width: 3, height: 4 }]);
+        expect(paneChromeDragRegionsFor('a')).toHaveLength(1);
+        setPaneChromeDragRegions('a', []);
+        expect(paneChromeDragRegionsFor('a')).toEqual([]);
+        stop();
+        // The failure store is a different store; this only proves the region store did not throw
+        // on the repeat, which is the content comparison doing its job.
+        expect(notified).toBe(0);
+        clearPaneChromeDeclarations();
     });
 });

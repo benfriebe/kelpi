@@ -58,6 +58,9 @@ async function present(): Promise<void> {
         for (const entry of pane.controls) if (entry.enabled && !entry.pinned) await ui.activatePaneControl(pane.paneID, entry.ref);
         for (const other of pane.items) if (other.enabled) await ui.runPaneHeaderItem(pane.paneID, other.ref);
         await ui.openPaneMenu(pane.paneID);
+        // The title area, offered to the host: a press there is the window's own pane move.
+        if (pane.rect !== null) await ui.setPaneDragRegions(pane.paneID, [{ x: 0, y: 0, width: pane.rect.width, height: pane.rect.height }]);
+        await ui.setPaneDragRegions(pane.paneID, null);
         await ui.closePane(pane.paneID);
     }
     stop();

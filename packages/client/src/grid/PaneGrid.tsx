@@ -78,6 +78,7 @@ import {
     paneChromeHeight,
     projectPaneChrome,
     retainPaneChromeHeights,
+    usePaneChromeDragRegions,
     usePaneChromeHeights,
     usePaneChromePainted,
     usePaneChromeRegistry,
@@ -843,6 +844,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      * something declares a height, and nothing does in this phase.
      */
     const bands = usePaneChromeHeights();
+    // The parts of each band a presenter has declared as its own title bar, band-local and already
+    // clamped into that band by the host's call validation.
+    const dragRegions = usePaneChromeDragRegions();
     // Every declaration goes back when the displayed workspace changes, and when this grid goes.
     usePaneChromeScope(props.workspaceID);
     const zoomAvailable = panes.length > 1;
@@ -908,6 +912,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         readonly renaming: ReadonlySet<string>;
         readonly rects: readonly PaneChromeFrameRect[];
         readonly grips: readonly { readonly paneID: string; readonly rect: PaneChromeFrameRect }[];
+        readonly regions: readonly { readonly paneID: string; readonly rect: PaneChromeFrameRect }[];
     } | null>(() => {
         if (!chromeActive) return null;
         // Referenced so this recomputes when a header republishes; the registry is read
@@ -958,7 +963,25 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             presented,
             renaming,
             rects: [...presented].map((paneID) => rects[paneID]!),
-            grips: [...presented].map((paneID) => ({ paneID, rect: grips[paneID]! }))
+            grips: [...presented].map((paneID) => ({ paneID, rect: grips[paneID]! })),
+            /*
+             * Band-local to grid-local, and nothing else: the rectangles were clamped into the
+             * pane's own band when they were declared, so translating them by that band's own
+             * origin is all that is left. A region can therefore never reach a terminal, a page
+             * hole, a divider or the pane next door, whatever a presenter asks for.
+             */
+            regions: [...presented].flatMap((paneID) => {
+                const band = rects[paneID]!;
+                return (dragRegions.get(paneID) ?? []).map((region) => ({
+                    paneID,
+                    rect: {
+                        x: band.x + region.x,
+                        y: band.y + region.y,
+                        width: Math.min(region.width, Math.max(0, band.width - region.x)),
+                        height: Math.min(region.height, Math.max(0, band.height - region.y))
+                    }
+                }));
+            })
         };
     }, [
         chromeActive,
@@ -966,6 +989,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         panes,
         frames,
         bands,
+        dragRegions,
         headerHeight,
         gridVisible,
         focusedPaneID,
@@ -1219,6 +1243,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     onRename={(paneID) => props.onRequestRename?.(paneID)}
                     onMenu={openPaneMenuForPresenter}
                     grips={chrome.grips}
+                    regions={chrome.regions}
                     /*
                      * The host's own grip raises the host's own gesture, from a real press in the
                      * host's document: `startPaneDrag` is the very callback the bundled header
@@ -1229,6 +1254,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     onGripPointerDown={(paneID, event) => {
                         latest.current.onFocusPane?.(paneID);
                         startPaneDrag(paneID, event);
+                    }}
+                    // The bundled header's own double click and right click, on the same surface.
+                    onGripDoubleClick={(paneID) => latest.current.onToggleZoom?.(paneID)}
+                    onGripContextMenu={(paneID, event) => {
+                        latest.current.onFocusPane?.(paneID);
+                        latest.current.onPaneContextMenu?.(paneID, event);
                     }}
                     onReleaseCaret={(paneID) => props.onReleaseChromeCaret?.(paneID)}
                     {...(props.onPaneChromeFailure === undefined

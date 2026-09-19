@@ -29,6 +29,7 @@ export {
     PANE_CHROME_LIMITS,
     PANE_CHROME_PLACEMENT,
     isPaneChromeActionID,
+    paneChromeDragRegion,
     paneChromeHeight,
     paneChromeParks,
     paneChromeRow,
@@ -41,6 +42,7 @@ export {
     type PaneChromeControlDescriptor,
     type PaneChromeControlKind,
     type PaneChromeDescriptor,
+    type PaneChromeDragRegion,
     type PaneChromeItemDescriptor,
     type PaneChromeItemTone,
     type PaneChromeKind,
@@ -88,9 +90,13 @@ export {
 } from './surface';
 
 export {
+    clearPaneChromeDeclarations,
     clearPaneChromeHeights,
     paneChromeBand,
+    paneChromeDragRegionsFor,
     retainPaneChromeHeights,
+    setPaneChromeDragRegions,
+    usePaneChromeDragRegions,
     paneChromeDeclaration,
     paneChromeDeclarationCount,
     setPaneChromeHeight,
@@ -99,7 +105,8 @@ export {
     usePaneChromeParking,
     usePaneChromeScope,
     usePaneChromeWithdrawal,
-    type PaneChromeHeights
+    type PaneChromeHeights,
+    type PaneChromeRegions
 } from './height';
 
 export {

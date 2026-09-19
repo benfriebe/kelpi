@@ -53,7 +53,13 @@
 
 import { pluginJSON, type JsonObject } from '@kelpi/protocol';
 
-import { PANE_CHROME_LIMITS, PANE_CHROME_PLACEMENT, type PaneChromePlacement } from './contract';
+import {
+    PANE_CHROME_LIMITS,
+    PANE_CHROME_PLACEMENT,
+    paneChromeDragRegion,
+    type PaneChromeDragRegion,
+    type PaneChromePlacement
+} from './contract';
 import type { PaneChromeFramePane, PaneChromeProjection } from './projection';
 import type { PaneChromeSurface } from './surface';
 
@@ -79,7 +85,8 @@ export const PANE_CHROME_UI_METHODS = [
     'ui.activatePaneControl',
     'ui.runPaneHeaderItem',
     'ui.openPaneMenu',
-    'ui.setPaneChromeHeight'
+    'ui.setPaneChromeHeight',
+    'ui.setPaneDragRegions'
 ] as const;
 
 // ── the DTO ─────────────────────────────────────────────────────────────────────────
@@ -139,6 +146,8 @@ export interface PaneChromePresenterHostOptions {
     readonly openMenu: (paneID: string) => void;
     /** Declare (or withdraw) a pane's band. The clamp is `height.ts`'s, not the presenter's. */
     readonly declareHeight: (paneID: string, pixels: number | null) => void;
+    /** Declare (or withdraw) the parts of a pane's band that behave like a title bar. */
+    readonly declareDragRegions: (paneID: string, regions: readonly PaneChromeDragRegion[] | null) => void;
     /** A presenter that cannot be trusted with every pane's header any more. */
     readonly fail: (detail: string) => void;
     /**
@@ -162,7 +171,8 @@ const CALL_ARGUMENTS: Readonly<Record<string, readonly string[]>> = Object.freez
     'ui.activatePaneControl': ['paneID', 'ref'],
     'ui.runPaneHeaderItem': ['paneID', 'ref'],
     'ui.openPaneMenu': ['paneID'],
-    'ui.setPaneChromeHeight': ['paneID', 'pixels']
+    'ui.setPaneChromeHeight': ['paneID', 'pixels'],
+    'ui.setPaneDragRegions': ['paneID', 'regions']
 });
 
 const PLACEMENT_METHODS: Readonly<Record<PaneChromePlacement, readonly string[]>> = Object.freeze({
@@ -557,6 +567,59 @@ export function createPaneChromePresenterHost(
                 // The clamp is the host's (`contract.ts` ▸ `paneChromeHeight`), applied at read
                 // against that pane's own height. This only decides that the declaration is legal.
                 options.declareHeight(found.paneID, pixels);
+                return;
+            }
+            if (method === 'ui.setPaneDragRegions') {
+                const raw = args['regions'];
+                if (raw === null) {
+                    // A withdrawal, on the same terms as a band's: it only ever removes a host
+                    // surface, so it needs a pane with a live header rather than a carried one.
+                    const paneID = args['paneID'];
+                    if (typeof paneID !== 'string' || paneID.length > 160 || options.surface(paneID) === null)
+                        throw new Error('That pane is not in the current pane chrome frame.');
+                    options.declareDragRegions(paneID, null);
+                    return;
+                }
+                if (!Array.isArray(raw)) throw new Error('Pane drag regions are a list of rectangles, or null.');
+                if (raw.length > PANE_CHROME_LIMITS.maxDragRegions)
+                    throw new Error(
+                        `A pane may declare at most ${String(PANE_CHROME_LIMITS.maxDragRegions)} drag regions.`
+                    );
+                const found = pane(args['paneID']);
+                /*
+                 * The band the rectangles are measured against is the one the FRAME published, so a
+                 * presenter cannot widen its own header by declaring a rectangle bigger than it: a
+                 * region is clamped into the pane's own band and a region with nothing left is
+                 * dropped. That is what keeps a host surface off a terminal, a page hole, a divider
+                 * and the pane next door.
+                 */
+                if (found.rect === null) throw new Error('That pane has not been laid out yet.');
+                const band = { width: found.rect.width, height: found.rect.height };
+                const clamped: PaneChromeDragRegion[] = [];
+                for (const entry of raw) {
+                    if (entry === null || typeof entry !== 'object' || Array.isArray(entry))
+                        throw new Error('Pane drag regions are a list of rectangles, or null.');
+                    const region = entry as Record<string, unknown>;
+                    /*
+                     * FINITE numbers, refused rather than dropped. NaN and the infinities are not
+                     * rectangles, and treating them as a rectangle with no area would make one
+                     * arithmetic slip inside a presenter look exactly like a deliberate hand-back -
+                     * which is the rule `setPaneChromeHeight` already follows for a band.
+                     */
+                    if (!['x', 'y', 'width', 'height'].every((key) => Number.isFinite(region[key])))
+                        throw new Error('A pane drag region is four finite numbers: x, y, width and height.');
+                    const kept = paneChromeDragRegion(
+                        {
+                            x: region['x'] as number,
+                            y: region['y'] as number,
+                            width: region['width'] as number,
+                            height: region['height'] as number
+                        },
+                        band
+                    );
+                    if (kept !== null) clamped.push(kept);
+                }
+                options.declareDragRegions(found.paneID, clamped.length === 0 ? null : clamped);
                 return;
             }
             const found = pane(args['paneID']);

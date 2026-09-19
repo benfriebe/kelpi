@@ -5,8 +5,8 @@
  * displayed workspace, and ten `kelpi.ui` verbs act on it: `focusChromePane`, `splitPane`,
  * `toggleZoom`, `renamePane` (which opens the HOST's inline field and takes no name),
  * `closePane` (which routes through the HOST's confirmation), `activatePaneControl` and
- * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `setPaneChromeHeight` and
- * `reportPresenterReady`.
+ * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `setPaneChromeHeight`,
+ * `setPaneDragRegions` and `reportPresenterReady`.
  *
  * What is NOT here is the point of the example. There is no pane handle, no pid, no absolute path,
  * no plugin id and no command name anywhere in this file: a control is named by an opaque,
@@ -25,6 +25,21 @@
  * drawn; a pane the budget withheld is not in `panes` at all and keeps the bundled header, which
  * the count in `withheld` is what says.
  *
+ * ── The title area, offered to the host ─────────────────────────────────────────────
+ *
+ * A press inside this frame can never start the window's pane-move gesture: Chromium settles where
+ * a mouse gesture is routed when the button goes down, so it stays in here. What this view can do
+ * is say which parts of its band BEHAVE like a title bar, with `setPaneDragRegions`, and the host
+ * lays its own transparent surfaces over them - so a user grabs the header where the header is, as
+ * they do on a bundled pane.
+ *
+ * What is declared is the title's own run: after the status dot and the kind chip, before the other
+ * plugins' items and the control row, on both lines of a tall band. Deliberately NOT the whole
+ * band, because nothing is forwarded back into this document - a region over a control would hide
+ * that control. The regions are re-declared whenever this view's own layout moves, which is what a
+ * `ResizeObserver` over the bands is for: the rectangles are band-local, so a pane that merely
+ * moves or resizes takes them with it and nothing has to be re-sent.
+ *
  * ── Declared bands ──────────────────────────────────────────────────────────────────
  *
  * A pane at least `WIDE_PANE` px across gets a two-line band: the title row, then the directory,
@@ -41,12 +56,14 @@ const element = id => document.getElementById(id);
  * The scenario's whole view into this presenter, and `postMessage`-free: state to assert on plus
  * the three deliberate hooks the recovery paths and the height authority are exercised with.
  */
-const lab = { snapshot: null, ready: false, frames: 0, lastError: null, lastPress: null, pressMoves: 0, crash, stall, declare };
+const lab = { snapshot: null, ready: false, frames: 0, lastError: null, lastPress: null, pressMoves: 0, regions: {}, crash, stall, declare };
 globalThis.paneLab = lab;
 
 let disposed = false, painted = false, stalled = false, armed = null;
 /** The bands this view has asked for, by pane id, so an unchanged declaration is not re-sent. */
 const declared = new Map();
+/** The drag regions last sent, by pane id, for the same reason. */
+const sentRegions = new Map();
 /** Pane ids that `declare()` has pinned by hand; the width rule leaves those alone. */
 const pinned = new Set();
 
@@ -344,14 +361,22 @@ function render(snapshot) {
     document.body.dataset.workspace = snapshot.visible ? snapshot.workspaceID : '';
     // `visible: false` means present nothing: the window is showing another workspace, the grid is
     // hidden, or the bundled header has the bands back.
-    if (!snapshot.visible) { blank(); return; }
+    if (!snapshot.visible) {
+        blank();
+        sentRegions.clear();
+        lab.regions = {};
+        return;
+    }
     const root = element('root');
     root.hidden = false;
     // A pane with no measured rect is a pane the grid has not laid out yet. Drawing it at 0,0 would
     // put a header over the top-left pane, which is a worse answer than drawing nothing for a frame.
     const drawn = snapshot.panes.filter(pane => pane.rect !== null);
     const bands = reconcile(root, drawn.map(pane => pane.paneID), bandNode);
-    for (const [index, node] of bands.entries()) paintBand(node, drawn[index]);
+    for (const [index, node] of bands.entries()) {
+        paintBand(node, drawn[index]);
+        bandObserver?.observe(node);
+    }
 
     /*
      * The withheld count, said out loud - INSIDE the first carried band.
@@ -408,6 +433,72 @@ function declareBands(snapshot) {
     }
 }
 
+/**
+ * Where this band's title actually is, in the band's own coordinates.
+ *
+ * Measured rather than computed, because the answer depends on what the browser did with a flex row
+ * at this width: the title gives ground first, the chips and the buttons do not. The region runs
+ * from the end of the kind chip to the start of whichever box comes next (the other plugins' items,
+ * or the controls), which is the part of the row that is text and space rather than buttons.
+ */
+function titleRegion(node, line) {
+    const band = node.getBoundingClientRect();
+    const facts = line.querySelector('.facts');
+    if (facts === null) return null;
+    const box = facts.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return null;
+    // A control or an item inside this box would be hidden by the surface, so the region stops at
+    // the first one. `.facts` holds none today; the guard is what keeps that true if it ever does.
+    const blocker = [...facts.querySelectorAll('.control, .item')]
+        .map(element => element.getBoundingClientRect())
+        .filter(rect => rect.width > 0)
+        .sort((a, b) => a.left - b.left)[0];
+    const right = blocker === undefined ? box.right : Math.min(box.right, blocker.left);
+    const width = right - box.left;
+    if (width <= 0) return null;
+    return {
+        x: Math.round(box.left - band.left),
+        y: Math.round(box.top - band.top),
+        width: Math.round(width),
+        height: Math.round(box.height)
+    };
+}
+
+/**
+ * Publish this view's drag regions, one band at a time and only when they have moved.
+ *
+ * Every call is charged to the presenter's 240-per-second budget and a breach fails the placement,
+ * so a re-declaration per frame per pane would be a presenter that killed itself during a divider
+ * drag. The comparison is on the rectangles themselves.
+ */
+function publishRegions() {
+    for (const node of document.querySelectorAll('[data-testid="lab-pane-header"]')) {
+        const paneID = node.dataset.paneId;
+        if (paneID === undefined) continue;
+        const regions = [];
+        for (const line of node.querySelectorAll('.line-one, .line-two')) {
+            if (line.hidden) continue;
+            const region = titleRegion(node, line);
+            if (region !== null) regions.push(region);
+        }
+        const key = JSON.stringify(regions);
+        if (sentRegions.get(paneID) === key) continue;
+        sentRegions.set(paneID, key);
+        lab.regions[paneID] = regions;
+        void act(() => api.ui.setPaneDragRegions(paneID, regions.length === 0 ? null : regions));
+    }
+}
+
+/**
+ * Re-measure when this view's own layout moves.
+ *
+ * The rectangles are band-local, so a pane that merely moves or resizes carries them along and
+ * nothing has to be sent. What does change them is this document reflowing - a title that now fits,
+ * an item that appeared, a band that went from one line to two - and that is exactly what a
+ * `ResizeObserver` over the bands reports.
+ */
+const bandObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => publishRegions()) : null;
+
 async function frame(snapshot) {
     lab.frames += 1; lab.snapshot = snapshot;
     if (stalled) return new Promise(() => {});
@@ -421,6 +512,8 @@ async function frame(snapshot) {
     try {
         render(snapshot);
         declareBands(snapshot);
+        // After the paint, because the regions are measured from what the browser actually laid out.
+        publishRegions();
         if (painted) return;
         painted = true;
         await afterPaint();

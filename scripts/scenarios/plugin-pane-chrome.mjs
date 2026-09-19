@@ -20,8 +20,9 @@
  *      activated by ref, UI Lab's `pane.header` item activated by ref reaching UI Lab's backend,
  *      rename (the HOST's field opens and its commit reaches the daemon), close (the HOST's
  *      confirmation appears and cancels), the host's pane menu opened by `openPaneMenu`, and the
- *      pane-move drag from the host's own grip - with the cross-document capture that forced that
- *      design measured beside it;
+ *      pane-move drag from the middle of the lab's own TITLE, through a region the presenter
+ *      declared and the host laid its own surface over, with the double click, the right click and
+ *      the still-pressable control row beside it;
  *   5. a declared 96 px band, measured live: the band grows, the body rect moves down by the
  *      difference, the shell's own `stty size` reports fewer rows, and a web pane's native view
  *      moves with it and still takes a click;
@@ -805,8 +806,30 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const boxBefore = await paneBox(`[data-pane-id="${shellPane}"]`);
         const targetBox = dragTarget === null ? null : await paneBox(`[data-pane-id="${dragTarget}"]`);
 
-        // First, the measurement: a real press INSIDE the frame, and who sees the moves.
-        const inFrameGrab = await aimFrame(`${band(shellPane)} [data-testid="lab-pane-facts"]`, 0.4).catch(() => null);
+        /*
+         * First the measurement: a real press INSIDE the frame, and who sees the moves.
+         *
+         * Aimed at one of the lab's own controls, because that is now the part of the band the host
+         * is NOT covering - the title has a host surface over it, which is the whole point of this
+         * round. A press there is as inside the frame as a press can be.
+         */
+        const inFrameGrab = await (async () => {
+            const bandBox = await paneBox(`[data-testid="pane-header-${shellPane}"]`);
+            if (bandBox === null) return null;
+            // Scan the band for a point the host is NOT covering: the title now has a host surface
+            // over it, so the press has to land where the presenter's own row is.
+            for (let at = 0.95; at > 0.05; at -= 0.05) {
+                const point = { x: bandBox.x + bandBox.width * at, y: bandBox.y + bandBox.height / 2 };
+                const hit = await page.eval(`(() => {
+                    const node = document.elementFromPoint(${point.x}, ${point.y});
+                    const frame = document.querySelector('${presenterFrame}');
+                    return node !== null && (node === frame || frame?.contains(node)) ? 'frame' : String(node?.dataset?.testid ?? node?.nodeName ?? 'nothing');
+                })()`);
+                if (hit === 'frame') return point;
+            }
+            return null;
+        })();
+        if (inFrameGrab === null) rec.note('no point on the band reaches the presenter frame; the host is covering all of it');
         let captured = null;
         if (inFrameGrab !== null && targetBox !== null) {
             await page.mouse('mouseMoved', inFrameGrab.x, inFrameGrab.y, { button: 'none', buttons: 0 });
@@ -843,20 +866,24 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
          * The cause is Chromium's routing rule, the evidence is the user's manual test, and the fix
          * is that the press now happens in the host's own grip where none of it applies.
          */
-        rec.check('a press inside the presenter\'s frame selects nothing and moves no pane',
+        rec.check('a press dragged from inside the presenter\'s frame selects nothing and moves no pane',
             captured !== null && captured.selection === '' && captured.movedByFramePress === false,
             JSON.stringify(captured));
 
         /*
-         * And now the grip, which is the host's own element in the host's own document. The press
-         * lands there, so the gesture is the one the bundled header raises, with the same
-         * threshold, the same drop zones and the same commit.
+         * And now the way a user actually reaches for a header: the TITLE, with the host's own
+         * surface over it because the lab declared that rectangle as a drag region. The grip at the
+         * leading edge is the floor for a presenter that declares nothing; it is not where anyone
+         * reaches, which is what the user's second round found.
          */
+        const dragSurface = `[data-testid^="pane-chrome-drag-${shellPane}-"]`;
+        const surfaceBox = await paneBox(dragSurface);
         const gripBox = await paneBox(`[data-testid="pane-chrome-grip-${shellPane}"]`);
         const orderBefore = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id).join(',');
-        let dragMoved = false;
-        if (gripBox !== null && targetBox !== null && boxBefore !== null) {
-            const from = { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 };
+        let dragMoved = false, zoned = false;
+        if (surfaceBox !== null && targetBox !== null && boxBefore !== null) {
+            // The MIDDLE of the title, which is where a hand goes.
+            const from = { x: surfaceBox.x + surfaceBox.width / 2, y: surfaceBox.y + surfaceBox.height / 2 };
             const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height * 0.8 };
             await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
             await page.mouse('mousePressed', from.x, from.y);
@@ -864,19 +891,75 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                 await page.mouse('mouseMoved', from.x + (to.x - from.x) * step, from.y + (to.y - from.y) * step, { buttons: 1 });
                 await sleep(50);
             }
-            const zoned = await d.settleDom(page, `document.querySelector('[data-testid="drop-zone-overlay"]')`, { ceilingMs: 4_000 });
+            zoned = await d.settleDom(page, `document.querySelector('[data-testid="drop-zone-overlay"]')`, { ceilingMs: 4_000 });
             await page.mouse('mouseReleased', to.x, to.y);
             dragMoved = await d.settle(async () => {
                 const now = await paneBox(`[data-pane-id="${shellPane}"]`);
                 return now !== null && (now.x !== boxBefore.x || now.y !== boxBefore.y || now.width !== boxBefore.width);
             }, { ceilingMs: 12_000 });
-            rec.note(`grip drag: drop zone shown ${String(zoned)}, order ${orderBefore} -> ${(await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id).join(',')}`);
         }
+        const orderAfter = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id).join(',');
         const selectionAfter = String(await inFrame(`String(getSelection()?.toString() ?? '')`).catch(() => 'unreadable'));
-        rec.check('a drag from the host\'s grip moves the pane, and leaves no selection in the frame',
-            gripBox !== null && gripBox.width > 0 && dragMoved && selectionAfter === '',
-            `grip ${JSON.stringify(gripBox)} · ${JSON.stringify(boxBefore)} -> ${JSON.stringify(await paneBox(`[data-pane-id="${shellPane}"]`))} · selection ${JSON.stringify(selectionAfter)}`);
-        await shot('host-drag-grip', 'A Pane Lab band with the host\'s own drag grip at its LEADING edge: a narrow strip in the header\'s own colour carrying two short vertical hairlines, immediately inside the focus ring and before anything the plugin draws. Every presented band has one.');
+        rec.check('a drag from the middle of the lab\'s title moves the pane, in the daemon\'s own order',
+            surfaceBox !== null && surfaceBox.width > 0 && dragMoved && zoned && orderAfter !== orderBefore
+            && selectionAfter === '',
+            `surface ${JSON.stringify(surfaceBox)} · grip ${JSON.stringify(gripBox)} · drop zone ${String(zoned)} · order ${orderBefore} -> ${orderAfter} · selection ${JSON.stringify(selectionAfter)}`);
+        await shot('drag-from-the-title', 'A Pane Lab band being grabbed by its TITLE rather than by an edge strip: the pane has moved to a different place in the grid, and every band still shows the host\'s narrow grip at its leading edge as the floor for a presenter that declares nothing.');
+
+        // The same surface is the bundled header's own double click and right click.
+        const zoomedBefore = await page.eval(`document.querySelector('[data-pane-id="${shellPane}"]')?.dataset.zoomed ?? 'false'`);
+        const surfaceNow = await paneBox(dragSurface);
+        if (surfaceNow !== null) {
+            await page.mouse('mouseMoved', surfaceNow.x + surfaceNow.width / 2, surfaceNow.y + surfaceNow.height / 2, { button: 'none', buttons: 0 });
+            await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: surfaceNow.x + surfaceNow.width / 2, y: surfaceNow.y + surfaceNow.height / 2, button: 'left', buttons: 1, clickCount: 2 });
+            await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: surfaceNow.x + surfaceNow.width / 2, y: surfaceNow.y + surfaceNow.height / 2, button: 'left', buttons: 0, clickCount: 2 });
+        }
+        const zoomedOn = await d.settleDom(page, `document.querySelector('[data-pane-id="${shellPane}"]')?.dataset.zoomed === 'true'`, { ceilingMs: 8_000 });
+        const zoomedSurface = await paneBox(dragSurface);
+        if (zoomedSurface !== null) {
+            await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: zoomedSurface.x + zoomedSurface.width / 2, y: zoomedSurface.y + zoomedSurface.height / 2, button: 'left', buttons: 1, clickCount: 2 });
+            await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: zoomedSurface.x + zoomedSurface.width / 2, y: zoomedSurface.y + zoomedSurface.height / 2, button: 'left', buttons: 0, clickCount: 2 });
+        }
+        const zoomedOff = await d.settleDom(page, `document.querySelector('[data-pane-id="${shellPane}"]')?.dataset.zoomed !== 'true'`, { ceilingMs: 8_000 });
+        rec.check('a double click on the title zooms the pane and un-zooms it, as the bundled header does',
+            String(zoomedBefore) !== 'true' && zoomedOn && zoomedOff,
+            `before ${String(zoomedBefore)} · on ${String(zoomedOn)} · off ${String(zoomedOff)}`);
+
+        const menuSurface = await paneBox(dragSurface);
+        if (menuSurface !== null) {
+            await page.mouse('mouseMoved', menuSurface.x + menuSurface.width / 2, menuSurface.y + menuSurface.height / 2, { button: 'none', buttons: 0 });
+            await page.mouse('mousePressed', menuSurface.x + menuSurface.width / 2, menuSurface.y + menuSurface.height / 2, { button: 'right', buttons: 2 });
+            await page.mouse('mouseReleased', menuSurface.x + menuSurface.width / 2, menuSurface.y + menuSurface.height / 2, { button: 'right', buttons: 0 });
+        }
+        const menuFromSurface = await d.settleDom(page, `document.querySelector('[role="menu"]')`, { ceilingMs: 8_000 });
+        if (menuFromSurface) await page.key('Escape');
+        rec.check('a right click on the title opens the host\'s own pane menu',
+            menuFromSurface, `surface ${JSON.stringify(menuSurface)}`);
+
+        // And the region does NOT cover the row: a control under it would be a control nobody can
+        // press, because nothing is forwarded back into the frame.
+        const controlBefore = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
+        const stillSplit = await controlRef(shellPane, 'Split right');
+        const stillWorks = stillSplit === null ? 'no ref' : await (async () => {
+            await clickFrame(`${band(shellPane)} [data-testid="lab-pane-control"][data-ref="${stillSplit}"]`);
+            return await d.settle(async () =>
+                (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length === controlBefore + 1,
+                { ceilingMs: 12_000 }) ? 'split' : 'nothing';
+        })();
+        rec.check('a lab control is still pressable: the declared region does not cover the row',
+            stillWorks === 'split', `ref ${String(stillSplit)} · ${String(stillWorks)}`);
+
+        // Forged regions: clamped into the band, and refused past the cap.
+        const bandRect = (await labPane(shellPane))?.rect ?? null;
+        const clampedAnswer = await refusal(`kelpi.ui.setPaneDragRegions(${JSON.stringify(shellPane)}, [{x:-9999,y:-9999,width:99999,height:99999}])`);
+        const clampedBox = await d.settle(async () => {
+            const surface = await paneBox(dragSurface);
+            return surface !== null && bandRect !== null && surface.width <= bandRect.width + 1;
+        }, { ceilingMs: 8_000 });
+        const cappedAnswer = await refusal(`kelpi.ui.setPaneDragRegions(${JSON.stringify(shellPane)}, Array.from({length: 9}, () => ({x:0,y:0,width:4,height:4})))`);
+        rec.check('a region reaching outside the band is clamped to it, and a ninth is refused by message',
+            clampedAnswer === 'resolved' && clampedBox && /at most 8 drag regions/.test(String(cappedAnswer)),
+            `clamped ${String(clampedAnswer)} into ${JSON.stringify(await paneBox(dragSurface))} of band ${JSON.stringify(bandRect)} · capped ${String(cappedAnswer)}`);
 
         // ── 7 · withholding, live ────────────────────────────────────────────────────
         const documentText = String(await inFrame(`document.documentElement.outerHTML + '\\n' + JSON.stringify(globalThis.paneLab.snapshot)`));
@@ -1018,6 +1101,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             && rowsUnderCrashBand.rows < rowsPlainBeforeCrash.rows
             && rowsAfterCrash.rows === rowsPlainBeforeCrash.rows,
             `${JSON.stringify(headersBack)} · PTY ${JSON.stringify(rowsPlainBeforeCrash)} -> under the band ${JSON.stringify(rowsUnderCrashBand)} -> after the fallback ${JSON.stringify(rowsAfterCrash)}`);
+        // And no host surface is left over a band nobody is presenting: a transparent rectangle
+        // still taking presses over a bundled header would be the worst of both designs.
+        const surfacesLeft = Number(await page.eval(`document.querySelectorAll('[data-testid^="pane-chrome-drag-"], [data-testid^="pane-chrome-grip-"]').length`));
+        rec.check('the fallback leaves no drag surface behind', surfacesLeft === 0, `${String(surfacesLeft)} still in the DOM`);
         const toast = await d.settleDom(page, `document.querySelector('[data-testid="toast-stack"]')?.textContent?.includes('Pane header presenter')`, { ceilingMs: 10_000 });
         const toastText = String(await page.eval(`document.querySelector('[data-testid="toast-stack"]')?.textContent ?? 'none'`));
         rec.check('the failure is reported on screen, naming the surface and the reason',

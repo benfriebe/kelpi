@@ -11,6 +11,11 @@ then start an isolated instance from its root:
 node scripts/dev-instance.mjs --state out/plugin-pane-playground
 ```
 
+**An installed example is a COPY.** A running instance keeps using the copy it installed until the
+plugin is reinstalled or reloaded, so editing files in this directory changes nothing in a window
+that is already up. Reinstall the path (or `kelpi plugin reload example.pane-lab`) after every edit;
+a stale copy cost a round of manual testing once already.
+
 In its Settings → Plugins, install the absolute path to `examples/plugins/pane-lab`, then pick
 **Pane Lab** for `pane.chrome` in **Workbench views**. The placement is Settings-only: it appears in
 `ui.getWorkbench().slots`, but `ui.selectView` refuses it, because a header presenter draws every
@@ -60,9 +65,15 @@ rather than smear a text selection over the title.
 
 **The pane MOVE is not this view's to start.** A mouse press that lands inside an iframe keeps every
 later move and the release inside that iframe's document, because Chromium settles where a gesture
-is routed when the button goes down. No call could change that, so the host keeps a narrow drag grip
-at the leading edge of every band it presents and runs its own gesture from a press there. The `rect`
-each pane carries already excludes it, so this view neither draws it nor has to know it is there.
+is routed when the button goes down. What this view can do is say which parts of its band behave
+like a title bar, with `setPaneDragRegions`, and the host lays its own transparent surfaces over
+them: a press there is the host's, so it focuses the pane and starts the window's own move, double
+click zooms and right click opens the pane menu. The lab declares the run of each row from the end
+of the kind chip to the start of the items and the controls, and re-measures from a `ResizeObserver`
+whenever its own layout moves. Nothing is forwarded back into this document, so a region over one of
+its own buttons would hide that button - which is why the declaration stops where the row does. A
+presenter that declares nothing still gets a narrow grip the host reserves at the leading edge of
+every band; the `rect` each pane carries already excludes it.
 
 Split, close, the globe and the per-kind buttons are all controls, so they all go through
 `activatePaneControl`; `closePane` and `renamePane` exist as their own calls for a presenter that
@@ -113,6 +124,7 @@ globalThis.paneLab = {
     ready, frames,         // readiness reported, frames received
     lastError,             // the last refusal or failure, as text
     lastPress, pressMoves, // the last press on a band, and the moves this FRAME saw under it
+    regions,               // the drag regions last declared, by pane id
     crash(mode),           // 'listener' throws inside the listener; 'uncaught' fails the placement
     stall(),               // stop acknowledging, so the 5 s watchdog fires
     declare(paneID, px)    // declare a band by hand, or null to hand it back

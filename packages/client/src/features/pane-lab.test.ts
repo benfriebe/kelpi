@@ -121,6 +121,8 @@ function make(specs: readonly PaneSpec[]) {
     const refs = createPaneChromeRefs();
     const actions: Action[] = [];
     const declared = new Map<string, number>();
+    /** The drag regions the host accepted, by pane id, already clamped into that pane's band. */
+    const regions = new Map<string, readonly { x: number; y: number; width: number; height: number }[]>();
     const state = {
         visible: true,
         focusedPaneID: specs[0]?.id ?? null,
@@ -233,6 +235,7 @@ function make(specs: readonly PaneSpec[]) {
     return {
         actions,
         declared,
+        regions,
         state,
         projection,
         surface,
@@ -257,9 +260,36 @@ function make(specs: readonly PaneSpec[]) {
 }
 type Grid = ReturnType<typeof make>;
 
+/**
+ * A layout, because jsdom has none.
+ *
+ * The lab MEASURES its drag region - the answer depends on what a flex row did at this width, which
+ * is not something it can compute - so a document where every box is 0x0 declares nothing at all
+ * and the whole path goes untested. These are the two boxes `titleRegion` reads: the band it is
+ * relative to, and the facts half it runs across.
+ */
+function stubLayout(): () => void {
+    const real = Element.prototype.getBoundingClientRect;
+    const box = (left: number, top: number, width: number, height: number): DOMRect =>
+        ({
+            x: left, y: top, left, top, width, height,
+            right: left + width, bottom: top + height,
+            toJSON: () => ({})
+        }) as DOMRect;
+    Element.prototype.getBoundingClientRect = function boxed(this: Element): DOMRect {
+        if (this.classList.contains('band')) return box(0, 0, 600, 21);
+        if (this.classList.contains('facts')) return box(20, 0, 400, 21);
+        return box(0, 0, 0, 0);
+    };
+    return () => {
+        Element.prototype.getBoundingClientRect = real;
+    };
+}
+
 async function mount(grid: Grid) {
     document.documentElement.innerHTML = new DOMParser().parseFromString(shell, 'text/html').documentElement
         .innerHTML;
+    cleanups.push(stubLayout());
     const failures: string[] = [];
     const thrown: Error[] = [];
     const errors: Error[] = [];
@@ -286,6 +316,10 @@ async function mount(grid: Grid) {
         declareHeight: (paneID, pixels) => {
             if (pixels === null) grid.declared.delete(paneID);
             else grid.declared.set(paneID, Math.max(0, Math.round(pixels)));
+        },
+        declareDragRegions: (paneID, next) => {
+            if (next === null) grid.regions.delete(paneID);
+            else grid.regions.set(paneID, next);
         },
         fail: (detail) => {
             failures.push(detail);
@@ -340,7 +374,9 @@ async function mount(grid: Grid) {
             runPaneHeaderItem: (paneID: string, ref: string) => call('ui.runPaneHeaderItem', { paneID, ref }),
             openPaneMenu: (paneID: string) => call('ui.openPaneMenu', { paneID }),
             setPaneChromeHeight: (paneID: string, pixels: number | null) =>
-                call('ui.setPaneChromeHeight', { paneID, pixels })
+                call('ui.setPaneChromeHeight', { paneID, pixels }),
+            setPaneDragRegions: (paneID: string, next: unknown) =>
+                call('ui.setPaneDragRegions', { paneID, regions: next as JsonObject['regions'] })
         }
     });
     // Evaluate the shipped module unchanged, exactly as `features/settings-lab.test.ts` does.
@@ -394,6 +430,9 @@ function band(paneID: string): HTMLElement {
     return node!;
 }
 const bandIDs = (): string[] => found('lab-pane-header').map((node) => node.dataset.paneId ?? '');
+/** The first band's facts box, which is the box the lab measures its drag region from. */
+const band0Facts = (): HTMLElement | null =>
+    found('lab-pane-header')[0]?.querySelector<HTMLElement>('[data-testid="lab-pane-facts"]') ?? null;
 const controls = (paneID: string): HTMLButtonElement[] => [
     ...band(paneID).querySelectorAll<HTMLButtonElement>('[data-testid="lab-pane-control"]')
 ];
@@ -560,6 +599,86 @@ describe('Pane Lab routes every gesture through the host', () => {
         await until(() => grid.actions.some((entry) => entry.verb === 'command'), 'the command call');
     });
 
+
+    it('declares a drag region that covers its title and no control or item', async () => {
+        /*
+         * The user's second finding: a 12 px grip at the edge is not where anyone reaches for a
+         * header. The lab offers the host its TITLE area instead, and the one thing that must not
+         * be in it is a button - nothing is forwarded back into the frame, so a region over a
+         * control would hide that control.
+         */
+        const grid = make([
+            {
+                id: 'p1',
+                width: 800,
+                commands: [{ id: 'example.board.inspect', title: 'Inspect board' }],
+                items: [{ id: 'example.board.status', text: 'Ready' }]
+            }
+        ]);
+        const h = await mount(grid);
+        await ready(h);
+        await until(() => (grid.regions.get('p1')?.length ?? 0) > 0, 'a declared drag region');
+        const declared = grid.regions.get('p1')!;
+        const band = framePane(h, 'p1')!.rect!;
+        for (const region of declared) {
+            // Inside the band it was measured against, which is what keeps a host surface off a
+            // terminal, a page hole, a divider and the pane next door.
+            expect(region.x).toBeGreaterThanOrEqual(0);
+            expect(region.y).toBeGreaterThanOrEqual(0);
+            expect(region.x + region.width).toBeLessThanOrEqual(band.width);
+            expect(region.y + region.height).toBeLessThanOrEqual(band.height);
+        }
+        // And over nothing that can be pressed. jsdom lays nothing out, so the boxes are all zero
+        // and the overlap test is vacuous there; what IS asserted is the rule the lab follows:
+        // the region is measured from the facts box, which holds no control and no item.
+        const facts = band0Facts();
+        expect(facts?.querySelector('[data-testid="lab-pane-control"]')).toBeNull();
+        expect(facts?.querySelector('[data-testid="lab-pane-item"]')).toBeNull();
+    });
+
+    it('clamps a region that reaches outside the band, and refuses more than eight', async () => {
+        const grid = make([{ id: 'p1', width: 800 }]);
+        const h = await mount(grid);
+        await ready(h);
+        const band = framePane(h, 'p1')!.rect!;
+        // A rectangle reaching past every edge: clamped into the band rather than refused, so a
+        // presenter cannot put a host surface over a terminal, a page hole or the pane next door.
+        await h.send('ui.setPaneDragRegions', {
+            paneID: 'p1',
+            regions: [{ x: -500, y: -500, width: 99_999, height: 99_999 }]
+        });
+        expect(grid.regions.get('p1')).toEqual([{ x: 0, y: 0, width: band.width, height: band.height }]);
+        // A rectangle entirely outside has nothing left after the clamp and is dropped, which
+        // withdraws rather than leaving a surface nobody can press.
+        await h.send('ui.setPaneDragRegions', {
+            paneID: 'p1',
+            regions: [{ x: band.width + 40, y: 0, width: 20, height: 10 }]
+        });
+        expect(grid.regions.has('p1')).toBe(false);
+        await expect(
+            h.send('ui.setPaneDragRegions', {
+                paneID: 'p1',
+                regions: Array.from({ length: PANE_CHROME_LIMITS.maxDragRegions + 1 }, () => ({ x: 0, y: 0, width: 4, height: 4 }))
+            })
+        ).rejects.toThrow(/at most 8 drag regions/);
+        await expect(
+            h.send('ui.setPaneDragRegions', { paneID: 'p1', regions: [{ x: 0, y: 0, width: Number.NaN, height: 4 }] })
+        ).rejects.toThrow(/four finite numbers/);
+    });
+
+    it('hands its regions back for a pane whose header is still mounted', async () => {
+        const grid = make([{ id: 'p1', width: 800 }, { id: 'p2', width: 800 }]);
+        const h = await mount(grid);
+        await ready(h);
+        await until(() => (grid.regions.get('p2')?.length ?? 0) > 0, 'a declared drag region');
+        // Hidden, so every WRITE for it is refused - but a hand-back is not a write, on the same
+        // terms as a band's.
+        grid.state.hidden.add('p2');
+        h.refresh();
+        await until(() => framePane(h, 'p2') === undefined, 'the pane to leave the frame');
+        await h.send('ui.setPaneDragRegions', { paneID: 'p2', regions: null });
+        expect(grid.regions.has('p2')).toBe(false);
+    });
 
     it('starts no text selection from a press on a band, and asks for no drag call', async () => {
         /*

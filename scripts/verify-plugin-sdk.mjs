@@ -79,6 +79,8 @@ async function mount(element: HTMLElement) {
         for (const other of pane.items) if (other.enabled) await api.ui.runPaneHeaderItem(pane.paneID, other.ref);
         if (!pane.renaming) await api.ui.renamePane(pane.paneID);
         await api.ui.focusChromePane(pane.paneID);
+        // The band's own title area, offered to the host as a drag region.
+        if (pane.rect !== null) await api.ui.setPaneDragRegions(pane.paneID, [{ x: 8, y: 0, width: Math.max(0, pane.rect.width - 80), height: pane.rect.height }]);
     }
     const stopChrome = api.ui.onPaneChrome(frame => { void frame.withheld; });
     stopChrome();

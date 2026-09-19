@@ -33,18 +33,25 @@
  * they arrived in; the host keeps the mapping and re-resolves it against a fresh model before
  * anything runs, so a ref from an older frame, from another pane, or invented, activates nothing.
  *
- * ── The pane-move drag, and why it is not a call ────────────────────────────────────
+ * ── Dragging a presented pane ───────────────────────────────────────────────────────
  *
- * The host keeps a thin drag grip at the LEADING EDGE of every band it presents, and a presenter's
- * rectangle begins after it. That is not a courtesy: **a mouse press that lands inside an iframe
- * keeps every later move and the release inside that iframe's document**, because Chromium settles
- * where a gesture is routed when the button goes down. A presenter therefore cannot start a
- * host-owned drag from its own pixels whatever call it is offered, so there is no such call - the
- * press happens in the host's strip from the start, and the gesture, its threshold, its drop zones
- * and its commit are all the window's own.
+ * **A mouse press that lands inside an iframe keeps every later move and the release inside that
+ * iframe's document**, because Chromium settles where a gesture is routed when the button goes
+ * down. A presenter therefore cannot start the window's pane-move gesture from its own pixels,
+ * whatever call it is offered, and there is no such call.
  *
- * Draw nothing in the grip: it is not inside the `rect` a pane carries, so drawing at negative
- * coordinates is the only way to reach it and the host clips that away.
+ * What there is instead is `setPaneDragRegions`: a presenter says which parts of its band behave
+ * like a title bar, and the HOST lays its own transparent surfaces over them. A press on one is a
+ * press in the host's document, so it does what the bundled header's empty title area does - focus
+ * the pane and start the move, double click to zoom, right click for the pane menu - with the
+ * window's own threshold, drop zones and commit.
+ *
+ * Nothing is forwarded back into the frame, so **a region placed over one of your own controls
+ * hides that control**. Declare the gaps and the title, not the buttons.
+ *
+ * A presenter that declares nothing still gets a narrow grip the host reserves at the LEADING EDGE
+ * of every band, before the `rect` it is given. Draw nothing there: it is outside your rectangle
+ * and the host clips it away.
  *
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
@@ -295,6 +302,22 @@ export interface WindowPaneChromeAPI {
     runPaneHeaderItem(paneID: string, ref: string): Promise<void>;
     /** Opens the host's own pane context menu, which stays native. */
     openPaneMenu(paneID: string): Promise<void>;
+    /**
+     * Declare which parts of this pane's band behave like a title bar.
+     *
+     * Rectangles in BAND-LOCAL pixels, with the origin at the `rect` this pane carries in the
+     * frame - so a pane that moves, resizes or changes its band takes its regions with it and a
+     * declaration only goes stale when YOUR OWN layout changes. Re-declare from a resize observer
+     * over whatever you drew.
+     *
+     * The host clamps each rectangle into the band, drops one with no area left and refuses more
+     * than eight. `null` (or an empty list) withdraws, and the reserved grip is what remains.
+     *
+     * The host lays a transparent surface of its own over each region and takes the press there,
+     * which is the only way a pane move can start at all (see the note at the top of this file).
+     * Nothing is forwarded into your document, so a region over one of your own controls hides it.
+     */
+    setPaneDragRegions(paneID: string, regions: readonly PaneChromeRect[] | null): Promise<void>;
     /**
      * Declare how tall this presenter's band needs to be, in CSS pixels.
      *

@@ -519,6 +519,7 @@
             runPaneHeaderItem: async (paneID, ref) => { await base.call('ui.runPaneHeaderItem', { paneID, ref }); },
             openPaneMenu: async paneID => { await base.call('ui.openPaneMenu', { paneID }); },
             setPaneChromeHeight: async (paneID, pixels) => { await base.call('ui.setPaneChromeHeight', { paneID, pixels: pixels === null ? null : pixels }); },
+            setPaneDragRegions: async (paneID, regions) => { await base.call('ui.setPaneDragRegions', { paneID, regions: regions === null ? null : [...regions].map(region => ({ x: region.x, y: region.y, width: region.width, height: region.height })) }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),
             showDialog: options => base.call('ui.showDialog', options),

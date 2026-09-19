@@ -37,10 +37,24 @@ import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 're
 
 import { useOverlayPresence } from '../chrome/modal-presence';
 
-import { PANE_CHROME_LIMITS, paneChromeHeight, paneChromeParks, type PaneChromeKind } from './contract';
+import {
+    PANE_CHROME_LIMITS,
+    paneChromeHeight,
+    paneChromeParks,
+    type PaneChromeDragRegion,
+    type PaneChromeKind
+} from './contract';
 
 /** The declarations, by pane id. A pane with no entry is a pane wearing the host's own band. */
 const declarations = new Map<string, number>();
+/**
+ * The drag regions, by pane id: the parts of its band a presenter says behave like a title bar.
+ *
+ * Here rather than in a module of their own, because the two are the same KIND of thing - what a
+ * presenter has declared about one pane's band - and every path that hands a band back has to hand
+ * the regions back with it. One store is one set of withdrawal paths that cannot come apart.
+ */
+const regions = new Map<string, readonly PaneChromeDragRegion[]>();
 const listeners = new Set<() => void>();
 
 /**
@@ -56,8 +70,15 @@ const EMPTY: PaneChromeHeights = Object.freeze(new Map<string, number>());
 /** Declared band heights by pane id, as the grid reads them. */
 export type PaneChromeHeights = ReadonlyMap<string, number>;
 
+/** Declared drag regions by pane id, band-local, as the grid reads them. */
+export type PaneChromeRegions = ReadonlyMap<string, readonly PaneChromeDragRegion[]>;
+
+let regionSnapshot: PaneChromeRegions = Object.freeze(new Map<string, readonly PaneChromeDragRegion[]>());
+const EMPTY_REGIONS: PaneChromeRegions = Object.freeze(new Map<string, readonly PaneChromeDragRegion[]>());
+
 function republish(): void {
     snapshot = Object.freeze(new Map(declarations));
+    regionSnapshot = Object.freeze(new Map(regions));
     // Copied before iterating: a listener that unsubscribes in response would otherwise mutate
     // the set mid-walk.
     for (const listener of [...listeners]) listener();
@@ -103,6 +124,57 @@ export function setPaneChromeHeight(paneID: string, pixels: number | null): void
 }
 
 /**
+ * Declare (or withdraw) the parts of a pane's band that behave like a title bar.
+ *
+ * The rectangles are BAND-LOCAL and already clamped by the caller (`contract.ts` ▸
+ * `paneChromeDragRegion`), so this only stores them. `null` and an empty list are the same
+ * withdrawal: a presenter that has nothing to offer falls back to the host's reserved grip.
+ */
+export function setPaneChromeDragRegions(
+    paneID: string,
+    next: readonly PaneChromeDragRegion[] | null
+): void {
+    if (next === null || next.length === 0) {
+        if (!regions.delete(paneID)) return;
+        republish();
+        return;
+    }
+    const current = regions.get(paneID);
+    // Compared by content: a presenter re-declares from its own resize observer, and a republish
+    // per frame would re-render the grid and re-measure every terminal in it for nothing.
+    if (current !== undefined && JSON.stringify(current) === JSON.stringify(next)) return;
+    regions.set(paneID, Object.freeze([...next]));
+    republish();
+}
+
+/** What a pane has declared, already clamped. Test seam; the grid reads the hook. */
+export function paneChromeDragRegionsFor(paneID: string): readonly PaneChromeDragRegion[] {
+    return regions.get(paneID) ?? [];
+}
+
+/** Every declared region, as one stable map. */
+export function usePaneChromeDragRegions(): PaneChromeRegions {
+    return useSyncExternalStore(
+        subscribe,
+        () => regionSnapshot,
+        () => EMPTY_REGIONS
+    );
+}
+
+/**
+ * Drop every declaration a presenter has made about every pane: bands and drag regions both.
+ *
+ * The one call the presenter's own stand-down paths use, so a band handed back without its regions
+ * (host surfaces over a header nobody is drawing) is not a state this window can reach.
+ */
+export function clearPaneChromeDeclarations(): void {
+    const had = declarations.size > 0 || regions.size > 0;
+    declarations.clear();
+    regions.clear();
+    if (had) republish();
+}
+
+/**
  * Drop every declaration.
  *
  * Phase B's fallback calls this: a declaration belongs to the view that made it, so a failed
@@ -137,12 +209,19 @@ export function clearPaneChromeHeights(): void {
  * comes back in, which costs one frame of the native band and nothing else.
  */
 export function retainPaneChromeHeights(paneIDs: Iterable<string>): void {
-    if (declarations.size === 0) return;
+    if (declarations.size === 0 && regions.size === 0) return;
     const keep = paneIDs instanceof Set ? paneIDs : new Set(paneIDs);
     let changed = false;
     for (const paneID of [...declarations.keys()]) {
         if (keep.has(paneID)) continue;
         declarations.delete(paneID);
+        changed = true;
+    }
+    // The regions go with the band, and for the same reason: a host surface over the band of a pane
+    // the presenter is not drawing would take a press that belongs to the bundled header under it.
+    for (const paneID of [...regions.keys()]) {
+        if (keep.has(paneID)) continue;
+        regions.delete(paneID);
         changed = true;
     }
     if (changed) republish();
@@ -230,6 +309,7 @@ export function usePaneChromeWithdrawal(paneID: string): void {
     useEffect(
         () => () => {
             setPaneChromeHeight(paneID, null);
+            setPaneChromeDragRegions(paneID, null);
         },
         [paneID]
     );
@@ -251,7 +331,7 @@ export function usePaneChromeScope(scope: string | undefined): void {
     useEffect(() => {
         if (scope === undefined) return undefined;
         return () => {
-            clearPaneChromeHeights();
+            clearPaneChromeDeclarations();
         };
     }, [scope]);
 }

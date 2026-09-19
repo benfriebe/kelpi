@@ -123,9 +123,63 @@ export const PANE_CHROME_LIMITS = {
      *
      * 12 px is the narrowest strip that reads as a handle beside a 10 px glyph and still leaves a
      * 131 px pane a usable header.
+     *
+     * It is the FLOOR rather than the whole answer. A user reaches for the header itself, the way
+     * they do on a bundled pane, and a faint strip at the edge is not where anyone reaches - so a
+     * presenter declares the regions of its own band that behave like a title bar
+     * (`setPaneDragRegions`) and the host lays its surfaces over those. The grip is what a presenter
+     * that declares nothing still gets.
      */
-    gripWidth: 12
+    gripWidth: 12,
+    /**
+     * How many drag regions one pane may declare.
+     *
+     * Eight, because a header is a row of a few boxes: a title area, a directory line, maybe a gap
+     * between two clusters. A presenter wanting more than that is describing something other than a
+     * title bar, and every region is a host surface with its own hit testing over somebody's
+     * terminal - a list with no ceiling is a way to spend the window's input budget.
+     */
+    maxDragRegions: 8
 } as const;
+
+/**
+ * One rectangle of a pane's band that behaves like a title bar, in BAND-LOCAL pixels.
+ *
+ * The origin is the presenter's own band rectangle for that pane (`rect` in the frame), which is
+ * what keeps a declaration from going stale: a pane that moves, resizes or changes its band moves
+ * its rectangle with it, and the regions travel along. Only the PRESENTER's own layout can
+ * invalidate one, which is why a presenter re-declares from its own resize observer.
+ */
+export interface PaneChromeDragRegion {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
+
+/**
+ * Clamp one declared region into the band it belongs to, or refuse it.
+ *
+ * Every number is treated as hostile, because one of them arrives over a plugin call: a region is
+ * clamped to the band's own box, so a presenter cannot put a host surface over a terminal, a web
+ * page's hole, a divider or another pane by declaring a rectangle that reaches outside its own
+ * header. A rectangle with no area left after the clamp is dropped rather than drawn, because a
+ * surface nobody can press is a surface that only costs hit testing.
+ */
+export function paneChromeDragRegion(
+    region: PaneChromeDragRegion,
+    band: { readonly width: number; readonly height: number }
+): PaneChromeDragRegion | null {
+    const { x, y, width, height } = region;
+    if (![x, y, width, height].every((part) => Number.isFinite(part))) return null;
+    if (!Number.isFinite(band.width) || !Number.isFinite(band.height)) return null;
+    const left = Math.max(0, Math.min(Math.round(x), Math.floor(band.width)));
+    const top = Math.max(0, Math.min(Math.round(y), Math.floor(band.height)));
+    const right = Math.max(left, Math.min(Math.round(x + width), Math.floor(band.width)));
+    const bottom = Math.max(top, Math.min(Math.round(y + height), Math.floor(band.height)));
+    if (right - left <= 0 || bottom - top <= 0) return null;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+}
 
 // ── what a pane IS, for chrome's purposes ───────────────────────────────────────────
 

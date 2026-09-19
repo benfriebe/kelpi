@@ -4,7 +4,7 @@
  * The blessed remote path is `tailscale serve`: it fronts the daemon's loopback HTTP port
  * with automatic HTTPS at `https://<machine>.<tailnet>.ts.net`, which is what makes a remote
  * browser a *secure context* (clipboard, notifications) and keeps the listener itself bound
- * to 127.0.0.1. This module turns that recipe into one command: verify tailscaled is up,
+ * to loopback. This module turns that recipe into one command: verify tailscaled is up,
  * make sure serve fronts the daemon's current port, and hand back the finished URL.
  *
  * Three rules, all borrowed from the CLI-install playbook:
@@ -428,15 +428,29 @@ function emptyMap(value: unknown): boolean {
     return value === undefined || value === null || (object(value) && Object.keys(value).length === 0);
 }
 
+/** Only endpoints guaranteed by the kernel-reported bind, without DNS or liveness guesses. */
+function loopbackEndpoint(host: string | undefined, port: number) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    const loopback: '127.0.0.1' | '::1' | undefined = host === '127.0.0.1' || host === '0.0.0.0' ? '127.0.0.1'
+        : host === '::1' || host === '::' ? '::1' : undefined;
+    if (loopback === undefined) return undefined;
+    const address = `${loopback === '::1' ? '[::1]' : loopback}:${port}`;
+    const proxy = `http://${address}`;
+    // A numeric serve target means IPv4. IPv6 must always name its endpoint explicitly.
+    return { host: loopback, address, proxy, argument: loopback === '::1' ? proxy : String(port) };
+}
+
 /**
  * The mutation/URL safety decision, shared by pairing and the status dashboard. No diagnostic
  * target sweep can establish absence or ownership. Accept only Tailscale's known empty shape
  * (including its null config) or an explicit HTTPS listener for this DNS name whose sole root
- * handler proxies HTTP to Kelpi's IPv4 loopback port. Other paths can intercept assets or /ws;
+ * handler proxies HTTP to Kelpi's actual loopback endpoint. Other paths can intercept assets or /ws;
  * localhost can resolve to a different IPv6 service; neither is equivalent to that route.
  * Unknown configuration and foreground/service indirection require manual inspection.
  */
-export function inspectServeConfig(json: string, dnsName: string, port: number): ServeInspection {
+export function inspectServeConfig(json: string, dnsName: string, port: number, host: string | undefined): ServeInspection {
+    const endpoint = loopbackEndpoint(host, port);
+    if (endpoint === undefined) return { kind: 'unverified' };
     let config: unknown;
     try { config = JSON.parse(json); }
     catch { return { kind: 'unverified' }; }
@@ -467,7 +481,7 @@ export function inspectServeConfig(json: string, dnsName: string, port: number):
         if (!object(root) || Object.keys(root).length !== 1) continue;
         // Match the stored HTTP root form exactly. URL normalization would also accept e.g.
         // /app/.., whose upstream path need not be treated the same way by the proxy backend.
-        const expected = `http://127.0.0.1:${port}`;
+        const expected = endpoint.proxy;
         if (root['Proxy'] !== expected && root['Proxy'] !== `${expected}/`) continue;
         if (listenPort === 443) return { kind: 'serving', listenPort };
         found ??= listenPort;
@@ -526,8 +540,10 @@ export type TailnetUrlResult =
       };
 
 export interface ResolveTailnetOptions {
+    /** Kernel-reported bind address, from the live daemon, never the invoking CLI's env. */
+    readonly host: string | undefined;
     /**
-     * The daemon's BOUND HTTP port (the run dir's port file — stable across restarts). Anything
+     * The daemon's live BOUND HTTP port, reported together with its host. Anything
      * that is not a real port, `0` above all, is refused before tailscale is asked anything.
      */
     readonly port: number;
@@ -556,6 +572,16 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             message: `the daemon has no bound HTTP port to front (got ${String(options.port)}), so tailscale serve was left untouched.`,
             repair: 'Restart the daemon (`kelpid stop` then `kelpid start`) so it records the port it bound, then try again.',
             steps: ['Restart the daemon (`kelpid stop`, then `kelpid start`) so it records the port it actually bound.']
+        };
+    }
+    const endpoint = loopbackEndpoint(options.host, options.port);
+    if (endpoint === undefined) {
+        return {
+            kind: 'error',
+            message: `the daemon's HTTP bind endpoint could not be verified as loopback (bind: ${options.host ?? 'unknown'}). Forwarding was left untouched.`,
+            repair: options.host === undefined
+                ? 'Restart the daemon with this version so it reports its actual HTTP bind endpoint, then try again.'
+                : 'Bind the daemon to 127.0.0.1, ::1, or a wildcard address before using tailnet forwarding.'
         };
     }
     const run = options.run ?? defaultTailscaleRunner();
@@ -613,14 +639,14 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             message: `\`tailscale serve status --json\` failed, so the current serve config cannot be inspected: ${serveStatus.stderr.trim() || serveStatus.stdout.trim() || `exit ${String(serveStatus.code)}`}`,
             repair:
                 'Check `tailscale serve status` yourself; if nothing (or only the daemon) is being served, ' +
-                `run \`tailscale serve --bg ${String(options.port)}\` and re-run \`kelpid url --tailnet\`.`,
+                `run \`tailscale serve --bg ${endpoint.argument}\` and re-run \`kelpid url --tailnet\`.`,
             steps: [
                 'Run `tailscale serve status` to see what this tailnet already serves.',
-                `If nothing (or only kelpi) is there, run \`tailscale serve --bg ${String(options.port)}\` yourself.`
+                `If nothing (or only kelpi) is there, run \`tailscale serve --bg ${endpoint.argument}\` yourself.`
             ]
         };
     }
-    const inspection = inspectServeConfig(serveStatus.stdout, identity.dnsName, options.port);
+    const inspection = inspectServeConfig(serveStatus.stdout, identity.dnsName, options.port, options.host);
     let listenPort = 443;
     if (inspection.kind !== 'serving') {
         if (inspection.kind !== 'empty') {
@@ -641,24 +667,24 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             if (unique.length > 16) details.push(`${String(unique.length - 16)} additional targets were not probed`);
             const history = options.forwardingFile === undefined ? undefined : readForwardingRecord(options.forwardingFile);
             if (history !== undefined) {
-                details.push(`Kelpi last configured tailscale serve for ${history.dnsName} at 127.0.0.1:${String(history.port)} on ${history.configuredAt}; this history does not establish current ownership`);
+                details.push(`Kelpi last configured tailscale serve for ${history.dnsName} at ${history.host === '::1' ? '[::1]' : '127.0.0.1'}:${String(history.port)} on ${history.configuredAt}; this history does not establish current ownership`);
             }
             return {
                 kind: 'error',
-                message: `tailscale serve could not be verified as an HTTPS root route to Kelpi's current 127.0.0.1:${String(options.port)}. ` +
+                message: `tailscale serve could not be verified as an HTTPS root route to Kelpi's current ${endpoint.address}. ` +
                     (details.length > 0 ? `${details.join('; ')}. ` : 'The existing configuration is occupied or unrecognized. ') +
                     'Forwarding was left untouched.',
                 repair:
-                    `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`tailscale serve --bg ${String(options.port)}\` ` +
+                    `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`tailscale serve --bg ${endpoint.argument}\` ` +
                     '(this replaces the :443 root handler), then try again.',
                 steps: [
                     ...details,
                     'Run `tailscale serve status` and confirm which service should own :443. A refused connection alone does not identify the owner.',
-                    `To forward :443 to Kelpi's current port, run \`tailscale serve --bg ${String(options.port)}\` yourself - it replaces the :443 root handler.`
+                    `To forward :443 to Kelpi's current endpoint, run \`tailscale serve --bg ${endpoint.argument}\` yourself - it replaces the :443 root handler.`
                 ]
             };
         }
-        const serve = await run(['serve', '--bg', String(options.port)]);
+        const serve = await run(['serve', '--bg', endpoint.argument]);
         if (serve.code !== 0) {
             const said = serve.stderr.trim() || serve.stdout.trim() || `exit ${String(serve.code)}`;
             // tailscale's own message usually names the fix (an admin-console enable link);
@@ -683,22 +709,22 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             }
             return {
                 kind: 'error',
-                message: `\`tailscale serve --bg ${String(options.port)}\` failed: ${said}`,
+                message: `\`tailscale serve --bg ${endpoint.argument}\` failed: ${said}`,
                 repair:
                     link !== undefined
                         ? `Open ${link} (serve + HTTPS must be enabled for the tailnet), then re-run.`
                         : `Enable serve and HTTPS certificates for the tailnet (${TAILNET_DNS_ADMIN}), then re-run.`,
                 steps: [
                     `Open ${link ?? TAILNET_DNS_ADMIN} and check that serve and HTTPS certificates are enabled for this tailnet.`,
-                    `If it still refuses, run \`tailscale serve --bg ${String(options.port)}\` yourself to see tailscale's own answer.`
+                    `If it still refuses, run \`tailscale serve --bg ${endpoint.argument}\` yourself to see tailscale's own answer.`
                 ]
             };
         }
-        notes.push(`tailscale serve --bg ${String(options.port)}: configured (was not serving anything)`);
+        notes.push(`tailscale serve --bg ${endpoint.argument}: configured (was not serving anything)`);
         if (options.forwardingFile !== undefined) {
             try {
                 writeForwardingRecord(options.forwardingFile, {
-                    version: 1, dnsName: identity.dnsName, port: options.port,
+                    version: 1, dnsName: identity.dnsName, port: options.port, host: endpoint.host,
                     configuredAt: new Date().toISOString(), binary: serve.binary
                 });
             } catch (error) {
@@ -711,7 +737,7 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
         // a bare :443 URL a connection refused reported as success.
         listenPort = inspection.listenPort;
         notes.push(
-            `tailscale serve: already fronting 127.0.0.1:${String(options.port)} on :${String(listenPort)}`
+            `tailscale serve: already fronting ${endpoint.address} on :${String(listenPort)}`
         );
     }
 

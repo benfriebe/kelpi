@@ -201,6 +201,8 @@ export interface HandlerContext<State, Action, Event> {
    * boot always supplies it, and `ping` reports "unknown" rather than "fine" without it.
    */
   readonly persistenceHealth?: (() => PersistenceHealth) | undefined;
+  /** The kernel-reported primary HTTP bind, read live after the listener starts. */
+  readonly httpEndpoint?: (() => { readonly host: string; readonly port: number } | undefined) | undefined;
   /**
    * §SET-021 / §AGNT-005: what happened to the optional TCP control listener — the port the
    * config asked for, the port that is actually listening, and the bind error when there isn't

@@ -131,6 +131,8 @@ export interface RemoteChannelOptions {
      * port at all (#130).
      */
     readonly port: () => number | undefined;
+    /** Actual kernel-reported bind address; unknown must never imply IPv4 loopback. */
+    readonly host: () => string | undefined;
     /** Injected for tests; production shells out to the tailscale CLI. */
     readonly tailscale?: TailscaleRunner | undefined;
     /** Actual daemon run directory, including programmatic overrides at boot. */
@@ -262,7 +264,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 }
                 serving =
                     serveStatus.code === 0 &&
-                    inspectServeConfig(serveStatus.stdout, identity.dnsName, port).kind === 'serving';
+                    inspectServeConfig(serveStatus.stdout, identity.dnsName, port, options.host()).kind === 'serving';
             }
             return {
                 ok: true,
@@ -299,7 +301,7 @@ export function createRemoteChannel(options: RemoteChannelOptions): RemoteChanne
                 };
             }
             const result = await resolveTailnetURL({
-                port, token: minted.token, run,
+                port, host: options.host(), token: minted.token, run,
                 forwardingFile: path.join(options.runDir ?? resolveRunDir({ env }), 'tailscale-serve.json')
             });
             if (result.kind === 'error') {

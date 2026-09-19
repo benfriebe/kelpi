@@ -315,20 +315,44 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         // Restore a failed probe's root position so the remaining checks can still run.
         await page.eval(`(() => {const r=document.querySelector('${paneRoot(paneID)}');r.scrollLeft=0;r.scrollTop=0;})()`);
         await sleep(150);
-        // Resize within the same whole-column count: no wheel or scroll follows the shrink.
-        await page.send('Emulation.setDeviceMetricsOverride', {width:907,height:600,deviceScaleFactor:1,mobile:false});
-        await sleep(200);
+        // Put both widths inside one measured cell interval. A fixed viewport delta can cross
+        // a column boundary when a retained side panel or different font changes the host width.
+        const resizeSeed = await geometry(paneID);
+        const viewportWidth = await page.eval('window.innerWidth');
+        const cellWidth = resizeSeed?.cellWidth;
+        if (!(cellWidth >= 4) || !(hostCols(resizeSeed) > 0)) {
+            throw new Error(`sub-cell resize needs measurable host/cell geometry: ${JSON.stringify(resizeSeed)}`);
+        }
+        const targetHostWidth = (hostCols(resizeSeed) + 0.75) * cellWidth;
+        const wideWidth = Math.round(viewportWidth + targetHostWidth - resizeSeed.hostWidth);
+        const shrink = Math.floor(cellWidth / 2);
+        const smallWidth = wideWidth - shrink;
+        const resizePlan = { seed: resizeSeed, viewportWidth, cellWidth, targetHostWidth, wideWidth, smallWidth, shrink };
+        await page.send('Emulation.setDeviceMetricsOverride', {width:wideWidth,height:600,deviceScaleFactor:1,mobile:false});
+        const wideSettled = await d.settle(async () => {
+            const g = await geometry(paneID);
+            return g !== null && Math.abs(g.hostWidth - (resizeSeed.hostWidth + wideWidth - viewportWidth)) < 0.5;
+        });
+        const wideGeometry = await geometry(paneID);
+        if (!wideSettled || wideGeometry.cellWidth !== cellWidth ||
+            Math.floor((wideGeometry.hostWidth - shrink) / cellWidth) !== hostCols(wideGeometry)) {
+            throw new Error(`sub-cell resize precondition not established: ${JSON.stringify({plan:resizePlan,before:wideGeometry})}`);
+        }
         const beforeSmallResize=await viewport();
         await page.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:beforeSmallResize.cx,y:beforeSmallResize.cy,deltaX:2000,deltaY:0});
         await sleep(100);
         const atWideEdge=await viewport();
-        await page.send('Emulation.setDeviceMetricsOverride',{width:900,height:600,deviceScaleFactor:1,mobile:false});
+        // No wheel, focus or scroll action follows this shrink until the assertion is recorded.
+        await page.send('Emulation.setDeviceMetricsOverride',{width:smallWidth,height:600,deviceScaleFactor:1,mobile:false});
         await sleep(250);
         const afterSmallResize=await viewport();
+        const smallGeometry = await geometry(paneID);
         rec.check('a sub-cell shrink reveals the newly clipped right edge',
+            atWideEdge.x === atWideEdge.maxX && !atWideEdge.right &&
+            hostCols(smallGeometry) === hostCols(wideGeometry) &&
             afterSmallResize.clip === atWideEdge.clip && afterSmallResize.x === atWideEdge.x &&
             afterSmallResize.maxX > atWideEdge.maxX && afterSmallResize.right,
-            JSON.stringify({before:atWideEdge,after:afterSmallResize}));
+            JSON.stringify({plan:resizePlan,beforeGeometry:wideGeometry,afterGeometry:smallGeometry,before:atWideEdge,after:afterSmallResize}));
         await page.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:afterSmallResize.cx,y:afterSmallResize.cy,deltaX:2000,deltaY:0});
 
         // Exercise real engine selection after an X pan, with a deterministic word in a hidden column.

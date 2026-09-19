@@ -106,3 +106,106 @@ diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 +    out[3] = b.coord().y;
 +    return true;
 +}
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -776,6 +776,10 @@
+
+     // If we have no scrollback, then we shift all our rows instead.
+     if (self.no_scrollback) {
++        // A row leaving a screen without history is discarded, not a new anchor.
++        // PageList keeps general-purpose pins valid for cursors and viewports.
++        self.clearSelectionOnRow(0);
++
+         // If we have a single-row screen, we have no rows to shift
+         // so our cursor is in the correct place we just have to clear
+         // the cells.
+@@ -2386,6 +2390,47 @@
+     self.selection = null;
+ }
+
++/// Clear a selection if either endpoint belongs to a row about to be discarded.
++/// Other tracked pins retain PageList's existing cursor/viewport semantics.
++pub fn clearSelectionOnRow(self: *Screen, y: size.CellCountInt) void {
++    const sel = self.selection orelse return;
++    for ([_]Pin{ sel.start(), sel.end() }) |p| {
++        const pt = self.pages.pointFromPin(.active, p) orelse continue;
++        if (pt.coord().y == y) {
++            self.clearSelection();
++            return;
++        }
++    }
++}
++
++/// Follow text moved by insertLines/deleteLines, whose cell copies do not move
++/// PageList pins. Clear the entire selection when either endpoint is discarded.
++pub fn scrollSelection(
++    self: *Screen,
++    top: size.CellCountInt,
++    bottom: size.CellCountInt,
++    left: size.CellCountInt,
++    right: size.CellCountInt,
++    delta: isize,
++) void {
++    const sel = if (self.selection) |*v| v else return;
++    if (sel.start().garbage or sel.end().garbage) {
++        self.clearSelection();
++        return;
++    }
++    for ([_]*Pin{ sel.startPtr(), sel.endPtr() }) |p| {
++        const pt = self.pages.pointFromPin(.active, p.*) orelse continue;
++        const c = pt.coord();
++        if (c.y < top or c.y > bottom or c.x < left or c.x > right) continue;
++        const y = @as(isize, @intCast(c.y)) + delta;
++        if (y < top or y > bottom) {
++            self.clearSelection();
++            return;
++        }
++        p.* = self.pages.pin(.{ .active = .{ .x = c.x, .y = @intCast(y) } }).?;
++    }
++}
++
+ pub const SelectionString = struct {
+     /// The selection to convert to a string.
+     sel: Selection,
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -1229,6 +1229,7 @@
+         // Preserve old cursor just for assertions
+         const old_cursor = self.screens.active.cursor;
+
++        self.screens.active.clearSelectionOnRow(self.scrolling_region.top);
+         try self.screens.active.pages.eraseRowBounded(
+             .{ .active = .{ .y = self.scrolling_region.top } },
+             self.scrolling_region.bottom - self.scrolling_region.top,
+@@ -1551,6 +1552,14 @@
+     // region. So we take whichever is smaller.
+     const adjusted_count = @min(count, rem);
+
++    self.screens.active.scrollSelection(
++        self.screens.active.cursor.y,
++        self.scrolling_region.bottom,
++        self.scrolling_region.left,
++        self.scrolling_region.right,
++        @intCast(adjusted_count),
++    );
++
+     // Create a new tracked pin which we'll use to navigate the page list
+     // so that if we need to adjust capacity it will be properly tracked.
+     var cur_p = self.screens.active.pages.trackPin(
+@@ -1758,6 +1767,14 @@
+     // We can only insert lines up to our remaining lines in the scroll
+     // region. So we take whichever is smaller.
+     const adjusted_count = @min(count, rem);
++
++    self.screens.active.scrollSelection(
++        self.screens.active.cursor.y,
++        self.scrolling_region.bottom,
++        self.scrolling_region.left,
++        self.scrolling_region.right,
++        -@as(isize, @intCast(adjusted_count)),
++    );
+
+     // Create a new tracked pin which we'll use to navigate the page list
+     // so that if we need to adjust capacity it will be properly tracked.

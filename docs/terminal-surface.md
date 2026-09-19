@@ -1420,8 +1420,11 @@ are tracked by native buffer pins during each output write, then the copy reader
 use those pins' updated coordinates. A retained conversation row stays selected when older
 scrollback pages are discarded, including a trim hidden by net growth in the same output chunk.
 If either endpoint is discarded, the whole selection clears and announces that change; it never
-silently selects the replacement rows. Resetting the VT, changing screens, and erasing selected
-history also clear the selection. This is a reproduced engine defect and regression fix, not
+silently selects the replacement rows. This also applies when output rotates rows off the
+alternate screen or a scrolling region, including colored output and reverse scrolling.
+Surviving endpoints follow the moved text; cursor and viewport pins keep their native behavior.
+Resetting the VT, changing screens, and erasing selected history also clear the selection.
+This is a reproduced engine defect and regression fix, not
 confirmation that trimming caused the original remote Codex session's failure; that session
 still needs a retest after the already-merged remote dispatch fix and this engine update.
 

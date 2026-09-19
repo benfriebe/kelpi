@@ -1423,6 +1423,8 @@ If either endpoint is discarded, the whole selection clears and announces that c
 silently selects the replacement rows. This also applies when output rotates rows off the
 alternate screen or a scrolling region, including colored output and reverse scrolling.
 Surviving endpoints follow the moved text; cursor and viewport pins keep their native behavior.
+Selections on footer rows below a top-anchored scrolling region stay attached when the engine
+internally rotates those rows to grow history, including across page boundaries and pruning.
 Resetting the VT, changing screens, and erasing selected history also clear the selection.
 This is a reproduced engine defect and regression fix, not
 confirmation that trimming caused the original remote Codex session's failure; that session

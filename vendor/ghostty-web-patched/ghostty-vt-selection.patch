@@ -120,7 +120,46 @@ diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
          // If we have a single-row screen, we have no rows to shift
          // so our cursor is in the correct place we just have to clear
          // the cells.
-@@ -2386,6 +2390,47 @@
+@@ -898,6 +902,19 @@
+     //  end of the pagelist (`grow()`), and move everything BELOW the cursor
+     //  DOWN by one row. This has the same practical result but it's a whole
+     //  lot cheaper in 99% of cases.
++
++    // The footer stays at the same active coordinates, but its cells move one
++    // row down in the page list. Remember which selection endpoints follow it
++    // before grow() changes the active origin or prunes history. Other tracked
++    // pins keep their existing cursor/viewport semantics.
++    var selection_in_footer: [2]bool = .{ false, false };
++    if (self.selection) |sel| {
++        for ([_]Pin{ sel.start(), sel.end() }, 0..) |p, i| {
++            if (p.garbage) continue;
++            const pt = self.pages.pointFromPin(.active, p) orelse continue;
++            selection_in_footer[i] = pt.coord().y > self.cursor.y;
++        }
++    }
+
+     const old_pin = self.cursor.page_pin.*;
+     if (try self.pages.grow()) |_| {
+@@ -955,6 +972,18 @@
+             //      +----------+ :
+             //     +-------------+
+             try self.cursorScrollAboveRotate();
++        }
++    }
++
++    if (self.selection) |*sel| {
++        // A history endpoint may have been pruned by grow(). Never repair that
++        // discarded endpoint into a valid selection on unrelated text.
++        if (sel.start().garbage or sel.end().garbage) {
++            self.clearSelection();
++        } else {
++            for ([_]*Pin{ sel.startPtr(), sel.endPtr() }, selection_in_footer) |p, move| {
++                if (move) p.* = p.down(1).?;
++            }
+         }
+     }
+
+@@ -2386,6 +2415,47 @@
      self.selection = null;
  }
 

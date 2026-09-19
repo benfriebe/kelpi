@@ -82,8 +82,11 @@ import {
     startShell,
     waitForHealthz
 } from './lib/stack.mjs';
-import { CANONICAL_ORDER, aggregateShards, describePartition, expandChains, planShards } from './lib/shards.mjs';
+import { CANONICAL_ORDER, aggregateShards, describePartition, planShards, windowPlacementOf } from './lib/shards.mjs';
+import { parseArgs, shardArgs, shardPlanOptions } from './lib/audit-options.mjs';
+import { resolveAuditPlacement } from './lib/placement.mjs';
 import {
+    requireVisiblePage,
     describePickGuards,
     focusPageCommentSource,
     installPickWitnessSource,
@@ -94,108 +97,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 
 // ── options ─────────────────────────────────────────────────────────────────────────
-
-const WINDOW_PLACEMENTS = new Set(['hidden', 'offscreen', 'onscreen', 'default']);
-
-function parseArgs(argv) {
-    const options = {
-        out: null,
-        build: true,
-        forceBuild: false,
-        packaged: false,
-        keep: false,
-        verbose: false,
-        only: null,
-        /**
-         * Does `--only` bring the chain its steps declare?
-         *
-         * On, because a step that reads `state.webPane` cannot do anything alone but fail (#203).
-         * `--no-chain` is the opt-out, and it exists for one caller: `verify-manifest.mjs` runs a
-         * candidate step ALONE from a cold boot on purpose, and "alone" is the measurement.
-         */
-        chain: true,
-        /*
-         * Where the shell window goes.
-         *
-         * `default` — a visible window, exactly as before — because it is the only placement
-         * measured to keep BOTH the assertions and the screenshots. Freeing the machine's display
-         * was the goal and it was tried three ways; `packages/shell/src/audit-window.ts` holds the
-         * table. In short: `offscreen` loses the Retina backing store (devicePixelRatio 2 → 1,
-         * which turned two green assertions red in a full run), and `hidden` (zero opacity) is
-         * assertion-identical but writes blank PNGs, which is fatal for a suite where 107 of 118
-         * steps are `needs-eyes`.
-         *
-         * `--window hidden` is still worth having for an assertions-only regression run, and
-         * `--window onscreen` is the per-class fidelity pin used by `lib/shards.mjs`'s
-         * `ONSCREEN_STEPS`. The throttling half of the change (`backgroundThrottling: false`) is
-         * unconditional under `KELPI_AUDIT` and is what makes any of them survive being occluded.
-         *
-         * There is deliberately no `phone` placement: a phone viewport is a size, a device scale
-         * factor and a pointer type, which is precisely what a placement is forbidden to change.
-         * The phone lane emulates per step instead - see `emulatePhone` and the block above it.
-         */
-        window: 'default',
-        /** Total shards. 1 = the classic single-process serial run. */
-        shards: 1,
-        /** Which shard THIS process is; null in the parent. Set by the parent on each child. */
-        shard: null
-    };
-    for (let i = 0; i < argv.length; i++) {
-        const arg = argv[i];
-        const valued = (name) => (arg === `--${name}` ? (argv[++i] ?? '') : arg.slice(`--${name}=`.length));
-        if (arg === '--out' || arg.startsWith('--out=')) options.out = valued('out');
-        else if (arg === '--no-build') options.build = false;
-        else if (arg === '--force-build') options.forceBuild = true;
-        else if (arg === '--packaged') options.packaged = true;
-        else if (arg === '--keep') options.keep = true;
-        else if (arg === '--verbose') options.verbose = true;
-        else if (arg === '--only' || arg.startsWith('--only=')) options.only = valued('only').split(',').filter(Boolean);
-        else if (arg === '--no-chain') options.chain = false;
-        else if (arg === '--window' || arg.startsWith('--window=')) options.window = valued('window');
-        else if (arg === '--shards' || arg.startsWith('--shards=')) options.shards = Number.parseInt(valued('shards'), 10);
-        else if (arg === '--shard' || arg.startsWith('--shard=')) options.shard = Number.parseInt(valued('shard'), 10);
-        else if (arg === '--help' || arg === '-h') {
-            process.stdout.write(
-                'usage: node scripts/ui-audit/audit.mjs [--out <dir>] [--packaged] [--no-build] [--force-build]\n' +
-                    '                                      [--keep] [--verbose] [--only a,b] [--no-chain]\n' +
-                    '                                      [--window hidden|offscreen|onscreen|default] [--shards N]\n'
-            );
-            process.exit(0);
-        } else throw new Error(`unknown argument: ${arg}`);
-    }
-    if (!WINDOW_PLACEMENTS.has(options.window)) {
-        throw new Error(`--window must be one of ${[...WINDOW_PLACEMENTS].join(', ')} (got "${options.window}")`);
-    }
-    /**
-     * `--only` runs the steps named AND the prerequisites those steps have already declared.
-     *
-     * `lib/shards.mjs` records which accumulated value binds each spine step, and `--only` used to
-     * ignore it: `--only web-batch-pickup` ran a step the manifest describes as "reads
-     * state.webPane" with nothing having written it, so its whole output was one failed "a web
-     * pane exists" (#203). `expandChains` turns that declaration into the step that writes it.
-     *
-     * Done after the loop, not inside the `--only` branch, so `--no-chain` works whichever side of
-     * `--only` it is written on.
-     */
-    if (options.only !== null && options.chain) {
-        const asked = options.only;
-        options.only = expandChains(asked);
-        const added = options.only.filter((id) => !asked.includes(id));
-        // Loud, because the alternative is a developer who asked for one step watching two run. A
-        // shard child is handed the expanded list, so it adds nothing and prints nothing.
-        if (added.length > 0) {
-            process.stdout.write(`--only also runs ${added.join(', ')} (the chain these steps declare in lib/shards.mjs)\n`);
-        }
-    }
-    if (!Number.isInteger(options.shards) || options.shards < 1) throw new Error('--shards must be a positive integer');
-    if (options.shard !== null && (!Number.isInteger(options.shard) || options.shard < 0)) {
-        throw new Error('--shard must be a non-negative integer');
-    }
-    // Deliberately NOT bounded by `--shards`: a manifest that pins a fidelity class to its own
-    // window placement produces one more group than the requested shard count, and the parent
-    // addresses it by index. `planShards` is the authority on how many groups there are.
-    return options;
-}
 
 const options = parseArgs(process.argv.slice(2));
 
@@ -1179,6 +1080,17 @@ async function webViewSession(sandbox, site, repoRoot) {
     return connect(target.webSocketDebuggerUrl, { repoRoot });
 }
 
+// An environmental failure must also leave the next flow a clean batch and CDP session.
+async function requireVisibleBatchPage(view, page, paneID, stepID) {
+    try {
+        await requireVisiblePage(view, stepID);
+    } catch (error) {
+        view.close();
+        await page.eval(`document.querySelector('[data-testid="web-batch-cancel-${paneID}"]')?.click()`).catch(() => {});
+        throw error;
+    }
+}
+
 /**
  * Install the click witness in the embedded page (#206), and never throw doing it.
  *
@@ -1779,7 +1691,7 @@ async function openSidebarMenu(page, selector, needle) {
  *
  * The children are the *same* harness with `--shard i` — not a special mode — so a sharded run
  * and a serial run execute identical step code against identical stacks. All the parent adds is
- * the fan-out, the `--no-build` (it builds once, up front, so N children do not race four builds
+ * the serial child launches, the `--no-build` (it builds once, up front, so N children do not race four builds
  * against each other and each other's `dist/`), and the fold.
  *
  * A child that dies is reported and does NOT kill its siblings: the aggregate is more useful with
@@ -1787,9 +1699,8 @@ async function openSidebarMenu(page, selector, needle) {
  * step ids when the result is diffed against the baseline.
  *
  * With `lib/shards.mjs`'s free lane switched off — which is where the measurements left it — the
- * partition puts every step in shard 0 and the other shards are empty and never started, so this
- * path is the serial run with a fan-out and a fold around it. That is deliberate: the entrypoint
- * stays exercised (and stays honest) while the lane is closed.
+ * normal partition stays in shard 0. Declared placement floors add private children, run after
+ * the previous child has exited and cleaned up its desktop state. Empty groups never start.
  */
 async function runShardedParent() {
     const startedAt = new Date().toISOString();
@@ -1803,13 +1714,13 @@ async function runShardedParent() {
     }
     if (options.packaged) await assertPackagedSignature(repoRoot);
 
-    const plan = planShards(CANONICAL_ORDER, options.shards);
+    const plan = planShards(CANONICAL_ORDER, options.shards, shardPlanOptions(options));
     process.stdout.write(`${describePartition(plan)}\n\n`);
 
     const shardsDir = path.join(outDir, 'shards');
     fs.mkdirSync(shardsDir, { recursive: true });
     const shardDirs = [];
-    const children = [];
+    const outcomes = [];
     for (let index = 0; index < plan.groups.length; index++) {
         if (plan.groups[index].length === 0) {
             process.stdout.write(`  shard ${String(index)}: nothing assigned, not started\n`);
@@ -1822,33 +1733,13 @@ async function runShardedParent() {
             '--out',
             dir,
             '--no-build',
-            '--shards',
-            String(options.shards),
-            '--shard',
-            String(index),
-            // A shard the manifest pinned to a placement (the fidelity class) overrides the run's
-            // choice: Electron fixes the placement when the window is built, so "this class needs
-            // a visible window" can only be honoured by giving it a process of its own.
-            '--window',
-            plan.placements[index] ?? options.window,
+            ...shardArgs(options, plan, index),
             ...(options.packaged ? ['--packaged'] : []),
             ...(options.keep ? ['--keep'] : []),
-            ...(options.verbose ? ['--verbose'] : []),
-            // The list is already expanded, so the child's own expansion is a no-op, but pass
-            // `--no-chain` through anyway, so a parent told to run one step alone cannot hand a
-            // child permission to run its chain.
-            ...(options.chain ? [] : ['--no-chain']),
-            ...(options.only === null ? [] : ['--only', options.only.join(',')])
+            ...(options.verbose ? ['--verbose'] : [])
         ];
-        /*
-         * Stagger the launches.
-         *
-         * `freePort` picks a port by binding one, reading it and closing again — which is a
-         * race the moment two sandboxes are built in the same instant, and each shard draws
-         * three of them (HTTP, control, DevTools). A second and a half between starts makes
-         * the windows disjoint in practice, and costs a sharded run nothing measurable.
-         */
-        if (index > 0) await sleep(1500);
+        // Each private child can touch the machine's screen and clipboard. Wait for its
+        // complete cleanup before starting another placement group (#206; #207).
         const child = spawnProcess(process.execPath, args, { cwd: repoRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
         clearBackgroundTaskPolicy(child.pid);
         const logPath = path.join(shardsDir, `shard-${String(index)}.log`);
@@ -1868,8 +1759,8 @@ async function runShardedParent() {
             }
         });
         const startedShardAt = Date.now();
-        children.push(
-            new Promise((resolve) => {
+        outcomes.push(
+            await new Promise((resolve) => {
                 child.on('close', (code) => {
                     const seconds = ((Date.now() - startedShardAt) / 1000).toFixed(0);
                     process.stdout.write(`  shard ${String(index)} finished in ${seconds}s (exit ${String(code ?? -1)}) → ${logPath}\n`);
@@ -1880,11 +1771,10 @@ async function runShardedParent() {
         );
     }
 
-    const outcomes = await Promise.all(children);
     const broken = outcomes.filter((outcome) => outcome.code !== 0);
 
-    const shardZero = path.join(shardsDir, 'shard-0', 'results.json');
-    const inheritedMeta = fs.existsSync(shardZero) ? JSON.parse(fs.readFileSync(shardZero, 'utf8')).meta : {};
+    const firstResult = shardDirs.map((dir) => path.join(dir, 'results.json')).find((file) => fs.existsSync(file));
+    const inheritedMeta = firstResult === undefined ? {} : JSON.parse(fs.readFileSync(firstResult, 'utf8')).meta;
     const summary = aggregateShards({
         outDir,
         shardDirs,
@@ -1895,7 +1785,7 @@ async function runShardedParent() {
             commit: gitCommit(),
             shellMode: options.packaged ? 'packaged Kelpi.app' : 'dev electron (packages/shell)',
             windowPlacement: options.window,
-            shardCount: options.shards
+            shardCount: shardDirs.length
         }
     });
     process.stdout.write(
@@ -2012,8 +1902,10 @@ async function main() {
      * harness throws here (in every shard at once) instead of silently dropping steps from one.
      */
     let shardFilter = null;
+    let supportFilter = null;
     const skip = (id) =>
-        (options.only !== null && !options.only.includes(id)) || (shardFilter !== null && !shardFilter.has(id));
+        (options.only !== null && !options.only.includes(id)) ||
+        (shardFilter !== null && !shardFilter.has(id) && !supportFilter?.has(id));
 
     try {
         // The daemon's first pane should open in the fixture dir, so `ls` has content.
@@ -2129,6 +2021,13 @@ async function main() {
         await sleep(2500);
 
         const flows = buildFlows({ report, page, cli, sandbox, work, repo, site, consoleErrors, runtime, repoRoot, options });
+        const placementDrift = flows.find((flow) => flow.windowPlacement !== windowPlacementOf(flow.id));
+        if (placementDrift !== undefined) {
+            throw new Error(
+                `the ${placementDrift.id} flow declares ${String(placementDrift.windowPlacement)}, but ` +
+                `lib/shards.mjs declares ${String(windowPlacementOf(placementDrift.id))}; keep the parent plan and flow contract aligned`
+            );
+        }
         if (options.shard !== null) {
             /*
              * The partition is derived from the flows THIS process actually built, not from the
@@ -2136,7 +2035,7 @@ async function main() {
              * input, and a manifest that has drifted from the harness throws here (in every shard
              * at once) instead of silently dropping steps out of one of them.
              */
-            const plan = planShards(flows.map((flow) => flow.id), options.shards);
+            const plan = planShards(flows.map((flow) => flow.id), options.shards, shardPlanOptions(options));
             if (plan.groups[options.shard] === undefined) {
                 throw new Error(
                     `--shard ${String(options.shard)} is out of range: the manifest partitions this run into ` +
@@ -2144,8 +2043,9 @@ async function main() {
                 );
             }
             shardFilter = new Set(plan.groups[options.shard]);
+            supportFilter = new Set(plan.supports?.[options.shard] ?? []);
             process.stdout.write(
-                `shard ${String(options.shard)}/${String(options.shards)} — ${String(shardFilter.size)} steps` +
+                `shard ${String(options.shard)}/${String(plan.groups.length)} — ${String(shardFilter.size)} steps` +
                     `${options.shard === 0 ? ' (spine, canonical order)' : ' (free)'}\n`
             );
         }
@@ -2185,7 +2085,11 @@ async function main() {
         await recordTimeline('(boot)');
         for (const flow of flows) {
             if (skip(flow.id)) continue;
-            const recorder = report.step(flow.id, { expect: flow.expect, needsEyes: flow.needsEyes === true });
+            const recorder = report.step(flow.id, {
+                expect: flow.expect,
+                needsEyes: flow.needsEyes === true,
+                support: supportFilter?.has(flow.id) === true
+            });
             await report.guard(recorder, () => flow.run(recorder));
             await recordTimeline(flow.id);
         }
@@ -6005,6 +5909,9 @@ function buildFlows(ctx) {
         },
         {
             id: 'web-batch-pickup',
+            // This drives the native page itself. Its declared floor is kept with the shard
+            // manifest, where the parent can plan a private process before Electron builds it.
+            windowPlacement: windowPlacementOf('web-batch-pickup'),
             expect:
                 'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; hiding the panel leaves the button wearing a numeric badge with the pending count; Send pastes one `# kelpi inspect batch` block into a shell pane.',
             needsEyes: true,
@@ -6065,6 +5972,7 @@ function buildFlows(ctx) {
                      * click arrives, and because zero clicks seen is the positive control that
                      * separates "the picker declined" from "the click never reached the page".
                      */
+                    await requireVisibleBatchPage(view, page, paneID, 'web-batch-pickup');
                     await installWitness(view);
                     const helloBox = await view.click('#hello');
                     await sleep(700);
@@ -6093,6 +6001,7 @@ function buildFlows(ctx) {
                         pickProbe === null ? String(dismissed) : describePickGuards(pickProbe)
                     );
                     await sleep(500);
+                    await requireVisibleBatchPage(view, page, paneID, 'web-batch-pickup');
                     await view.click('#go');
                     await sleep(700);
                     await view.eval(
@@ -6306,6 +6215,7 @@ function buildFlows(ctx) {
         //    strip, and the focus handoff (index gaps #4, #9, #17) ────────────────────────
         {
             id: 'web-batch-internals',
+            windowPlacement: windowPlacementOf('web-batch-internals'),
             expect:
                 'The page half of the pickup session behaves: badges follow a scroll and a live re-query, hide when their element collapses or leaves the viewport, the popover carries `#<label> <selector>` and obeys its placement rules, a panel-side comment pushes into the textarea only while it is unfocused, Escape and ⌘-Return dismiss it, and a highlight that beats its sync is applied on the next one.',
             needsEyes: true,
@@ -6325,6 +6235,7 @@ function buildFlows(ctx) {
                 await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
+                await requireVisibleBatchPage(view, page, paneID, 'web-batch-internals');
                 await installWitness(view);
                 const helloBox = await view.click('#hello');
                 await sleep(700);
@@ -8045,6 +7956,7 @@ function buildFlows(ctx) {
              * the hosting TAB's id.
              */
             id: 'web-console-frames',
+            windowPlacement: windowPlacementOf('web-console-frames'),
             expect:
                 'A cross-origin iframe\'s console.log AND its uncaught exception both reach `kelpi web console` for the pane that embeds it, attributed to that pane\'s tab (WEB-073).',
             needsEyes: true,
@@ -35433,9 +35345,15 @@ function buildFlows(ctx) {
     ];
 }
 
-// `--shards N` without `--shard i` is the parent: it fans out N copies of this same script and
-// folds their results. Everything else — including each of those copies — is the run itself.
-const entry = options.shards > 1 && options.shard === null ? runShardedParent : main;
+// A placement-sensitive native-page flow is also a parent run even at `--shards 1`: Electron
+// fixes placement at window construction, so its offscreen instance must be a second process.
+// `--only` has already gained its declared chain writers, which lets a narrow rerun avoid
+// starting an unrelated normal shard.
+const selectedForPlacement = options.only ?? CANONICAL_ORDER;
+const needsPlacementChild = selectedForPlacement.some((id) =>
+    resolveAuditPlacement(options.window, windowPlacementOf(id)).raised
+);
+const entry = options.shard === null && (options.shards > 1 || needsPlacementChild) ? runShardedParent : main;
 
 entry().catch((error) => {
     process.stderr.write(`\nAUDIT HARNESS FAILED: ${String(error?.stack ?? error)}\n`);

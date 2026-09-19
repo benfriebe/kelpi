@@ -15,6 +15,11 @@ it('records boot errors on their own instances, drains shared intervals once, an
         const watcher = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/renderer-errors.mjs')).href;
         const stub = path.join(temp, 'driver.mjs');
         const stopped = path.join(temp, 'stopped');
+        const slot = path.join(temp, 'desktop-slot.mjs');
+        const acquired = path.join(temp, 'acquired');
+        fs.writeFileSync(slot, `import fs from 'node:fs';
+            export const DESKTOP_TEST_PORT = 19735;
+            export async function holdDesktopTestSlot() { fs.writeFileSync(${JSON.stringify(acquired)}, 'yes'); return { release: async () => {} }; }`);
         fs.writeFileSync(stub, `
             import { EventEmitter } from 'node:events';
             import fs from 'node:fs';
@@ -23,6 +28,7 @@ it('records boot errors on their own instances, drains shared intervals once, an
             let count = 0;
             let lane;
             export async function boot({ window }) {
+                if (!fs.existsSync(${JSON.stringify(acquired)})) throw new Error('boot before desktop slot');
                 const id = ++count;
                 const page = new EventEmitter();
                 page.send = async () => {};
@@ -40,6 +46,8 @@ it('records boot errors on their own instances, drains shared intervals once, an
         fs.writeFileSync(hook, `
             import { registerHooks } from 'node:module';
             registerHooks({ resolve(specifier, context, nextResolve) {
+                if (specifier.endsWith('/desktop-slot.mjs'))
+                    return { url: ${JSON.stringify(pathToFileURL(slot).href)}, shortCircuit: true };
                 if (specifier === ${JSON.stringify(path.join(root, 'scripts/ui-audit/lib/driver.mjs'))})
                     return { url: ${JSON.stringify(pathToFileURL(stub).href)}, shortCircuit: true };
                 return nextResolve(specifier, context);
@@ -53,6 +61,7 @@ it('records boot errors on their own instances, drains shared intervals once, an
         const run = spawnSync(process.execPath, ['--import', hook, path.join(root, 'scripts/scenario.mjs'),
             '--no-build', '--window', 'hidden', '--out', path.join(temp, 'out'), ...scenarios], { encoding: 'utf8', timeout: 20_000 });
         expect(run.status, run.stdout + run.stderr).toBe(1);
+        expect(fs.existsSync(path.join(temp, 'out/results.json')), run.stdout + run.stderr).toBe(true);
         const output = JSON.parse(fs.readFileSync(path.join(temp, 'out/results.json'), 'utf8'));
         const summaries = output.summaries;
         expect(summaries.map((scenario) => scenario.name)).toEqual(['first', 'dedicated', 'next', 'clean']);

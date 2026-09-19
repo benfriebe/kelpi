@@ -45,6 +45,7 @@
  * `KELPI_COMPAT_CLI=/path/to/kelpi` points it at another copy.
  */
 
+import { runDesktopTest, spawnDesktopHelper, listenDesktopServer, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -126,7 +127,7 @@ async function waitFor(label, predicate, timeoutMs = 20_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, {
+        const child = spawnDesktopHelper(command, args, {
             cwd: opts.cwd ?? repoRoot,
             env: { ...process.env, ...opts.env }
         });
@@ -207,9 +208,10 @@ async function startFixture() {
         });
         response.end(body);
     });
-    await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    const listener = listenDesktopServer(server, port, '127.0.0.1');
+    await listener.ready;
     server.unref();
-    return { port, base: `http://127.0.0.1:${port}`, close: () => server.close() };
+    return { port, base: `http://127.0.0.1:${port}`, close: listener.stop };
 }
 
 /** A local page + a SIBLING script: the file:// case the webSecurity decision is about. */
@@ -301,6 +303,7 @@ async function makeSandbox(label) {
 }
 
 function startDaemon(sandbox) {
+    assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
         cwd: repoRoot,
@@ -321,7 +324,7 @@ function startDaemon(sandbox) {
         exited = true;
     });
 
-    return {
+    return ownDesktopResource({
         child,
         log: () => log.join(''),
         get exited() {
@@ -335,9 +338,10 @@ function startDaemon(sandbox) {
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
             releaseChild(child);
         }
-    };
+    }, 'stop');
 }
 
 async function waitForHealthz(base, timeoutMs = 20_000) {
@@ -366,6 +370,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const child = spawn(
         electronBinary(),
@@ -397,7 +402,7 @@ function startShell(sandbox) {
         exitCode = code ?? (signal === null ? null : -1);
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -424,9 +429,10 @@ function startShell(sandbox) {
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /**
@@ -678,7 +684,7 @@ async function cdpCommand(target, method, params = {}) {
 function makeCli(sandbox) {
     const invoke = (args, opts = {}) =>
         new Promise((resolve, reject) => {
-            const child = spawn(KELPI_CLI, args, {
+            const child = spawnDesktopHelper(KELPI_CLI, args, {
                 cwd: opts.cwd ?? sandbox.home,
                 env: {
                     PATH: sandbox.env.PATH,
@@ -1461,7 +1467,7 @@ async function webPhase() {
         await second?.quit('SIGKILL');
         await shell?.quit('SIGKILL');
         await daemon.stop();
-        fixture.close();
+        await fixture.close();
         sandbox.cleanup();
     }
 }
@@ -1491,5 +1497,5 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await main();
+await runDesktopTest(main);
 process.exit(process.exitCode ?? 0);

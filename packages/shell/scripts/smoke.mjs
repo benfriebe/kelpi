@@ -33,6 +33,7 @@
  * Exit code 0 = every check passed. Any failure prints the captured logs and exits 1.
  */
 
+import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -197,7 +198,7 @@ async function waitFor(label, predicate, timeoutMs = 20_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { cwd: opts.cwd ?? repoRoot, env: { ...process.env, ...opts.env } });
+        const child = spawnDesktopHelper(command, args, { cwd: opts.cwd ?? repoRoot, env: { ...process.env, ...opts.env } });
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8');
@@ -382,6 +383,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
 }
 
 function startDaemon(sandbox) {
+    assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
         cwd: repoRoot,
@@ -402,7 +404,7 @@ function startDaemon(sandbox) {
         exited = true;
     });
 
-    return {
+    return ownDesktopResource({
         child,
         log: () => log.join(''),
         get exited() {
@@ -416,9 +418,10 @@ function startDaemon(sandbox) {
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
             releaseChild(child);
         }
-    };
+    }, 'stop');
 }
 
 async function waitForHealthz(base, timeoutMs = 20_000) {
@@ -449,6 +452,7 @@ function electronBinary() {
 }
 
 function startShell(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const child = spawn(electronBinary(), ['.', `--user-data-dir=${sandbox.userData}`], {
         cwd: shellRoot,
@@ -477,7 +481,7 @@ function startShell(sandbox) {
         exitCode = code ?? (signal === null ? null : -1);
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -508,9 +512,10 @@ function startShell(sandbox) {
             // Sweep whatever is left of the tree (a held quit keeps the whole app alive).
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /**
@@ -526,11 +531,17 @@ function startShell(sandbox) {
  * exiting because another shell owns the single-instance lock.
  */
 async function launchWithFiles(sandbox, files) {
+    assertDesktopActive();
     const child = spawn(electronBinary(), ['.', ...files, `--user-data-dir=${sandbox.userData}`], {
         cwd: shellRoot,
         env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
         stdio: ['ignore', 'pipe', 'pipe']
     });
+    ownDesktopResource({ async stop() {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await waitForDesktopChildExit(child);
+        releaseChild(child);
+    } });
     let output = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -882,7 +893,9 @@ async function spawnPhase() {
     const sandbox = await makeSandbox('spawn', { skill: 'empty' });
     let shell;
     let spawnedPid;
+    const spawnedDaemon = ownShellSpawnedDaemon(() => shell, null, { env: sandbox.env });
     try {
+        await spawnedDaemon.ready;
         shell = startShell(sandbox);
 
         const spawned = await shell.waitForLine(/daemon spawned/, 'the daemon-spawned line');
@@ -934,25 +947,7 @@ async function spawnPhase() {
 
         return { shellLog: shell.text() };
     } finally {
-        await shell?.quit('SIGKILL');
-        // The daemon here is DETACHED on purpose, so the smoke has to stop it explicitly —
-        // this is the one place a shell-owned daemon gets signalled, and it is the test
-        // harness doing it, not the shell.
-        if (spawnedPid !== undefined) {
-            try {
-                process.kill(spawnedPid, 'SIGTERM');
-                for (let attempt = 0; attempt < 40; attempt += 1) {
-                    await sleep(100);
-                    try {
-                        process.kill(spawnedPid, 0);
-                    } catch {
-                        break;
-                    }
-                }
-            } catch {
-                // Already gone.
-            }
-        }
+        await spawnedDaemon.stop();
         sandbox.cleanup();
     }
 }
@@ -1152,7 +1147,7 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await main();
+await runDesktopTest(main);
 // Every child has been killed and released by here; exit explicitly so a stray handle from a
 // torn-down Electron helper can never turn a finished run into a hang.
 process.exit(process.exitCode ?? 0);

@@ -1,0 +1,124 @@
+/*
+ * A find bar and nothing else.
+ *
+ * The document canvas is transparent for the reason Pane Lab's is: `color-scheme: dark` makes the
+ * UA paint the canvas its own opaque colour, and this frame is stretched over the WHOLE pane grid -
+ * an opaque canvas here would paint every terminal in the window out for the frames before the
+ * host's clip settles. The host clips this frame to the one box it granted, so only the rectangle
+ * below is ever on screen and everything around it has to be nothing at all.
+ *
+ * Every colour is a host theme variable, so the bar follows the window's appearance setting rather
+ * than restating a palette the user did not choose.
+ */
+:root {
+    color-scheme: dark light;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--kelpi-fg);
+    background: transparent;
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; overflow: hidden; background: transparent; }
+[hidden] { display: none !important; }
+
+/*
+ * The bar itself, positioned at the rectangle the frame carries.
+ *
+ * `position: absolute` in the grid's own coordinate space, because that is the space the `box` in
+ * the frame is expressed in. The size is NOT taken from the box: this view measures what it drew
+ * and declares that with `setSearchBoxSize`, and the host clamps it and hands the clamped
+ * rectangle back in the next frame. Reading the box back as a width would be a loop.
+ */
+.root {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-radius: 8px;
+    background: var(--kelpi-surface, #13131a);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    /*
+     * The bar sizes itself to its own content, which is the whole point of declaring a box: a
+     * three-digit counter is a wider bar, and the host is told so rather than being left to guess.
+     */
+    width: max-content;
+    max-width: 480px;
+    /*
+     * Nothing may be pushed out of the row by the needle. The field is the only thing that yields
+     * (`flex: 0 1 auto; min-width: 0` below); the counter and the four controls are `flex: none`,
+     * so when the host's box is narrower than the bar wants, what shrinks is the needle and not the
+     * user's way of stepping or closing the search.
+     */
+    overflow: hidden;
+}
+
+.field {
+    flex: 0 1 auto;
+    min-width: 0;
+    width: 160px;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 5px;
+    outline: none;
+    font: inherit;
+    color: var(--kelpi-fg);
+    background: color-mix(in srgb, var(--kelpi-fg, #fff) 8%, transparent);
+}
+.field::placeholder { color: var(--kelpi-fg-tertiary, #777); }
+
+.count {
+    /*
+     * The counter yields too, after the field and before any control.
+     *
+     * A 115 px box cannot seat a needle, a count and four buttons, and the order in which they give
+     * ground is a decision: the NEEDLE first (you are typing it and can see it in the terminal), the
+     * COUNT second (it is a number you can read after the bar has room), and the controls never -
+     * stepping and closing are what a find bar is FOR, and a bar with no × is one a user cannot
+     * dismiss with the mouse at all.
+     */
+    flex: 0 1 auto;
+    min-width: 0;
+    text-align: right;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: var(--kelpi-fg-secondary, #aaa);
+}
+.count[data-empty='true'] { color: var(--kelpi-fg-tertiary, #777); }
+
+.button {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 22px;
+    min-width: 22px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 11px;
+    color: var(--kelpi-fg);
+    background: transparent;
+    opacity: 0.7;
+    cursor: pointer;
+}
+.button:disabled { opacity: 0.3; cursor: default; }
+/* The case toggle is the one control with a state to show, so it is the one with a lit look. */
+.button[aria-pressed='true'] {
+    opacity: 1;
+    background: color-mix(in srgb, var(--kelpi-accent, #4a82d8) 30%, transparent);
+}
+
+.error {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    margin: 0;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 10px;
+    color: var(--kelpi-fg);
+    background: var(--kelpi-surface, #13131a);
+}

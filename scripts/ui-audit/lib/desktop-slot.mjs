@@ -13,7 +13,7 @@ export const DESKTOP_TEST_PORT = 19735;
 /**
  * Hold until this runner exits, including its teardown and --keep lifetime. The listener
  * is unref'ed so it cannot keep a completed runner alive. release() is for bounded callers
- * (and unit tests); entrypoints deliberately leave ownership with the process.
+ * (and unit tests); desktop-lifecycle.mjs releases only after leaf resource cleanup.
  *
  * No environment override: two worktrees choosing different slots would lose isolation.
  * `port` is an injection point for non-desktop tests, which use an ephemeral port.

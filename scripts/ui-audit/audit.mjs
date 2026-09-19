@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
-import { holdDesktopTestSlot } from './lib/desktop-slot.mjs';
+import { runDesktopTest } from './lib/desktop-lifecycle.mjs';
 
 /**
  * Which CDP page target is **the client window**, as opposed to a web pane's page?
@@ -1803,7 +1803,6 @@ async function runShardedParent() {
 
 async function main() {
     // Only leaf runs own the desktop; holding in the sharding parent would deadlock children.
-    await holdDesktopTestSlot();
     const startedAt = new Date().toISOString();
     process.stdout.write(`kelpi UI audit → ${outDir}\n`);
 
@@ -1873,22 +1872,6 @@ async function main() {
 
     const cli = makeCli(sandbox, { repoRoot });
 
-    /**
-     * A killed run must not leave an orphan daemon + Electron behind on a developer's machine.
-     * The shell is spawned detached (so a ⌘Q dialog cannot take the harness with it), which
-     * means Ctrl-C would otherwise strand it.
-     */
-    const teardownSignals = ['SIGINT', 'SIGTERM'];
-    const onSignal = () => {
-        try {
-            runtime.shell?.child?.kill('SIGKILL');
-            runtime.daemon?.child?.kill('SIGKILL');
-        } catch {
-            // best effort
-        }
-        process.exit(130);
-    };
-    for (const signal of teardownSignals) process.on(signal, onSignal);
     /**
      * The live processes. Held in one mutable object because the reattach flow deliberately
      * kills the shell and starts another: teardown must find the CURRENT pair, not the ones
@@ -35356,7 +35339,7 @@ const selectedForPlacement = options.only ?? CANONICAL_ORDER;
 const needsPlacementChild = selectedForPlacement.some((id) =>
     resolveAuditPlacement(options.window, windowPlacementOf(id)).raised
 );
-const entry = options.shard === null && (options.shards > 1 || needsPlacementChild) ? runShardedParent : main;
+const entry = options.shard === null && (options.shards > 1 || needsPlacementChild) ? runShardedParent : () => runDesktopTest(main);
 
 entry().catch((error) => {
     process.stderr.write(`\nAUDIT HARNESS FAILED: ${String(error?.stack ?? error)}\n`);

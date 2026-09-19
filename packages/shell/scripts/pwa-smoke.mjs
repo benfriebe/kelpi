@@ -45,7 +45,7 @@
  * Electron's own `--user-data-dir`.
  */
 
-import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
+import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -205,6 +205,7 @@ async function makeSandbox() {
 }
 
 function startDaemon(sandbox) {
+    assertDesktopActive();
     const log = [];
     const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
         cwd: repoRoot,
@@ -225,7 +226,7 @@ function startDaemon(sandbox) {
         exited = true;
     });
 
-    return {
+    return ownDesktopResource({
         log: () => log.join(''),
         get exited() {
             return exited;
@@ -238,9 +239,10 @@ function startDaemon(sandbox) {
             child.kill('SIGTERM');
             await Promise.race([new Promise((resolve) => child.on('exit', resolve)), raceTimeout(8000)]);
             if (!exited) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
             releaseChild(child);
         }
-    };
+    }, 'stop');
 }
 
 async function waitForHealthz(base, timeoutMs = 20_000) {
@@ -361,6 +363,7 @@ app.whenReady().then(() => {
 }
 
 function startProbe(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const child = spawn(
         electronBinary(),
@@ -386,7 +389,7 @@ function startProbe(sandbox) {
         exited = true;
     });
 
-    return {
+    return ownDesktopResource({
         text: () => lines.join(''),
         get exited() {
             return exited;
@@ -398,9 +401,10 @@ function startProbe(sandbox) {
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /** Open a CDP session on the page whose URL matches, and enable the Page domain. */
@@ -419,7 +423,6 @@ async function attach(sandbox, matcher, label) {
 // ── the run ─────────────────────────────────────────────────────────────────────────
 
 async function main() {
-    await holdDesktopTestSlot();
     await ensureBuilds();
 
     const sandbox = await makeSandbox();
@@ -704,7 +707,7 @@ function precacheFromDist() {
     return JSON.parse(JSON.parse(found[1]));
 }
 
-main()
+runDesktopTest(main)
     .then(() => {
         const failed = results.filter((entry) => !entry.ok);
         process.stdout.write(

@@ -44,7 +44,7 @@
  * Exit code 0 = every check passed.
  */
 
-import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
+import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -597,6 +597,7 @@ async function makeSandbox() {
 }
 
 function startApp(sandbox) {
+    assertDesktopActive();
     const lines = [];
     const args = [`--user-data-dir=${sandbox.userData}`];
     // Only when asked for: see `--mock-keychain` in the header. A default-on switch here would
@@ -634,7 +635,7 @@ function startApp(sandbox) {
         exitSignal = signal;
     });
 
-    return {
+    return ownDesktopResource({
         child,
         lines,
         get exited() {
@@ -672,9 +673,10 @@ function startApp(sandbox) {
             }
             signalGroup(child, 'SIGKILL');
             await sleep(150);
+            await waitForDesktopChildExit(child, { group: true });
             releaseChild(child);
         }
-    };
+    }, 'quit');
 }
 
 /** The shipped CLI, pointed at the sandbox daemon over TCP (its only non-hardcoded transport). */
@@ -714,6 +716,7 @@ async function launchPhase() {
     const sandbox = await makeSandbox();
     let app;
     let daemonPid;
+    const spawnedDaemon = ownShellSpawnedDaemon(() => app, sandbox.pidFile);
     try {
         // Nothing to adopt: the run dir does not exist yet, so a daemon can only come from the
         // app's own Resources. (This is also the isolation guarantee — the developer's real
@@ -947,24 +950,7 @@ async function launchPhase() {
 
         return { appLog: app.text() };
     } finally {
-        await app?.quit('SIGKILL');
-        // The daemon is DETACHED by design, so the harness stops it explicitly. This is the one
-        // place a shell-started daemon gets signalled, and it is the test doing it.
-        if (daemonPid !== undefined && processAlive(daemonPid)) {
-            try {
-                process.kill(daemonPid, 'SIGTERM');
-            } catch {
-                // Already gone.
-            }
-            for (let attempt = 0; attempt < 60 && processAlive(daemonPid); attempt += 1) await sleep(100);
-            if (processAlive(daemonPid)) {
-                try {
-                    process.kill(daemonPid, 'SIGKILL');
-                } catch {
-                    // Already gone.
-                }
-            }
-        }
+        await spawnedDaemon.stop();
         sandbox.cleanup();
     }
 }
@@ -977,7 +963,6 @@ async function main() {
         return;
     }
 
-    await holdDesktopTestSlot();
     await ensureBuilds();
     await packageApp();
 
@@ -1006,7 +991,7 @@ async function main() {
     if (failed.length > 0) process.exitCode = 1;
 }
 
-await main();
+await runDesktopTest(main);
 // Every child is dead and released by here; exit explicitly so a stray handle from a torn-down
 // Electron helper cannot turn a finished run into a hang.
 process.exit(process.exitCode ?? 0);

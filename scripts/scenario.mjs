@@ -59,7 +59,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { holdDesktopTestSlot } from './ui-audit/lib/desktop-slot.mjs';
+import { runDesktopTest, ownDesktopResource } from './ui-audit/lib/desktop-lifecycle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -113,7 +113,7 @@ const log = (line) => console.log(`[scenario] ${line}`);
 
 // Across worktrees and visible audits too: a hidden window still uses the real clipboard.
 // Hold through teardown (or --keep); dedicated scenario instances belong to this same run.
-await holdDesktopTestSlot();
+await runDesktopTest(async () => {
 let t;
 const attachPort = value('--attach');
 if (attachPort !== undefined) {
@@ -147,9 +147,7 @@ const stop = async () => {
     }
     await t.stop();
 };
-process.on('SIGINT', () => {
-    void t.stop().finally(() => process.exit(130));
-});
+ownDesktopResource(t);
 
 // ── the post-condition: what a scenario must hand on unchanged ──────────────────────
 
@@ -324,7 +322,7 @@ for (const file of files) {
     if (resolved.raised && importError === null && attachPort === undefined) {
         log(`▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
         try {
-            dedicated = await driver.boot({
+            dedicated = ownDesktopResource(await driver.boot({
                 repoRoot,
                 // Short on purpose: the sandbox's control socket lives in this label's temp
                 // directory, and a macOS unix socket path is capped at 104 bytes. The full name
@@ -334,7 +332,7 @@ for (const file of files) {
                 build: false,
                 log: (line) => log(`  ${name}: ${line}`),
                 window: resolved.placement
-            });
+            }));
         } catch (error) {
             log(`⚠ ${name}: the ${String(resolved.placement)} instance would not boot (${error instanceof Error ? error.message : String(error)}); running it in this lane instead`);
             dedicated = null;
@@ -430,4 +428,6 @@ fs.writeFileSync(
 );
 log(`results: ${path.join(outDir, 'results.json')}`);
 await stop();
-process.exit(anyFailed ? 1 : 0);
+process.exitCode = anyFailed ? 1 : 0;
+});
+process.exit(process.exitCode ?? 0);

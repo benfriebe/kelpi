@@ -620,8 +620,9 @@ owns the software-keyboard inset a presenter cannot read, so a frame reports
 
 The [public types](../packages/plugin-sdk/pane-chrome.d.ts) describe the frame and the presenter
 calls (`focusChromePane`, `splitPane`, `toggleZoom`, `renamePane`, `closePane`,
-`activatePaneControl`, `runPaneHeaderItem`, `openPaneMenu`, `beginPaneDrag`, `setPaneChromeHeight`
-and the shared `reportPresenterReady`), and `WindowPaneChromeAPI` is part of `ViewAPI.ui`.
+`activatePaneControl`, `runPaneHeaderItem`, `openPaneMenu`, `setPaneChromeHeight`,
+`setPaneDragRegions` and the shared `reportPresenterReady`), and `WindowPaneChromeAPI` is part of
+`ViewAPI.ui`.
 
 The focus call is `focusChromePane` and not phase A's declared `focusPane`. `ViewAPI['ui']` already
 has `focusPane(workspaceID, paneID)`, so intersecting the two would have made one name with two
@@ -663,12 +664,56 @@ Two costs, stated plainly:
 - **The frame carries each band's rectangle.** That is the layout the user is already looking at,
   in CSS px, with the origin at the grid's top-left, so it says nothing about where the window is or
   what else is on the display. It is the price of one view drawing N headers.
-- **The pane-move drag needs one extra call.** It is raised from the native header's
-  `onPointerDown`, and a presenter's own pixels cannot raise it - so `beginPaneDrag(paneID)` says
-  that the press just made in a band was the start of one. The host then takes pointer events back
-  from every frame in the grid (the class it already applies for a native drag), reads its origin
-  from the first move it sees, draws its own drop zones and commits through its own verb. Nothing
-  about the gesture is the presenter's, and nothing about it is lost.
+- **The pane-move drag is host surfaces, not a call.** A press inside an iframe never leaves it, so
+  a presenter declares which parts of its band behave like a title bar (`setPaneDragRegions`) and
+  the host lays its own surfaces over them, with a reserved 12 px grip as the floor. See
+  "Dragging a presented pane" below.
+
+### Dragging a presented pane
+
+A user dragging a presented band with a real mouse got a text selection smeared across the header
+and no pane move at all, while the live scenario's drag check passed. A second round found the first
+fix was right and not enough.
+
+**The routing rule.** A mouse press that lands inside an iframe keeps every later move and the
+release inside that iframe's document, because Chromium settles where a gesture is routed when the
+button goes DOWN. A host acting on a message about the press is acting after the routing was
+decided, so a presenter cannot start the window's pane-move gesture from its own pixels whatever
+call it is given. `beginPaneDrag` was withdrawn for that reason.
+
+**Drag regions.** `setPaneDragRegions(paneID, regions | null)` is how a presenter offers its title
+area instead: up to eight rectangles in BAND-LOCAL pixels, with the origin at the `rect` that pane
+carries in the frame. The host lays its own transparent surface over each one, and a press there is
+a press in the host's document - so it does what the bundled header's empty title area does: focus
+the pane and start the move on the same threshold, double click to zoom, right click for the pane
+menu, with the same cursor. The idea is Electron's own draggable app regions, one surface smaller.
+
+Band-local is what keeps a declaration fresh: a pane that moves, resizes or changes its band carries
+its regions with it, so only the presenter's OWN layout can invalidate one, and a presenter
+re-declares from a resize observer over what it drew. The host clamps every rectangle into the band,
+drops one with no area left, refuses a non-finite number and refuses a ninth region, and charges the
+call to the same 240-per-second budget as every other. A region can therefore never reach a
+terminal, a web page's hole, a divider or the pane next door.
+
+**Nothing is forwarded back into the frame**, so a region placed over one of a presenter's own
+controls hides that control. Declare the title and the gaps, not the buttons. Pane Lab declares the
+run of its first row (and of its second on a tall band) from the end of the kind chip to the start
+of the items and the control row, and re-measures whenever its own layout moves.
+
+**The grip is the floor.** A presenter that declares nothing still gets a 12 px strip the host
+reserves at the leading edge of every band, painted in the band's own colour with a two-hairline
+handle. It is outside the rectangle the presenter is given, so nothing it draws can cover it.
+
+Every region and every grip goes back whenever a band does: a generation change, a failure, the
+placement standing down, the pane leaving the projection, the connection dropping. A transparent
+surface still taking presses over a bundled header would be the worst of both designs.
+
+Worth recording for anyone writing a live check over an iframe: **CDP cannot reproduce the routing
+rule.** `Input.dispatchMouseEvent` hit-tests every synthesized event on its own and keeps no
+per-frame capture, so a scripted pointer teleports between documents where a real one cannot. That
+is why the first drag check passed against a design a real mouse could not drive, and why the
+scenario now asserts the consequences - a press in the frame selects nothing and moves nothing, a
+press on a declared region moves the pane in the daemon's own order - rather than the mechanism.
 
 The band itself stays the host's, always. `PaneGrid` lays a pane's body out under a fixed-height
 row, so the row has to exist whoever is painting in it: the host paints its fill and its hairline,

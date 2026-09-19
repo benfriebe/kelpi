@@ -49,6 +49,12 @@ repair a stale bundle. The [vendor provenance](../vendor/ghostty-web-patched/PRO
 explains each step, and `pnpm vitest run packages/client/src/terminal/vendor-engine.test.ts`
 guards the result. The app launcher does not perform the vendor rebuild.
 
+> **An installed plugin is a copy.** A running instance keeps using the copy it installed until the
+> plugin is reinstalled or reloaded, so editing the source of an example changes nothing in a window
+> that is already up. Reinstall the path, or `kelpi plugin reload <id>`, after every edit. A stale
+> installed copy of an example once cost a round of manual testing on a fix that was already in the
+> tree.
+
 ## Start a private instance
 
 After preparing the checkout, run from its root:

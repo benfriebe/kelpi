@@ -118,8 +118,10 @@ arrive as opaque per-frame refs, never as plugin ids or command names. On failur
 back on the bundled header in the same commit with every declared band dropped, a failure toast is
 raised, **Retry presenter** appears beside the selection, and phone windows keep their own header.
 Standing the placement down - the bundled header, a disabled plugin, an uninstalled one - hands
-every declared band back in the same commit. The pane-move drag still works from a presenter's band
-through `beginPaneDrag`: the presenter says a press started one and the host runs its own gesture.
+every declared band back in the same commit. The pane-move drag still works from a presented band: a
+press inside an iframe never leaves that iframe, so a presenter declares which parts of its band
+behave like a title bar and the host lays its own surfaces over them, with a reserved 12 px grip at
+the leading edge as the floor.
 See [pane chrome](plugin-ui.md#pane-chrome).
 
 Plugin panes participate in normal splits, moves, zoom, parking, and close/reopen. They retain

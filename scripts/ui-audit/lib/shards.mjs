@@ -431,7 +431,7 @@ export function balanceBlocks(items, count) {
  */
 export const ONSCREEN_STEPS = new Set([]);
 
-export function planShards(stepIDs, shardCount, { windowPlacement = 'default' } = {}) {
+export function planShards(stepIDs, shardCount, { windowPlacement = 'default', only = null, chain = true } = {}) {
     const known = new Set(stepIDs);
     const missing = CANONICAL_ORDER.filter((id) => !known.has(id));
     if (missing.length > 0) {
@@ -448,7 +448,7 @@ export function planShards(stepIDs, shardCount, { windowPlacement = 'default' } 
      * stay in an audit process whose visible or hidden window might be covered: Chromium drops
      * CDP input to the covered WebContentsView. Run such flows in their declared placement, with
      * chain writers as setup in that private process. The aggregate retains the normal process's
-     * writer result, so setup never creates a duplicate canonical step.
+     * writer result; failed setup duplicates remain separately attributed in the report.
      */
     const isolatedByPlacement = new Map();
     const normalEntries = [];
@@ -470,6 +470,17 @@ export function planShards(stepIDs, shardCount, { windowPlacement = 'default' } 
             plan.groups.push(ids);
             plan.placements.push(placement);
             plan.supports.push(setup);
+        }
+        // Select before launch: dependencies belong to the process that consumes them.
+        // An automatically added web-pane must not start an otherwise unrelated normal child.
+        if (only !== null) {
+            const wanted = new Set(only);
+            plan.groups = plan.groups.map((ids) => ids.filter((id) => wanted.has(id)));
+            plan.supports = plan.groups.map((ids) => chain
+                ? expandChains(ids).filter((id) => !ids.includes(id))
+                : []);
+        } else if (!chain) {
+            plan.supports = plan.groups.map(() => []);
         }
         plan.shardCount = plan.groups.length;
         plan.isolated = [...isolatedByPlacement.values()].flat().map((entry) => entry.id);
@@ -596,36 +607,39 @@ function renameArtefact(shardDir, outDir, name, fromSlug, toSlug) {
 }
 
 /**
- * Fold every shard's run directory into one that is indistinguishable from a serial run's.
+ * Fold every shard's run directory into one canonical report.
  *
  * Byte-compatibility with the serial `results.json` is the contract — the campaign's
  * reconciliation tooling reads it — so this does not invent a shard-shaped schema. It re-orders
  * the steps into the canonical order, renumbers `index`/`slug` as a single-process run would,
  * copies every PNG and text artefact across under its canonical name, and rewrites the `shots`
  * list and the `artifact: …` notes to match. `meta` gains one extra key (`shards`) and keeps
- * every key it had.
+ * every key it had. Failed duplicate setup gets an additional, shard-attributed entry so
+ * an otherwise green canonical writer cannot hide a failure in its private placement process.
  */
 export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
     const collected = new Map();
-    const support = new Map();
+    const support = [];
+    fs.mkdirSync(outDir, { recursive: true });
     const consoleEntries = [];
     const shardMeta = [];
     for (let i = 0; i < shardDirs.length; i++) {
         const dir = shardDirs[i];
+        const shard = Number(path.basename(dir).match(/^shard-(\d+)$/)?.[1] ?? i);
         const file = path.join(dir, 'results.json');
         if (!fs.existsSync(file)) {
-            shardMeta.push({ shard: i, dir, ok: false, error: 'no results.json' });
+            shardMeta.push({ shard, dir, ok: false, error: 'no results.json' });
             continue;
         }
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-        shardMeta.push({ shard: i, dir: path.basename(dir), ok: true, steps: parsed.steps.length, summary: parsed.summary });
+        shardMeta.push({ shard, dir: path.basename(dir), ok: true, steps: parsed.steps.length, summary: parsed.summary });
         for (const step of parsed.steps) {
             if (step.id === CONSOLE_STEP_ID) {
                 consoleEntries.push({ step, dir });
                 continue;
             }
             if (step.support === true) {
-                if (!support.has(step.id)) support.set(step.id, { step, dir });
+                support.push({ step, dir, shard: path.basename(dir) });
                 continue;
             }
             if (collected.has(step.id)) {
@@ -637,15 +651,29 @@ export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
         // question they exist to answer.
         for (const log of ['daemon.log', 'shell.log', 'cli-invocations.jsonl', 'state-timeline.jsonl']) {
             const from = path.join(dir, log);
-            if (fs.existsSync(from)) fs.copyFileSync(from, path.join(outDir, `shard-${String(i)}-${log}`));
+            if (fs.existsSync(from)) fs.copyFileSync(from, path.join(outDir, `shard-${String(shard)}-${log}`));
         }
     }
 
-    // A placement-isolated flow may need a chain writer that the normal shard did not run (for
-    // example `--only web-batch-pickup`). Keep that setup result only when no canonical result
-    // exists; in a full run the normal shard remains the report's one authoritative writer.
-    for (const [id, found] of support) {
-        if (!collected.has(id)) collected.set(id, found);
+    // Keep one canonical writer; retain every failed duplicate as a distinct setup result.
+    // A green canonical writer says nothing about setup in a different private process.
+    const failedSupport = [];
+    for (const found of support) {
+        const { step, shard } = found;
+        if (!collected.has(step.id)) {
+            collected.set(step.id, found);
+        } else if (step.error != null || step.assertions.some((assertion) => !assertion.ok)) {
+            failedSupport.push({
+                ...found,
+                step: {
+                    ...step,
+                    id: `${step.id}-setup-${shard}`,
+                    setupFor: step.id,
+                    sourceShard: shard,
+                    notes: [`Setup for ${step.id} in ${shard}; the canonical result came from another process.`, ...step.notes]
+                }
+            });
+        }
     }
 
     const steps = [];
@@ -673,6 +701,8 @@ export function aggregateShards({ outDir, shardDirs, canonicalOrder, meta }) {
     // Anything the canonical order does not name (a step added since the manifest was written)
     // still lands in the report, after the known ones, rather than vanishing.
     for (const [, found] of collected) emit(found.step, found.dir);
+
+    for (const found of failedSupport) emit(found.step, found.dir);
 
     if (consoleEntries.length > 0) {
         /*

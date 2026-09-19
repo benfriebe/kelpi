@@ -140,3 +140,43 @@ describe('native-page placement floors', () => {
         }
     });
 });
+
+describe('failed placement setup aggregation', () => {
+    for (const mode of ['assertion', 'error', 'multiple']) {
+        it(`keeps ${mode} failures with shard attribution and artifacts`, () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-support-'));
+            const makeStep = (support, failed, error = null) => ({
+                id: 'web-pane', index: '01', slug: '01-web-pane', support,
+                expect: 'setup', needsEyes: false, notes: ['artifact: 01-web-pane-detail.txt'],
+                assertions: [{ name: 'setup ready', ok: !failed, detail: '' }],
+                shots: ['01-web-pane-page.png'], blocks: [], error,
+                startedAt: '2026-09-19T00:00:00Z', finishedAt: '2026-09-19T00:00:00Z'
+            });
+            try {
+                const entries = [makeStep(false, false), makeStep(true, mode !== 'error', mode === 'error' ? 'setup failed' : null)];
+                if (mode === 'multiple') entries.push(makeStep(true, false, 'second setup failed'));
+                const dirs = entries.map((step, index) => {
+                    const dir = path.join(root, `shard-${index}`);
+                    fs.mkdirSync(dir);
+                    fs.writeFileSync(path.join(dir, 'results.json'), JSON.stringify({ summary: {}, steps: [step] }));
+                    fs.writeFileSync(path.join(dir, '01-web-pane-detail.txt'), `detail ${index}`);
+                    fs.writeFileSync(path.join(dir, '01-web-pane-page.png'), `image ${index}`);
+                    return dir;
+                });
+                const outDir = path.join(root, 'out');
+                const summary = aggregateShards({ outDir, shardDirs: dirs, canonicalOrder: CANONICAL_ORDER, meta: {} });
+                expect(summary.failedAssertions).toBe(mode === 'error' ? 0 : 1);
+                expect(summary.errored).toBe(mode === 'assertion' ? 0 : 1);
+                const { steps } = JSON.parse(fs.readFileSync(path.join(outDir, 'results.json'), 'utf8'));
+                expect(steps.filter((step) => step.id === 'web-pane')).toHaveLength(1);
+                expect(steps).toHaveLength(entries.length);
+                for (let index = 1; index < steps.length; index++) {
+                    expect(steps[index].setupFor).toBe('web-pane');
+                    expect(steps[index].sourceShard).toBe(`shard-${index}`);
+                    expect(fs.readFileSync(path.join(outDir, steps[index].shots[0]), 'utf8')).toBe(`image ${index}`);
+                    expect(fs.readFileSync(path.join(outDir, steps[index].notes.find((note) => note.startsWith('artifact: ')).slice(10)), 'utf8')).toBe(`detail ${index}`);
+                }
+            } finally { fs.rmSync(root, { recursive: true, force: true }); }
+        });
+    }
+});

@@ -11,11 +11,17 @@ import { describe, expect, it } from 'vitest';
 import { FOCUS_RING_WIDTH } from '../grid/FocusRing';
 
 import { PANE_CHROME_LIMITS } from './contract';
+import { clearPaneChromeHeights, paneChromeDeclaration, retainPaneChromeHeights, setPaneChromeHeight } from './height';
+import { createPaneChromeRefs } from './projection';
 import {
+    clearPaneChromePainted,
     clearPaneChromePresenterFailure,
+    notePaneChromePainted,
     notePaneChromePresenterFailure,
+    paneChromePaintedGeneration,
     paneChromePresenterFailure,
     resetPaneChromePresenterFailures,
+    subscribePaneChromePainted,
     subscribePaneChromePresenters
 } from './presenter';
 import { paneChromeClipPath, paneChromeFrameRect } from './presenter-slot';
@@ -100,5 +106,92 @@ describe('the window failure latch', () => {
         expect(paneChromePresenterFailure()).toBe(paneChromePresenterFailure());
         resetPaneChromePresenterFailures();
         expect(paneChromePresenterFailure()).toBeNull();
+    });
+});
+
+describe('the window painted latch', () => {
+    it('names one generation, and a reload puts the bundled header back until the new one paints', () => {
+        resetPaneChromePresenterFailures();
+        const seen: (string | null)[] = [];
+        const stop = subscribePaneChromePainted(() => seen.push(paneChromePaintedGeneration()));
+        expect(paneChromePaintedGeneration()).toBeNull();
+        notePaneChromePainted('view:1:a');
+        expect(paneChromePaintedGeneration()).toBe('view:1:a');
+        // A repeat is not a change: a store that republished would re-render the whole grid on
+        // every frame the presenter acknowledged.
+        notePaneChromePainted('view:1:a');
+        // The reload: a new instance has painted nothing, so the bundled header draws again until
+        // it says otherwise.
+        clearPaneChromePainted();
+        expect(paneChromePaintedGeneration()).toBeNull();
+        notePaneChromePainted('view:2:b');
+        expect(seen).toEqual(['view:1:a', null, 'view:2:b']);
+        stop();
+        resetPaneChromePresenterFailures();
+    });
+});
+
+describe('retainPaneChromeHeights', () => {
+    it('drops every band but the carried panes\', and leaves a carried one alone', () => {
+        clearPaneChromeHeights();
+        setPaneChromeHeight('carried', 96);
+        setPaneChromeHeight('withheld', 96);
+        setPaneChromeHeight('hidden', 48);
+        retainPaneChromeHeights(['carried']);
+        expect(paneChromeDeclaration('carried')).toBe(96);
+        // A pane the frame no longer carries is wearing the bundled 24 px header, and a bundled
+        // header floating inside a 96 px band is the defect this exists for - with the pane's body
+        // rect, its terminal's rows and a web pane's bounds all still computed from it.
+        expect(paneChromeDeclaration('withheld')).toBeNull();
+        expect(paneChromeDeclaration('hidden')).toBeNull();
+        clearPaneChromeHeights();
+    });
+
+    it('does nothing at all when every declaration is carried', () => {
+        clearPaneChromeHeights();
+        setPaneChromeHeight('a', 40);
+        retainPaneChromeHeights(new Set(['a', 'b']));
+        expect(paneChromeDeclaration('a')).toBe(40);
+        clearPaneChromeHeights();
+    });
+});
+
+describe('createPaneChromeRefs', () => {
+    it('gives one key one token for the pane\'s life, whatever the row does', () => {
+        const refs = createPaneChromeRefs();
+        const split = refs.mint('p1', 'control', 'split-right');
+        const close = refs.mint('p1', 'control', 'close');
+        expect(split).not.toBe(close);
+        // A plugin command arrives at the head of the row. A positional ref would have shifted
+        // every token along and made a one-commit-old click activate its neighbour.
+        const command = refs.mint('p1', 'control', 'example.board.inspect');
+        expect([split, close]).not.toContain(command);
+        expect(refs.mint('p1', 'control', 'split-right')).toBe(split);
+        expect(refs.mint('p1', 'control', 'close')).toBe(close);
+    });
+
+    it('keeps the two lists apart, and each pane to itself', () => {
+        const refs = createPaneChromeRefs();
+        // The same id can name a `pane.header` command AND a `pane.header` item of one plugin, and
+        // the two must not share a token: an item's ref may never activate a control.
+        const control = refs.mint('p1', 'control', 'example.board.thing');
+        const item = refs.mint('p1', 'item', 'example.board.thing');
+        expect(control.startsWith('c')).toBe(true);
+        expect(item.startsWith('i')).toBe(true);
+        // Tokens are pane-scoped: the table is keyed by pane and the host re-checks the pane too.
+        expect(refs.mint('p2', 'control', 'close')).toBe('c0');
+        expect(refs.panes).toBe(2);
+        refs.retain(['p1']);
+        expect(refs.panes).toBe(1);
+        // A pane that comes back gets its own numbering rather than a closed pane's.
+        expect(refs.mint('p2', 'control', 'split-right')).toBe('c0');
+    });
+
+    it('carries no owner in the token it hands out', () => {
+        const refs = createPaneChromeRefs();
+        const ref = refs.mint('p1', 'control', 'example.board.inspect');
+        expect(ref).not.toContain('example');
+        expect(ref).not.toContain('board');
+        expect(/^c\d+$/.test(ref)).toBe(true);
     });
 });

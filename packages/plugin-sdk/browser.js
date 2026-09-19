@@ -518,6 +518,7 @@
             activatePaneControl: async (paneID, ref) => { await base.call('ui.activatePaneControl', { paneID, ref }); },
             runPaneHeaderItem: async (paneID, ref) => { await base.call('ui.runPaneHeaderItem', { paneID, ref }); },
             openPaneMenu: async paneID => { await base.call('ui.openPaneMenu', { paneID }); },
+            beginPaneDrag: async paneID => { await base.call('ui.beginPaneDrag', { paneID }); },
             setPaneChromeHeight: async (paneID, pixels) => { await base.call('ui.setPaneChromeHeight', { paneID, pixels: pixels === null ? null : pixels }); },
             showQuickPick: options => base.call('ui.showQuickPick', options),
             showInput: options => base.call('ui.showInput', options),

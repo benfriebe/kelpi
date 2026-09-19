@@ -47,11 +47,18 @@ Every gesture is a `kelpi.ui` call and the host re-validates all of it:
 
 | Gesture | Call |
 | --- | --- |
-| Press anywhere in a band | `focusChromePane(paneID)` |
+| Press anywhere in a band | `focusChromePane(paneID)`, and `beginPaneDrag(paneID)` for the same press |
 | Double-click a band | `toggleZoom(paneID)` |
 | Right-click a band | `openPaneMenu(paneID)` - the host's own menu, which stays native |
 | A control button | `activatePaneControl(paneID, ref)` |
 | Another plugin's item | `runPaneHeaderItem(paneID, ref)` |
+
+A press that lands on a control or an item is neither: a button consumes its own tap, exactly as the
+bundled header's do. The drag handle is the whole band rather than the title, because a narrow pane
+squeezes the title to nothing and a handle with no area is a drag nobody can start. `beginPaneDrag`
+only says that the press was the start of a move; the host takes pointer events back from this
+frame, measures its own threshold from the next move, draws its own drop zones over the panes and
+commits through its own verb.
 
 Split, close, the globe and the per-kind buttons are all controls, so they all go through
 `activatePaneControl`; `closePane` and `renamePane` exist as their own calls for a presenter that
@@ -87,6 +94,7 @@ is inset by the focus ring's 2 px on three sides so the ring paints over nothing
 | Test id | What it is |
 | --- | --- |
 | `lab-pane-header` | One pane's band. `data-pane-id`, `data-kind`, `data-status`, `data-focused`, `data-height`, `data-tall` |
+| `lab-pane-grip` | The facts half of the first row: the drag handle a press on the band uses |
 | `lab-pane-title` | That band's title, as `head` + `tail` |
 | `lab-pane-branch` | The git branch chip |
 | `lab-pane-control` | One trailing control. `data-ref`, `data-kind`, `data-pinned`, `data-icon` |

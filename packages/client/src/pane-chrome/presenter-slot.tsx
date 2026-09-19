@@ -94,10 +94,14 @@ import type { KelpiRuntime } from '../state';
 import { PANE_CHROME_LIMITS, PANE_CHROME_PLACEMENT } from './contract';
 import { clearPaneChromeHeights, setPaneChromeHeight } from './height';
 import {
+    clearPaneChromePainted,
     clearPaneChromePresenterFailure,
     createPaneChromePresenterHost,
+    notePaneChromePainted,
     notePaneChromePresenterFailure,
+    paneChromePaintedGeneration,
     paneChromePresenterFailure,
+    subscribePaneChromePainted,
     subscribePaneChromePresenters,
     type PaneChromePresenterHost
 } from './presenter';
@@ -213,7 +217,36 @@ export function usePaneChromeSelection(enabled: boolean): PaneChromeSelection {
     const latched = failure?.generation === generation;
     const bundled =
         !enabled || !selected?.pluginID || !runtime || connection !== 'connected' || latched;
+    /*
+     * A latch belongs to ONE generation, and it is cleared here rather than in the slot.
+     *
+     * The slot is mounted only while a presenter is selected, so a latch cleared there survived the
+     * one move that most obviously supersedes it: choosing "Pane header (bundled)". The slot
+     * unmounted, the effect never ran again, and the Settings row went on reading `Failed: …` for a
+     * placement nobody had selected. This hook is called by the grid on every render whatever is
+     * selected, which is where that answer belongs.
+     */
+    useEffect(() => {
+        const current = paneChromePresenterFailure();
+        if (current !== null && current.generation !== generation) clearPaneChromePresenterFailure();
+    }, [generation]);
     return { bundled, viewID, pluginID: selected?.pluginID ?? null, runtime, generation };
+}
+
+/**
+ * Has the selected presenter painted yet, for THIS generation?
+ *
+ * The grid asks before it stands a bundled header down. Nothing else may: a header that stood down
+ * on the selection alone leaves every pane with no title, no close and no split for the length of a
+ * plugin boot, and for the whole five second readiness window if the view never paints.
+ */
+export function usePaneChromePainted(generation: string): boolean {
+    const painted = useSyncExternalStore(
+        subscribePaneChromePainted,
+        paneChromePaintedGeneration,
+        paneChromePaintedGeneration
+    );
+    return painted !== null && painted === generation;
 }
 
 export interface PaneChromePresenterSlotProps {
@@ -232,6 +265,17 @@ export interface PaneChromePresenterSlotProps {
     readonly onRename: (paneID: string) => void;
     /** Open the host's own pane context menu, anchored under that pane's band. */
     readonly onMenu: (paneID: string) => void;
+    /** Arm the host's pane-move gesture for that pane, from the press that just happened. */
+    readonly onBeginDrag: (paneID: string) => void;
+    /**
+     * Put the caret back on a pane, because a header band is never a keyboard surface.
+     *
+     * A click on a control inside the frame focuses the iframe, and this slot grants no chords, so
+     * every keystroke after it - typing, Escape, the palette, every window chord - was swallowed by
+     * a sandbox that answers none of them until the user clicked the pane body again. `App`'s
+     * `handBackPaneCaret` is the one place that hand-back is written down.
+     */
+    readonly onReleaseCaret: (paneID: string | null) => void;
     /** The native failure report (a toast), raised once per failing generation. */
     readonly onFailure?: ((detail: string) => void) | undefined;
 }
@@ -240,7 +284,19 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
     const placement = PANE_CHROME_PLACEMENT;
     const { selection } = props;
     const { bundled, generation, runtime, viewID } = selection;
+    const wrapper = useRef<HTMLDivElement | null>(null);
     const painted = !bundled && props.visible;
+    /*
+     * Painting and BEING SEEN are two different things here.
+     *
+     * `painted` is the host's own paint decision and is what the frame's `visible` reports: the
+     * presenter is selected and the grid is showing, so present something. `shown` is whether the
+     * bands are clipped IN, which waits for the presenter's own readiness report - until then the
+     * bundled headers are still the ones drawing and a second header painted over them would be two
+     * headers on one pane. The frame is mounted and fed either way, which is what lets it paint and
+     * report in the first place.
+     */
+    const shown = painted && usePaneChromePainted(generation);
 
     /** Everything the model's stable callbacks need from the latest render. */
     const latest = useRef(props);
@@ -261,6 +317,9 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
              * a header nobody is drawing. Ratified decision 8's all-or-nothing is exactly this line.
              */
             clearPaneChromeHeights();
+            // And the band swaps back with them: a presenter that has failed is not painting, so
+            // the bundled header has to be the one drawing in the same commit.
+            clearPaneChromePainted();
             // Once per failing generation: the latch is what makes the report honest, and a
             // watchdog that fired twice must not raise two toasts for one broken presenter.
             if (!already) latest.current.onFailure?.(message);
@@ -313,6 +372,9 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
     }, []);
     const onReady = useCallback((): void => {
         watch.current.painted = true;
+        // The swap: from here the presenter's bands are clipped IN and the bundled headers stand
+        // down, in one commit and not a moment before (`usePaneChromePainted`).
+        notePaneChromePainted(latest.current.selection.generation);
         if (watch.current.ready === null) return;
         clearTimeout(watch.current.ready);
         watch.current.ready = null;
@@ -337,6 +399,9 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
             },
             openMenu: (paneID) => {
                 latest.current.onMenu(paneID);
+            },
+            beginDrag: (paneID) => {
+                latest.current.onBeginDrag(paneID);
             },
             declareHeight: (paneID, pixels) => {
                 // Straight to the store the grid reads. The clamp is applied at READ, against that
@@ -368,6 +433,21 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
                 if (mounted.current) return;
                 cell.current?.dispose();
                 cell.current = null;
+                /*
+                 * THE declarations go here, and this is the only place they can.
+                 *
+                 * `PaneGrid` renders this slot only while a presenter is selected, so the moment
+                 * the user picks "Pane header (bundled)", disables the plugin or uninstalls it,
+                 * this component unmounts - it never re-renders with a bundled selection to notice
+                 * it in. A stand-down handled by a render would therefore never run, and every pane
+                 * would keep the band its departed presenter declared: a bundled 24 px header
+                 * floating inside 96 px of nothing, with every PTY still sized against it.
+                 *
+                 * The microtask guard is StrictMode's: a rehearsal remount must not drop the bands
+                 * of the mount that replaced it.
+                 */
+                clearPaneChromeHeights();
+                clearPaneChromePainted();
             });
         };
     }, []);
@@ -383,36 +463,60 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
         host?.refresh();
     });
 
-    // A latch belongs to one generation. A reload, a rollback or a different selection supersedes
-    // it, so the Settings row must stop reporting a failure the window has already moved past.
-    useEffect(() => {
-        const failure = paneChromePresenterFailure();
-        if (failure !== null && failure.generation !== generation) clearPaneChromePresenterFailure();
-    }, [generation]);
-
     /*
-     * Standing down. Nothing is watched while the bundled headers draw - no frames leave the window
-     * - and the host is dropped in an effect rather than during the render that decided it, so a
-     * render React discards cannot leave a committed view holding a disposed grant. The
-     * declarations go with it, for the same reason a failure drops them.
+     * A generation change is a different presenter: the new one has not painted, so the bundled
+     * header takes every band back until it says it has. A reload and a rollback both land here.
+     * The failure latch is cleared by `usePaneChromeSelection`, which the grid calls whatever is
+     * selected - this component is not mounted for the case that matters most.
      */
     useEffect(() => {
-        if (!bundled) return;
-        clearWatchdogs();
-        clearPaneChromeHeights();
-        cell.current?.dispose();
-        cell.current = null;
-    }, [bundled, clearWatchdogs]);
+        clearPaneChromePainted();
+        return () => {
+            clearPaneChromePainted();
+        };
+    }, [generation]);
+
     useEffect(() => clearWatchdogs, [clearWatchdogs]);
+
+    /*
+     * The caret never stays in a header band.
+     *
+     * Clicking a control inside the frame moves focus into the iframe, which is when the host
+     * window fires its own `blur`. This slot grants no chords and the presenter answers none, so
+     * every keystroke from that moment - typing into the shell, Escape, the palette, every window
+     * chord - went into a sandbox that dropped it, until the user clicked the pane body again. The
+     * bundled header never had the problem, because a `<button>` press leaves the caret where it
+     * was.
+     *
+     * So the caret goes straight back to the focused pane. Deferred by a microtask, because the
+     * blur arrives mid-gesture and the click the user made has to finish landing inside the frame
+     * first; guarded on the active element, so a blur that is the whole WINDOW going to the
+     * background (where the active element is not this iframe) is left alone.
+     */
+    useEffect(() => {
+        if (bundled) return;
+        const view = wrapper.current?.ownerDocument.defaultView ?? window;
+        const onBlur = (): void => {
+            queueMicrotask(() => {
+                const active = wrapper.current?.ownerDocument.activeElement ?? null;
+                if (active === null || !(wrapper.current?.contains(active) ?? false)) return;
+                latest.current.onReleaseCaret(latest.current.projection.frame.focusedPaneID);
+            });
+        };
+        view.addEventListener('blur', onBlur);
+        return () => view.removeEventListener('blur', onBlur);
+    }, [bundled]);
 
     if (bundled || host === null || runtime === null || selection.pluginID === null) return null;
     return (
         <div
+            ref={wrapper}
             data-testid="pane-chrome-presenter"
             data-pane-chrome-presenter={viewID}
             data-view-id={viewID}
             data-bands={String(props.rects.length)}
-            aria-hidden={!painted}
+            data-shown={shown ? 'true' : 'false'}
+            aria-hidden={!shown}
             style={{
                 position: 'absolute',
                 inset: 0,
@@ -421,7 +525,7 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
                 zIndex: 2,
                 // The whole geometry, in one property: paint and hit testing are removed everywhere
                 // but the bands this presenter was given.
-                clipPath: painted ? paneChromeClipPath(props.rects) : `path('M0 0Z')`,
+                clipPath: shown ? paneChromeClipPath(props.rects) : `path('M0 0Z')`,
                 // A frame that is not painting is still ATTACHED: it keeps its lease, its feed and
                 // its readiness, so the bands come back without a re-attach when the grid does.
                 visibility: painted ? 'visible' : 'hidden'

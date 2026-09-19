@@ -277,6 +277,18 @@ export interface WindowPaneChromeAPI {
     /** Opens the host's own pane context menu, which stays native. */
     openPaneMenu(paneID: string): Promise<void>;
     /**
+     * Tell the host that the press just made in this pane's band is the start of a pane MOVE.
+     *
+     * Call it from a `pointerdown` on whatever part of the band should be the drag handle. The
+     * gesture itself stays the host's: it takes pointer events back from every frame in the grid,
+     * measures its threshold from the first move it sees, draws its own drop zones over the panes
+     * and commits the move on release. A presenter says when, and draws none of it.
+     *
+     * Refused for a pane the current frame does not carry, which is every pane that is withheld,
+     * hidden or not this workspace's.
+     */
+    beginPaneDrag(paneID: string): Promise<void>;
+    /**
      * Declare how tall this presenter's band needs to be, in CSS pixels.
      *
      * The host clamps it to the smaller of 96 px and a quarter of that pane's height, lays the

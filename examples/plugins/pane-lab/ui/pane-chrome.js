@@ -5,8 +5,8 @@
  * displayed workspace, and ten `kelpi.ui` verbs act on it: `focusChromePane`, `splitPane`,
  * `toggleZoom`, `renamePane` (which opens the HOST's inline field and takes no name),
  * `closePane` (which routes through the HOST's confirmation), `activatePaneControl` and
- * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `setPaneChromeHeight` and
- * `reportPresenterReady`.
+ * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `beginPaneDrag`, `setPaneChromeHeight`
+ * and `reportPresenterReady`.
  *
  * What is NOT here is the point of the example. There is no pane handle, no pid, no absolute path,
  * no plugin id and no command name anywhere in this file: a control is named by an opaque,
@@ -41,7 +41,7 @@ const element = id => document.getElementById(id);
  * The scenario's whole view into this presenter, and `postMessage`-free: state to assert on plus
  * the three deliberate hooks the recovery paths and the height authority are exercised with.
  */
-const lab = { snapshot: null, ready: false, frames: 0, lastError: null, crash, stall, declare };
+const lab = { snapshot: null, ready: false, frames: 0, lastError: null, lastPress: null, crash, stall, declare };
 globalThis.paneLab = lab;
 
 let disposed = false, painted = false, stalled = false, armed = null;
@@ -175,8 +175,27 @@ function bandNode() {
     // The whole band focuses its pane, which is shell-ui.md §4.1's rule and the bundled header's
     // own `onPointerDown`. Every control inside it stops the press, exactly as a native button
     // consumes its own tap.
-    node.addEventListener('pointerdown', () => {
-        void act(() => api.ui.focusChromePane(node.dataset.paneId));
+    node.addEventListener('pointerdown', event => {
+        const paneID = node.dataset.paneId;
+        // What the last press was, for a scenario that has to tell "the press never arrived" from
+        // "the press arrived and the gesture did not commit".
+        lab.lastPress = { paneID: paneID ?? null, button: event.button, target: event.target?.className ?? null };
+        if (paneID === undefined) return;
+        void act(() => api.ui.focusChromePane(paneID));
+        /*
+         * And the same press starts a pane MOVE, which is what the bundled header's own
+         * `onPointerDown` does: focus, then raise the grid's gesture. A press on a control or an
+         * item is not one - a button consumes its own tap - and neither is a secondary button.
+         *
+         * The handle is the whole band rather than the title, because a narrow pane squeezes the
+         * title to nothing and a drag handle with no area is a drag nobody can start.
+         * `beginPaneDrag` only says "this press is the start of one": the host takes pointer events
+         * back from this frame, measures its own threshold from the next move, draws its own drop
+         * zones and commits the move. Nothing about the drag is drawn here.
+         */
+        if (event.button !== 0) return;
+        if (event.target instanceof Element && event.target.closest('.control, .item') !== null) return;
+        void act(() => api.ui.beginPaneDrag(paneID));
     });
     node.addEventListener('dblclick', event => {
         event.preventDefault();
@@ -196,6 +215,10 @@ function bandNode() {
      */
     const one = document.createElement('div'); one.className = 'line line-one';
     const facts = document.createElement('div'); facts.className = 'line facts';
+    // The drag handle, named: everything in this box is a FACT rather than a control, so a press
+    // anywhere in it is a press on the header itself. The controls and the items sit beside it and
+    // consume their own taps, exactly as the bundled header's buttons do.
+    facts.dataset.testid = 'lab-pane-grip';
     const items = document.createElement('div'); items.className = 'line items';
     const controls = document.createElement('div'); controls.className = 'line controls';
     one.append(facts, items, controls);
@@ -332,24 +355,25 @@ function render(snapshot) {
     for (const [index, node] of bands.entries()) paintBand(node, drawn[index]);
 
     /*
-     * The withheld count, said out loud.
+     * The withheld count, said out loud - INSIDE the first carried band.
      *
-     * A withheld pane keeps its native header, so nothing is missing from the window - but a
-     * presenter that ignored the count would be drawing an incomplete row and claiming it was the
-     * whole one. This is the one thing drawn outside a band, and the host's clip is what decides
-     * whether it is on screen: a frame with nothing withheld draws nothing here either way.
+     * A withheld pane keeps its bundled header, so nothing is missing from the window; a presenter
+     * that ignored the count would be drawing an incomplete row and calling it the whole one. But
+     * the host clips this frame to the bands it granted, so anything drawn beside them is either
+     * clipped away or, where a band happens to be underneath it, painted straight over that pane's
+     * own title - which is what the first cut did. A chip in the first band's own layout is inside
+     * the clip by construction and cannot overlap anything, because flexbox gave it its own box.
      */
-    let notice = root.querySelector('.withheld');
-    if (snapshot.withheld === 0) notice?.remove();
-    else {
-        if (notice === null) {
-            notice = document.createElement('div');
-            notice.className = 'withheld';
-            notice.dataset.testid = 'lab-pane-withheld';
-            root.append(notice);
-        }
+    const box = bands[0]?.querySelector('.line-one .facts') ?? null;
+    if (box !== null && snapshot.withheld > 0) {
+        const notice = chip('withheld', `+${snapshot.withheld} bundled`,
+            `${snapshot.withheld} pane${snapshot.withheld === 1 ? '' : 's'} did not fit this frame and keep the bundled header`);
+        notice.dataset.testid = 'lab-pane-withheld';
         notice.dataset.count = String(snapshot.withheld);
-        notice.textContent = `${snapshot.withheld} pane${snapshot.withheld === 1 ? '' : 's'} on the bundled header`;
+        // Into the row's own layout, before the spacer, so the title gives ground to it rather than
+        // being painted over by it. `paintBand` rebuilds this box every frame, so there is never a
+        // stale one to remove.
+        box.insertBefore(notice, box.lastElementChild);
     }
 }
 

@@ -69,19 +69,23 @@ import { registerGestureReset } from '../chrome/gesture-reset';
 import { useOverlayPresence } from '../chrome/modal-presence';
 import {
     PaneChromePresenterSlot,
+    createPaneChromeRefs,
     paneChromeBand,
     paneChromeDeclaration,
     paneChromeEntry,
     paneChromeFrameRect,
     paneChromeHeight,
     projectPaneChrome,
+    retainPaneChromeHeights,
     usePaneChromeHeights,
+    usePaneChromePainted,
     usePaneChromeRegistry,
     usePaneChromeScope,
     usePaneChromeSelection,
     type PaneChromeChanges,
     type PaneChromeFrameRect,
-    type PaneChromeProjection
+    type PaneChromeProjection,
+    type PaneChromeRefMinter
 } from '../pane-chrome';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
@@ -181,6 +185,15 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     readonly onRequestRename?: ((paneID: string) => void) | undefined;
     /** A pane chrome presenter failed and every pane is back on its native header. */
     readonly onPaneChromeFailure?: ((detail: string) => void) | undefined;
+    /**
+     * Put the caret back on a pane after it landed in the presenter's frame.
+     *
+     * A header band is never a keyboard surface, and the presenter's frame claims no chords, so a
+     * click on one of its controls otherwise swallowed every keystroke until the user clicked the
+     * pane body. `App` passes `handBackPaneCaret`, which is the one place that hand-back is
+     * written down, web panes included.
+     */
+    readonly onReleaseChromeCaret?: ((paneID: string | null) => void) | undefined;
     /** Fixed size instead of measuring — tests and any non-DOM host. */
     readonly size?: PaneGridSize | undefined;
     /** Terminal cols/rows for the resize badge; falls back to pixels when absent. */
@@ -211,7 +224,16 @@ interface DividerGesture {
 
 interface MoveGesture {
     readonly paneID: string;
-    readonly origin: Point;
+    /**
+     * Where the press was, or null for a gesture armed without one.
+     *
+     * A presenter's band is an iframe, so the press that starts a pane move happens in another
+     * document and this one never sees its coordinates. `null` means "take the origin from the
+     * first move you DO see": the host grabs pointer events back from every frame the moment a
+     * drag is armed (`paneDragArmed`), so that first move is the real pointer at its real place,
+     * and the threshold is then measured from there exactly as it is for a native press.
+     */
+    origin: Point | null;
     readonly releaseCapture: () => void;
     active: boolean;
 }
@@ -626,6 +648,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         (event: PointerEvent): void => {
             const gesture = moveRef.current;
             if (gesture === null) return;
+            if (gesture.origin === null) {
+                // A presenter-armed drag: this is the first move the host has seen, so it is the
+                // origin. Nothing is dragged yet and the threshold starts counting from here.
+                gesture.origin = { x: event.clientX, y: event.clientY };
+                return;
+            }
             if (!gesture.active) {
                 const dx = event.clientX - gesture.origin.x;
                 const dy = event.clientY - gesture.origin.y;
@@ -779,6 +807,34 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         } as unknown as ReactMouseEvent<HTMLElement>);
     }, []);
 
+    /**
+     * Arm the pane-move gesture for a presenter's band.
+     *
+     * The press happened inside the presenter's iframe, so this document never saw it and has no
+     * origin to measure a threshold from. `paneDragArmed` is what fixes that: it is the class the
+     * grid already applies for every drag, and it takes pointer events away from every frame in the
+     * grid - the presenter's included - so the very next move lands here, at the real pointer, and
+     * becomes the gesture's origin (`onPanePointerMove`).
+     *
+     * Everything after that is the gesture the native header raises: the same threshold, the same
+     * drop-zone hit test against the host's own frames, the same preview and the same
+     * `onMovePane` commit. A presenter says when, and nothing else.
+     */
+    const beginPresenterDrag = useCallback((paneID: string): void => {
+        if (!framesRef.current.has(paneID)) return;
+        moveRef.current?.releaseCapture();
+        moveRef.current = {
+            paneID,
+            origin: null,
+            active: false,
+            // Nothing to release: the pointer was captured in another document, if at all.
+            releaseCapture: () => {}
+        };
+        dropTargetRef.current = null;
+        setPaneDragArmed(true);
+        attachListeners(onPanePointerMove, endPaneDrag);
+    }, [attachListeners, onPanePointerMove, endPaneDrag]);
+
     const cancelHover = useCallback((): void => {
         if (hoverTimerRef.current === null) return;
         clearTimeout(hoverTimerRef.current);
@@ -844,6 +900,34 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const chromeEnabled = props.paneChromePresenter === true;
     const chromeSelection = usePaneChromeSelection(chromeEnabled);
     const chromeActive = chromeEnabled && !chromeSelection.bundled;
+    /*
+     * Has the selected presenter actually PAINTED for this generation?
+     *
+     * The band swaps on this and not on the selection. Standing a bundled header down the moment a
+     * plugin was selected left every pane with no title, no close, no split and no zoom for the
+     * plugin's boot, its attach and its first frame - and for the whole five second readiness
+     * window if the view never painted at all, which is precisely the case the fallback exists for.
+     * The same hole opened on every reload and rollback. So the bundled header keeps drawing, the
+     * presenter's frame is mounted and fed but clipped to nothing, and the two change places in one
+     * commit when the presenter says it has painted.
+     */
+    const chromePainted = usePaneChromePainted(chromeSelection.generation);
+    const chromeShown = chromeActive && chromePainted;
+    /*
+     * One token table per presenter generation, kept across renders.
+     *
+     * This is what makes a ref mean the same control from one frame to the next: rebuilt per frame,
+     * a ref would be a row POSITION and a click painted from a frame one commit old would activate
+     * whatever had moved into that slot. Reset when the generation moves, because a new presenter
+     * instance gets a new frame and has no older one to replay.
+     */
+    const chromeRefs = useRef<{ generation: string; minter: PaneChromeRefMinter }>({
+        generation: chromeSelection.generation,
+        minter: createPaneChromeRefs()
+    });
+    if (chromeRefs.current.generation !== chromeSelection.generation) {
+        chromeRefs.current = { generation: chromeSelection.generation, minter: createPaneChromeRefs() };
+    }
     // Only while a presenter is up: headers publish unconditionally, so a subscription here with
     // nothing selected would re-measure every terminal in the grid on every agent tick.
     const chromeVersion = usePaneChromeRegistry(chromeActive);
@@ -861,6 +945,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
      */
     const chrome = useMemo<{
         readonly projection: PaneChromeProjection;
+        readonly carried: ReadonlySet<string>;
         readonly presented: ReadonlySet<string>;
         readonly renaming: ReadonlySet<string>;
         readonly rects: readonly PaneChromeFrameRect[];
@@ -886,15 +971,18 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                 paneChromeBand(bands, pane.id, frame.height, headerHeight)
             );
         }
-        const projection = projectPaneChrome({
-            workspaceID: props.workspaceID ?? '',
-            // `PaneGrid` is the desktop grid; the phone has its own header and never mounts it.
-            formFactor: 'desktop',
-            focusedPaneID,
-            zoomedPaneID: zoomed,
-            panes: descriptors,
-            rects
-        });
+        const projection = projectPaneChrome(
+            {
+                workspaceID: props.workspaceID ?? '',
+                // `PaneGrid` is the desktop grid; the phone has its own header and never mounts it.
+                formFactor: 'desktop',
+                focusedPaneID,
+                zoomedPaneID: zoomed,
+                panes: descriptors,
+                rects
+            },
+            chromeRefs.current.minter
+        );
         /*
          * A carried pane's header stands down - unless its rename field is up.
          *
@@ -907,6 +995,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         const presented = new Set(carried.filter((paneID) => !renaming.has(paneID)));
         return {
             projection,
+            carried: new Set(carried),
             presented,
             renaming,
             rects: [...presented].map((paneID) => rects[paneID]!)
@@ -923,6 +1012,26 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         zoomed,
         props.workspaceID
     ]);
+    /*
+     * A band belongs to a CARRIED pane, and the host is what enforces it.
+     *
+     * A pane leaves the frame when it is withheld by the byte budget, zoomed out of sight or gone
+     * from the workspace, and from that moment the presenter is not drawing it - but its
+     * declaration lived on, so the bundled 24 px header came back inside a 96 px band and the
+     * pane's body rect, its terminal's rows and a web pane's native bounds all stayed computed from
+     * chrome nobody paints. The presenter could not fix it either: every call for a pane the frame
+     * does not carry is refused, the hand-back included (which `presenter.ts` now exempts).
+     *
+     * So the host withdraws, every commit, from the one place that knows which panes are carried.
+     * The token table is pruned on the same list, so a pane that comes back gets its own tokens
+     * back rather than inheriting a closed pane's.
+     */
+    useEffect(() => {
+        if (chrome === null) return;
+        retainPaneChromeHeights(chrome.carried);
+        chromeRefs.current.minter.retain(chrome.carried);
+    }, [chrome]);
+
     const dropRect =
         dropTarget === null
             ? null
@@ -970,6 +1079,16 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                 const focused = visible && pane.id === focusedPaneID;
                 // The declaration, clamped against THIS pane's height, or the host's own band.
                 const band = paneChromeBand(bands, pane.id, rect.height, headerHeight);
+                /*
+                 * Resolved once, because it decides two things: what is drawn, and how high this
+                 * wrapper stacks. `grid/PaneSearchOverlay.tsx` is `absolute right-2 top-2 z-30`
+                 * INSIDE this wrapper, and a `z-30` inside a `zIndex: 1` stacking context cannot
+                 * reach past a sibling at 2 - so the presenter's band covered the find bar's top
+                 * edge at the native height and swallowed the bar whole under a declared one: the
+                 * counter unreadable, the next and previous buttons dead. A pane with an overlay is
+                 * lifted for the same reason a renaming pane is, and for exactly as long.
+                 */
+                const overlay = props.renderPaneOverlay?.(pane.id) ?? null;
                 return (
                     <div
                         key={pane.id}
@@ -984,10 +1103,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             visibility: visible ? 'visible' : 'hidden',
                             pointerEvents: visible ? 'auto' : 'none',
                             opacity: draggingPaneID === pane.id ? 0.5 : 1,
-                            // L31 with one addition: the pane whose rename field is up is lifted
-                            // ABOVE the presenter's frame (which sits at 2), because that field is
-                            // the host's and a caret under an iframe is a caret nobody can reach.
-                            // Everything else is unchanged. `PaneGridView.swift:104-111`
+                            // L31 with two additions, both of them the same rule: a pane carrying
+                            // host chrome the user has to reach is lifted ABOVE the presenter's
+                            // frame (which sits at 2). That is the inline rename field, whose caret
+                            // would otherwise be under an iframe, and the pane search overlay,
+                            // which the band covered. Everything else is unchanged.
+                            // `PaneGridView.swift:104-111`
                             // paints the panes with a plain `ForEach` inside a `ZStack` and never
                             // reorders on focus, so where a 2 px focus ring meets a neighbour's
                             // edge the shipped app lets paint order decide — it does not lift the
@@ -995,7 +1116,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             // id rather than the `panes` array, which is a deliberate, separate
                             // choice: it keeps React from moving a terminal's node when the tree
                             // is rearranged.)
-                            zIndex: chrome?.renaming.has(pane.id) === true ? 3 : visible ? 1 : 0
+                            zIndex:
+                                chrome?.renaming.has(pane.id) === true || overlay !== null
+                                    ? 3
+                                    : visible
+                                      ? 1
+                                      : 0
                             /*
                              * §N17 — and NO fill on the wrapper either.
                              *
@@ -1051,7 +1177,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             paneWidth={rect.width}
                             // Phase B: a selected presenter is drawing this pane's band, so the
                             // header keeps the box and gives up everything it painted in it.
-                            presented={chrome?.presented.has(pane.id) === true}
+                            presented={chromeShown && chrome?.presented.has(pane.id) === true}
                             changes={props.changesFor?.(pane.id) ?? null}
                             renameToken={props.renameRequest?.paneID === pane.id ? props.renameRequest.seq : 0}
                             onHeaderPointerDown={startPaneDrag}
@@ -1089,7 +1215,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             block the bar's `absolute right-2 top-2` needs; the ordering keeps the
                             focus ring and the resize badge painting above it, as the Swift's later
                             `.overlay` modifiers do (`:379`, `:387`). */}
-                        {props.renderPaneOverlay?.(pane.id) ?? null}
+                        {overlay}
                         <FocusRing focused={focused} dimmed={ringDimmed} />
                         {/*
                           * §N26's matrix, for the record: this badge is over the page area of a
@@ -1132,6 +1258,8 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     surface={(paneID) => paneChromeEntry(paneID)?.surface ?? null}
                     onRename={(paneID) => props.onRequestRename?.(paneID)}
                     onMenu={openPaneMenuForPresenter}
+                    onBeginDrag={beginPresenterDrag}
+                    onReleaseCaret={(paneID) => props.onReleaseChromeCaret?.(paneID)}
                     {...(props.onPaneChromeFailure === undefined
                         ? {}
                         : { onFailure: props.onPaneChromeFailure })}

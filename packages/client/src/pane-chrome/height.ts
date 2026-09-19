@@ -116,6 +116,38 @@ export function clearPaneChromeHeights(): void {
     republish();
 }
 
+/**
+ * Keep only the panes the presenter is actually drawing, and drop every other declaration.
+ *
+ * The host's own withdrawal, and the answer to a band nobody can hand back. A presenter declares a
+ * band for a pane the frame carries; the moment a pane LEAVES that frame - withheld by the byte
+ * budget, zoomed out of sight, or gone from the workspace - it is wearing the bundled header again,
+ * and a bundled 24 px header floating inside a 96 px band is the exact shape of the defect. Worse,
+ * the band is still what that pane's body rect is computed from, so a live PTY stays sized against
+ * chrome nobody draws.
+ *
+ * The presenter cannot fix this on its own: a pane that has left the frame is a pane its calls are
+ * refused for, which is correct for a WRITE and would be a trap for a withdrawal. So the host
+ * withdraws, every render, from the one place that knows which panes are carried.
+ *
+ * A hidden pane is included deliberately, against the instinct that it should keep its band because
+ * it is coming straight back. `PaneGrid` keeps a hidden pane mounted at its last rect and its
+ * terminal measures the DOM box it is given, so a zoomed-out pane holding a 96 px declaration is a
+ * PTY resized against a band that is not on screen. The presenter re-declares on the frame the pane
+ * comes back in, which costs one frame of the native band and nothing else.
+ */
+export function retainPaneChromeHeights(paneIDs: Iterable<string>): void {
+    if (declarations.size === 0) return;
+    const keep = paneIDs instanceof Set ? paneIDs : new Set(paneIDs);
+    let changed = false;
+    for (const paneID of [...declarations.keys()]) {
+        if (keep.has(paneID)) continue;
+        declarations.delete(paneID);
+        changed = true;
+    }
+    if (changed) republish();
+}
+
 /** What a pane has declared, raw and unclamped. Test seam; the grid reads the hook. */
 export function paneChromeDeclaration(paneID: string): number | null {
     return declarations.get(paneID) ?? null;

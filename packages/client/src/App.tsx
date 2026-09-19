@@ -3844,6 +3844,13 @@ function Shell(props: AppProps): ReactElement {
                             return footerGitStats(inspectorData.associations, target.workingDirectory, canonical);
                         }}
                         onRequestRename={startPaneRename}
+                        /*
+                         * A header band is not a keyboard surface. A click on a control inside the
+                         * presenter's frame moves the caret into an iframe that answers no chords,
+                         * so it comes straight back to the focused pane - which is exactly what a
+                         * bundled header's `<button>` does by leaving it alone.
+                         */
+                        onReleaseChromeCaret={handBackPaneCaret}
                         onPaneChromeFailure={detail => notifyFailureRef.current('Pane header presenter', detail)}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}

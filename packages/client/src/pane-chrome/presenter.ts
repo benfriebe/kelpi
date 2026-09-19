@@ -64,6 +64,7 @@ export const PANE_CHROME_UI_METHODS = [
     'ui.activatePaneControl',
     'ui.runPaneHeaderItem',
     'ui.openPaneMenu',
+    'ui.beginPaneDrag',
     'ui.setPaneChromeHeight'
 ] as const;
 
@@ -122,6 +123,15 @@ export interface PaneChromePresenterHostOptions {
     readonly openRename: (paneID: string) => void;
     /** Open the HOST's own pane context menu for that pane, anchored under its band. */
     readonly openMenu: (paneID: string) => void;
+    /**
+     * Arm the HOST's pane-move gesture for that pane (ratified decision 6's neighbour).
+     *
+     * The drag itself stays the grid's: it is a window-level pointer gesture with a drop-zone
+     * hit test, a preview and a commit, none of which a projection could describe. What a
+     * presenter can do is say "the press that just happened in my band was the start of one",
+     * and the host takes it from the next pointer move.
+     */
+    readonly beginDrag: (paneID: string) => void;
     /** Declare (or withdraw) a pane's band. The clamp is `height.ts`'s, not the presenter's. */
     readonly declareHeight: (paneID: string, pixels: number | null) => void;
     /** A presenter that cannot be trusted with every pane's header any more. */
@@ -147,6 +157,7 @@ const CALL_ARGUMENTS: Readonly<Record<string, readonly string[]>> = Object.freez
     'ui.activatePaneControl': ['paneID', 'ref'],
     'ui.runPaneHeaderItem': ['paneID', 'ref'],
     'ui.openPaneMenu': ['paneID'],
+    'ui.beginPaneDrag': ['paneID'],
     'ui.setPaneChromeHeight': ['paneID', 'pixels']
 });
 
@@ -209,6 +220,51 @@ export function subscribePaneChromePresenters(listener: () => void): () => void 
 /** Test seam: one page is one window, so a suite has to be able to start from a clean one. */
 export function resetPaneChromePresenterFailures(): void {
     publishFailure(null);
+    publishPainted(null);
+}
+
+// ── the window's painted latch ──────────────────────────────────────────────────────
+//
+// The other fact the grid needs and cannot see: has the SELECTED presenter actually painted yet?
+//
+// Without it the header stands down the instant a plugin is selected, and the pane spends the boot,
+// the attach and the first frame with no title, no close, no split and no zoom - and the full five
+// seconds of the readiness watchdog if the view never paints at all. The same hole opens on every
+// reload and rollback, which is exactly when a presenter is most likely not to come back.
+//
+// So the band swaps on the presenter's OWN readiness report rather than on the selection: the
+// bundled header keeps drawing, the presenter's frame is mounted but clipped to nothing, and the
+// two change places in one commit when it says it has painted. Keyed by generation, so a reload
+// puts the bundled header back until the new instance has painted in its turn.
+
+let paintedGeneration: string | null = null;
+const paintedListeners = new Set<() => void>();
+
+function publishPainted(next: string | null): void {
+    if (paintedGeneration === next) return;
+    paintedGeneration = next;
+    for (const listener of [...paintedListeners]) listener();
+}
+
+/** The generation that has reported it has painted, or null while none has. */
+export function paneChromePaintedGeneration(): string | null {
+    return paintedGeneration;
+}
+
+export function notePaneChromePainted(generation: string): void {
+    publishPainted(generation);
+}
+
+/** A reload, a different selection, a failure or the slot going away all end a painted generation. */
+export function clearPaneChromePainted(): void {
+    publishPainted(null);
+}
+
+export function subscribePaneChromePainted(listener: () => void): () => void {
+    paintedListeners.add(listener);
+    return () => {
+        paintedListeners.delete(listener);
+    };
 }
 
 // ── the host ────────────────────────────────────────────────────────────────────────
@@ -230,13 +286,27 @@ export function createPaneChromePresenterHost(
     let lastKey: string | undefined;
     let shape: string | null = null;
     /**
+     * The inputs the last frame was built from, by identity.
+     *
+     * `refresh()` runs on every render of the grid, and most renders change nothing this frame is
+     * made of - a hover, a focus ring dimming, a toast. Without this each of them cost a
+     * projection, a `pluginJSON` round trip, a deep freeze and a `JSON.stringify` of the whole
+     * frame, and during a divider drag that is once per pointer move. `PaneGrid` memoises the
+     * projection on the facts it is built from, so identity here is exactly "nothing moved".
+     */
+    let lastInputs: { projection: PaneChromeProjection; formFactor: string; visible: boolean } | null = null;
+    /**
      * The frame the presenter is actually HOLDING, and the table that reads its refs.
      *
-     * Kept rather than re-projected per call, and that is the whole point of a ref: a ref names a
-     * ROW POSITION, so resolving a one-frame-late click against a fresh table would land it on
-     * whatever moved into that slot. Against the table that left with the frame it resolves to the
-     * control the user actually pressed, and `surface.runControl` then re-resolves that id against
-     * a fresh model and refuses if it has gone or gone disabled. Two checks, neither of them trust.
+     * Kept rather than re-projected per call, and the two halves of the guarantee are worth
+     * separating. The TABLE is the delivered frame's, so a ref the current frame does not carry -
+     * forged, from another pane, or naming a control that has since left the row - resolves to
+     * nothing and is refused here. The KEY it resolves to is then re-resolved by
+     * `surface.runControl` against a fresh model, so a control that has gone or gone disabled
+     * since the frame went out refuses there. Neither check is trust, and neither is the one that
+     * used to be claimed: refs are assigned per KEY rather than per row position
+     * (`projection.ts` ▸ `createPaneChromeRefs`), which is what stops a one-commit-old click
+     * resolving to whatever moved into that slot.
      */
     let delivered: { snapshot: PaneChromePresenterSnapshot; refs: PaneChromeProjection['refs'] } | null = null;
 
@@ -331,6 +401,17 @@ export function createPaneChromePresenterHost(
         queueMicrotask(() => {
             queued = false;
             if (disposed || listeners.size === 0) return;
+            const projection = options.projection();
+            const formFactor = options.formFactor();
+            const visible = options.visible();
+            if (
+                lastInputs !== null &&
+                lastInputs.projection === projection &&
+                lastInputs.formFactor === formFactor &&
+                lastInputs.visible === visible
+            )
+                return;
+            lastInputs = { projection, formFactor, visible };
             const next = read();
             const nextKey = key(next);
             if (nextKey === lastKey) return;
@@ -447,10 +528,28 @@ export function createPaneChromePresenterHost(
                 return;
             }
             if (method === 'ui.setPaneChromeHeight') {
-                const found = pane(args['paneID']);
                 const pixels = args['pixels'];
                 if (pixels !== null && (typeof pixels !== 'number' || !Number.isFinite(pixels)))
                     throw new Error('A pane chrome band is a finite number of pixels, or null to withdraw.');
+                if (pixels === null) {
+                    /*
+                     * A WITHDRAWAL is not a write, and refusing it for a pane the frame no longer
+                     * carries was a trap: a pane leaves the frame the moment it is withheld, zoomed
+                     * out or hidden, and every call for it is refused from then on - including the
+                     * one call that would have handed its band back. The presenter was left holding
+                     * a declaration it could never undo.
+                     *
+                     * So a hand-back needs only a pane with a live header to hand it back to. The
+                     * host withdraws on its own account too (`height.ts` ▸
+                     * `retainPaneChromeHeights`), because a presenter may be gone by then.
+                     */
+                    const paneID = args['paneID'];
+                    if (typeof paneID !== 'string' || paneID.length > 160 || options.surface(paneID) === null)
+                        throw new Error('That pane is not in the current pane chrome frame.');
+                    options.declareHeight(paneID, null);
+                    return;
+                }
+                const found = pane(args['paneID']);
                 // The clamp is the host's (`contract.ts` ▸ `paneChromeHeight`), applied at read
                 // against that pane's own height. This only decides that the declaration is legal.
                 options.declareHeight(found.paneID, pixels);
@@ -485,6 +584,16 @@ export function createPaneChromePresenterHost(
             }
             if (method === 'ui.openPaneMenu') {
                 options.openMenu(found.paneID);
+                return;
+            }
+            if (method === 'ui.beginPaneDrag') {
+                /*
+                 * The pane is carried, so it is visible and the presenter is drawing its band;
+                 * `pane()` above has already refused every other case. There is nothing else to
+                 * validate here, because the gesture reads the HOST's own frames from the next
+                 * pointer move on and commits through the host's own `onMovePane`.
+                 */
+                options.beginDrag(found.paneID);
                 return;
             }
             if (method === 'ui.activatePaneControl') {

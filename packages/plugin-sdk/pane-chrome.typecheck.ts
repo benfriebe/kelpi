@@ -58,6 +58,8 @@ async function present(): Promise<void> {
         for (const entry of pane.controls) if (entry.enabled && !entry.pinned) await ui.activatePaneControl(pane.paneID, entry.ref);
         for (const other of pane.items) if (other.enabled) await ui.runPaneHeaderItem(pane.paneID, other.ref);
         await ui.openPaneMenu(pane.paneID);
+        // The press that started in the band becomes the host's own pane-move gesture.
+        await ui.beginPaneDrag(pane.paneID);
         await ui.closePane(pane.paneID);
     }
     stop();

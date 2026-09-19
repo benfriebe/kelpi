@@ -88,10 +88,12 @@ import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
  * and the headers stand down; `plugins/` holds the Workbench select, the status row, Retry and
  * `PluginView`'s presenter grant; `features/` carries the bundled `kelpi.pane.chrome` definition
  * that is the recovery floor; `plugin-sdk/` is the public contract; `protocol/src/plugins.ts`
- * validates the placement and refuses it to containers; `App.tsx` wires the grid, the rename
- * request, the change counts and the failure toast; `terminal/` and `webpane/` are what a declared
- * band actually resizes; `chrome/` owns the toast stack and the overlay registry a parked page
- * enrols in; `phone/` is check 11's shell.
+ * validates the placement, which check 1 is what would catch: a placement missing from
+ * `PLUGIN_PLACEMENTS` fails the lab's manifest and the install with it. `App.tsx` wires the grid,
+ * the rename request, the caret hand-back, the change counts and the failure toast; `terminal/` and
+ * `webpane/` are what a declared band actually resizes and what the find bar and the element picker
+ * are read from; `chrome/` owns the toast stack, whose TEXT the fallback check asserts; `phone/` is
+ * check 11's shell.
  */
 export const covers = ['examples/plugins/pane-lab/', 'packages/client/src/pane-chrome/',
     'packages/client/src/grid/', 'packages/client/src/plugins/', 'packages/client/src/features/',
@@ -100,6 +102,18 @@ export const covers = ['examples/plugins/pane-lab/', 'packages/client/src/pane-c
     'packages/client/src/phone/',
     // Check 10 is a real disconnect and reconnect of the primary daemon.
     'packages/client/src/connection/'];
+
+/**
+ * The lowest lane this can be trusted at.
+ *
+ * Check 5 drives a REAL native page: it clicks into a web pane's `WebContentsView` and waits for
+ * the focus that click causes to come back through the shell and the daemon. `hidden` paints the
+ * frame at zero opacity, and AppKit stops counting it as visible the moment anything is in front of
+ * it - at which point Chromium drops the synthesized input CDP delivers to that view, exactly as
+ * `plugin-browser-features` measured (`ui-audit/lib/placement.mjs`). Every other check here is DOM
+ * and would be happy at `hidden`; this one would fail for the lane rather than for the code.
+ */
+export const windowPlacement = 'offscreen';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const labID = 'example.pane-lab', uiID = 'example.ui-lab';
@@ -161,11 +175,17 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
      * outside the clip - which is the whole geometry working. `elementFromPoint` answering
      * something other than the frame is therefore the check that matters most here.
      */
-    const clickFrame = async target => {
+    /**
+     * Where something inside the presenter frame is, in the HOST's viewport, aim checked.
+     *
+     * Split out of `clickFrame` because a drag has to press and move rather than click, and
+     * clicking first to find the point would have fired the gesture twice.
+     */
+    const aimFrame = async (target, fraction = 0.5) => {
         if (!await frameCheck(`(() => { const node = document.querySelector(${JSON.stringify(target)}); return node && !node.disabled; })()`)) {
             throw new Error(`Missing or disabled ${target} in the presenter frame: ${await labState()}`);
         }
-        const inner = await inFrame(`(() => { const node = document.querySelector(${JSON.stringify(target)}); const box = node.getBoundingClientRect(); return {x:box.x + box.width/2, y:box.y + box.height/2, width:box.width, height:box.height}; })()`);
+        const inner = await inFrame(`(() => { const node = document.querySelector(${JSON.stringify(target)}); const box = node.getBoundingClientRect(); return {x:box.x + box.width * ${String(fraction)}, y:box.y + box.height/2, width:box.width, height:box.height}; })()`);
         await page.eval('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
         const outer = await page.box(presenterFrame);
         if (!outer || !inner.width || !inner.height) throw new Error(`no visible ${target} in the presenter frame`);
@@ -177,6 +197,11 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             return node === frame || frame?.contains(node) ? 'frame' : (node.outerHTML ?? node.nodeName).slice(0, 160);
         })()`);
         if (hit !== 'frame') throw new Error(`${target} in the presenter frame is covered or clipped away at ${JSON.stringify(point)}: ${String(hit)}`);
+        return point;
+    };
+
+    const clickFrame = async target => {
+        const point = await aimFrame(target);
         await page.clickAt(point.x, point.y);
         return point;
     };
@@ -265,6 +290,37 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const labBand = paneID => page.eval(`!!document.querySelector('${presenterSlot}')`)
         .then(() => frameCheck(`!!document.querySelector('[data-testid="lab-pane-header"][data-pane-id="${paneID}"]')`, 8_000));
 
+    /**
+     * Every web page's placement, as a list rather than a string.
+     *
+     * A list, because a check comparing two joined strings passes just as happily when BOTH are
+     * empty - which is what the first cut did, enumerating web panes before one existed.
+     */
+    const pageStates = async () => {
+        const raw = await page.eval(`JSON.stringify([...document.querySelectorAll('[data-testid^="web-page-"]')].map(node => ({ id: node.dataset.testid, visible: node.dataset.visible, covered: node.dataset.overlayCovered })))`);
+        return typeof raw === 'string' ? JSON.parse(raw) : [];
+    };
+
+    /**
+     * Read the shell's PTY size until it satisfies a predicate.
+     *
+     * A band change reaches a PTY through a resize observer, a layout, a report to the daemon and a
+     * SIGWINCH, so a single read taken the moment the DOM settled can be the size from before all
+     * of that. Every rows comparison in this scenario therefore waits for the number it expects to
+     * MOVE rather than sampling once and hoping.
+     */
+    const settleRows = async (paneID, predicate, label) => {
+        let last = null;
+        const ok = await d.settle(async () => {
+            const now = await shellRows(paneID, label);
+            if (now === null) return false;
+            last = now;
+            return predicate(now);
+        }, { ceilingMs: 30_000 });
+        if (!ok) rec.note(`${label}: the PTY never reached the expected size; last read ${JSON.stringify(last)}`);
+        return last;
+    };
+
     /** Show a workspace, through the sidebar row a user would click, and wait for the frame. */
     const showWorkspace = async workspace => {
         const row = `[data-testid="workspace-row"][data-workspace-id="${workspace}"]`;
@@ -282,19 +338,32 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
      * `MARKER $(stty size | tr ...)`, and only one of those can match. That is a real SIGWINCH
      * measurement rather than a DOM readout: it is what the process inside the pane believes.
      */
-    const shellRows = async paneID => {
-        const marker = `ROWS${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-        await cli.ok(['pane', 'send', '--target', paneID, `echo "${marker} $(stty size | tr ' ' '-')"`]);
-        await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
-        let answer = null;
-        await d.settle(async () => {
-            const capture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
-            const match = new RegExp(`${marker} (\\d+)-(\\d+)`).exec(capture);
-            if (match === null) return false;
-            answer = { rows: Number(match[1]), cols: Number(match[2]) };
-            return true;
-        }, { ceilingMs: 15_000 });
-        return answer;
+    const shellRows = async (paneID, label = 'the shell') => {
+        /*
+         * Retried once, and named when it fails.
+         *
+         * A loaded machine can leave a send un-echoed past any one ceiling, and the first cut then
+         * compared a later reading against `null` - which is a check that fails for the wrong
+         * reason and reads as a geometry regression. One retry covers the lost send; a second
+         * failure is reported as what it is.
+         */
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const marker = `ROWS${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+            await cli.ok(['pane', 'send', '--target', paneID, `echo "${marker} $(stty size | tr ' ' '-')"`]);
+            await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
+            let answer = null;
+            await d.settle(async () => {
+                const capture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                const match = new RegExp(`${marker} (\\d+)-(\\d+)`).exec(capture);
+                if (match === null) return false;
+                answer = { rows: Number(match[1]), cols: Number(match[2]) };
+                return true;
+            }, { ceilingMs: 20_000 });
+            if (answer !== null) return answer;
+            rec.note(`${label} never echoed its stty marker on attempt ${String(attempt + 1)}; retrying once`);
+        }
+        rec.note(`FAILED READ: ${label} never echoed the marker, so its PTY size could not be read`);
+        return null;
     };
 
     // Where the window was before this scenario took it: restored at the end, because the sandbox
@@ -304,6 +373,8 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
     const workspaceID = workspace.workspace_id;
     /** The workspace check 3 proves WITHHOLDING with: many panes, each with a maximal title. */
     let crowdedID = null;
+    /** The web pane check 5 measures, hoisted so the cleanup can close it after a throw. */
+    let webPaneID = null;
     let uiFrame = '';
 
     try {
@@ -434,6 +505,20 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             itemRef !== null && itemAnswer === 'resolved' && reached,
             `ref ${String(itemRef)} · ${String(itemAnswer)} · count before ${String(beforeCount)}`);
 
+        /*
+         * The web pane is opened HERE, before the zoom, and not where it is first measured: check 6
+         * asks whether a band declared on a hidden pane parks a live page, and a check that
+         * enumerates web panes when there are none is a check that cannot fail.
+         */
+        const opened = await cli.ok(['web', 'open', 'about:blank']);
+        const webPane = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1] ?? null;
+        if (webPane === null) throw new Error(`no web pane opened: ${opened.trim()}`);
+        webPaneID = webPane;
+        const placed = await d.settleDom(page, `document.querySelector('[data-testid="web-page-${webPane}"]')?.dataset.visible === 'true'`, { ceilingMs: 25_000 });
+        rec.check('a web pane is placed and live before the parking checks', placed,
+            String(await page.eval(`document.querySelector('[data-testid="web-page-${webPane}"]')?.dataset.visible ?? 'none'`)));
+        await d.settle(async () => await labPane(webPane) !== null, { ceilingMs: 12_000 });
+
         // Zoom, through the band's own double click.
         await inFrame(`(() => { document.querySelector(${JSON.stringify(band(shellPane))}).dispatchEvent(new MouseEvent('dblclick', {bubbles:true})); return true; })()`);
         const zoomed = await d.settleDom(page, `document.querySelector('[data-pane-id="${shellPane}"]')?.dataset.zoomed === 'true'`, { ceilingMs: 8_000 });
@@ -444,58 +529,95 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const hiddenPane = visiblePanes.find(paneID => paneID !== shellPane) ?? null;
         const hiddenFrame = await labPane(hiddenPane);
         const hiddenBefore = await headerBox(hiddenPane);
-        const webHoleBefore = await page.eval(`[...document.querySelectorAll('[data-testid^="web-page-"]')].map(node => node.dataset.visible).join(',')`);
+        const webHoleBefore = await pageStates();
         const hiddenAnswer = await refusal(`kelpi.ui.setPaneChromeHeight(${JSON.stringify(hiddenPane)}, ${String(TALL)})`);
         await sleep(400);
         const hiddenAfter = await headerBox(hiddenPane);
-        const webHoleAfter = await page.eval(`[...document.querySelectorAll('[data-testid^="web-page-"]')].map(node => node.dataset.visible).join(',')`);
-        rec.check('a band declared on a hidden (zoomed-out) pane is refused, changes nothing and parks nothing',
-            hiddenFrame === null && hiddenAnswer !== 'resolved' && hiddenBefore !== null
-            && hiddenAfter?.height === hiddenBefore.height && String(webHoleAfter) === String(webHoleBefore),
-            `frame entry ${JSON.stringify(hiddenFrame)} · answer ${String(hiddenAnswer)} · band ${JSON.stringify(hiddenBefore)} -> ${JSON.stringify(hiddenAfter)} · pages ${String(webHoleBefore)} -> ${String(webHoleAfter)}`);
+        const webHoleAfter = await pageStates();
         await inFrame(`(() => { document.querySelector(${JSON.stringify(band(shellPane))}).dispatchEvent(new MouseEvent('dblclick', {bubbles:true})); return true; })()`);
         await d.settleDom(page, `document.querySelector('[data-pane-id="${shellPane}"]')?.dataset.zoomed !== 'true'`, { ceilingMs: 8_000 });
+        // And again with the zoom released: a park that only shows up once the pages are back on
+        // screen is the one this check exists to catch.
+        await d.settle(async () => await labPane(webPane) !== null, { ceilingMs: 12_000 });
+        const webHoleAfterZoom = await pageStates();
+        rec.check('a band declared on a hidden (zoomed-out) pane is refused, changes nothing and parks nothing',
+            hiddenFrame === null && String(hiddenAnswer).includes('not in the current pane chrome frame')
+            && hiddenBefore !== null && hiddenAfter?.height === hiddenBefore.height
+            && webHoleBefore.length > 0 && String(webHoleAfter) === String(webHoleBefore)
+            && String(webHoleAfterZoom) === String(webHoleBefore),
+            `frame entry ${JSON.stringify(hiddenFrame)} · answer ${String(hiddenAnswer)} · band ${JSON.stringify(hiddenBefore)} -> ${JSON.stringify(hiddenAfter)} · pages ${JSON.stringify(webHoleBefore)} -> ${JSON.stringify(webHoleAfter)} -> ${JSON.stringify(webHoleAfterZoom)}`);
 
         // ── 5 · a declared 96 px band, measured against a live shell ─────────────────
         const bandBefore = await headerBox(shellPane);
         const bodyBefore = await bodyBox(shellPane);
-        const rowsBefore = await shellRows(shellPane);
+        const rowsBefore = await shellRows(shellPane, 'the shell before the declaration');
         await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, ${String(TALL)}); return true; })()`);
         const grew = await d.settle(async () => ((await headerBox(shellPane))?.height ?? 0) > (bandBefore?.height ?? 0) + 40, { ceilingMs: 10_000 });
         const bandAfter = await headerBox(shellPane);
         const bodyAfter = await bodyBox(shellPane);
         await sleep(700);
-        const rowsAfter = await shellRows(shellPane);
+        const rowsAfter = await shellRows(shellPane, 'the shell under the declared band');
         const moved = bandAfter && bodyBefore && bodyAfter
             && Math.abs((bodyAfter.y - bodyBefore.y) - (bandAfter.height - bandBefore.height)) <= 1;
         rec.check('a declared band grows the header, moves the body rect down by the same amount, and resizes the PTY',
             grew && moved && rowsBefore !== null && rowsAfter !== null && rowsAfter.rows < rowsBefore.rows,
-            `band ${String(bandBefore?.height)} -> ${String(bandAfter?.height)} px, body y ${String(bodyBefore?.y)} -> ${String(bodyAfter?.y)}, stty ${JSON.stringify(rowsBefore)} -> ${JSON.stringify(rowsAfter)}`);
+            `band ${String(bandBefore?.height)} -> ${String(bandAfter?.height)} px, body y ${String(bodyBefore?.y)} -> ${String(bodyAfter?.y)}, stty ${JSON.stringify(rowsBefore)} -> ${JSON.stringify(rowsAfter)}${rowsBefore === null || rowsAfter === null ? ' (the shell never echoed the marker; see the note above)' : ''}`);
         rec.note(`MEASURED band ${String(bandBefore?.height)} -> ${String(bandAfter?.height)} px; body top ${String(bodyBefore?.y)} -> ${String(bodyAfter?.y)}; PTY ${String(rowsBefore?.rows)} -> ${String(rowsAfter?.rows)} rows at ${String(rowsAfter?.cols)} cols`);
         await shot('declared-band', 'The focused shell pane wearing a TALL two-line Pane Lab band (roughly four times the bundled header): the title row on top and the directory, branch and agent row under it, with the terminal starting lower down the pane and its content unbroken. Every other pane still on a one-line band.');
 
         // A web pane under the same declaration: its native view has to move with the band.
-        const opened = await cli.ok(['web', 'open', 'about:blank']);
-        const webPane = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1] ?? null;
-        if (webPane === null) throw new Error(`no web pane opened: ${opened.trim()}`);
         const webHole = `[data-testid="web-page-${webPane}"]`;
-        const placed = await d.settleDom(page, `document.querySelector('${webHole}')?.dataset.visible === 'true'`, { ceilingMs: 25_000 });
         const holeBefore = await paneBox(webHole);
-        await d.settle(async () => await labPane(webPane) !== null, { ceilingMs: 12_000 });
         await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(webPane)}, ${String(TALL)}); return true; })()`);
         const holeMoved = await d.settle(async () => ((await paneBox(webHole))?.y ?? 0) > (holeBefore?.y ?? 0) + 40, { ceilingMs: 12_000 });
         const holeAfter = await paneBox(webHole);
         const stillLive = await page.eval(`document.querySelector('${webHole}')?.dataset.visible ?? 'none'`);
-        // Input still reaches the page: a click in the middle of the hole, then the page's own
-        // answer to where the pointer landed. A parked page answers nothing at all.
-        const clicked = holeAfter === null ? false : await (async () => {
-            await page.clickAt(holeAfter.x + holeAfter.width / 2, holeAfter.y + holeAfter.height / 2);
-            await sleep(300);
-            return await page.eval(`document.querySelector('${webHole}')?.dataset.visible === 'true'`);
-        })();
+        /*
+         * Input still REACHES the page, proved by a round trip rather than by the host re-reading
+         * its own attribute.
+         *
+         * The focus is taken somewhere else first, then a click lands in the middle of the moved
+         * hole. A native `WebContentsView` that takes that click reports it to the shell, which
+         * focuses the pane, which reaches the daemon and comes back on the delta stream as the
+         * window's focused pane. A click that never got past the window - which is what a parked or
+         * mis-placed view means - moves nothing at all.
+         */
+        const bodyOfShell = await bodyBox(shellPane);
+        if (bodyOfShell !== null) await page.clickAt(bodyOfShell.x + bodyOfShell.width / 2, bodyOfShell.y + Math.min(60, bodyOfShell.height / 2));
+        await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 });
+        const caretBeforeClick = String(await page.eval(`document.activeElement?.tagName ?? 'none'`));
+        /*
+         * Zoomed for the click, and only for the click.
+         *
+         * A six-pane grid leaves this web pane a 64 px column, and a click aimed at the middle of
+         * one is a click aimed at a scrollbar and a focus-ring gutter. The band is still declared
+         * and still applied - the zoom changes which pixels the page occupies, not who drew the
+         * chrome above it - so what is measured is unchanged and what is clicked is unambiguous.
+         */
+        await refusal(`kelpi.ui.toggleZoom(${JSON.stringify(webPane)})`);
+        await d.settleDom(page, `document.querySelector('[data-pane-id="${webPane}"]')?.dataset.zoomed === 'true'`, { ceilingMs: 8_000 });
+        await d.settle(async () => ((await paneBox(webHole))?.width ?? 0) > 200, { ceilingMs: 10_000 });
+        const zoomedHole = await paneBox(webHole);
+        if (zoomedHole !== null) {
+            await page.clickAt(zoomedHole.x + zoomedHole.width / 2, zoomedHole.y + zoomedHole.height / 2);
+        }
+        /*
+         * Two signals, either of which is the click having reached the native view: the pane the
+         * window reports as focused becomes the web pane, or the caret leaves the host document
+         * altogether - which is what happens when a `WebContentsView` takes a press, and cannot
+         * happen if the click landed on the DOM in front of it.
+         */
+        const reachedPage = await d.settle(async () => {
+            if (await focusedNow() === webPane) return true;
+            const caret = String(await page.eval(`document.activeElement?.tagName ?? 'none'`));
+            return caretBeforeClick === 'TEXTAREA' && caret !== 'TEXTAREA';
+        }, { ceilingMs: 12_000 });
+        rec.note(`web click: caret ${caretBeforeClick} -> ${String(await page.eval(`document.activeElement?.tagName ?? 'none'`))}, focus ${String(await focusedNow())}, wanted ${webPane}, zoomed hole ${JSON.stringify(zoomedHole)}`);
+        await refusal(`kelpi.ui.toggleZoom(${JSON.stringify(webPane)})`);
+        await d.settleDom(page, `document.querySelector('[data-pane-id="${webPane}"]')?.dataset.zoomed !== 'true'`, { ceilingMs: 8_000 });
         rec.check('a web pane\'s native view moves with the declared band, stays live and still takes input',
-            placed && holeMoved && String(stillLive) === 'true' && clicked,
-            `hole ${JSON.stringify(holeBefore)} -> ${JSON.stringify(holeAfter)} · data-visible ${String(stillLive)} · overlay-covered ${String(await page.eval(`document.querySelector('${webHole}')?.dataset.overlayCovered ?? 'none'`))}`);
+            placed && holeMoved && String(stillLive) === 'true' && reachedPage,
+            `hole ${JSON.stringify(holeBefore)} -> ${JSON.stringify(holeAfter)} · data-visible ${String(stillLive)} · overlay-covered ${String(await page.eval(`document.querySelector('${webHole}')?.dataset.overlayCovered ?? 'none'`))} · focus after the click ${String(await focusedNow())}, wanted ${webPane}`);
         rec.note(`MEASURED web hole ${JSON.stringify(holeBefore)} -> ${JSON.stringify(holeAfter)} under a ${String(TALL)} px declaration`);
         await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(webPane)}, null); globalThis.paneLab.declare(${JSON.stringify(shellPane)}, null); return true; })()`);
         await d.settle(async () => ((await headerBox(shellPane))?.height ?? 99) <= 24, { ceilingMs: 10_000 });
@@ -546,6 +668,178 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         rec.check('openPaneMenu opens the host\'s own pane menu, which stays native',
             menuAnswer === 'resolved' && menuUp, `${String(menuAnswer)} · menu ${String(menuUp)}`);
 
+        /*
+         * ── M4 · the caret never stays in a header band ──────────────────────────────
+         *
+         * A click on a control inside the presenter's frame moves focus into an iframe that claims
+         * no chords, so from that moment every keystroke - typing, Escape, the palette, every
+         * window chord - went into a sandbox that dropped it, until the user clicked the pane body
+         * again. The host hands the caret straight back to the focused pane, which is what the
+         * bundled header gets for free by being made of buttons.
+         *
+         * The observable is where the caret IS. A terminal's own text input is the pane surface, so
+         * "the caret is on `[data-pane-surface]` and not inside the presenter's wrapper" is the
+         * whole property, and the find bar below is what proves the chords came back with it.
+         */
+        const itemButton = `[data-testid="lab-pane-item"]`;
+        let caretBack = null;
+        if (await frameCheck(`!!document.querySelector('${band(shellPane)} ${itemButton}')`, 6_000)) {
+            await clickFrame(`${band(shellPane)} ${itemButton}`);
+            caretBack = await d.settle(async () => await page.eval(`(() => {
+                const active = document.activeElement;
+                if (active === null) return false;
+                if (document.querySelector('[data-testid="pane-chrome-presenter"]')?.contains(active)) return false;
+                return active.closest('[data-pane-surface]') !== null || active.hasAttribute('data-pane-surface');
+            })()`), { ceilingMs: 8_000 });
+        }
+        rec.check('the caret goes back to the pane after a click on the presenter\'s own control',
+            caretBack === true,
+            `active ${String(await page.eval(`(() => { const a = document.activeElement; return a === null ? 'none' : `+"`${a.tagName}${a.closest('[data-pane-surface]') ? ' (pane surface)' : ''}${document.querySelector('[data-testid=\"pane-chrome-presenter\"]')?.contains(a) ? ' (inside the presenter)' : ''}`"+`; })()`))}`);
+
+        /*
+         * ── H3 · the find bar is still reachable under a declared band ───────────────
+         *
+         * `grid/PaneSearchOverlay.tsx` is `absolute right-2 top-2 z-30` inside the pane wrapper, and
+         * a `z-30` inside a `zIndex: 1` stacking context cannot reach past the presenter's frame at
+         * 2. At the native band that covered the bar's top edge; under a 96 px one the whole bar was
+         * invisible and dead. The host lifts a pane carrying an overlay, exactly as it lifts a
+         * renaming one. ⌘F reaching the host at all is the other half of the check above.
+         */
+        await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, ${String(TALL)}); return true; })()`);
+        await d.settle(async () => ((await headerBox(shellPane))?.height ?? 0) > 40, { ceilingMs: 10_000 });
+        await cli.ok(['pane', 'send', '--target', shellPane, 'echo FINDABLE-ANCHOR']);
+        await cli.run(['pane', 'send-key', '--target', shellPane, 'enter']);
+        /*
+         * The caret goes on the TERMINAL first, by clicking the pane body.
+         *
+         * `super+f` is `toggle_search`, and the window dispatches it for the focused pane - but the
+         * press before this one landed in the presenter's frame, and a chord pressed while the
+         * caret is still being handed back is a chord nobody answers. A click in the body is the
+         * gesture a user makes before searching anyway.
+         */
+        const bodyBefore2 = await bodyBox(shellPane);
+        if (bodyBefore2 !== null) await page.clickAt(bodyBefore2.x + bodyBefore2.width / 2, bodyBefore2.y + Math.min(60, bodyBefore2.height / 2));
+        const findFocused = await d.settle(async () => await focusedNow() === shellPane, { ceilingMs: 8_000 });
+        await sleep(200);
+        await page.key('KeyF', { modifiers: 4 });
+        const findBar = `[data-testid="pane-search-input-${shellPane}"]`;
+        const findUp = await d.settleDom(page, `document.querySelector(${JSON.stringify(findBar)})`, { ceilingMs: 10_000 });
+        if (!findUp) {
+            rec.note(`find bar did not open: active ${String(await page.eval(`document.activeElement?.tagName ?? 'none'`))}, any search bar ${String(await page.eval(`[...document.querySelectorAll('[data-testid^="pane-search-"]')].map(node => node.dataset.testid).join(',') || 'none'`))}, caret owner ${String(await page.eval(`document.activeElement?.getAttribute?.('data-pane-surface') ?? document.activeElement?.closest?.('[data-pane-surface]')?.getAttribute('data-pane-surface') ?? 'none'`))}`);
+        }
+        let findCounted = false, findAimed = false;
+        if (findUp) {
+            // Aim-checked: a bar that is on screen but painted over by the presenter's band is
+            // exactly the defect, and `page.click` would aim at its rect either way.
+            /*
+             * SETTLED, not sampled once. The bar mounting and the wrapper being lifted above the
+             * presenter are two facts of the same render, and a hit test taken between the commit
+             * and the paint answers with whatever was on top a frame earlier.
+             */
+            let aim = null;
+            await d.settle(async () => {
+                aim = JSON.parse(String(await page.eval(`(() => {
+                    const node = document.querySelector(${JSON.stringify(findBar)});
+                    const bar = document.querySelector('[data-testid="pane-search-${shellPane}"]');
+                    if (node === null || bar === null) return JSON.stringify({ x: 0, y: 0, ok: false, hit: 'no bar' });
+                    const box = node.getBoundingClientRect();
+                    // A fifth of the way across the field, not its middle: a narrow pane squeezes
+                    // the bar until its own Next button overlaps the centre of the input, and a hit
+                    // test that demanded the input itself would be measuring the BAR's layout
+                    // rather than whether the presenter's band is over it.
+                    const point = { x: box.x + box.width * 0.2, y: box.y + box.height / 2 };
+                    const hit = document.elementFromPoint(point.x, point.y);
+                    return JSON.stringify({
+                        ...point,
+                        // What this check is about: the topmost thing here belongs to the HOST's
+                        // find bar rather than to the presenter's frame.
+                        ok: hit !== null && bar.contains(hit),
+                        onInput: hit === node || node.contains(hit),
+                        hit: hit === null ? 'nothing' : String(hit.outerHTML ?? hit.nodeName).slice(0, 120)
+                    });
+                })()`)));
+                return aim.ok === true;
+            }, { ceilingMs: 8_000 });
+            findAimed = aim?.ok === true;
+            if (findAimed) {
+                await page.clickAt(aim.x, aim.y);
+                // The caret has to be IN the field: a click that landed on one of the bar's own
+                // buttons is still the bar being on top, but it types nowhere.
+                if (aim.onInput !== true) await page.eval(`document.querySelector(${JSON.stringify(findBar)})?.focus()`);
+                await page.insertText('FINDABLE-ANCHOR');
+                findCounted = await d.settleDom(page, `(document.querySelector('[data-testid="pane-search-count-${shellPane}"]')?.textContent ?? '').includes('/')`, { ceilingMs: 10_000 });
+            }
+            rec.note(`find bar aim: ${JSON.stringify(aim)}`);
+            // The shot is taken while the bar is UP: a picture of the pane after it closed is a
+            // picture of nothing this check is about.
+            await shot('find-bar-over-band', 'The focused shell pane wearing a TALL Pane Lab band with the host\'s own find bar drawn OVER it at the top right - the search field holding FINDABLE-ANCHOR, its match counter and its close button all fully visible above the plugin band rather than sliced by it.');
+            await page.key('Escape');
+        }
+        rec.check('the terminal find bar is on top of a declared band, clickable, and counts its matches',
+            findUp && findAimed && findCounted,
+            `focused ${String(findFocused)} (${String(await focusedNow())} vs ${shellPane}) · open ${String(findUp)} · clickable ${String(findAimed)} · counted ${String(findCounted)} · count ${String(await page.eval(`document.querySelector('[data-testid="pane-search-count-${shellPane}"]')?.textContent ?? 'none'`))}`);
+
+        await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, null); return true; })()`);
+
+        /*
+         * ── DRAG · the pane-move gesture, raised from a presenter's band ─────────────
+         *
+         * `beginPaneDrag` is the whole of what a presenter contributes: the host takes pointer
+         * events back from every frame in the grid, measures its own threshold from the next move,
+         * draws its own drop zones and commits through its own `onMovePane`.
+         */
+        const dragTarget = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))
+            .map(pane => pane.id).find(id => id !== shellPane) ?? null;
+        const boxBefore = await paneBox(`[data-pane-id="${shellPane}"]`);
+        const targetBox = dragTarget === null ? null : await paneBox(`[data-pane-id="${dragTarget}"]`);
+        let dragMoved = false;
+        /*
+         * The GRIP, not the band's midpoint.
+         *
+         * A narrow pane squeezes the title to nothing and packs the controls and the other plugins'
+         * items into the middle, so the band's centre is a button - and a press on a button is a
+         * button press, which is exactly what the lab's own guard refuses to treat as a drag. The
+         * grip is the facts half of the row, which is all header and no control.
+         */
+        const from = await aimFrame(`${band(shellPane)} [data-testid="lab-pane-grip"]`, 0.2).catch(() => null);
+        if (targetBox !== null && boxBefore !== null && from !== null) {
+            const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
+            await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1 });
+            /*
+             * A beat, and then several moves.
+             *
+             * `beginPaneDrag` sets React state, and the class that takes pointer events away from
+             * every frame in the grid lands on the commit after it - so a move dispatched in the
+             * same tick would still be swallowed by the presenter's iframe. The first move the host
+             * DOES see becomes the gesture's origin, so at least two are needed before the
+             * threshold can be crossed.
+             */
+            await sleep(250);
+            rec.note(`drag armed: grid pointer-events suppressed ${String(await page.eval(`(document.querySelector('[data-testid="pane-grid"]')?.className ?? '').includes('pointer-events-none')`))}`);
+            for (const step of [0.15, 0.4, 0.7, 1]) {
+                await page.send('Input.dispatchMouseEvent', {
+                    type: 'mouseMoved',
+                    x: from.x + (to.x - from.x) * step,
+                    y: from.y + (to.y - from.y) * step,
+                    button: 'left',
+                    // The held button, as a bitmask. Without it every move reports no button down,
+                    // which is a pointer that is hovering rather than dragging.
+                    buttons: 1
+                });
+                await sleep(60);
+            }
+            await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1 });
+            dragMoved = await d.settle(async () => {
+                const now = await paneBox(`[data-pane-id="${shellPane}"]`);
+                return now !== null && (now.x !== boxBefore.x || now.y !== boxBefore.y || now.width !== boxBefore.width);
+            }, { ceilingMs: 12_000 });
+        }
+        if (!dragMoved) {
+            rec.note(`drag did not move the pane: grab ${JSON.stringify(from)} -> ${JSON.stringify(targetBox)}, last press ${String(await inFrame(`JSON.stringify(globalThis.paneLab?.lastPress ?? null)`).catch(() => 'frame unreadable'))}, lab error ${String(await inFrame(`globalThis.paneLab?.lastError ?? 'none'`).catch(() => 'frame unreadable'))}`);
+        }
+        rec.check('a drag started from the presenter\'s band moves the pane through the host\'s own gesture',
+            dragMoved, `${JSON.stringify(boxBefore)} -> ${JSON.stringify(await paneBox(`[data-pane-id="${shellPane}"]`))}`);
+
         // ── 7 · withholding, live ────────────────────────────────────────────────────
         const documentText = String(await inFrame(`document.documentElement.outerHTML + '\\n' + JSON.stringify(globalThis.paneLab.snapshot)`));
         /*
@@ -559,35 +853,110 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         const forbidden = [sandbox.root, '/Users/', uiID, 'example.ui-lab.increment', 'pane-close-',
             'pane-split-right-', String(daemon?.pid ?? 'no-daemon-pid')];
         const leaked = forbidden.filter(needle => documentText.includes(needle));
-        const agentShape = Object.keys((await labPane(shellPane))?.agent ?? {});
         const paneKeys = Object.keys((await labPane(shellPane)) ?? {});
+        const controlKeys = Object.keys((await labPane(shellPane))?.controls?.[0] ?? {});
+        /*
+         * The SHAPES, not just the strings.
+         *
+         * The first cut read the agent's own keys, which are an empty set on a plain shell pane
+         * with no agent attached - a check that could not fail. What the withheld list actually
+         * promises is about every pane and every control in the frame, so that is what is walked:
+         * no key anywhere names a session, a handle, a pid, a path or a test id, and a control
+         * carries a ref rather than a key or a command.
+         */
+        const allKeys = new Set();
+        const walk = value => {
+            if (value === null || typeof value !== 'object') return;
+            if (Array.isArray(value)) { for (const entry of value) walk(entry); return; }
+            for (const [name, entry] of Object.entries(value)) { allKeys.add(name); walk(entry); }
+        };
+        walk(await labSnapshot());
+        const shapeLeaks = [...allKeys].filter(name => /session|pid|handle|workingdirectory|testid|command|pluginid|url/i.test(name));
         rec.check('no absolute path, plugin id, command name, pid or bundled test id reaches the presenter',
-            leaked.length === 0
-            // And the shapes themselves: a pane carries no handle and an agent carries no session.
-            && !paneKeys.some(key => ['workingDirectory', 'url', 'pid', 'testID'].includes(key))
-            && !agentShape.includes('agentSessionID') && !agentShape.includes('sessionID'),
-            `leaked ${JSON.stringify(leaked)} · pane keys ${JSON.stringify(paneKeys)} · agent keys ${JSON.stringify(agentShape)}`);
+            leaked.length === 0 && shapeLeaks.length === 0
+            && !paneKeys.includes('workingDirectory') && controlKeys.includes('ref') && !controlKeys.includes('key'),
+            `leaked ${JSON.stringify(leaked)} · key leaks ${JSON.stringify(shapeLeaks)} · pane keys ${JSON.stringify(paneKeys)} · control keys ${JSON.stringify(controlKeys)}`);
 
         const goodRef = await controlRef(shellPane, 'Split right');
         const itemRefNow = (await labPane(shellPane))?.items?.[0]?.ref ?? 'i0';
         const panesBeforeForgery = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
+        const countBeforeForgery = (await json(['plugin', 'run', `${uiID}.snapshot`])).state.context.count;
+        /*
+         * A GENUINE ref from another pane, not one with a character appended.
+         *
+         * The first cut forged all three by suffixing `#`, which made "a ref from another pane" the
+         * same test as "an invented ref" three times over. `webPane`'s own first control ref is a
+         * live token of a live pane, and it has to mean nothing on this one: refs are pane-scoped
+         * and the host re-checks the pane as well as the table.
+         */
+        /*
+         * A WELL-FORMED ref that no row of this pane holds.
+         *
+         * Not "the other pane's first ref": a token is a per-pane ordinal, so `c0` exists in every
+         * pane and naming it on this one legitimately means THIS pane's own first control - which
+         * is the scoping working, not a leak, and a presenter holds every carried pane's frame
+         * anyway. What has to be refused is a token of the right SHAPE that this pane's table does
+         * not hold, which is the shape a stale or guessed ref actually takes.
+         */
+        const shellRefs = ((await labPane(shellPane))?.controls ?? []).map(entry => entry.ref);
+        const otherPaneRef = shellRefs.length === 0 ? null : `c${String(shellRefs.length)}`;
+        const crossTarget = shellPane;
         const forged = await activate(shellPane, 'c999');
         const invented = await activate(shellPane, 'nonsense');
-        const crossPane = await activate(webPane, `${goodRef}#`);
+        const crossPane = otherPaneRef === null || crossTarget === null
+            ? 'no row to reason about'
+            : await activate(crossTarget, otherPaneRef);
         const itemAsControl = await activate(shellPane, itemRefNow);
         const controlAsItem = await refusal(`kelpi.ui.runPaneHeaderItem(${JSON.stringify(shellPane)}, ${JSON.stringify(goodRef)})`);
         const ghost = await refusal(`kelpi.ui.focusChromePane('not-a-pane')`);
+        const answers = { forged, invented, crossPane, itemAsControl, controlAsItem, ghost };
         const panesAfterForgery = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
-        rec.check('a forged ref, an invented ref, a cross-pane ref and a ref used on the wrong list are all refused',
-            [forged, invented, crossPane, itemAsControl, controlAsItem, ghost].every(answer => answer !== 'resolved')
-            && panesAfterForgery === panesBeforeForgery,
-            JSON.stringify({ forged, invented, crossPane, itemAsControl, controlAsItem, ghost }));
+        const countAfterForgery = (await json(['plugin', 'run', `${uiID}.snapshot`])).state.context.count;
+        rec.check('a forged ref, an invented ref, a well-formed ref this row does not hold and a ref on the wrong list are all refused, with nothing run',
+            // The MESSAGE, not merely "not resolved": a call that threw for some other reason would
+            // otherwise read as a refusal.
+            Object.values(answers).every(answer => /not in the current pane chrome frame/.test(String(answer)))
+            && otherPaneRef !== null
+            && panesAfterForgery === panesBeforeForgery
+            // Nothing ran: no split, no close, and UI Lab's counter is where it was.
+            && countAfterForgery === countBeforeForgery,
+            `${JSON.stringify(answers)} · panes ${String(panesBeforeForgery)} -> ${String(panesAfterForgery)} · UI Lab count ${String(countBeforeForgery)} -> ${String(countAfterForgery)}`);
+
+        /*
+         * A genuinely STALE ref, replayed onto a row that has changed shape.
+         *
+         * This is the defect refs were re-designed for: they used to be row POSITIONS, so `c0` meant
+         * "whatever is first in this row", and a click is always painted from a frame at least one
+         * commit old. Disabling UI Lab takes its `pane.header` command out of the head of the row
+         * and moves every host control along; the ref captured before it has to go on naming Split
+         * right, not its neighbour.
+         */
+        const staleRef = await controlRef(shellPane, 'Split right');
+        const rowBefore = (await labPane(shellPane))?.controls?.length ?? 0;
+        await cli.ok(['plugin', 'disable', uiID]);
+        const rowShrank = await d.settle(async () => ((await labPane(shellPane))?.controls?.length ?? 0) < rowBefore, { ceilingMs: 12_000 });
+        const panesBeforeReplay = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length;
+        const replay = staleRef === null ? 'no ref' : await activate(shellPane, staleRef);
+        const splitAgain = await d.settle(async () =>
+            (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length === panesBeforeReplay + 1, { ceilingMs: 12_000 });
+        rec.check('a ref painted from an older frame still names the control it was drawn on',
+            rowShrank && replay === 'resolved' && splitAgain,
+            `row ${String(rowBefore)} -> ${String((await labPane(shellPane))?.controls?.length)} · ref ${String(staleRef)} · ${String(replay)} · panes ${String(panesBeforeReplay)} -> ${String((await json(['pane', 'list', '--workspace', workspaceID, '--json'])).length)}`);
+        await cli.ok(['plugin', 'enable', uiID]);
+        await d.settle(async () => ((await labPane(shellPane))?.items?.length ?? 0) > 0, { ceilingMs: 15_000 });
 
         // ── 8 · crash, and every pane back at once ───────────────────────────────────
+        const rowsPlainBeforeCrash = await shellRows(shellPane, 'the shell before the crash declaration');
         const declaredBefore = await (async () => {
             await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, ${String(TALL)}); return true; })()`);
             return await d.settle(async () => ((await headerBox(shellPane))?.height ?? 0) > 40, { ceilingMs: 10_000 });
         })();
+        // Against the band that is actually on screen now, not against a number read before several
+        // splits changed this pane's size: what is asserted is that the band TOOK rows and the
+        // fallback gave them back.
+        const rowsUnderCrashBand = rowsPlainBeforeCrash === null
+            ? null
+            : await settleRows(shellPane, now => now.rows < rowsPlainBeforeCrash.rows, 'the shell under the crash declaration');
         await arm(`crash('uncaught')`);
         // A frame the presenter will be sent: a split changes the shape of the row.
         await cli.ok(['pane', 'create', '--workspace', workspaceID]);
@@ -596,13 +965,26 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         for (const paneID of (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id)) {
             headersBack.push([paneID, await nativeHeader(paneID), (await headerBox(paneID))?.height ?? null]);
         }
+        // The PTY is what a dropped band has to be measured against: a header nobody draws, still
+        // sized into, is the whole reason the fallback is all-or-nothing.
+        const rowsAfterCrash = rowsUnderCrashBand === null
+            ? null
+            : await settleRows(shellPane, now => now.rows > rowsUnderCrashBand.rows, 'the shell after the fallback');
         rec.check('a crash puts the bundled header back on EVERY pane at once and drops every declared band',
-            declaredBefore && fellBack && headersBack.every(([, native, height]) =>
-                native.presented === 'false' && native.title && native.close && height !== null && height <= 24),
-            JSON.stringify(headersBack));
-        const toast = await d.settleDom(page, `document.querySelector('[data-testid="toast-stack"]')`, { ceilingMs: 10_000 });
-        rec.check('the failure is reported on screen', toast,
-            String(await page.eval(`document.querySelector('[data-testid="toast-stack"]')?.textContent ?? 'none'`)));
+            declaredBefore && fellBack
+            // A floor, because `[].every(...)` is true and a list that failed to build would pass.
+            && headersBack.length >= 3
+            && headersBack.every(([, native, height]) =>
+                native.presented === 'false' && native.title && native.close && height !== null && height <= 24)
+            && rowsPlainBeforeCrash !== null && rowsUnderCrashBand !== null && rowsAfterCrash !== null
+            && rowsUnderCrashBand.rows < rowsPlainBeforeCrash.rows
+            && rowsAfterCrash.rows === rowsPlainBeforeCrash.rows,
+            `${JSON.stringify(headersBack)} · PTY ${JSON.stringify(rowsPlainBeforeCrash)} -> under the band ${JSON.stringify(rowsUnderCrashBand)} -> after the fallback ${JSON.stringify(rowsAfterCrash)}`);
+        const toast = await d.settleDom(page, `document.querySelector('[data-testid="toast-stack"]')?.textContent?.includes('Pane header presenter')`, { ceilingMs: 10_000 });
+        const toastText = String(await page.eval(`document.querySelector('[data-testid="toast-stack"]')?.textContent ?? 'none'`));
+        rec.check('the failure is reported on screen, naming the surface and the reason',
+            toast && toastText.includes('Pane header presenter') && /crashed on purpose/i.test(toastText),
+            toastText);
         await shot('fallback-after-crash', 'Every pane back on the bundled 24 px header at once - status dot or glyph, title, split buttons and ✕ on each - with a failure toast in the corner reading "Pane header presenter". No Pane Lab band anywhere, and no pane left taller than the others.');
 
         await openPlugins();
@@ -630,16 +1012,52 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         // ── 9 · disable, enable and reload, with the selection retained ──────────────
         await cli.ok(['plugin', 'disable', labID]);
         const disabledBack = await bundledHeaders();
+        // A disabled presenter is a stood-down presenter: its bands go back with it, or every pane
+        // keeps a tall band with the bundled 24 px header floating inside it.
+        const disabledBands = (await headerBox(shellPane))?.height ?? null;
         await cli.ok(['plugin', 'enable', labID]);
         const enabledBack = await attached() && await ready();
+        /*
+         * The reload, SAMPLED: no pane may ever be headerless.
+         *
+         * The band swaps on the presenter's own readiness report, not on the selection, so while a
+         * reloading view boots the bundled header has to be the one drawing. Sampling is what makes
+         * that assertable: every sample taken while the presenter is not shown has to find a native
+         * title on the pane, and at least one such sample has to exist or the check proves nothing.
+         */
         await cli.ok(['plugin', 'reload', labID]);
+        const samples = [];
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+            const raw = await page.eval(`(() => {
+                const slot = document.querySelector('[data-testid="pane-chrome-presenter"]');
+                const band = document.querySelector('[data-testid="pane-header-${shellPane}"]');
+                return JSON.stringify({
+                    shown: slot?.dataset.shown ?? 'none',
+                    presented: band?.dataset.presented ?? 'none',
+                    title: !!document.querySelector('[data-testid="pane-title-${shellPane}"]')
+                });
+            })()`);
+            const sample = typeof raw === 'string' ? JSON.parse(raw) : null;
+            if (sample !== null) samples.push(sample);
+            if (sample?.shown === 'true' && sample.presented === 'true') break;
+            await sleep(30);
+        }
+        const booting = samples.filter(sample => sample.shown !== 'true');
+        const headless = booting.filter(sample => sample.presented === 'true' || !sample.title);
         const reloaded = await attached() && await ready();
         await openPlugins();
         const retainedValue = await slotValue();
+        const latchedAfterReload = (await statusRow()).includes('Failed');
         await closeSettings();
         rec.check('disable, enable and reload all keep the selection and end with the lab drawing',
-            disabledBack && enabledBack && reloaded && retainedValue === labView,
-            `disabled ${String(disabledBack)} · enabled ${String(enabledBack)} · reloaded ${String(reloaded)} · selection ${String(retainedValue)}`);
+            disabledBack && disabledBands !== null && disabledBands <= 24 && enabledBack && reloaded
+            // Read while Settings is OPEN: a select queried after the dialog closed is a null read
+            // that agrees with nothing.
+            && retainedValue === labView && !latchedAfterReload,
+            `disabled ${String(disabledBack)} band ${String(disabledBands)} · enabled ${String(enabledBack)} · reloaded ${String(reloaded)} · selection ${String(retainedValue)} · latched ${String(latchedAfterReload)}`);
+        rec.check('no pane is ever headerless while a reloading presenter boots',
+            booting.length > 0 && headless.length === 0 && samples.at(-1)?.presented === 'true',
+            `${String(samples.length)} samples, ${String(booting.length)} before the swap, ${String(headless.length)} headless: ${JSON.stringify(headless.slice(0, 3))}`);
 
         // ── 10 · the daemon replaced under the presenter ─────────────────────────────
         if (daemon === null) rec.note('LIMIT: no sandbox daemon handle (--attach), so the disconnect check was skipped');
@@ -651,12 +1069,58 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
             // only authority on the CLIENT having reconnected (`ui-audit/lib/stack.mjs` says so).
             const reconnected = await d.settleDom(page, `document.querySelector('[data-connection]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
             const back = reconnected && await attached(30_000) && await ready(20_000);
+            // Opened first: the row is a Settings control, and reading one with the dialog closed
+            // answers `''` whatever the truth is.
+            await openPlugins();
             const latched = (await statusRow()).includes('Failed');
+            const stillSelected = await slotValue();
+            await closeSettings();
             rec.check('a daemon restart hands every band back while disconnected, and the presenter re-attaches with nothing latched',
-                offline && reconnected && back && !latched && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
-                `pid ${String(pidBefore)} -> ${String(daemon.pid)} · offline ${String(offline)} · back ${String(back)} · ${await labState()}`);
+                offline && reconnected && back && !latched && stillSelected === labView
+                && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
+                `pid ${String(pidBefore)} -> ${String(daemon.pid)} · offline ${String(offline)} · back ${String(back)} · latched ${String(latched)} · selection ${String(stillSelected)} · ${await labState()}`);
             rec.note(`the daemon was replaced (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms)`);
         }
+
+        /*
+         * ── H1 · standing the presenter down hands every band back ───────────────────
+         *
+         * The slot is mounted only while a presenter is selected, so choosing "Pane header
+         * (bundled)" unmounts it - and the stand-down that dropped the declarations lived in a
+         * render branch that could therefore never run. Every pane kept the band its departed
+         * presenter had declared, with the bundled 24 px header floating inside it and every PTY
+         * still sized against chrome nobody draws.
+         */
+        const rowsPlain = await shellRows(shellPane, 'the shell before the stand-down declaration');
+        await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, ${String(TALL)}); return true; })()`);
+        const standDownGrew = await d.settle(async () => ((await headerBox(shellPane))?.height ?? 0) > 40, { ceilingMs: 10_000 });
+        const rowsUnderBand = rowsPlain === null
+            ? null
+            : await settleRows(shellPane, now => now.rows < rowsPlain.rows, 'the shell under the band before the stand-down');
+        await selectPresenter(bundledView);
+        const stoodDown = await bundledHeaders();
+        await closeSettings();
+        const bandAfterStandDown = (await headerBox(shellPane))?.height ?? null;
+        const rowsAfterStandDown = rowsPlain === null
+            ? null
+            : await settleRows(shellPane, now => now.rows === rowsPlain.rows, 'the shell after the stand-down');
+        const nativeAfterStandDown = await nativeHeader(shellPane);
+        rec.check('choosing the bundled header hands every declared band back, and the PTY with it',
+            standDownGrew && stoodDown && bandAfterStandDown !== null && bandAfterStandDown <= 24
+            && nativeAfterStandDown.presented === 'false' && nativeAfterStandDown.title
+            && rowsPlain !== null && rowsUnderBand !== null && rowsAfterStandDown !== null
+            && rowsUnderBand.rows < rowsPlain.rows && rowsAfterStandDown.rows === rowsPlain.rows,
+            `band ${String(bandAfterStandDown)} px · native ${JSON.stringify(nativeAfterStandDown)} · stty ${JSON.stringify(rowsPlain)} -> under the band ${JSON.stringify(rowsUnderBand)} -> ${JSON.stringify(rowsAfterStandDown)}`);
+        // And the row stops reporting a failure the window has moved past.
+        await openPlugins();
+        const rowAfterStandDown = await statusRow();
+        await closeSettings();
+        rec.check('the pane.chrome row reports Bundled once the placement is handed back',
+            !rowAfterStandDown.includes('Failed') && rowAfterStandDown.includes('Bundled'), rowAfterStandDown);
+        await selectPresenter(labView);
+        await closeSettings();
+        await attached();
+        await ready();
 
         // ── 11 · the phone keeps its own header ──────────────────────────────────────
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
@@ -691,6 +1155,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await safely('the phone returns to its landing page', async () => { if (!await phoneToLanding(page, d, { note: message => rec.note(`cleanup: ${message}`) })) rec.note('cleanup: the phone shell never reached its landing page'); });
         await safely('device metrics are cleared', () => page.send('Emulation.clearDeviceMetricsOverride'));
         await safely('touch emulation is cleared', () => page.send('Emulation.setTouchEmulationEnabled', { enabled: false }));
+        await safely('any toast still on screen is dismissed', async () => {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+                if (!await page.eval(`!!document.querySelector('[data-testid="toast-stack"]')`)) return;
+                const closed = await page.eval(`(() => { const button = document.querySelector('[data-testid="toast-stack"] button'); if (button === null) return false; button.click(); return true; })()`);
+                if (closed !== true) return;
+                await sleep(200);
+            }
+        });
         await safely('any dialog or menu still up is dismissed', async () => {
             for (let attempt = 0; attempt < 4; attempt += 1) {
                 if (!await page.eval(`!!document.querySelector('[data-testid="confirm-dialog"]') || !!document.querySelector('[role="menu"]')`)) return;
@@ -712,6 +1184,10 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await safely('the plugins are removed', async () => {
             await cli.run(['plugin', 'remove', labID]);
             await cli.run(['plugin', 'remove', uiID]);
+        });
+        await safely('the web pane this scenario opened is closed', async () => {
+            if (webPaneID === null) return;
+            await cli.run(['pane', 'close', '--target', webPaneID]);
         });
         await safely('every workspace this scenario created is deleted', async () => {
             if (crowdedID !== null) await cli.run(['workspace', 'delete', crowdedID, '--force']);

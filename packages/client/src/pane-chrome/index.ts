@@ -90,6 +90,7 @@ export {
 export {
     clearPaneChromeHeights,
     paneChromeBand,
+    retainPaneChromeHeights,
     paneChromeDeclaration,
     paneChromeDeclarationCount,
     setPaneChromeHeight,
@@ -103,6 +104,7 @@ export {
 
 export {
     PANE_CHROME_FRAME_BUDGET,
+    createPaneChromeRefs,
     paneChromeBytes,
     projectPaneChrome,
     type PaneChromeFrame,
@@ -112,6 +114,7 @@ export {
     type PaneChromeFrameRect,
     type PaneChromeProjection,
     type PaneChromeProjectionInput,
+    type PaneChromeRefMinter,
     type PaneChromeRefTable,
     type PaneChromeRefTarget
 } from './projection';
@@ -132,11 +135,15 @@ export {
 export {
     PANE_CHROME_PLACEMENTS,
     PANE_CHROME_UI_METHODS,
+    clearPaneChromePainted,
     clearPaneChromePresenterFailure,
     createPaneChromePresenterHost,
+    notePaneChromePainted,
     notePaneChromePresenterFailure,
+    paneChromePaintedGeneration,
     paneChromePresenterFailure,
     resetPaneChromePresenterFailures,
+    subscribePaneChromePainted,
     subscribePaneChromePresenters,
     type PaneChromePresenterFailure,
     type PaneChromePresenterHost,
@@ -149,6 +156,7 @@ export {
     PaneChromePresenterSlot,
     paneChromeClipPath,
     paneChromeFrameRect,
+    usePaneChromePainted,
     usePaneChromeSelection,
     type PaneChromePresenterSlotProps,
     type PaneChromeSelection

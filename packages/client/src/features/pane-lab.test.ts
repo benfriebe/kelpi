@@ -38,7 +38,7 @@ import {
     type PaneChromePresenterSnapshot
 } from '../pane-chrome/presenter';
 import { paneChromeFrameRect } from '../pane-chrome/presenter-slot';
-import { projectPaneChrome, type PaneChromeFrameRect } from '../pane-chrome/projection';
+import { createPaneChromeRefs, projectPaneChrome, type PaneChromeFrameRect } from '../pane-chrome/projection';
 import { createPaneChromeSurface, type PaneChromeSurface } from '../pane-chrome/surface';
 
 const assets = path.resolve(
@@ -110,6 +110,15 @@ const cleanups: Array<() => void> = [];
  * observable in the frame that comes back.
  */
 function make(specs: readonly PaneSpec[]) {
+    // Mutable, because a plugin contributing a `pane.header` command mid-session is the case the
+    // stale-ref replay test exists for.
+    const live: PaneSpec[] = [...specs];
+    /*
+     * ONE token table for the whole session, which is what `PaneGrid` keeps per presenter
+     * generation. A fresh table per projection is what `projectPaneChrome` defaults to, and it is
+     * exactly the positional behaviour that made a one-commit-old click activate its neighbour.
+     */
+    const refs = createPaneChromeRefs();
     const actions: Action[] = [];
     const declared = new Map<string, number>();
     const state = {
@@ -178,7 +187,7 @@ function make(specs: readonly PaneSpec[]) {
 
     /** Rebuilt on every read, which is what `surface.ts` re-resolving against a FRESH model means. */
     const models = (): Map<string, PaneChromeModel> =>
-        new Map(specs.filter((spec) => panes.has(spec.id)).map((spec) => [spec.id, model(spec)]));
+        new Map(live.filter((spec) => panes.has(spec.id)).map((spec) => [spec.id, model(spec)]));
 
     const surfaces = new Map<string, PaneChromeSurface>();
     const surface = (paneID: string): PaneChromeSurface | null => {
@@ -195,10 +204,10 @@ function make(specs: readonly PaneSpec[]) {
     };
 
     const projection = () => {
-        const live = specs.filter((spec) => panes.has(spec.id) && !state.hidden.has(spec.id));
+        const shown = live.filter((spec) => panes.has(spec.id) && !state.hidden.has(spec.id));
         const rects: Record<string, PaneChromeFrameRect> = {};
         let y = 0;
-        const descriptors = live.map((spec) => {
+        const descriptors = shown.map((spec) => {
             const width = widths.get(spec.id)!;
             const descriptor = model(spec).descriptor;
             rects[spec.id] = paneChromeFrameRect(
@@ -208,14 +217,17 @@ function make(specs: readonly PaneSpec[]) {
             y += paneHeight;
             return descriptor;
         });
-        return projectPaneChrome({
-            workspaceID: state.workspaceID,
-            formFactor: 'desktop',
-            focusedPaneID: state.focusedPaneID,
-            zoomedPaneID: state.zoomedPaneID,
-            panes: descriptors,
-            rects
-        });
+        return projectPaneChrome(
+            {
+                workspaceID: state.workspaceID,
+                formFactor: 'desktop',
+                focusedPaneID: state.focusedPaneID,
+                zoomedPaneID: state.zoomedPaneID,
+                panes: descriptors,
+                rects
+            },
+            refs
+        );
     };
 
     return {
@@ -226,6 +238,12 @@ function make(specs: readonly PaneSpec[]) {
         surface,
         widths,
         panes,
+        /** Another plugin's `pane.header` command arriving, at the HEAD of the control row. */
+        addCommand(paneID: string, command: { readonly id: string; readonly title: string }) {
+            const index = live.findIndex((spec) => spec.id === paneID);
+            if (index < 0) return;
+            live[index] = { ...live[index]!, commands: [command, ...(live[index]!.commands ?? [])] };
+        },
         /** A pane closed under the presenter: its header unmounts, so it has no surface left. */
         remove(paneID: string) {
             panes.delete(paneID);
@@ -248,6 +266,7 @@ async function mount(grid: Grid) {
     const calls: Array<{ method: string; args: JsonObject }> = [];
     const renames: string[] = [];
     const menus: string[] = [];
+    const drags: string[] = [];
     let acknowledged = 0;
     let readied = 0;
 
@@ -264,6 +283,9 @@ async function mount(grid: Grid) {
         },
         openMenu: (paneID) => {
             menus.push(paneID);
+        },
+        beginDrag: (paneID) => {
+            drags.push(paneID);
         },
         declareHeight: (paneID, pixels) => {
             if (pixels === null) grid.declared.delete(paneID);
@@ -321,6 +343,7 @@ async function mount(grid: Grid) {
                 call('ui.activatePaneControl', { paneID, ref }),
             runPaneHeaderItem: (paneID: string, ref: string) => call('ui.runPaneHeaderItem', { paneID, ref }),
             openPaneMenu: (paneID: string) => call('ui.openPaneMenu', { paneID }),
+            beginPaneDrag: (paneID: string) => call('ui.beginPaneDrag', { paneID }),
             setPaneChromeHeight: (paneID: string, pixels: number | null) =>
                 call('ui.setPaneChromeHeight', { paneID, pixels })
         }
@@ -348,6 +371,7 @@ async function mount(grid: Grid) {
         thrown,
         renames,
         menus,
+        drags,
         acknowledged: () => acknowledged,
         readied: () => readied,
         lab: (): LabDiagnostics => (globalThis as unknown as { paneLab: LabDiagnostics }).paneLab,
@@ -542,6 +566,41 @@ describe('Pane Lab routes every gesture through the host', () => {
         await until(() => grid.actions.some((entry) => entry.verb === 'command'), 'the command call');
     });
 
+
+    it('starts the host\'s pane-move gesture from a press on the band\'s title', async () => {
+        const grid = make([{ id: 'p1' }, { id: 'p2' }]);
+        const h = await mount(grid);
+        await ready(h);
+        band('p2')
+            .querySelector<HTMLElement>('[data-testid="lab-pane-title"]')!
+            .dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        await until(() => h.drags.length === 1, 'the drag to be armed');
+        // The gesture is the HOST's: nothing about it is drawn or tracked by the presenter.
+        expect(h.drags).toEqual(['p2']);
+    });
+
+    it('refuses a drag for a pane the frame does not carry', async () => {
+        const grid = make([{ id: 'p1' }]);
+        const h = await mount(grid);
+        await ready(h);
+        await expect(h.send('ui.beginPaneDrag', { paneID: 'ghost' })).rejects.toThrow(
+            /not in the current pane chrome frame/
+        );
+        expect(h.drags).toEqual([]);
+    });
+
+    it('prints the withheld count inside the first carried band, never over it', async () => {
+        const huge = 'x'.repeat(PANE_CHROME_LIMITS.payloadBytes);
+        const grid = make([{ id: 'p1' }, { id: 'p2', overrides: { title: huge } }]);
+        const h = await mount(grid);
+        await ready(h);
+        const notice = document.querySelector<HTMLElement>('[data-testid="lab-pane-withheld"]');
+        expect(notice?.dataset.count).toBe('1');
+        // Inside the first band's own row, so the layout gives it a box rather than the host's clip
+        // deciding whether it lands on somebody's title.
+        expect(band('p1').contains(notice)).toBe(true);
+    });
+
     it('opens the host\'s rename field and never sends a name', async () => {
         const grid = make([{ id: 'p1' }]);
         const h = await mount(grid);
@@ -583,6 +642,33 @@ describe('Pane Lab declares a band and the host clamps it', () => {
         }
         await until(() => (h.lab().frames ?? 0) >= 5, 'five more frames');
         expect(h.sent('ui.setPaneChromeHeight').length).toBe(before);
+    });
+
+    it('lets a band be handed back for a pane that has LEFT the frame', async () => {
+        const grid = make([{ id: 'wide', width: WIDE_PANE + 40 }, { id: 'other' }]);
+        const h = await mount(grid);
+        await ready(h);
+        await until(() => grid.declared.get('wide') === TALL_BAND, 'the declared band');
+        // The pane is hidden, so the frame stops carrying it and every WRITE for it is refused.
+        grid.state.hidden.add('wide');
+        h.refresh();
+        await until(() => framePane(h, 'wide') === undefined, 'the pane to leave the frame');
+        await expect(h.send('ui.setPaneChromeHeight', { paneID: 'wide', pixels: 64 })).rejects.toThrow(
+            /not in the current pane chrome frame/
+        );
+        // A hand-back is not a write. Refusing it too left the presenter holding a band it could
+        // never undo, with the bundled header floating inside it.
+        await h.send('ui.setPaneChromeHeight', { paneID: 'wide', pixels: null });
+        expect(grid.declared.has('wide')).toBe(false);
+    });
+
+    it('refuses a hand-back for a pane with no header left at all', async () => {
+        const grid = make([{ id: 'p1' }]);
+        const h = await mount(grid);
+        await ready(h);
+        await expect(h.send('ui.setPaneChromeHeight', { paneID: 'ghost', pixels: null })).rejects.toThrow(
+            /not in the current pane chrome frame/
+        );
     });
 
     it('refuses a declaration for a pane the frame does not carry', async () => {
@@ -632,6 +718,34 @@ describe('Pane Lab is refused what the frame withheld', () => {
             /not in the current pane chrome frame/
         );
         expect(grid.actions).toEqual([]);
+    });
+
+    it('replays a stale ref onto the control it was minted for, never onto its neighbour', async () => {
+        /*
+         * The defect this is here for: refs used to be ROW POSITIONS, so `c0` meant "whatever is
+         * first in this row". A plugin command appearing at the head of the row moved every
+         * control along, and a click painted from the frame before it - which is every click, the
+         * frame is always at least one commit old - activated the control one place over. Split
+         * right ran Close.
+         */
+        const grid = make([{ id: 'p1' }]);
+        const h = await mount(grid);
+        await ready(h);
+        const splitRef = control(h, 'p1', 'Split right')!.ref;
+        const closeRef = control(h, 'p1', 'Close pane')!.ref;
+        expect(splitRef).not.toBe(closeRef);
+        // A plugin command arrives at the HEAD of the row, moving every host control along.
+        grid.addCommand('p1', { id: 'example.board.inspect', title: 'Inspect board' });
+        h.refresh();
+        const before = framePane(h, 'p1')!.controls.length;
+        await until(() => (framePane(h, 'p1')?.controls.length ?? 0) > before, 'the new row');
+        // The ref the user's click was painted with still names Split right, and nothing else.
+        await h.send('ui.activatePaneControl', { paneID: 'p1', ref: splitRef });
+        expect(grid.actions.map((entry) => entry.verb)).toEqual(['split']);
+        expect(grid.actions.some((entry) => entry.verb === 'close')).toBe(false);
+        // And the newcomer got a token of its own rather than inheriting one.
+        const command = control(h, 'p1', 'Inspect board')!;
+        expect([splitRef, closeRef]).not.toContain(command.ref);
     });
 
     it('refuses every call for a pane whose header has gone', async () => {

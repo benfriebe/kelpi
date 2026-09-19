@@ -96,6 +96,7 @@ describe('browser window pane chrome presenter', () => {
             h.api.ui.activatePaneControl('pane-1', 'c0'),
             h.api.ui.runPaneHeaderItem('pane-1', 'i0'),
             h.api.ui.openPaneMenu('pane-1'),
+            h.api.ui.beginPaneDrag('pane-1'),
             h.api.ui.setPaneChromeHeight('pane-1', 48),
             h.api.ui.setPaneChromeHeight('pane-1', null),
         ];
@@ -111,6 +112,8 @@ describe('browser window pane chrome presenter', () => {
             ['ui.activatePaneControl', { paneID: 'pane-1', ref: 'c0' }],
             ['ui.runPaneHeaderItem', { paneID: 'pane-1', ref: 'i0' }],
             ['ui.openPaneMenu', { paneID: 'pane-1' }],
+            // The press stays in the presenter's document; only the fact of it crosses.
+            ['ui.beginPaneDrag', { paneID: 'pane-1' }],
             ['ui.setPaneChromeHeight', { paneID: 'pane-1', pixels: 48 }],
             // `null` survives the marshalling: it is a withdrawal, not a missing argument.
             ['ui.setPaneChromeHeight', { paneID: 'pane-1', pixels: null }],

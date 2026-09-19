@@ -79,7 +79,10 @@ const REMOTE_GAPS: readonly string[] = [
      * gap, and the failure toast has no presenter to report on.
      */
     'onRequestRename',
-    'onPaneChromeFailure'
+    'onPaneChromeFailure',
+    // The caret hand-back after a click inside the presenter's frame. Inert without a presenter,
+    // and the remote grid has none.
+    'onReleaseChromeCaret'
 ];
 
 /**

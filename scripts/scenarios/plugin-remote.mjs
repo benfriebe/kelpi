@@ -69,7 +69,9 @@ export default async function ({ page, cli, sandbox, rec, d }) {
                 `document.activeElement === document.querySelector(${JSON.stringify(trustSelector)})`));
             rec.check('revealing navigation trust through Settings search leaves configuration unchanged',
                 fs.readFileSync(sandbox.configPath, 'utf8') === beforeSearch);
-            if (await page.eval(`document.querySelector(${JSON.stringify(trustSelector)}).checked`) !== trusted) await page.click(trustSelector);
+            // Search has focused the real checkbox and may still be scrolling it into view.
+            // Space exercises that keyboard destination without racing a moving click target.
+            if (await page.eval(`document.querySelector(${JSON.stringify(trustSelector)}).checked`) !== trusted) await page.key('Space');
             rec.check(`navigation trust is ${trusted ? 'saved' : 'cleared'} in the primary host record`, await d.settle(async () => {
                 const contents = fs.readFileSync(sandbox.configPath, 'utf8');
                 return contents.includes('remote-daemon-navigation-trust = PluginRemote:') === trusted;

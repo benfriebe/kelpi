@@ -396,7 +396,7 @@ Deletes one or more workspaces (closing any remaining panes). Refuses to
 delete the last remaining workspace.
 
 Options:
-  --force, -y        Delete even when a workspace still has running agents.
+  --force, -y        Delete even with running, waiting or inactive agent sessions.
   --prune-worktree   Best-effort \`git worktree remove\` of the deleted dir.
   --json             Print a per-id JSON result array.
   -h, --help         Show this help.

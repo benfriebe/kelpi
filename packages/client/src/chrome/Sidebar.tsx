@@ -23,6 +23,7 @@
  * Everything else is props/callbacks — the sidebar never reads the store or sends a command.
  */
 
+import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import { firstGrapheme } from '@kelpi/core/codec';
 import type { IconRef, WorkspaceColor } from '@kelpi/daemon/store';
 import {
@@ -1686,12 +1687,12 @@ export interface SidebarProps extends SidebarCallbacks {
      */
     readonly inheritGroupID?: string | null | undefined;
     /**
-     * How many agents a workspace still has running (`activeAgentCount` — visible AND parked
+     * Agent panes a workspace would close (`workspaceAgentSummary` — visible AND parked
      * panes). It turns the delete confirmation into `WorkspaceDeleteGate`'s alert: the count in
      * the message, and a "Don't ask again" that writes `confirm-workspace-delete` (WS-108).
      * Absent = every delete shows the plain confirmation, which is what it did before.
      */
-    readonly activeAgentCount?: ((workspaceID: string) => number) | undefined;
+    readonly workspaceAgentSummary?: ((workspaceID: string) => WorkspaceAgentSummary) | undefined;
     /** The daemon's `confirm-workspace-delete` setting; default true, as the config's is. */
     readonly confirmDeleteWhenActive?: boolean | undefined;
     /** The alert's suppression button — honoured whichever button ended the dialog. */
@@ -1879,11 +1880,11 @@ type ConfirmState =
           readonly id: string;
           readonly name: string;
           /**
-           * Agents this workspace would terminate. > 0 turns the plain confirmation into
+           * Agent panes this workspace would close. A positive total turns the confirmation into
            * `WorkspaceDeleteGate`'s alert — the count in the message plus a "Don't ask again"
-           * (WS-108) — and 0 leaves it exactly as it was.
+           * (WS-108); absent means a plain confirmation.
            */
-          readonly activeAgents?: number | undefined;
+          readonly agents?: WorkspaceAgentSummary | undefined;
       }
     | {
           readonly kind: 'group';
@@ -3960,15 +3961,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         // WS-108: the count only enters the dialog while the daemon's
                         // `confirm-workspace-delete` is on — with it off, the delete is the
                         // plain confirmation it has always been, and the alert never fires.
-                        const active =
-                            props.confirmDeleteWhenActive === false
-                                ? 0
-                                : (props.activeAgentCount?.(workspaceID) ?? 0);
+                        const agents = props.confirmDeleteWhenActive === false
+                            ? undefined : props.workspaceAgentSummary?.(workspaceID);
                         setConfirm({
                             kind: 'workspace',
                             id: workspaceID,
                             name: workspace.name,
-                            ...(active > 0 ? { activeAgents: active } : {})
+                            ...(agents !== undefined && agents.total > 0 ? { agents } : {})
                         });
                     }
                 }
@@ -5223,14 +5222,13 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     const members = props.confirm.kind === 'group' ? props.confirm.memberCount : 0;
     const workspaceNoun = `workspace${members === 1 ? '' : 's'}`;
     /**
-     * WS-108: a workspace with running agents gets `WorkspaceDeleteGate`'s alert instead of the
+     * WS-108 / #241: a workspace with agent panes gets `WorkspaceDeleteGate`'s alert instead of the
      * plain confirmation — the count in the message and a "Don't ask again" that writes the
-     * daemon's `confirm-workspace-delete`. The caller has already applied the setting (0 when
+     * daemon's `confirm-workspace-delete`. The caller has already applied the setting (no summary when
      * it is off), so this only renders what it was handed.
      */
-    const activeAgents = props.confirm.kind === 'workspace' ? (props.confirm.activeAgents ?? 0) : 0;
-    const noun = activeAgents === 1 ? 'agent' : 'agents';
-    const them = activeAgents === 1 ? 'it' : 'them';
+    const agents = props.confirm.kind === 'workspace' ? props.confirm.agents : undefined;
+    const activeAgents = agents?.total ?? 0;
     return createPortal(
         <div
             data-testid="confirm-dialog"
@@ -5278,7 +5276,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         className="mt-1 text-[11px]"
                         style={{ color: tokens.textSecondary }}
                     >
-                        {`This workspace has ${String(activeAgents)} active ${noun}. Deleting it will terminate ${them}.`}
+                        {agents === undefined ? null : workspaceAgentDeleteWarning(agents)}
                     </div>
                 ) : null}
             </div>

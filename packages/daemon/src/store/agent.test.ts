@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activeAgentCount, activeAgentSummary, chromeStatusSummary, syncedPaneIDs, workspaceByID } from './derived.js';
+import { workspaceAgentSummary, activeAgentCount, activeAgentSummary, chromeStatusSummary, syncedPaneIDs, workspaceByID } from './derived.js';
 import { previewAgentEvent } from './reducers/index.js';
 import { harness, id, NOW, seededState, W1 } from './testing.js';
 import type { DaemonState, DomainAction, Pane, WorkspaceState } from './types.js';
@@ -192,6 +192,25 @@ describe('agent lifecycle', () => {
         expect(pane(h.state(), P0).lastActivityAt).toBeGreaterThan(before);
     });
 
+    it.each(['visible', 'parked'] as const)('classifies every agent status in the %s lane without changing quit counts', (lane) => {
+        const base = ws(seededState());
+        const template = base.panes[0]!;
+        const panes: Pane[] = [
+            { ...template, id: 'running-bound', status: 'running', agentSessionID: 'run' },
+            { ...template, id: 'running-unbound', status: 'running', agentSessionID: null },
+            { ...template, id: 'waiting-bound', status: 'waitingForInput', agentSessionID: 'wait' },
+            { ...template, id: 'waiting-unbound', status: 'waitingForInput', agentSessionID: null },
+            { ...template, id: 'inactive', status: 'idle', agentSessionID: 'resume' },
+            { ...template, id: 'plain', status: 'idle', agentSessionID: null }
+        ];
+        const workspace = { ...base, panes: lane === 'visible' ? panes : [], parkedPanes: lane === 'parked' ? panes : [] };
+        expect(workspaceAgentSummary(workspace)).toEqual({ running: 2, waiting: 2, inactive: 1, total: 5 });
+        expect(activeAgentCount(workspace)).toBe(4);
+        expect(chromeStatusSummary({ ...seededState(), workspaces: [workspace] })).toEqual(
+            lane === 'visible' ? { running: 2, waiting: 2, inactive: 1 } : { running: 0, waiting: 0, inactive: 0 }
+        );
+    });
+
     it('summarises active agents across workspaces', () => {
         const h = harness(seededState());
         h.dispatch(split(PA), {
@@ -206,6 +225,7 @@ describe('agent lifecycle', () => {
             event: { type: 'sessionStarted', sessionID: 'idle-session', agent: 'claude' },
             now: NOW
         });
+        expect(workspaceAgentSummary(ws(h.state()))).toEqual({ running: 1, waiting: 0, inactive: 1, total: 2 });
         expect(activeAgentSummary(h.state())).toEqual({ agentCount: 1, workspaceCount: 1 });
         expect(chromeStatusSummary(h.state())).toEqual({ running: 1, waiting: 0, inactive: 1 });
     });

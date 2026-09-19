@@ -151,6 +151,7 @@ import {
     workspaceSelectionReport
 } from './app/file-menu';
 import { createFrameTick, type FrameTick } from './app/frame-tick';
+import { createTextSizeStep } from './app/text-size';
 import { focusPaneSurface, handCaretToPaneWhenReady, mayClaimPaneCaret, releaseFocusedPaneCaret } from './app/pane-focus';
 import { useRemoteDaemons, type RemoteRuntimeFactory } from './app/remote-daemons';
 import { RemoteWorkspaceView } from './app/RemoteWorkspaceView';
@@ -2440,17 +2441,18 @@ function Shell(props: AppProps): ReactElement {
     );
 
     /**
-     * One chord, two surfaces, in the order the more specific one wins.
-     *
-     * A focused markdown PREVIEW has its own font size and has had ⌘= / ⌘- / ⌘0 since §3.16; the
-     * terminal size is the daemon's. So the preview is offered the press first and the daemon's
-     * setting takes what it declines - which is the same shape `toggle_search` uses to route ⌘F
-     * between a content pane's find bar and the terminal's scrollback search. Nothing a person
-     * can see changed for a markdown pane: the chords moved to these actions in the default map
-     * (#175), and this is what keeps the preview's behaviour byte-identical through the move.
+     * One behaviour, two routes (#175). `app/text-size.ts` states the two rules and why they live
+     * in a module rather than here: the chord passes the dispatcher's gates on its way in and the
+     * View menu's `menu-command` passes none of them, so the remote-workspace gate has to be
+     * inside the shared function or the menu row walks past it.
      */
-    const textSizeStep = useCallback(
-        (step: FontSizeStep): boolean => act.setFontSizeFocused(step) || stepTerminalTextSize(step),
+    const textSizeStep = useMemo(
+        () =>
+            createTextSizeStep({
+                remoteWorkspaceSelected: () => remoteSelectionRef.current !== null,
+                previewStep: (step) => act.setFontSizeFocused(step),
+                daemonStep: stepTerminalTextSize
+            }),
         [act, stepTerminalTextSize]
     );
     /** Read at call time by the `menu-command` listener, which is installed once. */

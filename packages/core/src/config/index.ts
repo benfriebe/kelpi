@@ -50,11 +50,13 @@ export {
     actionForTrigger,
     applyKeybindOverrides,
     canonicalKeyBindingsForPlatform,
+    displayTriggerForAction,
     parseKeybindValue,
     removeAllBindings,
     removeBinding,
     resolveKeyBindings,
     setBinding,
+    shiftTwinBinding,
     triggersForAction
 } from './bindings.js';
 export type { KeyBinding, KeyBindingMap, KeybindOverride } from './bindings.js';

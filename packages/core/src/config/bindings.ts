@@ -127,6 +127,81 @@ function buildDefaults(): KeyBindingMap {
 
 export const DEFAULT_KEYBINDINGS: KeyBindingMap = buildDefaults();
 
+/**
+ * Default triggers that are two SPELLINGS of one chord: `super+=` and `shift+super+=` (#175).
+ *
+ * The distinction this encodes, and it is the whole of the rule: `focus_next_pane`'s `super+]`
+ * and `alt+super+right` are two SHORTCUTS for one action, and unbinding one must leave the other
+ * alone. `super+=` and `shift+super+=` are not two shortcuts. They are the same chord typed on
+ * the same physical key, split in two only because ⌘+ on a US layout is a shifted `=` and the
+ * map matches on the physical key. A user who writes `keybind = super+==unbind`, or who binds
+ * ⌘= back to the markdown preview's own font size, has said what ⌘+ should do, and would
+ * otherwise still have ⇧⌘= resizing every terminal on the daemon: the same chord doing the very
+ * thing they just took away.
+ *
+ * Derived rather than listed, so a later pair inherits the rule: two DEFAULT bindings pair when
+ * they carry the same key code and the same action and their modifier sets differ by exactly
+ * `shift`. Keyed both ways, trigger identity to the twin's binding.
+ */
+function buildShiftTwins(): ReadonlyMap<string, KeyBinding> {
+    const twins = new Map<string, KeyBinding>();
+    const bindings = [...DEFAULT_KEYBINDINGS.values()];
+    for (const one of bindings) {
+        for (const other of bindings) {
+            if (one === other) continue;
+            if (one.trigger.keyCode !== other.trigger.keyCode || one.action !== other.action) continue;
+            if (!differByShiftAlone(one.trigger, other.trigger)) continue;
+            twins.set(keyTriggerKey(one.trigger), other);
+        }
+    }
+    return twins;
+}
+
+function differByShiftAlone(a: KeyTrigger, b: KeyTrigger): boolean {
+    const without = (trigger: KeyTrigger): string =>
+        [...trigger.modifiers].filter((modifier) => modifier !== 'shift').sort().join('+');
+    if (without(a) !== without(b)) return false;
+    return a.modifiers.includes('shift') !== b.modifiers.includes('shift');
+}
+
+const DEFAULT_SHIFT_TWINS: ReadonlyMap<string, KeyBinding> = buildShiftTwins();
+
+/**
+ * The other spelling of a default chord, when this trigger has one and the map still holds it
+ * as the shipped default. Exported for the client's display rule (`chrome/keys.ts`).
+ */
+export function shiftTwinBinding(map: KeyBindingMap, trigger: KeyTrigger): KeyBinding | null {
+    const twin = DEFAULT_SHIFT_TWINS.get(keyTriggerKey(trigger));
+    if (twin === undefined) return null;
+    // Only while the twin is still the SHIPPED binding. A user who spelled out both lines has
+    // bound two chords deliberately, and neither may take the other down.
+    return map.get(keyTriggerKey(twin.trigger))?.action === twin.action ? twin : null;
+}
+
+/**
+ * The ONE trigger a hint names for an action: §7.1's "first trigger in configString order", with
+ * a display-only preference for the unshifted half of a two-spelling chord (#175).
+ *
+ * Declared here so the Help overlay, the palette hints and the shell's menu accelerators all read
+ * the same answer. `shift+super+=` sorts before `super+=`, so without this Increase Terminal Text
+ * Size is hinted ⇧⌘= - true, but the wrong half of a pair whose other half is on the keycap. The
+ * preference is scoped to {@link shiftTwinBinding}'s same-key ±shift relation, so an action whose
+ * triggers are genuinely different shortcuts (`focus_next_pane`'s ⌘] and ⌥⌘→) is untouched, and
+ * the full trigger LIST is untouched too: Settings ▸ Keybindings still shows every chip.
+ */
+export function displayTriggerForAction(map: KeyBindingMap, action: KelpiAction): KeyTrigger | null {
+    const triggers = triggersForAction(map, action);
+    const unshiftedTwinPresent = (candidate: KeyTrigger): boolean =>
+        candidate.modifiers.includes('shift') &&
+        triggers.some(
+            (sibling) =>
+                !sibling.modifiers.includes('shift') &&
+                shiftTwinBinding(map, sibling)?.trigger.keyCode === candidate.keyCode
+        );
+    const preferred = triggers.filter((candidate) => !unshiftedTwinPresent(candidate));
+    return (preferred.length > 0 ? preferred : triggers)[0] ?? null;
+}
+
 export function actionForTrigger(map: KeyBindingMap, trigger: KeyTrigger): KelpiAction | null {
     return map.get(keyTriggerKey(trigger))?.action ?? null;
 }
@@ -171,6 +246,11 @@ export function removeAllBindings(map: KeyBindingMap, action: KelpiAction): KeyB
 /**
  * §1.4 - overrides apply ON TOP of the defaults in file order: `unbind` removes the
  * trigger, anything else replaces/adds it. Later lines win for the same trigger.
+ *
+ * One addition (#175): a line that claims either spelling of a two-spelling default chord takes
+ * the OTHER spelling's default with it, so `super+==unbind` really does take ⌘+ away rather than
+ * leaving ⇧⌘= doing the thing that was just unbound. {@link shiftTwinBinding} states the rule and
+ * why it is not the same as `focus_next_pane`'s two genuinely different shortcuts.
  */
 export function applyKeybindOverrides(
     map: KeyBindingMap,
@@ -178,6 +258,8 @@ export function applyKeybindOverrides(
 ): KeyBindingMap {
     let next = map;
     for (const override of overrides) {
+        const twin = shiftTwinBinding(next, override.trigger);
+        if (twin !== null) next = removeBinding(next, twin.trigger);
         next =
             override.action === UNBIND_ACTION
                 ? removeBinding(next, override.trigger)

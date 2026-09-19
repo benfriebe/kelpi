@@ -3,6 +3,7 @@ import {
     DEFAULT_KEYBINDINGS,
     actionForTrigger,
     applyKeybindOverrides,
+    displayTriggerForAction,
     canonicalKeyBindingsForPlatform,
     parseKeybindValue,
     removeAllBindings,
@@ -65,6 +66,66 @@ describe('the default map', () => {
         );
         expect(actionForTrigger(map, trigger('super+='))).toBeNull();
         expect(actionForTrigger(map, trigger('ctrl+alt+up'))).toBe('increase_terminal_font_size');
+    });
+
+    /**
+     * The two spellings of ⌘+ go together, or the unbind is a lie.
+     *
+     * ⇧⌘= IS ⌘+ on a US layout. A user who unbinds ⌘=, or who binds it back to the markdown
+     * preview's own font size to restore the pre-#175 behaviour, has said what that chord should
+     * do - and without this would still have the shifted spelling resizing every terminal on the
+     * daemon. Both directions, because either spelling may be the one they write.
+     */
+    describe('the two spellings of ⌘+ (#175)', () => {
+        const overridden = (lines: string) =>
+            applyKeybindOverrides(DEFAULT_KEYBINDINGS, parseKeybindOverrides(lines));
+
+        it('takes the shifted twin away with an unbind of the unshifted spelling', () => {
+            const map = overridden('keybind = super+==unbind');
+            expect(actionForTrigger(map, trigger('super+='))).toBeNull();
+            expect(actionForTrigger(map, trigger('shift+super+='))).toBeNull();
+            expect(triggersForAction(map, 'increase_terminal_font_size')).toEqual([]);
+        });
+
+        it('and the other way round', () => {
+            const map = overridden('keybind = shift+super+==unbind');
+            expect(actionForTrigger(map, trigger('shift+super+='))).toBeNull();
+            expect(actionForTrigger(map, trigger('super+='))).toBeNull();
+        });
+
+        it('leaves ⌘+ meaning ONE thing when ⌘= is bound back to the markdown preview', () => {
+            const map = overridden('keybind = super+==increase_markdown_font_size');
+            expect(actionForTrigger(map, trigger('super+='))).toBe('increase_markdown_font_size');
+            expect(actionForTrigger(map, trigger('shift+super+='))).toBeNull();
+        });
+
+        it('keeps both when the user spelled both out, in either order', () => {
+            const map = overridden(
+                'keybind = super+==increase_markdown_font_size\nkeybind = shift+super+==toggle_zoom'
+            );
+            expect(actionForTrigger(map, trigger('super+='))).toBe('increase_markdown_font_size');
+            expect(actionForTrigger(map, trigger('shift+super+='))).toBe('toggle_zoom');
+        });
+
+        /*
+         * The rule is a pair of SPELLINGS, never a pair of shortcuts: `focus_next_pane` has ⌘]
+         * and ⌥⌘→, which are two different chords a user chose between, and unbinding one must
+         * leave the other exactly where it was.
+         */
+        it('does not touch an action whose two triggers are genuinely different shortcuts', () => {
+            const map = overridden('keybind = super+]=unbind');
+            expect(actionForTrigger(map, trigger('super+]'))).toBeNull();
+            expect(actionForTrigger(map, trigger('alt+super+right'))).toBe('focus_next_pane');
+        });
+
+        // The hint names the spelling on the keycap, while the map still holds both.
+        it('hints the unshifted spelling and leaves every other action’s hint alone', () => {
+            expect(keyTriggerConfigString(displayTriggerForAction(DEFAULT_KEYBINDINGS, 'increase_terminal_font_size')!))
+                .toBe('super+=');
+            expect(keyTriggerConfigString(displayTriggerForAction(DEFAULT_KEYBINDINGS, 'focus_next_pane')!))
+                .toBe('alt+super+right');
+            expect(displayTriggerForAction(DEFAULT_KEYBINDINGS, 'open_diff')).toBeNull();
+        });
     });
 
     // #82: Ghostty's macOS natural-text-editing set, matched exactly (Config.zig:7315-7334).

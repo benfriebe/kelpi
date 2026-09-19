@@ -20,15 +20,20 @@
  *   3. **`stty size` inside the shell**: the process's own answer, through a real SIGWINCH. A
  *      bigger cell in the same box is fewer columns, and nothing but a real reflow produces it;
  *   4. **the other pane**: a second terminal that was never focused and never pressed. Its cell
- *      grows too, which is what "daemon-wide" means and what a per-pane or per-viewer
- *      implementation would fail;
- *   5. **the Appearance row**: the slider the setting belongs to, showing the same number.
+ *      grows too, which rules out a PER-PANE implementation. It does not rule out a per-viewer
+ *      one, because it is in the same window;
+ *   5. **a second client**: a raw WebSocket client of its own, handshaking with the daemon after
+ *      the press and reading `welcome.settings.appearance.fontSize`. THIS is what rules out a
+ *      per-viewer implementation, because it is a different client with no shared state;
+ *   6. **the Appearance row**: the slider the setting belongs to, showing the same number.
  *
- * There is no `kelpi settings` read in the CLI (the CLI has no settings verbs at all), so item 1
- * is the daemon's own store for this key and item 4 is the second reader.
+ * The CLI has no settings verbs at all, so there is no `kelpi settings` to read: items 1 and 5
+ * are the daemon's own answer, once as the file it writes and once as the handshake it serves.
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
+import { PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = [
     'packages/core/src/config/actions.ts',
@@ -38,6 +43,7 @@ export const covers = [
     'packages/client/src/settings/sections.ts',
     'packages/client/src/settings/catalog.ts',
     'packages/client/src/chrome/keys.ts',
+    'packages/client/src/app/text-size.ts',
     'packages/client/src/App.tsx',
     'packages/shell/src/menu.ts'
 ];
@@ -47,18 +53,64 @@ const TAG = Math.random().toString(36).slice(2, 7).toUpperCase();
 const DEFAULT_SIZE = 13;
 const MIN_SIZE = 8;
 
-export default async function ({ page, cli, sandbox, rec, d, sleep }) {
-    const originalGhostty = fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8');
+export default async function ({ page, harness, cli, sandbox, rec, d, sleep }) {
+    /*
+     * Read INSIDE nothing yet, but tolerant of an absent file, and restored the same way.
+     *
+     * `makeSandbox` always writes one, so absence is not this lane's state - but `--attach` runs
+     * against a developer's own instance, and a throw HERE would land before the try below and
+     * so before anything could put the file back. Null means "there was no file": the finally
+     * then deletes whatever the scenario's own writes created rather than inventing content.
+     */
+    const readGhostty = () => (fs.existsSync(sandbox.ghosttyConfigPath) ? fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8') : null);
+    const originalGhostty = readGhostty();
     const startingWorkspaces = JSON.parse(await cli.ok(['workspace', 'list', '--json']));
     const startingWorkspace = startingWorkspaces.find((workspace) => workspace.is_active === true)?.id ?? null;
     const initialWorkspaceIDs = new Set(startingWorkspaces.map((workspace) => workspace.id));
 
     /** The daemon's own answer: the `font-size` line in the file it writes, or null for absent. */
     const configuredSize = () => {
-        const match = /^[ \t]*font-size[ \t]*=[ \t]*([\d.]+)[ \t]*$/m.exec(
-            fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8')
-        );
+        const match = /^[ \t]*font-size[ \t]*=[ \t]*([\d.]+)[ \t]*$/m.exec(readGhostty() ?? '');
         return match === null ? null : Number(match[1]);
+    };
+
+    /**
+     * What a SECOND client is told the terminal font size is, straight from the handshake.
+     *
+     * The instrument that makes "daemon-wide" mean something. A second pane in this window would
+     * grow under a per-viewer implementation too; a separate WebSocket client sharing no state
+     * with the page, asking the daemon cold, would not. `welcome` carries `settings` ahead of the
+     * first snapshot (`client/src/state/bridge.ts`), which is all this needs, so the socket is
+     * opened and closed inside one call and leaves nothing attached.
+     */
+    const secondClientSize = async () => {
+        const token = fs.readFileSync(path.join(sandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
+        const socket = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+        try {
+            return await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('the second client never got a welcome')), 10_000);
+                socket.addEventListener('open', () =>
+                    socket.send(
+                        JSON.stringify({
+                            type: 'hello',
+                            protocolVersion: PROTOCOL_VERSION,
+                            token,
+                            client: { kind: 'browser', name: 'kelpi-text-size-reader' }
+                        })
+                    )
+                );
+                socket.addEventListener('message', ({ data }) => {
+                    if (typeof data !== 'string') return;
+                    const message = JSON.parse(data);
+                    if (message.type !== 'welcome') return;
+                    clearTimeout(timeout);
+                    resolve(message.settings?.appearance?.fontSize ?? null);
+                });
+                socket.addEventListener('error', (error) => { clearTimeout(timeout); reject(error); }, { once: true });
+            });
+        } finally {
+            try { socket.close(); } catch { /* already gone */ }
+        }
     };
     const sizeSettlesAt = async (want, ceilingMs = 8_000) =>
         await d.settle(() => configuredSize() === want, { ceilingMs, intervalMs: 60 });
@@ -174,12 +226,48 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             grewElsewhere,
             `${String(baselineOther.height)}px → ${String((await readCell(other))?.height ?? 0)}px`
         );
+        const seenElsewhere = await secondClientSize();
+        rec.check(
+            'a SECOND client, handshaking cold, is told the same size: the setting is the daemon’s, not this viewer’s',
+            seenElsewhere === DEFAULT_SIZE + 1,
+            `welcome.settings.appearance.fontSize = ${String(seenElsewhere)}`
+        );
         await sleep(600);
         const grownShell = await shellSize(first, 'the focused pane after ⌘+');
         rec.check(
             'the process inside the pane was told about it: `stty size` reports fewer columns',
             grownShell !== null && baselineShell !== null && grownShell.cols < baselineShell.cols,
             `${String(baselineShell?.cols)} cols → ${String(grownShell?.cols)} cols (rows ${String(baselineShell?.rows)} → ${String(grownShell?.rows)})`
+        );
+
+        /*
+         * The View menu, which is the other half of the same claim.
+         *
+         * The three rows SHOW the live chord and do not register it (`shell/src/menu.ts` ▸
+         * TEXT_SIZE_ROWS), and Electron's typings call `registerAccelerator` a Linux/Windows
+         * flag, so whether macOS honours it is not something a unit test can answer. The press
+         * above is the answer: had the accelerator been registered, ⌘= would have stepped the
+         * size through the menu relay AS WELL as through the dispatcher and the config would
+         * read 15, not 14. Reading the menu here is what turns that into a stated claim rather
+         * than a coincidence nobody would notice if it broke.
+         */
+        const viewRows = (await harness.menu()).items.find((item) => item.label === 'View')?.submenu ?? [];
+        const menuRow = (label) => viewRows.find((item) => item.label === label) ?? null;
+        rec.check(
+            'the View menu carries the three rows, each showing the live chord',
+            menuRow('Increase Terminal Text Size')?.accelerator === 'CommandOrControl+=' &&
+                menuRow('Decrease Terminal Text Size')?.accelerator === 'CommandOrControl+-' &&
+                menuRow('Reset Terminal Text Size')?.accelerator === 'CommandOrControl+0',
+            JSON.stringify(
+                ['Increase', 'Decrease', 'Reset'].map(
+                    (which) => menuRow(`${which} Terminal Text Size`)?.accelerator ?? null
+                )
+            )
+        );
+        rec.check(
+            'and showing it did not take it: one ⌘+ is one step, so the accelerator is not registered',
+            configuredSize() === DEFAULT_SIZE + 1,
+            `after a single press the daemon says ${String(configuredSize())}; a registered accelerator would have made it ${String(DEFAULT_SIZE + 2)}`
         );
 
         // ── ⌘- ───────────────────────────────────────────────────────────────────────
@@ -214,6 +302,15 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             `the ghostty config says ${String(configuredSize())}`
         );
 
+        // The keypad is the same binding, not a second one (`chrome/keys.ts` aliases the codes),
+        // so ⌘ and the keypad's `+` step once more without anything else being bound.
+        await press('NumpadAdd', '+');
+        rec.check(
+            `⌘ and the keypad + step it too (${String(DEFAULT_SIZE + 6)})`,
+            await sizeSettlesAt(DEFAULT_SIZE + 6, 12_000),
+            `the ghostty config says ${String(configuredSize())}`
+        );
+
         await press('Digit0', '0');
         rec.check(
             `⌘0 put it back to the shipped default (${String(DEFAULT_SIZE)})`,
@@ -222,7 +319,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         );
 
         // A bound is a no-op, not an error: nothing written, and no toast to read.
-        const beforeFloor = fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8');
+        const beforeFloor = readGhostty();
         for (let repeat = 0; repeat < DEFAULT_SIZE - MIN_SIZE + 3; repeat += 1) await press('Minus', '-');
         await d.settle(() => configuredSize() === MIN_SIZE, { ceilingMs: 12_000, intervalMs: 60 });
         await sleep(800);
@@ -230,7 +327,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         rec.check(
             `⌘- stops at the row's own minimum (${String(MIN_SIZE)}) and raises nothing`,
             configuredSize() === MIN_SIZE && !/font|size/i.test(toast),
-            `config ${String(configuredSize())} · toasts ${JSON.stringify(toast.slice(0, 200))} · was ${JSON.stringify(beforeFloor.slice(0, 80))}`
+            `config ${String(configuredSize())} · toasts ${JSON.stringify(toast.slice(0, 200))} · was ${JSON.stringify((beforeFloor ?? '').slice(0, 80))}`
         );
         await press('Digit0', '0');
         rec.check('⌘0 comes back from the floor too', await sizeSettlesAt(DEFAULT_SIZE, 12_000), String(configuredSize()));
@@ -282,14 +379,14 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
             `document.activeElement?.getAttribute('data-testid') === 'sidebar-filter'`
         );
         rec.check('the sidebar filter has the caret', focusedFilter === true);
-        const beforeTyping = fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8');
+        const beforeTyping = readGhostty();
         await press('Minus', '-');
         await press('Equal', '=');
         await press('Digit0', '0');
         await sleep(1_200);
         rec.check(
             'the three chords write nothing while a chrome text field owns the keyboard',
-            fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8') === beforeTyping,
+            readGhostty() === beforeTyping,
             `config ${String(configuredSize())}, was ${String(DEFAULT_SIZE + 1)}`
         );
         await page.eval(`document.querySelector('[data-testid="sidebar-filter"]')?.blur()`);
@@ -308,8 +405,9 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
          * measures panes (#205 ▸ cleanup discipline). The daemon watches the file, so the write
          * is also what puts the running panes back.
          */
-        fs.writeFileSync(sandbox.ghosttyConfigPath, originalGhostty);
-        await d.settle(() => fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8') === originalGhostty, { ceilingMs: 3_000 });
+        if (originalGhostty === null) fs.rmSync(sandbox.ghosttyConfigPath, { force: true });
+        else fs.writeFileSync(sandbox.ghosttyConfigPath, originalGhostty);
+        await d.settle(() => readGhostty() === originalGhostty, { ceilingMs: 3_000 });
         await sleep(600);
         if (await page.eval(`document.querySelector('${d.PAGE.settingsPanel}') !== null`)) {
             await page.click('[data-testid="settings-close"]').catch(() => {});

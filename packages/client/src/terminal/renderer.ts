@@ -482,6 +482,15 @@ export interface ResolvedRendererOptions {
  * tofu boxes, because no system monospace on macOS carries Powerline or Nerd Font glyphs.
  */
 export const DEFAULT_FONT_FAMILY = TERMINAL_FONT_FALLBACKS;
+/**
+ * What the engine renders when the daemon's `font-size` is null.
+ *
+ * `SETTINGS_TERMINAL_FONT_SIZE_DEFAULT` (`settings/sections.ts`) is the same number and must
+ * stay so: it is what Settings ▸ Appearance shows for an absent key and what ⌘0 writes (#175),
+ * so a difference would put the slider's claim and the pane's pixels out of step. The settings
+ * catalog is free of React and of this layer by design (it is imported by daemon-side tests), so
+ * the number is restated there and pinned against drift by `settings/text-size.test.ts`.
+ */
 export const DEFAULT_FONT_SIZE = 13;
 /** xterm counts lines. */
 export const DEFAULT_SCROLLBACK_LINES = 10_000;

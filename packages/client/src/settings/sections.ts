@@ -366,7 +366,17 @@ export const settingsWholeLabel = (value: number): string => String(Math.round(v
  */
 export const SETTINGS_TERMINAL_PADDING_DEFAULT = 4;
 
-/** The terminal font size a ghostty config that says nothing falls back to (`AppearanceTab`'s 13). */
+/**
+ * The terminal font size a ghostty config that says nothing falls back to (`AppearanceTab`'s 13).
+ *
+ * `DEFAULT_FONT_SIZE` in `terminal/renderer.ts` is the same number, and it has to be: this is
+ * what the row shows and what ⌘0 writes (#175), that is what the ENGINE renders when the value
+ * arrives null, and a person who pressed ⌘0 must not be looking at a different size from the one
+ * the slider claims. Restated rather than imported for the reason `SETTINGS_TERMINAL_PADDING_DEFAULT`
+ * below is - this module is free of React and of the terminal layer, and is imported by daemon-side
+ * tests - and pinned against drift by `text-size.test.ts`, the way `SETTINGS_DEFAULT_TCP_PORT` is
+ * pinned in `sections.test.ts`.
+ */
 export const SETTINGS_TERMINAL_FONT_SIZE_DEFAULT = 13;
 
 /**

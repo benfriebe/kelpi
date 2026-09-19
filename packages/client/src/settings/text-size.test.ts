@@ -27,6 +27,7 @@ import {
     type SettingsNumberFieldDescriptor
 } from './contract';
 import { SETTINGS_TERMINAL_FONT_SIZE_DEFAULT, SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID } from './sections';
+import { DEFAULT_FONT_SIZE } from '../terminal/renderer';
 import { createSettingsSurface, type SettingsSurface } from './surface';
 import type { SettingsActions } from './types';
 
@@ -80,6 +81,28 @@ function harness(initial: Appearance = {}) {
 
 afterEach(() => {
     for (const created of surfaces.splice(0)) created.dispose();
+});
+
+// ── the two shipped 13s ─────────────────────────────────────────────────────────────
+
+/**
+ * One number, written twice, pinned here.
+ *
+ * `SETTINGS_TERMINAL_FONT_SIZE_DEFAULT` is what the Appearance row shows when the ghostty config
+ * says nothing and what ⌘0 writes; `DEFAULT_FONT_SIZE` (`terminal/renderer.ts`) is what the
+ * ENGINE renders when the value arrives null. If they drift, a person who pressed ⌘0 reads one
+ * size on the slider and sees another in the pane, and nothing else in the app would say so.
+ *
+ * Restated rather than imported one from the other because the two modules are in different
+ * layers on purpose: the settings catalog is free of React and of the terminal engine (it is
+ * imported by daemon-side tests), and the engine does not depend on the settings catalog. That is
+ * the same arrangement `SETTINGS_DEFAULT_TCP_PORT` has with `GeneralTab`, pinned the same way in
+ * `sections.test.ts`.
+ */
+describe('the shipped terminal font size', () => {
+    it('is the same number in the settings catalog and in the engine', () => {
+        expect(SETTINGS_TERMINAL_FONT_SIZE_DEFAULT).toBe(DEFAULT_FONT_SIZE);
+    });
 });
 
 // ── the arithmetic, with no surface at all ──────────────────────────────────────────

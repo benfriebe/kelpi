@@ -12,6 +12,7 @@ import {
     COMMAND_PALETTE_LABEL,
     DEBUG_MENU_LABEL,
     DEFAULT_MENU_ACCELERATORS,
+    MENU_ACCELERATOR_ACTIONS,
     DESELECT_ALL_WORKSPACES_COMMAND,
     DESELECT_ALL_WORKSPACES_LABEL,
     DESELECT_ALL_WORKSPACES_MENU_ID,
@@ -166,35 +167,52 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
     });
 
     /**
-     * #175: the three text-size rows relay like every other product row and carry NO
-     * accelerator, which is the decision `menu.ts` ▸ `TEXT_SIZE_ROWS` argues.
+     * #175 - the three text-size rows SHOW their chord and do not register it.
      *
-     * Their chords are in the binding map, and the sweep below ("leaves no chord the binding map
-     * claims to a native menu default") is why a glyph here would not be free: a claimed chord on
-     * a menu row needs the app's own dedup, because whether a macOS accelerator also reaches the
-     * renderer is not observable from inside the process (N14, `client/app/shell-close.ts`). The
-     * chord is shown - and rebound - in Settings ▸ Keybindings and the Help overlay instead.
+     * `registerAccelerator: false` is the whole of it: the glyph is there, because a person opens
+     * View to find out what the shortcut is, and the keystroke stays the client dispatcher's, so
+     * one press is one step and no N14-style coalescing bridge is owed. The chord is the LIVE one
+     * (#47), in the unshifted spelling, and it goes when the map does.
      */
-    it('relays the three terminal text-size rows and gives them no accelerator', () => {
+    it('shows the live chord on the three text-size rows without registering it', () => {
         const sendMenuRequest = vi.fn(() => true);
-        const template = viewMenuTemplate({ sendMenuRequest });
+        const template = viewMenuTemplate({ sendMenuRequest, accelerators: DEFAULT_MENU_ACCELERATORS });
         const row = (label: string) => template.find((item) => item.label === label);
-        for (const [label, command] of [
-            [INCREASE_TEXT_SIZE_LABEL, INCREASE_TEXT_SIZE_COMMAND],
-            [DECREASE_TEXT_SIZE_LABEL, DECREASE_TEXT_SIZE_COMMAND],
-            [RESET_TEXT_SIZE_LABEL, RESET_TEXT_SIZE_COMMAND]
+        for (const [label, command, accelerator] of [
+            [INCREASE_TEXT_SIZE_LABEL, INCREASE_TEXT_SIZE_COMMAND, 'CommandOrControl+='],
+            [DECREASE_TEXT_SIZE_LABEL, DECREASE_TEXT_SIZE_COMMAND, 'CommandOrControl+-'],
+            [RESET_TEXT_SIZE_LABEL, RESET_TEXT_SIZE_COMMAND, 'CommandOrControl+0']
         ] as const) {
-            expect(row(label)?.accelerator).toBeUndefined();
+            // The chord is DISPLAYED…
+            expect(row(label)?.accelerator).toBe(accelerator);
+            // …and explicitly not taken from the page, which is what keeps one press one step.
+            expect(row(label)?.registerAccelerator).toBe(false);
             (row(label)?.click as (() => void) | undefined)?.();
             expect(sendMenuRequest).toHaveBeenCalledWith(command);
         }
-        // A rebind cannot move them either, because there is nothing to move: a map that spends
-        // ⌘= on something else leaves these rows exactly as they are.
-        const rebound = viewMenuTemplate({
-            sendMenuRequest: () => true,
-            accelerators: menuAccelerators(['super+==unbind'])
-        });
-        expect(rebound.find((item) => item.label === INCREASE_TEXT_SIZE_LABEL)?.accelerator).toBeUndefined();
+    });
+
+    /*
+     * ⇧⌘= sorts before ⌘= by config string, and ⌘= is the one on the keycap. The preference lives
+     * in core (`displayTriggerForAction`) so this row and the client's Help overlay cannot show
+     * different halves of the same pair.
+     */
+    it('prefers the unshifted spelling of ⌘+ over its shifted twin', () => {
+        expect(DEFAULT_MENU_ACCELERATORS['increase_terminal_font_size']).toBe('CommandOrControl+=');
+    });
+
+    it('moves the three chords with a rebind and drops them on an unbind', () => {
+        const rebound = menuAccelerators(['super+==unbind', 'ctrl+alt+up=increase_terminal_font_size']);
+        expect(rebound['increase_terminal_font_size']).toBe('Control+Alt+Up');
+        const gone = menuAccelerators(['super+0=unbind']);
+        expect(gone['reset_terminal_font_size']).toBeUndefined();
+        const row = viewMenuTemplate({ sendMenuRequest: () => true, accelerators: gone }).find(
+            (item) => item.label === RESET_TEXT_SIZE_LABEL
+        );
+        expect(row?.accelerator).toBeUndefined();
+        expect(row?.registerAccelerator).toBe(false);
+        // A moved text-size chord has to rebuild the menu, or the glyph goes stale (#47).
+        expect(sameMenuAccelerators(DEFAULT_MENU_ACCELERATORS, gone)).toBe(false);
     });
 
     /**
@@ -743,13 +761,52 @@ describe('File ▸ Close (N14)', () => {
         for (const row of rowsWithAccelerators) {
             const accelerator = row.accelerator as string;
             if (![...claimedTriggers].some((trigger) => sameChord(accelerator, trigger))) continue;
-            // ⌘W was the one that broke this rule: `role: 'close'`, no click, and the page's
-            // `close_pane` racing it.
-            expect({ accelerator, role: row.role, hasClick: typeof row.click === 'function' }).toEqual({
+            /*
+             * Two ways a row may carry a chord the map claims, and both are named here rather
+             * than left to the reader:
+             *
+             *   - it does not REGISTER it (`registerAccelerator: false`): the glyph is shown and
+             *     the keystroke never leaves the page. #175's three text-size rows, and the
+             *     safest of the two because nothing can race anything;
+             *   - it is a CLICK row: it runs the app's own code, in the app's own order, and owes
+             *     whatever dedup that needs. File ▸ Close is the one, with N14's bridge behind it.
+             *
+             * What must never happen again is the third shape: a `role`, whose accelerator is
+             * implicit and whose behaviour is Electron's. ⌘W was exactly that.
+             */
+            const shape = {
+                accelerator,
+                role: row.role,
+                registers: row.registerAccelerator !== false,
+                hasClick: typeof row.click === 'function'
+            };
+            expect(shape.role).toBeUndefined();
+            expect(shape.registers === false || shape.hasClick).toBe(true);
+            expect({ ...shape, role: undefined }).toEqual({
                 accelerator,
                 role: undefined,
+                registers: shape.registers,
                 hasClick: true
             });
+        }
+    });
+
+    /*
+     * #175's rows are the first in the menu to use the non-registering shape, so the sweep above
+     * would pass them on the click-row clause alone. This says the stronger thing out loud.
+     */
+    it('lets the text-size rows carry a claimed chord because they do not register it', () => {
+        const rows = viewMenuTemplate({ sendMenuRequest: () => true, accelerators: DEFAULT_MENU_ACCELERATORS });
+        const claimed = rows.filter(
+            (item) => typeof item.accelerator === 'string' && item.registerAccelerator === false
+        );
+        expect(claimed.map((item) => item.label)).toEqual([
+            INCREASE_TEXT_SIZE_LABEL,
+            DECREASE_TEXT_SIZE_LABEL,
+            RESET_TEXT_SIZE_LABEL
+        ]);
+        for (const item of claimed) {
+            expect([...claimedTriggers].some((trigger) => sameChord(item.accelerator as string, trigger))).toBe(true);
         }
     });
 
@@ -941,11 +998,23 @@ describe('menu accelerators follow the binding map (#47, §7.1)', () => {
             ),
             toggle_sidebar: TOGGLE_SIDEBAR_ACCELERATOR,
             toggle_inspector: TOGGLE_INSPECTOR_ACCELERATOR,
-            command_palette: COMMAND_PALETTE_ACCELERATOR
+            command_palette: COMMAND_PALETTE_ACCELERATOR,
+            // #175's three rows are the only entries here that are NOT menu-bar actions: they
+            // display a chord they do not register, so the derivation reaches them while the
+            // dispatch layer does not (`MENU_ACCELERATOR_ACTIONS`).
+            increase_terminal_font_size: 'CommandOrControl+=',
+            decrease_terminal_font_size: 'CommandOrControl+-',
+            reset_terminal_font_size: 'CommandOrControl+0'
         });
         expect(DEFAULT_MENU_ACCELERATORS).toEqual(defaults);
-        // Every one of the 16 menu-bar actions ships with a displayable chord (§4).
+        // Every one of the 16 menu-bar actions ships with a displayable chord (§4)…
         for (const action of MENU_BAR_ACTIONS) expect(defaults[action]).toBeDefined();
+        // …and the three text-size actions are emphatically not among them, because that set is
+        // the one that still fires while a chrome text field has the caret.
+        for (const action of ['increase_terminal_font_size', 'decrease_terminal_font_size', 'reset_terminal_font_size'] as const) {
+            expect(MENU_BAR_ACTIONS.has(action)).toBe(false);
+            expect(MENU_ACCELERATOR_ACTIONS).toContain(action);
+        }
     });
 
     it('moves a rebound action to its FIRST trigger in configString order', () => {

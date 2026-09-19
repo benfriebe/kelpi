@@ -94,6 +94,13 @@ describe('code → keyCode identity', () => {
         expect(CODE_TO_KEY_CODE.get('Escape')).toBe(53);
         // `code` is PHYSICAL: a shifted `=` is still Equal, so ⌘⇧= finds the ⌘= binding's key.
         expect(CODE_TO_KEY_CODE.get('Equal')).toBe(24);
+        // …and the keypad is aliased onto the character keys it types (#175), exactly as the
+        // keypad's Return has always been aliased onto Enter's code. One binding, either key, so
+        // an `unbind` of `super+=` takes the keypad with it rather than leaving it live.
+        expect(CODE_TO_KEY_CODE.get('NumpadEnter')).toBe(CODE_TO_KEY_CODE.get('Enter'));
+        expect(CODE_TO_KEY_CODE.get('NumpadAdd')).toBe(CODE_TO_KEY_CODE.get('Equal'));
+        expect(CODE_TO_KEY_CODE.get('NumpadSubtract')).toBe(CODE_TO_KEY_CODE.get('Minus'));
+        expect(CODE_TO_KEY_CODE.get('Numpad0')).toBe(CODE_TO_KEY_CODE.get('Digit0'));
         expect(CODE_TO_KEY_CODE.get('F13')).toBeUndefined();
     });
 
@@ -122,11 +129,16 @@ describe('the default binding matrix', () => {
         ['Space', { meta: true, shift: true }, 'cycle_layout'],
         ['KeyP', { meta: true }, 'command_palette'],
         ['KeyS', { meta: true, shift: true }, 'toggle_sidebar'],
-        // #175: ⌘= and ⌘⇧= (⌘+ on a US layout) are both the terminal text size now.
+        // #175: ⌘= and ⌘⇧= (⌘+ on a US layout) are both the terminal text size now, and so is
+        // the KEYPAD, aliased onto the same key codes the way NumpadEnter already is. The keypad
+        // rows carry no new binding: they resolve to the very triggers the three lines above do.
         ['Equal', { meta: true }, 'increase_terminal_font_size'],
         ['Equal', { meta: true, shift: true }, 'increase_terminal_font_size'],
         ['Minus', { meta: true }, 'decrease_terminal_font_size'],
         ['Digit0', { meta: true }, 'reset_terminal_font_size'],
+        ['NumpadAdd', { meta: true }, 'increase_terminal_font_size'],
+        ['NumpadSubtract', { meta: true }, 'decrease_terminal_font_size'],
+        ['Numpad0', { meta: true }, 'reset_terminal_font_size'],
         ['Escape', {}, 'close_search']
     ];
 
@@ -339,7 +351,8 @@ describe('conditional rules', () => {
                 ['Equal', { meta: true }],
                 ['Equal', { meta: true, shift: true }],
                 ['Minus', { meta: true }],
-                ['Digit0', { meta: true }]
+                ['Digit0', { meta: true }],
+                ['NumpadAdd', { meta: true }]
             ] as const) {
                 expect(dispatch(keyEvent(code, modifiers, host))).toBe(true);
             }
@@ -347,7 +360,8 @@ describe('conditional rules', () => {
                 'increase_terminal_font_size',
                 'increase_terminal_font_size',
                 'decrease_terminal_font_size',
-                'reset_terminal_font_size'
+                'reset_terminal_font_size',
+                'increase_terminal_font_size'
             ]);
 
             fired.length = 0;
@@ -355,10 +369,35 @@ describe('conditional rules', () => {
             expect(dispatch(keyEvent('Equal', { meta: true }, filter))).toBe(false);
             expect(dispatch(keyEvent('Minus', { meta: true }, filter))).toBe(false);
             expect(dispatch(keyEvent('Digit0', { meta: true }, filter))).toBe(false);
+            expect(dispatch(keyEvent('NumpadAdd', { meta: true }, filter))).toBe(false);
             expect(fired).toEqual([]);
         } finally {
             host.remove();
         }
+    });
+
+    /**
+     * #175 + the review's F1: `keybind = super+==unbind` has to silence ⌘+ in every spelling.
+     *
+     * Through the CLIENT's own seam, because that is what a user's config file reaches: the
+     * shifted twin goes with it (core's pairing rule) and so does the keypad (which is the same
+     * trigger, not a second binding).
+     */
+    it('an unbind of ⌘= silences the shifted spelling and the keypad with it', () => {
+        const { registry, fired } = recorder();
+        const bindings = clientKeyBindings(['super+==unbind']);
+        const dispatch = createKeyDispatcher({ bindings, actions: registry });
+        for (const [code, modifiers] of [
+            ['Equal', { meta: true }],
+            ['Equal', { meta: true, shift: true }],
+            ['NumpadAdd', { meta: true }]
+        ] as const) {
+            expect(dispatch(keyEvent(code, modifiers))).toBe(false);
+        }
+        expect(fired).toEqual([]);
+        // ⌘- and ⌘0 are untouched: the rule pairs SPELLINGS of one chord, not an action's chords.
+        expect(dispatch(keyEvent('Minus', { meta: true }))).toBe(true);
+        expect(fired).toEqual(['decrease_terminal_font_size']);
     });
 
     it('recognises the editable surfaces, and NOT a terminal canvas', () => {

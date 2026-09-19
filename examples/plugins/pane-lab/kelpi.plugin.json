@@ -1,0 +1,12 @@
+{
+  "id": "example.pane-lab",
+  "name": "Pane Lab",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "trust": "full",
+  "contributes": {
+    "views": [
+      { "id": "example.pane-lab.chrome", "title": "Pane Lab", "entry": "ui/index.html", "placements": ["pane.chrome"], "stateVersion": 1 }
+    ]
+  }
+}

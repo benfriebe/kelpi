@@ -1,5 +1,5 @@
 /** Bundled Workspaces model, view lifecycle and host binding. */
-import { activeAgentCount, type WorkspaceColor } from '@kelpi/daemon/store';
+import { workspaceAgentSummary, type WorkspaceColor } from '@kelpi/daemon/store';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { RemoteDaemonSections, type RemoteSelection } from '../app/RemoteDaemonSections';
 import type { RemoteDaemonRuntime } from '../app/remote-daemons';
@@ -64,9 +64,9 @@ export function useWorkspacesFeatureModel(state: KelpiState) {
             confirmDeleteWhenActive: state.settings.value.general.confirmWorkspaceDeleteWhenActive,
             inheritGroupID: !state.settings.value.general.inheritGroupOnNewWorkspace || workspace === null
                 ? null : selectGroupForWorkspace(state, workspace.id)?.id ?? null,
-            activeAgentCount: (workspaceID: string): number => {
+            workspaceAgentSummary: (workspaceID: string) => {
                 const target = state.daemon.state.workspaces.find(candidate => candidate.id === workspaceID);
-                return target === undefined ? 0 : activeAgentCount(target);
+                return target === undefined ? { running: 0, waiting: 0, inactive: 0, total: 0 } : workspaceAgentSummary(target);
             }
         };
     }, [state]);
@@ -135,7 +135,7 @@ export function WorkspacesFeatureView(props: WorkspacesFeatureViewProps): ReactE
         onToggleGroupCollapse={actions.setGroupCollapsed}
         onRenameWorkspace={actions.renameWorkspace}
         onDeleteWorkspace={actions.deleteWorkspace}
-        activeAgentCount={model.activeAgentCount}
+        workspaceAgentSummary={model.workspaceAgentSummary}
         confirmDeleteWhenActive={model.confirmDeleteWhenActive}
         onSuppressDeleteConfirm={props.suppressDeleteConfirm}
         onToggleWorkspaceLabel={actions.toggleWorkspaceLabel}

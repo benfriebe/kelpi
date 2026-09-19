@@ -38,7 +38,7 @@ const NEW_GROUP = 'CCCCCCCC-0000-4000-8000-000000000009';
  * state the reply is about to refer to. (Pushed as a fresh `snapshot`, not a hand-built delta: a
  * delta the client cannot apply makes it resync, which drops the in-flight command with it.)
  */
-function snapshotState(options: { group?: { id: string; name: string; members?: string[] } } = {}): JsonObject {
+function snapshotState(options: { inactive?: 'visible' | 'parked'; group?: { id: string; name: string; members?: string[] } } = {}): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'alpha', color: 'blue', now: NOW });
     store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'beta', color: 'green', now: NOW });
@@ -51,6 +51,16 @@ function snapshotState(options: { group?: { id: string; name: string; members?: 
         event: { type: 'agentStarted', agent: 'claude' },
         now: NOW
     });
+    if (options.inactive !== undefined) {
+        store.dispatch({ type: 'pane-agent-event', paneID: PANE_B, now: NOW,
+            event: { type: 'sessionStarted', sessionID: 'resumable', agent: 'codex' } });
+        store.dispatch({ type: 'pane-agent-event', paneID: PANE_B, now: NOW,
+            event: { type: 'setPaneStatus', status: 'idle' } });
+        if (options.inactive === 'parked') {
+            store.dispatch({ type: 'split-pane', workspaceID: W2, paneID: 'DDDDDDDD-0000-4000-8000-000000000004', direction: 'horizontal', now: NOW });
+            store.dispatch({ type: 'park-pane', workspaceID: W2, paneID: PANE_B });
+        }
+    }
     if (options.group !== undefined) {
         store.dispatch({
             type: 'create-group',
@@ -73,7 +83,7 @@ interface Harness {
     reply(extra: Record<string, unknown>): void;
 }
 
-function setup(): Harness {
+function setup(options: { inactive?: 'visible' | 'parked' } = {}): Harness {
     const sockets = createFakeSocketFactory();
     const store = createKelpiStore();
     const runtime = createKelpiRuntime({
@@ -88,7 +98,7 @@ function setup(): Harness {
     });
     render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} />);
     act(() => {
-        completeHandshake(sockets.last(), { state: snapshotState() });
+        completeHandshake(sockets.last(), { state: snapshotState(options) });
     });
 
     const frames = (): Record<string, unknown>[] =>
@@ -335,6 +345,17 @@ describe('Move to Group ▸ New Group… (§WS-052)', () => {
 });
 
 describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
+    it.each(['visible', 'parked'] as const)('warns before deleting an inactive %s session', (inactive) => {
+        const h = setup({ inactive });
+        fireEvent.contextMenu(row('beta'));
+        fireEvent.click(screen.getByText('Delete'));
+        const dialog = screen.getByTestId('confirm-dialog');
+        expect(dialog.textContent).toContain('This workspace has 1 inactive agent. Deleting it will close it.');
+        expect(h.lastCommand('workspace-delete')).toBeUndefined();
+        fireEvent.click(within(dialog).getByText('Cancel'));
+        expect(h.lastCommand('workspace-delete')).toBeUndefined();
+    });
+
     it('names the running agent before deleting a busy workspace', async () => {
         const h = setup();
         fireEvent.contextMenu(row('beta'));
@@ -342,7 +363,7 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
 
         const dialog = screen.getByTestId('confirm-dialog');
         expect(dialog.getAttribute('data-active-agents')).toBe('1');
-        expect(dialog.textContent).toContain('This workspace has 1 active agent');
+        expect(dialog.textContent).toContain('This workspace has 1 running agent');
         // Nothing has gone out yet: the gate is a gate, not a notice.
         expect(h.lastCommand('workspace-delete')).toBeUndefined();
 
@@ -363,7 +384,7 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
         fireEvent.click(screen.getByText('Delete'));
         const dialog = screen.getByTestId('confirm-dialog');
         expect(dialog.getAttribute('data-active-agents')).toBe('0');
-        expect(dialog.textContent).not.toContain('active agent');
+        expect(dialog.textContent).not.toContain('This workspace has');
     });
 
     /**
@@ -399,7 +420,7 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
         broadcast(false);
         const suppressed = openDelete();
         expect(suppressed.getAttribute('data-active-agents')).toBe('0');
-        expect(suppressed.textContent).not.toContain('active agent');
+        expect(suppressed.textContent).not.toContain('This workspace has');
         expect(within(suppressed).queryByTestId('confirm-suppress')).toBeNull();
         fireEvent.click(within(suppressed).getByTestId('confirm-cancel'));
 
@@ -407,7 +428,7 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
         broadcast(true);
         const restored = openDelete();
         expect(restored.getAttribute('data-active-agents')).toBe('1');
-        expect(restored.textContent).toContain('This workspace has 1 active agent');
+        expect(restored.textContent).toContain('This workspace has 1 running agent');
         expect(within(restored).getByTestId('confirm-suppress')).toBeTruthy();
         fireEvent.click(within(restored).getByTestId('confirm-cancel'));
 

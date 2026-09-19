@@ -45,6 +45,7 @@
  * `KELPI_COMPAT_CLI=/path/to/kelpi` points it at another copy.
  */
 
+import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -1471,6 +1472,7 @@ async function main() {
         process.stdout.write(`skipped: the Swift kelpi CLI is not installed at ${KELPI_CLI}\n`);
         return;
     }
+    await holdDesktopTestSlot();
     await ensureBuilds();
 
     const logs = [];

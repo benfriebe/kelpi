@@ -33,6 +33,7 @@
  * Exit code 0 = every check passed. Any failure prints the captured logs and exits 1.
  */
 
+import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -1122,6 +1123,7 @@ async function promptWidthPhase() {
 // ── main ────────────────────────────────────────────────────────────────────────────
 
 async function main() {
+    await holdDesktopTestSlot();
     await ensureBuilds();
 
     const logs = [];

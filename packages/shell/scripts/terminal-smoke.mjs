@@ -32,6 +32,7 @@
  * Exit code 0 = every check passed. Requires zsh (macOS has it) and a GUI session.
  */
 
+import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -477,6 +478,7 @@ async function ensureBuilds() {
 }
 
 async function main() {
+    await holdDesktopTestSlot();
     await ensureBuilds();
     if (options.outDir !== null) fs.mkdirSync(options.outDir, { recursive: true });
 

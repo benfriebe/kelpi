@@ -12,8 +12,8 @@
  *
  * `--window hidden | offscreen | onscreen` opens the harness functional lane. Unset, nothing about
  * the run changes: the shell builds the window it always built. `hidden` gives the machine's owner
- * their screen back and lets several runs overlap (two, three, four at once, each in its own
- * sandbox) at the cost of the screenshots, which come back blank; `rec.shot` says so in the note
+ * their screen back at the cost of the screenshots, which come back blank; runs serialize
+ * across worktrees because the screen and clipboard are shared. `rec.shot` says so in the note
  * it writes. Assertions are unaffected: the DOM, CDP input, the harness channel, the CLI and the
  * app's own activity signalling all behave the same. Never use it for a check that measures pixels.
  * See ui-audit/README.md for the measurements and for what `onscreen`/`offscreen` cost.
@@ -59,6 +59,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { holdDesktopTestSlot } from './ui-audit/lib/desktop-slot.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -100,8 +101,8 @@ if (placement !== undefined && !driver.WINDOW_PLACEMENTS.includes(placement)) {
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 let outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios', stamp);
-// Runs in parallel are the point of the hidden lane, and two started inside the same millisecond
-// share a stamp: without this they would write their screenshots and their results.json into one
+// Two runners queued inside the same millisecond share a stamp: without this they would write
+// their screenshots and their results.json into one
 // directory and the second would win. The pid is appended only when it is actually needed, so a
 // serial run's path shape is unchanged.
 if (value('--out') === undefined && fs.existsSync(outDir)) outDir = `${outDir}-${String(process.pid)}`;
@@ -110,6 +111,9 @@ const log = (line) => console.log(`[scenario] ${line}`);
 
 // ── the instance ────────────────────────────────────────────────────────────────────
 
+// Across worktrees and visible audits too: a hidden window still uses the real clipboard.
+// Hold through teardown (or --keep); dedicated scenario instances belong to this same run.
+await holdDesktopTestSlot();
 let t;
 const attachPort = value('--attach');
 if (attachPort !== undefined) {

@@ -44,6 +44,7 @@
  * Exit code 0 = every check passed.
  */
 
+import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -976,6 +977,7 @@ async function main() {
         return;
     }
 
+    await holdDesktopTestSlot();
     await ensureBuilds();
     await packageApp();
 

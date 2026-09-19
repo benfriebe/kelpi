@@ -116,7 +116,8 @@ subsequent navigation or window disposal. It does not recreate the destination p
 
 Chrome belongs to the primary daemon and viewing window. An embedded pane owned by a secondary
 daemon receives an unavailable result instead of reading or changing another daemon's chrome.
-A direct browser attachment to that daemon has its own primary chrome and preferences.
+Navigation has a separate per-host trust control in Settings ▸ Remote; that grant does not
+change chrome ownership. A direct browser attachment to that daemon has its own primary chrome and preferences.
 Backend/CLI calls cannot select an arbitrary attached window through this browser-only API.
 
 `remoteWorkspaceSelected` reports when the primary grid displays a secondary daemon. Primary

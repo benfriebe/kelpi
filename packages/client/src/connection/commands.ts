@@ -1498,12 +1498,13 @@ export class CommandClient {
 
     /** `set-remote-daemons` — the WHOLE §1.7 registry, `setProfiles`-style full replacement. */
     setRemoteDaemons(
-        input: { daemons: readonly { name: string; url: string }[] },
+        input: { daemons: readonly { name: string; url: string; trustedForNavigation?: boolean }[] },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('set-remote-daemons', {
-                daemons: input.daemons.map((daemon) => ({ name: daemon.name, url: daemon.url }))
+                daemons: input.daemons.map((daemon) => ({ name: daemon.name, url: daemon.url,
+                    ...(daemon.trustedForNavigation !== undefined ? { trustedForNavigation: daemon.trustedForNavigation } : {}) }))
             }),
             options ?? {}
         );

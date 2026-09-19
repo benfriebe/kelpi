@@ -533,3 +533,20 @@ describe('set-remote-daemons (§1.7)', () => {
         expect(f.read() ?? '').toContain('remote-daemon = werk:');
     });
 });
+
+it('round-trips remote navigation trust through settings RPC and rejects malformed flags atomically', () => {
+    const f = fixture({ config: PRESERVED });
+    const client = f.connect();
+    const daemon = { name: 'werk', url: 'https://werk/?token=kd_a' };
+    const save = (trustedForNavigation: unknown) => client.send({ command: 'set-remote-daemons',
+        daemons: [{ ...daemon, trustedForNavigation }] } as never);
+    expect(settingsOf(save(true)).remoteDaemons).toEqual([{ ...daemon, trustedForNavigation: true }]);
+    expect(f.read()).toContain('remote-daemon-navigation-trust = werk:https://werk/?token=kd_a');
+    const before = f.read();
+    for (const bad of ['true', 1, null, {}]) {
+        expect(save(bad)).toMatchObject({ ok: false });
+        expect(f.read()).toBe(before);
+    }
+    expect(settingsOf(save(false)).remoteDaemons).toEqual([daemon]);
+    expect(f.read()).not.toContain('remote-daemon-navigation-trust');
+});

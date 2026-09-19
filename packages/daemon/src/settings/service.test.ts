@@ -695,3 +695,15 @@ describe('setRemoteDaemons (§1.7)', () => {
             .toEqual([{ name: 'werk', url: 'https://w.example/?token=k' }]);
     });
 });
+
+it('restores explicit remote navigation trust on a fresh settings service and persists revocation', () => {
+    const f = fixture();
+    const daemon = { name: 'werk', url: 'https://werk/?token=one', trustedForNavigation: true };
+    f.service.setRemoteDaemons([daemon]);
+    const reopened = fixture({ config: f.read()! });
+    expect(reopened.service.snapshot.remoteDaemons).toEqual([daemon]);
+    reopened.service.setRemoteDaemons([{ ...daemon, trustedForNavigation: false }]);
+    expect(fixture({ config: reopened.read()! }).service.snapshot.remoteDaemons).toEqual([{ name: daemon.name, url: daemon.url }]);
+    expect(() => f.service.setRemoteDaemons([{ ...daemon, trustedForNavigation: 'true' } as never])).toThrow('navigation trust must be a boolean');
+    expect(f.service.snapshot.remoteDaemons).toEqual([daemon]);
+});

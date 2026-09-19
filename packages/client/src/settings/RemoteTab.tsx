@@ -47,6 +47,8 @@ export interface RemoteTabActions {
 export interface RemoteDaemonRow {
     readonly name: string;
     readonly url: string;
+    /** Explicit permission for this host’s plugin views to read/watch and select window navigation. */
+    readonly trustedForNavigation?: boolean;
 }
 
 interface DeviceRow {
@@ -731,7 +733,7 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
             <SettingsSection
                 title="Daemons"
                 testID="remote-daemons-registry"
-                hint="Other kelpi daemons this window can attach to. Paste a pairing URL from that machine's own Remote tab; its workspaces then appear as a section in the sidebar, and new groups can be created on it."
+                hint="Trust lets a host’s plugins read this window’s hosts and workspaces and switch its workspace selection. It does not grant access to window chrome or prompts. Other kelpi daemons this window can attach to: paste a pairing URL from that machine's own Remote tab; its workspaces then appear as a section in the sidebar, and new groups can be created on it."
             >
                 {configuredDaemons.length === 0 ? (
                     <SettingsDetail>
@@ -745,6 +747,17 @@ export function RemoteTab(props: RemoteTabProps): ReactElement {
                         detail={daemon.url.replace(/([?&]token=)[^&]+/, '$1…')}
                         testID={`remote-daemon-row-${daemon.name}`}
                     >
+                        <label className="flex items-center gap-2 text-xs">
+                            <input type="checkbox"
+                                aria-label={`Trust ${daemon.name} plugins with window navigation`}
+                                data-testid={`remote-daemon-navigation-trust-${daemon.name}`}
+                                checked={daemon.trustedForNavigation === true}
+                                disabled={props.onSaveDaemons === undefined}
+                                onChange={event => props.onSaveDaemons?.(configuredDaemons.map(entry =>
+                                    entry.name === daemon.name ? { ...entry, trustedForNavigation: event.target.checked } : entry))}
+                            />
+                            Trust plugins with navigation
+                        </label>
                         <SettingsButton
                             testID={`remote-daemon-remove-${daemon.name}`}
                             tone="danger"

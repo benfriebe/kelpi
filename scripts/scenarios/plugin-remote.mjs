@@ -5,7 +5,7 @@ import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } f
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
 export const covers = ['packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/plugins/', 'packages/daemon/src/plugins/',
-    'packages/client/src/settings/RemoteTab.tsx', 'packages/client/src/settings/sections.ts',
+    'packages/client/src/settings/RemoteTab.tsx', 'packages/client/src/settings/SettingsOverlay.tsx', 'packages/client/src/settings/sections.ts',
     'packages/client/src/settings/search-navigation.ts', 'packages/client/src/app/remote-daemons.ts',
     'packages/core/src/config/remote-daemons.ts'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -52,17 +52,23 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         rec.check('remote plugin navigation reads and selection are refused by default', await refusedNavigation());
         const trustSelector = '[data-testid="remote-daemon-navigation-trust-PluginRemote"]';
         const setNavigationTrust = async trusted => {
+            const beforeSearch = fs.readFileSync(sandbox.configPath, 'utf8');
+            // Closing Settings returns focus to the plugin frame. Take it back into the host
+            // before sending the window shortcut, including on an immediate clear/regrant.
+            await page.click(row);
             await page.key('Comma', { modifiers: 4, key: ',' });
             if (!await d.settleDom(page, `document.querySelector('[data-testid="settings-search"]')`, { ceilingMs: 8_000 })) throw new Error('Settings did not open');
             await page.click('[data-testid="settings-search"]');
             await page.key('KeyA', { modifiers: 4, key: 'a' });
             await page.key('Backspace');
-            await page.type('Trust plugins with navigation');
+            await page.insertText('Trust plugins with navigation');
             const hit = '[data-testid="settings-search-result-remote-daemon-navigation-trust"]';
             if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(hit)})`)) throw new Error('Navigation trust was not searchable');
             await page.click(hit);
             rec.check('Settings search reveals and focuses the real per-host navigation trust checkbox', await d.settleDom(page,
                 `document.activeElement === document.querySelector(${JSON.stringify(trustSelector)})`));
+            rec.check('revealing navigation trust through Settings search leaves configuration unchanged',
+                fs.readFileSync(sandbox.configPath, 'utf8') === beforeSearch);
             if (await page.eval(`document.querySelector(${JSON.stringify(trustSelector)}).checked`) !== trusted) await page.click(trustSelector);
             rec.check(`navigation trust is ${trusted ? 'saved' : 'cleared'} in the primary host record`, await d.settle(async () => {
                 const contents = fs.readFileSync(sandbox.configPath, 'utf8');
@@ -95,7 +101,7 @@ export default async function ({ page, cli, sandbox, rec, d }) {
             return true;
         })()`);
         rec.check('trusted remote plugin can return the window to a local workspace', await d.settleDom(page,
-            `!document.querySelector(${JSON.stringify(frame)}) && !!document.querySelector('[data-workspace-id="${localWorkspace.id}"][data-selected="true"]')`, { ceilingMs: 8_000 }));
+            `!document.querySelector(${JSON.stringify(frame)}) && !!document.querySelector('[data-workspace-id="${localWorkspace.id}"][data-active="true"]')`, { ceilingMs: 8_000 }));
         await page.click(row);
         if (!await ready()) throw new Error('Remote plugin did not return');
         await setNavigationTrust(false);

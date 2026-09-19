@@ -206,14 +206,17 @@ describe('rendered Settings index completeness', () => {
     });
 });
 
-it('finds, reveals and focuses the saved host navigation trust control', () => {
+it.each([
+    'werk', 'Work "Laptop"', 'Work\\Laptop', '開発機 🦑 "机"\\dev'
+])('finds, reveals and focuses navigation trust for host %s without changing settings', name => {
     const save = vi.fn();
-    setup({ settings: { ...DEFAULT_WS_SETTINGS, remoteDaemons: [{ name: 'werk', url: 'https://werk/?token=secret' }] },
+    setup({ settings: { ...DEFAULT_WS_SETTINGS, remoteDaemons: [{ name, url: 'https://werk/?token=secret' }] },
         actions: { ...NOOP_ACTIONS, setRemoteDaemons: save } });
     search('Trust plugins with navigation', 'remote-daemon-navigation-trust');
-    const input = screen.getByTestId('remote-daemon-navigation-trust-werk');
+    const input = screen.getByTestId(`remote-daemon-navigation-trust-${name}`);
     expect(document.activeElement).toBe(input);
     expect(input.dataset['settingsSearchHit']).toBe('true');
+    expect(save).not.toHaveBeenCalled();
     fireEvent.click(input);
-    expect(save).toHaveBeenCalledWith([{ name: 'werk', url: 'https://werk/?token=secret', trustedForNavigation: true }]);
+    expect(save).toHaveBeenCalledExactlyOnceWith([{ name, url: 'https://werk/?token=secret', trustedForNavigation: true }]);
 });

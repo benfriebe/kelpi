@@ -24,23 +24,46 @@ import {
     subscribePaneChromePainted,
     subscribePaneChromePresenters
 } from './presenter';
-import { paneChromeClipPath, paneChromeFrameRect } from './presenter-slot';
+import { paneChromeClipPath, paneChromeFrameRect, paneChromeGripRect } from './presenter-slot';
 
 const rect = (width = 600, height = 480, x = 0, y = 0) => ({ x, y, width, height });
 
 describe('paneChromeFrameRect', () => {
-    it('reserves the focus ring on three sides and the hairline on the fourth', () => {
+    it('reserves the focus ring on three sides, the hairline on the fourth and the grip in front', () => {
         const band = paneChromeFrameRect(rect(), PANE_CHROME_LIMITS.nativeHeight);
-        expect(band.x).toBe(FOCUS_RING_WIDTH);
+        expect(band.x).toBe(FOCUS_RING_WIDTH + PANE_CHROME_LIMITS.gripWidth);
         expect(band.y).toBe(FOCUS_RING_WIDTH);
-        expect(band.width).toBe(600 - FOCUS_RING_WIDTH * 2);
+        expect(band.width).toBe(600 - FOCUS_RING_WIDTH * 2 - PANE_CHROME_LIMITS.gripWidth);
         // The ring's top run plus the 1 px rule the host paints under every header.
         expect(band.height).toBe(PANE_CHROME_LIMITS.nativeHeight - FOCUS_RING_WIDTH - 1);
+    });
+
+    it('never overlaps the grip, at any width the two have to share', () => {
+        for (const width of [3, 24, 48, 49, 131, 600, 1600]) {
+            const band = paneChromeFrameRect(rect(width), 24);
+            const grip = paneChromeGripRect(rect(width), 24);
+            // The presenter's rectangle begins where the grip ends, always: a grip a presenter
+            // could draw over is a drag handle nobody can press.
+            expect(band.x).toBeGreaterThanOrEqual(grip.x + grip.width);
+            expect(band.width).toBeGreaterThanOrEqual(0);
+        }
     });
 
     it('follows a declared band rather than the native one', () => {
         const band = paneChromeFrameRect(rect(), 96);
         expect(band.height).toBe(96 - FOCUS_RING_WIDTH - 1);
+    });
+
+    it('gives the header the band when there is no room for both', () => {
+        // A grip needs room for itself and for a header beside it. Below that the header wins,
+        // because a pane with a handle and no title is worse than one that has to be moved another
+        // way - the context menu and the keyboard are both still there.
+        const narrow = paneChromeGripRect(rect(40), 24);
+        expect(narrow.width).toBe(0);
+        expect(paneChromeFrameRect(rect(40), 24).x).toBe(FOCUS_RING_WIDTH);
+        const wide = paneChromeGripRect(rect(600), 24);
+        expect(wide.width).toBe(PANE_CHROME_LIMITS.gripWidth);
+        expect(wide.height).toBe(24 - FOCUS_RING_WIDTH - 1);
     });
 
     it('keeps the strips rather than returning a negative rectangle', () => {
@@ -57,8 +80,9 @@ describe('paneChromeFrameRect', () => {
 
     it('offsets by the pane\'s own position in the grid', () => {
         const band = paneChromeFrameRect(rect(400, 300, 640, 120), 24);
-        expect(band.x).toBe(640 + FOCUS_RING_WIDTH);
+        expect(band.x).toBe(640 + FOCUS_RING_WIDTH + PANE_CHROME_LIMITS.gripWidth);
         expect(band.y).toBe(120 + FOCUS_RING_WIDTH);
+        expect(paneChromeGripRect(rect(400, 300, 640, 120), 24).x).toBe(640 + FOCUS_RING_WIDTH);
     });
 });
 

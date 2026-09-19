@@ -58,8 +58,6 @@ async function present(): Promise<void> {
         for (const entry of pane.controls) if (entry.enabled && !entry.pinned) await ui.activatePaneControl(pane.paneID, entry.ref);
         for (const other of pane.items) if (other.enabled) await ui.runPaneHeaderItem(pane.paneID, other.ref);
         await ui.openPaneMenu(pane.paneID);
-        // The press that started in the band becomes the host's own pane-move gesture.
-        await ui.beginPaneDrag(pane.paneID);
         await ui.closePane(pane.paneID);
     }
     stop();
@@ -84,5 +82,8 @@ void snapshot.panes[0]?.agent?.agentSessionID;
 void snapshot.panes[0]?.url;
 // @ts-expect-error The workspace focus verb keeps its own name; a presenter's takes one argument.
 void ui.focusPane('pane-1');
+// @ts-expect-error The pane-move drag is the host's grip, not a call: a press inside this frame
+// never leaves this frame, so no verb could start one.
+void ui.beginPaneDrag('pane-1');
 // @ts-expect-error The rename field is the host's: a presenter asks for it, it does not send a name.
 void ui.renamePane('pane-1', 'api');

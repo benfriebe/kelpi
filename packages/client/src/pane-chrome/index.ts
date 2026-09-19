@@ -156,6 +156,7 @@ export {
     PaneChromePresenterSlot,
     paneChromeClipPath,
     paneChromeFrameRect,
+    paneChromeGripRect,
     usePaneChromePainted,
     usePaneChromeSelection,
     type PaneChromePresenterSlotProps,

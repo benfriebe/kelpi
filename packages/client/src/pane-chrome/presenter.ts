@@ -27,6 +27,21 @@
  *     never by spread, and `pluginJSON` round-trips the result, so a presenter never holds a host
  *     object at all.
  *
+ * ── The pane-move drag is NOT a presenter call ──────────────────────────────────────
+ *
+ * It was, briefly: `beginPaneDrag(paneID)` let a presenter say that the press in its band had
+ * started one. It cannot work, and the reason is not this contract's to fix. **Chromium settles
+ * where a mouse gesture is routed when the button goes down**, so a press inside the presenter's
+ * iframe keeps every later move and the release inside that iframe's document; a host that flips
+ * the frame to `pointer-events: none` on hearing about the press is acting after the routing was
+ * decided. Measured on a real pointer: the frame received every move and the window's gesture
+ * received none.
+ *
+ * So the press has to happen in the HOST's document from the start, and the host reserves a strip
+ * at the leading edge of every presented band for exactly that
+ * (`PANE_CHROME_LIMITS.gripWidth`, `presenter-slot.tsx` ▸ `PaneChromeGrips`). Nothing a presenter
+ * draws can cover it, because its own rectangle begins after it.
+ *
  * ── One name that had to change ─────────────────────────────────────────────────────
  *
  * Phase A's `pane-chrome.d.ts` declared the focus call as `focusPane(paneID)`. `ViewAPI['ui']`
@@ -64,7 +79,6 @@ export const PANE_CHROME_UI_METHODS = [
     'ui.activatePaneControl',
     'ui.runPaneHeaderItem',
     'ui.openPaneMenu',
-    'ui.beginPaneDrag',
     'ui.setPaneChromeHeight'
 ] as const;
 
@@ -123,15 +137,6 @@ export interface PaneChromePresenterHostOptions {
     readonly openRename: (paneID: string) => void;
     /** Open the HOST's own pane context menu for that pane, anchored under its band. */
     readonly openMenu: (paneID: string) => void;
-    /**
-     * Arm the HOST's pane-move gesture for that pane (ratified decision 6's neighbour).
-     *
-     * The drag itself stays the grid's: it is a window-level pointer gesture with a drop-zone
-     * hit test, a preview and a commit, none of which a projection could describe. What a
-     * presenter can do is say "the press that just happened in my band was the start of one",
-     * and the host takes it from the next pointer move.
-     */
-    readonly beginDrag: (paneID: string) => void;
     /** Declare (or withdraw) a pane's band. The clamp is `height.ts`'s, not the presenter's. */
     readonly declareHeight: (paneID: string, pixels: number | null) => void;
     /** A presenter that cannot be trusted with every pane's header any more. */
@@ -157,7 +162,6 @@ const CALL_ARGUMENTS: Readonly<Record<string, readonly string[]>> = Object.freez
     'ui.activatePaneControl': ['paneID', 'ref'],
     'ui.runPaneHeaderItem': ['paneID', 'ref'],
     'ui.openPaneMenu': ['paneID'],
-    'ui.beginPaneDrag': ['paneID'],
     'ui.setPaneChromeHeight': ['paneID', 'pixels']
 });
 
@@ -584,16 +588,6 @@ export function createPaneChromePresenterHost(
             }
             if (method === 'ui.openPaneMenu') {
                 options.openMenu(found.paneID);
-                return;
-            }
-            if (method === 'ui.beginPaneDrag') {
-                /*
-                 * The pane is carried, so it is visible and the presenter is drawing its band;
-                 * `pane()` above has already refused every other case. There is nothing else to
-                 * validate here, because the gesture reads the HOST's own frames from the next
-                 * pointer move on and commits through the host's own `onMovePane`.
-                 */
-                options.beginDrag(found.paneID);
                 return;
             }
             if (method === 'ui.activatePaneControl') {

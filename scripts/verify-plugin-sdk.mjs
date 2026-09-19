@@ -79,8 +79,6 @@ async function mount(element: HTMLElement) {
         for (const other of pane.items) if (other.enabled) await api.ui.runPaneHeaderItem(pane.paneID, other.ref);
         if (!pane.renaming) await api.ui.renamePane(pane.paneID);
         await api.ui.focusChromePane(pane.paneID);
-        // The host's own pane-move gesture, started from a press in the band.
-        await api.ui.beginPaneDrag(pane.paneID);
     }
     const stopChrome = api.ui.onPaneChrome(frame => { void frame.withheld; });
     stopChrome();

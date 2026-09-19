@@ -96,7 +96,6 @@ describe('browser window pane chrome presenter', () => {
             h.api.ui.activatePaneControl('pane-1', 'c0'),
             h.api.ui.runPaneHeaderItem('pane-1', 'i0'),
             h.api.ui.openPaneMenu('pane-1'),
-            h.api.ui.beginPaneDrag('pane-1'),
             h.api.ui.setPaneChromeHeight('pane-1', 48),
             h.api.ui.setPaneChromeHeight('pane-1', null),
         ];
@@ -112,14 +111,20 @@ describe('browser window pane chrome presenter', () => {
             ['ui.activatePaneControl', { paneID: 'pane-1', ref: 'c0' }],
             ['ui.runPaneHeaderItem', { paneID: 'pane-1', ref: 'i0' }],
             ['ui.openPaneMenu', { paneID: 'pane-1' }],
-            // The press stays in the presenter's document; only the fact of it crosses.
-            ['ui.beginPaneDrag', { paneID: 'pane-1' }],
             ['ui.setPaneChromeHeight', { paneID: 'pane-1', pixels: 48 }],
             // `null` survives the marshalling: it is a withdrawal, not a missing argument.
             ['ui.setPaneChromeHeight', { paneID: 'pane-1', pixels: null }],
         ]);
         for (const message of h.calls().slice(1)) await h.reply(message, null);
         expect(await Promise.all(pending)).toEqual(pending.map(() => undefined));
+    });
+
+    it('offers no pane-move verb, because a press in this frame never leaves it', async () => {
+        // The drag is the host's own grip at the leading edge of every band. A call for it would be
+        // a call that cannot work: Chromium settles where a mouse gesture is routed when the button
+        // goes down, so a press inside this document keeps the moves and the release here.
+        const h = harness();
+        expect((h.api.ui as unknown as Record<string, unknown>)['beginPaneDrag']).toBeUndefined();
     });
 
     it('keeps the workspace focus verb, which takes two arguments and another placement', async () => {

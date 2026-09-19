@@ -33,6 +33,19 @@
  * they arrived in; the host keeps the mapping and re-resolves it against a fresh model before
  * anything runs, so a ref from an older frame, from another pane, or invented, activates nothing.
  *
+ * ── The pane-move drag, and why it is not a call ────────────────────────────────────
+ *
+ * The host keeps a thin drag grip at the LEADING EDGE of every band it presents, and a presenter's
+ * rectangle begins after it. That is not a courtesy: **a mouse press that lands inside an iframe
+ * keeps every later move and the release inside that iframe's document**, because Chromium settles
+ * where a gesture is routed when the button goes down. A presenter therefore cannot start a
+ * host-owned drag from its own pixels whatever call it is offered, so there is no such call - the
+ * press happens in the host's strip from the start, and the gesture, its threshold, its drop zones
+ * and its commit are all the window's own.
+ *
+ * Draw nothing in the grip: it is not inside the `rect` a pane carries, so drawing at negative
+ * coordinates is the only way to reach it and the host clips that away.
+ *
  * ── What stays native ───────────────────────────────────────────────────────────────
  *
  * The focus ring, the pane context menu, the inline rename FIELD, every destructive confirmation,
@@ -186,7 +199,13 @@ export interface PaneChromePane {
     readonly sync: PaneChromeSync;
     /** The band this pane is painting at right now, already clamped. */
     readonly height: number;
-    /** The rectangle inside that band the presenter may draw in, or null before a first layout. */
+    /**
+     * The rectangle inside that band the presenter may draw in, or null before a first layout.
+     *
+     * It already excludes the focus ring's gutter, the hairline under the header and the host's
+     * drag grip, so a presenter positions its header at exactly these four numbers and never has to
+     * reason about any of them.
+     */
     readonly rect: PaneChromeRect | null;
     readonly size: PaneChromeSize;
     readonly controls: readonly PaneChromeControl[];
@@ -276,18 +295,6 @@ export interface WindowPaneChromeAPI {
     runPaneHeaderItem(paneID: string, ref: string): Promise<void>;
     /** Opens the host's own pane context menu, which stays native. */
     openPaneMenu(paneID: string): Promise<void>;
-    /**
-     * Tell the host that the press just made in this pane's band is the start of a pane MOVE.
-     *
-     * Call it from a `pointerdown` on whatever part of the band should be the drag handle. The
-     * gesture itself stays the host's: it takes pointer events back from every frame in the grid,
-     * measures its threshold from the first move it sees, draws its own drop zones over the panes
-     * and commits the move on release. A presenter says when, and draws none of it.
-     *
-     * Refused for a pane the current frame does not carry, which is every pane that is withheld,
-     * hidden or not this workspace's.
-     */
-    beginPaneDrag(paneID: string): Promise<void>;
     /**
      * Declare how tall this presenter's band needs to be, in CSS pixels.
      *

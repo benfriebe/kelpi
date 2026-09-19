@@ -266,7 +266,6 @@ async function mount(grid: Grid) {
     const calls: Array<{ method: string; args: JsonObject }> = [];
     const renames: string[] = [];
     const menus: string[] = [];
-    const drags: string[] = [];
     let acknowledged = 0;
     let readied = 0;
 
@@ -283,9 +282,6 @@ async function mount(grid: Grid) {
         },
         openMenu: (paneID) => {
             menus.push(paneID);
-        },
-        beginDrag: (paneID) => {
-            drags.push(paneID);
         },
         declareHeight: (paneID, pixels) => {
             if (pixels === null) grid.declared.delete(paneID);
@@ -343,7 +339,6 @@ async function mount(grid: Grid) {
                 call('ui.activatePaneControl', { paneID, ref }),
             runPaneHeaderItem: (paneID: string, ref: string) => call('ui.runPaneHeaderItem', { paneID, ref }),
             openPaneMenu: (paneID: string) => call('ui.openPaneMenu', { paneID }),
-            beginPaneDrag: (paneID: string) => call('ui.beginPaneDrag', { paneID }),
             setPaneChromeHeight: (paneID: string, pixels: number | null) =>
                 call('ui.setPaneChromeHeight', { paneID, pixels })
         }
@@ -371,7 +366,6 @@ async function mount(grid: Grid) {
         thrown,
         renames,
         menus,
-        drags,
         acknowledged: () => acknowledged,
         readied: () => readied,
         lab: (): LabDiagnostics => (globalThis as unknown as { paneLab: LabDiagnostics }).paneLab,
@@ -567,26 +561,23 @@ describe('Pane Lab routes every gesture through the host', () => {
     });
 
 
-    it('starts the host\'s pane-move gesture from a press on the band\'s title', async () => {
+    it('starts no text selection from a press on a band, and asks for no drag call', async () => {
+        /*
+         * What the user actually hit: a press dragged across the band highlighted its title instead
+         * of moving the pane. The band holds nothing selectable (`user-select: none`) and the press
+         * itself is defaulted away, so a drag across a header is never a selection - and the pane
+         * MOVE is the host's own grip, outside this frame, because a press that lands in here can
+         * never reach the window's gesture.
+         */
         const grid = make([{ id: 'p1' }, { id: 'p2' }]);
         const h = await mount(grid);
         await ready(h);
-        band('p2')
-            .querySelector<HTMLElement>('[data-testid="lab-pane-title"]')!
-            .dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-        await until(() => h.drags.length === 1, 'the drag to be armed');
-        // The gesture is the HOST's: nothing about it is drawn or tracked by the presenter.
-        expect(h.drags).toEqual(['p2']);
-    });
-
-    it('refuses a drag for a pane the frame does not carry', async () => {
-        const grid = make([{ id: 'p1' }]);
-        const h = await mount(grid);
-        await ready(h);
-        await expect(h.send('ui.beginPaneDrag', { paneID: 'ghost' })).rejects.toThrow(
-            /not in the current pane chrome frame/
-        );
-        expect(h.drags).toEqual([]);
+        const press = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
+        band('p2').querySelector<HTMLElement>('[data-testid="lab-pane-title"]')!.dispatchEvent(press);
+        expect(press.defaultPrevented).toBe(true);
+        // There is no call for it to have made: the contract carries none.
+        expect(h.sent('ui.beginPaneDrag')).toEqual([]);
+        await expect(h.send('ui.beginPaneDrag', { paneID: 'p2' })).rejects.toThrow(/Unknown pane chrome method/);
     });
 
     it('prints the withheld count inside the first carried band, never over it', async () => {

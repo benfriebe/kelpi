@@ -104,7 +104,27 @@ export const PANE_CHROME_LIMITS = {
      * runs. The host keeps the band itself (its fill, its hairline and the ring around it) and
      * hands the presenter the rectangle inside the ring.
      */
-    frameInset: 2
+    frameInset: 2,
+    /**
+     * The host's own drag grip at the left of every presented band, in px.
+     *
+     * Reserved for the same reason the focus ring's gutter is, one problem further along: **a mouse
+     * press that lands inside an iframe keeps every later move and the release in that iframe's
+     * document.** Chromium decides where a mouse gesture is routed when the button goes DOWN, so a
+     * host that flips the frame to `pointer-events: none` on hearing about the press is already too
+     * late - the routing was settled before the message arrived. A presenter therefore cannot start
+     * a host gesture from its own pixels at all, whatever call it is given, and the window's
+     * pane-move drag would be lost for as long as a presenter is drawing.
+     *
+     * So the press has to happen in the HOST's document from the start. The host keeps a thin strip
+     * at the leading edge of every presented band, paints a grip in it, and starts the same gesture
+     * the bundled header raises. The presenter's rectangle begins after it, so nothing a presenter
+     * draws can cover it and nothing it does can take it away.
+     *
+     * 12 px is the narrowest strip that reads as a handle beside a 10 px glyph and still leaves a
+     * 131 px pane a usable header.
+     */
+    gripWidth: 12
 } as const;
 
 // ── what a pane IS, for chrome's purposes ───────────────────────────────────────────

@@ -74,6 +74,7 @@ import {
     paneChromeDeclaration,
     paneChromeEntry,
     paneChromeFrameRect,
+    paneChromeGripRect,
     paneChromeHeight,
     projectPaneChrome,
     retainPaneChromeHeights,
@@ -224,16 +225,7 @@ interface DividerGesture {
 
 interface MoveGesture {
     readonly paneID: string;
-    /**
-     * Where the press was, or null for a gesture armed without one.
-     *
-     * A presenter's band is an iframe, so the press that starts a pane move happens in another
-     * document and this one never sees its coordinates. `null` means "take the origin from the
-     * first move you DO see": the host grabs pointer events back from every frame the moment a
-     * drag is armed (`paneDragArmed`), so that first move is the real pointer at its real place,
-     * and the threshold is then measured from there exactly as it is for a native press.
-     */
-    origin: Point | null;
+    readonly origin: Point;
     readonly releaseCapture: () => void;
     active: boolean;
 }
@@ -648,12 +640,6 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         (event: PointerEvent): void => {
             const gesture = moveRef.current;
             if (gesture === null) return;
-            if (gesture.origin === null) {
-                // A presenter-armed drag: this is the first move the host has seen, so it is the
-                // origin. Nothing is dragged yet and the threshold starts counting from here.
-                gesture.origin = { x: event.clientX, y: event.clientY };
-                return;
-            }
             if (!gesture.active) {
                 const dx = event.clientX - gesture.origin.x;
                 const dy = event.clientY - gesture.origin.y;
@@ -807,34 +793,6 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         } as unknown as ReactMouseEvent<HTMLElement>);
     }, []);
 
-    /**
-     * Arm the pane-move gesture for a presenter's band.
-     *
-     * The press happened inside the presenter's iframe, so this document never saw it and has no
-     * origin to measure a threshold from. `paneDragArmed` is what fixes that: it is the class the
-     * grid already applies for every drag, and it takes pointer events away from every frame in the
-     * grid - the presenter's included - so the very next move lands here, at the real pointer, and
-     * becomes the gesture's origin (`onPanePointerMove`).
-     *
-     * Everything after that is the gesture the native header raises: the same threshold, the same
-     * drop-zone hit test against the host's own frames, the same preview and the same
-     * `onMovePane` commit. A presenter says when, and nothing else.
-     */
-    const beginPresenterDrag = useCallback((paneID: string): void => {
-        if (!framesRef.current.has(paneID)) return;
-        moveRef.current?.releaseCapture();
-        moveRef.current = {
-            paneID,
-            origin: null,
-            active: false,
-            // Nothing to release: the pointer was captured in another document, if at all.
-            releaseCapture: () => {}
-        };
-        dropTargetRef.current = null;
-        setPaneDragArmed(true);
-        attachListeners(onPanePointerMove, endPaneDrag);
-    }, [attachListeners, onPanePointerMove, endPaneDrag]);
-
     const cancelHover = useCallback((): void => {
         if (hoverTimerRef.current === null) return;
         clearTimeout(hoverTimerRef.current);
@@ -949,6 +907,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         readonly presented: ReadonlySet<string>;
         readonly renaming: ReadonlySet<string>;
         readonly rects: readonly PaneChromeFrameRect[];
+        readonly grips: readonly { readonly paneID: string; readonly rect: PaneChromeFrameRect }[];
     } | null>(() => {
         if (!chromeActive) return null;
         // Referenced so this recomputes when a header republishes; the registry is read
@@ -956,6 +915,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         void chromeVersion;
         const descriptors = [];
         const rects: Record<string, PaneChromeFrameRect> = {};
+        const grips: Record<string, PaneChromeFrameRect> = {};
         const renaming = new Set<string>();
         for (const pane of panes) {
             const frame = gridVisible ? frames.get(pane.id) : undefined;
@@ -966,10 +926,9 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             if (frame === undefined || entry === undefined) continue;
             if (entry.descriptor.renaming) renaming.add(pane.id);
             descriptors.push(entry.descriptor);
-            rects[pane.id] = paneChromeFrameRect(
-                frame,
-                paneChromeBand(bands, pane.id, frame.height, headerHeight)
-            );
+            const paneBand = paneChromeBand(bands, pane.id, frame.height, headerHeight);
+            rects[pane.id] = paneChromeFrameRect(frame, paneBand);
+            grips[pane.id] = paneChromeGripRect(frame, paneBand);
         }
         const projection = projectPaneChrome(
             {
@@ -998,7 +957,8 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             carried: new Set(carried),
             presented,
             renaming,
-            rects: [...presented].map((paneID) => rects[paneID]!)
+            rects: [...presented].map((paneID) => rects[paneID]!),
+            grips: [...presented].map((paneID) => ({ paneID, rect: grips[paneID]! }))
         };
     }, [
         chromeActive,
@@ -1258,7 +1218,18 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                     surface={(paneID) => paneChromeEntry(paneID)?.surface ?? null}
                     onRename={(paneID) => props.onRequestRename?.(paneID)}
                     onMenu={openPaneMenuForPresenter}
-                    onBeginDrag={beginPresenterDrag}
+                    grips={chrome.grips}
+                    /*
+                     * The host's own grip raises the host's own gesture, from a real press in the
+                     * host's document: `startPaneDrag` is the very callback the bundled header
+                     * passes, so a pane dragged by a presenter's band and a pane dragged by its
+                     * bundled header are the same gesture with the same threshold, the same drop
+                     * zones and the same commit.
+                     */
+                    onGripPointerDown={(paneID, event) => {
+                        latest.current.onFocusPane?.(paneID);
+                        startPaneDrag(paneID, event);
+                    }}
                     onReleaseCaret={(paneID) => props.onReleaseChromeCaret?.(paneID)}
                     {...(props.onPaneChromeFailure === undefined
                         ? {}

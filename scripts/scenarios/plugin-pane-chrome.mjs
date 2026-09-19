@@ -18,8 +18,10 @@
  *      maximal titles) keeps its native header in full;
  *   4. the gestures: focus, split and zoom through the lab's own band, a host control (split right)
  *      activated by ref, UI Lab's `pane.header` item activated by ref reaching UI Lab's backend,
- *      rename (the HOST's field opens and its commit reaches the daemon) and close (the HOST's
- *      confirmation appears and cancels), and the host's pane menu opened by `openPaneMenu`;
+ *      rename (the HOST's field opens and its commit reaches the daemon), close (the HOST's
+ *      confirmation appears and cancels), the host's pane menu opened by `openPaneMenu`, and the
+ *      pane-move drag from the host's own grip - with the cross-document capture that forced that
+ *      design measured beside it;
  *   5. a declared 96 px band, measured live: the band grows, the body rect moves down by the
  *      difference, the shell's own `stty size` reports fewer rows, and a web pane's native view
  *      moves with it and still takes a click;
@@ -66,10 +68,6 @@
  *     presenter (`pane-chrome/presenter.ts` ▸ `charge`), and driving 240 calls through the frame in
  *     under a second from CDP measures the harness rather than the host.
  *     `features/pane-lab.test.ts` owns it.
- *   - **The pane-move DRAG is not available while a presenter draws a band**, and that is a stated
- *     property of the geometry rather than a defect: the drag is raised from the native header's
- *     `onPointerDown` and a presenter's own pixels cannot raise it. Check 4 presses the pane menu
- *     instead, which is the route that stays open.
  *   - **The remote workspace grid keeps the bundled header.** One presenter per window, one frame,
  *     one latch; `App.remote-grid-parity.test.tsx` records the gap with its reason.
  *
@@ -782,63 +780,103 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await inFrame(`(() => { globalThis.paneLab.declare(${JSON.stringify(shellPane)}, null); return true; })()`);
 
         /*
-         * ── DRAG · the pane-move gesture, raised from a presenter's band ─────────────
+         * ── DRAG · the pane-move gesture, and where the press has to happen ──────────
          *
-         * `beginPaneDrag` is the whole of what a presenter contributes: the host takes pointer
-         * events back from every frame in the grid, measures its own threshold from the next move,
-         * draws its own drop zones and commits through its own `onMovePane`.
+         * The user found this by hand: dragging a Pane Lab band selected text inside the band
+         * instead of moving the pane, while the scenario's own check passed. Two separate defects,
+         * and the second is the one that matters.
+         *
+         *   1. The lab's band had no `user-select: none` and did not default the press away, so the
+         *      browser started a native text selection across the header.
+         *   2. **A mouse press that lands inside an iframe keeps every later move and the release
+         *      inside that iframe's document.** Chromium settles the routing when the button goes
+         *      down, so the host flipping the frame to `pointer-events: none` on hearing about the
+         *      press is already too late. No call a presenter can make will start a host gesture
+         *      from its own pixels, which is why `beginPaneDrag` is withdrawn and the host keeps a
+         *      drag grip at the leading edge of every band instead.
+         *
+         * The old check passed because it dispatched a press with no pointer ever having entered
+         * the frame and then teleported: CDP hit-tests each synthesized event, so the host saw
+         * moves that a real pointer would never have sent it. Both halves are measured below with a
+         * pointer that enters, presses, moves in steps with the button held, and releases.
          */
         const dragTarget = (await json(['pane', 'list', '--workspace', workspaceID, '--json']))
             .map(pane => pane.id).find(id => id !== shellPane) ?? null;
         const boxBefore = await paneBox(`[data-pane-id="${shellPane}"]`);
         const targetBox = dragTarget === null ? null : await paneBox(`[data-pane-id="${dragTarget}"]`);
-        let dragMoved = false;
-        /*
-         * The GRIP, not the band's midpoint.
-         *
-         * A narrow pane squeezes the title to nothing and packs the controls and the other plugins'
-         * items into the middle, so the band's centre is a button - and a press on a button is a
-         * button press, which is exactly what the lab's own guard refuses to treat as a drag. The
-         * grip is the facts half of the row, which is all header and no control.
-         */
-        const from = await aimFrame(`${band(shellPane)} [data-testid="lab-pane-grip"]`, 0.2).catch(() => null);
-        if (targetBox !== null && boxBefore !== null && from !== null) {
-            const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
-            await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1 });
-            /*
-             * A beat, and then several moves.
-             *
-             * `beginPaneDrag` sets React state, and the class that takes pointer events away from
-             * every frame in the grid lands on the commit after it - so a move dispatched in the
-             * same tick would still be swallowed by the presenter's iframe. The first move the host
-             * DOES see becomes the gesture's origin, so at least two are needed before the
-             * threshold can be crossed.
-             */
-            await sleep(250);
-            rec.note(`drag armed: grid pointer-events suppressed ${String(await page.eval(`(document.querySelector('[data-testid="pane-grid"]')?.className ?? '').includes('pointer-events-none')`))}`);
-            for (const step of [0.15, 0.4, 0.7, 1]) {
-                await page.send('Input.dispatchMouseEvent', {
-                    type: 'mouseMoved',
-                    x: from.x + (to.x - from.x) * step,
-                    y: from.y + (to.y - from.y) * step,
-                    button: 'left',
-                    // The held button, as a bitmask. Without it every move reports no button down,
-                    // which is a pointer that is hovering rather than dragging.
-                    buttons: 1
-                });
-                await sleep(60);
+
+        // First, the measurement: a real press INSIDE the frame, and who sees the moves.
+        const inFrameGrab = await aimFrame(`${band(shellPane)} [data-testid="lab-pane-facts"]`, 0.4).catch(() => null);
+        let captured = null;
+        if (inFrameGrab !== null && targetBox !== null) {
+            await page.mouse('mouseMoved', inFrameGrab.x, inFrameGrab.y, { button: 'none', buttons: 0 });
+            await page.mouse('mousePressed', inFrameGrab.x, inFrameGrab.y);
+            for (const step of [0.2, 0.5, 0.8]) {
+                await page.mouse('mouseMoved',
+                    inFrameGrab.x + (targetBox.x + targetBox.width / 2 - inFrameGrab.x) * step,
+                    inFrameGrab.y + (targetBox.y + targetBox.height / 2 - inFrameGrab.y) * step,
+                    { buttons: 1 });
+                await sleep(50);
             }
-            await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1 });
+            const framesMoves = Number(await inFrame(`globalThis.paneLab?.pressMoves ?? -1`).catch(() => -1));
+            const hostArmed = await page.eval(`(document.querySelector('[data-testid="pane-grid"]')?.className ?? '').includes('pointer-events-none')`);
+            const selection = String(await inFrame(`String(getSelection()?.toString() ?? '')`).catch(() => 'unreadable'));
+            await page.mouse('mouseReleased', targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2);
+            const movedByFramePress = await d.settle(async () => {
+                const now = await paneBox(`[data-pane-id="${shellPane}"]`);
+                return now !== null && boxBefore !== null && (now.x !== boxBefore.x || now.y !== boxBefore.y);
+            }, { ceilingMs: 3_000 });
+            captured = { framesMoves, hostArmed, selection, movedByFramePress };
+            rec.note(`MEASURED after a press inside the frame: the frame saw ${String(framesMoves)} moves with the button down, the host's gesture armed ${String(hostArmed)}, the pane moved ${String(movedByFramePress)}, selection ${JSON.stringify(selection)}`);
+        }
+        /*
+         * What is asserted, and what cannot be.
+         *
+         * ASSERTED: a press dragged across a band selects nothing (the user's actual symptom), and
+         * it moves no pane - the presenter has no drag path of its own and is not supposed to.
+         *
+         * NOT ASSERTED, because this harness cannot: that the moves stayed in the frame.
+         * `Input.dispatchMouseEvent` hit-tests every synthesized event on its own and keeps no
+         * per-frame capture, so a CDP pointer teleports between documents where a real one cannot -
+         * which is exactly why the previous version of this check passed while the user's mouse
+         * failed. The frame counter is printed above for the record and is expected to read 0 here.
+         * The cause is Chromium's routing rule, the evidence is the user's manual test, and the fix
+         * is that the press now happens in the host's own grip where none of it applies.
+         */
+        rec.check('a press inside the presenter\'s frame selects nothing and moves no pane',
+            captured !== null && captured.selection === '' && captured.movedByFramePress === false,
+            JSON.stringify(captured));
+
+        /*
+         * And now the grip, which is the host's own element in the host's own document. The press
+         * lands there, so the gesture is the one the bundled header raises, with the same
+         * threshold, the same drop zones and the same commit.
+         */
+        const gripBox = await paneBox(`[data-testid="pane-chrome-grip-${shellPane}"]`);
+        const orderBefore = (await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id).join(',');
+        let dragMoved = false;
+        if (gripBox !== null && targetBox !== null && boxBefore !== null) {
+            const from = { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 };
+            const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height * 0.8 };
+            await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+            await page.mouse('mousePressed', from.x, from.y);
+            for (const step of [0.1, 0.35, 0.6, 0.85, 1]) {
+                await page.mouse('mouseMoved', from.x + (to.x - from.x) * step, from.y + (to.y - from.y) * step, { buttons: 1 });
+                await sleep(50);
+            }
+            const zoned = await d.settleDom(page, `document.querySelector('[data-testid="drop-zone-overlay"]')`, { ceilingMs: 4_000 });
+            await page.mouse('mouseReleased', to.x, to.y);
             dragMoved = await d.settle(async () => {
                 const now = await paneBox(`[data-pane-id="${shellPane}"]`);
                 return now !== null && (now.x !== boxBefore.x || now.y !== boxBefore.y || now.width !== boxBefore.width);
             }, { ceilingMs: 12_000 });
+            rec.note(`grip drag: drop zone shown ${String(zoned)}, order ${orderBefore} -> ${(await json(['pane', 'list', '--workspace', workspaceID, '--json'])).map(pane => pane.id).join(',')}`);
         }
-        if (!dragMoved) {
-            rec.note(`drag did not move the pane: grab ${JSON.stringify(from)} -> ${JSON.stringify(targetBox)}, last press ${String(await inFrame(`JSON.stringify(globalThis.paneLab?.lastPress ?? null)`).catch(() => 'frame unreadable'))}, lab error ${String(await inFrame(`globalThis.paneLab?.lastError ?? 'none'`).catch(() => 'frame unreadable'))}`);
-        }
-        rec.check('a drag started from the presenter\'s band moves the pane through the host\'s own gesture',
-            dragMoved, `${JSON.stringify(boxBefore)} -> ${JSON.stringify(await paneBox(`[data-pane-id="${shellPane}"]`))}`);
+        const selectionAfter = String(await inFrame(`String(getSelection()?.toString() ?? '')`).catch(() => 'unreadable'));
+        rec.check('a drag from the host\'s grip moves the pane, and leaves no selection in the frame',
+            gripBox !== null && gripBox.width > 0 && dragMoved && selectionAfter === '',
+            `grip ${JSON.stringify(gripBox)} · ${JSON.stringify(boxBefore)} -> ${JSON.stringify(await paneBox(`[data-pane-id="${shellPane}"]`))} · selection ${JSON.stringify(selectionAfter)}`);
+        await shot('host-drag-grip', 'A Pane Lab band with the host\'s own drag grip at its LEADING edge: a narrow strip in the header\'s own colour carrying two short vertical hairlines, immediately inside the focus ring and before anything the plugin draws. Every presented band has one.');
 
         // ── 7 · withholding, live ────────────────────────────────────────────────────
         const documentText = String(await inFrame(`document.documentElement.outerHTML + '\\n' + JSON.stringify(globalThis.paneLab.snapshot)`));
@@ -1138,7 +1176,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         await shot('desktop-restored', 'Back on the desktop after the phone emulation: the "Pane chrome" workspace with every pane wearing a Pane Lab band again, no toast, and the title bar reading connected.');
 
         rec.note('LIMIT: the 240-calls-per-second budget breach is not pressed live; driving it from CDP measures the harness. See the header.');
-        rec.note('LIMIT: the pane-move drag is raised from the native header and is unavailable while a presenter draws a band; openPaneMenu is the route that stays open.');
+        rec.note('LIMIT: cross-document pointer capture cannot be reproduced through CDP, which hit-tests each synthesized event and keeps no per-frame capture. The drag grip is a host element for that reason; what is asserted here is that a press in the frame selects nothing and moves nothing, and that a press on the grip moves the pane.');
     } catch (error) {
         await rec.shot(page, 'failure-live');
         throw error;

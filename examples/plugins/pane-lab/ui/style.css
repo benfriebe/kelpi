@@ -13,8 +13,18 @@
  * `--lab-agent` and `--lab-warn`, per colour scheme, because the host does not publish a token for
  * either and an amber readable on a dark band is not the amber readable on a light one.
  */
+/*
+ * Nothing in a band is selectable.
+ *
+ * A header is chrome, and a press dragged across chrome should move the pane rather than highlight
+ * its title. Without this the browser starts a native text selection on the first press and the
+ * user gets a blue smear across the band; `pane-chrome.js` calls `preventDefault` on the same
+ * press, and the two together are what "a band holds no text you can select" means.
+ */
 :root {
     color-scheme: dark light;
+    user-select: none;
+    -webkit-user-select: none;
     font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
     color: var(--kelpi-fg);
     background: transparent;

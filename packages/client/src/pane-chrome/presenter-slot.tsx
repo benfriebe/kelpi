@@ -81,6 +81,7 @@ import {
     useRef,
     useState,
     useSyncExternalStore,
+    type PointerEvent as ReactPointerEvent,
     type ReactElement
 } from 'react';
 
@@ -90,6 +91,8 @@ import { PluginView } from '../plugins/PluginView';
 import { resolveSlot } from '../plugins/registry';
 import { useOptionalWorkbench } from '../plugins/Workbench';
 import type { KelpiRuntime } from '../state';
+
+import { tokens } from '../grid/tokens';
 
 import { PANE_CHROME_LIMITS, PANE_CHROME_PLACEMENT } from './contract';
 import { clearPaneChromeHeights, setPaneChromeHeight } from './height';
@@ -131,12 +134,44 @@ export function paneChromeFrameRect(
 ): PaneChromeFrameRect {
     const inset = rect.width > ring * 2 && band > ring + 1 ? ring : 0;
     const hairline = band > ring + 1 ? 1 : 0;
+    const grip = paneChromeGripRect(rect, band, ring);
     return {
-        x: rect.x + inset,
+        x: rect.x + inset + grip.width,
         y: rect.y + inset,
-        width: Math.max(0, rect.width - inset * 2),
+        width: Math.max(0, rect.width - inset * 2 - grip.width),
         height: Math.max(0, band - inset - hairline)
     };
+}
+
+/**
+ * The host's own drag grip, at the leading edge of one band.
+ *
+ * Inside the focus ring's gutter and above the presenter's frame, so a press on it happens in the
+ * HOST's document - which is the whole point (`PANE_CHROME_LIMITS.gripWidth`). It takes its width
+ * from the same band the presenter's rectangle is cut out of, so the two can never overlap, and a
+ * band with no room for both keeps the presenter's header and gives up the grip rather than
+ * shipping a strip nobody can see.
+ */
+export function paneChromeGripRect(
+    rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+    band: number,
+    ring: number = FOCUS_RING_WIDTH
+): PaneChromeFrameRect {
+    const inset = rect.width > ring * 2 && band > ring + 1 ? ring : 0;
+    const hairline = band > ring + 1 ? 1 : 0;
+    const height = Math.max(0, band - inset - hairline);
+    /*
+     * A grip needs room for itself AND for a header beside it; below that the header wins, because
+     * a pane with a handle and no title is worse than one that has to be moved from the context
+     * menu or the keyboard. `inset === 0` is the same floor one step down: a band too short to give
+     * the focus ring its gutter is too short to give anything else one either.
+     */
+    const room = rect.width - inset * 2;
+    const width =
+        inset > 0 && height > 0 && room >= PANE_CHROME_LIMITS.gripWidth * 4
+            ? PANE_CHROME_LIMITS.gripWidth
+            : 0;
+    return { x: rect.x + inset, y: rect.y + inset, width, height };
 }
 
 /**
@@ -265,8 +300,15 @@ export interface PaneChromePresenterSlotProps {
     readonly onRename: (paneID: string) => void;
     /** Open the host's own pane context menu, anchored under that pane's band. */
     readonly onMenu: (paneID: string) => void;
-    /** Arm the host's pane-move gesture for that pane, from the press that just happened. */
-    readonly onBeginDrag: (paneID: string) => void;
+    /**
+     * The bands the host draws its own drag grip in, with the pane each one belongs to.
+     *
+     * Kept apart from `rects` because they are different halves of one band: `rects` is what the
+     * presenter draws in, and this is the strip the host keeps for itself at the leading edge.
+     */
+    readonly grips: readonly { readonly paneID: string; readonly rect: PaneChromeFrameRect }[];
+    /** The grid's own pane-move gesture, raised from a press on a grip. */
+    readonly onGripPointerDown: (paneID: string, event: ReactPointerEvent<HTMLElement>) => void;
     /**
      * Put the caret back on a pane, because a header band is never a keyboard surface.
      *
@@ -400,9 +442,6 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
             openMenu: (paneID) => {
                 latest.current.onMenu(paneID);
             },
-            beginDrag: (paneID) => {
-                latest.current.onBeginDrag(paneID);
-            },
             declareHeight: (paneID, pixels) => {
                 // Straight to the store the grid reads. The clamp is applied at READ, against that
                 // pane's own height, which is the only place both numbers are in hand.
@@ -509,6 +548,7 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
 
     if (bundled || host === null || runtime === null || selection.pluginID === null) return null;
     return (
+        <>
         <div
             ref={wrapper}
             data-testid="pane-chrome-presenter"
@@ -549,5 +589,64 @@ export function PaneChromePresenterSlot(props: PaneChromePresenterSlotProps): Re
                 }}
             />
         </div>
+        {shown ? <PaneChromeGrips grips={props.grips} onPointerDown={props.onGripPointerDown} /> : null}
+        </>
+    );
+}
+
+/**
+ * The host's drag grips, one per presented band.
+ *
+ * A sibling of the presenter's frame rather than a child of it, and rendered after it so it paints
+ * on top: the press that starts a pane move has to land in the HOST's document, because Chromium
+ * settles where a mouse gesture is routed when the button goes down and a press inside an iframe
+ * keeps every later move and the release inside that iframe. No call a presenter could make can
+ * undo that, which is why `beginPaneDrag` was withdrawn and this took its place.
+ *
+ * Its own container, clipped to nothing when there is nothing to draw, so a grid with no presenter
+ * has no extra element and no extra hit-testing in it.
+ */
+function PaneChromeGrips(props: {
+    readonly grips: PaneChromePresenterSlotProps['grips'];
+    readonly onPointerDown: PaneChromePresenterSlotProps['onGripPointerDown'];
+}): ReactElement | null {
+    const grips = props.grips.filter((grip) => grip.rect.width > 0 && grip.rect.height > 0);
+    if (grips.length === 0) return null;
+    return (
+        <>
+            {grips.map((grip) => (
+                <div
+                    key={grip.paneID}
+                    data-testid={`pane-chrome-grip-${grip.paneID}`}
+                    data-pane-id={grip.paneID}
+                    aria-hidden="true"
+                    title="Drag to move this pane"
+                    style={{
+                        position: 'absolute',
+                        left: `${String(grip.rect.x)}px`,
+                        top: `${String(grip.rect.y)}px`,
+                        width: `${String(grip.rect.width)}px`,
+                        height: `${String(grip.rect.height)}px`,
+                        // Above the presenter's frame (2) and below a renaming pane's wrapper (3),
+                        // which is the same order every other host surface over a band keeps.
+                        zIndex: 2,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'grab',
+                        // The band's own fill, so the strip reads as part of the header rather than
+                        // as a gap the presenter forgot to paint.
+                        background: tokens.headerBackground,
+                        // A grip, drawn rather than imported: two hairlines at the band's own
+                        // divider colour, which is what a drag handle looks like everywhere else.
+                        backgroundImage: `linear-gradient(to right, ${tokens.divider} 1px, transparent 1px, transparent 3px, ${tokens.divider} 4px, transparent 4px)`,
+                        backgroundRepeat: 'no-repeat',
+                        backgroundPosition: 'center',
+                        backgroundSize: '5px 10px'
+                    }}
+                    onPointerDown={(event) => props.onPointerDown(grip.paneID, event)}
+                />
+            ))}
+        </>
     );
 }

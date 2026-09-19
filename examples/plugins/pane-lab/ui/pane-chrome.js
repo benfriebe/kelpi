@@ -5,8 +5,8 @@
  * displayed workspace, and ten `kelpi.ui` verbs act on it: `focusChromePane`, `splitPane`,
  * `toggleZoom`, `renamePane` (which opens the HOST's inline field and takes no name),
  * `closePane` (which routes through the HOST's confirmation), `activatePaneControl` and
- * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `beginPaneDrag`, `setPaneChromeHeight`
- * and `reportPresenterReady`.
+ * `runPaneHeaderItem` (both by opaque ref), `openPaneMenu`, `setPaneChromeHeight` and
+ * `reportPresenterReady`.
  *
  * What is NOT here is the point of the example. There is no pane handle, no pid, no absolute path,
  * no plugin id and no command name anywhere in this file: a control is named by an opaque,
@@ -41,7 +41,7 @@ const element = id => document.getElementById(id);
  * The scenario's whole view into this presenter, and `postMessage`-free: state to assert on plus
  * the three deliberate hooks the recovery paths and the height authority are exercised with.
  */
-const lab = { snapshot: null, ready: false, frames: 0, lastError: null, lastPress: null, crash, stall, declare };
+const lab = { snapshot: null, ready: false, frames: 0, lastError: null, lastPress: null, pressMoves: 0, crash, stall, declare };
 globalThis.paneLab = lab;
 
 let disposed = false, painted = false, stalled = false, armed = null;
@@ -177,25 +177,24 @@ function bandNode() {
     // consumes its own tap.
     node.addEventListener('pointerdown', event => {
         const paneID = node.dataset.paneId;
-        // What the last press was, for a scenario that has to tell "the press never arrived" from
-        // "the press arrived and the gesture did not commit".
+        // What the last press was, and how many moves the FRAME saw while the button was down.
+        // The second number is the measurement behind the host's drag grip: a press that lands in
+        // here keeps the whole gesture in here, whatever the host does afterwards.
         lab.lastPress = { paneID: paneID ?? null, button: event.button, target: event.target?.className ?? null };
+        lab.pressMoves = 0;
+        /*
+         * A band is chrome, not prose.
+         *
+         * Without this the browser starts a native text SELECTION on a press and drags it across
+         * the header, which is what a user gets instead of anything useful - and the selection also
+         * keeps the gesture in this document. `user-select: none` in the stylesheet says the band
+         * holds nothing selectable; this says the press itself is not the start of one. The pane
+         * move is the host's own grip at the leading edge of the band, in the host's own document,
+         * because a press in here can never reach the window's gesture (see the README).
+         */
+        event.preventDefault();
         if (paneID === undefined) return;
         void act(() => api.ui.focusChromePane(paneID));
-        /*
-         * And the same press starts a pane MOVE, which is what the bundled header's own
-         * `onPointerDown` does: focus, then raise the grid's gesture. A press on a control or an
-         * item is not one - a button consumes its own tap - and neither is a secondary button.
-         *
-         * The handle is the whole band rather than the title, because a narrow pane squeezes the
-         * title to nothing and a drag handle with no area is a drag nobody can start.
-         * `beginPaneDrag` only says "this press is the start of one": the host takes pointer events
-         * back from this frame, measures its own threshold from the next move, draws its own drop
-         * zones and commits the move. Nothing about the drag is drawn here.
-         */
-        if (event.button !== 0) return;
-        if (event.target instanceof Element && event.target.closest('.control, .item') !== null) return;
-        void act(() => api.ui.beginPaneDrag(paneID));
     });
     node.addEventListener('dblclick', event => {
         event.preventDefault();
@@ -215,10 +214,10 @@ function bandNode() {
      */
     const one = document.createElement('div'); one.className = 'line line-one';
     const facts = document.createElement('div'); facts.className = 'line facts';
-    // The drag handle, named: everything in this box is a FACT rather than a control, so a press
-    // anywhere in it is a press on the header itself. The controls and the items sit beside it and
-    // consume their own taps, exactly as the bundled header's buttons do.
-    facts.dataset.testid = 'lab-pane-grip';
+    // The facts half of the row: everything in it is a FACT rather than a control. Named so a test
+    // can aim at a part of the band that is never a button; the DRAG handle is the host's own grip
+    // at the leading edge, outside this frame entirely.
+    facts.dataset.testid = 'lab-pane-facts';
     const items = document.createElement('div'); items.className = 'line items';
     const controls = document.createElement('div'); controls.className = 'line controls';
     one.append(facts, items, controls);
@@ -430,6 +429,18 @@ async function frame(snapshot) {
         document.body.dataset.ready = 'true';
     } catch (error) { failed(error); }
 }
+
+/*
+ * How many moves THIS DOCUMENT sees while a button is down.
+ *
+ * On the document rather than on the band, because a drag leaves the band almost immediately and a
+ * listener on the band would count one move and stop - which is not the question. The question is
+ * whether the gesture stays in this frame at all once a press has landed in it, and the answer is
+ * what the host's drag grip exists for.
+ */
+addEventListener('pointermove', event => {
+    if (event.buttons !== 0 && typeof lab.pressMoves === 'number') lab.pressMoves += 1;
+}, true);
 
 await api.ready;
 const stop = api.ui.onPaneChrome(frame, failed);

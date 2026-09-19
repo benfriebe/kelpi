@@ -104,6 +104,24 @@ placement back with every draft intact, **Retry presenter** appears beside the s
 phone windows keep the bundled sheet. See
 [selectable Settings presenter](plugin-ui.md#selectable-settings-presenter).
 
+Every pane's header band is a fifth, `pane.chrome`. One selected view draws the band of every
+visible pane of the displayed workspace, from one frame carrying the panes that fit a 256 KiB budget
+and a count of the rest; a withheld pane keeps the bundled header. It is Settings-only in the same
+way, and a container cannot declare it. The host keeps the band itself - its height, its fill, the
+focus ring around it, the pane context menu, the inline rename field, every destructive
+confirmation, the dividers, the resize badge, the terminal's mirror clip wash and the find bar - and
+clips the presenter's single frame to the bands it granted, so a click below a header still reaches
+the terminal under it. A presenter declares how tall a band it needs and the host clamps it to the
+smaller of 96 px and a quarter of that pane's height before the pane's body, a terminal's rows and a
+web pane's native bounds are laid out under it. Controls and other plugins' `pane.header` items
+arrive as opaque per-frame refs, never as plugin ids or command names. On failure **every** pane is
+back on the bundled header in the same commit with every declared band dropped, a failure toast is
+raised, **Retry presenter** appears beside the selection, and phone windows keep their own header.
+Standing the placement down - the bundled header, a disabled plugin, an uninstalled one - hands
+every declared band back in the same commit. The pane-move drag still works from a presenter's band
+through `beginPaneDrag`: the presenter says a press started one and the host runs its own gesture.
+See [pane chrome](plugin-ui.md#pane-chrome).
+
 Plugin panes participate in normal splits, moves, zoom, parking, and close/reopen. They retain
 their descriptor and JSON state when the plugin is missing, disabled, updated, or removed.
 Parked plugin panes also survive daemon restarts. A missing plugin never spawns a terminal.
@@ -126,6 +144,14 @@ for `settings.window` in Settings → Plugins → Workbench views; see the
 [UI guide](plugin-ui.md#selectable-settings-presenter) for the native sections and the recovery
 path, and its README for the diagnostics and the deliberate crash and stall hooks the live
 scenario uses.
+
+[Pane Lab](../examples/plugins/pane-lab) draws every pane's header band from the public pane chrome
+feed, with no backend and no build: a band per carried pane positioned at the rectangle the frame
+gives it, a declared two-line band on wide panes, the host's controls and other plugins' items by
+opaque ref, and the withheld count printed. It is selected for `pane.chrome` in Settings → Plugins →
+Workbench views; see the [UI guide](plugin-ui.md#pane-chrome) for the geometry, what is withheld and
+how a failed presenter puts every bundled header back at once, and its README for the diagnostics
+and the deliberate crash and stall hooks the live scenario uses.
 
 [Document Lab](../examples/plugins/document-lab) replaces Markdown, Scratchpad and Diff bodies
 while preserving their native pane IDs and buffers. The [document guide](plugin-documents.md)
@@ -226,10 +252,7 @@ the commands registered during activation.
 Supported built-in placements are `pane`, `sidebar.primary`, `sidebar.secondary`, `panel.bottom`,
 `topbar`, `statusbar`, `workspace`, `settings`, `document.markdown`, `document.scratchpad`,
 `document.diff`, `terminal`, `browser`, `interaction.palette`, `interaction.prompts`,
-`interaction.notifications`, and `settings.window`. `pane.chrome` validates as well and draws
-nothing yet: its presenter host arrives in phase B (see
-[Pane chrome](plugin-ui.md#pane-chrome)), so the slot is not registered and nothing can be
-selected into it. A view can support several placements or a
+`interaction.notifications`, `settings.window`, and `pane.chrome`. A view can support several placements or a
 declared custom slot. Document, terminal and browser placements accept isolated views, not
 containers. Neither do the palette, prompts, notifications, Settings presenter and pane chrome
 placements: a presenter owns its whole surface.

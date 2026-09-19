@@ -64,6 +64,14 @@ export const COMMAND_PALETTE_COMMAND = 'command-palette';
 export const SELECT_ALL_WORKSPACES_COMMAND = 'select-all-workspaces';
 /** §WS-151 — the client answers by clearing the sidebar's workspace multi-selection. */
 export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
+/**
+ * #175: the three terminal text-size rows. The client answers with the same handler its
+ * `increase/decrease/reset_terminal_font_size` key actions run, which offers a focused markdown
+ * preview its own size first and otherwise steps the daemon-wide ghostty `font-size`.
+ */
+export const INCREASE_TEXT_SIZE_COMMAND = 'increase-terminal-text-size';
+export const DECREASE_TEXT_SIZE_COMMAND = 'decrease-terminal-text-size';
+export const RESET_TEXT_SIZE_COMMAND = 'reset-terminal-text-size';
 
 /**
  * §WS-151's "Switch to Workspace N" rows: `switch-workspace-1` … `switch-workspace-9`.
@@ -411,6 +419,39 @@ export const RECOVER_INTERFACE_LABEL = 'Recover Interface';
 export const RECOVER_INTERFACE_ACCELERATOR = 'CommandOrControl+Alt+Control+R';
 export const RECOVER_INTERFACE_COMMAND = 'recover-interface';
 
+export const INCREASE_TEXT_SIZE_LABEL = 'Increase Terminal Text Size';
+export const DECREASE_TEXT_SIZE_LABEL = 'Decrease Terminal Text Size';
+export const RESET_TEXT_SIZE_LABEL = 'Reset Terminal Text Size';
+
+/**
+ * #175's three rows carry NO accelerator, and that is the decision rather than an omission.
+ *
+ * Their chords (⌘= / ⌘- / ⌘0) are in the binding map, which leaves exactly two shapes open:
+ *
+ *   1. **Derive one, like the product toggles above.** `menuAccelerators` derives only for
+ *      `MENU_BAR_ACTIONS`, and these three are deliberately not in that set: it is the one set
+ *      that still fires while a CHROME TEXT FIELD has the caret, and a ⌘- typed into the sidebar
+ *      filter must stay a `-`. Adding them to it to get a glyph would change what the chord does
+ *      while the user is typing, which is the opposite of what #175 asks for.
+ *   2. **Hard-code one, like Force Reload and Recover Interface.** Both of those sit on chords
+ *      the map does NOT claim, which is precisely why they may. `menu.test.ts` ▸ "leaves no chord
+ *      the binding map claims to a native menu default" allows a claimed chord only on a click
+ *      row, and N14 shows what a click row then owes: whether a macOS accelerator also reaches
+ *      the renderer "is not observable from inside the app" (`client/app/shell-close.ts`), so
+ *      ⌘W needed a 400 ms coalescing bridge to keep one press from closing two panes. A press
+ *      that stepped the font size twice would need the same bridge, and it would also fire while
+ *      a focused WEB pane is zooming its page on ⌘= through the renderer's own priority layer.
+ *
+ * So the rows are the gesture and the keyboard is the binding map's, undivided. The chord is
+ * shown - and rebound - where every non-menu-bar chord is: Settings ▸ Keybindings and the Help
+ * overlay, both of which read the live map.
+ */
+const TEXT_SIZE_ROWS: readonly (readonly [string, string])[] = [
+    [INCREASE_TEXT_SIZE_LABEL, INCREASE_TEXT_SIZE_COMMAND],
+    [DECREASE_TEXT_SIZE_LABEL, DECREASE_TEXT_SIZE_COMMAND],
+    [RESET_TEXT_SIZE_LABEL, RESET_TEXT_SIZE_COMMAND]
+];
+
 /**
  * The View submenu: the two *product* toggles first, in the shipped app's own order, then the
  * web-contents roles the shell has always carried.
@@ -428,6 +469,11 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         { role: 'reload' },
         { role: 'forceReload', accelerator: FORCE_RELOAD_ACCELERATOR },
         { role: 'toggleDevTools' },
+        { type: 'separator' },
+        // #175: the terminal text size, in the menu every platform puts a text-size group in.
+        // Inserted BEFORE full screen rather than appended, so `Recover Interface` stays the last
+        // row of the View menu, which is where #79 deliberately put it.
+        ...TEXT_SIZE_ROWS.map(([label, command]) => relayRow(deps, label, undefined, command)),
         { type: 'separator' },
         { role: 'togglefullscreen' },
         { type: 'separator' },
@@ -734,7 +780,10 @@ export const VIEW_MENU_LOG_FRAGMENT =
     `View ▸ ${TOGGLE_SIDEBAR_LABEL} (⌘⇧S) + ${TOGGLE_INSPECTOR_LABEL} (⌘I)` +
     // Issue #79, appended for the same reason the inspector toggle was: `sidebar-remaining`
     // asserts the prefix above as a substring, so the third row goes on the end.
-    ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)`;
+    ` + ${RECOVER_INTERFACE_LABEL} (⌃⌥⌘R)` +
+    // #175. No chord beside them, because these three carry no accelerator on purpose; see
+    // TEXT_SIZE_ROWS. Appended, like every row before them, so the prefix stays assertable.
+    ` + ${INCREASE_TEXT_SIZE_LABEL} / ${DECREASE_TEXT_SIZE_LABEL} / ${RESET_TEXT_SIZE_LABEL}`;
 
 /**
  * `File ▸ …`, as `main.ts` logs it.

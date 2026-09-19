@@ -61,7 +61,13 @@ import {
     switchWorkspaceLabel,
     switchWorkspacePosition,
     viewMenuTemplate,
-    workspaceSelectionLogLine
+    workspaceSelectionLogLine,
+    DECREASE_TEXT_SIZE_COMMAND,
+    DECREASE_TEXT_SIZE_LABEL,
+    INCREASE_TEXT_SIZE_COMMAND,
+    INCREASE_TEXT_SIZE_LABEL,
+    RESET_TEXT_SIZE_COMMAND,
+    RESET_TEXT_SIZE_LABEL
 } from './menu.js';
 
 /** The rows a template carries, in order, with roles standing in for the label-less ones. */
@@ -79,6 +85,11 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
             'reload',
             'forceReload',
             'toggleDevTools',
+            // #175, inserted here rather than appended so Recover Interface stays last (#79).
+            'separator',
+            INCREASE_TEXT_SIZE_LABEL,
+            DECREASE_TEXT_SIZE_LABEL,
+            RESET_TEXT_SIZE_LABEL,
             'separator',
             'togglefullscreen',
             // Issue #79, appended so the two product toggles keep their shipped positions.
@@ -149,8 +160,41 @@ describe('View menu (§WS-001, §APP-025 / §WS-152)', () => {
         // false if this fragment were ever reshaped instead of appended to.
         expect(VIEW_MENU_LOG_FRAGMENT.startsWith('View ▸ Toggle Sidebar (⌘⇧S)')).toBe(true);
         expect(VIEW_MENU_LOG_FRAGMENT).toBe(
-            'View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I) + Recover Interface (⌃⌥⌘R)'
+            'View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I) + Recover Interface (⌃⌥⌘R)' +
+                ' + Increase Terminal Text Size / Decrease Terminal Text Size / Reset Terminal Text Size'
         );
+    });
+
+    /**
+     * #175: the three text-size rows relay like every other product row and carry NO
+     * accelerator, which is the decision `menu.ts` ▸ `TEXT_SIZE_ROWS` argues.
+     *
+     * Their chords are in the binding map, and the sweep below ("leaves no chord the binding map
+     * claims to a native menu default") is why a glyph here would not be free: a claimed chord on
+     * a menu row needs the app's own dedup, because whether a macOS accelerator also reaches the
+     * renderer is not observable from inside the process (N14, `client/app/shell-close.ts`). The
+     * chord is shown - and rebound - in Settings ▸ Keybindings and the Help overlay instead.
+     */
+    it('relays the three terminal text-size rows and gives them no accelerator', () => {
+        const sendMenuRequest = vi.fn(() => true);
+        const template = viewMenuTemplate({ sendMenuRequest });
+        const row = (label: string) => template.find((item) => item.label === label);
+        for (const [label, command] of [
+            [INCREASE_TEXT_SIZE_LABEL, INCREASE_TEXT_SIZE_COMMAND],
+            [DECREASE_TEXT_SIZE_LABEL, DECREASE_TEXT_SIZE_COMMAND],
+            [RESET_TEXT_SIZE_LABEL, RESET_TEXT_SIZE_COMMAND]
+        ] as const) {
+            expect(row(label)?.accelerator).toBeUndefined();
+            (row(label)?.click as (() => void) | undefined)?.();
+            expect(sendMenuRequest).toHaveBeenCalledWith(command);
+        }
+        // A rebind cannot move them either, because there is nothing to move: a map that spends
+        // ⌘= on something else leaves these rows exactly as they are.
+        const rebound = viewMenuTemplate({
+            sendMenuRequest: () => true,
+            accelerators: menuAccelerators(['super+==unbind'])
+        });
+        expect(rebound.find((item) => item.label === INCREASE_TEXT_SIZE_LABEL)?.accelerator).toBeUndefined();
     });
 
     /**

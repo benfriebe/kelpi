@@ -49,6 +49,7 @@ import {
     SETTINGS_LIMITS,
     isSettingsSectionID,
     settingsFieldDescriptor,
+    steppedSettingsValue,
     validateSettingsDraft,
     validateSettingsWrite,
     type SettingsDraftValue,
@@ -145,6 +146,30 @@ export interface SettingsSurface {
      * and the field's held draft is what commits.
      */
     commitField(fieldID: string, raw?: SettingsDraftValue): void;
+    /**
+     * Move a number or slider field by whole steps of its OWN step and commit the result.
+     *
+     * The ⌘= / ⌘- half of #175, and it is a method here rather than arithmetic at the call site
+     * for one reason: the value a step starts from is NOT what the daemon last broadcast. A press
+     * that arrives while the previous press's write is still out has to start from the value that
+     * write ASKED for, or ten presses in a second land one step and nine stale overwrites. The
+     * queue already holds that value ({@link PendingWrite}), so the step reads it here and the
+     * commit goes through the same funnel, the same validation and the same at-most-once queue
+     * every control uses.
+     *
+     * At a bound the stepped value IS the bound, so the commit is the "unchanged" no-op
+     * `commitField` already has: nothing is written and nothing is refused.
+     */
+    stepField(fieldID: string, steps: number): void;
+    /**
+     * Commit the field's SHIPPED DEFAULT - the ⌘0 half of #175.
+     *
+     * Deliberately not {@link resetField}, which discards a draft and writes nothing. The value
+     * written is `default`, the same number the descriptor publishes and the same number the row
+     * shows when the config file says nothing about the key, and it goes out through
+     * `commitField` so it is bounded, on the grid and queued like any other write.
+     */
+    restoreFieldDefault(fieldID: string): void;
     /**
      * Discard the draft and its error. It does NOT write the shipped default.
      *
@@ -429,6 +454,72 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
 
     // ── the snapshot ────────────────────────────────────────────────────────────────
 
+    // ── the one writer ──────────────────────────────────────────────────────────────
+
+    /**
+     * `commitField`'s body, as a function the two stepping calls can reach.
+     *
+     * They are not a second write path and must not become one: a step decides only WHICH number
+     * to ask for, and then asks for it here, through the same re-resolve, the same two validation
+     * funnels, the same unchanged rule and the same at-most-once queue as a dragged slider.
+     */
+    const commit = (fieldID: string, raw?: SettingsDraftValue): void => {
+        if (state.disposed) return;
+        const settings = fresh();
+        const definition = resolve(fieldID, settings);
+        const descriptor = describe(definition, settings);
+        const held = state.drafts.get(fieldID);
+        const source: SettingsDraftValue | undefined = raw ?? held;
+        if (source === undefined) return;
+        let value: SettingsFieldValue;
+        try {
+            value = validateSettingsWrite(descriptor, validateSettingsDraft(descriptor, source));
+        } catch (error) {
+            if (definition.fallbackToDefault !== true) {
+                // Refused by a rule, not by the daemon: keep the draft, say why, send nothing.
+                state.drafts.set(fieldID, typeof source === 'boolean' ? draftText(source) : source);
+                state.errors.set(fieldID, error instanceof Error ? error.message : String(error));
+                touch();
+                notify();
+                return;
+            }
+            // SET-020: this row would rather write its shipped default than leave the user
+            // looking at a control that did nothing. `seventy` and `0x1F90` both land here.
+            value = validateSettingsWrite(descriptor, definition.default);
+        }
+        state.errors.delete(fieldID);
+        const current = definition.read(settings);
+        if (Object.is(current, value) && !state.writes.has(fieldID) && definition.commitsUnchanged !== true) {
+            // SET-099's rule, generalised: committing the value the file already holds is not
+            // a write. The draft has nowhere left to be, so it goes. A row that says
+            // `commitsUnchanged` opts out - the TCP port always writes.
+            if (!state.editing.has(fieldID)) state.drafts.delete(fieldID);
+            touch();
+            notify();
+            return;
+        }
+        state.drafts.set(fieldID, draftText(value));
+        queue(fieldID, value);
+        notify();
+    };
+
+    /**
+     * The number a step must start from: the newest value ASKED for, not the newest broadcast.
+     *
+     * `desired` is a write queued behind one that is still out, `value` is the one in flight, and
+     * only when neither exists is the daemon's snapshot the latest word. Without this, ten ⌘= in
+     * a second would each read the same broadcast 13, each compute 14, and the queue's own
+     * "asking again for the value already out is the same ask" rule would collapse them into one
+     * step (`queue`). With it they compose: 14 queues 15 queues 16, and the drain sends the
+     * newest when the broadcast for the first arrives.
+     */
+    const pendingValue = (fieldID: string): SettingsFieldValue | null => {
+        const write = state.writes.get(fieldID);
+        if (write === undefined) return null;
+        if (write.desired !== null) return write.desired.value;
+        return write.inFlight ? write.value : null;
+    };
+
     const build = (settings: WsSettingsSnapshot, sectionID: SettingsSectionID): SettingsSurfaceSnapshot => {
         /*
          * Two questions, two answers, and Appearance is where they differ.
@@ -539,43 +630,27 @@ export function createSettingsSurface(config: SettingsSurfaceConfig): SettingsSu
         },
 
         commitField(fieldID: string, raw?: SettingsDraftValue): void {
+            commit(fieldID, raw);
+        },
+
+        stepField(fieldID: string, steps: number): void {
             if (state.disposed) return;
             const settings = fresh();
+            // Re-resolved against a FRESH catalog read like every other mutator, so a field that
+            // vanished, went native, went off screen or went disabled refuses the step.
             const definition = resolve(fieldID, settings);
             const descriptor = describe(definition, settings);
-            const held = state.drafts.get(fieldID);
-            const source: SettingsDraftValue | undefined = raw ?? held;
-            if (source === undefined) return;
-            let value: SettingsFieldValue;
-            try {
-                value = validateSettingsWrite(descriptor, validateSettingsDraft(descriptor, source));
-            } catch (error) {
-                if (definition.fallbackToDefault !== true) {
-                    // Refused by a rule, not by the daemon: keep the draft, say why, send nothing.
-                    state.drafts.set(fieldID, typeof source === 'boolean' ? draftText(source) : source);
-                    state.errors.set(fieldID, error instanceof Error ? error.message : String(error));
-                    touch();
-                    notify();
-                    return;
-                }
-                // SET-020: this row would rather write its shipped default than leave the user
-                // looking at a control that did nothing. `seventy` and `0x1F90` both land here.
-                value = validateSettingsWrite(descriptor, definition.default);
-            }
-            state.errors.delete(fieldID);
-            const current = definition.read(settings);
-            if (Object.is(current, value) && !state.writes.has(fieldID) && definition.commitsUnchanged !== true) {
-                // SET-099's rule, generalised: committing the value the file already holds is not
-                // a write. The draft has nowhere left to be, so it goes. A row that says
-                // `commitsUnchanged` opts out - the TCP port always writes.
-                if (!state.editing.has(fieldID)) state.drafts.delete(fieldID);
-                touch();
-                notify();
-                return;
-            }
-            state.drafts.set(fieldID, draftText(value));
-            queue(fieldID, value);
-            notify();
+            if (descriptor.kind !== 'number' && descriptor.kind !== 'slider')
+                throw new Error(`Settings field ${fieldID} does not step: it is a ${descriptor.kind}.`);
+            const pending = pendingValue(fieldID);
+            const from = typeof pending === 'number' ? pending : descriptor.value;
+            commit(fieldID, String(steppedSettingsValue(descriptor, from, steps)));
+        },
+
+        restoreFieldDefault(fieldID: string): void {
+            if (state.disposed) return;
+            const definition = resolve(fieldID, fresh());
+            commit(fieldID, draftText(definition.default));
         },
 
         resetField(fieldID: string): void {

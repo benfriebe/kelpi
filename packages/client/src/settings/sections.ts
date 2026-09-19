@@ -369,6 +369,17 @@ export const SETTINGS_TERMINAL_PADDING_DEFAULT = 4;
 /** The terminal font size a ghostty config that says nothing falls back to (`AppearanceTab`'s 13). */
 export const SETTINGS_TERMINAL_FONT_SIZE_DEFAULT = 13;
 
+/**
+ * The id of the Appearance row ⌘= / ⌘- / ⌘0 move (#175), so the key actions name a FIELD and
+ * never the ghostty key behind it.
+ *
+ * That is the whole point of the id/target split this module's header states: a caller holding
+ * `font-size` would be holding a write target, and the surface would have nothing left to check
+ * it against. The three actions hold this string, the surface maps it, and the daemon's
+ * `WS_WRITABLE_GHOSTTY_KEYS` allowlist is still the outer layer neither can talk past.
+ */
+export const SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID = 'appearance.fontSize';
+
 const CHROME_APPEARANCE_CHOICES: readonly SettingsChoice[] = Object.freeze([
     Object.freeze({ value: 'system', label: 'System' }),
     Object.freeze({ value: 'light', label: 'Light' }),

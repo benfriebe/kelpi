@@ -1,6 +1,6 @@
 /**
  * The bindable action list.
- * Spec: docs/config-keybindings.md §4 (56 actions + the `unbind` pseudo-action).
+ * Spec: docs/config-keybindings.md §4 (59 actions + the `unbind` pseudo-action).
  * Raw values are the config-file vocabulary and must not change.
  */
 
@@ -61,6 +61,14 @@ export const KELPI_ACTIONS = [
     'kill_line_backward',
     'move_to_line_start',
     'move_to_line_end',
+    // Terminal text size (#175). DAEMON-WIDE, not per pane and not per viewer: each steps the
+    // ghostty `font-size` Settings ▸ Appearance already writes, through the same settings verb,
+    // so every session on that daemon follows and a remote kelpi-to-kelpi session can drive it.
+    // They are NOT in `MENU_BAR_ACTIONS` on purpose: that set is the one that still fires while
+    // a chrome text field has the caret, and a ⌘- typed into the sidebar filter must stay a `-`.
+    'increase_terminal_font_size',
+    'decrease_terminal_font_size',
+    'reset_terminal_font_size',
     // Web pane (hidden from Settings; all ship unbound)
     'web_focus_url_bar',
     'web_back',

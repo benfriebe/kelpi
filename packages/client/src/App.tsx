@@ -139,10 +139,13 @@ import {
 } from './chrome';
 import {
     COMMAND_PALETTE_COMMAND,
+    DECREASE_TEXT_SIZE_COMMAND,
     DESELECT_ALL_WORKSPACES_COMMAND,
+    INCREASE_TEXT_SIZE_COMMAND,
     NEW_GROUP_COMMAND,
     NEW_WEB_PANE_COMMAND,
     RECOVER_INTERFACE_COMMAND,
+    RESET_TEXT_SIZE_COMMAND,
     SELECT_ALL_WORKSPACES_COMMAND,
     switchWorkspacePosition,
     workspaceSelectionReport
@@ -183,6 +186,7 @@ import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type Ren
 import type { PaneChromeItemDescriptor } from './pane-chrome';
 import {
     DEFAULT_SETTINGS_TAB,
+    SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID,
     SettingsOverlay,
     globalHotkeyErrorFrom,
     settingsTransportStatus,
@@ -2402,6 +2406,57 @@ function Shell(props: AppProps): ReactElement {
         settingsSurface.settingsChanged();
     }, [settingsSurface, settings]);
 
+    /**
+     * ⌘= / ⌘- / ⌘0: terminal text size (#175), DAEMON-WIDE.
+     *
+     * The owner's scope decision (2026-09-15): one size per daemon rather than per pane or per
+     * viewer, written through the ordinary settings verb, so every session on that daemon follows
+     * and a kelpi-to-kelpi session can drive it. That makes this three lines rather than a
+     * feature: the Appearance tab's terminal Font size row already IS the setting, the surface is
+     * already the one write path, and the only thing the keyboard adds is which number to ask for.
+     *
+     * Stepping goes through `stepField` rather than reading the row and committing here, because
+     * the value a press starts from is the newest value ASKED for, not the newest broadcast - the
+     * surface holds that, and without it a held-down ⌘= would be one step and a queue of stale
+     * repeats of it (`settings/surface.ts` ▸ `pendingValue`).
+     *
+     * Every refusal the surface can raise - the row gone, gone native, off screen, disabled, not
+     * a number - answers `false` here, which makes the chord FALL THROUGH rather than raise a
+     * toast: the same shape every conditional binding in `keyActions` has. A step that lands on
+     * the row's own minimum or maximum is not a refusal; it is the surface's unchanged-commit
+     * no-op, and the chord is consumed with nothing written.
+     */
+    const stepTerminalTextSize = useCallback(
+        (step: FontSizeStep): boolean => {
+            try {
+                if (step === 'reset') settingsSurface.restoreFieldDefault(SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID);
+                else settingsSurface.stepField(SETTINGS_TERMINAL_FONT_SIZE_FIELD_ID, step === 'increase' ? 1 : -1);
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [settingsSurface]
+    );
+
+    /**
+     * One chord, two surfaces, in the order the more specific one wins.
+     *
+     * A focused markdown PREVIEW has its own font size and has had ⌘= / ⌘- / ⌘0 since §3.16; the
+     * terminal size is the daemon's. So the preview is offered the press first and the daemon's
+     * setting takes what it declines - which is the same shape `toggle_search` uses to route ⌘F
+     * between a content pane's find bar and the terminal's scrollback search. Nothing a person
+     * can see changed for a markdown pane: the chords moved to these actions in the default map
+     * (#175), and this is what keeps the preview's behaviour byte-identical through the move.
+     */
+    const textSizeStep = useCallback(
+        (step: FontSizeStep): boolean => act.setFontSizeFocused(step) || stepTerminalTextSize(step),
+        [act, stepTerminalTextSize]
+    );
+    /** Read at call time by the `menu-command` listener, which is installed once. */
+    const textSizeStepRef = useRef(textSizeStep);
+    textSizeStepRef.current = textSizeStep;
+
     // ── favicon / tab badge ─────────────────────────────────────────────────────────
 
     const faviconRef = useRef<FaviconController | null>(null);
@@ -2453,10 +2508,17 @@ function Shell(props: AppProps): ReactElement {
             // Conditional binding (§4.1): only a focused markdown pane consumes ⌘E — anything
             // else returns false and the keystroke falls through to the pane.
             toggle_markdown_edit: () => act.toggleMarkdownEditFocused(),
-            // §3.16: same conditional shape — markdown, and not editing, or fall through.
+            // §3.16: same conditional shape, markdown and not editing, or fall through. These
+            // three ship UNBOUND since #175 took ⌘= / ⌘- / ⌘0 for the terminal set below; they
+            // stay registered so a user who binds one by hand gets exactly the preview's size.
             increase_markdown_font_size: () => act.setFontSizeFocused('increase'),
             decrease_markdown_font_size: () => act.setFontSizeFocused('decrease'),
             reset_markdown_font_size: () => act.setFontSizeFocused('reset'),
+            // #175: ⌘= / ⌘- / ⌘0 (and ⇧⌘= , which is ⌘+ on a US layout) step the DAEMON-WIDE
+            // terminal font size, after offering a focused markdown preview its own size first.
+            increase_terminal_font_size: () => textSizeStep('increase'),
+            decrease_terminal_font_size: () => textSizeStep('decrease'),
+            reset_terminal_font_size: () => textSizeStep('reset'),
             // §3.13 / §7.14: ⌘F routes by pane type — a markdown/diff pane's own find bar, or
             // the daemon-backed scrollback search for a terminal (TERM-113).
             // A web pane's find is its own (the marks live in a page the host owns), so it is
@@ -2521,7 +2583,7 @@ function Shell(props: AppProps): ReactElement {
             web_zoom_reset: () => webAct.run((pane) => webAct.zoom(pane.paneID, 'reset')),
             ...workspaceSwitchHandlers((index) => act.switchToIndex(index))
         }),
-        [act, webAct, shellClose]
+        [act, webAct, shellClose, textSizeStep]
     );
 
     const keyActionsRef = useRef(keyActions);
@@ -2756,6 +2818,17 @@ function Shell(props: AppProps): ReactElement {
                 const ended = resetGestures('manual');
                 console.info(`recover interface: reset ${String(ended)} pointer gesture(s)`);
             }
+            /*
+             * #175 - View ▸ Increase / Decrease / Reset Terminal Text Size.
+             *
+             * The same handler the three key actions run, so a click and a chord are one gesture
+             * by two routes. These rows carry no accelerator (`shell/src/menu.ts` ▸
+             * `TEXT_SIZE_ROWS` states why), so a `menu-command` here is always a real click and
+             * can never be the second half of a keystroke the dispatcher has already stepped.
+             */
+            else if (command === INCREASE_TEXT_SIZE_COMMAND) textSizeStepRef.current('increase');
+            else if (command === DECREASE_TEXT_SIZE_COMMAND) textSizeStepRef.current('decrease');
+            else if (command === RESET_TEXT_SIZE_COMMAND) textSizeStepRef.current('reset');
             else if (command === SELECT_ALL_WORKSPACES_COMMAND) actRef.current.selectAllWorkspaces();
             else if (command === DESELECT_ALL_WORKSPACES_COMMAND) actRef.current.deselectAllWorkspaces();
             else if (typeof command === 'string' && switchWorkspacePosition(command) !== null) {

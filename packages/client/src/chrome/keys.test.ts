@@ -71,7 +71,9 @@ function recorder(): { registry: KeyActionRegistry; fired: KelpiAction[] } {
         'toggle_sidebar',
         'next_workspace',
         'previous_workspace',
-        'increase_markdown_font_size',
+        'increase_terminal_font_size',
+        'decrease_terminal_font_size',
+        'reset_terminal_font_size',
         'close_search',
         'new_workspace'
     ];
@@ -120,7 +122,11 @@ describe('the default binding matrix', () => {
         ['Space', { meta: true, shift: true }, 'cycle_layout'],
         ['KeyP', { meta: true }, 'command_palette'],
         ['KeyS', { meta: true, shift: true }, 'toggle_sidebar'],
-        ['Equal', { meta: true }, 'increase_markdown_font_size'],
+        // #175: ⌘= and ⌘⇧= (⌘+ on a US layout) are both the terminal text size now.
+        ['Equal', { meta: true }, 'increase_terminal_font_size'],
+        ['Equal', { meta: true, shift: true }, 'increase_terminal_font_size'],
+        ['Minus', { meta: true }, 'decrease_terminal_font_size'],
+        ['Digit0', { meta: true }, 'reset_terminal_font_size'],
         ['Escape', {}, 'close_search']
     ];
 
@@ -311,6 +317,48 @@ describe('conditional rules', () => {
         expect(dispatch(keyEvent('KeyP', { meta: true }, input))).toBe(true);
         expect(dispatch(keyEvent('KeyS', { meta: true, shift: true }, input))).toBe(true);
         expect(fired).toEqual(['command_palette', 'toggle_sidebar']);
+    });
+
+    /**
+     * #175: the same rule, asked of the three chords the issue is about.
+     *
+     * They must work over a focused TERMINAL (the host is `contenteditable`, so the plain
+     * tag/flag test would have read it as chrome text) and must not fire while the sidebar
+     * filter or a rename has the caret: a ⌘- typed into a field is a `-`, and a ⌘0 is a `0`.
+     * The Settings recorder is covered one layer up, where `isPaletteOpen` stands the whole
+     * dispatcher down while the window is open (`App.tsx`).
+     */
+    it('steps the terminal text size over a terminal host, and never inside a chrome field', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        const host = document.createElement('div');
+        host.setAttribute('data-terminal-host', '');
+        document.body.append(host);
+        try {
+            for (const [code, modifiers] of [
+                ['Equal', { meta: true }],
+                ['Equal', { meta: true, shift: true }],
+                ['Minus', { meta: true }],
+                ['Digit0', { meta: true }]
+            ] as const) {
+                expect(dispatch(keyEvent(code, modifiers, host))).toBe(true);
+            }
+            expect(fired).toEqual([
+                'increase_terminal_font_size',
+                'increase_terminal_font_size',
+                'decrease_terminal_font_size',
+                'reset_terminal_font_size'
+            ]);
+
+            fired.length = 0;
+            const filter = { tagName: 'INPUT' };
+            expect(dispatch(keyEvent('Equal', { meta: true }, filter))).toBe(false);
+            expect(dispatch(keyEvent('Minus', { meta: true }, filter))).toBe(false);
+            expect(dispatch(keyEvent('Digit0', { meta: true }, filter))).toBe(false);
+            expect(fired).toEqual([]);
+        } finally {
+            host.remove();
+        }
     });
 
     it('recognises the editable surfaces, and NOT a terminal canvas', () => {

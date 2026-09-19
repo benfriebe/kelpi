@@ -32,6 +32,19 @@ export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
  */
 export const RECOVER_INTERFACE_COMMAND = 'recover-interface';
 
+/**
+ * View ▸ the three terminal text-size rows (#175).
+ *
+ * They carry no accelerator in the menu (`shell/src/menu.ts` ▸ `TEXT_SIZE_ROWS` states why), so
+ * these three names are the ONLY way the rows reach the client: the chord ⌘= / ⌘- / ⌘0 takes the
+ * binding map's route instead and never becomes a `menu-command`. Both ends land on the same
+ * handler, which offers a focused markdown preview its own font size first and otherwise steps
+ * the daemon-wide terminal one through the settings surface.
+ */
+export const INCREASE_TEXT_SIZE_COMMAND = 'increase-terminal-text-size';
+export const DECREASE_TEXT_SIZE_COMMAND = 'decrease-terminal-text-size';
+export const RESET_TEXT_SIZE_COMMAND = 'reset-terminal-text-size';
+
 /** File ▸ Switch to Workspace 1…9 (⌘1…⌘9), as `switch-workspace-1` … `switch-workspace-9`. */
 export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
 

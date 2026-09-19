@@ -28,7 +28,7 @@ export interface KeybindOverride {
 
 /**
  * Split a `keybind` value at its LAST `=` (that is what lets the `=` key itself be
- * bound: `super+==increase_markdown_font_size`), then validate both halves.
+ * bound: `super+==increase_terminal_font_size`), then validate both halves.
  * Returns null for the "warn + skip line" cases.
  */
 export function parseKeybindValue(value: string): KeybindOverride | null {
@@ -43,7 +43,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     return { trigger, action: actionString };
 }
 
-/** §5.2 - the 45 shipped default triggers, in `<trigger>=<action>` form. */
+/** §5.2 - the 46 shipped default triggers, in `<trigger>=<action>` form. */
 export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'super+n=new_workspace',
     'super+o=open_file',
@@ -70,9 +70,21 @@ export const DEFAULT_KEYBIND_LINES: readonly string[] = [
     'alt+super+up=previous_workspace',
     'shift+super+r=rename_workspace',
     'super+e=toggle_markdown_edit',
-    'super+==increase_markdown_font_size',
-    'super+-=decrease_markdown_font_size',
-    'super+0=reset_markdown_font_size',
+    /*
+     * #175: ⌘= / ⌘- / ⌘0 are TERMINAL text size, and step the daemon-wide ghostty `font-size`.
+     *
+     * They were `increase/decrease/reset_markdown_font_size` before this, and those three actions
+     * are still in the vocabulary and still rebindable; what moved is which action the three
+     * shipped chords resolve to. Nothing a person can see changed for a markdown preview: the
+     * terminal handlers offer a focused preview pane its own font size FIRST and only then step
+     * the daemon's, which is the same precedence `toggle_search` uses to route ⌘F by pane type
+     * (`App.tsx`). Two triggers for increase because ⌘+ on a US layout is a shifted `=`, exactly
+     * as the web pane's own zoom layer reads it (`webpane/priority.ts`).
+     */
+    'super+==increase_terminal_font_size',
+    'shift+super+==increase_terminal_font_size',
+    'super+-=decrease_terminal_font_size',
+    'super+0=reset_terminal_font_size',
     'shift+super+return=toggle_zoom',
     'shift+super+t=reopen_closed_pane',
     'super+f=toggle_search',

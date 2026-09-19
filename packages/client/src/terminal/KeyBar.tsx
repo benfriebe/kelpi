@@ -324,6 +324,22 @@ export const KEY_BAR_KEYS: readonly KeyBarKey[] = [
         action: 'toggleKeyboard',
         wide: true
     }
+    /*
+     * #175: NO `A−` / `A+` pair, and the reason is this list's own rule rather than room.
+     *
+     * Every key above is one of three things: a keystroke a soft keyboard cannot produce
+     * (`init`), a modifier that latches onto the next one (`modifier`), or one of exactly two
+     * things done to the BAR or the pane it is aimed at (`action`: paste, and the keyboard
+     * toggle). Terminal text size is none of them. It is a DAEMON-WIDE settings write, one
+     * value for every session on the daemon including the ones on other devices, and putting
+     * it on a per-pane key bar would read as "make THIS pane's text bigger", which is exactly
+     * the per-pane reading the owner ruled out (config-keybindings.md §7.6).
+     *
+     * The phone reaches the same setting where it lives and where its value is visible:
+     * Settings ▸ Appearance ▸ Terminal ▸ Font size, which the phone sheet already draws. A
+     * second control for one value is how two controls come to disagree (`settings/index.ts`'s
+     * one-write-path rule), and this bar is already a horizontal scroller at fifteen keys.
+     */
 ];
 
 export interface KeyBarProps {

@@ -1411,7 +1411,10 @@ Close (⌘W), which asks the focused window's page to run `close_pane` and close
 only when the page reports nothing to close or does not answer within 500ms
 (`menu.ts:133-169`); Edit (standard roles); View ▸ Toggle Sidebar, Toggle Inspector, Reload,
 Force Reload (⌥⌘R, moved off ⇧⌘R because that chord is `rename_workspace`), Toggle Developer
-Tools, Toggle Full Screen, Recover Interface (⌃⌥⌘R, see "Recovering a stuck window" below)
+Tools, Increase / Decrease / Reset Terminal Text Size (#175: relay rows that SHOW the live chord
+and do not register it, `registerAccelerator: false`, so the glyph follows a rebind while the
+keystroke stays the client dispatcher's and one press is one step without N14's dedup;
+config-keybindings.md §7.6 states the decision and the scenario measures it), Toggle Full Screen, Recover Interface (⌃⌥⌘R, see "Recovering a stuck window" below)
 (`menu.ts:253-283`); Window (standard); Debug ▸ Seed Test Group
 (unpackaged builds only; `menu.ts:493-521`); Help ▸ Kelpi Help (⌘?, §11). Every product row
 relays `menu-request` → daemon → `menu-command` → the client's own action, because the shell

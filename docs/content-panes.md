@@ -886,9 +886,17 @@ origin (`openExternalLink` in `packages/client/src/content/bridge.ts`).
 
 ### 3.16 Font size (preview only)
 
-Per-pane `markdownFontSize`, adjusted by keybindings (defaults: ⌘= increase, ⌘-
-decrease, ⌘0 reset). Rules (enforced by the daemon reducer `set-markdown-font-size` in
-`packages/daemon/src/store/reducers/panes.ts`):
+Per-pane `markdownFontSize`, adjusted by ⌘= / ⌘- / ⌘0. Rules (enforced by the daemon
+reducer `set-markdown-font-size` in `packages/daemon/src/store/reducers/panes.ts`):
+
+**Which action those three chords are, since #175.** They ship bound to
+`increase/decrease/reset_terminal_font_size`, not to the `*_markdown_font_size` trio, and
+those handlers offer the FOCUSED PANE's preview font size first, stepping the daemon-wide
+terminal size only when the focused pane is not a markdown preview
+(config-keybindings.md §7.6). So the behaviour below is unchanged and the guard below is
+still the guard; what changed is which action name the default map spends the chords on.
+The `*_markdown_font_size` actions remain bindable and still do exactly this and nothing
+else.
 
 - Only when the focused pane is `markdown` AND `isEditing == false` (the plain-text
   editor has a fixed 13 pt monospace font; diff panes currently receive the same
@@ -1432,7 +1440,7 @@ Header layout (all panes share one header bar; content-pane specifics):
   drawn bottom-right over the preview body, not in the header, whenever the pane is in
   view mode; it sends `markdown-external-editor {action:"open"}` (§4.1;
   `packages/client/src/content/MarkdownPane.tsx`). There are no font +/- header buttons:
-  preview font size is reachable only through the ⌘= / ⌘- / ⌘0 bindings (§3.16).
+  preview font size is reachable only through the ⌘= / ⌘- / ⌘0 chords (§3.16).
 - Standard buttons (split right / split down / close) follow.
 - Context-menu "Open in Finder"-equivalent: markdown reveals `filePath`; diff reveals
   `filePath` when non-empty, else opens `workingDirectory`; others open the working
@@ -1535,8 +1543,9 @@ Scratchpad:
 
 Fonts (defaults, bindable):
 
-- ⌘E toggle_markdown_edit; ⌘= / ⌘- / ⌘0 markdown font size (guarded: markdown pane,
-  view mode); ⌘⇧N create_scratchpad; open_diff default unbound.
+- ⌘E toggle_markdown_edit; ⌘= / ⌘- / ⌘0 font size (guarded: a markdown pane in view mode
+  takes its own preview size, anything else steps the daemon-wide terminal size;
+  config-keybindings.md §7.6); ⌘⇧N create_scratchpad; open_diff default unbound.
 
 ---
 

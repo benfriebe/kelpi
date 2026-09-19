@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
-import { runDesktopTest } from './lib/desktop-lifecycle.mjs';
+import { runDesktopTest, spawnDesktopHelper, listenDesktopServer } from './lib/desktop-lifecycle.mjs';
 
 /**
  * Which CDP page target is **the client window**, as opposed to a web pane's page?
@@ -481,7 +481,8 @@ async function startFixtureSite() {
         });
         response.end(body);
     });
-    await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    const listener = listenDesktopServer(server, port, '127.0.0.1');
+    await listener.ready;
     server.unref();
 
     const frameHandler = (_request, response) => {
@@ -489,7 +490,8 @@ async function startFixtureSite() {
         response.end(frameBody);
     };
     const frameServer = http.createServer(frameHandler);
-    await new Promise((resolve) => frameServer.listen(framePort, '127.0.0.1', resolve));
+    const frameListener = listenDesktopServer(frameServer, framePort, '127.0.0.1');
+    await frameListener.ready;
     frameServer.unref();
     /**
      * …and the same port on `::1`.
@@ -502,10 +504,8 @@ async function startFixtureSite() {
     frameServer6.on('error', () => {
         // No IPv6 loopback on this machine: the v4 listener above is the whole fixture then.
     });
-    await new Promise((resolve) => {
-        frameServer6.once('error', resolve);
-        frameServer6.listen(framePort, '::1', resolve);
-    });
+    const frameListener6 = listenDesktopServer(frameServer6, framePort, '::1');
+    await frameListener6.ready.catch(() => {});
     frameServer6.unref();
 
     return {
@@ -517,15 +517,7 @@ async function startFixtureSite() {
         frameOrigin,
         frameURL: `${frameOrigin}/frame`,
         markers: OOPIF_MARKERS,
-        close: () => {
-            server.close();
-            frameServer.close();
-            try {
-                frameServer6.close();
-            } catch {
-                // never bound
-            }
-        }
+        close: () => Promise.all([listener.stop(), frameListener.stop(), frameListener6.stop()])
     };
 }
 
@@ -810,7 +802,7 @@ async function openSettingsTab(page, tab) {
 async function kelpidStatus(sandbox, { repoRoot, json = true } = {}) {
     const entry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
     return new Promise((resolve) => {
-        const child = spawnProcess(process.execPath, [entry, 'status', ...(json ? ['--json'] : [])], {
+        const child = spawnDesktopHelper(process.execPath, [entry, 'status', ...(json ? ['--json'] : [])], {
             cwd: repoRoot,
             env: sandbox.env,
             stdio: ['ignore', 'pipe', 'pipe']
@@ -2095,7 +2087,7 @@ async function main() {
         } catch {
             // already gone
         }
-        site.close();
+        await site.close();
         if (runtime.shell !== null) await runtime.shell.quit();
         if (runtime.daemon !== null) await runtime.daemon.stop();
         // The two process logs, kept with the artefact: the run-O leak hunt needed to know
@@ -11128,6 +11120,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 const box = await makeSandbox(repoRoot, { label: 'coexist' });
                 let decoy;
+                let decoyListener;
                 let daemon2;
                 try {
                     // The decoy: answers the stale-socket ping probe like a live daemon, so the
@@ -11137,10 +11130,8 @@ function buildFlows(ctx) {
                             socket.end('{"ok":true,"version":"decoy","pid":99999}\n');
                         });
                     });
-                    await new Promise((resolve, reject) => {
-                        decoy.once('error', reject);
-                        decoy.listen(box.socketPath, resolve);
-                    });
+                    decoyListener = listenDesktopServer(decoy, box.socketPath);
+                    await decoyListener.ready;
 
                     daemon2 = startDaemon(box, { repoRoot });
                     await waitForHealthz(box.base);
@@ -11187,7 +11178,7 @@ function buildFlows(ctx) {
                     recorder.check('the decoy still owns and answers on the compat path', decoyReply.includes('"version":"decoy"'), decoyReply.trim());
                 } finally {
                     await daemon2?.stop();
-                    await new Promise((resolve) => (decoy === undefined ? resolve() : decoy.close(resolve)));
+                    await decoyListener?.stop();
                     box.cleanup();
                 }
             }

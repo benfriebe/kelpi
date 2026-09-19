@@ -45,7 +45,7 @@
  * Electron's own `--user-data-dir`.
  */
 
-import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -117,7 +117,7 @@ function signalGroup(child, signal) {
 
 async function run(command, args, opts = {}) {
     return await new Promise((resolve) => {
-        const child = spawn(command, args, { cwd: repoRoot, ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawnDesktopHelper(command, args, { cwd: repoRoot, ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         child.stdout.on('data', (chunk) => (stdout += String(chunk)));

@@ -45,7 +45,7 @@
  * `KELPI_COMPAT_CLI=/path/to/kelpi` points it at another copy.
  */
 
-import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { runDesktopTest, spawnDesktopHelper, listenDesktopServer, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -127,7 +127,7 @@ async function waitFor(label, predicate, timeoutMs = 20_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, {
+        const child = spawnDesktopHelper(command, args, {
             cwd: opts.cwd ?? repoRoot,
             env: { ...process.env, ...opts.env }
         });
@@ -208,9 +208,10 @@ async function startFixture() {
         });
         response.end(body);
     });
-    await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    const listener = listenDesktopServer(server, port, '127.0.0.1');
+    await listener.ready;
     server.unref();
-    return { port, base: `http://127.0.0.1:${port}`, close: () => server.close() };
+    return { port, base: `http://127.0.0.1:${port}`, close: listener.stop };
 }
 
 /** A local page + a SIBLING script: the file:// case the webSecurity decision is about. */
@@ -683,7 +684,7 @@ async function cdpCommand(target, method, params = {}) {
 function makeCli(sandbox) {
     const invoke = (args, opts = {}) =>
         new Promise((resolve, reject) => {
-            const child = spawn(KELPI_CLI, args, {
+            const child = spawnDesktopHelper(KELPI_CLI, args, {
                 cwd: opts.cwd ?? sandbox.home,
                 env: {
                     PATH: sandbox.env.PATH,
@@ -1466,7 +1467,7 @@ async function webPhase() {
         await second?.quit('SIGKILL');
         await shell?.quit('SIGKILL');
         await daemon.stop();
-        fixture.close();
+        await fixture.close();
         sandbox.cleanup();
     }
 }

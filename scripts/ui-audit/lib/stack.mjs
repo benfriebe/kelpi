@@ -9,7 +9,7 @@
  * `packages/shell/scripts/web-smoke.mjs`, which has the same constraints.
  */
 
-import { ownDesktopResource, assertDesktopActive, waitForDesktopChildExit } from './desktop-lifecycle.mjs';
+import { ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, spawnDesktopHelper } from './desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -58,7 +58,7 @@ export async function waitFor(label, predicate, timeoutMs = 30_000, intervalMs =
 
 export function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
+        const child = spawnDesktopHelper(command, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
         // Every child, not just the ones that host a window — see `clearBackgroundTaskPolicy`.
         // `buildAll`, `packageApp` and the `codesign` check all come through here, and
         // `packageApp` in particular is a minute of first-touch I/O over a 250 MB bundle, which
@@ -828,7 +828,7 @@ export function makeCli(sandbox, { repoRoot }) {
     const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
     const invoke = (args, opts = {}) =>
         new Promise((resolve) => {
-            const child = spawn(process.execPath, [entry, ...args], {
+            const child = spawnDesktopHelper(process.execPath, [entry, ...args], {
                 cwd: opts.cwd ?? sandbox.home,
                 env: {
                     PATH: sandbox.env.PATH,

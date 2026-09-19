@@ -139,6 +139,7 @@ export function listenDesktopServer(server, ...args) {
  * The two smoke phases intentionally let the daemon outlive its spawning shell. A fresh
  * private channel is its ownership receipt, established BEFORE daemon startup. Teardown asks
  * that connected process to stop itself; a numeric PID from a log/file never authorizes a kill.
+ * A teardown receipt AND process exit are required: death alone cannot prove child cleanup.
  * PID liveness is used only to wait conservatively for exit (reuse can block, never kill).
  * Missing receipts fail closed, including cancellation before a partial boot can report in.
  */
@@ -165,7 +166,14 @@ export function ownShellSpawnedDaemon(shell, _pidFile, { env, timeoutMs = 12_000
             }
             socket.removeAllListeners('data');
             socket.setTimeout(0);
-            peers.push({ socket, pid: hello.pid });
+            const peer = { socket, pid: hello.pid, stopped: false };
+            peers.push(peer);
+            let receipt = '';
+            socket.on('data', chunk => {
+                receipt += chunk;
+                if (receipt.length > 1024) { socket.destroy(); return; }
+                if (receipt === 'stopped\n') peer.stopped = true;
+            });
             socket.write(closing ? 'stop\n' : 'start\n');
         });
     });
@@ -182,7 +190,8 @@ export function ownShellSpawnedDaemon(shell, _pidFile, { env, timeoutMs = 12_000
             while (peers.length === 0 && Date.now() < deadline) await sleep(20);
             if (peers.length === 0) throw new Error('private daemon ownership unknown: no authenticated owner channel; refusing PID-based cleanup');
         }
-        for (const {socket, pid} of peers) {
+        for (const peer of peers) {
+            const {socket, pid} = peer;
             if (!socket.destroyed) socket.write('stop\n');
             const deadline = Date.now() + timeoutMs;
             for (;;) {
@@ -191,7 +200,10 @@ export function ownShellSpawnedDaemon(shell, _pidFile, { env, timeoutMs = 12_000
                     if (error.code !== 'ESRCH') throw error;
                     live = false;
                 }
-                if (!live && socket.destroyed) break;
+                if (!live && socket.destroyed) {
+                    if (!peer.stopped) throw new Error(`private daemon owner ${pid} exited without confirmed resource teardown`);
+                    break;
+                }
                 if (Date.now() >= deadline) throw new Error(`private daemon owner ${pid} has not acknowledged process exit`);
                 await sleep(20);
             }

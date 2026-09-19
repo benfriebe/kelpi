@@ -1,13 +1,19 @@
 /** Private smoke ownership channel; absent from ordinary daemon launches. */
 import net from 'node:net';
 
+export interface TestOwner {
+    readonly stopRequested: boolean;
+    readonly whenStopRequested: Promise<void>;
+    /** Only after startup has settled and every resource it created has stopped. */
+    confirmStopped(): Promise<void>;
+}
+
 /**
- * Establish ownership before boot creates resources. Only this process signals itself: a
- * stale log or reused PID can never authorize the test runner to signal another process.
- * The channel stays with the daemon after its spawning shell exits. Its random capability
- * is consumed here and removed from the environment so panes/plugins cannot inherit it.
+ * Consume the capability before boot builds any pane/plugin environment. The owner queues
+ * cancellation; it must never signal a partially booted daemon past its cleanup path. Only
+ * foreground test launches use this lifetime, leaving ordinary daemon signals unchanged.
  */
-export async function connectTestOwner(env: NodeJS.ProcessEnv): Promise<void> {
+export async function connectTestOwner(env: NodeJS.ProcessEnv): Promise<TestOwner | undefined> {
     const portText = env['KELPI_TEST_OWNER_PORT'];
     const token = env['KELPI_TEST_OWNER_TOKEN'];
     delete env['KELPI_TEST_OWNER_PORT'];
@@ -18,39 +24,71 @@ export async function connectTestOwner(env: NodeJS.ProcessEnv): Promise<void> {
         throw new Error('invalid private test owner channel');
     }
     const socket = net.createConnection({host:'127.0.0.1', port});
-    let stopping = false;
+    let stopRequested = false;
+    let requestStop!: () => void;
+    const whenStopRequested = new Promise<void>(resolve => { requestStop = resolve; });
     const stop = (): void => {
-        if (stopping) return;
-        stopping = true;
-        // A stalled shutdown retains the runner's slot; force-killing this daemon could
-        // strand its own private descendants before it has finished stopping them.
-        process.kill(process.pid, 'SIGTERM');
+        stopRequested = true;
+        requestStop();
     };
-    await new Promise<void>((resolve, reject) => {
-        let started = false;
-        let buffer = '';
-        socket.setTimeout(5000, () => socket.destroy(new Error('private test owner handshake timed out')));
-        socket.on('connect', () => socket.write(JSON.stringify({token, pid:process.pid}) + '\n'));
-        socket.on('error', reject);
-        socket.on('close', () => {
-            if (started) stop();
-            else reject(new Error('private test owner closed before startup permission'));
-        });
-        socket.on('data', chunk => {
-            buffer += chunk;
-            for (;;) {
-                const newline = buffer.indexOf('\n');
-                if (newline < 0) break;
-                const command = buffer.slice(0, newline);
-                buffer = buffer.slice(newline + 1);
-                if (command === 'stop') stop();
-                else if (command === 'start' && !started && !stopping) {
-                    started = true;
-                    socket.setTimeout(0);
-                    socket.unref();
-                    resolve();
+    // Catch repeated signals even before startup has installed its ordinary handlers. The
+    // test entrypoint serializes startup and stop instead of creating resources after teardown.
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, stop);
+    const dispose = (): void => {
+        for (const signal of ['SIGINT', 'SIGTERM'] as const) process.off(signal, stop);
+    };
+    let confirmed: Promise<void> | undefined;
+    const owner: TestOwner = {
+        get stopRequested() { return stopRequested; },
+        whenStopRequested,
+        confirmStopped() {
+            confirmed ??= new Promise<void>(resolve => {
+                // A disconnected owner cannot receive a receipt and will retain its slot.
+                // Locally, cleanup is already complete, so the daemon may still finish.
+                const done = (): void => { dispose(); socket.destroy(); resolve(); };
+                if (socket.destroyed) done();
+                else {
+                    socket.once('close', done);
+                    socket.end('stopped\n', done);
                 }
-            }
+            });
+            return confirmed;
+        }
+    };
+    try {
+        await new Promise<void>((resolve, reject) => {
+            let permitted = false;
+            let buffer = '';
+            socket.setTimeout(5000, () => socket.destroy(new Error('private test owner handshake timed out')));
+            socket.on('connect', () => socket.write(JSON.stringify({token, pid:process.pid}) + '\n'));
+            socket.on('error', error => { stop(); reject(error); });
+            socket.on('close', () => {
+                stop();
+                if (!permitted) reject(new Error('private test owner closed before startup permission'));
+            });
+            socket.on('data', chunk => {
+                buffer += chunk;
+                if (buffer.length > 1024) { socket.destroy(new Error('invalid private test owner command')); return; }
+                for (;;) {
+                    const newline = buffer.indexOf('\n');
+                    if (newline < 0) break;
+                    const command = buffer.slice(0, newline);
+                    buffer = buffer.slice(newline + 1);
+                    if (command === 'stop') stop();
+                    if ((command === 'start' || command === 'stop') && !permitted) {
+                        permitted = true;
+                        socket.setTimeout(0);
+                        // Keep the channel referenced until confirmed cleanup: an unresolved
+                        // startup/stop must not silently exit and pretend resources are gone.
+                        resolve();
+                    }
+                }
+            });
         });
-    });
+        return owner;
+    } catch (error) {
+        dispose();
+        socket.destroy();
+        throw error;
+    }
 }

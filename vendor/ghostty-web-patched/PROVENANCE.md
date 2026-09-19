@@ -58,6 +58,15 @@ the terminal reset, the JavaScript manager clears the selection and its highligh
 clears a selection touching history before the native erase: `PageList.eraseRows` otherwise moves
 erased pins to row zero without marking them garbage. Active-screen selections survive ED3.
 
+The adversarial review also reproduced discarded endpoints remaining valid during row rotation:
+on an 80×10 alternate screen, selecting `conversation-00001` and writing four more lines changed
+Copy to `conversation-00004`. A primary scrolling region could instead repoint it outside that
+region. The native `Screen` and `Terminal` additions clear selections touching a discarded row
+before `eraseRow`/`eraseRowBounded`, including single-row screens. The insert/delete copy paths
+(also used by colored-output scrolling and reverse scrolling) explicitly move surviving selection
+pins and clear endpoints that leave the scrolling rectangle. Cursor, viewport and other tracked
+pins retain their existing native behavior; no general `PageList` pin semantics are changed.
+
 `clearSelection` now stops drag autoscroll and emits its change once; `deselect` does not emit a
 second notification. Copy still pulls the live renderer on demand. Native selection tracking
 does not change the pre-existing viewport pinning policy or the clipboard dispatch path.
@@ -76,8 +85,8 @@ baseline was reproduced byte for byte with Zig 0.15.2 before adding either local
 TypeScript bundle with `pnpm vendor:build` and commit the WASM, both bundles, declarations and
 package version together (the existing file override does not need a lockfile change).
 
-The shipped WASM is 424,960 bytes, SHA-256
-`bf31722ad17178b20dfb2fe0c3abb3afad9f2aa22c6bb0165d7eb86b734ca97b`.
+The shipped WASM is 425,840 bytes, SHA-256
+`f3b0005ea4dec84d38e127cada5ce8d5c1b2f62c36e6a85f123b86d6b91300e8`.
 The bundle rebuild resolved Vite 4.5.14, vite-plugin-dts 4.5.4 and TypeScript 5.9.3.
 
 ## Nex adaptation: an erased row forgets it was wrapped (`0.4.0-nex.13`, 2026-09-11)

@@ -305,6 +305,21 @@ connection, command RPC, PTY streams and store mirror (`app/remote-daemons.ts`) 
   remove; rows elide the token). The credential lives in the config file only — never in
   localStorage — with the same same-UID trust the run dir has.
 
+#### Remote workspace reorder gesture (#237)
+
+A left-button drag past five vertical pixels may reorder a remote workspace within its
+current top-level list or group. Release on the upper/lower half of a visible sibling row
+to insert before/after it. Headers, blank space, other groups, other hosts, and the local
+list are not drop targets. Top-level command indices include intervening group slots.
+The command uses that remote runtime; daemon persistence and snapshot/delta echoes supply
+the rendered order for all connected clients, without an optimistic local reorder.
+
+Escape, pointer cancellation, loss of the held button, window blur/hidden state, recovery,
+host collapse, and component teardown cancel the gesture. A remote disconnect, source
+removal/reparenting, group collapse, or changed source-container order also cancels it;
+unrelated snapshots do not. Membership is checked again against the live mirror at release.
+An ordinary click still selects the workspace; a completed drag suppresses its trailing click.
+
 ---
 
 ## 2. Data model summary (TS shapes)

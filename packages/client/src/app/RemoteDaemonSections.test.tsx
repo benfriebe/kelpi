@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { resetGestures } from '../chrome/gesture-reset';
 import type { KelpiRuntime } from '../state';
 import { createKelpiStore } from '../state';
 import { RemoteDaemonSections } from './RemoteDaemonSections';
@@ -68,6 +69,7 @@ function held(options: { collapsedGroup?: boolean } = {}): {
         repos: [],
         labelPresets: []
     });
+    store.getState().setConnectionStatus('connected');
     const calls: string[] = [];
     const runtime = {
         store,
@@ -172,9 +174,9 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
         setRowBox(W1, 10);
         setRowBox(W4, 140);
         const tail = document.querySelector(`[data-workspace-id="${W4}"]`) as HTMLElement;
-        fireEvent.mouseDown(tail, { button: 0, clientY: 150 });
-        fireEvent.mouseMove(window, { clientY: 5 });
-        fireEvent.mouseUp(window, { clientY: 5 });
+        fireEvent.mouseDown(tail, { button: 0, buttons: 1, clientX: 50, clientY: 150 });
+        fireEvent.mouseMove(window, { buttons: 1, clientX: 50, clientY: 15 });
+        fireEvent.mouseUp(window, { button: 0, clientX: 50, clientY: 15 });
         fireEvent.click(tail);
         expect(h.calls).toEqual([`move:${W4}:top:0`]);
         expect(onSelect).not.toHaveBeenCalled();
@@ -186,9 +188,9 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
         setRowBox(W1, 10);
         setRowBox(W4, 140);
         const first = document.querySelector(`[data-workspace-id="${W1}"]`) as HTMLElement;
-        fireEvent.mouseDown(first, { button: 0, clientY: 20 });
-        fireEvent.mouseMove(window, { clientY: 155 });
-        fireEvent.mouseUp(window, { clientY: 155 });
+        fireEvent.mouseDown(first, { button: 0, buttons: 1, clientX: 50, clientY: 20 });
+        fireEvent.mouseMove(window, { buttons: 1, clientX: 50, clientY: 155 });
+        fireEvent.mouseUp(window, { button: 0, clientX: 50, clientY: 155 });
         // The intervening group is a top-level daemon slot: after removing W1, W4 is at 1,
         // so placing W1 after it is command index 2, not workspace-sibling index 1.
         expect(h.calls).toEqual([`move:${W1}:top:2`]);
@@ -200,9 +202,93 @@ describe('RemoteDaemonSections (§1.7 accordion)', () => {
         setRowBox(W2, 70);
         setRowBox(W3, 105);
         const first = document.querySelector(`[data-workspace-id="${W2}"]`) as HTMLElement;
-        fireEvent.mouseDown(first, { button: 0, clientY: 80 });
-        fireEvent.mouseMove(window, { clientY: 120 });
-        fireEvent.mouseUp(window, { clientY: 120 });
+        fireEvent.mouseDown(first, { button: 0, buttons: 1, clientX: 50, clientY: 80 });
+        fireEvent.mouseMove(window, { buttons: 1, clientX: 50, clientY: 120 });
+        fireEvent.mouseUp(window, { button: 0, clientX: 50, clientY: 120 });
         expect(h.calls).toEqual([`move:${W2}:${G1}:1`]);
+    });
+});
+
+describe('remote reorder cancellation', () => {
+    function start(workspaceID = W4, targetY = 15) {
+        const h = held();
+        const onSelect = vi.fn();
+        const view = render(<RemoteDaemonSections daemons={[h.held]} selection={null} onSelect={onSelect} />);
+        setRowBox(W1, 10); setRowBox(W2, 70); setRowBox(W3, 105); setRowBox(W4, 140);
+        const row = document.querySelector(`[data-workspace-id="${workspaceID}"]`) as HTMLElement;
+        fireEvent.mouseDown(row, { button: 0, buttons: 1, clientX: 50, clientY: workspaceID === W2 ? 80 : 150 });
+        fireEvent.mouseMove(window, { buttons: 1, clientX: 50, clientY: targetY });
+        return { ...h, onSelect, view, row };
+    }
+    function release(clientX = 50, clientY = 15) {
+        fireEvent.mouseUp(window, { button: 0, clientX, clientY });
+    }
+    it.each([[900, 15], [50, 5], [50, 90], [50, 115], [50, 190]])(
+        'rejects non-sibling drop at (%s, %s)', (x, y) => {
+            const h = start(); release(x, y); expect(h.calls).toEqual([]);
+        }
+    );
+    it.each(['escape', 'blur', 'pointercancel', 'lost-button', 'collapse', 'disconnect', 'recovery', 'hidden', 'unmount'])(
+        'cancels on %s and allows the next ordinary click', (reason) => {
+            const h = start();
+            if (reason === 'escape') fireEvent.keyDown(window, { key: 'Escape' });
+            if (reason === 'blur') fireEvent.blur(window);
+            if (reason === 'pointercancel') fireEvent.pointerCancel(window);
+            if (reason === 'lost-button') fireEvent.mouseMove(window, { buttons: 0, clientX: 50, clientY: 15 });
+            if (reason === 'collapse') fireEvent.click(screen.getByTestId('remote-daemon-toggle-werk'));
+            if (reason === 'disconnect') act(() => h.held.runtime.store.getState().setConnectionStatus('reconnecting'));
+            if (reason === 'recovery') act(() => { resetGestures(); });
+            if (reason === 'hidden') {
+                const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+                fireEvent(document, new Event('visibilitychange'));
+                visibility.mockRestore();
+            }
+            if (reason === 'unmount') h.view.unmount();
+            release(); expect(h.calls).toEqual([]);
+            if (reason === 'collapse') fireEvent.click(screen.getByTestId('remote-daemon-toggle-werk'));
+            if (reason !== 'unmount') {
+                const row = document.querySelector(`[data-workspace-id="${W1}"]`) as HTMLElement;
+                fireEvent.mouseDown(row, { button: 0, buttons: 1, clientX: 50, clientY: 20 });
+                fireEvent.mouseUp(row, { button: 0, clientX: 50, clientY: 20 });
+                fireEvent.click(row);
+                expect(h.onSelect).toHaveBeenCalledWith({ daemon: 'werk', workspaceID: W1 });
+            }
+        }
+    );
+    it.each(['reparent', 'delete', 'reorder', 'collapse-group'])(
+        'rejects a live source list change: %s', (change) => {
+            const h = start(W2, 120);
+            act(() => {
+                const state = h.held.runtime.store.getState().daemon.state;
+                h.held.runtime.store.getState().applySnapshot(1, {
+                    ...state,
+                    workspaces: change === 'delete' ? state.workspaces.filter(w => w.id !== W2) : state.workspaces,
+                    groups: state.groups.map(group => ({ ...group,
+                        isCollapsed: change === 'collapse-group',
+                        childOrder: change === 'reorder' ? [W3, W2] : change === 'collapse-group' ? [W2, W3] : [W3]
+                    })),
+                    topLevelOrder: change === 'reparent' ? [...state.topLevelOrder, { kind: 'workspace', id: W2 }] : state.topLevelOrder
+                });
+            });
+            release(50, 120); expect(h.calls).toEqual([]);
+        }
+    );
+    it('rejects changed top-level group slots even if the workspace sibling order is unchanged', () => {
+        const h = start();
+        act(() => {
+            const state = h.held.runtime.store.getState().daemon.state;
+            h.held.runtime.store.getState().applySnapshot(1, { ...state, topLevelOrder: [
+                { kind: 'group', id: G1 }, { kind: 'workspace', id: W1 }, { kind: 'workspace', id: W4 }
+            ] });
+        });
+        release(); expect(h.calls).toEqual([]);
+    });
+    it('accepts an unrelated snapshot during the gesture', () => {
+        const h = start();
+        act(() => {
+            const state = h.held.runtime.store.getState().daemon.state;
+            h.held.runtime.store.getState().applySnapshot(1, { ...state, lastActiveWorkspaceID: W3 });
+        });
+        release(); expect(h.calls).toEqual([`move:${W4}:top:0`]);
     });
 });

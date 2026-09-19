@@ -373,7 +373,7 @@ export class SelectionManager {
   focus(): void {
     const canvas = this.renderer.getCanvas();
     if (canvas.parentElement) {
-      canvas.parentElement.focus();
+      canvas.parentElement.focus({ preventScroll: true });
     }
   }
 
@@ -467,7 +467,7 @@ export class SelectionManager {
         // CRITICAL: Focus the terminal so it can receive keyboard input
         // The canvas doesn't have tabindex, but the parent container does
         if (canvas.parentElement) {
-          canvas.parentElement.focus();
+          canvas.parentElement.focus({ preventScroll: true });
         }
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
@@ -641,7 +641,7 @@ export class SelectionManager {
       }
 
       // Focus the textarea so the context menu appears on it
-      this.textarea.focus();
+      this.textarea.focus({ preventScroll: true });
 
       // After a short delay, restore the textarea to its hidden state
       // This allows the context menu to appear first
@@ -916,7 +916,7 @@ export class SelectionManager {
       textarea.style.opacity = '0';
 
       // Select all text and copy
-      textarea.focus();
+      textarea.focus({ preventScroll: true });
       textarea.select();
       textarea.setSelectionRange(0, text.length);
 
@@ -924,7 +924,7 @@ export class SelectionManager {
 
       // Restore focus
       if (previouslyFocused) {
-        previouslyFocused.focus();
+        previouslyFocused.focus({ preventScroll: true });
       }
 
       if (!success) {
@@ -934,7 +934,7 @@ export class SelectionManager {
       console.error('❌ Fallback copy failed:', err);
       // Still try to restore focus even on error
       if (previouslyFocused) {
-        previouslyFocused.focus();
+        previouslyFocused.focus({ preventScroll: true });
       }
     }
   }

@@ -523,22 +523,27 @@ follows exactly **one client at a time**, the *size owner*:
   inside the pane where the box is bigger and **pannable** inside the engine host where it
   is smaller (#178). The host uses explicitly driven `scrollLeft` / `scrollTop` with
   `overflow: hidden` only while mirroring; the pane root, padding, chrome and indicators stay
-  fixed. The canvas remains unscaled, and pointer coordinates use its scroll-aware client rect.
+  fixed. The host is also the containing block for the engine's absolute IME textarea and
+  composition overlay, so they pan with the canvas. Engine and selection focus use
+  `preventScroll` to keep a click or phone tap from revealing an offscreen caret by moving
+  the viewport. The canvas remains unscaled, and pointer coordinates use its scroll-aware client rect.
   Scaling remains rejected, and the owner's rows never re-wrap. Taking size control is still
-  available on every
-  form factor can reach: the top bar's chip on a desktop, the overflow menu's "Take size control"
+  available on every form factor: the top bar's chip on a desktop, the overflow menu's "Take size control"
   on a phone (`packages/client/src/phone/PhoneShell.tsx`), and
   `kelpi.window.takeSizeControl` for a plugin chrome.
 - **Pan gestures** (#178): horizontal wheel/trackpad deltas pan the mirrored canvas. Vertical
   deltas pan only when the canvas is taller than the host; otherwise they retain the terminal's
   scrollback or application mouse-wheel behavior, including the vertical part of a diagonal
-  gesture. Pixel, line and page deltas are normalized; control-wheel stays on its existing path.
+  gesture. The horizontal part likewise reaches the application when columns fit and only
+  the vertical axis pans. Pixel, line and page deltas are normalized; control-wheel stays on its existing path.
   A pan axis consumes its gesture even at the edge, so it cannot unexpectedly send terminal
   input there. On phones, a two-finger drag pans in the same axes; vertical movement when rows
   fit goes to scrollback or mouse-wheel reports, with mouse mode latched at gesture start.
   Two-finger pans do not generate clicks, long presses or momentum; the existing one-finger
   gestures keep their behavior. Offsets clamp when the owner grid or viewer box shrinks and
   reset when mirroring ends, including taking size control and rebuilding the renderer.
+  Pixel-only resizes refresh those offsets and indicators even when the measured whole-cell
+  grid is unchanged; they do not send redundant PTY size reports.
 - **What a mirror does NOT change**: the pane keeps measuring its own box and keeps reporting it,
   because that report is the daemon's takeover cache and the request for this viewer's own fresh
   snapshot. It reports a measurement, never the mirrored grid.

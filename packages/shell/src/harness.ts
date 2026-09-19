@@ -70,6 +70,8 @@ import { setNotificationPresenter } from './notify-present.js';
 import type { NotificationPresenter } from './notify.js';
 
 export interface HarnessOptions {
+    /** Release the initial navigation held for a CDP watcher (#239). */
+    readonly loadClient?: (() => boolean) | undefined;
     readonly app: App;
     readonly dialog: Dialog;
     /** Electron's `shell` module, for the `openExternal` wrapper (#83). */
@@ -246,6 +248,7 @@ function makeSurface(options: HarnessOptions, counters: HarnessCounters): Harnes
         platform: process.platform,
         pid: process.pid,
         version: () => app.getVersion(),
+        loadClient: options.loadClient,
         menuItems: () => Menus.getApplicationMenu()?.items ?? [],
         clickItem: (item) => {
             // Exactly the call Electron makes for a menu selection, `menuItem.click(event,

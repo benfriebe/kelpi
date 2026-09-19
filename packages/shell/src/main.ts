@@ -49,7 +49,7 @@ import {
     resolveCliLinkPath,
     type CliInstallResult
 } from './cli-install.js';
-import { harnessQuietNotifications, harnessSocketPath } from './harness-protocol.js';
+import { harnessLoadGate, harnessQuietNotifications, harnessSocketPath } from './harness-protocol.js';
 import { startHarness, stopHarness } from './harness.js';
 // #67: the seam every notification goes through, so the harness channel can count them.
 import { notificationsSupported, presentNotification } from './notify-present.js';
@@ -404,9 +404,13 @@ function applyPermissionPolicy(): void {
  * module-level constant rather than two calls that could disagree.
  */
 const TITLE_BAR = titleBarStyleFor(process.platform);
+const initialClientLoad = harnessLoadGate(process.env);
 
 function loadDaemonUrl(window: BrowserWindow): void {
     if (daemon === null) return;
+    if (initialClientLoad.defer(() => {
+        if (!window.isDestroyed()) loadDaemonUrl(window);
+    })) return;
     // `shellWindow` marks the page as "the UI inside this shell window" — it is what makes the
     // client's web-pane geometry reports actionable and scopes reveal requests to this window.
     // The client keeps it (only `daemon`/`token` are stripped from the visible URL).
@@ -1606,6 +1610,7 @@ async function boot(): Promise<void> {
             BrowserWindow,
             Menu,
             socketPath: harnessSocket,
+            loadClient: () => initialClientLoad.release(),
             quietNotifications: harnessQuietNotifications(process.env),
             mainWindow: () => mainWindow,
             // #76: the `crash` op. Read through the module variable, never captured, because

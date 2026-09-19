@@ -33,7 +33,7 @@
  * Exit code 0 = every check passed. Any failure prints the captured logs and exits 1.
  */
 
-import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -198,7 +198,7 @@ async function waitFor(label, predicate, timeoutMs = 20_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { cwd: opts.cwd ?? repoRoot, env: { ...process.env, ...opts.env } });
+        const child = spawnDesktopHelper(command, args, { cwd: opts.cwd ?? repoRoot, env: { ...process.env, ...opts.env } });
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8');
@@ -893,8 +893,9 @@ async function spawnPhase() {
     const sandbox = await makeSandbox('spawn', { skill: 'empty' });
     let shell;
     let spawnedPid;
-    const spawnedDaemon = ownShellSpawnedDaemon(() => shell, path.join(sandbox.runDir, `daemon-v${PROTOCOL_VERSION}.pid`));
+    const spawnedDaemon = ownShellSpawnedDaemon(() => shell, null, { env: sandbox.env });
     try {
+        await spawnedDaemon.ready;
         shell = startShell(sandbox);
 
         const spawned = await shell.waitForLine(/daemon spawned/, 'the daemon-spawned line');

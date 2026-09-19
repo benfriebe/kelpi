@@ -44,7 +44,7 @@
  * Exit code 0 = every check passed.
  */
 
-import { runDesktopTest, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
+import { runDesktopTest, spawnDesktopHelper, ownDesktopResource, assertDesktopActive, waitForDesktopChildExit, ownShellSpawnedDaemon } from '../../../scripts/ui-audit/lib/desktop-lifecycle.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -153,7 +153,7 @@ async function waitFor(label, predicate, timeoutMs = 30_000, intervalMs = 100) {
 
 function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, {
+        const child = spawnDesktopHelper(command, args, {
             cwd: opts.cwd ?? repoRoot,
             env: { ...process.env, ...opts.env },
             stdio: ['ignore', 'pipe', 'pipe']
@@ -682,7 +682,7 @@ function startApp(sandbox) {
 /** The shipped CLI, pointed at the sandbox daemon over TCP (its only non-hardcoded transport). */
 function cli(sandbox, args, timeoutMs = 20_000) {
     return new Promise((resolve) => {
-        const child = spawn(KELPI_CLI, args, {
+        const child = spawnDesktopHelper(KELPI_CLI, args, {
             cwd: sandbox.home,
             env: {
                 PATH: sandbox.env.PATH,
@@ -716,8 +716,9 @@ async function launchPhase() {
     const sandbox = await makeSandbox();
     let app;
     let daemonPid;
-    const spawnedDaemon = ownShellSpawnedDaemon(() => app, sandbox.pidFile);
+    const spawnedDaemon = ownShellSpawnedDaemon(() => app, null, { env: sandbox.env });
     try {
+        await spawnedDaemon.ready;
         // Nothing to adopt: the run dir does not exist yet, so a daemon can only come from the
         // app's own Resources. (This is also the isolation guarantee — the developer's real
         // daemon lives in a different run dir and is never touched.)

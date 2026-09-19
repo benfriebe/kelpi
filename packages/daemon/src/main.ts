@@ -35,6 +35,7 @@ import {
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
+import { connectTestOwner } from './lifecycle/test-owner.js';
 import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
@@ -1130,6 +1131,7 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
             io.out(resolveDaemonVersion(io.env ?? process.env).version);
             return 0;
         case 'start':
+            if (args.foreground) await connectTestOwner(io.env ?? process.env);
             return commandStart(io, args);
         case 'stop':
             return commandStop(io, args);

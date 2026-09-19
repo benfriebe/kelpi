@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -210,30 +211,49 @@ for (const [file, factories] of [
     }
 }, 10_000);
 
-it('stops a shell-spawned private daemon from its spawn log before a pid file or healthz exists', async () => {
+it('stops only its connected daemon before pid-file/healthz readiness and after its shell exits', async () => {
     const { ownShellSpawnedDaemon } = await import('./desktop-lifecycle.mjs');
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-spawn-cleanup-'));
-    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 100)); console.log('ready'); setInterval(() => {}, 1000)"],
-        { detached:true, stdio:['ignore', 'pipe', 'ignore'] });
-    const exit = once(child, 'exit');
+    const env = { ...process.env };
     const order = [];
+    const sentinel = spawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], {stdio:['ignore','pipe','ignore']});
+    const sentinelExit = once(sentinel, 'exit');
+    const owner = ownShellSpawnedDaemon(() => ({
+        quit: async () => { order.push('shell stopped'); },
+        text: () => { throw new Error('logs are not ownership'); }
+    }), path.join(temp, 'stale.pid'), {env});
+    let child;
     try {
+        await once(sentinel.stdout, 'data');
+        fs.writeFileSync(path.join(temp, 'stale.pid'), JSON.stringify({pid:sentinel.pid}));
+        await owner.ready;
+        const stranger = net.createConnection({host:'127.0.0.1', port:Number(env.KELPI_TEST_OWNER_PORT)});
+        const rejected = once(stranger, 'close');
+        stranger.on('connect', () => stranger.write(JSON.stringify({token:'wrong',pid:sentinel.pid}) + '\n'));
+        await rejected;
+        const channel = url(path.join(root, 'packages/daemon/src/lifecycle/test-owner.ts'));
+        child = spawn(process.execPath, ['--input-type=module', '-e', `
+            import {connectTestOwner} from ${JSON.stringify(channel)};
+            process.on('SIGTERM', () => setTimeout(() => process.exit(0), 100));
+            await connectTestOwner(process.env);
+            if (process.env.KELPI_TEST_OWNER_TOKEN || process.env.KELPI_TEST_OWNER_PORT) throw new Error('capability leaked');
+            console.log('ready'); setInterval(() => {}, 1000);
+        `], {env, detached:true, stdio:['ignore','pipe','inherit']});
+        const exit = once(child, 'exit');
         await once(child.stdout, 'data');
-        const owned = ownShellSpawnedDaemon(() => ({
-            quit: async () => { order.push('shell stopped'); },
-            text: () => { order.push('read spawn log'); return `daemon spawned pid=${child.pid} entry=private node=private`; }
-        }), path.join(temp, 'absent.pid'));
-        await Promise.all([owned.stop(), owned.stop()]);
-        expect(order).toEqual(['shell stopped', 'read spawn log']);
+        await Promise.all([owner.stop(), owner.stop()]);
+        expect(order).toEqual(['shell stopped']);
         expect(alive(child.pid)).toBe(false);
+        expect(alive(sentinel.pid)).toBe(true);
         expect(await exit).toEqual([0, null]);
     } finally {
-        if (alive(child.pid)) child.kill('SIGKILL');
+        if (child && alive(child.pid)) child.kill('SIGKILL');
+        sentinel.kill('SIGKILL'); await sentinelExit;
         fs.rmSync(temp, {recursive:true, force:true});
     }
 });
 
-it('attempts remaining cleanup and retains the slot when a resource refuses teardown', async () => {
+for (const failure of ['refused', 'unknown daemon']) it('retains the slot and attempts remaining cleanup: ' + failure, async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-cleanup-failure-'));
     const portFile = path.join(temp, 'port');
     const slotFile = path.join(temp, 'slot.mjs');
@@ -245,13 +265,13 @@ it('attempts remaining cleanup and retains the slot when a resource refuses tear
     fs.writeFileSync(hook, `import {registerHooks} from 'node:module';
         registerHooks({resolve(s,c,next) { return s === './desktop-slot.mjs' && c.parentURL?.endsWith('/desktop-lifecycle.mjs')
             ? {url:${JSON.stringify(url(slotFile))},shortCircuit:true} : next(s,c); }});`);
-    fs.writeFileSync(runner, `import {runDesktopTest, ownDesktopResource, assertDesktopActive} from ${JSON.stringify(url(path.join(lib, 'desktop-lifecycle.mjs')))};
+    fs.writeFileSync(runner, `import {runDesktopTest, ownDesktopResource, assertDesktopActive, ownShellSpawnedDaemon} from ${JSON.stringify(url(path.join(lib, 'desktop-lifecycle.mjs')))};
         await runDesktopTest(async () => {
             ownDesktopResource({stop:async () => {
                 try { assertDesktopActive(); } catch { console.log('CREATION_REFUSED'); }
                 console.log('OTHER_CLEANUP');
             }});
-            ownDesktopResource({stop:async () => { throw new Error('fixture refused'); }});
+            ${failure === 'refused' ? `ownDesktopResource({stop:async () => { throw new Error('fixture refused'); }});` : `ownShellSpawnedDaemon(() => ({quit:async()=>{},text:()=>''}), null);`}
             throw new Error('run failed');
         });`);
     const child = spawn(process.execPath, ['--import', hook, runner], {stdio:['ignore','pipe','pipe']});
@@ -272,3 +292,78 @@ it('attempts remaining cleanup and retains the slot when a resource refuses tear
         fs.rmSync(temp,{recursive:true,force:true});
     }
 });
+
+for (const evidence of ['missing', 'conflicting']) it(`refuses ${evidence} PID evidence without signalling either process`, async () => {
+    const { ownShellSpawnedDaemon } = await import('./desktop-lifecycle.mjs');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-owner-evidence-'));
+    const children = [0, 1].map(() => spawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], {stdio:['ignore','pipe','ignore']}));
+    const exits = children.map(child => once(child, 'exit'));
+    try {
+        await Promise.all(children.map(child => once(child.stdout, 'data')));
+        const file = path.join(temp, 'daemon.pid');
+        if (evidence === 'conflicting') fs.writeFileSync(file, JSON.stringify({pid:children[1].pid}));
+        const owner = ownShellSpawnedDaemon(() => ({quit:async()=>{}, text:()=>evidence === 'missing' ? '' : `daemon spawned pid=${children[0].pid}`}), file);
+        await expect(owner.stop()).rejects.toThrow(/ownership|owner|channel/i);
+        expect(children.map(child => alive(child.pid))).toEqual([true, true]);
+    } finally {
+        children.forEach(child => child.kill('SIGKILL'));
+        await Promise.all(exits);
+        fs.rmSync(temp, {recursive:true,force:true});
+    }
+});
+
+
+it('cancels the actual plugin-dev helper through the real scenario runner before slot handoff', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-direct-helper-'));
+    const portFile = path.join(temp, 'port');
+    const pidFile = path.join(temp, 'pid');
+    const write = (name, body) => { const p = path.join(temp, name + '.mjs'); fs.writeFileSync(p, body); return p; };
+    const server = net.createServer(socket => socket.on('data', () => socket.end(JSON.stringify({ok:true,result:{daemonID:'private-fixture',capabilities:['plugin-dev']}}) + '\n')));
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const driverURL = url(path.join(lib, 'driver.mjs'));
+    const driver = write('driver', `export {recorder,WINDOW_PLACEMENTS} from ${JSON.stringify(driverURL + '?real')};
+        export async function boot({window}) { return {
+            page:{eval:async()=>{throw new Error('no DOM');}}, rendererErrors:{finish:()=>{}},
+            sandbox:{env:{PATH:process.env.PATH},home:${JSON.stringify(temp)},controlPort:${server.address().port},base:'private fixture'},
+            shell:{},debugPort:1,harness:{path:'fixture'},windowPlacement:window,stop:async()=>{}
+        }; }`);
+    const slot = write('slot', `import fs from 'node:fs';import {holdDesktopTestSlot as hold} from ${JSON.stringify(url(path.join(lib,'desktop-slot.mjs')))};
+        export async function holdDesktopTestSlot(){const s=await hold({port:0});fs.writeFileSync(${JSON.stringify(portFile)},String(s.port));return s;}`);
+    const hook = write('hook', `import {registerHooks} from 'node:module';registerHooks({resolve(s,c,next){
+        if(s==='./desktop-slot.mjs'&&c.parentURL?.endsWith('/desktop-lifecycle.mjs'))return {url:${JSON.stringify(url(slot))},shortCircuit:true};
+        if(s===${JSON.stringify(path.join(lib,'driver.mjs'))})return {url:${JSON.stringify(url(driver))},shortCircuit:true};return next(s,c);}});`);
+    const source = fs.readFileSync(path.join(root, 'scripts/scenarios/plugin-authoring.mjs'), 'utf8');
+    const startAt = source.indexOf('        dev = spawn');
+    const spawning = source.slice(startAt, source.indexOf('        dev.stdout.setEncoding', startAt));
+    const stopping = source.slice(source.indexOf('    const stopDev = async () => {'), source.indexOf('    const writeVersion'));
+    // Exact production helper call and stop function, with UI/setup omitted.
+    const scenario = write('scenario', `import fs from 'node:fs';import path from 'node:path';import {spawn} from 'node:child_process';
+        import * as lifecycle from ${JSON.stringify(url(path.join(lib,'desktop-lifecycle.mjs')))};
+        const {spawnDesktopHelper} = lifecycle;
+        const repoRoot=${JSON.stringify(root)};
+        export default async function({sandbox}) {const external=${JSON.stringify(temp)},source=external;let dev;
+            ${stopping}
+            try {${spawning}
+                fs.writeFileSync(${JSON.stringify(pidFile)},String(dev.pid));
+                await new Promise(resolve=>dev.stdout.on('data',chunk=>{process.stdout.write(chunk);if(String(chunk).includes('watching'))resolve();}));
+                console.log('FIXTURE_READY');await new Promise(()=>{});
+            } finally {await stopDev();}
+        }`);
+    const child = spawn(process.execPath, ['--import',hook,path.join(root,'scripts/scenario.mjs'),'--no-build','--window','hidden','--out',path.join(temp,'out'),scenario], {stdio:['ignore','pipe','pipe']});
+    let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
+    const exit=once(child,'exit');let pid;
+    try {
+        await until(()=>output.includes('FIXTURE_READY'),()=>output);
+        pid=Number(fs.readFileSync(pidFile,'utf8'));
+        child.kill('SIGTERM');
+        expect(await exit,output).toEqual([143,null]);
+        const slot=await holdDesktopTestSlot({port:Number(fs.readFileSync(portFile,'utf8')),timeoutMs:500,log:()=>{}});
+        try { expect(alive(pid),output).toBe(false); } finally { await slot.release(); }
+        expect(output).toContain('"type":"stopped"');
+    } finally {
+        if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exit;}
+        if(pid&&alive(pid))process.kill(pid,'SIGKILL');
+        await new Promise(resolve=>server.close(resolve));
+        fs.rmSync(temp,{recursive:true,force:true});
+    }
+}, 10_000);

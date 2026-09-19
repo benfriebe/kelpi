@@ -1,5 +1,7 @@
 /** Catchable cancellation owns the same lifetime as the desktop reservation (#207). */
-import fs from 'node:fs';
+import net from 'node:net';
+import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { holdDesktopTestSlot } from './desktop-slot.mjs';
 
@@ -90,36 +92,120 @@ export async function waitForDesktopChildExit(child, { group = false } = {}) {
     }
 }
 
-/**
- * Only for the two smoke phases that intentionally exercise the app spawning a detached
- * daemon. The PID comes from this private shell's own spawn log (available before healthz),
- * with its fresh sandbox pid file as fallback. Never inspect the installed app's run dir.
- * Register before starting the shell; stop the shell first so it cannot spawn another daemon.
- */
-export function ownShellSpawnedDaemon(shell, pidFile) {
-    return ownDesktopResource({ async stop() {
-        const instance = shell();
-        if (!instance) return;
-        await instance.quit();
-        let pid = Number(/daemon spawned pid=(\d+)/.exec(instance.text())?.[1]);
-        if (!pid && fs.existsSync(pidFile)) pid = JSON.parse(fs.readFileSync(pidFile, 'utf8')).pid;
-        if (!Number.isSafeInteger(pid) || pid <= 0) return;
-        const alive = () => {
-            try { process.kill(pid, 0); return true; } catch (error) {
-                if (error.code === 'ESRCH') return false;
-                throw error;
-            }
-        };
-        const signal = (name) => {
-            try { process.kill(pid, name); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-        };
-        if (!alive()) return;
-        signal('SIGTERM');
-        const deadline = Date.now() + 6000;
-        while (alive() && Date.now() < deadline) await sleep(50);
-        if (alive()) signal('SIGKILL');
-        const killedDeadline = Date.now() + 5000;
-        while (alive() && Date.now() < killedDeadline) await sleep(20);
-        if (alive()) throw new Error(`private shell-spawned daemon ${pid} survived teardown`);
+/** A direct helper belongs to the leaf just as much as its daemon and Electron do. */
+export function spawnDesktopHelper(command, args, options, { signal = 'SIGTERM', timeoutMs = 8000 } = {}) {
+    assertDesktopActive();
+    const child = spawn(command, args, options);
+    const closed = new Promise(resolve => child.once('close', resolve));
+    // A failed spawn has no process to stop, but must remain an observable command failure.
+    let spawnError;
+    child.once('error', error => {
+        spawnError = error;
+        console.error('Private helper failed to start:', error);
+    });
+    ownDesktopResource(Object.assign(child, { async stop() {
+        if (child.pid && child.exitCode === null && child.signalCode === null) {
+            child.kill(signal);
+            const deadline = Date.now() + timeoutMs;
+            while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) await sleep(20);
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            await waitForDesktopChildExit(child);
+        }
+        // close follows stdio drain; plugin-dev's final stopped event is part of its verdict.
+        await closed;
+        return { code: spawnError ? -1 : child.exitCode, signal: child.signalCode };
+    } }));
+    child.once('close', () => { void child.stop().catch(() => {}); });
+    return child;
+}
+
+/** Register a fixture listener before its first startup await, including partial boot. */
+export function listenDesktopServer(server, ...args) {
+    assertDesktopActive();
+    let ready;
+    const owner = ownDesktopResource({ get ready() { return ready; }, async stop() {
+        try { await ready; } catch { return; } // A rejected listen never acquired a listener.
+        server.closeAllConnections?.();
+        await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     } });
+    ready = new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(...args, resolve);
+    });
+    return owner;
+}
+
+/**
+ * The two smoke phases intentionally let the daemon outlive its spawning shell. A fresh
+ * private channel is its ownership receipt, established BEFORE daemon startup. Teardown asks
+ * that connected process to stop itself; a numeric PID from a log/file never authorizes a kill.
+ * PID liveness is used only to wait conservatively for exit (reuse can block, never kill).
+ * Missing receipts fail closed, including cancellation before a partial boot can report in.
+ */
+export function ownShellSpawnedDaemon(shell, _pidFile, { env, timeoutMs = 12_000 } = {}) {
+    assertDesktopActive();
+    const token = randomBytes(32).toString('hex');
+    let closing = false;
+    const peers = [];
+    const sockets = new Set();
+    const server = net.createServer(socket => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+        socket.on('error', () => {});
+        socket.setTimeout(2000, () => socket.destroy());
+        let buffer = '';
+        socket.on('data', chunk => {
+            buffer += chunk;
+            if (buffer.length > 1024) { socket.destroy(); return; }
+            if (!buffer.includes('\n')) return;
+            let hello;
+            try { hello = JSON.parse(buffer); } catch { socket.destroy(); return; }
+            if (hello.token !== token || !Number.isSafeInteger(hello.pid) || hello.pid <= 0 || peers.length) {
+                socket.destroy(); return;
+            }
+            socket.removeAllListeners('data');
+            socket.setTimeout(0);
+            peers.push({ socket, pid: hello.pid });
+            socket.write(closing ? 'stop\n' : 'start\n');
+        });
+    });
+    // Registration precedes listen's first await, so cancellation owns partial setup too.
+    let ready = Promise.resolve();
+    const owner = ownDesktopResource({ get ready() { return ready; }, async stop() {
+        closing = true;
+        await ready;
+        const instance = shell();
+        if (instance) await instance.quit();
+        if (instance && peers.length === 0) {
+            if (!env) throw new Error('private daemon ownership unknown: owner channel was not configured');
+            const deadline = Date.now() + timeoutMs;
+            while (peers.length === 0 && Date.now() < deadline) await sleep(20);
+            if (peers.length === 0) throw new Error('private daemon ownership unknown: no authenticated owner channel; refusing PID-based cleanup');
+        }
+        for (const {socket, pid} of peers) {
+            if (!socket.destroyed) socket.write('stop\n');
+            const deadline = Date.now() + timeoutMs;
+            for (;;) {
+                let live;
+                try { process.kill(pid, 0); live = true; } catch (error) {
+                    if (error.code !== 'ESRCH') throw error;
+                    live = false;
+                }
+                if (!live && socket.destroyed) break;
+                if (Date.now() >= deadline) throw new Error(`private daemon owner ${pid} has not acknowledged process exit`);
+                await sleep(20);
+            }
+        }
+        for (const socket of sockets) socket.destroy();
+        if (server.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    } });
+    if (env) ready = new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen({host:'127.0.0.1', port:0}, () => {
+            env.KELPI_TEST_OWNER_PORT = String(server.address().port);
+            env.KELPI_TEST_OWNER_TOKEN = token;
+            resolve();
+        });
+    });
+    return owner;
 }

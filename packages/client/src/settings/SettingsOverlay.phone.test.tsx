@@ -123,6 +123,17 @@ describe('the Settings sheet on a phone', () => {
         expect(screen.getByTestId('settings-close').style.minHeight).toBe('44px');
     });
 
+    it('keeps search on the tab-list screen and pushes a matching result', () => {
+        renderPhone();
+        fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'group fill' } });
+        expect(screen.getByTestId('settings-phone-list')).toBeDefined();
+        expect(screen.getByTestId('settings-search-results').textContent).toContain('Group band fill');
+
+        fireEvent.click(screen.getByTestId('settings-search-result-sidebar-group-fill'));
+        expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
+        expect(screen.getByTestId('settings-phone-back')).toBeDefined();
+    });
+
     it('pushes a tab, shows its content behind a back button, and comes back to the list', () => {
         renderPhone();
         fireEvent.click(screen.getByTestId('settings-tab-button-labels'));

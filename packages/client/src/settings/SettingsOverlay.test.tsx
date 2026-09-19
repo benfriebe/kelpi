@@ -166,6 +166,27 @@ describe('the Settings window', () => {
         expect(screen.getByTestId('settings-toolbar').textContent).toContain('Labels');
     });
 
+    it('searches settings by name and context, then opens and reveals the existing control', () => {
+        const original = Element.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        try {
+            setup();
+            fireEvent.change(screen.getByTestId('settings-search'), { target: { value: 'workspace header background' } });
+            const results = screen.getByTestId('settings-search-results');
+            expect(results.textContent).toContain('Appearance');
+            expect(results.textContent).toContain('Group band fill');
+            expect(screen.queryByTestId('settings-tab-general')).toBeNull();
+
+            fireEvent.click(screen.getByTestId('settings-search-result-sidebar-group-fill'));
+            expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
+            expect(screen.getByTestId('sidebar-group-fill').dataset['settingsSearchHit']).toBe('true');
+            expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+        } finally {
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
     it('closes on Escape, on the Close button, and on a backdrop click', () => {
         const first = setup();
         fireEvent.keyDown(screen.getByTestId('settings-window'), { key: 'Escape' });

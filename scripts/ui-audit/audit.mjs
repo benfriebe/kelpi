@@ -27244,8 +27244,8 @@ function buildFlows(ctx) {
                     JSON.stringify(gate)
                 );
                 recorder.check(
-                    'the warning names the count and what will happen to it',
-                    /1 active agent/.test(String(gate.text)) && /terminate/.test(String(gate.text)),
+                    'the warning names the running-agent count and says deletion will close it',
+                    /This workspace has 1 running agent\. Deleting it will close it\./.test(String(gate.text)),
                     String(gate.text)
                 );
                 recorder.check(

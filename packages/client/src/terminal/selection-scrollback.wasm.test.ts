@@ -265,3 +265,112 @@ describe('selection in native row-copy operations (#170)', () => {
         } finally { f.dispose(); }
     });
 });
+
+describe.each(['primary', 'alternate'] as const)('selection below a top-anchored %s scroll region (#170)', screen => {
+    const prepare = (lines: number, colored = false) => {
+        const f = fixture();
+        if (screen === 'alternate') f.term.write('\x1b[?1049h');
+        // Alternate full-screen output has no history. Grow through the partial region
+        // instead when exercising its page-boundary paths.
+        f.writeLines(9);
+        f.term.write(f.line(9));
+        f.term.write('\x1b[1;8r\x1b[8;1H');
+        if (lines > 9) f.term.write('\n'.repeat(lines - 9));
+        // Give both footer rows distinct, stable contents after the history setup.
+        f.term.write(`\x1b[9;1H${f.line(8)}\x1b[10;1H${f.line(9)}\x1b[8;1H`);
+        if (colored) f.term.write('\x1b[44m');
+        return f;
+    };
+    const expectCopy = (f: ReturnType<typeof fixture>, text: string) => {
+        expect(f.term.getSelection()).toBe(text);
+        const copied = vi.fn(async () => {});
+        expect(copySelection({ focusedPaneID: () => 'pane', selectionFor: () => f.term.getSelection(), writeText: copied, onError: vi.fn() })).toBe(true);
+        expect(copied).toHaveBeenCalledExactlyOnceWith(text);
+    };
+
+    it.each([
+        { lines: 9, colored: false, label: 'single page' },
+        { lines: 9, colored: true, label: 'colored single page' },
+        { lines: 588, colored: false, label: 'new page' },
+        { lines: 589, colored: true, label: 'footer across pages' },
+        { lines: 1177, colored: false, label: 'history prune' }
+    ])('keeps both footer endpoints and Copy attached through $label growth', ({ lines, colored }) => {
+        const f = prepare(lines, colored);
+        try {
+            f.select(8, 9, true);
+            const selected = `${f.line(8)}\n${f.line(9)}`;
+            expectCopy(f, selected);
+            const changed = vi.fn();
+            f.selection.onSelectionChange(changed);
+            const history = f.vt.getScrollbackLength();
+            f.term.write('\n');
+            expect(f.vt.getScrollbackLength()).toBe(lines === 1177 ? history - 588 : history + 1);
+            expectCopy(f, selected);
+            expect(f.selection.getSelectionCoords()).toEqual({ startCol: 0, startRow: 8, endCol: 17, endRow: 9 });
+            expect(changed).toHaveBeenCalledOnce();
+            expect(f.vt.getCursor()).toMatchObject({ x: 0, y: 7 });
+            expect(f.vt.readTrackedSelection()).toBeNull();
+        } finally { f.dispose(); }
+    });
+
+    it.each([8, 9])('keeps a single footer row %s selected through batched colored scrolling', row => {
+        const f = prepare(9, true);
+        try {
+            f.select(row);
+            f.term.write('\n\n\n');
+            expectCopy(f, f.line(row));
+            expect(f.selection.getSelectionCoords()).toEqual({ startCol: 0, startRow: row, endCol: 17, endRow: row });
+        } finally { f.dispose(); }
+    });
+
+    it('moves only the footer endpoint of a selection spanning the region boundary', () => {
+        const f = prepare(9);
+        try {
+            f.select(6, 9);
+            f.term.write('\n');
+            // The upper endpoint follows output up; the footer endpoint stays on row 9.
+            expect(f.selection.getSelectionCoords()).toEqual({ startCol: 0, startRow: 5, endCol: 17, endRow: 9 });
+            expectCopy(f, `${f.line(6)}\n${f.line(7)}\n\n${f.line(8)}\n${f.line(9)}`);
+        } finally { f.dispose(); }
+    });
+
+    it('keeps the footer through reverse scrolling and clears a partly discarded region selection', () => {
+        const f = prepare(9, true);
+        try {
+            f.select(8, 9);
+            const selected = `${f.line(8)}\n${f.line(9)}`;
+            f.term.write('\x1b[1;1H\x1bM');
+            expectCopy(f, selected);
+            expect(f.selection.getSelectionCoords()).toEqual({ startCol: 0, startRow: 8, endCol: 17, endRow: 9 });
+            f.select(7, 9); // only the first endpoint is about to be discarded
+            const changed = vi.fn();
+            f.selection.onSelectionChange(changed);
+            f.term.write('\x1bM');
+            expect(f.term.hasSelection()).toBe(false);
+            expect(f.selection.getSelectionCoords()).toBeNull();
+            expect(changed).toHaveBeenCalledOnce();
+            const copied = vi.fn(async () => {});
+            expect(copySelection({ focusedPaneID: () => 'pane', selectionFor: () => f.term.getSelection(), writeText: copied, onError: vi.fn() })).toBe(false);
+            expect(copied).not.toHaveBeenCalled();
+        } finally { f.dispose(); }
+    });
+
+    it('does not resurrect an endpoint pruned while the other endpoint is in the footer', () => {
+        const f = prepare(1177);
+        try {
+            // Begin the drag in old history, then scroll back down before ending it.
+            f.term.viewportY = f.vt.getScrollbackLength();
+            f.select(1, 1, false, false);
+            f.term.viewportY = 0;
+            f.canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 179, clientY: 190, buttons: 1, shiftKey: true }));
+            f.release();
+            expect(f.term.hasSelection()).toBe(true);
+            const changed = vi.fn();
+            f.selection.onSelectionChange(changed);
+            f.term.write('\n');
+            expect(f.term.hasSelection()).toBe(false);
+            expect(f.selection.getSelectionCoords()).toBeNull();
+            expect(changed).toHaveBeenCalledOnce();
+        } finally { f.dispose(); }
+    });
+});

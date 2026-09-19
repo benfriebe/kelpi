@@ -67,6 +67,15 @@ before `eraseRow`/`eraseRowBounded`, including single-row screens. The insert/de
 pins and clear endpoints that leave the scrolling rectangle. Cursor, viewport and other tracked
 pins retain their existing native behavior; no general `PageList` pin semantics are changed.
 
+A further recheck reproduced a top-anchored partial region moving a selection on an unchanged
+footer: with rows 1–8 scrolling in a ten-row terminal, one line feed changed Copy of row 10 to
+row 9. `Screen.cursorScrollAbove` grows history and internally rotates the footer down one buffer
+row, without moving its native pins. The patch records which selection endpoints are in that
+footer before growth, then advances only those endpoints after either the single-page or
+multi-page rotation. A garbage endpoint from history pruning still clears the entire selection.
+Real-WASM tests cover both screens, page allocation and pruning, one or both endpoints in the
+footer, colored output, batched line feeds, reverse scrolling, highlight coordinates and live Copy.
+
 `clearSelection` now stops drag autoscroll and emits its change once; `deselect` does not emit a
 second notification. Copy still pulls the live renderer on demand. Native selection tracking
 does not change the pre-existing viewport pinning policy or the clipboard dispatch path.
@@ -85,8 +94,8 @@ baseline was reproduced byte for byte with Zig 0.15.2 before adding either local
 TypeScript bundle with `pnpm vendor:build` and commit the WASM, both bundles, declarations and
 package version together (the existing file override does not need a lockfile change).
 
-The shipped WASM is 425,840 bytes, SHA-256
-`f3b0005ea4dec84d38e127cada5ce8d5c1b2f62c36e6a85f123b86d6b91300e8`.
+The shipped WASM is 426,515 bytes, SHA-256
+`9269d2ad5e171d667180929979227375283e433031e563b2608a8e5fabd4ad9a`.
 The bundle rebuild resolved Vite 4.5.14, vite-plugin-dts 4.5.4 and TypeScript 5.9.3.
 
 ## Nex adaptation: an erased row forgets it was wrapped (`0.4.0-nex.13`, 2026-09-11)

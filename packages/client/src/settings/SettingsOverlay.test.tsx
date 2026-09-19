@@ -79,6 +79,13 @@ describe('the Settings window', () => {
         ]);
     });
 
+    it('paints the semantic tab rail with the sidebar chrome token', () => {
+        setup();
+        const rail = screen.getByRole('tablist', { name: 'Settings sections' });
+        expect(rail).toBe(screen.getByTestId('settings-tabs'));
+        expect(rail.style.background).toContain('var(--kelpi-sidebar-bg,');
+    });
+
     it('honours a deep link to a specific tab', () => {
         setup({ initialTab: 'labels' });
         expect(screen.getByTestId('settings-tab-labels')).toBeDefined();

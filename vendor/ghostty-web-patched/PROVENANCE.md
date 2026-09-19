@@ -1,7 +1,7 @@
-# ghostty-web 0.4.0-nex.14 (vendored)
+# ghostty-web 0.4.0-nex.15 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both, plus thirteen
+review in the orchestrating session and explicit user authorization to integrate both, plus fourteen
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
@@ -10,7 +10,7 @@ repainted when the scrollbar goes away; `-nex.9`: replays receive fresh WASM sto
 every terminal on its own WASM instance; `-nex.11`: output never moves a scrolled viewport;
 `-nex.12`: a disposed terminal is garbage, the document listener that pinned it is removed;
 `-nex.13`: an `ESC[2K`'d row forgets it was ever wrapped; `-nex.14`: selected conversation
-rows remain anchored when older history is trimmed).
+rows remain anchored when older history is trimmed; `-nex.15`: DOM focus preserves the embedder's pan position).
 
 **`-nex.13` is the first adaptation that is NOT TypeScript-only.** Every version up to `-nex.12`
 shipped `ghostty-vt.wasm` byte-identical to the npm `ghostty-web@0.4.0` package; `-nex.13`
@@ -35,6 +35,22 @@ reproduces the `0.4.0` wasm BYTE-IDENTICALLY when run without the patch, is in
 | `0.4.0-nex.12` | `SelectionManager.dispose` removes its document `mousedown` listener, so a disposed terminal (and, since `-nex.10`, its WASM instance) can be collected |
 | `0.4.0-nex.13` | **wasm patch**: `ESC[2K` breaks the row's soft-wrap linkage on BOTH sides, so a column reflow can never glue an erased row to its neighbours (#165) |
 | `0.4.0-nex.14` | **wasm + TypeScript**: native selection pins keep retained rows selected across scrollback trims; discarded endpoints clear and announce the selection (#170) |
+| `0.4.0-nex.15` | terminal and selection DOM focus uses `preventScroll`, preserving the embedder's mirrored-canvas pan (#178) |
+
+## Kelpi adaptation: focus preserves a panned terminal (`0.4.0-nex.15`, 2026-09-20)
+
+The client now pans a mirrored owner grid inside a positioned host, which also contains the
+engine's absolute IME textarea and preedit. Focusing that offscreen textarea with bare DOM
+`focus()` scrolls the host to the terminal cursor before selection resolves its pointer cell.
+Every DOM focus in `terminal.ts` and `selection-manager.ts` now uses `{ preventScroll: true }`,
+including canvas clicks, phone taps, parent focus redirects, delayed focus, selection, and
+clipboard fallback focus restoration. Focus still changes the caret and opens the phone
+keyboard; it does not change the embedder's viewport. Public terminal `focus()` retains its API.
+
+This is TypeScript-only; the `-nex.14` selection WASM/types and native patches are unchanged.
+The bundles are rebuilt with `pnpm vendor:build`. The real-browser `terminal-mirrors-owner-grid`
+scenario checks IME alignment after X/Y pans and focus/selection while the terminal cursor lies
+outside the viewer, alongside the existing ownership and phone-pan checks.
 
 ## Kelpi adaptation: selection follows retained history (`0.4.0-nex.14`, 2026-09-19)
 

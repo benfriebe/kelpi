@@ -905,10 +905,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         }
         const previous = geometryRef.current;
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
-        if (unchanged && !force) return;
         geometryRef.current = next;
-        // #178: the box moved, so what a mirror is clipping off moved with it.
+        // Pixel bounds can move without changing the whole-cell grid. Refresh the pan edges
+        // before skipping an unchanged PTY measurement (e.g. a 679px box shrinking to 672px).
         publishClip();
+        if (unchanged && !force) return;
         const cell = renderer.cellSize();
         setCellHint(
             cell.width > 0 && cell.height > 0 ? `${cell.width.toFixed(2)}x${cell.height.toFixed(2)}` : ''
@@ -1548,11 +1549,13 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 const axes = panMirror(event.deltaX * xUnit, event.deltaY * yUnit);
                 if ((axes.x && event.deltaX !== 0) || (axes.y && event.deltaY !== 0)) {
                     consume(event);
-                    // A diagonal trackpad gesture can pan X and scroll terminal history in Y.
-                    // Forward only the unspent vertical delta through the normal mouse/engine path.
-                    if (!axes.y && event.deltaY !== 0 && event.target instanceof EventTarget) {
+                    // Each axis keeps its own destination: the unused component of a diagonal
+                    // gesture still belongs to terminal scrollback or application mouse reports.
+                    const deltaX = axes.x ? 0 : event.deltaX;
+                    const deltaY = axes.y ? 0 : event.deltaY;
+                    if ((deltaX !== 0 || deltaY !== 0) && event.target instanceof EventTarget) {
                         event.target.dispatchEvent(new WheelEvent('wheel', {
-                            bubbles: true, cancelable: true, deltaY: event.deltaY, deltaMode: event.deltaMode,
+                            bubbles: true, cancelable: true, deltaX, deltaY, deltaMode: event.deltaMode,
                             clientX: event.clientX, clientY: event.clientY,
                             shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey
                         }));
@@ -2464,12 +2467,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 {TERMINAL_ACCESSIBILITY_HELP}
             </span>
             {/* N19: `data-pane-surface` marks the subtree that legitimately owns this pane's
-                caret — the engine's hidden `<textarea>` lives in here. It is what tells the
-                politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
+                caret — the engine's hidden `<textarea>` lives in here. Positioning the host
+                also makes it the containing block for that textarea and the IME preedit, so
+                they scroll with the canvas instead of staying anchored to the pane root.
+                It is what tells the politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
                 not a chrome text field, and it is what `focusPaneSurface` hands the caret to. */}
             <div
                 ref={hostRef}
-                className="h-full w-full"
+                className="relative h-full w-full"
                 data-terminal-host=""
                 onScroll={() => panMirror()}
                 {...{ [PANE_SURFACE_ATTR]: '' }}

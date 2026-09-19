@@ -54,7 +54,7 @@ const RUNNING = JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'werk
 function channel(file: string, ts: { run: TailscaleRunner }, port: number | undefined = 61154) {
     return createRemoteChannel({
         env: { KELPID_DEVICES_PATH: file, KELPID_RUN_DIR: path.dirname(file) } as NodeJS.ProcessEnv,
-        port: () => port,
+        port: () => port, host: () => '127.0.0.1',
         tailscale: ts.run
     });
 }
@@ -230,7 +230,7 @@ describe('remote-pair', () => {
         const ts = tailscale({ status: { code: 0, stdout: RUNNING } });
         const remote = createRemoteChannel({
             env: { KELPID_DEVICES_PATH: file, KELPID_RUN_DIR: path.join(path.dirname(file), 'wrong-run') },
-            runDir, port: () => 61154, tailscale: ts.run
+            runDir, port: () => 61154, host: () => '127.0.0.1', tailscale: ts.run
         });
         expect(await remote.pair('phone', true)).toMatchObject({ ok: true });
         expect(readForwardingRecord(path.join(runDir, 'tailscale-serve.json'))?.port).toBe(61154);

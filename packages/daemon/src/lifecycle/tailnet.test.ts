@@ -141,7 +141,7 @@ describe('stale forwarding diagnosis', () => {
     ] as const)('reports %s without replacing a target of unknown ownership', async (state, message) => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: serveConfig(3000) } });
         const probeTarget = vi.fn(async () => state);
-        const result = await resolveTailnetURL({ port: 61154, token: 'secret', run, probeTarget });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 'secret', run, probeTarget });
         expect(probeTarget).toHaveBeenCalledWith('127.0.0.1', 3000);
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining(message) });
         expect(result.kind === 'error' && result.message).toContain("Kelpi's current 127.0.0.1:61154");
@@ -158,14 +158,14 @@ describe('stale forwarding diagnosis', () => {
         } } } });
         const { run } = scripted({ serveStatus: { code: 0, stdout: config } });
         const probeTarget = vi.fn(async () => 'refused' as const);
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run, probeTarget });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run, probeTarget });
         expect(probeTarget.mock.calls).toEqual([['::1', 3000], ['localhost', 3000]]);
         expect(result.kind === 'error' && result.message).toContain('[::1]:3000');
     });
 
     it('a probe exception remains an inconclusive refusal, not an uncaught pairing failure', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: serveConfig(3000) } });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run, probeTarget: async () => { throw new Error('sandbox'); } });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run, probeTarget: async () => { throw new Error('sandbox'); } });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('liveness unknown') });
         expect(calls).toHaveLength(2);
     });
@@ -174,7 +174,7 @@ describe('stale forwarding diagnosis', () => {
         const config = JSON.stringify({ targets: Array.from({ length: 30 }, (_, i) => `127.0.0.1:${3000 + i}`) });
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
         const probeTarget = vi.fn(async () => 'refused' as const);
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run, probeTarget });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run, probeTarget });
         expect(probeTarget).toHaveBeenCalledTimes(16);
         expect(result.kind === 'error' && result.message).toContain('14 additional targets were not probed');
         expect(calls).toHaveLength(2);
@@ -183,11 +183,11 @@ describe('stale forwarding diagnosis', () => {
     it('records a successful configure and uses it after the current daemon port changes', async () => {
         const forwardingFile = historyFile();
         const first = scripted({});
-        expect((await resolveTailnetURL({ port: 61154, token: 't', run: first.run, forwardingFile })).kind).toBe('ok');
+        expect((await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run: first.run, forwardingFile })).kind).toBe('ok');
         const history = readForwardingRecord(forwardingFile);
         expect(history).toMatchObject({ version: 1, port: 61154, dnsName: 'werk.taila5f942.ts.net' });
         const second = scripted({ serveStatus: { code: 0, stdout: serveConfig(61154) } });
-        const result = await resolveTailnetURL({ port: 61200, token: 't', run: second.run, forwardingFile, probeTarget: async () => 'refused' });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61200, token: 't', run: second.run, forwardingFile, probeTarget: async () => 'refused' });
         expect(result.kind === 'error' && result.message).toContain('possibly stale forwarding');
         expect(result.kind === 'error' && result.message).toContain('Kelpi last configured tailscale serve for werk.taila5f942.ts.net at 127.0.0.1:61154');
         expect(result.kind === 'error' && result.message).toContain('does not establish current ownership');
@@ -200,10 +200,10 @@ describe('stale forwarding diagnosis', () => {
         const history = { version: 1 as const, dnsName: 'old.tail.ts.net', port: 50000, configuredAt: '2026-09-19T12:00:00.000Z' };
         writeForwardingRecord(forwardingFile, history);
         const observed = scripted({ serveStatus: { code: 0, stdout: serveConfig(61154) } });
-        await resolveTailnetURL({ port: 61154, token: 't', run: observed.run, forwardingFile });
+        await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run: observed.run, forwardingFile });
         expect(readForwardingRecord(forwardingFile)).toEqual(history);
         const failed = scripted({ serveBg: { code: 1, stderr: 'denied' } });
-        await resolveTailnetURL({ port: 61154, token: 't', run: failed.run, forwardingFile });
+        await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run: failed.run, forwardingFile });
         expect(readForwardingRecord(forwardingFile)).toEqual(history);
     });
 
@@ -211,7 +211,7 @@ describe('stale forwarding diagnosis', () => {
         const forwardingFile = historyFile();
         fs.mkdirSync(forwardingFile);
         const { run } = scripted({});
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run, forwardingFile });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run, forwardingFile });
         expect(result.kind).toBe('ok');
         expect(result.kind === 'ok' && result.notes.join(' ')).toContain('Could not record');
         expect(fs.readdirSync(path.dirname(forwardingFile))).toEqual(['tailscale-serve.json']);
@@ -232,6 +232,28 @@ describe('resolveTailnetURL', () => {
         Web: { 'werk.taila5f942.ts.net:443': { Handlers: { '/': handler } } }
     });
 
+    it.each([undefined, 'localhost', '192.168.1.20'])('refuses an unproven loopback bind %s before any CLI call', async host => {
+        const { run, calls } = scripted({});
+        const result = await resolveTailnetURL({ host, port: 61154, token: 'secret', run });
+        expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('bind') });
+        expect(JSON.stringify(result)).not.toContain('secret');
+        expect(calls).toEqual([]);
+    });
+
+    it('will not reuse an IPv4 route for an IPv6-only daemon, even on the same port', async () => {
+        const { run, calls } = scripted({ serveStatus: { code: 0, stdout: serveConfig(61154) } });
+        expect(await resolveTailnetURL({ host: '::1', port: 61154, token: 'secret', run, probeTarget: async () => 'listening' }))
+            .toMatchObject({ kind: 'error' });
+        expect(calls).toHaveLength(2);
+    });
+
+    it('names the actual IPv6 endpoint in manual repair instructions when serve status fails', async () => {
+        const { run, calls } = scripted({ serveStatus: { code: 1, stdout: '', stderr: 'failed' } });
+        const result = await resolveTailnetURL({ host: '::1', port: 61154, token: 'secret', run });
+        expect(result).toMatchObject({ kind: 'error', repair: expect.stringContaining('serve --bg http://[::1]:61154') });
+        expect(calls).toHaveLength(2);
+    });
+
     it.each([
         ['trailing-slash proxy', rootConfig({ Proxy: 'http://127.0.0.1:3000/' })],
         ['proxy with an upstream path', rootConfig({ Proxy: 'http://127.0.0.1:3000/app' })],
@@ -246,7 +268,7 @@ describe('resolveTailnetURL', () => {
         ['unknown shape', '{"FutureConfig":{}}']
     ])('leaves an occupied or unrecognized %s untouched', async (_name, config) => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
-        const result = await resolveTailnetURL({ port: 61154, token: 'secret', run, probeTarget: async () => 'refused' });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 'secret', run, probeTarget: async () => 'refused' });
         expect(result.kind).toBe('error');
         expect(JSON.stringify(result)).not.toContain('secret');
         expect(calls).toEqual([['status', '--json'], ['serve', 'status', '--json']]);
@@ -284,7 +306,7 @@ describe('resolveTailnetURL', () => {
         ['ambiguous handler', rootConfig({ Proxy: 'http://127.0.0.1:61154', Text: 'foreign' })]
     ])('does not emit a token URL for a matching port on %s', async (_name, config) => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
-        const result = await resolveTailnetURL({ port: 61154, token: 'secret', run, probeTarget: async () => 'listening' });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 'secret', run, probeTarget: async () => 'listening' });
         expect(result.kind).toBe('error');
         expect(JSON.stringify(result)).not.toContain('secret');
         expect(calls).toEqual([['status', '--json'], ['serve', 'status', '--json']]);
@@ -293,14 +315,14 @@ describe('resolveTailnetURL', () => {
     it.each(['{}', 'null', '{"TCP":{},"Web":{},"AllowFunnel":{},"Foreground":{},"Services":null}'])(
         'configures a positively empty configuration: %s', async (config) => {
             const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
-            expect((await resolveTailnetURL({ port: 61154, token: 't', run })).kind).toBe('ok');
+            expect((await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run })).kind).toBe('ok');
             expect(calls).toContainEqual(['serve', '--bg', '61154']);
         }
     );
 
     it('accepts the verified IPv4 HTTP root with a trailing slash', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: rootConfig({ Proxy: 'http://127.0.0.1:61154/' }) } });
-        expect(await resolveTailnetURL({ port: 61154, token: 't', run })).toMatchObject({
+        expect(await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run })).toMatchObject({
             kind: 'ok', url: 'https://werk.taila5f942.ts.net/?token=t'
         });
         expect(calls).toHaveLength(2);
@@ -312,7 +334,7 @@ describe('resolveTailnetURL', () => {
             'werk.taila5f942.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:61154' } } }
         } });
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: config } });
-        expect(await resolveTailnetURL({ port: 61154, token: 't', run })).toMatchObject({
+        expect(await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run })).toMatchObject({
             kind: 'ok', url: 'https://werk.taila5f942.ts.net:8443/?token=t'
         });
         expect(calls).toHaveLength(2);
@@ -320,7 +342,7 @@ describe('resolveTailnetURL', () => {
 
     it('says tailscale is not installed when the binary is missing', async () => {
         const run: TailscaleRunner = () => Promise.resolve({ code: -1, stdout: '', stderr: 'ENOENT' });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('not installed') });
     });
 
@@ -328,7 +350,7 @@ describe('resolveTailnetURL', () => {
         const { run } = scripted({
             status: { code: 0, stdout: JSON.stringify({ BackendState: 'NeedsLogin', Self: {} }) }
         });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('NeedsLogin') });
         expect(result.kind === 'error' && result.repair).toContain('tailscale up');
         // Every refusal hands back the SAME repair as ordered steps, for a surface with room.
@@ -339,13 +361,13 @@ describe('resolveTailnetURL', () => {
         const { run } = scripted({
             status: { code: 0, stdout: JSON.stringify({ BackendState: 'Running', Self: {} }) }
         });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('MagicDNS') });
     });
 
     it('prints the URL without touching serve when the port is already fronted', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: serveConfig(61154) } });
-        const result = await resolveTailnetURL({ port: 61154, token: 's3cret', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 's3cret', run });
         expect(result).toMatchObject({
             kind: 'ok',
             url: 'https://werk.taila5f942.ts.net/?token=s3cret',
@@ -356,21 +378,21 @@ describe('resolveTailnetURL', () => {
 
     it('configures serve when nothing is being served, and says so', async () => {
         const { run, calls } = scripted({});
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'ok', notes: [expect.stringContaining('configured')] });
         expect(calls).toContainEqual(['serve', '--bg', '61154']);
     });
 
     it('REFUSES port 0 before asking tailscale anything: `serve --bg 0` fronts nothing (#130)', async () => {
         const { run, calls } = scripted({});
-        const result = await resolveTailnetURL({ port: 0, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 0, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('no bound HTTP port') });
         expect(calls).toEqual([]);
     });
 
     it('REFUSES when the serve config cannot be inspected — unreadable is not absent', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 1, stdout: '', stderr: 'unknown flag' } });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('cannot be inspected') });
         expect(calls.some((args) => args[0] === 'serve' && args[1] === '--bg')).toBe(false);
     });
@@ -385,7 +407,7 @@ describe('resolveTailnetURL', () => {
             }
         });
         const { run } = scripted({ serveStatus: { code: 0, stdout: config } });
-        const result = await resolveTailnetURL({ port: 61154, token: 's', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 's', run });
         expect(result).toMatchObject({ kind: 'ok', url: 'https://werk.taila5f942.ts.net:8443/?token=s' });
     });
 
@@ -398,14 +420,14 @@ describe('resolveTailnetURL', () => {
         expect(parseServeProxyPorts(forward)).toEqual([9443]);
 
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: insecure } });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('127.0.0.1:3000') });
         expect(calls.some((args) => args[0] === 'serve' && args[1] === '--bg')).toBe(false);
     });
 
     it('REFUSES to replace a serve config that fronts a different service', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 0, stdout: serveConfig(3000) } });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('127.0.0.1:3000') });
         expect(result.kind === 'error' && result.repair).toContain('tailscale serve --bg 61154');
         expect(calls.some((args) => args[0] === 'serve' && args[1] === '--bg')).toBe(false);
@@ -413,7 +435,7 @@ describe('resolveTailnetURL', () => {
 
     it('surfaces a serve failure with tailscale’s own words and the HTTPS-certs hint', async () => {
         const { run } = scripted({ serveBg: { code: 1, stderr: 'error: HTTPS is not enabled' } });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({ kind: 'error', message: expect.stringContaining('HTTPS is not enabled') });
         expect(result.kind === 'error' && result.repair).toContain('HTTPS certificates');
     });
@@ -425,7 +447,7 @@ describe('resolveTailnetURL', () => {
                 stderr: 'Serve is not enabled on your tailnet.\nTo enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=x'
             }
         });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         // Plain words, not `tailscale serve --bg 61154` failed: nothing is broken, the tailnet
         // has simply never had serve switched on.
         expect(result).toMatchObject({
@@ -446,7 +468,7 @@ describe('resolveTailnetURL', () => {
         const { run } = scripted({
             serveBg: { code: 1, stderr: 'foo: see https://login.tailscale.com/admin/machines for details' }
         });
-        const result = await resolveTailnetURL({ port: 61154, token: 't', run });
+        const result = await resolveTailnetURL({ host: '127.0.0.1', port: 61154, token: 't', run });
         expect(result).toMatchObject({
             kind: 'error',
             message: expect.stringContaining('foo: see'),

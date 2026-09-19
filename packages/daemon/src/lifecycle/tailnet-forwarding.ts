@@ -48,6 +48,8 @@ export interface ForwardingRecord {
     readonly version: 1;
     readonly dnsName: string;
     readonly port: number;
+    /** Absent in older v1 records, which always used IPv4 loopback. */
+    readonly host?: '127.0.0.1' | '::1' | undefined;
     readonly configuredAt: string;
     readonly binary?: string | undefined;
 }
@@ -63,6 +65,7 @@ export function readForwardingRecord(file: string): ForwardingRecord | undefined
             typeof record['dnsName'] !== 'string' || record['dnsName'].length === 0 ||
             typeof record['port'] !== 'number' || !Number.isInteger(record['port']) ||
             record['port'] < 1 || record['port'] > 65535 ||
+            (record['host'] !== undefined && record['host'] !== '127.0.0.1' && record['host'] !== '::1') ||
             typeof record['configuredAt'] !== 'string' || !Number.isFinite(Date.parse(record['configuredAt'])) ||
             (record['binary'] !== undefined && typeof record['binary'] !== 'string')
         ) return undefined;

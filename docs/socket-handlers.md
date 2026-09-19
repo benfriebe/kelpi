@@ -1277,6 +1277,8 @@ read by `kelpid status` and `kelpi doctor`:
 - `compat {path, error}`: present when the shared compatibility socket could not be bound
   (for example because another Kelpi owns it).
 - `pane_route`: the `KELPI_SOCKET` value injected into panes.
+- `http {host, port}`: the live, kernel-reported primary HTTP/WS bind, used to verify tailnet
+  forwarding. Absent before bind or on older daemons; absence never implies IPv4 loopback.
 - `persistence {ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:
   the persistence layer's health.
 
@@ -1336,7 +1338,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | graft-start | `started: [...]`, `partial_error?`, `partial_error_kind?` (failures add `error_kind`) |
 | graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
-| ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `persistence?` |
+| ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `persistence?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,

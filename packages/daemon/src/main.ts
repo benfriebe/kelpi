@@ -778,7 +778,7 @@ async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
     }
 
     const record = readPidRecord(paths);
-    const port = record?.http_port ?? readPortFile(paths);
+    const port = (tailnet ? probe.http?.port : undefined) ?? record?.http_port ?? readPortFile(paths);
     const token = readToken(paths);
     if (port === undefined || token === undefined) {
         io.err(`kelpid is running but ${paths.dir} has no HTTP port or token to build a URL from`);
@@ -792,7 +792,7 @@ async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
     }
 
     const result = await resolveTailnetURL({
-        port, token, run: io.tailscaleRunner,
+        port, host: probe.http?.host, token, run: io.tailscaleRunner,
         forwardingFile: nodePath.join(paths.dir, 'tailscale-serve.json')
     });
     if (result.kind === 'error') {
@@ -871,7 +871,7 @@ async function commandPair(
         return 1;
     }
     const record = readPidRecord(paths);
-    const port = record?.http_port ?? readPortFile(paths);
+    const port = (tailnet ? probe.http?.port : undefined) ?? record?.http_port ?? readPortFile(paths);
     if (port === undefined) {
         io.err(`kelpid is running but ${paths.dir} has no HTTP port to build a URL from`);
         io.err('Repair: restart it (`kelpid stop` then `kelpid start`) so it rewrites the run dir.');
@@ -890,7 +890,7 @@ async function commandPair(
     let url: string;
     if (tailnet) {
         const result = await resolveTailnetURL({
-            port, token: minted.token, run: io.tailscaleRunner,
+            port, host: probe.http?.host, token: minted.token, run: io.tailscaleRunner,
             forwardingFile: nodePath.join(paths.dir, 'tailscale-serve.json')
         });
         if (result.kind === 'error') {

@@ -427,9 +427,14 @@ The token is stored in `localStorage` and stripped from the address bar, so late
 only when Tailscale reports a recognized empty configuration. Malformed or unfamiliar
 configuration, file servers, and other occupied handlers are left untouched. Existing
 forwarding is reused only for an HTTPS listener on this machine's tailnet DNS name with
-a single `/` handler targeting `http://127.0.0.1:<Kelpi port>` (an optional trailing `/`
-is accepted). Matching port numbers on another address, host, protocol, or path do not
-establish that the URL reaches Kelpi. Mixed paths, foreground/service indirection, and
+a single `/` handler targeting the daemon's proven loopback endpoint over HTTP (an optional
+trailing `/` is accepted). The live control ping reports the kernel's actual bind address
+and port; the CLI's environment and old port files cannot establish this endpoint. IPv4
+loopback and `0.0.0.0` use `127.0.0.1`; IPv6 loopback and `::` use `[::1]`, including an explicit
+IPv6 URL when configuring serve. A hostname bind uses the address the kernel actually bound.
+Missing bind metadata (including older daemons) or non-loopback/non-wildcard binds require
+restarting or reconfiguring the daemon before pairing. Matching port numbers on another address,
+host, protocol, or path do not establish that the URL reaches Kelpi. Mixed paths, foreground/service indirection, and
 Funnel-enabled routes require manual inspection. Settings status uses the same rule.
 
 When existing forwarding cannot be reused, Kelpi checks recognized loopback targets with
@@ -441,8 +446,8 @@ A refused connection does not establish ownership, so replacement remains an exp
 IPv4 and IPv6 targets are checked separately; `localhost` checks both. Checks take at most
 one second and cover at most 16 distinct targets per diagnosis.
 
-After Kelpi successfully runs `tailscale serve --bg`, it records the target port, tailnet DNS
-name, timestamp, and CLI path when known in `<run dir>/tailscale-serve.json` (mode 0600).
+After Kelpi successfully runs `tailscale serve --bg`, it records the target address and port,
+tailnet DNS name, timestamp, and CLI path when known in `<run dir>/tailscale-serve.json` (mode 0600).
 The record survives daemon restarts and is included in a conflicting-forward diagnosis;
 it is history, not proof of current ownership. Merely observing existing forwarding does not
 claim it, a failed configure does not replace the record, and manual Tailscale commands are

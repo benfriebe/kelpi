@@ -47,8 +47,25 @@ export interface ControlPingProbe {
     readonly compat?: ControlPingCompat | undefined;
     /** The `KELPI_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
     readonly paneRoute?: string | undefined;
+    /** Live primary HTTP endpoint. Absent from older daemons; never infer from client env. */
+    readonly http?: ControlPingHttp | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
+}
+
+export interface ControlPingHttp {
+    readonly host: string;
+    readonly port: number;
+}
+
+/** An omitted/malformed endpoint is unknown, not the default IPv4 loopback bind. */
+export function readHttpEndpoint(reply: Record<string, unknown>): ControlPingHttp | undefined {
+    const raw = reply['http'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+    const { host, port } = raw as Record<string, unknown>;
+    if (typeof host !== 'string' || net.isIP(host) === 0 ||
+        typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    return { host, port };
 }
 
 /**
@@ -197,6 +214,7 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const tcp = readTcpStatus(reply);
                 const compat = readCompatStatus(reply);
                 const paneRoute = readString(reply, 'pane_route');
+                const http = reply['ok'] === true ? readHttpEndpoint(reply) : undefined;
                 finish({
                     alive: true,
                     reply,
@@ -206,7 +224,8 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                     ...(persistence !== undefined ? { persistence } : {}),
                     ...(tcp !== undefined ? { tcp } : {}),
                     ...(compat !== undefined ? { compat } : {}),
-                    ...(paneRoute !== undefined ? { paneRoute } : {})
+                    ...(paneRoute !== undefined ? { paneRoute } : {}),
+                    ...(http !== undefined ? { http } : {})
                 });
                 return;
             }

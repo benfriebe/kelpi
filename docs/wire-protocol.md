@@ -1162,6 +1162,9 @@ ignores unless it understands them (`packages/daemon/src/handlers/app/ping.ts:33
 - `tcp` `{requested, host, bound?, error?}`: present only when a `tcp-port` was configured;
   `bound` when the listener is up, `error` when the bind failed (§1.2).
 - `compat` `{path, error}`: present only when the compat socket (§1) is degraded.
+- `http` `{host, port}`: the kernel-reported primary HTTP/WS bind, present once it is listening.
+  Tailnet URL/pair commands use this live endpoint; a missing or malformed block is unknown,
+  never a reason to infer IPv4 loopback from CLI environment or saved port metadata.
 - `pane_route`: the `KELPI_SOCKET` value injected into panes, present once the run-dir
   server's TCP listener is bound.
 - `persistence` `{ok, degraded, path, failed_saves, last_save_at, error?, errno?, phase?}`:

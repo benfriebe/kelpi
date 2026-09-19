@@ -597,63 +597,59 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
     const panelRow = (
         <div className="flex min-h-0 flex-1">
             <div
-                className="flex w-44 shrink-0 flex-col border-r"
+                role="tablist"
+                aria-label="Settings sections"
+                aria-orientation="vertical"
+                data-testid="settings-tabs"
+                /*
+                 * S59: `gap-1`. The rail rows are the port's intended 28.8 px now that S1
+                 * layered the reset, but `gap-0.5` left a 2 px row gap — a 30.8 px pitch,
+                 * eight rows reading as a paragraph of lines rather than a list of tabs.
+                 * 4 px puts the pitch at 32.8, still far denser than the Swift's
+                 * icon-over-title `.tabItem`s (~50 × 40 pt).
+                 */
+                className="flex min-h-0 w-44 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2"
                 style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
+                onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        moveTab(1);
+                        return;
+                    }
+                    if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+                        event.preventDefault();
+                        moveTab(-1);
+                        return;
+                    }
+                    if (event.key === 'Home') {
+                        event.preventDefault();
+                        moveTab(0, 'first');
+                        return;
+                    }
+                    if (event.key === 'End') {
+                        event.preventDefault();
+                        moveTab(0, 'last');
+                    }
+                }}
             >
-                <div
-                    role="tablist"
-                    aria-label="Settings sections"
-                    aria-orientation="vertical"
-                    data-testid="settings-tabs"
-                    /*
-                     * S59: `gap-1`. The rail rows are the port's intended 28.8 px now that S1
-                     * layered the reset, but `gap-0.5` left a 2 px row gap — a 30.8 px pitch,
-                     * eight rows reading as a paragraph of lines rather than a list of tabs.
-                     * 4 px puts the pitch at 32.8, still far denser than the Swift's
-                     * icon-over-title `.tabItem`s (~50 × 40 pt).
-                     */
-                    className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2"
-                    onKeyDown={(event) => {
-                        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                            event.preventDefault();
-                            moveTab(1);
-                            return;
-                        }
-                        if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                            event.preventDefault();
-                            moveTab(-1);
-                            return;
-                        }
-                        if (event.key === 'Home') {
-                            event.preventDefault();
-                            moveTab(0, 'first');
-                            return;
-                        }
-                        if (event.key === 'End') {
-                            event.preventDefault();
-                            moveTab(0, 'last');
-                        }
-                    }}
-                >
-                    {SETTINGS_TABS.map((entry) => (
-                        <RailTab
-                            key={entry.id}
-                            id={entry.id}
-                            label={entry.label}
-                            icon={entry.icon}
-                            selected={entry.id === tab}
-                            registerRef={(node) => {
-                                if (node === null) tabRefs.current.delete(entry.id);
-                                else tabRefs.current.set(entry.id, node);
-                            }}
-                            onSelect={() => {
-                                setSearchQuery('');
-                                setPendingSearchTarget(null);
-                                setTab(entry.id);
-                            }}
-                        />
-                    ))}
-                </div>
+                {SETTINGS_TABS.map((entry) => (
+                    <RailTab
+                        key={entry.id}
+                        id={entry.id}
+                        label={entry.label}
+                        icon={entry.icon}
+                        selected={entry.id === tab}
+                        registerRef={(node) => {
+                            if (node === null) tabRefs.current.delete(entry.id);
+                            else tabRefs.current.set(entry.id, node);
+                        }}
+                        onSelect={() => {
+                            setSearchQuery('');
+                            setPendingSearchTarget(null);
+                            setTab(entry.id);
+                        }}
+                    />
+                ))}
             </div>
 
             <div

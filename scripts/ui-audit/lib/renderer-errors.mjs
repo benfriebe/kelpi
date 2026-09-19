@@ -26,7 +26,7 @@
  * `Runtime.enable` is idempotent, and a session that refuses it is reported as itself rather than
  * quietly watching nothing: "no errors seen" and "nobody looked" must not read the same.
  */
-export async function watchRendererErrors(page) {
+export async function watchRendererErrors(page, { timeoutMs = 60_000 } = {}) {
     const seen = [];
     let enableError = null;
     // Subscribe before enable: events may arrive before its acknowledgement.
@@ -39,12 +39,15 @@ export async function watchRendererErrors(page) {
         seen.push(`console.error: ${(params.args ?? []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' ')}`);
     });
     try {
-        await page.send('Runtime.enable');
+        await page.send('Runtime.enable', {}, timeoutMs);
     } catch (error) {
         enableError = error instanceof Error ? error.message : String(error);
     }
     return {
-        get hasErrors() { return seen.length > 0 || enableError !== null; },
+        // A setup failure is not evidence that client code ran and failed. Boot must reject
+        // it before navigation; attached instances still report it through the named check.
+        enableError,
+        get hasErrors() { return seen.length > 0; },
         /**
          * Take everything seen since the last call and record the verdict for this scenario.
          *
@@ -63,4 +66,3 @@ export async function watchRendererErrors(page) {
         }
     };
 }
-

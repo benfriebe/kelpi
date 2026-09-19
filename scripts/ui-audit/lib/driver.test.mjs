@@ -16,8 +16,7 @@ vi.mock('./stack.mjs', () => ({
 vi.mock('./cdp.mjs', () => ({
     MOD: {}, sleep: async () => {}, listTargets: vi.fn(),
     waitForPageTarget: async (_port, { match }) => {
-        expect(match({ url: '' })).toBe(true);
-        expect(match({ url: 'http://already-loaded/?shellWindow=1' })).toBe(false);
+        state.matchTarget = match;
         return { webSocketDebuggerUrl: 'ws://private-test' };
     },
     connect: async () => state.page
@@ -57,6 +56,52 @@ beforeEach(() => {
 });
 
 describe('boot watches the first client navigation', () => {
+    it('waits for a real blank document, ignoring the uninitialized Electron target', async () => {
+        const instance = await boot({ repoRoot: '/repo', build: false });
+        try {
+            expect(state.matchTarget({ url: '' })).toBe(false);
+            expect(state.matchTarget({ url: 'about:blank' })).toBe(true);
+            expect(state.matchTarget({ url: 'http://already-loaded/?shellWindow=1' })).toBe(false);
+        } finally {
+            await instance.stop();
+        }
+    });
+
+    it('does not set up or release the client before Runtime.enable acknowledges', async () => {
+        let acknowledge;
+        const enabling = new Promise((resolve) => { acknowledge = resolve; });
+        let requested;
+        const requestedEnable = new Promise((resolve) => { requested = resolve; });
+        state.page.send = vi.fn((method) => {
+            if (method !== 'Runtime.enable') return Promise.resolve();
+            state.order.push('watch');
+            requested();
+            return enabling;
+        });
+        const pending = boot({ repoRoot: '/repo', build: false,
+            beforeLoad: async () => state.order.push('setup') });
+        await requestedEnable;
+        expect(state.order).toEqual(['watch']);
+        acknowledge();
+        const instance = await pending;
+        expect(state.order).toEqual(['watch', 'setup', 'load']);
+        await instance.stop();
+    });
+
+    it('rejects and cleans a failed watcher without running setup or loading the client', async () => {
+        state.page.send.mockRejectedValue(new Error('session unavailable'));
+        const beforeLoad = vi.fn();
+        await expect(boot({ repoRoot: '/repo', build: false, beforeLoad, timeoutMs: 1234 }))
+            .rejects.toThrow('Runtime.enable: session unavailable');
+        expect(state.page.send).toHaveBeenCalledWith('Runtime.enable', {}, 1234);
+        expect(beforeLoad).not.toHaveBeenCalled();
+        expect(state.order).not.toContain('load');
+        expect(state.page.close).toHaveBeenCalledTimes(1);
+        expect(state.shell.quit).toHaveBeenCalledTimes(1);
+        expect(state.daemon.stop).toHaveBeenCalledTimes(1);
+        expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
+    });
+
     it('arms before setup and load, returning startup errors even when the app root never mounts', async () => {
         state.page.eval.mockResolvedValue(false);
         state.onLoad = () => {

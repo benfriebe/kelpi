@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -250,7 +251,7 @@ describe('resolveTailnetURL', () => {
     it('names the actual IPv6 endpoint in manual repair instructions when serve status fails', async () => {
         const { run, calls } = scripted({ serveStatus: { code: 1, stdout: '', stderr: 'failed' } });
         const result = await resolveTailnetURL({ host: '::1', port: 61154, token: 'secret', run });
-        expect(result).toMatchObject({ kind: 'error', repair: expect.stringContaining('serve --bg http://[::1]:61154') });
+        expect(result).toMatchObject({ kind: 'error', repair: expect.stringContaining("serve --bg 'http://[::1]:61154'") });
         expect(calls).toHaveLength(2);
     });
 
@@ -475,6 +476,49 @@ describe('resolveTailnetURL', () => {
             steps: [expect.stringContaining('https://login.tailscale.com/admin/machines'), expect.any(String)]
         });
         expect(result.kind === 'error' && result.repair).not.toContain('link above');
+    });
+});
+
+// macOS supplies zsh; exercise its filename expansion wherever that shell is installed.
+describe.skipIf(!fs.existsSync('/bin/zsh'))('displayed tailnet commands in zsh', () => {
+    const dirs: string[] = [];
+    afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+
+    describe.each(['127.0.0.1', '0.0.0.0', '::1', '::'])('bind %s', host => {
+        it.each(['status failure', 'occupied config', 'setup failure', 'setup success'] as const)(
+            'passes the exact target to a harmless stub after %s', async branch => {
+                const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-tailnet-repair-'));
+                dirs.push(dir);
+                fs.writeFileSync(path.join(dir, 'tailscale'), '#!/bin/sh\nprintf \'%s\\n\' "$@"\n', { mode: 0o755 });
+                const { run, calls } = scripted(
+                    branch === 'status failure' ? { serveStatus: { code: 1, stdout: '', stderr: 'unreadable' } }
+                    : branch === 'occupied config' ? { serveStatus: { code: 0, stdout: serveConfig(3000) } }
+                    : branch === 'setup failure' ? { serveBg: { code: 1, stderr: 'setup failed' } }
+                    : {}
+                );
+                const result = await resolveTailnetURL({
+                    host, port: 61154, token: 'secret', run, probeTarget: async () => 'refused'
+                });
+                expect(result.kind).toBe(branch === 'setup success' ? 'ok' : 'error');
+                const commands = result.kind === 'error'
+                    ? [result.message, result.repair ?? '', ...(result.steps ?? [])]
+                        .flatMap(text => [...text.matchAll(/`(tailscale serve --bg [^`]+)`/g)].map(match => match[1]!))
+                    : result.notes.map(note => note.split(': configured')[0]!);
+                // Each error displays the command twice: repair + step, or failure message + step.
+                expect(commands).toHaveLength(branch === 'setup success' ? 1 : 2);
+                const target = host.includes(':') ? 'http://[::1]:61154' : '61154';
+                for (const command of commands) {
+                    if (!host.includes(':')) expect(command).toBe('tailscale serve --bg 61154');
+                    const stdout = execFileSync('/bin/zsh', [
+                        '-f', '-c', 'PATH="$1"; eval "$2"', 'repair-test', dir, command
+                    ], { cwd: dir, env: { PATH: dir, ZDOTDIR: dir }, encoding: 'utf8', timeout: 3000 });
+                    expect(stdout).toBe(`serve\n--bg\n${target}\n`);
+                }
+                expect(calls.filter(args => args.includes('--bg'))).toEqual(
+                    branch.startsWith('setup') ? [['serve', '--bg', target]] : []
+                );
+            }
+        );
     });
 });
 

@@ -584,6 +584,9 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
                 : 'Bind the daemon to 127.0.0.1, ::1, or a wildcard address before using tailnet forwarding.'
         };
     }
+    // Displayed IPv6 URLs need shell quotes: zsh treats their brackets as a filename pattern.
+    // The subprocess still receives endpoint.argument directly, without these display quotes.
+    const serveCommand = `tailscale serve --bg ${endpoint.host === '::1' ? `'${endpoint.argument}'` : endpoint.argument}`;
     const run = options.run ?? defaultTailscaleRunner();
     const notes: string[] = [];
 
@@ -639,10 +642,10 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             message: `\`tailscale serve status --json\` failed, so the current serve config cannot be inspected: ${serveStatus.stderr.trim() || serveStatus.stdout.trim() || `exit ${String(serveStatus.code)}`}`,
             repair:
                 'Check `tailscale serve status` yourself; if nothing (or only the daemon) is being served, ' +
-                `run \`tailscale serve --bg ${endpoint.argument}\` and re-run \`kelpid url --tailnet\`.`,
+                `run \`${serveCommand}\` and re-run \`kelpid url --tailnet\`.`,
             steps: [
                 'Run `tailscale serve status` to see what this tailnet already serves.',
-                `If nothing (or only kelpi) is there, run \`tailscale serve --bg ${endpoint.argument}\` yourself.`
+                `If nothing (or only kelpi) is there, run \`${serveCommand}\` yourself.`
             ]
         };
     }
@@ -675,12 +678,12 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
                     (details.length > 0 ? `${details.join('; ')}. ` : 'The existing configuration is occupied or unrecognized. ') +
                     'Forwarding was left untouched.',
                 repair:
-                    `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`tailscale serve --bg ${endpoint.argument}\` ` +
+                    `Inspect \`tailscale serve status\`; if Kelpi should own :443, run \`${serveCommand}\` ` +
                     '(this replaces the :443 root handler), then try again.',
                 steps: [
                     ...details,
                     'Run `tailscale serve status` and confirm which service should own :443. A refused connection alone does not identify the owner.',
-                    `To forward :443 to Kelpi's current endpoint, run \`tailscale serve --bg ${endpoint.argument}\` yourself - it replaces the :443 root handler.`
+                    `To forward :443 to Kelpi's current endpoint, run \`${serveCommand}\` yourself - it replaces the :443 root handler.`
                 ]
             };
         }
@@ -709,18 +712,18 @@ export async function resolveTailnetURL(options: ResolveTailnetOptions): Promise
             }
             return {
                 kind: 'error',
-                message: `\`tailscale serve --bg ${endpoint.argument}\` failed: ${said}`,
+                message: `\`${serveCommand}\` failed: ${said}`,
                 repair:
                     link !== undefined
                         ? `Open ${link} (serve + HTTPS must be enabled for the tailnet), then re-run.`
                         : `Enable serve and HTTPS certificates for the tailnet (${TAILNET_DNS_ADMIN}), then re-run.`,
                 steps: [
                     `Open ${link ?? TAILNET_DNS_ADMIN} and check that serve and HTTPS certificates are enabled for this tailnet.`,
-                    `If it still refuses, run \`tailscale serve --bg ${endpoint.argument}\` yourself to see tailscale's own answer.`
+                    `If it still refuses, run \`${serveCommand}\` yourself to see tailscale's own answer.`
                 ]
             };
         }
-        notes.push(`tailscale serve --bg ${endpoint.argument}: configured (was not serving anything)`);
+        notes.push(`${serveCommand}: configured (was not serving anything)`);
         if (options.forwardingFile !== undefined) {
             try {
                 writeForwardingRecord(options.forwardingFile, {

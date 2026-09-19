@@ -944,7 +944,7 @@ procedure:
 
 ## 11. Workspace delete gate
 
-Guards deleting a workspace that still has active agents. Two independent
+Guards deleting a workspace that still has running, waiting or inactive agent panes. Two independent
 enforcement points:
 
 ### 11.1 GUI gate
@@ -956,8 +956,13 @@ pane of a workspace** (which deletes the workspace instead of the pane;
 `allowLast: true`, so it is the one gesture that may delete the last workspace and
 reach the "No workspace selected" state (§11.2).
 
-Decision. `activeAgentCount` = panes + parked panes with status ≠ idle in that
-workspace. The `confirmWorkspaceDeleteWhenActive` setting defaults to true; it is a
+Decision. `workspaceAgentSummary` counts visible **and parked** panes whose status
+is not idle **or** whose `agentSessionID` is not null. Each pane belongs to exactly
+one bucket: **running** (`running`), **waiting for input** (`waitingForInput`), or
+**inactive** (idle with a bound resumable session). Plain idle panes do not count.
+The delete total is the sum of these three buckets. The quit gate's
+`activeAgentCount` remains status-only: quitting leaves the daemon and sessions alive.
+The `confirmWorkspaceDeleteWhenActive` setting defaults to true; it is a
 daemon general setting, config key `confirm-workspace-delete`
 (`packages/protocol/src/ws/settings.ts:29-38`), so dialogs and the Settings ▸
 Workspaces toggle (`packages/client/src/settings/WorkspacesTab.tsx`) stay in sync
@@ -966,17 +971,20 @@ across clients. The two entry points apply it differently:
 - The sidebar **Delete** item **always** opens the `Delete “<workspaceName>”?`
   confirmation (`setConfirm({kind:'workspace', ...})`,
   `packages/client/src/chrome/Sidebar.tsx:3894-3907`). It folds the count in only
-  when `activeAgentCount > 0` AND the setting is true; otherwise the dialog is the
+  when `delete total > 0` AND the setting is true; otherwise the dialog is the
   plain confirmation with no agent line and no suppression box
   (`Sidebar.tsx:5176-5195`).
-- The ⌘W last-pane path (`shouldDelete(workspaceName, activeAgentCount)`): if
-  `activeAgentCount == 0` OR the setting is false, delete immediately with no dialog
+- The ⌘W last-pane path: if
+  `delete total == 0` OR the setting is false, delete immediately with no dialog
   (`packages/client/src/App.tsx:1371-1384`); otherwise open the warning dialog below.
   This is the one route that deletes without a dialog.
-- The warning dialog (the sidebar dialog with an active count, or the ⌘W gate):
+- The warning dialog (the sidebar dialog with agent panes, or the ⌘W gate):
   - Title: `Delete “<workspaceName>”?`
-  - Body: `This workspace has <N> active agent(s). Deleting it will terminate
-    it/them.` (singular/plural).
+  - Body lists nonzero buckets in running / waiting / inactive order, with singular
+    or plural nouns per bucket; for example: `This workspace has 1 running agent,
+    2 agents waiting for input and 1 inactive agent. Deleting it will close all 4.`
+    A single inactive session reads `This workspace has 1 inactive agent. Deleting
+    it will close it.` Both GUI routes use the same formatter as the CLI breakdown.
   - Buttons: **Cancel** default; **Delete** destructive.
   - `Don't ask again` suppression box: persists the setting false regardless of
     button, broadcasts for Settings re-sync.
@@ -997,11 +1005,17 @@ Server-side, independent of the GUI setting:
 - Ambiguous name (matches > 1 workspace, non-UUID):
   `{"ok":false,"error":"workspace name is ambiguous: <name> (use the id)"}`;
   unknown → `workspace not found: <name>`.
-- **Running-agents guard**: if `activeAgentCount > 0` and `force` (CLI
+- **Agent-panes guard**: if `delete total > 0` and `force` (CLI
   `--force`/`-y`) is not set:
-  `{"ok":false,"error":"workspace <name> has <N> running agent(s); pass --force
-  to delete anyway","active_agents":N}`. `--force` is honoured independently of
-  the GUI "Don't ask again" setting.
+  `{"ok":false,"error":"workspace <name> has 1 running agent, 2 agents waiting for input and 1 inactive agent; pass --force to delete anyway","active_agents":4,"running":1,"waiting":2,"inactive":1}`.
+  The existing `active_agents` field now holds the delete total, including inactive
+  sessions; the three new fields always include zero counts too. `--force` is
+  honoured independently of the GUI "Don't ask again" setting.
+- Compatibility delta (#241): the single-running-agent error text is unchanged,
+  preserving the existing Swift-CLI compat assertion. Waiting agents are no longer
+  described as running, inactive sessions now refuse without force, and the reply
+  adds the three breakdown fields. These intentionally differ from the shipped
+  Swift server; a differential run must allow these deltas.
 - Success reply: `{"ok":true,"workspace_id":...,"workspace_name":...,
   "path": <a shell pane's cwd, preferred over other pane types; omitted when the
   workspace has no panes>}` — `path` powers client-side `--prune-worktree`.
@@ -1214,7 +1228,7 @@ working:
     sessions" only happens when the **daemon** stops, and the daemon's own shutdown
     does the flush (persistence) and the bounded PTY kill. The workspace-delete guard
     stays server-side (`--force`), with the client dialog as a UI convenience over the
-    same `activeAgentCount`.
+    same `workspaceAgentSummary` (§11), including inactive resumable sessions.
 11. **System stats** sample the *daemon host's* resources (that's where the agents
     run), via Node in the daemon (`os.cpus` / `os.loadavg`; `vm_stat`, `netstat -ibn`
     and `ioreg` on darwin, `/proc` on Linux) and stream to clients; the 2 s cadence,

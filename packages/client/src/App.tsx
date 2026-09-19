@@ -1,3 +1,4 @@
+import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import { TerminalFeaturePane } from './features/TerminalFeaturePane';
 import { BrowserFeaturePane } from './features/BrowserFeaturePane';
 import { DocumentPane, isDocumentPane } from './features/DocumentPane';
@@ -60,7 +61,7 @@ import { canonicalTriggerForPlatform, parseKeyTrigger, type KelpiAction } from '
 import { wireEdgeForDropZone, type DropZone, type SplitDirection } from '@kelpi/core/layout';
 import type { JsonObject } from '@kelpi/protocol';
 import {
-    activeAgentCount,
+    workspaceAgentSummary,
     layoutPaneOrder,
     syncedPaneIDs,
     type Pane,
@@ -552,12 +553,12 @@ function Shell(props: AppProps): ReactElement {
     const [paneMenu, setPaneMenu] = useState<{ paneID: string; x: number; y: number } | null>(null);
     /**
      * The ⌘W-on-the-last-pane gate (TERM-077 / WS-109). Closing the last pane deletes the
-     * workspace, and the Swift app puts an alert in front of that ONLY when the workspace still
-     * has running agents and `confirm-workspace-delete` is on — so this is null in every other
+     * workspace. An alert is shown when the workspace has agent panes (including inactive
+     * sessions) and `confirm-workspace-delete` is on — so this is null in every other
      * case and the delete goes straight out.
      */
     const [closeGate, setCloseGate] = useState<
-        { workspaceID: string; name: string; activeAgents: number; allowLast?: boolean } | null
+        { workspaceID: string; name: string; agents: WorkspaceAgentSummary; allowLast?: boolean } | null
     >(null);
     /**
      * The Settings window (M8): open flag + which tab, so a deep link ("Manage labels…") can
@@ -1393,13 +1394,12 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * ⌘W (TERM-077 / WS-109), the Swift rule verbatim.
+             * ⌘W (TERM-077 / WS-109), with the session-aware delete gate (§11).
              *
              * On the LAST pane of a workspace, closing the pane deletes the WORKSPACE instead —
              * anything else leaves an empty workspace showing the grid's "No panes" placeholder,
              * which is the state the sweep found. The alert only comes up when that workspace
-             * still has running agents AND `confirm-workspace-delete` is on; with neither, ⌘W
-             * deletes silently, exactly as `KelpiCommands.handleClosePane` does.
+             * has agent panes and `confirm-workspace-delete` is on; otherwise ⌘W deletes silently.
              *
              * §WS-156: this is the ONE route that may reach zero workspaces, which is the Swift's
              * own asymmetry (the CLI and the sidebar's Delete both refuse at one) and the only
@@ -1413,12 +1413,12 @@ function Shell(props: AppProps): ReactElement {
                 if (workspace.panes.length > 1) {
                     return run('Close pane', commands.closePane({ paneID }));
                 }
-                const agents = activeAgentCount(workspace);
-                if (agents > 0 && store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) {
+                const agents = workspaceAgentSummary(workspace);
+                if (agents.total > 0 && store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) {
                     setCloseGate({
                         workspaceID: workspace.id,
                         name: workspace.name,
-                        activeAgents: agents,
+                        agents,
                         allowLast: true
                     });
                     return true;
@@ -4201,7 +4201,7 @@ function Shell(props: AppProps): ReactElement {
             {closeGate === null ? null : (
                 <AgentDeleteGate
                     name={closeGate.name}
-                    activeAgents={closeGate.activeAgents}
+                    agents={closeGate.agents}
                     onCancel={() => setCloseGate(null)}
                     onConfirm={(suppress) => {
                         if (suppress) settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
@@ -4228,7 +4228,7 @@ function Shell(props: AppProps): ReactElement {
 
 interface AgentDeleteGateProps {
     readonly name: string;
-    readonly activeAgents: number;
+    readonly agents: WorkspaceAgentSummary;
     readonly onCancel: () => void;
     readonly onConfirm: (suppress: boolean) => void;
     /** Suppression is honoured on Cancel too (macOS HIG, `WorkspaceDeleteGate.swift:78`). */
@@ -4256,8 +4256,6 @@ interface AgentDeleteGateProps {
  */
 function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
     const [suppress, setSuppress] = useState(false);
-    const noun = props.activeAgents === 1 ? 'agent' : 'agents';
-    const them = props.activeAgents === 1 ? 'it' : 'them';
     useModalPresence();
     /*
      * H11's fill tone, the same recipe the sidebar's `ConfirmDialog` draws: the global reset
@@ -4304,10 +4302,10 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
         >
             <div
                 data-testid="agent-delete-gate"
-                data-active-agents={String(props.activeAgents)}
+                data-active-agents={String(props.agents.total)}
                 role="dialog"
                 aria-modal="true"
-                aria-label="Delete workspace with active agents"
+                aria-label="Delete workspace with agents"
                 className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
                 style={{
                     background: chromeTokens.surfaceBackground,
@@ -4318,7 +4316,7 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
             >
                 <div className="mb-1 font-semibold">{`Delete “${props.name}”?`}</div>
                 <div className="mb-3 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
-                    {`This workspace has ${String(props.activeAgents)} active ${noun}. Deleting it will terminate ${them}.`}
+                    {workspaceAgentDeleteWarning(props.agents)}
                 </div>
                 <label
                     className="mb-3 flex items-center gap-2 text-[11px]"

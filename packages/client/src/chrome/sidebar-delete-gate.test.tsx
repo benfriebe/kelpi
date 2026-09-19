@@ -69,26 +69,45 @@ function openDelete(): void {
 
 describe('workspace delete gate', () => {
     it('names the running agents and offers the suppression box', () => {
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} activeAgentCount={() => 2} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} workspaceAgentSummary={() => ({ running: 2, waiting: 0, inactive: 0, total: 2 })} />);
         openDelete();
         const dialog = screen.getByTestId('confirm-dialog');
         expect(dialog.dataset['activeAgents']).toBe('2');
         expect(within(dialog).getByTestId('confirm-active-agents').textContent).toBe(
-            'This workspace has 2 active agents. Deleting it will terminate them.'
+            'This workspace has 2 running agents. Deleting it will close all 2.'
         );
         expect(within(dialog).getByTestId('confirm-suppress')).toBeTruthy();
     });
 
-    it('singularises the message for one agent', () => {
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} activeAgentCount={() => 1} />);
+    it('reports every kind, including inactive sessions', () => {
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()}
+            workspaceAgentSummary={() => ({ running: 1, waiting: 2, inactive: 1, total: 4 })} />);
         openDelete();
         expect(screen.getByTestId('confirm-active-agents').textContent).toBe(
-            'This workspace has 1 active agent. Deleting it will terminate it.'
+            'This workspace has 1 running agent, 2 agents waiting for input and 1 inactive agent. Deleting it will close all 4.'
+        );
+    });
+
+    it('warns when the only agent is inactive', () => {
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()}
+            workspaceAgentSummary={() => ({ running: 0, waiting: 0, inactive: 1, total: 1 })} />);
+        openDelete();
+        expect(screen.getByTestId('confirm-active-agents').textContent).toBe(
+            'This workspace has 1 inactive agent. Deleting it will close it.'
+        );
+        expect(screen.getByTestId('confirm-suppress')).toBeTruthy();
+    });
+
+    it('singularises the message for one agent', () => {
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} workspaceAgentSummary={() => ({ running: 1, waiting: 0, inactive: 0, total: 1 })} />);
+        openDelete();
+        expect(screen.getByTestId('confirm-active-agents').textContent).toBe(
+            'This workspace has 1 running agent. Deleting it will close it.'
         );
     });
 
     it('shows the plain confirmation when nothing is running', () => {
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} activeAgentCount={() => 0} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} workspaceAgentSummary={() => ({ running: 0, waiting: 0, inactive: 0, total: 0 })} />);
         openDelete();
         expect(screen.getByTestId('confirm-dialog').dataset['activeAgents']).toBe('0');
         expect(screen.queryByTestId('confirm-active-agents')).toBeNull();
@@ -100,7 +119,7 @@ describe('workspace delete gate', () => {
             <Sidebar
                 {...baseProps()}
                 onDeleteWorkspace={vi.fn()}
-                activeAgentCount={() => 3}
+                workspaceAgentSummary={() => ({ running: 3, waiting: 0, inactive: 0, total: 3 })}
                 confirmDeleteWhenActive={false}
             />
         );
@@ -115,7 +134,7 @@ describe('workspace delete gate', () => {
             <Sidebar
                 {...baseProps()}
                 onDeleteWorkspace={onDeleteWorkspace}
-                activeAgentCount={() => 1}
+                workspaceAgentSummary={() => ({ running: 1, waiting: 0, inactive: 0, total: 1 })}
                 onSuppressDeleteConfirm={onSuppressDeleteConfirm}
             />
         );
@@ -127,7 +146,7 @@ describe('workspace delete gate', () => {
     });
 
     it('every answer takes the hover fill under the pointer, and drops it on leave (H11)', () => {
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} activeAgentCount={() => 0} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} workspaceAgentSummary={() => ({ running: 0, waiting: 0, inactive: 0, total: 0 })} />);
         openDelete();
         const dialog = screen.getByTestId('confirm-dialog');
         for (const id of ['confirm-cancel', 'confirm-delete']) {
@@ -150,7 +169,7 @@ describe('workspace delete gate', () => {
             <Sidebar
                 {...baseProps()}
                 onDeleteWorkspace={onDeleteWorkspace}
-                activeAgentCount={() => 1}
+                workspaceAgentSummary={() => ({ running: 1, waiting: 0, inactive: 0, total: 1 })}
                 onSuppressDeleteConfirm={onSuppressDeleteConfirm}
             />
         );
@@ -172,7 +191,7 @@ describe('workspace delete gate', () => {
 describe('workspace delete gate keys', () => {
     it('Escape cancels and deletes nothing', () => {
         const onDeleteWorkspace = vi.fn();
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 0} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} workspaceAgentSummary={() => ({ running: 0, waiting: 0, inactive: 0, total: 0 })} />);
         openDelete();
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(onDeleteWorkspace).not.toHaveBeenCalled();
@@ -181,7 +200,7 @@ describe('workspace delete gate keys', () => {
 
     it('Return takes the default answer, Cancel, even with an active-agent warning up', () => {
         const onDeleteWorkspace = vi.fn();
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 2} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} workspaceAgentSummary={() => ({ running: 2, waiting: 0, inactive: 0, total: 2 })} />);
         openDelete();
         fireEvent.keyDown(window, { key: 'Enter' });
         expect(onDeleteWorkspace).not.toHaveBeenCalled();
@@ -195,7 +214,7 @@ describe('workspace delete gate keys', () => {
             <Sidebar
                 {...baseProps()}
                 onDeleteWorkspace={onDeleteWorkspace}
-                activeAgentCount={() => 1}
+                workspaceAgentSummary={() => ({ running: 1, waiting: 0, inactive: 0, total: 1 })}
                 onSuppressDeleteConfirm={onSuppressDeleteConfirm}
             />
         );
@@ -209,7 +228,7 @@ describe('workspace delete gate keys', () => {
 
     it('stops listening once the dialog is closed', () => {
         const onDeleteWorkspace = vi.fn();
-        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} activeAgentCount={() => 0} />);
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={onDeleteWorkspace} workspaceAgentSummary={() => ({ running: 0, waiting: 0, inactive: 0, total: 0 })} />);
         openDelete();
         fireEvent.click(screen.getByTestId('confirm-cancel'));
         expect(screen.queryByTestId('confirm-dialog')).toBeNull();

@@ -86,7 +86,46 @@ export function resetPaneAgentStateOnLoad(state: PaneAgentState): PaneAgentState
 /** §6.1 step 4 / §6.2: settle delay between spawning a surface and typing the resume. */
 export const RESUME_SETTLE_DELAY_MS = 2000;
 
-/** Quit / delete gates count every pane whose status is not idle. */
+/** Quit gates count every pane whose status is not idle. */
 export function isActiveAgentStatus(status: PaneAgentState['status']): boolean {
     return status !== 'idle';
+}
+
+/** Delete gates include resumable idle sessions as well as live agent statuses. */
+export interface WorkspaceAgentSummary {
+    readonly running: number;
+    readonly waiting: number;
+    readonly inactive: number;
+    readonly total: number;
+}
+
+export function summarizeAgentPanes(
+    panes: readonly Pick<PaneAgentState, 'status' | 'agentSessionID'>[]
+): WorkspaceAgentSummary {
+    let running = 0;
+    let waiting = 0;
+    let inactive = 0;
+    for (const pane of panes) {
+        if (pane.status === 'running') running += 1;
+        else if (pane.status === 'waitingForInput') waiting += 1;
+        else if (pane.agentSessionID !== null) inactive += 1;
+    }
+    return { running, waiting, inactive, total: running + waiting + inactive };
+}
+
+/** The same breakdown is used by the GUI and the headless delete refusal. */
+export function describeAgentSummary(summary: WorkspaceAgentSummary): string {
+    const parts = [
+        summary.running > 0 ? `${summary.running} running ${summary.running === 1 ? 'agent' : 'agents'}` : null,
+        summary.waiting > 0 ? `${summary.waiting} ${summary.waiting === 1 ? 'agent' : 'agents'} waiting for input` : null,
+        summary.inactive > 0 ? `${summary.inactive} inactive ${summary.inactive === 1 ? 'agent' : 'agents'}` : null
+    ].filter((part): part is string => part !== null);
+    return parts.length > 1
+        ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+        : (parts[0] ?? '0 agents');
+}
+
+export function workspaceAgentDeleteWarning(summary: WorkspaceAgentSummary): string {
+    const consequence = summary.total === 1 ? 'close it' : `close all ${summary.total}`;
+    return `This workspace has ${describeAgentSummary(summary)}. Deleting it will ${consequence}.`;
 }

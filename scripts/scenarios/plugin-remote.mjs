@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { phoneToLanding } from '../ui-audit/lib/workbench.mjs';
 
-export const covers = ['packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/plugins/', 'packages/daemon/src/plugins/'];
+export const covers = ['packages/client/src/app/RemoteWorkspaceView.tsx', 'packages/client/src/phone/PhoneRemoteWorkspace.tsx', 'packages/client/src/plugins/', 'packages/daemon/src/plugins/',
+    'packages/client/src/settings/RemoteTab.tsx', 'packages/client/src/settings/SettingsOverlay.tsx', 'packages/client/src/settings/sections.ts',
+    'packages/client/src/settings/search-navigation.ts', 'packages/client/src/app/remote-daemons.ts',
+    'packages/core/src/config/remote-daemons.ts'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pluginID = 'example.agent-board', viewID = `${pluginID}.board`;
 
@@ -36,6 +39,76 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         const frame = `[data-testid="plugin-view-${pane.paneID}"] iframe`;
         const ready = () => d.settle(async () => { try { return await page.evalInFrame(frame, `(async () => (await kelpi.snapshot()).state.workspaces.some(workspace => workspace.id === ${JSON.stringify(workspace.workspace_id)}))()`); } catch { return false; } }, { ceilingMs: 15_000 });
         rec.check('remote plugin renders with a working API on its own daemon', await ready());
+        // #193: default refusal, a real Settings/search grant, and live revocation. This
+        // exercises the assembled primary provider around a plugin owned by the other daemon.
+        const refusedNavigation = () => page.evalInFrame(frame, `(async () => {
+            const errors = [];
+            for (const [method, args] of [['ui.getNavigation', {}], ['ui.selectWorkspace', { hostID: 'local', workspaceID: 'anything' }]]) {
+                try { await kelpi.call(method, args); errors.push('accepted'); }
+                catch (error) { errors.push(String(error.message)); }
+            }
+            return errors.every(error => error.includes('unavailable for this daemon'));
+        })()`);
+        rec.check('remote plugin navigation reads and selection are refused by default', await refusedNavigation());
+        const trustSelector = '[data-testid="remote-daemon-navigation-trust-PluginRemote"]';
+        const setNavigationTrust = async trusted => {
+            const beforeSearch = fs.readFileSync(sandbox.configPath, 'utf8');
+            // Closing Settings returns focus to the plugin frame. Take it back into the host
+            // before sending the window shortcut, including on an immediate clear/regrant.
+            await page.click(row);
+            await page.key('Comma', { modifiers: 4, key: ',' });
+            if (!await d.settleDom(page, `document.querySelector('[data-testid="settings-search"]')`, { ceilingMs: 8_000 })) throw new Error('Settings did not open');
+            await page.click('[data-testid="settings-search"]');
+            await page.key('KeyA', { modifiers: 4, key: 'a' });
+            await page.key('Backspace');
+            await page.insertText('Trust plugins with navigation');
+            const hit = '[data-testid="settings-search-result-remote-daemon-navigation-trust"]';
+            if (!await d.settleDom(page, `document.querySelector(${JSON.stringify(hit)})`)) throw new Error('Navigation trust was not searchable');
+            await page.click(hit);
+            rec.check('Settings search reveals and focuses the real per-host navigation trust checkbox', await d.settleDom(page,
+                `document.activeElement === document.querySelector(${JSON.stringify(trustSelector)})`));
+            rec.check('revealing navigation trust through Settings search leaves configuration unchanged',
+                fs.readFileSync(sandbox.configPath, 'utf8') === beforeSearch);
+            // Search has focused the real checkbox and may still be scrolling it into view.
+            // Space exercises that keyboard destination without racing a moving click target.
+            if (await page.eval(`document.querySelector(${JSON.stringify(trustSelector)}).checked`) !== trusted) await page.key('Space');
+            rec.check(`navigation trust is ${trusted ? 'saved' : 'cleared'} in the primary host record`, await d.settle(async () => {
+                const contents = fs.readFileSync(sandbox.configPath, 'utf8');
+                return contents.includes('remote-daemon-navigation-trust = PluginRemote:') === trusted;
+            }, { ceilingMs: 8_000 }));
+            await page.click('[data-testid="settings-close"]');
+            if (!await ready()) throw new Error('Remote plugin did not reattach after navigation trust changed');
+        };
+        await setNavigationTrust(true);
+        const navigation = await page.evalInFrame(frame, `kelpi.ui.getNavigation()`);
+        rec.check('trusted remote views can read this window navigation without credentials', navigation.hosts.some(host => host.kind === 'local') &&
+            navigation.hosts.some(host => host.name === 'PluginRemote') && !JSON.stringify(navigation).includes(token));
+        await page.evalInFrame(frame, `(() => {
+            globalThis.__remoteNavigation = [];
+            globalThis.__offRemoteNavigation = kelpi.ui.onNavigation(value => globalThis.__remoteNavigation.push(value));
+            return true;
+        })()`);
+        rec.check('trusted remote views receive the navigation subscription', await d.settle(async () =>
+            await page.evalInFrame(frame, `globalThis.__remoteNavigation.length > 0`), { ceilingMs: 8_000 }));
+        const navigationWorkspace = await command(['workspace', 'create', '--name', 'Navigation subscription update', '--json']);
+        rec.check('trusted remote navigation subscription follows live workspace changes', await d.settle(async () =>
+            await page.evalInFrame(frame, `globalThis.__remoteNavigation.some(value => value.hosts.some(host => host.workspaces.some(workspace => workspace.id === ${JSON.stringify(navigationWorkspace.workspace_id)})))`), { ceilingMs: 8_000 }));
+        const localHost = navigation.hosts.find(host => host.kind === 'local');
+        const localWorkspace = localHost?.workspaces[0];
+        if (!localWorkspace) throw new Error('No local workspace available for navigation regression');
+        // Selection can unmount this calling frame before the RPC reply. Return first and
+        // assert the visible destination in the host, not the lifetime of this CDP context.
+        await page.evalInFrame(frame, `(() => {
+            setTimeout(() => { void kelpi.ui.selectWorkspace(${JSON.stringify(localHost.id)}, ${JSON.stringify(localWorkspace.id)}); }, 0);
+            return true;
+        })()`);
+        rec.check('trusted remote plugin can return the window to a local workspace', await d.settleDom(page,
+            `!document.querySelector(${JSON.stringify(frame)}) && !!document.querySelector('[data-workspace-id="${localWorkspace.id}"][data-active="true"]')`, { ceilingMs: 8_000 }));
+        await page.click(row);
+        if (!await ready()) throw new Error('Remote plugin did not return');
+        await setNavigationTrust(false);
+        rec.check('clearing trust refuses navigation on the mounted remote host', await refusedNavigation());
+        await setNavigationTrust(true);
         const identity = await page.evalInFrame(frame, `JSON.stringify(kelpi.context)`);
         const initialEpoch = await page.evalInFrame(frame, `(async () => (await kelpi.snapshot()).epoch)()`);
         await page.evalInFrame(frame, `kelpi.files.write(${JSON.stringify(path.join(remote.root, 'plugin-probe.txt'))}, 'remote filesystem')`);
@@ -63,6 +136,10 @@ export default async function ({ page, cli, sandbox, rec, d }) {
         await d.settleDom(page, `document.querySelector(${JSON.stringify(row)})`, { ceilingMs: 12_000 });
         await page.click(row);
         rec.check('the same remote pane works through the ordinary browser client', await ready());
+        rec.check('navigation trust survives a new client attachment', await page.evalInFrame(frame,
+            `(async () => (await kelpi.ui.getNavigation()).hosts.some(host => host.kind === 'local'))()`));
+        await setNavigationTrust(false);
+        rec.check('cleared persisted trust refuses remote navigation again', await refusedNavigation());
         await rec.shot(page, 'remote-plugin-after-restart');
 
         await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });

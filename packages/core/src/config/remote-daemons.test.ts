@@ -33,3 +33,15 @@ describe('remote-daemon lines (§1.7)', () => {
         expect(serializeRemoteDaemonLines([{ name: 'a', url: 'b' }])).toEqual(['remote-daemon = a:b']);
     });
 });
+
+it('persists navigation trust for the exact saved host and clears it on replacement/removal', () => {
+    const trusted = { name: 'werk', url: 'https://werk/?token=kd_a', trustedForNavigation: true };
+    const config = writeRemoteDaemons('# preserved\n', [trusted, { name: 'other', url: 'https://other/' }]);
+    expect(parseRemoteDaemons(config)).toEqual([trusted, { name: 'other', url: 'https://other/' }]);
+    expect(parseRemoteDaemons(config + 'remote-daemon = werk:https://replacement/\n')[0]).toEqual({ name: 'werk', url: 'https://replacement/' });
+    const cleared = writeRemoteDaemons(config, [{ ...trusted, trustedForNavigation: false }]);
+    expect(cleared).not.toContain('remote-daemon-navigation-trust');
+    expect(parseRemoteDaemons(writeRemoteDaemons(null, [trusted, { ...trusted, trustedForNavigation: false }]))).toEqual([{ name: trusted.name, url: trusted.url }]);
+    expect(parseRemoteDaemons(cleared)).toEqual([{ name: trusted.name, url: trusted.url }]);
+    expect(writeRemoteDaemons(config, [])).toBe('# preserved\n');
+});

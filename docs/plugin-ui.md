@@ -192,7 +192,7 @@ cannot observe a result or continue its JavaScript. Prompts have no ordinary
 pick items, eight actions, 256 KiB per request, and input lengths up to 16,384 characters
 (default 4,096). Malformed requests reject with an error.
 
-Window UI is available only through the primary workbench runtime. An embedded remote
+Shared prompts and notifications are available only through the primary workbench runtime. An embedded remote
 pane receives an explicit unavailable error; a window connected directly to that remote
 daemon can present its prompts normally. Backends use events/commands to coordinate with a
 view when they need an interactive response. No host DOM or native window handle is exposed.
@@ -857,3 +857,21 @@ all-or-nothing fallback with its toast and Retry, a daemon restart and the phone
 header. The
 [validation record](plugin-validation.md) records past runs and their source revisions. Use
 `--window onscreen` to inspect screenshots; a historical pass does not validate a later checkout.
+
+### Remote-host navigation trust
+
+Window navigation (`ui.getNavigation`, `ui.onNavigation`, `ui.selectWorkspace`) is available to
+primary-daemon views and to embedded views of hosts explicitly trusted in Settings ▸ Remote ▸
+Daemons. **Trust plugins with navigation** grants read/watch access to this window's host and
+workspace summaries and permission to switch its local or remote workspace selection. Search
+Settings for “Trust plugins with navigation” to reveal and focus the control; with no saved host,
+search points to adding one first. Trust applies to all plugin views from that saved host.
+
+Remote hosts are untrusted by default. Clearing the checkbox refuses subsequent navigation calls
+and stops the subscription; changing trust reloads attached plugin views to renew their bridge.
+Trust is saved with the primary daemon's remote-host registry, bound to the exact saved name and
+pairing URL. Replacing or removing that record through Settings clears trust. A direct attachment
+to a daemon makes it the primary host for that window and needs no remote-host grant.
+
+This permission does not grant remote views workbench selection, window chrome, prompts or
+notifications, and never changes the daemon used for domain, file or terminal operations.

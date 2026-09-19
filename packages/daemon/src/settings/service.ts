@@ -625,7 +625,11 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 // token went.
                 requireSingleLine('remote daemon name', daemon.name.trim());
                 requireSingleLine(`remote daemon '${daemon.name.trim()}' URL`, daemon.url.trim());
-                normalized.push({ name: daemon.name.trim(), url: daemon.url.trim() });
+                if (daemon.trustedForNavigation !== undefined && typeof daemon.trustedForNavigation !== 'boolean') {
+                    throw new SettingsError('remote daemon navigation trust must be a boolean');
+                }
+                normalized.push({ name: daemon.name.trim(), url: daemon.url.trim(),
+                    ...(daemon.trustedForNavigation === true ? { trustedForNavigation: true } : {}) });
             }
             return commit(writeRemoteDaemons(contentsOrNull(configPath), normalized));
         },

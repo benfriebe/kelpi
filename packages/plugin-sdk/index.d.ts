@@ -108,7 +108,7 @@ export interface ViewAPI extends KelpiAPI {
         getWorkbench(): Promise<WorkbenchInfo>;
         selectView(slot: string, viewID: string): Promise<void>;
         activateTab(containerID: string, slotID: string): Promise<void>;
-        /** Window navigation is available only to views owned by the hosting primary daemon. */
+        /** Window navigation is available to primary-daemon views and remote hosts explicitly trusted in Settings > Remote. */
         getNavigation(): Promise<NavigationSnapshot>;
         /** Selects a currently connected host/workspace in this window; never forwards daemon APIs. */
         selectWorkspace(hostID: string, workspaceID: string): Promise<void>;

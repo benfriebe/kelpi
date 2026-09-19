@@ -374,7 +374,10 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
         if (!props.open || pendingSearchTarget === null || searchQuery.trim() !== '' ||
             tab !== pendingSearchTarget.sectionID) return;
         const root = dialogRef.current;
-        const target = root?.querySelector<HTMLElement>(`[data-testid="${searchDestination?.testID}"]`);
+        // Dynamic targets include saved host names. Compare the attribute literally so quotes,
+        // backslashes and Unicode names are never interpreted as CSS selector syntax.
+        const target = Array.from(root?.querySelectorAll<HTMLElement>('[data-testid]') ?? [])
+            .find(element => element.getAttribute('data-testid') === searchDestination?.testID);
         setMissingSearchTarget(target == null);
         if (target == null) {
             root?.querySelector<HTMLElement>('[data-testid="settings-search-notice"]')?.focus();

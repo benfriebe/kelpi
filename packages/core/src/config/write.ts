@@ -66,7 +66,7 @@ export function writeProfiles(contents: string | null, profiles: readonly Profil
  */
 export function writeRemoteDaemons(contents: string | null, daemons: readonly RemoteDaemon[]): string {
     const preserved = stripTrailingBlankLines(
-        splitConfigLines(contents ?? '').filter((line) => configLineKey(line) !== 'remote-daemon')
+        splitConfigLines(contents ?? '').filter((line) => !['remote-daemon', 'remote-daemon-navigation-trust'].includes(configLineKey(line) ?? ''))
     );
     const daemonLines = serializeRemoteDaemonLines(daemons);
     if (preserved.length === 0 && daemonLines.length === 0) return '';

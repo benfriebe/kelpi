@@ -16,11 +16,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
+import { DESKTOP_TEST_PORT } from './desktop-slot.mjs';
 
 export const PROTOCOL_VERSION = 2;
 
-/** The user's own dev stack. The audit must never bind or connect to these. */
-export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400]);
+/** The user's dev stack and the desktop reservation: never allocate these to a sandbox. */
+export const RESERVED_PORTS = new Set([19733, 19734, 9223, 19400, DESKTOP_TEST_PORT]);
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

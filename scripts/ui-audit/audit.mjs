@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
+import { holdDesktopTestSlot } from './lib/desktop-slot.mjs';
 
 /**
  * Which CDP page target is **the client window**, as opposed to a web pane's page?
@@ -1801,6 +1802,8 @@ async function runShardedParent() {
 }
 
 async function main() {
+    // Only leaf runs own the desktop; holding in the sharding parent would deadlock children.
+    await holdDesktopTestSlot();
     const startedAt = new Date().toISOString();
     process.stdout.write(`kelpi UI audit → ${outDir}\n`);
 

@@ -15,6 +15,10 @@ it('records boot errors on their own instances, drains shared intervals once, an
         const watcher = pathToFileURL(path.join(root, 'scripts/ui-audit/lib/renderer-errors.mjs')).href;
         const stub = path.join(temp, 'driver.mjs');
         const stopped = path.join(temp, 'stopped');
+        const slot = path.join(temp, 'desktop-slot.mjs');
+        const acquired = path.join(temp, 'acquired');
+        fs.writeFileSync(slot, `import fs from 'node:fs';
+            export async function holdDesktopTestSlot() { fs.writeFileSync(${JSON.stringify(acquired)}, 'yes'); }`);
         fs.writeFileSync(stub, `
             import { EventEmitter } from 'node:events';
             import fs from 'node:fs';
@@ -23,6 +27,7 @@ it('records boot errors on their own instances, drains shared intervals once, an
             let count = 0;
             let lane;
             export async function boot({ window }) {
+                if (!fs.existsSync(${JSON.stringify(acquired)})) throw new Error('boot before desktop slot');
                 const id = ++count;
                 const page = new EventEmitter();
                 page.send = async () => {};
@@ -40,6 +45,8 @@ it('records boot errors on their own instances, drains shared intervals once, an
         fs.writeFileSync(hook, `
             import { registerHooks } from 'node:module';
             registerHooks({ resolve(specifier, context, nextResolve) {
+                if (specifier === './ui-audit/lib/desktop-slot.mjs')
+                    return { url: ${JSON.stringify(pathToFileURL(slot).href)}, shortCircuit: true };
                 if (specifier === ${JSON.stringify(path.join(root, 'scripts/ui-audit/lib/driver.mjs'))})
                     return { url: ${JSON.stringify(pathToFileURL(stub).href)}, shortCircuit: true };
                 return nextResolve(specifier, context);

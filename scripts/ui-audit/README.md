@@ -16,7 +16,7 @@ The audit measures. A scenario checks one thing, is written by whoever changes t
 node scripts/scenario.mjs                      # every scenario, in a fresh sandbox (builds first)
 node scripts/scenario.mjs confirm-dialog-keys  # one, by name, --no-build to skip the build
 node scripts/scenario.mjs --keep <name>        # leave the sandbox up to poke at afterwards
-node scripts/scenario.mjs --window hidden      # without taking the screen, and in parallel (below)
+node scripts/scenario.mjs --window hidden      # without taking the screen (runs serialize; below)
 ```
 
 Against a dev instance you already have up (`node scripts/dev-instance.mjs` prints both values):
@@ -156,10 +156,16 @@ Under the channel the shell still posts for real, which is harmless. `KELPI_HARN
 ```bash
 node scripts/scenario.mjs --no-build --window hidden                  # every scenario, no screen
 node scripts/scenario.mjs --no-build --window hidden a & \
-node scripts/scenario.mjs --no-build --window hidden b ; wait         # two at once, own sandbox each
+node scripts/scenario.mjs --no-build --window hidden b ; wait         # queued, own sandbox each
 ```
 
-Each run already gets its own run dir, socket, database and ephemeral ports, so parallelism was only ever blocked by the window. Measured on this machine: **four full runs at once, 4 × 23 checks, all green, each scenario at its serial time** (3.4 s / 1.7 s / 1.6 s per run against a 3.4 / 1.8 / 1.6 serial control). The results directory is stamped to the millisecond and disambiguated by pid, so parallel runs never write over each other.
+Each run gets its own run dir, socket, database and ephemeral ports. **The desktop and clipboard are still shared.** The earlier four-run measurement (4 × 23 checks green) did not establish clipboard isolation. Scenario runners (including `--attach`), audit runs and the five shell smokes now acquire one machine-wide desktop test slot before starting their work (#207), across worktrees and window placements. A waiting run prints its wait every 30 seconds and fails after 30 minutes without starting a desktop test. `verify.mjs` invokes these guarded runners; it does not hold a second slot. Audit shard children acquire individually, and their parent never owns the slot.
+
+`lib/desktop-slot.mjs` reserves loopback TCP port **19735** for the runner lifetime, through teardown and `--keep`. Binding is atomic; normal exit, failure and SIGKILL release the reservation in the kernel. There is no inherited bypass or stale lock file to delete. An unrelated listener on that port also blocks tests and yields the same explicit timeout; the harness never stops it. This cooperative guard cannot isolate the pasteboard from a person, an older checkout, a standalone driver probe or another unguarded tool. It also cannot guarantee orphan cleanup after a hard kill. Coordinate those uses separately. Non-desktop unit tests and typechecks do not acquire it.
+
+**Issue #207 remains an unconfirmed intermittent failure.** Serialization removes an allowed source of interference; it does not prove what caused the historical missing paste or lone `/`. PR #228's clipboard-at-press, caret, toast and full-capture diagnostics remain in `terminal-copy-paste-chords`. The image-paste path is specified product behavior and is unchanged. A green run under the guard is not a reproduction or a root-cause finding.
+
+The results directory is stamped to the millisecond and disambiguated by pid, so queued runs never write over each other.
 
 **Safe for**: everything a scenario asserts, which is DOM state, CDP input, the CLI, the harness channel's menu / accelerators / dialogs / dock counters / notification records, and the app's own activity signalling. **Not safe for**: anything that measures pixels. Under `hidden` a screenshot comes back blank white (`Page.captureScreenshot` composites the window's alpha), under `offscreen` it comes back at half resolution with sub-pixel geometry quantised differently. `rec.shot` writes that caveat into the note it records, and `results.json` carries the placement, so a picture is never silently worth less than it looks. Pixel checks belong in the audit.
 

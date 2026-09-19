@@ -45,6 +45,7 @@
  * Electron's own `--user-data-dir`.
  */
 
+import { holdDesktopTestSlot } from '../../../scripts/ui-audit/lib/desktop-slot.mjs';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -418,6 +419,7 @@ async function attach(sandbox, matcher, label) {
 // ── the run ─────────────────────────────────────────────────────────────────────────
 
 async function main() {
+    await holdDesktopTestSlot();
     await ensureBuilds();
 
     const sandbox = await makeSandbox();

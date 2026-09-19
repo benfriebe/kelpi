@@ -643,8 +643,9 @@ at the entry points:
   itself is the WS-only `delete-workspace` command (`GUI_DELETE_WORKSPACE_COMMAND`,
   `packages/daemon/src/ws/sync.ts:393`), routed into the app dispatcher rather than answered from
   the store because it must tear down PTYs and persist.
-- The CLI `workspace delete` refuses the last workspace and enforces the running-agents guard
-  server-side with `--force` (socket subsystem doc).
+- The CLI `workspace delete` refuses the last workspace and enforces the agent-panes guard
+  server-side with `--force`, including inactive resumable sessions and parked panes
+  (agent-lifecycle §11 and socket subsystem doc).
 
 ### 4.4 Bulk delete
 

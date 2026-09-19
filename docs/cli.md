@@ -973,8 +973,8 @@ kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-wor
   batch, `ok:false` is recorded and the loop continues).
 - Per-id result record (for `--json`): `{"id": <argument as typed>, "ok": bool}` plus on
   success `workspace_id?`, `workspace_name`, `path?`, and when `--prune-worktree`:
-  `worktree_pruned: bool`, `worktree_error?`; on failure `error` and `active_agents?`
-  (from a running-agents refusal).
+  `worktree_pruned: bool`, `worktree_error?`; on failure `error`, `active_agents?`, `running?`, `waiting?` and `inactive?`
+  (from an agent-panes refusal; `active_agents` is their sum).
 - Human output: per success `deleted workspace <name>`; per prune result an indented
   `  <message>` on success or `Warning: <message>` to stderr on failure; per failed delete
   `kelpi workspace delete: <error>` to stderr.
@@ -982,8 +982,9 @@ kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-wor
 - Exit 1 if **any** delete failed (prune failures do NOT affect the exit code).
 
 Server contract: refuses to delete the last remaining workspace; refuses (without force) a
-workspace with active agents:
-`{ok:false,"error":"…has N running agent(s); pass --force…","active_agents":N}`; ambiguous
+workspace with running, waiting-for-input or inactive (idle with a bound session)
+agent panes, including parked panes:
+`{ok:false,"error":"…has 1 running agent and 1 inactive agent; pass --force…","active_agents":2,"running":1,"waiting":0,"inactive":1}`; ambiguous
 names get a distinct "ambiguous" error; success reply carries `workspace_id`,
 `workspace_name`, and `path` (a shell pane's current cwd; absent for empty workspaces).
 

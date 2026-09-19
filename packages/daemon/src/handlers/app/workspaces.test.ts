@@ -583,7 +583,7 @@ describe('workspace-delete', () => {
         ).toEqual({
             ok: false,
             error: 'workspace w1 has 1 running agent; pass --force to delete anyway',
-            active_agents: 1
+            active_agents: 1, running: 1, waiting: 0, inactive: 0
         });
         expect(
             h.replyMessage({ command: 'workspace-delete', name: 'ghost', force: false, allow_last: true })
@@ -618,12 +618,12 @@ describe('workspace-delete', () => {
         expect(h.reply({ command: 'workspace-delete', name: 'w1' })).toEqual({
             ok: false,
             error: 'workspace w1 has 1 running agent; pass --force to delete anyway',
-            active_agents: 1
+            active_agents: 1, running: 1, waiting: 0, inactive: 0
         });
         expect(h.state().workspaces).toHaveLength(2);
     });
 
-    it('pluralizes the running-agent noun', () => {
+    it('distinguishes running and waiting agents', () => {
         const h = harness({ initial: seeded(2) });
         h.dispatch(
             { type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW },
@@ -640,9 +640,29 @@ describe('workspace-delete', () => {
                 now: NOW
             }
         );
-        expect(h.reply({ command: 'workspace-delete', name: 'w1' })['error']).toBe(
-            'workspace w1 has 2 running agents; pass --force to delete anyway'
-        );
+        expect(h.reply({ command: 'workspace-delete', name: 'w1' })).toEqual({
+            ok: false,
+            error: 'workspace w1 has 1 running agent and 1 agent waiting for input; pass --force to delete anyway',
+            active_agents: 2, running: 1, waiting: 1, inactive: 0
+        });
+    });
+
+    it.each(['visible', 'parked'] as const)('requires force for an inactive %s session and kills it only after force', (lane) => {
+        const h = harness({ initial: seeded(2) });
+        const paneID = lane === 'parked' ? P2 : P1;
+        if (lane === 'parked') h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW });
+        h.dispatch({ type: 'pane-agent-event', paneID, now: NOW,
+            event: { type: 'sessionStarted', sessionID: 'resumable', agent: 'codex' } });
+        if (lane === 'parked') h.dispatch({ type: 'park-pane', workspaceID: W1, paneID: P2 });
+        expect(h.reply({ command: 'workspace-delete', name: 'w1' })).toEqual({
+            ok: false,
+            error: 'workspace w1 has 1 inactive agent; pass --force to delete anyway',
+            active_agents: 1, running: 0, waiting: 0, inactive: 1
+        });
+        expect(h.state().workspaces).toHaveLength(2);
+        expect(h.killed).toEqual([]);
+        expect(h.reply({ command: 'workspace-delete', name: 'w1', force: true })['ok']).toBe(true);
+        expect(h.killed).toContain(paneID);
     });
 
     it('--force deletes anyway, killing every pane and reporting the shell cwd', () => {

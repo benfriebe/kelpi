@@ -953,14 +953,15 @@ if ws == null:
 if total workspace count <= 1:
   error("refusing to delete the last workspace")
 
-// Running-agents guard — an "active agent" is any pane, visible OR parked,
-// whose status != "idle" (i.e. running or waitingForInput).
-n = ws.activeAgentCount
-if !force and n > 0:
+// Agent-panes guard — visible OR parked panes whose status != "idle" OR
+// agentSessionID != null. Buckets are mutually exclusive (agent-lifecycle §11).
+agents = workspaceAgentSummary(ws)
+if !force and agents.total > 0:
   reply {"ok": false,
-         "error": "workspace {ws.name} has {n} running agent(s); pass --force to delete anyway",
-         "active_agents": n}
-  // literal noun: "agent" when n == 1, "agents" otherwise
+         "error": "workspace {ws.name} has {describeAgentSummary(agents)}; pass --force to delete anyway",
+         "active_agents": agents.total,
+         "running": agents.running, "waiting": agents.waiting, "inactive": agents.inactive}
+  // Each nonzero bucket names its own count and kind; active_agents includes inactive sessions.
   return
 ```
 
@@ -1329,7 +1330,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |
 | workspace-list | `workspaces: [...]` |
 | workspace-create | `workspace_id`, `workspace_name`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
-| workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`) |
+| workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | group-list | `groups: [...]` |
 | group-reorder / group-sort | `group_id`, `group_name`, `order` |

@@ -153,9 +153,13 @@ export interface WorkspaceDeleteReply extends ReplySuccess {
     readonly path?: string;
 }
 
-/** The running-agents refusal carries the count so scripts can branch without parsing text. */
+/** Delete refusals include visible/parked running, waiting and resumable idle panes. */
 export interface WorkspaceDeleteFailure extends ReplyFailure {
+    /** Total of running + waiting + inactive (legacy field name). */
     readonly active_agents?: number;
+    readonly running?: number;
+    readonly waiting?: number;
+    readonly inactive?: number;
 }
 
 export interface WorkspaceLabelReply extends ReplySuccess {

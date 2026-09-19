@@ -43,6 +43,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './cdp.mjs';
+import { watchRendererErrors } from './renderer-errors.mjs';
 import {
     buildAll,
     clearBackgroundTaskPolicy,
@@ -142,6 +143,8 @@ export function harnessClient(socketPath, { timeoutMs = 10_000 } = {}) {
     return {
         path: socketPath,
         ping: () => request('ping'),
+        /** Boot only: release the first client navigation after CDP subscriptions are live. */
+        loadClient: () => request('load-client'),
         /** The application menu as a tree of { id, label, accelerator, enabled, visible, type, role, checked, submenu }. */
         menu: () => request('menu'),
         /** Click a menu item by `id` or by label `path` (['View', 'Toggle Sidebar']). */
@@ -637,8 +640,9 @@ export function recorder({ name, outDir, placement }) {
 async function connectClient(debugPort, { repoRoot, timeoutMs }) {
     const target = await waitForPageTarget(debugPort, { timeoutMs, match: isClientWindow });
     const page = await connect(target.webSocketDebuggerUrl, { repoRoot });
+    const rendererErrors = await watchRendererErrors(page);
     await page.waitFor(`document.querySelector('${PAGE.app}') !== null`, { timeoutMs, label: 'the client app root' });
-    return page;
+    return { page, rendererErrors };
 }
 
 /**
@@ -646,11 +650,12 @@ async function connectClient(debugPort, { repoRoot, timeoutMs }) {
  * debug port and harness socket. Nothing is started and nothing is stopped by `close()`.
  */
 export async function attach({ debugPort, harnessSocket, repoRoot = process.cwd(), timeoutMs = 30_000 }) {
-    const page = await connectClient(debugPort, { repoRoot, timeoutMs });
+    const { page, rendererErrors } = await connectClient(debugPort, { repoRoot, timeoutMs });
     const harness = harnessSocket === undefined ? null : harnessClient(harnessSocket);
     if (harness !== null) await harness.ping();
     return {
         page,
+        rendererErrors,
         harness,
         /*
          * No daemon handle, deliberately (#199). This instance was started by somebody else, its
@@ -701,6 +706,12 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * dev Electron shell and a CDP connection to the client window. The shell carries
  * KELPI_HARNESS (it quits if this process dies) and KELPI_HARNESS_SOCKET (the channel).
  *
+ * The shell holds its first client navigation behind KELPI_HARNESS_DEFER_LOAD plus the harness
+ * socket gate. Boot attaches to an inert about:blank document, subscribes to renderer errors,
+ * then releases that navigation. `rendererErrors.finish(rec)` drains the verdict into a recorder;
+ * a failed first mount returns with its errors even if the app root never appeared. `beforeLoad`
+ * optionally receives the watched CDP page for setup such as new-document scripts.
+ *
  * `window` is the harness functional lane (#65), and it is what lets more than one scenario run
  * on one machine at a time. Unset is the shipped window, exactly as before the lane existed:
  *
@@ -726,7 +737,7 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * lane mean "make the page believe it is focused / unfocused" rather than "make the OS window
  * key". `setPageFocusEmulation` above has the measurement.
  */
-export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window } = {}) {
+export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad } = {}) {
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
     }
@@ -746,112 +757,138 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
      * sandbox this runner can tear down.
      */
     const daemon = restartableDaemon(sandbox, { repoRoot });
-    await daemon.start();
-    const shell = startShell(sandbox, { repoRoot, extraEnv: { KELPI_HARNESS_SOCKET: harnessSocket } });
-    clearBackgroundTaskPolicy(shell.child?.pid);
-    // Before CDP, because a `hidden` window that did not actually go hidden is a run that has
-    // taken the owner's screen without saying so. The shell only logs this line when the lane
-    // opened, so waiting for it is also the check that both halves of the gate arrived.
-    const windowLogLine =
-        window === undefined
-            ? null
-            : String(await shell.waitForLine(/harness-window: placement=/, `the shell to place its window (${window})`, 45_000));
-    if (windowLogLine !== null && !windowLogLine.includes(`placement=${window}`)) {
-        throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
-    }
-    const page = await connectClient(sandbox.debugPort, { repoRoot, timeoutMs });
-    /*
-     * #109: the lane's window is never the key window (see `setPageFocusEmulation`), so the page
-     * would report `document.hasFocus() === false` for the whole run and CDP keys would have no
-     * focused page to route to. Emulation is turned on here, before a scenario runs a line, so
-     * the page starts in the same state it used to reach by stealing the machine's keyboard.
-     * Unset `window` is the shipped window: it can be key, so nothing is emulated.
-     */
-    const laneFocus = window !== undefined;
-    if (laneFocus) await setPageFocusEmulation(page, true);
-    const rawHarness = harnessClient(harnessSocket);
-    /*
-     * In the lane, `focus` and `blur` mean "make the page believe it is focused / unfocused".
-     * The main-process call still happens (`harness.focus()` orders the frame front and hands
-     * the keyboard to the web contents; `blur()` is a no-op on a window that was never key), and
-     * the page-level half is added here because this is the side holding the CDP session. The
-     * ORDER matters for `blur`: emulation goes off first, so a scenario that reads
-     * `document.hasFocus()` straight after the await never sees the stale `true`.
-     */
-    const harness = laneFocus
-        ? {
-              ...rawHarness,
-              focus: async () => {
-                  const answer = await rawHarness.focus();
-                  await setPageFocusEmulation(page, true);
-                  return answer;
-              },
-              blur: async () => {
-                  await setPageFocusEmulation(page, false);
-                  return await rawHarness.blur();
-              },
-              close: () => rawHarness.close()
-          }
-        : rawHarness;
-    await settle(async () => {
-        try {
-            await harness.ping();
-            return true;
-        } catch {
-            return false;
-        }
-    }, { ceilingMs: timeoutMs, intervalMs: 200 });
-    const raw = makeCli(sandbox, { repoRoot });
-    const cli = {
-        /** { code, stdout, stderr }; pass { env: { KELPI_PANE_ID } } to speak as a pane. */
-        run: (args, opts = {}) => raw.run(args, opts),
-        /** Run and require exit 0; returns stdout. The failure names the command and its stderr. */
-        async ok(args, opts = {}) {
-            const result = await raw.run(args, opts);
-            if (result.code !== 0) throw new Error(`kelpi ${args.join(' ')} exited ${String(result.code)}: ${result.stderr || result.stdout}`);
-            return result.stdout;
-        }
-    };
+    let shell;
+    let page;
+    let rawHarness;
     let stopped = false;
-    return {
-        sandbox,
-        /**
-         * This sandbox's daemon, restartable in place: `stop()`, `start()`, `restart()`, plus
-         * `pid`, `child`, `generation`, `exited`, `text()` and `lastStopMs` / `lastStartMs`.
-         * `stack.mjs` ▸ `restartableDaemon` has what a restart is and is not. Null under `attach`,
-         * where the runner did not start the daemon and must not stop somebody else's.
-         */
-        daemon,
-        shell,
-        page,
-        harness,
-        cli,
-        /** The placement this instance is actually running at, proven by the shell's own log line. */
-        windowPlacement: window ?? SHIPPED_WINDOW_PLACEMENT,
-        windowLogLine,
-        debugPort: sandbox.debugPort,
-        async stop() {
-            if (stopped) return;
-            stopped = true;
-            harness.close();
-            try {
-                page.close();
-            } catch {
-                /* already gone */
-            }
-            try {
-                await shell.quit();
-            } catch {
-                /* already gone */
-            }
-            try {
-                await daemon.stop();
-            } catch {
-                /* already gone */
-            }
-            sandbox.cleanup();
-        }
+    const stop = async () => {
+        if (stopped) return;
+        stopped = true;
+        try { rawHarness?.close(); } catch { /* already gone */ }
+        try { page?.close(); } catch { /* already gone */ }
+        try { await shell?.quit(); } catch { /* already gone */ }
+        try { await daemon.stop(); } catch { /* already gone */ }
+        sandbox.cleanup();
     };
+    try {
+        await daemon.start();
+        shell = startShell(sandbox, { repoRoot, extraEnv: {
+            KELPI_HARNESS_SOCKET: harnessSocket,
+            KELPI_HARNESS_DEFER_LOAD: '1'
+        } });
+        clearBackgroundTaskPolicy(shell.child?.pid);
+        // Before CDP, because a `hidden` window that did not actually go hidden is a run that has
+        // taken the owner's screen without saying so. The shell only logs this line when the lane
+        // opened, so waiting for it is also the check that both halves of the gate arrived.
+        const windowLogLine =
+            window === undefined
+                ? null
+                : String(await shell.waitForLine(/harness-window: placement=/, `the shell to place its window (${window})`, 45_000));
+        if (windowLogLine !== null && !windowLogLine.includes(`placement=${window}`)) {
+            throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
+        }
+        // An empty URL belongs to a never-navigated window with no running renderer. Wait for
+        // the shell's inert blank document so Runtime.enable can acknowledge before client load.
+        const target = await waitForPageTarget(sandbox.debugPort, {
+            timeoutMs, match: (target) => target.url === 'about:blank'
+        });
+        page = await connect(target.webSocketDebuggerUrl, { repoRoot });
+        const rendererErrors = await watchRendererErrors(page, { timeoutMs });
+        if (rendererErrors.enableError !== null) {
+            throw new Error(`the renderer could not be watched: Runtime.enable: ${rendererErrors.enableError}`);
+        }
+        /*
+         * #109: the lane's window is never the key window (see `setPageFocusEmulation`), so the page
+         * would report `document.hasFocus() === false` for the whole run and CDP keys would have no
+         * focused page to route to. Emulation is turned on here, before a scenario runs a line, so
+         * the page starts in the same state it used to reach by stealing the machine's keyboard.
+         * Unset `window` is the shipped window: it can be key, so nothing is emulated.
+         */
+        const laneFocus = window !== undefined;
+        if (laneFocus) await setPageFocusEmulation(page, true);
+        rawHarness = harnessClient(harnessSocket);
+        /*
+         * In the lane, `focus` and `blur` mean "make the page believe it is focused / unfocused".
+         * The main-process call still happens (`harness.focus()` orders the frame front and hands
+         * the keyboard to the web contents; `blur()` is a no-op on a window that was never key), and
+         * the page-level half is added here because this is the side holding the CDP session. The
+         * ORDER matters for `blur`: emulation goes off first, so a scenario that reads
+         * `document.hasFocus()` straight after the await never sees the stale `true`.
+         */
+        const harness = laneFocus
+            ? {
+                  ...rawHarness,
+                  focus: async () => {
+                      const answer = await rawHarness.focus();
+                      await setPageFocusEmulation(page, true);
+                      return answer;
+                  },
+                  blur: async () => {
+                      await setPageFocusEmulation(page, false);
+                      return await rawHarness.blur();
+                  },
+                  close: () => rawHarness.close()
+              }
+            : rawHarness;
+        const harnessReady = await settle(async () => {
+            try {
+                await harness.ping();
+                return true;
+            } catch {
+                return false;
+            }
+        }, { ceilingMs: timeoutMs, intervalMs: 200 });
+        if (!harnessReady) throw new Error('the shell harness did not become ready');
+        // Test setup (e.g. new-document scripts) runs under the already armed watcher.
+        await beforeLoad?.(page);
+        const loaded = await rawHarness.loadClient();
+        if (loaded.released !== true) throw new Error('the shell did not hold the initial client load');
+        // A broken first mount must reach the scenario recorder with its original error, instead
+        // of timing out here on the absent root and losing the evidence with the boot failure.
+        const clientReady = await settle(async () => {
+            if (rendererErrors.hasErrors) return true;
+            try {
+                return await page.eval(`document.querySelector('${PAGE.app}') !== null`);
+            } catch {
+                return false; // The initial navigation can destroy the blank execution context.
+            }
+        }, { ceilingMs: timeoutMs, intervalMs: 100 });
+        if (!clientReady) throw new Error('the client app root did not appear');
+        const raw = makeCli(sandbox, { repoRoot });
+        const cli = {
+            /** { code, stdout, stderr }; pass { env: { KELPI_PANE_ID } } to speak as a pane. */
+            run: (args, opts = {}) => raw.run(args, opts),
+            /** Run and require exit 0; returns stdout. The failure names the command and its stderr. */
+            async ok(args, opts = {}) {
+                const result = await raw.run(args, opts);
+                if (result.code !== 0) throw new Error(`kelpi ${args.join(' ')} exited ${String(result.code)}: ${result.stderr || result.stdout}`);
+                return result.stdout;
+            }
+        };
+        return {
+            sandbox,
+            /**
+             * This sandbox's daemon, restartable in place: `stop()`, `start()`, `restart()`, plus
+             * `pid`, `child`, `generation`, `exited`, `text()` and `lastStopMs` / `lastStartMs`.
+             * `stack.mjs` ▸ `restartableDaemon` has what a restart is and is not. Null under `attach`,
+             * where the runner did not start the daemon and must not stop somebody else's.
+             */
+            daemon,
+            shell,
+            page,
+            rendererErrors,
+            harness,
+            cli,
+            /** The placement this instance is actually running at, proven by the shell's own log line. */
+            windowPlacement: window ?? SHIPPED_WINDOW_PLACEMENT,
+            windowLogLine,
+            debugPort: sandbox.debugPort,
+            stop
+        };
+    } catch (error) {
+        await stop();
+        throw error;
+    }
 }
 
 /** Debug targets of a running instance, for a quick "is the client up" check. */

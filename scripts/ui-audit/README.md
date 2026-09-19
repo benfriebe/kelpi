@@ -56,6 +56,27 @@ export default async function ({ page, harness, cli, sandbox, shell, daemon, rec
 
 Rules that keep scenarios honest: wait on a condition (`settle`, `settleDom`, `page.waitFor`), not on a sleep, except where the wait IS the assertion (a negative check needs a dwell). Prefer `data-testid` anchors; add one to the client rather than matching on text or CSS. A scenario that fails should say what it saw: pass the detail to `rec.check`.
 
+Every instance returned by `d.boot()` carries `rendererErrors`. Boot sets
+`KELPI_HARNESS_DEFER_LOAD=1` alongside the private harness socket: the shell loads an inert
+`about:blank` document, giving CDP a running renderer while holding the first client document.
+The driver waits for that blank target and subscribes to `Runtime.exceptionThrown` and
+`console.error` before enabling Runtime, then releases the first app navigation through
+`harness.loadClient()` only after Runtime acknowledges. A refused or timed-out watcher setup
+rejects boot and tears down the private instance; it cannot substitute for app readiness.
+A failed first mount therefore reaches the first scenario's named renderer check even when no
+app root appears. `beforeLoad(page)` is an optional boot hook for CDP setup after the watcher is
+armed and before navigation; `renderer-errors-at-boot` uses it to inject a failing first document.
+Failed boots close their partial private instances.
+
+The runner calls `instance.rendererErrors.finish(rec)` after each scenario, consuming that
+instance's accumulated lines once. Dedicated placement instances get their own watcher from
+boot. The shared lane continues watching while a dedicated instance runs; its idle-period errors
+remain attributed to the next shared-lane scenario, preserving the existing attribution rule. `d.attach()` starts watching as soon as it connects, but cannot recover errors that
+predate attachment. Callers that boot additional instances can drain those watchers into their own
+recorders. The standalone audit has its own startup and console collector; it does not call
+`driver.boot()` and does not opt into the deferred-load gate.
+
+
 ### The daemon handle: stopping the primary daemon
 
 A window that has lost its daemon is a state a great deal of the client is written for, and nothing in the DOM can put it there: the plugin views draw "Connecting to daemon…", the presenter slots fall back to their bundled children, the reconnect backs off from 500 ms to 15 s, and every promise a plugin was awaiting is settled by the scope that is being disposed. `daemon` is how a scenario reaches it (#199):

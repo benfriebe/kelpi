@@ -50,6 +50,8 @@ describe('renderer error ownership', () => {
         const page = new EventEmitter();
         page.send = async () => { throw new Error('session unavailable'); };
         const watcher = await watchRendererErrors(page);
+        expect(watcher.hasErrors).toBe(false);
+        expect(watcher.enableError).toBe('session unavailable');
         for (let i = 0; i < 2; i++) {
             const rec = recorder();
             watcher.finish(rec);

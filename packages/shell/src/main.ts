@@ -410,7 +410,15 @@ function loadDaemonUrl(window: BrowserWindow): void {
     if (daemon === null) return;
     if (initialClientLoad.defer(() => {
         if (!window.isDestroyed()) loadDaemonUrl(window);
-    })) return;
+    })) {
+        // A never-navigated BrowserWindow advertises a CDP target but has no renderer to
+        // acknowledge Runtime.enable. Start an inert document while the actual client stays
+        // behind the gate; the driver waits for this URL before arming its watcher.
+        void window.loadURL('about:blank').catch((error: unknown) => {
+            logError('initial harness blank load failed', error);
+        });
+        return;
+    }
     // `shellWindow` marks the page as "the UI inside this shell window" — it is what makes the
     // client's web-pane geometry reports actionable and scopes reveal requests to this window.
     // The client keeps it (only `daemon`/`token` are stripped from the visible URL).

@@ -234,10 +234,12 @@ it('stops only its connected daemon before pid-file/healthz readiness and after 
         const channel = url(path.join(root, 'packages/daemon/src/lifecycle/test-owner.ts'));
         child = spawn(process.execPath, ['--input-type=module', '-e', `
             import {connectTestOwner} from ${JSON.stringify(channel)};
-            process.on('SIGTERM', () => setTimeout(() => process.exit(0), 100));
-            await connectTestOwner(process.env);
+            const owner = await connectTestOwner(process.env);
             if (process.env.KELPI_TEST_OWNER_TOKEN || process.env.KELPI_TEST_OWNER_PORT) throw new Error('capability leaked');
-            console.log('ready'); setInterval(() => {}, 1000);
+            console.log('ready');
+            await owner.whenStopRequested;
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await owner.confirmStopped();
         `], {env, detached:true, stdio:['ignore','pipe','inherit']});
         const exit = once(child, 'exit');
         await once(child.stdout, 'data');

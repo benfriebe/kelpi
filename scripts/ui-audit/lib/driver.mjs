@@ -707,8 +707,8 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * KELPI_HARNESS (it quits if this process dies) and KELPI_HARNESS_SOCKET (the channel).
  *
  * The shell holds its first client navigation behind KELPI_HARNESS_DEFER_LOAD plus the harness
- * socket gate. Boot attaches to the empty window, subscribes to renderer errors, then releases
- * that navigation. `rendererErrors.finish(rec)` drains the accumulated verdict into a recorder;
+ * socket gate. Boot attaches to an inert about:blank document, subscribes to renderer errors,
+ * then releases that navigation. `rendererErrors.finish(rec)` drains the verdict into a recorder;
  * a failed first mount returns with its errors even if the app root never appeared. `beforeLoad`
  * optionally receives the watched CDP page for setup such as new-document scripts.
  *
@@ -787,12 +787,16 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         if (windowLogLine !== null && !windowLogLine.includes(`placement=${window}`)) {
             throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
         }
-        // The shell has created its window but has not navigated. No web panes can exist yet.
+        // An empty URL belongs to a never-navigated window with no running renderer. Wait for
+        // the shell's inert blank document so Runtime.enable can acknowledge before client load.
         const target = await waitForPageTarget(sandbox.debugPort, {
-            timeoutMs, match: (target) => target.url === '' || target.url === 'about:blank'
+            timeoutMs, match: (target) => target.url === 'about:blank'
         });
         page = await connect(target.webSocketDebuggerUrl, { repoRoot });
-        const rendererErrors = await watchRendererErrors(page);
+        const rendererErrors = await watchRendererErrors(page, { timeoutMs });
+        if (rendererErrors.enableError !== null) {
+            throw new Error(`the renderer could not be watched: Runtime.enable: ${rendererErrors.enableError}`);
+        }
         /*
          * #109: the lane's window is never the key window (see `setPageFocusEmulation`), so the page
          * would report `document.hasFocus() === false` for the whole run and CDP keys would have no

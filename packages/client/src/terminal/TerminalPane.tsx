@@ -1150,10 +1150,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * #81: publish this pane's live selection read for the app's `copy` action.
              *
              * A registration rather than a callback prop, and a PULL rather than the push above,
-             * because the engine's `clearSelection()` fires no change event
-             * (`vendor/ghostty-web-patched/source/lib/selection-manager.ts:227`, called from the
-             * mousedown at `:439`): a cached selection survives the click that visibly cleared
-             * it. `terminal/pane-registry.ts` has the full argument.
+             * so copy reads the current selection. Older engines did not announce clearing;
+             * `0.4.0-nex.14` does (#170), but a notification remains an observation rather than
+             * the authority for copying. `terminal/pane-registry.ts` has the full argument.
              */
             const offRegistry = registerTerminalPane(paneID, {
                 selection: () => rendererRef.current?.selection() ?? '',
@@ -1675,11 +1674,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
          */
         const onStart = (event: TouchEvent): void => {
             // A new contact clears the word the last long press left highlighted, and the mirror
-            // is written by hand BOTH ways. The engine's `clearSelection()` fires no change event
-            // (#81), so a clear nobody announced leaves `data-terminal-selection` reporting a
-            // highlight that is not on the screen - measured on this pane in the audit, which
-            // found a stale `1` from an earlier step surviving three gestures. After this line
-            // there is no selection, whoever cleared it, so the mirror says so.
+            // is written by hand BOTH ways. Older engines did not announce `clearSelection()`
+            // (#81), leaving a stale `data-terminal-selection` in the audit. The current engine
+            // announces it (#170); the explicit zero also covers an already-empty selection,
+            // for which no new change is emitted.
             //
             // It runs in both modes for the same reason ghostty clears one (`Surface.zig:3850`):
             // once the application is being sent the gesture, a selection from before it asked

@@ -4,6 +4,7 @@ import { type ReactElement } from 'react';
 
 import type { KelpiRuntime } from '../state';
 import {
+    navigationTrustedRuntimes,
     tokenFromPairingURL,
     useRemoteDaemons,
     type RemoteDaemonEntry,
@@ -79,4 +80,15 @@ describe('useRemoteDaemons (§1.7)', () => {
         expect(tokenFromPairingURL('https://werk.taila.ts.net/')).toBeUndefined();
         expect(tokenFromPairingURL('not a url')).toBeUndefined();
     });
+});
+
+it('grants navigation only to the currently configured exact runtime and revokes stale identities', () => {
+    const runtime = fakeRuntime();
+    const entry = { name: 'werk', url: 'https://werk/?token=first', trustedForNavigation: true };
+    const held = new Map([[entry.name, { ...entry, runtime }]]);
+    expect([...navigationTrustedRuntimes([entry], held)]).toEqual([runtime]);
+    expect(navigationTrustedRuntimes([{ ...entry, trustedForNavigation: false }], held).size).toBe(0);
+    expect(navigationTrustedRuntimes([{ ...entry, url: 'https://replacement/' }], held).size).toBe(0);
+    expect(navigationTrustedRuntimes([{ ...entry, name: 'renamed' }], held).size).toBe(0);
+    expect(navigationTrustedRuntimes([], held).size).toBe(0);
 });

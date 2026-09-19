@@ -26,6 +26,11 @@ export function settingsSearchDestination(
         return { testID: 'terminal-background-locked', message: 'The terminal theme owns this colour. Choose None (Custom) in Theme to edit it.' };
     if (entry.testID === 'global-hotkey-clear' && ['none', ''].includes(settings.general.globalHotkey ?? ''))
         return { testID: 'global-hotkey-row', message: 'No global hotkey is configured. Record a shortcut here.' };
+    if (entry.testID === 'remote-daemon-navigation-trust') {
+        const first = settings.remoteDaemons[0];
+        return first ? { testID: `remote-daemon-navigation-trust-${first.name}` }
+            : { testID: 'remote-daemon-add-name', message: 'Add a remote daemon before trusting its plugins with window navigation.' };
+    }
     if (entry.testID === 'remote-pair-copy' || entry.testID === 'remote-pair-qr')
         return { testID: 'remote-pair-go', message: 'Pair a device to generate its connection link and QR code.' };
     if (entry.testID === 'repo-browse' && context.onBrowseForFolder === undefined)

@@ -558,7 +558,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         // Ownership is per runtime, and a desktop window shows one workspace at a time, so the
         // other half is asserted by going back: the local daemon never heard of that owner.
         // The way back is the sidebar row, which is the user's own: a plugin view hosted by a
-        // REMOTE daemon is refused this window's navigation outright ("Workbench UI is unavailable
+        // REMOTE daemon without per-host navigation trust is refused this window's navigation ("Navigation is unavailable
         // for this daemon in this window"), so `kelpi.ui.selectWorkspace` is not available there.
         if (!await reveal(local.workspaceID) || !await ready(local.paneID)) throw new Error('The window did not return to the local workspace');
         const unaffected = await probe(local.paneID);

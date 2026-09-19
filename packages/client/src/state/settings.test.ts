@@ -364,3 +364,11 @@ describe('the settings verbs', () => {
         h.dispose();
     });
 });
+
+it('hydrates navigation trust only from an explicit boolean true and clears it on later snapshots', () => {
+    for (const flag of [true, false, undefined, 'true', 1, null]) {
+        const entry = { name: 'werk', url: 'https://werk/' };
+        const snapshot = hydrateSettings({ remoteDaemons: [{ ...entry, trustedForNavigation: flag }] });
+        expect(snapshot?.remoteDaemons).toEqual([{ ...entry, ...(flag === true ? { trustedForNavigation: true } : {}) }]);
+    }
+});

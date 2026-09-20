@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export function redactFixtureText(value, allowed = [], limit = 160) {
     const text = String(value ?? '');
@@ -11,8 +12,9 @@ export function redactFixtureText(value, allowed = [], limit = 160) {
 }
 
 // Self-contained because this function runs in each renderer, including OOPIFs.
-export function installRendererRecorder({ key, allowed, capacity }) {
+export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
     if (globalThis[key]) throw new Error('incident recorder already armed');
+    const generation = `${performance.timeOrigin}:${Math.random()}`;
     let sequence = 0, frozen = false;
     const events = [], restores = [], diagnosticErrors = [];
     const observedTerminal = globalThis.terminalLab?.terminal;
@@ -55,7 +57,6 @@ export function installRendererRecorder({ key, allowed, capacity }) {
         ...(event.clipboardData ? { clipboard: safe(event.clipboardData.getData('text/plain')) } : {}) }); } catch (error) { diagnosticError('event', error); } };
     const types = ['keydown', 'keyup', 'copy', 'cut', 'paste', 'beforeinput', 'input', 'selectionchange', 'focus', 'blur', 'visibilitychange'];
     const eventTarget = typeof globalThis.addEventListener === 'function' ? globalThis : document;
-    for (const type of types) { eventTarget.addEventListener(type, listener, true); restores.push(() => eventTarget.removeEventListener(type, listener, true)); }
     const wrap = (object, name, clipboard = false) => {
         if (typeof object?.[name] !== 'function') return;
         const descriptor = Object.getOwnPropertyDescriptor(object, name), original = object[name];
@@ -76,28 +77,52 @@ export function installRendererRecorder({ key, allowed, capacity }) {
             } catch (error) { diagnosticError('result observation', error); }
             return result;
         };
+        restores.push(() => { if (object[name] === wrapper) { if (descriptor) Object.defineProperty(object, name, descriptor); else delete object[name]; } });
         object[name] = wrapper;
         if (object[name] !== wrapper) throw new Error(`cannot instrument ${name}`);
-        restores.push(() => { if (object[name] === wrapper) { if (descriptor) Object.defineProperty(object, name, descriptor); else delete object[name]; } });
     };
-    const restore = () => { for (const undo of restores.reverse()) undo(); delete globalThis[key]; };
-    globalThis[key] = { snapshot: () => {
+    const cleanupErrors = [];
+    const restore = () => {
+        const failed = [];
+        for (const undo of restores.splice(0).reverse()) {
+            try { undo(); } catch (error) { failed.unshift(undo); cleanupErrors.push(String(error?.message ?? error)); }
+        }
+        restores.push(...failed);
+        if (globalThis[key] === recorder) {
+            try { delete globalThis[key]; } catch (error) { cleanupErrors.push(String(error?.message ?? error)); }
+        }
+        return { restored: restores.length === 0 && globalThis[key] !== recorder, errors: cleanupErrors.slice() };
+    };
+    const recorder = { ownerId, generation, snapshot: () => {
         frozen = true;
         let observed;
         try { observed = state(); } catch (error) { diagnosticError('snapshot', error); observed = { unavailable: 'diagnostic state read failed' }; }
-        return { events: events.slice(), state: observed, diagnosticErrors: diagnosticErrors.slice(), incomplete: diagnosticErrors.length > 0, dropped: Math.max(0, sequence - events.length), timeOrigin: performance.timeOrigin };
+        const dropped = Math.max(0, sequence - events.length);
+        return { ownerId, generation, events: events.slice(), state: observed, diagnosticErrors: diagnosticErrors.slice(),
+            targetAvailable: true, historyRetained: dropped === 0, incomplete: diagnosticErrors.length > 0 || dropped > 0,
+            dropped, timeOrigin: performance.timeOrigin };
     }, restore };
     try {
+        globalThis[key] = recorder;
+        if (globalThis[key] !== recorder) throw new Error('cannot publish incident recorder');
+        for (const type of types) {
+            restores.push(() => eventTarget.removeEventListener(type, listener, true));
+            eventTarget.addEventListener(type, listener, true);
+        }
         wrap(navigator.clipboard, 'readText', true); wrap(navigator.clipboard, 'writeText', true);
         for (const method of ['write', 'reset', 'clear', 'resize', 'select', 'clearSelection', 'getSelection']) wrap(globalThis.terminalLab?.terminal, method);
         record('armed');
-        return true;
-    } catch (error) { restore(); throw error; }
+        return { ownerId, generation };
+    } catch (error) {
+        const cleanup = restore();
+        if (cleanup.errors.length) diagnosticError('installation cleanup', error);
+        throw error;
+    }
 }
 
-export async function armIncidentDiagnostics({ page, harness, rec, allowed = [], capacity = 256 }) {
+export async function armIncidentDiagnostics({ page, harness, rec, allowed = [], capacity = 1024 }) {
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 1024) throw new Error('invalid diagnostic capacity');
-    const key = '__kelpiIncidentRecorder';
+    const key = '__kelpiIncidentRecorder', ownerId = randomUUID();
     const targets = [], restores = [], events = [];
     let sequence = 0, frozen = false, first, closed = false, navigationScript, hostGeneration = 1;
     const record = (kind, detail = {}) => {
@@ -106,15 +131,20 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
         if (events.length > capacity) events.shift();
     };
     const safe = value => redactFixtureText(value, allowed);
+    const ownedExpression = body => `(() => { const recorder = globalThis[${JSON.stringify(key)}];
+        if (!recorder || recorder.ownerId !== ${JSON.stringify(ownerId)}) return {unavailable:'owned recorder absent',targetAvailable:false};
+        ${body} })()`;
+    const install = `(${installRendererRecorder.toString()})(${JSON.stringify({ key, allowed, capacity, ownerId })})`;
     const addRenderer = async (name, evaluate, isPresent) => {
-        // Register BEFORE installation so a partial start is still cleaned and reported.
+        // A failed acquisition remains known, but every subsequent operation is owner checked.
         const target = { name, evaluate, isPresent }; targets.push(target);
-        await evaluate(`(${installRendererRecorder.toString()})(${JSON.stringify({ key, allowed, capacity })})`);
+        const installed = await evaluate(install);
+        target.generation = installed?.generation;
     };
     const wrap = (object, name, detail) => {
         if (typeof object?.[name] !== 'function') return;
-        const original = object[name];
-        object[name] = function (...args) {
+        const descriptor = Object.getOwnPropertyDescriptor(object, name), original = object[name];
+        const wrapper = function (...args) {
             try { record(`${name}:call`, detail(args)); } catch { record('diagnostic-error', { phase: `${name}:call` }); }
             const observed = result => {
                 try { record(`${name}:resolved`, name.startsWith('clipboard') ? { value: safe(result?.text) } : {}); }
@@ -130,22 +160,34 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
                 return result;
             } catch (error) { rejected(error); throw error; }
         };
-        restores.push(() => { object[name] = original; });
+        restores.push([`wrapper ${name}`, () => {
+            if (object[name] !== wrapper) return;
+            if (descriptor) Object.defineProperty(object, name, descriptor); else delete object[name];
+        }]);
+        object[name] = wrapper;
+        if (object[name] !== wrapper) throw new Error(`cannot instrument ${name}`);
+    };
+    const snapshot = async target => {
+        if (target.retired) return { ...target.retired, name: target.name };
+        try {
+            const saved = await target.evaluate(ownedExpression('return recorder.snapshot();'));
+            const replaced = target.generation !== saved?.generation;
+            return { name: target.name, ...saved, ...(replaced ? { incomplete:true, historyRetained:false,
+                missingGeneration:target.generation ?? null, historyError:'document replaced without retained history' } : {}) };
+        } catch (error) { return { name:target.name, targetAvailable:false, historyRetained:false, unavailable:String(error?.message ?? error) }; }
     };
     const freeze = (reason = 'completed') => {
         if (first) return first;
         frozen = true;
-        // Issue all freeze reads before cleanup or any later diagnostic reads can change state.
-        first = Promise.all(targets.map(async ({ name, evaluate, retired }) => {
-            if (retired) return { name, ...retired };
-            try { return { name, ...await evaluate(`globalThis[${JSON.stringify(key)}]?.snapshot() ?? {unavailable:'document replaced before snapshot'}`) }; }
-            catch (error) { return { name, unavailable: String(error?.message ?? error) }; }
-        })).then(renderers => {
-            const complete = !renderers.some(renderer => renderer.incomplete || renderer.unavailable || !renderer.state) && !events.some(event => event.kind === 'diagnostic-error');
-            rec.check('incident diagnostics complete without observer errors', complete, complete ? 'all required renderer states retained' : 'missing renderer capture or observer errors retained in incident evidence', 'harness');
+        first = Promise.all(targets.map(snapshot)).then(renderers => {
+            const dropped = Math.max(0, sequence - events.length);
+            const targetAvailable = renderers.length > 0 && renderers.every(renderer => renderer.state && !renderer.unavailable);
+            const historyRetained = dropped === 0 && renderers.every(renderer => renderer.historyRetained === true);
+            const complete = targetAvailable && historyRetained && !renderers.some(renderer => renderer.incomplete) && !events.some(event => event.kind === 'diagnostic-error');
+            rec.check('incident diagnostics complete without observer errors', complete, complete ? 'all required renderer states and preceding history retained' : 'missing renderer capture, preceding history, or observer errors retained in incident evidence', 'harness');
             const file = path.join(rec.outDir, `${rec.name}-first-incident.json`);
-            fs.writeFileSync(file, JSON.stringify({ reason, complete, capacity, events: events.slice(), dropped: Math.max(0, sequence - events.length), renderers,
-                limitations: ['Instrumentation adds timing overhead; passing does not prove a prior failure cause.', 'Monotonic sequences are per process/renderer; clocks do not establish cross-process total order.', 'Only exact allowlisted synthetic strings are retained; arbitrary contents are redacted.', 'Clipboard evidence is observed operation results, not an extra read or retry.'] }, null, 2) + '\n', { flag: 'wx' });
+            fs.writeFileSync(file, JSON.stringify({ reason, ownerId, complete, targetAvailable, historyRetained, capacity, events: events.slice(), dropped, renderers,
+                limitations: ['Instrumentation adds timing overhead; passing does not prove a prior failure cause.', 'Monotonic sequences are per process/renderer; clocks do not establish cross-process total order.', 'Only exact allowlisted synthetic strings are retained; arbitrary contents are redacted.', 'Clipboard evidence is observed operation results, not an extra read or retry.', 'Buffer loss or unretained document generations make required preceding history incomplete.', 'No native-menu dispatch, bridge request/response, or PTY-input ordering instrumentation.'] }, null, 2) + '\n', { flag: 'wx' });
             rec.note(`incident evidence: ${file}`);
             return file;
         });
@@ -153,69 +195,74 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
     };
     const ensureHost = async () => {
         const target = targets.find(target => target.name === 'host');
-        if (await page.eval(`Boolean(globalThis[${JSON.stringify(key)}])`)) return;
+        const current = await page.eval(ownedExpression('return {generation:recorder.generation};'));
+        if (target && !target.retired && current?.generation === target.generation) return;
         if (target) {
             target.name = `host:document-${hostGeneration++}`;
-            if (!target.retired) {
-                target.retired = { unavailable: 'host document replaced without retained history', incomplete: true };
-                rec.check('host history preserved across navigation', false, target.retired.unavailable, 'harness');
-                await rec.flushFirstFailure();
-            }
+            target.retired ??= { unavailable:'host document replaced without retained history', incomplete:true, targetAvailable:false, historyRetained:false, generation:target.generation };
         }
-        await addRenderer('host', expression => page.eval(expression));
-        record('host-rearmed-before-input', { priorDocumentHistoryRetained: target?.retired?.state !== undefined });
+        if (current?.generation) targets.push({name:'host',evaluate:expression => page.eval(expression),generation:current.generation});
+        else await addRenderer('host', expression => page.eval(expression));
+        record('host-rearmed-before-input', { priorDocumentHistoryRetained: target?.retired?.historyRetained === true });
+    };
+    const restoreTarget = async target => {
+        const result = await target.evaluate(ownedExpression('return recorder.restore();'));
+        if (result?.unavailable) return { contextReplaced:true };
+        if (result?.restored !== true || result.errors?.length) throw new Error(JSON.stringify(result));
+        return result;
     };
     const retireRenderer = async name => {
         const target = targets.find(target => target.name === name);
         if (!target || target.retired) return;
-        // A failed check may already have queued the first snapshot. Preserve it before undoing.
         await rec.flushFirstFailure();
-        target.retired = { ...await target.evaluate(`globalThis[${JSON.stringify(key)}]?.snapshot()`), retiredBeforeLaterOperations: true, retiredAt: performance.now() };
-        if (!target.retired.state) {
-            rec.check(`incident capture: ${name}`, false, 'renderer disappeared before its final snapshot', 'harness');
+        target.retired = { ...await snapshot(target), retiredBeforeLaterOperations:true, retiredAt:performance.now() };
+        if (target.retired.incomplete || !target.retired.state) {
+            rec.check(`incident capture: ${name}`, false, 'renderer history incomplete before retirement', 'harness');
             await rec.flushFirstFailure();
         }
-        if (name === 'host' && navigationScript) {
-            await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript});
-            navigationScript = undefined;
-        }
-        await target.evaluate(`globalThis[${JSON.stringify(key)}]?.restore(); true`);
-        target.restored = true;
+        // Cleanup failures are independent: a failed navigation undo cannot skip the renderer.
+        const errors = await cleanupSteps([
+            ['navigation script', async () => {
+                if (name !== 'host' || !navigationScript) return;
+                await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript}); navigationScript = undefined;
+            }],
+            [name, async () => { await restoreTarget(target); target.restored = true; }]
+        ], (label, detail) => rec.check(`diagnostic cleanup: ${label}`, false, detail, 'cleanup'));
+        if (errors.length) throw new Error(errors.join('; '));
     };
     const off = rec.onFirstFailure(({ label }) => freeze(label));
     const close = async () => {
         if (closed) return; closed = true;
-        try { await freeze(); } catch (error) { rec.check('incident evidence retained', false, String(error), 'harness'); } finally {
-            off(); for (const restore of restores.reverse()) restore();
-            const cleanup = [];
-            if (navigationScript) {
-                try { await page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: navigationScript }); cleanup.push({ name: 'navigation script', restored: true }); }
-                catch (error) { cleanup.push({ name: 'navigation script', error: String(error) }); rec.check('diagnostic cleanup: navigation script', false, String(error), 'cleanup'); }
-            }
-            for (const { name, evaluate, isPresent, retired, restored: alreadyRestored } of targets) {
-                try {
-                    if (retired && alreadyRestored) { cleanup.push({ name, restoredBeforeUnmount: true }); continue; }
-                    if (isPresent && !await isPresent()) { cleanup.push({ name, contextAbsentFromCurrentDocument: true }); continue; }
-                    const restored = await evaluate(`(() => { const recorder = globalThis[${JSON.stringify(key)}]; if (!recorder) return {contextReplaced:true}; recorder.restore(); return {restored:true}; })()`);
-                    cleanup.push({ name, ...restored });
-                } catch (error) { cleanup.push({ name, error: String(error) }); rec.check(`diagnostic cleanup: ${name}`, false, error?.message ?? error, 'cleanup'); }
-            }
-            try { fs.writeFileSync(path.join(rec.outDir, `${rec.name}-incident-cleanup.json`), JSON.stringify(cleanup, null, 2) + '\n', { flag: 'wx' }); }
-            catch (error) { rec.check('diagnostic cleanup evidence retained', false, String(error), 'cleanup'); }
-        }
+        try { await freeze(); } catch (error) { rec.check('incident evidence retained', false, String(error), 'harness'); }
+        const cleanup = [];
+        const attempt = async (name, action) => {
+            try { cleanup.push({name,...await action()}); }
+            catch (error) { cleanup.push({name,error:String(error)}); rec.check(`diagnostic cleanup: ${name}`, false, String(error), 'cleanup'); }
+        };
+        await attempt('failure observer', () => { off(); return {restored:true}; });
+        for (const [name, restore] of restores.reverse()) await attempt(name, () => {restore();return {restored:true};});
+        if (navigationScript) await attempt('navigation script', async () => {
+            await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript}); return {restored:true};
+        });
+        for (const target of targets) await attempt(target.name, async () => {
+            if (target.restored) return {restoredBeforeUnmount:true};
+            if (target.isPresent && !await target.isPresent()) return {contextAbsentFromCurrentDocument:true};
+            return restoreTarget(target);
+        });
+        try { fs.writeFileSync(path.join(rec.outDir, `${rec.name}-incident-cleanup.json`), JSON.stringify(cleanup, null, 2) + '\n', { flag:'wx' }); }
+        catch (error) { rec.check('diagnostic cleanup evidence retained', false, String(error), 'cleanup'); }
     };
     try {
-        const install = `(${installRendererRecorder.toString()})(${JSON.stringify({ key, allowed, capacity })})`;
+        // Acquire the current document first. A duplicate arm cannot install a navigation hook.
+        await addRenderer('host', expression => page.eval(expression));
         if (typeof page.send === 'function') {
             await page.send('Page.enable');
-            // Top document only: remote/plugin renderers arm explicitly after their terminal exists.
-            const result = await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (globalThis.top === globalThis && !globalThis[${JSON.stringify(key)}]) { ${install}; }` });
+            const result = await page.send('Page.addScriptToEvaluateOnNewDocument', { source:`if (globalThis.top === globalThis && !globalThis[${JSON.stringify(key)}]) { ${install}; }` });
             navigationScript = result.identifier;
         }
-        await addRenderer('host', expression => page.eval(expression));
-        wrap(page, 'key', args => ({ code: /^(Key[CV]|MetaLeft|MetaRight)$/.test(args[0]) ? args[0] : '[redacted]' }));
-        for (const name of ['clipboardRead', 'clipboardWrite']) wrap(harness, name, args => name === 'clipboardWrite' ? { value: safe(args[0]) } : {});
-        return { addRenderer, ensureHost, retireRenderer, freeze, close };
+        wrap(page, 'key', args => ({ code:/^(Key[CV]|MetaLeft|MetaRight)$/.test(args[0]) ? args[0] : '[redacted]' }));
+        for (const name of ['clipboardRead', 'clipboardWrite']) wrap(harness, name, args => name === 'clipboardWrite' ? {value:safe(args[0])} : {});
+        return {addRenderer,ensureHost,retireRenderer,freeze,close};
     } catch (error) {
         rec.check('incident instrumentation armed before input', false, error?.message ?? error, 'harness');
         await close(); throw error;
@@ -236,7 +283,8 @@ export async function cleanupSteps(steps, recordFailure) {
     for (const [label, step] of steps) {
         try { await step(); } catch (error) {
             const detail = `${label}: ${String(error?.message ?? error)}`;
-            errors.push(detail); recordFailure?.(label, detail);
+            errors.push(detail);
+            try { recordFailure?.(label, detail); } catch (observerError) { errors.push(`cleanup reporting: ${String(observerError?.message ?? observerError)}`); }
         }
     }
     return errors;

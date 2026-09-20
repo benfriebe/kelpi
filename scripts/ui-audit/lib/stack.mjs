@@ -16,7 +16,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
+import { cacheDecision, writeRecordedHash } from './build-cache.mjs';
 import { DESKTOP_TEST_PORT } from './desktop-slot.mjs';
 
 export const PROTOCOL_VERSION = 2;
@@ -185,10 +185,9 @@ export async function buildAll(repoRoot, { log = () => {}, force = false } = {})
         if (result.code !== 0) {
             throw new Error(`${name} build failed (exit ${String(result.code)}):\n${result.stdout}${result.stderr}`);
         }
-        // Recorded only AFTER a successful build, and re-hashed rather than reusing the decision's
-        // hash: a bundle step that writes into its own input tree (or a concurrent edit landing
-        // mid-build) would otherwise record a hash for a tree that no longer exists.
-        writeRecordedHash(repoRoot, name, bundleHash(repoRoot, name));
+        // Bind output bytes to the inputs observed BEFORE the build. A concurrent edit or
+        // a recipe mutating its declared inputs must not certify an unobserved source build.
+        writeRecordedHash(repoRoot, name, decision.hash);
         built[name] = 'built';
     }
     return built;

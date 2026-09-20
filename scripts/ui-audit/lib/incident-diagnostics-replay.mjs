@@ -2,13 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { captureSource, captureOutputs } from './acceptance-provenance.mjs';
+import { bindPackagedRuntime } from './incident-diagnostics-packaged.mjs';
+import { BUNDLE_OUTPUTS, bundleHash, bundleOutputHashes, readBuildReceipt } from './build-cache.mjs';
 
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const startedAt = new Date().toISOString();
 const runId = process.env.KELPI_ACCEPTANCE_RUN_ID ?? randomUUID();
 
-export function captureProvenance(repoRoot, files = []) {
+export function captureProvenance(repoRoot, files = [], runtime = {}) {
     const git = args => execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
-    const hash = bytes => createHash('sha256').update(bytes).digest('hex');
     const hashes = {};
     const visit = relative => {
         const absolute = path.join(repoRoot, relative);
@@ -18,12 +21,65 @@ export function captureProvenance(repoRoot, files = []) {
         } else hashes[relative] = hash(fs.readFileSync(absolute));
     };
     for (const directory of ['packages/client/dist', 'packages/daemon/dist', 'packages/cli/dist', 'packages/shell/dist']) visit(directory);
-    for (const file of git(['ls-files', '--others', '--exclude-standard', '--', 'scripts']).split('\n').filter(Boolean)) visit(file);
+    for (const file of git(['ls-files', '--cached', '--others', '--exclude-standard', '--', 'scripts']).split('\n').filter(Boolean)) visit(file);
     for (const file of files) hashes[path.relative(repoRoot, file)] = hash(fs.readFileSync(file));
+    for (const file of ['examples/plugins/terminal-lab/ui/bundle.js', 'examples/plugins/terminal-lab/ui/bundle.css']) {
+        if (fs.existsSync(path.join(repoRoot,file)) || files.some(file => /plugin-terminal-(features|geometry)\.mjs$/.test(file))) visit(file);
+    }
     const head = git(['rev-parse', 'HEAD']), requestedHead = process.env.KELPI_ACCEPTANCE_HEAD ?? null;
     if (requestedHead !== null && head !== requestedHead) throw new Error(`requested HEAD ${requestedHead} differs from actual ${head}`);
-    return { runId, head, requestedHead, startedAt, dirtyFiles: git(['status', '--porcelain=v1', '--untracked-files=all']).split('\n').filter(Boolean),
-        trackedDiffSha256: hash(git(['diff', 'HEAD', '--binary'])), buildHashes: hashes };
+    const source = captureSource(repoRoot), errors = [];
+    let executedOutputs = [], build = null;
+    try { executedOutputs = captureOutputs(repoRoot); } catch (error) { errors.push(String(error.message)); }
+    const receiptPath = process.env.KELPI_ACCEPTANCE_BUILD_RECEIPT;
+    if (receiptPath) {
+        const bytes = fs.readFileSync(receiptPath);
+        if (hash(bytes) !== process.env.KELPI_ACCEPTANCE_BUILD_SHA256) throw new Error('build receipt digest differs');
+        const receipt = JSON.parse(bytes);
+        if (receipt.runId !== runId || receipt.head !== head || receipt.exitStatus !== 0 || JSON.stringify(receipt.source) !== JSON.stringify(source)) throw new Error('build receipt source/run differs');
+        build = receipt.build;
+        if (JSON.stringify(build?.outputs) !== JSON.stringify(executedOutputs)) throw new Error('executed outputs differ from build receipt');
+    } else {
+        // Local runs bind to receipts written by buildAll; absent receipts stay visibly incomplete.
+        for (const name of Object.keys(BUNDLE_OUTPUTS)) {
+            try {
+                const receipt = readBuildReceipt(repoRoot,name);
+                if (!receipt || receipt.hash !== bundleHash(repoRoot,name) || JSON.stringify(receipt.outputHashes) !== JSON.stringify(bundleOutputHashes(repoRoot,name))) errors.push(`${name}: missing or mismatched build receipt`);
+            } catch (error) { errors.push(`${name}: ${error.message}`); }
+        }
+        if (errors.length === 0) build = {inputManifestSha256:source.inputManifestSha256,outputs:executedOutputs,forced:false,receiptKind:'validated-build-cache'};
+    }
+    const provenance = { schemaVersion:2, runId, head, requestedHead, startedAt, dirtyFiles:git(['status', '--porcelain=v1', '--untracked-files=all']).split('\n').filter(Boolean),
+        trackedDiffSha256:source.trackedDiffSha256, buildHashes:hashes, source, build, executedOutputs, complete:errors.length === 0, errors, runtimeBindings:[] };
+    const binding=bindPackagedRuntime(repoRoot,provenance,runtime);
+    if(binding) { provenance.runtimeBindings.push(binding); if(!binding.complete) {provenance.complete=false;provenance.errors.push(...binding.errors);} }
+    return provenance;
+}
+
+/** Both manifests must be full, non-null sets; an omitted key cannot become a replay exemption. */
+export function validateReplayProvenance(original, current) {
+    if (!original || original.head !== current.head || original.trackedDiffSha256 !== current.trackedDiffSha256) throw new Error('replay source revision differs; restore the recorded commit and source diff first');
+    const compare = (left,right,label) => {
+        if (!left || !right || !Object.keys(left).length || JSON.stringify(Object.keys(left).sort()) !== JSON.stringify(Object.keys(right).sort())) throw new Error(`replay ${label} manifest is incomplete`);
+        for (const [file,value] of Object.entries(right)) if (!/^[a-f0-9]{64}$/.test(value) || !/^[a-f0-9]{64}$/.test(left[file]) || left[file] !== value) throw new Error(`replay ${label} differs or is missing: ${file}`);
+    };
+    compare(original.buildHashes,current.buildHashes,'build');
+    for(const output of Object.values(BUNDLE_OUTPUTS)) for(const file of [output.artifact,...(output.additionalArtifacts ?? [])]) {
+        if(!/^[a-f0-9]{64}$/.test(original.buildHashes[file]) || !/^[a-f0-9]{64}$/.test(current.buildHashes[file])) throw new Error(`replay required build artifact missing: ${file}`);
+    }
+    if (!original.source || original.source.inputManifestSha256 !== current.source?.inputManifestSha256 || JSON.stringify(original.source.inputs) !== JSON.stringify(current.source.inputs)) throw new Error('replay source manifest differs or is missing');
+}
+
+/** Retain each child verbatim; validation errors are evidence, never a parent identity substitution. */
+export function shardProvenanceErrors(parent, child) {
+    const errors = [];
+    for (const field of ['runId','head','requestedHead','trackedDiffSha256']) if (child?.[field] !== parent?.[field]) errors.push(`shard ${field} differs`);
+    for (const field of ['source','build','executedOutputs','buildHashes','dirtyFiles','runtimeBindings']) if (!child || JSON.stringify(child[field]) !== JSON.stringify(parent[field])) errors.push(`shard ${field} differs or is absent`);
+    if (!Number.isFinite(Date.parse(child?.startedAt)) || typeof child?.runId !== 'string' || !child.runId) errors.push('shard run identity incomplete');
+    if (!child || child.complete !== true || !Array.isArray(child.errors) || child.errors.length) errors.push('shard provenance incomplete');
+    if (!Array.isArray(child?.dirtyFiles) || child.dirtyFiles.length) errors.push('shard source not clean');
+    if (!child?.buildHashes || !Object.keys(child.buildHashes).length || Object.values(child.buildHashes).some(value => !/^[a-f0-9]{64}$/.test(value))) errors.push('shard build manifest incomplete');
+    return errors;
 }
 
 export function replayFiles(source, through) {

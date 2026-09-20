@@ -10,6 +10,9 @@ import os from 'node:os';
 import * as url from 'node:url';
 import * as crypto from 'node:crypto';
 import vm from 'node:vm';
+import {createRequire} from 'node:module';
+const fixtureRequire=createRequire(import.meta.url);
+let acorn;
 import {execFileSync,spawnSync} from 'node:child_process';
 const args=process.argv.slice(2), value=flag=>args.includes(flag)?args[args.indexOf(flag)+1]:undefined;
 if(typeof vm.SourceTextModule!=='function'){
@@ -42,18 +45,26 @@ async function execute(spec){
   statSync:p=>{protect(p);if(!files.has(p)&&!dirs.has(p))throw new Error('ENOENT');return {mtimeMs:Date.now(),size:files.has(p)?files.get(p).length:0,isFile:()=>files.has(p),isDirectory:()=>dirs.has(p)};},
   renameSync:(a,b)=>{protect(a);protect(b);files.set(b,files.get(a));files.delete(a);}
  };
+ const scenarioFile=virtual+'/scripts/scenarios/'+fixture.scenario.name+'.mjs';
+ mkdir(path.dirname(scenarioFile));files.set(scenarioFile,Buffer.from('export default async ({rec}) => { rec.check('+JSON.stringify(fixture.scenario.results[0].label)+',true); };'));
+ files.set(virtual+'/scripts/source-fixture.mjs',Buffer.from('controlled source input'));
+ files.set(virtual+'/scripts/ui-audit/audit.mjs',Buffer.from('const flows=[{id:'+JSON.stringify(fixture.audit.id)+',run:async(recorder)=>{recorder.check('+JSON.stringify(fixture.audit.assertions[0].name)+',true);}}];'));
  const put=(p,d)=>{mkdir(path.dirname(p));files.set(p,Buffer.from(JSON.stringify(d)));};
  function git(argv){
   if(argv[0]==='rev-parse')return head+'\n';
   if(argv[0]==='status')return dirty.join('\n');
-  if(argv[0]==='ls-files'||argv[0]==='diff')return '';
+  if(argv[0]==='ls-files')return argv.includes('-z')?'scripts/source-fixture.mjs\0':'';
+  if(argv[0]==='diff')return '';
   throw new Error('unexpected VM git command '+JSON.stringify(argv));
  }
  const cp={execSync:cmd=>{guard(cmd.startsWith('git '),'unexpected shell command');return git(cmd.slice(4).split(' '));},execFileSync:(exe,argv)=>{guard(exe==='git','unexpected execFileSync');return git(argv);},spawnSync:(exe,argv,options)=>{
   guard(exe==='sh'&&argv[0]==='-c','unexpected spawned command');const cmd=argv[1];commands.push(cmd);
   const provenance={runId:options.env.KELPI_ACCEPTANCE_RUN_ID??'legacy',head:options.env.KELPI_ACCEPTANCE_HEAD??head,requestedHead:head,dirtyFiles:[],startedAt:new Date().toISOString(),buildHashes:{fixture:digest(JSON.stringify(fixture))}};
+  if(options.env.KELPI_ACCEPTANCE_BUILD_RECEIPT){const receipt=JSON.parse(files.get(options.env.KELPI_ACCEPTANCE_BUILD_RECEIPT));Object.assign(provenance,{source:receipt.source,build:receipt.build,executedOutputs:receipt.build.outputs,trackedDiffSha256:receipt.source.trackedDiffSha256,buildHashes:Object.fromEntries(receipt.build.outputs.map(o=>[o.path,o.sha256])),complete:true,errors:[],runtimeBindings:[{id:'terminal-lab:'+fixture.scenario.name,source:receipt.source,build:receipt.build,executedOutputs:receipt.build.outputs,complete:true,errors:[]}]});}
   const cleanup={attempted:true,completed:true,errors:[],leaks:[]};
-  if(cmd.includes('vitest run')||cmd.includes('@kelpi/shell test')){
+  if(cmd.includes('vitest list')||cmd.includes('@kelpi/shell exec vitest list')){
+   const m=cmd.match(/--json='([^']+)'/);guard(!!m,'collection argument absent');put(m[1],cmd.includes('--filesOnly')?[{file:virtual+'/named.test.ts'}]:[{file:virtual+'/named.test.ts',name:'healthy control invariant'}]);
+  }else if(cmd.includes('vitest run')||cmd.includes('@kelpi/shell test')){
    const m=cmd.match(/--outputFile.json='([^']+)'/);guard(!!m,'vitest report argument absent');
    if(!spec.missingReports)put(m[1],{startTime:Date.now(),success:true,numTotalTests:1,numPassedTests:1,numFailedTests:0,numFailedTestSuites:0,numRuntimeErrorTestSuites:0,testResults:[{name:virtual+'/named.test.ts',status:'passed',assertionResults:[{fullName:'healthy control invariant',status:'passed'}]}]});
   }else if(cmd.includes('scripts/scenario.mjs')){
@@ -61,26 +72,26 @@ async function execute(spec){
    const summary=clone(fixture.scenario);let status=0;
    if((spec.retry&&laneRuns===1)||spec.forgedScenario){summary.results[0].ok=false;summary.failed=spec.forgedScenario?0:1;status=spec.forgedScenario?0:1;}
    const leaks=spec.leak?[clone(fixture.cleanupLeak)]:[];
-   if(!spec.missingReports)put(m[1]+'/results.json',{stamp:new Date().toISOString(),windowPlacement:'hidden',files:[],provenance,cleanup,summaries:[summary],leaks});return {status};
+   if(!spec.missingReports)put(m[1]+'/results.json',{stamp:new Date().toISOString(),windowPlacement:'hidden',files:[scenarioFile],provenance,cleanup,summaries:[summary],leaks});return {status};
   }else if(cmd.includes('scripts/ui-audit/audit.mjs')){
    const m=cmd.match(/--out (?:'([^']+)'|([^ ]+))/);guard(!!m,'audit output argument absent');const out=m[1]??m[2];const target=path.isAbsolute(out)?out:virtual+'/'+out;
    const step=clone(fixture.audit);if(spec.auditFailure)step.assertions[0].ok=false;
-   if(!spec.missingReports)put(target+'/results.json',{meta:{provenance,cleanup},summary:{total:1,assertions:1,failedAssertions:spec.auditFailure&&!spec.forgedAudit?1:0,errored:0,eyes:0},steps:[step]});
+   if(!spec.missingReports)put(target+'/results.json',{meta:{provenance,cleanup},summary:{total:2,assertions:2,failedAssertions:spec.auditFailure&&!spec.forgedAudit?1:0,errored:0,eyes:0},steps:[step,{id:'renderer-console',assertions:[{name:'no renderer console errors/warnings',ok:true}]}]});
   }else guard(cmd==='pnpm typecheck'||cmd==='pnpm run smoke:packaged','unexpected child '+cmd);
   return {status:0};
  }};
  const fakeProcess={argv:['node','scripts/verify.mjs','--full','--since',head],env:{},platform:process.platform,arch:process.arch,version:process.version,exitCode:0,exit:c=>{throw new Exit(c);}};
  const context=vm.createContext({console:{log:s=>logs.push(String(s)),error:s=>logs.push(String(s))},process:fakeProcess,Date,Set,Map,URL,Buffer});
  const synthetic=(name,values)=>new vm.SyntheticModule(Object.keys(values),function(){for(const [k,v]of Object.entries(values))this.setExport(k,v);},{context,identifier:name});
- const builtins={'node:fs':synthetic('node:fs',{default:memfs}),'node:path':synthetic('node:path',{default:path}),'node:url':synthetic('node:url',url),'node:crypto':synthetic('node:crypto',crypto),'node:os':synthetic('node:os',{default:os}),'node:child_process':synthetic('node:child_process',cp),stack:synthetic('stack',{buildAll:async()=>{}})};
+ const builtins={'node:fs':synthetic('node:fs',{default:memfs}),'node:path':synthetic('node:path',{default:path}),'node:url':synthetic('node:url',url),'node:crypto':synthetic('node:crypto',crypto),'node:os':synthetic('node:os',{default:os}),'node:child_process':synthetic('node:child_process',cp),stack:synthetic('stack',{buildAll:async()=>{for(const name of ['client','daemon','cli','shell']){const p=virtual+'/packages/'+name+'/dist/fixture.js';mkdir(path.dirname(p));files.set(p,Buffer.from(name));}}}),planInputs:synthetic('planInputs',{CANONICAL_ORDER:[fixture.audit.id],expandChains:ids=>ids}),'node:module':synthetic('node:module',{createRequire:()=>Object.assign(name=>{guard(name==='acorn','unexpected parser dependency');if(!acorn){const parserRequire=createRequire(fixtureRequire.resolve('vite/package.json',{paths:[path.join(root,'packages/client')]}));acorn=parserRequire('acorn');}return acorn;},{resolve:()=>virtual+'/node_modules/vite/package.json'})})};
  const modules=new Map();
  function getModule(rel){
   if(modules.has(rel))return modules.get(rel);guard(rel.startsWith('scripts/')&&!rel.includes('..'),'unexpected import outside scripts');
   const filename=path.join(root,rel);const bytes=fs.readFileSync(filename);sources[rel]={sha256:digest(bytes),bytes:bytes.length};
-  const mod=new vm.SourceTextModule(bytes.toString(),{context,identifier:url.pathToFileURL(virtual+'/'+rel).href,initializeImportMeta:meta=>{meta.url=url.pathToFileURL(virtual+'/'+rel).href;}});modules.set(rel,mod);return mod;
+  const mod=new vm.SourceTextModule(bytes.toString(),{context,identifier:url.pathToFileURL(virtual+'/'+rel).href,initializeImportMeta:meta=>{meta.url=url.pathToFileURL(virtual+'/'+rel).href;meta.dirname=path.posix.dirname(virtual+'/'+rel);}});modules.set(rel,mod);return mod;
  }
  const entry=getModule('scripts/verify.mjs');
- await entry.link((s,r)=>{if(s in builtins)return builtins[s];if(s.endsWith('/stack.mjs'))return builtins.stack;guard(s.startsWith('.'),'unsupported import '+s);return getModule(path.posix.normalize(path.posix.join(path.posix.dirname(url.fileURLToPath(r.identifier).slice(virtual.length+1)),s)));});
+ await entry.link((s,r)=>{if(s in builtins)return builtins[s];if(s.endsWith('/stack.mjs'))return builtins.stack;if(s.endsWith('/shards.mjs'))return builtins.planInputs;guard(s.startsWith('.'),'unsupported import '+s);return getModule(path.posix.normalize(path.posix.join(path.posix.dirname(url.fileURLToPath(r.identifier).slice(virtual.length+1)),s)));});
  let code=0,expectedWriteDenial=null;
  try{await entry.evaluate();code=fakeProcess.exitCode??0;}
  catch(e){if(e instanceof Exit)code=e.code;else if(e.code==='EACCES'&&e.message==='AUDIT_FIXTURE_REPORT_WRITE_DENIED'&&spec.writeFailure){expectedWriteDenial=e.message;code=1;}else throw e;}
@@ -95,6 +106,7 @@ try{
  guard(typeof requestedRoot==='string'&&requestedRoot.length>0,'supply --repo or KELPI_REGRESSION_ROOT explicitly');
  guard(typeof requestedOutput==='string'&&path.isAbsolute(requestedOutput),'supply an absolute --out or KELPI_REGRESSION_REPORT explicitly');
  root=fs.realpathSync(requestedRoot);
+
  guard(fs.statSync(root).isDirectory(),'repository root is not a directory');
  guard(fs.realpathSync(execFileSync('git',['rev-parse','--show-toplevel'],{cwd:root,encoding:'utf8'}).trim())===root,'supply the exact repository root');
  output=path.resolve(requestedOutput);

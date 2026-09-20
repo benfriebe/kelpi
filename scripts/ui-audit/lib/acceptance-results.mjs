@@ -1,10 +1,12 @@
+import { inspectSelection } from './acceptance-selection.mjs';
+import { inspectProvenance } from './acceptance-provenance.mjs';
 /** Strict interpretation of raw runner records. Summary booleans are never authority. */
 export const precedence = (values) => values.includes('failed') ? 'failed' : values.includes('unverified') || values.length === 0 ? 'unverified' : 'verified';
 export const exitCode = (verdict) => verdict === 'verified' ? 0 : verdict === 'failed' ? 1 : 2;
 const list = (value) => Array.isArray(value) ? value : [];
 const named = (value) => typeof value === 'string' && value.trim().length > 0;
 
-export function inspectResults(kind, report, { exitStatus = 0, runId, head, startedAt, finishedAt = Date.now(), requireProvenance = true, approvedVisuals = [] } = {}) {
+export function inspectResults(kind, report, { exitStatus = 0, runId, head, startedAt, finishedAt = Date.now(), requireProvenance = true, approvedVisuals = [], selection, expectedPlan, buildReceipt } = {}) {
     const failures = [], missing = [], assertions = [], visuals = [];
     const bad = (message) => failures.push(message);
     const absent = (message) => missing.push(message);
@@ -13,6 +15,8 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
     if (!report || typeof report !== 'object' || Array.isArray(report)) absent('missing or malformed structured report');
     if (report && kind !== 'vitest' && requireProvenance) {
         const p = report.provenance ?? report.meta?.provenance;
+        missing.push(...inspectProvenance(p, { head, buildReceipt }));
+        for (const id of (selection ?? expectedPlan)?.runtimeRequirements ?? []) if (list(p?.runtimeBindings).filter(b => b?.id === id).length !== 1) absent('required runtime artifact binding absent or duplicated');
         if (!p || p.runId !== runId || p.head !== head || (p.requestedHead != null && p.requestedHead !== p.head)) absent('report run/commit identity does not match');
         if (!Array.isArray(p?.dirtyFiles) || p.dirtyFiles.length) absent('runner source was dirty or not recorded');
         const reportStart = Date.parse(p?.startedAt ?? report.startedAt ?? report.meta?.startedAt);
@@ -67,6 +71,7 @@ export function inspectResults(kind, report, { exitStatus = 0, runId, head, star
         if (!cleanup || cleanup.attempted !== true || cleanup.completed !== true || !Array.isArray(cleanup.errors) || !Array.isArray(cleanup.leaks)) absent('cleanup was not fully evidenced');
         if (list(cleanup?.errors).length > 0 || list(cleanup?.leaks).length > 0) bad('cleanup errors or unresolved leaks');
     }
+    missing.push(...inspectSelection(kind, report, selection ?? expectedPlan));
     if (assertions.length === 0) absent('no named assertions executed');
     if (new Set(assertions.map(a => a.id)).size !== assertions.length) absent('duplicate assertion identities');
     if (visuals.length > 0) absent(`outstanding visual review: ${visuals.join(', ')}`);

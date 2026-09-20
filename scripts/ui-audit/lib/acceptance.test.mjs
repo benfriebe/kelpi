@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { inspectResults, precedence, exitCode } from './acceptance-results.mjs';
+import { inspectResults as inspectRawResults, precedence, exitCode } from './acceptance-results.mjs';
 import { digest, startRun, readArtifact, writeAcceptance, resolveRef } from './acceptance-io.mjs';
 import { inspectIncidents, inspectRegression } from './acceptance-incidents.mjs';
 import { acceptanceVerdict } from './acceptance-verdict.mjs';
@@ -13,7 +13,14 @@ import { publicationPayload, publishAcceptance } from '../../acceptance-publish.
 const root = path.resolve(import.meta.dirname, '../../..');
 const cleanup = () => ({ attempted: true, completed: true, errors: [], leaks: [] });
 const context = { runId: 'run-1', head: 'a'.repeat(40), startedAt: Date.now() - 1000 };
-const provenance = () => ({ runId: context.runId, head: context.head, requestedHead: context.head, dirtyFiles: [], startedAt: new Date().toISOString() });
+const source = head => { const inputs = [{ path: 'fixture.mjs', sha256: digest('source fixture') }]; return { head, tree: 'c'.repeat(40), trackedDiffSha256: digest(''), inputs, inputManifestSha256: digest(JSON.stringify(inputs)) }; };
+const provenance = () => {
+    const identity = source(context.head), outputs = ['client', 'daemon', 'cli', 'shell'].map(p => ({ path: `packages/${p}/dist/fixture.js`, sha256: digest(p) }));
+    return { complete: true, errors: [], runtimeBindings: [], runId: context.runId, head: context.head, requestedHead: context.head, dirtyFiles: [], startedAt: new Date().toISOString(), trackedDiffSha256: digest(''), source: identity, build: { inputManifestSha256: identity.inputManifestSha256, outputs, forced: true }, executedOutputs: outputs, buildHashes: Object.fromEntries(outputs.map(o => [o.path, o.sha256])) };
+};
+const selections = Object.fromEntries(['audit', 'scenario', 'vitest'].map(kind => [kind, { kind, ordered: kind !== 'vitest', complete: true, members: [{ id: kind === 'vitest' ? '/test.mjs' : 'copy', mode: 'assert', requiredAssertions: [kind === 'vitest' ? 'copy selected text' : 'clipboard equals selected text'], minAssertions: 1 }] }]));
+const buildReceipt = p => ({ runId: p.runId, head: p.head, exitStatus: 0, source: p.source, build: p.build });
+const inspectResults = (kind, raw, options) => inspectRawResults(kind, raw, { selection: selections[kind], buildReceipt: buildReceipt(provenance()), ...options });
 const audit = () => ({ provenance: provenance(), cleanup: cleanup(), summary: { total: 1, assertions: 1, failedAssertions: 0, errored: 0, eyes: 0 }, steps: [{ id: 'copy', assertions: [{ name: 'clipboard equals selected text', ok: true }], error: null, needsEyes: false }] });
 const scenario = () => ({ provenance: provenance(), cleanup: cleanup(), summaries: [{ name: 'copy', checks: 1, failed: 0, results: [{ label: 'clipboard equals selected text', ok: true }], leaked: [] }], leaks: [] });
 const vitest = () => ({ startTime: Date.now(), success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, testResults: [{ name: '/test.mjs', status: 'passed', assertionResults: [{ fullName: 'copy selected text', status: 'passed' }] }] });
@@ -129,7 +136,7 @@ function attachPlan(run, components) {
         run.artifacts.push({ path: run.manifestPath, sha256: digest(fs.readFileSync(run.manifestPath)) });
     }
     run.startedAt ??= new Date(Date.now() - 1000).toISOString();
-    const plan = { schemaVersion: 1, runId: run.runId, head: run.start.head, reference: run.reference, components: components.map(c => ({ label: c.label, kind: c.kind ?? 'command', command: c.command ?? 'typecheck', ...(c.reportPath ? { reportPath: c.reportPath } : {}) })) };
+    const plan = { schemaVersion: 1, runId: run.runId, head: run.start.head, reference: run.reference, components: components.map(c => ({ label: c.label, kind: c.kind ?? 'command', command: c.command ?? 'typecheck', ...(c.reportPath ? { reportPath: c.reportPath, selection: selections[c.kind] } : {}) })) };
     fs.writeFileSync(planPath, JSON.stringify(plan)); run.planPath = planPath;
     run.artifacts.push({ path: planPath, sha256: digest(fs.readFileSync(planPath)) });
     for (const component of components) {
@@ -138,6 +145,11 @@ function attachPlan(run, components) {
         fs.writeFileSync(file, JSON.stringify(receipt)); run.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)) });
         component.firstAttempt ??= { ok: true, verdict: 'verified' };
         component.firstAttempt.execution = { ...receipt, path: file };
+    }
+    for (const component of components.filter(c => ['audit', 'scenario'].includes(c.kind) && typeof c.reportPath === 'string' && fs.existsSync(c.reportPath))) {
+        const raw = JSON.parse(fs.readFileSync(component.reportPath)), p = raw.provenance;
+        const file = path.join(dir, 'build.json'); fs.writeFileSync(file, JSON.stringify(buildReceipt(p)));
+        run.buildReceiptPath = file; run.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)) });
     }
     run.components = components;
 }
@@ -163,6 +175,7 @@ describe('retained reports and exact-head publication', () => {
         attachPlan(report, report.components);
         report.verdict = acceptanceVerdict(report, report).verdict;
         expect(report.verdict).toBe('verified');
+        report.outDir = temp(); Object.assign(report, writeAcceptance(report, { verdict: report.verdict }));
         const payload = publicationPayload(report, { state: 'open', head: { sha: start.head } });
         expect(payload.state).toBe('success'); expect(JSON.stringify(payload)).not.toContain('fixture-machine'); expect(JSON.stringify(payload)).not.toContain('KELPI_REGRESSION');
         expect(() => publicationPayload(report, { state: 'open', head: { sha: 'b'.repeat(40) } })).toThrow(/exact/);
@@ -207,7 +220,7 @@ describe('visual review completion is exact-run evidence', () => {
         const dir = temp(), rawPath = path.join(dir, 'audit.json'), shotPath = path.join(dir, 'copy.png');
         const start = regression.candidate.before;
         const run = { schemaVersion: 1, scope: 'commit', runId: context.runId, start, end: start, reference: regression.baseline.before.head, artifacts: [], manifest, policyReasons: [] };
-        const raw = audit(); raw.provenance.head = start.head; raw.provenance.requestedHead = start.head; raw.steps[0].needsEyes = true; raw.steps[0].shots = ['copy.png']; raw.summary.eyes = 1;
+        const raw = audit(); raw.provenance.head = start.head; raw.provenance.requestedHead = start.head; raw.provenance.source.head = start.head; raw.steps[0].needsEyes = true; raw.steps[0].shots = ['copy.png']; raw.summary.eyes = 1;
         fs.writeFileSync(rawPath, JSON.stringify(raw)); fs.writeFileSync(shotPath, 'test screenshot bytes');
         run.artifacts.push(...[rawPath, shotPath].map(file => ({ path: file, sha256: digest(fs.readFileSync(file)) })));
         const components = [{ label: 'audit', kind: 'audit', command: 'run audit', reportPath: rawPath, firstAttempt: { ok: false, verdict: 'unverified' } }];

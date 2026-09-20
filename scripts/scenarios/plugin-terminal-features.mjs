@@ -3,7 +3,7 @@ import { armIncidentDiagnostics, redactFixtureText, removeOwnedRemoteStore } fro
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { buildTerminalLab } from '../build-terminal-lab.mjs';
+import { buildBoundTerminalLab } from '../ui-audit/lib/incident-diagnostics-runtime.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 import { daemonIDFromSandbox, phoneToLanding, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
 
@@ -18,11 +18,9 @@ const frame = id => `[data-testid="plugin-view-${id}"] iframe`;
 const normal = value => value.replaceAll('\r', '').split('\n').map(line => line.trimEnd()).join('\n').trimEnd();
 const ptyFrame = (type, paneID, payload) => Buffer.concat([Buffer.from([type]), Buffer.from(paneID.replaceAll('-', ''), 'hex'), payload]);
 
-export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
+export default async function ({ page, cli, sandbox, rec, d, harness, sleep, diagnosticsProvenance }) {
     await page.watchFrames();
-    const packagePath = await buildTerminalLab(repoRoot);
-    const builtFiles = ['packages/daemon/dist/kelpid.js', 'packages/cli/dist/kelpi.js', 'packages/client/dist/index.html', 'packages/plugin-sdk/browser.js', 'examples/plugins/terminal-lab/ui/bundle.js', 'examples/plugins/terminal-lab/ui/bundle.css', 'scripts/fixtures/plugin-terminal.cjs', 'scripts/scenarios/plugin-terminal-features.mjs', ...fs.readdirSync(path.join(repoRoot, 'packages/client/dist/assets')).filter(file => /\.(js|css)$/.test(file)).map(file => `packages/client/dist/assets/${file}`)];
-    fs.writeFileSync(path.join(rec.outDir, 'build-manifest.json'), JSON.stringify(Object.fromEntries(builtFiles.sort().map(file => [file, createHash('sha256').update(fs.readFileSync(path.join(repoRoot, file))).digest('hex')])), null, 2) + '\n');
+    const {packagePath,bindExecution} = await buildBoundTerminalLab(repoRoot,{rec,diagnosticsProvenance});
     const originalURL = await page.eval('location.href');
     const originalAgent = await page.eval('({ userAgent: navigator.userAgent, platform: navigator.platform })');
     const originalConfig = fs.readFileSync(sandbox.configPath, 'utf8');
@@ -125,6 +123,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         incident = await armIncidentDiagnostics({ page, harness, rec, allowed: ['TERMINAL-PASTE-α', 'COPY-SENTINEL', 'KELPI', 'REMOTE-PASTE-β', 'REMOTE-COPY-SENTINEL', 'NON-MAC-COPY-SENTINEL', 'CLEARED-SELECTION'] });
         rec.note('Attaching an SDK-only terminal renderer to a persistent full-screen process');
         local = await create(cli, path.join(sandbox.root, 'terminal-fixture'), 'Terminal Lab');
+        bindExecution('local-plugin-install');
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
         await choose(local.paneID);
         if (!await ready(local.paneID)) throw new Error('Terminal Lab failed to consume its initial replay');
@@ -396,6 +395,7 @@ export default async function ({ page, cli, sandbox, rec, d, harness, sleep }) {
         remoteSandbox = await makeSandbox(repoRoot, { label: 'terminal-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
         remoteDaemon = startDaemon(remoteSandbox, { repoRoot }); await waitForHealthz(remoteSandbox.base);
         const remoteCLI = makeCli(remoteSandbox, { repoRoot });
+        bindExecution('remote-plugin-install');
         await remoteCLI.ok(['plugin', 'install', packagePath, '--trust']);
         const remote = await create(remoteCLI, path.join(remoteSandbox.root, 'terminal-fixture'), 'Remote Terminal');
         const token = fs.readFileSync(path.join(remoteSandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();

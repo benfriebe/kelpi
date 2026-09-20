@@ -59,7 +59,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { captureProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
+import { captureProvenance, validateReplayProvenance, replayFiles, firstFailureSequence } from './ui-audit/lib/incident-diagnostics-replay.mjs';
+import { scenarioPlan } from './ui-audit/lib/incident-diagnostics-plan.mjs';
 import { runDesktopTest, ownDesktopResource } from './ui-audit/lib/desktop-lifecycle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +104,8 @@ if (placement !== undefined && !driver.WINDOW_PLACEMENTS.includes(placement)) {
     process.exit(2);
 }
 
+const selection = scenarioPlan(repoRoot, files);
+if (has('--plan')) { console.log(JSON.stringify(selection)); process.exit(0); }
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 let outDir = value('--out') ?? path.join(repoRoot, 'docs', 'audit', 'scenarios', stamp);
 // Two runners queued inside the same millisecond share a stamp: without this they would write
@@ -117,12 +120,20 @@ let provenance = captureProvenance(repoRoot, replaySource?.files ?? files);
 const cleanup = { attempted: false, completed: false, errors: [], leaks: [] };
 if (replaySource) {
     if (has('--window') && placement !== replaySource.windowPlacement) throw new Error('replay window placement differs from original');
-    if (!replaySource.provenance || replaySource.provenance.head !== provenance.head || replaySource.provenance.trackedDiffSha256 !== provenance.trackedDiffSha256) throw new Error('replay source revision differs; restore the recorded commit and source diff first');
-    for (const [file, hash] of Object.entries(replaySource.provenance.buildHashes)) {
-        if (provenance.buildHashes[file] !== hash) throw new Error(`replay build differs: ${file}`);
-    }
+    validateReplayProvenance(replaySource.provenance, provenance);
 }
 const log = (line) => console.log(`[scenario] ${line}`);
+
+// The real driver calls this after any build and before daemon/shell acquisition. Keep the
+// same bound outputs for dedicated/remote instances and compare again before scenario input.
+let observedStart = false;
+const observeExecutionBoundary = () => {
+    const current=captureProvenance(repoRoot,replaySource?.files ?? files);
+    if(replaySource) validateReplayProvenance(replaySource.provenance,current);
+    if(observedStart && (JSON.stringify(current.source)!==JSON.stringify(provenance.source) || JSON.stringify(current.executedOutputs)!==JSON.stringify(provenance.executedOutputs))) throw new Error('runtime source/build changed between instance boundaries');
+    if(!observedStart) {provenance=current;observedStart=true;}
+};
+const scenarioDriver={...driver,boot:options=>driver.boot({...options,beforeStart:observeExecutionBoundary})};
 
 // ── the instance ────────────────────────────────────────────────────────────────────
 
@@ -145,7 +156,7 @@ if (attachPort !== undefined) {
     });
 } else {
     log(`booting a sandbox${has('--no-build') ? ' (no build)' : ' (building first; skip with --no-build)'}`);
-    t = await driver.boot({ repoRoot, label: 'scenario', build: replaySource ? false : !has('--no-build'), log, window: placement });
+    t = await scenarioDriver.boot({ repoRoot, label: 'scenario', build: replaySource ? false : !has('--no-build'), log, window: placement });
     log(
         `up: ${t.sandbox.base}  debug ${String(t.debugPort)}  harness ${t.harness.path}  ` +
             `window ${t.windowPlacement}${
@@ -173,7 +184,7 @@ const stop = async () => {
     }
 };
 ownDesktopResource(t);
-provenance = captureProvenance(repoRoot, files);
+observeExecutionBoundary();
 
 // ── the post-condition: what a scenario must hand on unchanged ──────────────────────
 
@@ -209,7 +220,7 @@ const PAGE_STATE = `(() => {
             for (const [slot, view] of Object.entries(saved ?? {})) {
                 if (typeof view === 'string' && view.length > 0 && !view.startsWith('kelpi.')) workbench[slot + ' @ ' + daemon] = view;
             }
-        } catch { /* an unreadable store is not this run's business */ }
+        } catch (error) { throw new Error('unreadable workbench store ' + key + ': ' + String(error?.message ?? error)); }
     }
     const phoneShell = document.querySelector('[data-testid="phone-shell"]');
     return JSON.stringify({
@@ -345,7 +356,7 @@ for (const file of files) {
     if (resolved.raised && importError === null && attachPort === undefined) {
         log(`▶ ${name}: it declares ${String(resolved.placement)} and this run is ${String(t.windowPlacement)}; booting an instance of its own`);
         try {
-            dedicated = ownDesktopResource(await driver.boot({
+            dedicated = ownDesktopResource(await scenarioDriver.boot({
                 repoRoot,
                 // Short on purpose: the sandbox's control socket lives in this label's temp
                 // directory, and a macOS unix socket path is capped at 104 bytes. The full name
@@ -393,7 +404,8 @@ for (const file of files) {
             // a scenario that stopped its daemon would take a developer's session down.
             daemon: instance.daemon ?? null,
             rec,
-            d: driver,
+            diagnosticsProvenance: {provenance,replaySource},
+            d: scenarioDriver,
             sleep: driver.sleep,
             repoRoot
         });
@@ -457,7 +469,7 @@ if (watchForLeaks && leakReport.length > 0) {
 // that goes red behind a leak is only readable next to the scenario that made it (#205).
 fs.writeFileSync(
     path.join(outDir, 'results.json'),
-    `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, provenance, cleanup, summaries, leaks: leakReport,
+    `${JSON.stringify({ stamp, windowPlacement: t.windowPlacement ?? 'attached', files, selection, provenance, cleanup, summaries, leaks: leakReport,
         cleanupSemantics: watchForLeaks ? 'shared sandbox postconditions enforced' : 'standalone private sandbox state removed at teardown; no shared-state assertion',
         replayOf: replaySourcePath ? path.resolve(replaySourcePath) : null,
         sequence: firstFailureSequence({ files, summaries, resultsPath, windowPlacement: t.windowPlacement }) }, null, 2)}\n`
@@ -467,7 +479,7 @@ await stop();
 process.exitCode = anyFailed ? 1 : 0;
 });
 } catch (error) {
-    const retained = fs.existsSync(resultsPath) ? JSON.parse(fs.readFileSync(resultsPath, 'utf8')) : { stamp, files, provenance, summaries: [], leaks: [] };
+    const retained = fs.existsSync(resultsPath) ? JSON.parse(fs.readFileSync(resultsPath, 'utf8')) : { stamp, files, selection, provenance, summaries: [], leaks: [] };
     if (error.cleanup) Object.assign(cleanup, error.cleanup);
     retained.cleanup = cleanup;
     retained.harnessFailure = { failureClass: 'harness', detail: String(error?.stack ?? error) };

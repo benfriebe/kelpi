@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openSidebarMenu as aimSidebarMenu } from './lib/aim.mjs';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
-import { runDesktopTest, spawnDesktopHelper, listenDesktopServer } from './lib/desktop-lifecycle.mjs';
+import { runDesktopTest, ownDesktopResource, spawnDesktopHelper, listenDesktopServer } from './lib/desktop-lifecycle.mjs';
 
 /**
  * Which CDP page target is **the client window**, as opposed to a web pane's page?
@@ -67,7 +67,9 @@ import { runDesktopTest, spawnDesktopHelper, listenDesktopServer } from './lib/d
  * wanted all along.
  */
 const isClientWindow = (target) => String(target?.url ?? '').includes('shellWindow=');
-import { captureProvenance } from './lib/incident-diagnostics-replay.mjs';
+import { captureProvenance, shardProvenanceErrors } from './lib/incident-diagnostics-replay.mjs';
+import { inspectSelection } from './lib/acceptance-selection.mjs';
+import { auditPlan } from './lib/incident-diagnostics-plan.mjs';
 import { cleanupSteps } from './lib/incident-diagnostics.mjs';
 import { createReport } from './lib/report.mjs';
 import {
@@ -100,7 +102,12 @@ const repoRoot = path.resolve(here, '..', '..');
 
 // ── options ─────────────────────────────────────────────────────────────────────────
 
-const options = parseArgs(process.argv.slice(2));
+const planOnly = process.argv.includes('--plan');
+const options = parseArgs(process.argv.slice(2).filter(arg => arg !== '--plan'));
+const selectedPlan = planShards(CANONICAL_ORDER,options.shards,shardPlanOptions(options));
+const selectedIDs = options.shard === null ? CANONICAL_ORDER.filter(id => selectedPlan.groups.some(group => group.includes(id)) || selectedPlan.supports.some(group => group.includes(id))) : CANONICAL_ORDER.filter(id => selectedPlan.groups[options.shard]?.includes(id) || selectedPlan.supports[options.shard]?.includes(id));
+const selection = auditPlan(repoRoot,[...selectedIDs,'renderer-console']);
+if (planOnly) { console.log(JSON.stringify(selection)); process.exit(0); }
 
 function timestamp() {
     const now = new Date();
@@ -113,7 +120,7 @@ function timestamp() {
 
 const outDir = path.resolve(repoRoot, options.out ?? path.join('docs', 'audit', timestamp()));
 if (fs.existsSync(outDir) && fs.readdirSync(outDir).length > 0) throw new Error(`refusing to overwrite retained audit artifacts: ${outDir}`);
-let auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
+let auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)], {packaged:options.packaged,clientDir:process.env.KELPI_AUDIT_CLIENT_DIR});
 const auditCleanup = { attempted: false, completed: false, errors: [], leaks: [] };
 function retainAcceptanceFields() {
     fs.mkdirSync(outDir, { recursive: true });
@@ -125,7 +132,7 @@ function retainAcceptanceFields() {
         }
         step.firstFailure ??= step.assertions?.find(assertion => assertion.ok !== true) ?? (step.error ? { failureClass: 'harness', detail: step.error } : null);
     }
-    Object.assign(output, { provenance: auditProvenance, cleanup: auditCleanup });
+    Object.assign(output, { selection, provenance: auditProvenance, cleanup: auditCleanup });
     fs.writeFileSync(file, JSON.stringify(output, null, 2) + '\n');
 }
 
@@ -1724,7 +1731,7 @@ async function runShardedParent() {
         if (options.packaged) await packageApp(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
     }
     if (options.packaged) await assertPackagedSignature(repoRoot);
-    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
+    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)], {packaged:options.packaged,clientDir:process.env.KELPI_AUDIT_CLIENT_DIR});
 
     const plan = planShards(CANONICAL_ORDER, options.shards, shardPlanOptions(options));
     process.stdout.write(`${describePartition(plan)}\n\n`);
@@ -1752,7 +1759,7 @@ async function runShardedParent() {
         ];
         // Each private child can touch the machine's screen and clipboard. Wait for its
         // complete cleanup before starting another placement group (#206; #207).
-        const child = spawnProcess(process.execPath, args, { cwd: repoRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawnProcess(process.execPath, args, { cwd: repoRoot, env: {...process.env,KELPI_ACCEPTANCE_RUN_ID:auditProvenance.runId}, stdio: ['ignore', 'pipe', 'pipe'] });
         clearBackgroundTaskPolicy(child.pid);
         const logPath = path.join(shardsDir, `shard-${String(index)}.log`);
         const sink = fs.createWriteStream(logPath);
@@ -1785,8 +1792,32 @@ async function runShardedParent() {
 
     const broken = outcomes.filter((outcome) => outcome.code !== 0);
 
+    auditCleanup.attempted = true;
+    auditProvenance.shardProvenance = [];
+    for (const [ordinal,dir] of shardDirs.entries()) {
+        const index=outcomes[ordinal].index, file=path.join(dir,'results.json');
+        let child=null, errors=[];
+        try {
+            child=JSON.parse(fs.readFileSync(file,'utf8')); errors=shardProvenanceErrors(auditProvenance,child.provenance);
+            const expected=auditPlan(repoRoot,[...CANONICAL_ORDER.filter(id=>plan.groups[index].includes(id) || plan.supports?.[index]?.includes(id)),'renderer-console']);
+            errors.push(...inspectSelection('audit',child,expected));
+        }
+        catch(error) { errors.push(`shard report unreadable: ${String(error.message)}`); }
+        auditProvenance.shardProvenance.push({index,provenance:child?.provenance ?? null,selection:child?.selection ?? null,errors});
+        if(errors.length) {
+            auditProvenance.complete=false;
+            auditProvenance.errors.push(...errors.map(error=>`shard ${index}: ${error}`));
+            process.exitCode=1;
+        }
+        if(child?.cleanup?.attempted !== true || child.cleanup.completed !== true) auditCleanup.errors.push(`shard cleanup incomplete: ${dir}`);
+        auditCleanup.errors.push(...(child?.cleanup?.errors ?? []));
+        auditCleanup.leaks.push(...(child?.cleanup?.leaks ?? []));
+    }
+
+    auditCleanup.completed = auditCleanup.errors.length === 0;
     const firstResult = shardDirs.map((dir) => path.join(dir, 'results.json')).find((file) => fs.existsSync(file));
-    const inheritedMeta = firstResult === undefined ? {} : JSON.parse(fs.readFileSync(firstResult, 'utf8')).meta;
+    let inheritedMeta={};
+    try { if(firstResult) inheritedMeta=JSON.parse(fs.readFileSync(firstResult,'utf8')).meta; } catch {}
     const summary = aggregateShards({
         outDir,
         shardDirs,
@@ -1809,15 +1840,6 @@ async function runShardedParent() {
         process.stdout.write(`⚠ ${String(broken.length)} shard(s) exited non-zero: ${broken.map((o) => String(o.index)).join(', ')}\n`);
     }
     process.stdout.write(`report: ${path.join(outDir, 'index.md')}\n`);
-    auditCleanup.attempted = true;
-    for (const dir of shardDirs) {
-        const file = path.join(dir, 'results.json');
-        const child = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-        if (child?.cleanup?.attempted !== true || child.cleanup.completed !== true) auditCleanup.errors.push(`shard cleanup incomplete: ${dir}`);
-        auditCleanup.errors.push(...(child?.cleanup?.errors ?? []));
-        auditCleanup.leaks.push(...(child?.cleanup?.leaks ?? []));
-    }
-    auditCleanup.completed = auditCleanup.errors.length === 0;
     retainAcceptanceFields();
     if (broken.length > 0 || summary.failedAssertions > 0 || summary.errored > 0 || !auditCleanup.completed) process.exitCode = 1;
 }
@@ -1840,7 +1862,7 @@ async function main() {
     // N22: a packaged bundle with a broken seal accepts CDP connections and answers none of
     // them, which reads as an unexplained 90-second timeout. Say so up front instead.
     if (options.packaged) await assertPackagedSignature(repoRoot);
-    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)]);
+    auditProvenance = captureProvenance(repoRoot, [fileURLToPath(import.meta.url)], {packaged:options.packaged,clientDir:process.env.KELPI_AUDIT_CLIENT_DIR});
 
     /*
      * Which client build the daemon serves.
@@ -1866,6 +1888,7 @@ async function main() {
     // `auditWindow` on the sandbox, not just on `launchShell`'s `extraEnv`: the reattach step
     // starts a SECOND shell with an `extraEnv` of its own, and the placement has to survive that.
     const sandbox = await makeSandbox(repoRoot, { label: 'ui', clientDir, auditWindow: options.window });
+    if(!options.keep) ownDesktopResource(sandbox,'cleanup');
     if (options.packaged) delete sandbox.env.KELPID_ENTRY;
 
     const work = writeFixtures(sandbox);
@@ -1916,6 +1939,8 @@ async function main() {
         (shardFilter !== null && !shardFilter.has(id) && !supportFilter?.has(id));
 
     try {
+        const boundary=captureProvenance(repoRoot,[fileURLToPath(import.meta.url)],{packaged:options.packaged,clientDir:process.env.KELPI_AUDIT_CLIENT_DIR});
+        if(JSON.stringify(boundary.source)!==JSON.stringify(auditProvenance.source) || JSON.stringify(boundary.executedOutputs)!==JSON.stringify(auditProvenance.executedOutputs) || JSON.stringify(boundary.runtimeBindings)!==JSON.stringify(auditProvenance.runtimeBindings)) throw new Error('audit source/build changed before execution');
         // The daemon's first pane should open in the fixture dir, so `ls` has content.
         // CONT-082/083's resolution order ends at the process environment when the sandbox HOME
         // has no rc files, so this is what the daemon's `$EDITOR` probe finds.
@@ -2113,36 +2138,36 @@ async function main() {
         });
     } finally {
         auditCleanup.attempted = true;
-        // Preserve assertions before teardown; update with actual awaited cleanup outcomes.
-        report.write(); retainAcceptanceFields();
+        // Each write is independent of resource cleanup: a broken index/results file cannot
+        // strand the private processes or sandbox. Keep write failures in the retained outcome.
+        const writeErrors = [];
+        let summary;
+        try { summary=report.write(); retainAcceptanceFields(); } catch(error) { writeErrors.push(`initial report: ${String(error)}`); }
         auditCleanup.errors.push(...await cleanupSteps([
             ['CDP connection', () => runtime.page?.close()],
             ['fixture site', () => site.close()],
             ['shell process', () => runtime.shell?.quit()],
-            ['daemon process', () => runtime.daemon?.stop()]
+            ['daemon process', () => runtime.daemon?.stop()],
+            ['sandbox files', () => options.keep ? undefined : sandbox.cleanup()]
         ]));
-        // The two process logs, kept with the artefact: the run-O leak hunt needed to know
-        // which process minted two orphan panes, and both logs had been discarded.
-        try {
-            if (runtime.daemon !== null) fs.writeFileSync(path.join(outDir, 'daemon.log'), runtime.daemon.text());
-            if (runtime.shell !== null) fs.writeFileSync(path.join(outDir, 'shell.log'), runtime.shell.text());
-        } catch {
-            // best-effort
+        if(options.keep) auditCleanup.errors.push('sandbox retained by --keep');
+        for(const [name,resource] of [['daemon',runtime.daemon],['shell',runtime.shell]]) {
+            try { if(resource) fs.writeFileSync(path.join(outDir,`${name}.log`),resource.text()); }
+            catch(error) { writeErrors.push(`${name} log: ${String(error)}`); }
         }
+        try { summary=report.write(); } catch(error) { writeErrors.push(`final report: ${String(error)}`); }
+        auditCleanup.completed=!options.keep && auditCleanup.errors.length===0;
+        try { fs.writeFileSync(path.join(outDir,'cleanup.json'),JSON.stringify(auditCleanup,null,2)+'\n',{flag:'wx'}); } catch(error) { writeErrors.push(`cleanup report: ${String(error)}`); }
+        if(writeErrors.length) {
+            // report.write may have written JSON before failing on Markdown; preserve its checks.
+            retainAcceptanceFields();
+            const file=path.join(outDir,'results.json'),retained=JSON.parse(fs.readFileSync(file,'utf8'));
+            retained.harnessFailure={failureClass:'harness',detail:writeErrors.join('; ')};
+            fs.writeFileSync(file,JSON.stringify(retained,null,2)+'\n');
+        } else retainAcceptanceFields();
+        if(summary) process.stdout.write(`\n${summary.total} steps · ${summary.assertions} assertions · ${summary.failedAssertions} failed · ${summary.errored} step errors\n`);
+        if(writeErrors.length || !summary || summary.failedAssertions>0 || summary.errored>0 || !auditCleanup.completed) process.exitCode=1;
 
-        const summary = report.write();
-        process.stdout.write(
-            `\n${String(summary.total)} steps · ${String(summary.assertions)} assertions · ` +
-                `${String(summary.failedAssertions)} failed · ${String(summary.errored)} step errors · ` +
-                `${String(summary.eyes)} need eyes\n`
-        );
-        process.stdout.write(`report: ${path.join(outDir, 'index.md')}\n`);
-        if (options.keep) process.stdout.write(`sandbox kept: ${sandbox.root}\n`);
-        else auditCleanup.errors.push(...await cleanupSteps([['sandbox files', () => sandbox.cleanup()]]));
-        auditCleanup.completed = !options.keep && auditCleanup.errors.length === 0;
-        if (options.keep) auditCleanup.errors.push('sandbox retained by --keep');
-        retainAcceptanceFields();
-        if (summary.failedAssertions > 0 || summary.errored > 0 || !auditCleanup.completed) process.exitCode = 1;
     }
 }
 
@@ -33344,6 +33369,8 @@ function buildFlows(ctx) {
                 const shell = await widestShellPane(view, cli);
                 if (shell === null) throw new Error('phone-shell: no shell pane on screen to drive');
                 const paneID = shell.id;
+                const readOwnedRoster = async () => JSON.parse(String(await view.eval(`JSON.stringify({panes:${paneIDsExpr},focused:document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? '',workspace:document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''})`)));
+                const ownedRosterBefore = await readOwnedRoster();
                 // Own a terminal sibling: an arbitrary Markdown/document sibling has no grid.
                 const fixture = await cli.json(['pane', 'split', '--target', paneID, '--json']);
                 const sibling = String(fixture.pane_id ?? '');
@@ -33705,7 +33732,7 @@ function buildFlows(ctx) {
                         });
                     }
                 } finally {
-                    await clearPhoneEmulation(view).catch(() => {});
+                    await cleanupSteps([['phone emulation',()=>clearPhoneEmulation(view)]],(label,detail)=>recorder.check(`fixture cleanup: ${label}`,false,detail));
                 }
 
                 await view.waitFor(`document.querySelector('[data-testid="top-bar"]') !== null && document.querySelector('[data-testid="phone-shell"]') === null`, {
@@ -33727,6 +33754,12 @@ function buildFlows(ctx) {
                             if (closed.code !== 0) throw new Error(closed.stderr);
                             const remaining = await cli.json(['pane', 'list', '--json']);
                             recorder.check('fixture cleanup: terminal sibling was closed', !remaining.some(pane => pane.id === sibling));
+                        }],
+                        ['original pane and roster', async () => {
+                            if(ownedRosterBefore.workspace) await view.click(`[data-testid="workspace-row"][data-workspace-id="${ownedRosterBefore.workspace}"]`);
+                            if(ownedRosterBefore.focused) await focusPaneBody(view,ownedRosterBefore.focused);
+                            const after=await readOwnedRoster();
+                            recorder.check('fixture cleanup: original roster, workspace and focused pane restored',JSON.stringify(after)===JSON.stringify(ownedRosterBefore),`before=${JSON.stringify(ownedRosterBefore)} after=${JSON.stringify(after)}`);
                         }]
                     ], (label, detail) => recorder.check(`fixture cleanup: ${label}`, false, detail));
                 }

@@ -52,7 +52,9 @@ describe('first incident evidence', () => {
             expect(saved.renderers[1].state.selection.text).toBe('KELPI');
             expect(saved.renderers[1].events.map(event => event.kind)).toContain('reset:call');
             expect(saved.renderers[0].state.hasFocus).toBe(false);
-            expect(rec.summary().failed).toBe(1);
+            expect(rec.summary().failed).toBe(2);
+            expect(saved.historyRetained).toBe(false);
+            expect(saved.targetAvailable).toBe(true);
             expect(rec.summary().firstFailure.label).toBe('original failed copy');
             expect(page.key).toBe(originalKey);
             expect(harness.clipboardRead).toBe(originalRead);
@@ -248,5 +250,63 @@ it('a missing required renderer snapshot is a harness failure even when product 
         await incident.close();
         expect(rec.summary().failed).toBe(1);
         expect(rec.summary().firstFailure.failureClass).toBe('harness');
+    } finally {fs.rmSync(outDir,{recursive:true,force:true});}
+});
+
+it('a rejected duplicate arm leaves its existing owner live and unfrozen', async () => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(),'incident-owner-'));
+    try {
+        const host=renderer(), page={eval:host.eval};
+        const a=recorder({name:'a',outDir}), b=recorder({name:'b',outDir});
+        const incident=await armIncidentDiagnostics({page,rec:a});
+        await expect(armIncidentDiagnostics({page,rec:b})).rejects.toThrow('already armed');
+        expect(host.listeners.size).toBe(11);
+        host.listeners.get('copy')({type:'copy',isTrusted:true});
+        a.check('actual first Copy failure',false);
+        await a.flushFirstFailure(); await incident.close();
+        const saved=JSON.parse(fs.readFileSync(path.join(outDir,'a-first-incident.json')));
+        expect(saved.complete).toBe(true);
+        expect(saved.renderers[0].events.map(event=>event.kind)).toContain('copy');
+        expect(host.listeners.size).toBe(0);
+    } finally {fs.rmSync(outDir,{recursive:true,force:true});}
+});
+
+it('rolls back a listener acquisition that throws after installing and attempts all undos after a restore fault', async () => {
+    const host=renderer(), add=host.context.document.addEventListener;
+    host.context.document.addEventListener=(type,fn)=>{add(type,fn);if(type==='copy')throw Error('listener failure');};
+    const install=`(${installRendererRecorder.toString()})({key:'incident',ownerId:'test',allowed:[],capacity:30})`;
+    await expect(host.eval(install)).rejects.toThrow('listener failure');
+    expect(host.listeners.size).toBe(0);
+    host.context.document.addEventListener=add;
+    const read=host.clipboard.readText;
+    await host.eval(install);
+    Object.defineProperty(host.terminal,'getSelection',{writable:false,configurable:false});
+    const cleanup=await host.eval('incident.restore()');
+    expect(cleanup.restored).toBe(false);
+    expect(cleanup.errors.length).toBe(1);
+    expect(host.listeners.size).toBe(0);
+    expect(host.clipboard.readText).toBe(read);
+    expect(await host.eval('globalThis.incident')).toBeUndefined();
+});
+
+it('retains navigation loss and bounded history loss separately from current target availability', async () => {
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-history-'));
+    try {
+        let host=renderer(), script;
+        const page={eval:expression=>host.eval(expression),send:async(method,args)=>{if(method==='Page.addScriptToEvaluateOnNewDocument'){script=args.source;return {identifier:'owned'};}return {};}};
+        const rec=recorder({name:'history',outDir});
+        const incident=await armIncidentDiagnostics({page,rec,capacity:2});
+        host.listeners.get('copy')({type:'copy'});
+        host=renderer();await host.eval('globalThis.top=globalThis');await host.eval(script);
+        await incident.ensureHost();
+        for(const type of ['paste','focus','blur'])host.listeners.get(type)({type});
+        await incident.close();
+        const saved=JSON.parse(fs.readFileSync(path.join(outDir,'history-first-incident.json')));
+        expect(saved.complete).toBe(false);expect(saved.historyRetained).toBe(false);
+        expect(saved.renderers).toHaveLength(2);
+        expect(saved.renderers[0].unavailable).toContain('history');
+        expect(saved.renderers[1]).toMatchObject({targetAvailable:true,historyRetained:false});
+        expect(saved.renderers[1].dropped).toBeGreaterThan(0);
+        expect(rec.summary().failed).toBe(1);
     } finally {fs.rmSync(outDir,{recursive:true,force:true});}
 });

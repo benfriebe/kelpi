@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import { digest, verifyArtifacts } from './acceptance-io.mjs';
+import { ENVIRONMENTS, inspectEnvironment } from './acceptance-environment.mjs';
+export { ENVIRONMENTS } from './acceptance-environment.mjs';
 import { precedence } from './acceptance-results.mjs';
 const nonempty = v => typeof v === 'string' && v.trim().length > 0;
 const array = v => Array.isArray(v) ? v : [];
-export const ENVIRONMENTS = ['local', 'installed-tailscale', 'remote-codex', 'safari', 'physical-phone', 'native-ime'];
+export const RUNNER_SOURCES = { runner: 'acceptance-regression.mjs', io: 'ui-audit/lib/acceptance-io.mjs', incidents: 'ui-audit/lib/acceptance-incidents.mjs', results: 'ui-audit/lib/acceptance-results.mjs', environment: 'ui-audit/lib/acceptance-environment.mjs', provenance: 'ui-audit/lib/acceptance-provenance.mjs', selection: 'ui-audit/lib/acceptance-selection.mjs' };
 
 /** Recompute reproduction from named assertions; a crash is never a reproduced incident. */
 export function inspectRegression(report, { head, reference, assertionNames = [] } = {}) {
@@ -21,7 +23,8 @@ export function inspectRegression(report, { head, reference, assertionNames = []
         const { invocationPath, ...expected } = report.test;
         if (JSON.stringify(invocation) !== JSON.stringify(expected)) missing.push('immutable invocation args/source mismatch');
     } catch { missing.push('immutable invocation unavailable'); }
-    if (!Array.isArray(report?.runner) || report.runner.length < 4 || report.runner.some(a => !bound(a?.path) || !array(report.artifacts).some(b => b?.path === a?.path && b?.sha256 === a?.sha256))) missing.push('runner source identity not retained');
+    const runner = array(report?.runner);
+    if (runner.length !== Object.keys(RUNNER_SOURCES).length || new Set(runner.map(a => a?.path)).size !== runner.length || new Set(runner.map(a => a?.sha256)).size !== runner.length || Object.entries(RUNNER_SOURCES).some(([role, module]) => runner.filter(a => a?.role === role && a.module === module && a.kind === 'runner-source' && bound(a.path) && array(report.artifacts).some(b => b?.path === a.path && b.sha256 === a.sha256 && b.kind === 'runner-source')).length !== 1)) missing.push('distinct role-bound runner source identity not retained');
     for (const role of ['baseline', 'candidate']) {
         const attempt = report?.[role];
         if (!attempt || !Array.isArray(attempt.before?.dirty) || !Array.isArray(attempt.after?.dirty) || attempt.before.dirty.length || attempt.after.dirty.length || attempt.before.head !== attempt.after.head) missing.push(`${role} was not an unchanged clean commit`);
@@ -43,7 +46,7 @@ export function inspectRegression(report, { head, reference, assertionNames = []
         const cleanup = raw?.cleanup;
         if (cleanup?.attempted !== true || cleanup?.completed !== true || !Array.isArray(cleanup?.errors) || !Array.isArray(cleanup?.leaks)) missing.push(`${role} cleanup unverified`);
         if (array(cleanup?.errors).length || array(cleanup?.leaks).length) failures.push(`${role} unresolved cleanup leak/error`);
-        if (!nonempty(raw?.environment?.id) || !ENVIRONMENTS.includes(raw?.environment?.kind) || !nonempty(raw?.environment?.details)) missing.push(`${role} actual environment identity absent`);
+        missing.push(...inspectEnvironment(raw?.environment, { head: attempt?.before?.head, artifacts: array(report?.artifacts) }).missing.map(m => `${role} ${m}`));
     }
     const baseline = array(report?.baseline?.result?.assertions), candidate = array(report?.candidate?.result?.assertions);
     if (JSON.stringify(baseline.map(a => a?.name).sort()) !== JSON.stringify(candidate.map(a => a?.name).sort())) missing.push('baseline/candidate assertion sets differ');
@@ -68,6 +71,8 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
         ids.add(incident?.id);
         if (incident?.scope !== 'incident') missing.push('synthetic probes prove only their stated scope, not original incident reproduction');
         if (!Array.isArray(incident?.assertions) || !incident.assertions.length || incident.assertions.some(n => !nonempty(n))) missing.push('named incident assertions required');
+        const incidentReference = incident?.reference ?? reference;
+        if (!/^[a-f0-9]{40}$/.test(incidentReference ?? '') || incidentReference === head) missing.push('explicit incident baseline must be a different exact commit');
         const regressions = [];
         const receipts = incident?.regressions ?? (incident?.regression ? [incident.regression] : []);
         if (!Array.isArray(receipts) || receipts.length === 0) missing.push('regression evidence required');
@@ -78,14 +83,14 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
                 const regression = JSON.parse(bytes);
                 regressions.push(regression);
                 evidence.push({ path: receipt.path, sha256: receipt.sha256 }, ...array(regression.artifacts));
-                const checked = inspectRegression(regression, { head, reference, assertionNames: array(incident.assertions) });
+                const checked = inspectRegression(regression, { head, reference: incidentReference, assertionNames: array(incident.assertions) });
                 missing.push(...checked.missing); failed.push(...checked.failures);
             } catch (error) { missing.push(`regression evidence: ${error.message}`); }
         }
         if (!Array.isArray(incident?.requiredEnvironments) || incident.requiredEnvironments.length === 0) missing.push('explicit relevant environments required');
         for (const kind of array(incident?.requiredEnvironments)) {
             if (!ENVIRONMENTS.includes(kind)) missing.push(`unsupported environment requirement: ${kind}`);
-            if (!regressions.some(r => r.candidate?.result?.environment?.kind === kind && r.baseline?.result?.environment?.kind === kind)) missing.push(`required environment not exercised on both commits: ${kind}`);
+            if (!regressions.some(r => ['baseline', 'candidate'].every(role => r[role]?.result?.environment?.kind === kind && inspectEnvironment(r[role].result.environment, { head: r[role].before?.head, artifacts: r.artifacts }).missing.length === 0))) missing.push(`required environment not exercised on both commits: ${kind}`);
         }
         if (!Array.isArray(incident?.requiredVisuals) || !Array.isArray(incident?.visualSignoffs)) missing.push('explicit visual review requirements/signoffs required');
         for (const id of array(incident?.requiredVisuals)) {
@@ -96,7 +101,7 @@ export function inspectIncidents(manifest, { head, reference } = {}) {
         for (const signoff of array(incident?.visualSignoffs)) if (signoff?.verdict === 'failed') failed.push(`visual review failed: ${signoff.id}`);
         const verdict = failed.length ? 'failed' : missing.length ? 'unverified' : 'verified';
         verdicts.push(verdict);
-        assessments.push({ id: incident?.id, verdict, scope: incident?.scope, missingEvidenceCount: missing.length, missingEvidenceCategories: [...new Set(missing.map(message => /environment/.test(message) ? 'environment' : /visual/.test(message) ? 'visual-review' : /cleanup/.test(message) ? 'cleanup' : /original|assertion|reproduc|synthetic/.test(message) ? 'original-reproduction' : /artifact|digest|immutable|invocation|source/.test(message) ? 'artifact-integrity' : 'execution-provenance'))], failureCount: failed.length, requiredEnvironments: array(incident?.requiredEnvironments), exercisedEnvironments: [...new Set(regressions.map(r => r.candidate?.result?.environment?.kind).filter(Boolean))], outstandingVisuals: array(incident?.requiredVisuals).filter(id => missing.includes(`visual signoff outstanding: ${id}`)), regressions: regressions.map(r => ({ baseline: r.baseline?.before?.head, candidate: r.candidate?.before?.head, testDigest: r.test?.sha256, baselineFailedAssertions: array(r.baseline?.result?.assertions).filter(a => a?.ok === false).length, candidateFailedAssertions: array(r.candidate?.result?.assertions).filter(a => a?.ok === false).length })) });
+        assessments.push({ id: incident?.id, verdict, reference: incidentReference, scope: incident?.scope, missingEvidenceCount: missing.length, missingEvidenceCategories: [...new Set(missing.map(message => /environment/.test(message) ? 'environment' : /visual/.test(message) ? 'visual-review' : /cleanup/.test(message) ? 'cleanup' : /original|assertion|reproduc|synthetic/.test(message) ? 'original-reproduction' : /artifact|digest|immutable|invocation|source/.test(message) ? 'artifact-integrity' : 'execution-provenance'))], failureCount: failed.length, requiredEnvironments: array(incident?.requiredEnvironments), exercisedEnvironments: [...new Set(regressions.map(r => r.candidate?.result?.environment?.kind).filter(Boolean))], outstandingVisuals: array(incident?.requiredVisuals).filter(id => missing.includes(`visual signoff outstanding: ${id}`)), regressions: regressions.map(r => ({ baseline: r.baseline?.before?.head, candidate: r.candidate?.before?.head, testDigest: r.test?.sha256, baselineFailedAssertions: array(r.baseline?.result?.assertions).filter(a => a?.ok === false).length, candidateFailedAssertions: array(r.candidate?.result?.assertions).filter(a => a?.ok === false).length })) });
         reasons.push(...[...failed, ...missing].map(r => `${incident?.id ?? 'incident'}: ${r}`));
     }
     return { verdict: precedence(verdicts), reasons, evidence, assessments };

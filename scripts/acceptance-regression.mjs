@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { digest, git, snapshot, startRun, readArtifact, writeAcceptance } from './ui-audit/lib/acceptance-io.mjs';
-import { inspectRegression } from './ui-audit/lib/acceptance-incidents.mjs';
+import { inspectRegression, RUNNER_SOURCES } from './ui-audit/lib/acceptance-incidents.mjs';
 import { exitCode } from './ui-audit/lib/acceptance-results.mjs';
 
 export function runRegression({ baseline, candidate, test, args = [], assertions, outRoot, timeoutMs = 120000 }) {
@@ -23,12 +23,11 @@ export function runRegression({ baseline, candidate, test, args = [], assertions
     const invocationPath = path.join(run.outDir, 'test-invocation.json');
     fs.writeFileSync(invocationPath, `${JSON.stringify(invocation)}\n`, { flag: 'wx' });
     run.artifacts.push({ path: invocationPath, sha256: digest(fs.readFileSync(invocationPath)), kind: 'invocation' });
-    const runnerFiles = ['acceptance-regression.mjs', 'ui-audit/lib/acceptance-io.mjs', 'ui-audit/lib/acceptance-incidents.mjs', 'ui-audit/lib/acceptance-results.mjs'];
-    const runner = runnerFiles.map((name, index) => {
+    const runner = Object.entries(RUNNER_SOURCES).map(([role, name], index) => {
         const bytes = fs.readFileSync(new URL(name, import.meta.url));
         const file = path.join(run.outDir, `runner-${index}-${path.basename(name)}`);
         fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o444 });
-        const artifact = { path: file, sha256: digest(bytes), kind: 'runner-source' };
+        const artifact = { path: file, sha256: digest(bytes), kind: 'runner-source', role, module: name };
         run.artifacts.push(artifact); return artifact;
     });
     const report = { schemaVersion: 1, kind: 'incident-regression', runId: run.runId, startedAt: run.startedAt, test: { ...invocation, invocationPath }, runner, artifacts: run.artifacts };
@@ -43,6 +42,9 @@ export function runRegression({ baseline, candidate, test, args = [], assertions
             fs.writeFileSync(file, bytes, { flag: 'wx' }); run.artifacts.push({ path: file, sha256: digest(bytes), kind: stream });
         }
         const raw = readArtifact(resultPath, run, { startedAt, kind: 'assertions' });
+        for (const fact of raw.data?.environment?.evidence?.facts ?? []) {
+            if (fact?.path && fact?.sha256) run.artifacts.push({ path: fact.path, sha256: fact.sha256, kind: 'environment-fact' });
+        }
         report[role] = { root, before, after: snapshot(root), startedAt, finishedAt: Date.now(), exitStatus: child.status, signal: child.signal, error: child.error?.message ?? raw.error ?? null, resultPath, stdoutPath: path.join(run.outDir, `${role}-stdout.txt`), stderrPath: path.join(run.outDir, `${role}-stderr.txt`), result: raw.data, testDigestAfter: digest(fs.readFileSync(source)) };
     }
     report.finishedAt = new Date().toISOString();

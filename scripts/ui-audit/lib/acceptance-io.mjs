@@ -35,9 +35,25 @@ export function verifyArtifacts(artifacts) {
 export function writeAcceptance(run, result) {
     const report = { ...run, ...result, finishedAt: new Date().toISOString() };
     const target = path.join(run.outDir, 'acceptance.json');
-    // Exclusive writes: reruns and failures never overwrite the first attempt.
-    fs.writeFileSync(target, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
+    delete report.completion;
+    // The final JSON is the commit point; a failed Markdown/receipt write cannot authorize publication.
     const lines = ['# Commit acceptance', '', `Verdict: **${report.verdict}**`, '', `Commit: \`${report.start.head}\``, `Reference: \`${report.reference ?? 'missing'}\``, `Run: \`${report.runId}\``, `Scope: ${report.scope ?? 'commit'}`, '', '## Reasons', '', ...(report.reasons ?? []).map(r => `- ${r}`), '', '## Components', '', ...(report.components ?? []).map(c => `- ${c.label}: ${c.state}`), '', '## Dirty paths', '', ...[...new Set([...report.start.dirty, ...(report.end?.dirty ?? [])])].map(p => `- ${p}`), '', '## Artifacts', '', ...report.artifacts.map(a => `- ${a.path} — SHA256 \`${a.sha256}\``), ''];
-    fs.writeFileSync(path.join(run.outDir, 'acceptance.md'), lines.join('\n'), { flag: 'wx' });
+    const markdownPath = path.join(run.outDir, 'acceptance.md');
+    fs.writeFileSync(markdownPath, lines.join('\n'), { flag: 'wx' });
+    const receipt = { schemaVersion: 1, reportDigest: digest(JSON.stringify(report)), markdown: { path: markdownPath, sha256: digest(fs.readFileSync(markdownPath)) }, artifactManifestDigest: digest(JSON.stringify(report.artifacts)) };
+    const completionPath = path.join(run.outDir, 'acceptance-complete.json');
+    fs.writeFileSync(completionPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
+    report.completion = { path: completionPath, sha256: digest(fs.readFileSync(completionPath)) };
+    fs.writeFileSync(target, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
     return report;
+}
+
+export const canonicalRunId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+export function verifyCompletion(report) {
+    try {
+        const { completion, ...data } = report;
+        if (!verifyArtifacts([completion])) return false;
+        const receipt = JSON.parse(fs.readFileSync(completion.path, 'utf8'));
+        return receipt.schemaVersion === 1 && receipt.reportDigest === digest(JSON.stringify(data)) && receipt.artifactManifestDigest === digest(JSON.stringify(report.artifacts)) && verifyArtifacts([receipt.markdown]) && verifyArtifacts(report.artifacts);
+    } catch { return false; }
 }

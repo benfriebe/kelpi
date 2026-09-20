@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { inspectResults, precedence } from './acceptance-results.mjs';
 import { inspectIncidents } from './acceptance-incidents.mjs';
-import { verifyArtifacts } from './acceptance-io.mjs';
+import { inspectSource, inspectBuild } from './acceptance-provenance.mjs';
+import { canonicalRunId, verifyArtifacts } from './acceptance-io.mjs';
 const list = value => Array.isArray(value) ? value : [];
 const parse = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 
@@ -10,6 +11,8 @@ const parse = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); 
 export function acceptanceVerdict(run, { components = [], end, manifest, policyReasons = [] } = {}) {
     const reasons = [...policyReasons], verdicts = policyReasons.length ? ['unverified'] : [], assessments = [];
     const missing = message => { reasons.push(message); verdicts.push('unverified'); };
+    if (!canonicalRunId(run.runId)) missing('noncanonical run identity');
+    if (list(run.retainedFailures).length) { verdicts.push('failed'); reasons.push('retained original acceptance failure'); }
     const bound = file => typeof file === 'string' && list(run.artifacts).some(a => a?.path === file);
     if (manifest && (!bound(run.manifestPath) || JSON.stringify(parse(run.manifestPath)) !== JSON.stringify(manifest))) missing('incident manifest is not bound to its retained artifact');
     if (!run.reference) missing('explicit baseline/reference commit is required');
@@ -17,6 +20,7 @@ export function acceptanceVerdict(run, { components = [], end, manifest, policyR
     const plan = parse(run.planPath);
     if (!bound(run.planPath) || plan?.schemaVersion !== 1 || plan.runId !== run.runId || plan.head !== run.start?.head || plan.reference !== run.reference || !Array.isArray(plan?.components) || plan.components.length === 0) missing('bound execution plan is absent or does not match this run');
     const expected = list(plan?.components);
+    const buildReceipt = bound(run.buildReceiptPath) ? parse(run.buildReceiptPath) : null;
     if (!list(components).length) missing('no checks executed');
     if (new Set(expected.map(c => c?.label)).size !== expected.length) missing('duplicate planned component identity');
     for (const component of expected) if (list(components).filter(c => c?.label === component?.label).length !== 1) missing(`planned component missing or duplicated: ${component?.label}`);
@@ -45,10 +49,13 @@ export function acceptanceVerdict(run, { components = [], end, manifest, policyR
                     const shots = list(step.shots).map(shot => path.resolve(path.dirname(e.path), shot));
                     if (signoff.verdict === 'passed' && typeof signoff.reviewer === 'string' && signoff.reviewer.trim() && Date.parse(signoff.at) >= e.finishedAt && shots.length > 0 && verifyArtifacts(signoff.artifacts) && shots.every(shot => signoff.artifacts.some(a => a.path === shot))) approvedVisuals.push(step.id);
                 }
-                checked = inspectResults(e.kind, raw, { ...e, runId: run.runId, head: run.start.head, approvedVisuals });
+                checked = inspectResults(e.kind, raw, { ...e, runId: run.runId, head: run.start.head, approvedVisuals, requireProvenance: true, expectedPlan: undefined, selection: index === 0 ? spec?.selection : e.selection, buildReceipt });
                 attemptVerdicts.push(checked.verdict);
                 reasons.push(...[...checked.failures, ...checked.missing].map(r => `${component.label} attempt ${index + 1}: ${r}`));
-            } else if (['command', 'build'].includes(spec?.kind) && receipt?.exitStatus === 0) attemptVerdicts.push('verified');
+            } else if (['command', 'build'].includes(spec?.kind) && receipt?.exitStatus === 0) {
+                if (spec.kind === 'build') { for (const message of [...inspectSource(receipt.source, run.start.head), ...inspectBuild(receipt.source, receipt.build, receipt.build?.outputs)]) note(message); if (execution.path !== run.buildReceiptPath) note('build receipt is not the retained runtime authority'); }
+                attemptVerdicts.push('verified');
+            }
             else note('required structured evidence missing or unsupported');
             // Raw later passes cannot erase the first attempt's original recorded failure.
             if (attempt?.verdict === 'failed' || (attempt?.ok === false && attempt.verdict !== 'unverified')) attemptVerdicts.push('failed');

@@ -156,3 +156,9 @@ it('reports cleanup errors while still attempting every remaining owned resource
     expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
     expect(instance.cleanup).toEqual({ attempted: true, completed: false, leaks: [], errors: ['shell process: shell refused cleanup'] });
 });
+
+it('checks build identity before starting any daemon or shell and leaves no acquired fixture on rejection',async()=>{
+    const beforeStart=vi.fn(()=>{throw Error('build identity differs');});
+    await expect(boot({repoRoot:'/repo',build:false,beforeStart})).rejects.toThrow('build identity differs');
+    expect(beforeStart).toHaveBeenCalledOnce();expect(state.daemon.start).not.toHaveBeenCalled();expect(state.order).toEqual([]);
+});

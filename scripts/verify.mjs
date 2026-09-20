@@ -28,6 +28,9 @@ import { SCENARIO_PREFIX, planScenarios } from './ui-audit/lib/verify-plan.mjs';
 import { startRun, snapshot, resolveRef, readArtifact, writeAcceptance, digest } from './ui-audit/lib/acceptance-io.mjs';
 import { inspectResults, exitCode } from './ui-audit/lib/acceptance-results.mjs';
 import { acceptanceVerdict } from './ui-audit/lib/acceptance-verdict.mjs';
+import { captureSource, captureOutputs } from './ui-audit/lib/acceptance-provenance.mjs';
+import { CANONICAL_ORDER, expandChains } from './ui-audit/lib/shards.mjs';
+import { scenarioPlan, auditPlan } from './ui-audit/lib/incident-diagnostics-plan.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -422,7 +425,7 @@ if (has('--plan')) { log('unverified: plan only, no acceptance evidence created'
  * the battery runner's decision now (`ui-audit/lib/battery.mjs` has the two rules and the four
  * failed checks do not hide independent evidence; retries remain diagnostic.
  */
-let lastExecution = null;
+let lastExecution = null, retainedBuild = null;
 const spawn = (command, options = {}) => {
     const startedAt = Date.now();
     const env = { ...process.env, KELPI_ACCEPTANCE_RUN_ID: acceptanceRun.runId, KELPI_ACCEPTANCE_HEAD: acceptanceRun.start.head, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
@@ -431,6 +434,7 @@ const spawn = (command, options = {}) => {
     // carry it: anything that legitimately talks to a daemon pins its own sandbox route, and
     // an inherited pane route would satisfy KELPI_REQUIRE_SOCKET while addressing the real
     // instance — the one hole the guard cannot see.
+    if (retainedBuild) { env.KELPI_ACCEPTANCE_BUILD_RECEIPT = retainedBuild.path; env.KELPI_ACCEPTANCE_BUILD_SHA256 = retainedBuild.sha256; }
     delete env.KELPI_SOCKET;
     delete env.NEX_SOCKET;
     const result = spawnSync('sh', ['-c', command], {
@@ -494,31 +498,29 @@ const SCENARIO_LANE = '--no-build --window hidden';
 /**
  * Bundles, once, before anything drives a real app. Both the scenario step and the audit below run
  * `--no-build` so four `pnpm build`s do not race the same `dist/` trees; that is only honest if
- * SOMETHING built them, and `dist/` is gitignored, so on a fresh clone nothing has. `buildAll` is
- * content-hashed per bundle (ui-audit/lib/build-cache.mjs): ~2.5 s cold, ~0.05 s when the tree has
- * not moved, so paying it here costs a warm run nothing and saves a cold one from driving a stale
- * or absent client.
+ * strict acceptance binds one forced build to complete source inputs and actual outputs.
+ * Child runners receive that retained receipt and must observe exactly those outputs.
  */
-const retainBuild = (exitStatus) => {
-    const receipt = { command: 'buildAll(repoRoot)', exitStatus, startedAt: Date.now(), finishedAt: Date.now() };
+const retainBuild = (exitStatus, startedAt, source, outputs, error = null) => {
+    const receipt = { command: 'buildAll(repoRoot, force=true)', runId: acceptanceRun.runId, head: acceptanceRun.start.head, exitStatus, startedAt, finishedAt: Date.now(), source, build: { inputManifestSha256: source?.inputManifestSha256, outputs, forced: true }, error };
     const file = path.join(reportDir, 'build-result.json');
     fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`, { flag: 'wx' });
-    acceptanceRun.artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)), kind: 'build' });
+    retainedBuild = { path: file, sha256: digest(fs.readFileSync(file)), kind: 'build' };
+    acceptanceRun.artifacts.push(retainedBuild); acceptanceRun.buildReceiptPath = file;
     return { ...receipt, path: file };
 };
 const buildBundlesComponent = {
-    label: 'build bundles',
-    kind: 'build', command: 'buildAll(repoRoot)',
-    // Not a check: the three components after it DRIVE what it produces, so a red build makes
-    // their verdicts meaningless rather than merely unknown. `battery.mjs` marks the rest "not run".
-    precondition: true,
+    label: 'build bundles', kind: 'build', command: 'buildAll(repoRoot, force=true)', precondition: true,
     run: async () => {
-        log('  (content-hashed; a no-op when the tree has not moved)');
+        const startedAt = Date.now(); let source;
         try {
-            await buildAll(repoRoot, { log: (line) => log(`  ${line}`) });
-            return { ok: true, verdict: 'verified', execution: retainBuild(0) };
+            source = captureSource(repoRoot);
+            await buildAll(repoRoot, { force: true, log: (line) => log(`  ${line}`) });
+            if (JSON.stringify(captureSource(repoRoot)) !== JSON.stringify(source)) throw new Error('source changed during forced build');
+            const outputs = captureOutputs(repoRoot);
+            return { ok: true, verdict: 'verified', execution: retainBuild(0, startedAt, source, outputs) };
         } catch (error) {
-            return { ok: false, detail: String(error?.message ?? error), execution: retainBuild(1) };
+            return { ok: false, verdict: 'failed', detail: String(error?.message ?? error), execution: retainBuild(1, startedAt, source, [], String(error?.message ?? error)) };
         }
     }
 };
@@ -567,12 +569,14 @@ const structuredAttempt = (kind, reportPath, command, options = {}) => {
     const status = spawn(command, options);
     const finishedAt = Date.now();
     const raw = readArtifact(reportPath, acceptanceRun, { startedAt, kind });
-    const evidence = { kind, path: reportPath, command, exitStatus: status, startedAt, finishedAt };
-    const checked = inspectResults(kind, raw.data, { ...evidence, runId: acceptanceRun.runId, head: acceptanceRun.start.head });
+    const selection = options.selection ?? components.find(c => c.reportPath === reportPath)?.selection;
+    const evidence = { kind, path: reportPath, command, exitStatus: status, startedAt, finishedAt, selection };
+    const buildReceipt = retainedBuild ? readJson(retainedBuild.path) : null;
+    const checked = inspectResults(kind, raw.data, { ...evidence, runId: acceptanceRun.runId, head: acceptanceRun.start.head, selection, buildReceipt });
     return { execution: lastExecution, ok: checked.verdict === 'verified', verdict: checked.verdict, detail: [...checked.failures, ...checked.missing, ...(raw.error ? [raw.error] : [])].join('; '), evidence };
 };
 const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
-    label, kind: 'vitest', command: [command, ...filters.map(q), `--maxWorkers=${VITEST_MAX_WORKERS} --reporter=default --reporter=json --outputFile.json=${q(artifact(label))}`].join(' '), reportPath: artifact(label),
+    label, kind: 'vitest', collection: { command, filters, cwd }, command: [command, ...filters.map(q), `--maxWorkers=${VITEST_MAX_WORKERS} --reporter=default --reporter=json --outputFile.json=${q(artifact(label))}`].join(' '), reportPath: artifact(label),
     run: () => {
         const report = artifact(label);
         const flags = file => `--maxWorkers=${VITEST_MAX_WORKERS} --reporter=default --reporter=json --outputFile.json=${q(file)}`;
@@ -581,7 +585,7 @@ const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
         if (outcome.ok || failedFiles.length === 0) return outcome;
         return { ...outcome, retryOf: failedFiles.map(rel), retry: () => {
             const retryReport = artifact(`${label}-retry`);
-            return structuredAttempt('vitest', retryReport, [command, ...failedFiles.map(q), flags(retryReport)].join(' '), { cwd });
+            return structuredAttempt('vitest', retryReport, [command, ...failedFiles.map(q), flags(retryReport)].join(' '), { cwd, selection: { ...components.find(c => c.label === label)?.selection, members: components.find(c => c.label === label)?.selection?.members.filter(m => failedFiles.includes(m.id)) } });
         } };
     }
 });
@@ -595,6 +599,7 @@ const vitestComponent = (label, command, { filters = [], cwd } = {}) => ({
  * first run's evidence (screenshots, notes, per-check results) survives the second.
  */
 const scenarioComponent = (label, names) => ({
+    selection: scenarioPlan(repoRoot, (names.length ? names.map(name => scenarios.find(s => s.name === name)?.file ?? name) : scenarios.map(s => s.file)).map(file => path.resolve(repoRoot, file))),
     label, kind: 'scenario', command: `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(path.join(batteryDir, 'scenarios'))} ${names.map(q).join(' ')}`, reportPath: path.join(batteryDir, 'scenarios/results.json'),
     run: () => {
         const out = path.join(batteryDir, 'scenarios');
@@ -606,10 +611,10 @@ const scenarioComponent = (label, names) => ({
         return { ...outcome, retryOf: failedNames, retry: () => {
             const replayOut = path.join(batteryDir, 'scenario-prefix-replay');
             const failureIndex = results?.sequence?.firstFailure?.index;
-            const replay = Number.isInteger(failureIndex) ? structuredAttempt('scenario', path.join(replayOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(replayOut)} --replay ${q(path.join(out, 'results.json'))} --through ${failureIndex}`, { env: SANDBOX_GUARD }) : { ok: false, verdict: 'unverified', detail: 'original failure sequence unavailable for replay' };
+            const replay = Number.isInteger(failureIndex) ? structuredAttempt('scenario', path.join(replayOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(replayOut)} --replay ${q(path.join(out, 'results.json'))} --through ${failureIndex}`, { env: SANDBOX_GUARD, selection: scenarioPlan(repoRoot, results.files.slice(0, failureIndex + 1)) }) : { ok: false, verdict: 'unverified', detail: 'original failure sequence unavailable for replay' };
             const isolated = failedNames.map((name, index) => {
                 const retryOut = path.join(batteryDir, `scenario-retry-${index}`);
-                return structuredAttempt('scenario', path.join(retryOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${q(name)}`, { env: SANDBOX_GUARD });
+                return structuredAttempt('scenario', path.join(retryOut, 'results.json'), `node scripts/scenario.mjs ${SCENARIO_LANE} --out ${q(retryOut)} ${q(name)}`, { env: SANDBOX_GUARD, selection: scenarioPlan(repoRoot, [path.join(scenariosDir, `${name}.mjs`)]) });
             });
             const stillRed = failedNames.filter((_, index) => !isolated[index].ok);
             if (names.length === 0) laneObservations = scenarioObservations(results, { stillRed });
@@ -620,10 +625,11 @@ const scenarioComponent = (label, names) => ({
 });
 
 const auditComponent = (label, only = '') => ({
-    label, kind: 'audit', command: `node scripts/ui-audit/audit.mjs ${only ? `--only ${q(only)}` : ''} --out ${q(path.join(batteryDir, 'audit'))}`, reportPath: path.join(batteryDir, 'audit/results.json'),
+    selection: auditPlan(repoRoot, [...(only ? expandChains(only.split(',')) : CANONICAL_ORDER), 'renderer-console']),
+    label, kind: 'audit', command: `node scripts/ui-audit/audit.mjs --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(path.join(batteryDir, 'audit'))}`, reportPath: path.join(batteryDir, 'audit/results.json'),
     run: () => {
         const out = path.join(batteryDir, 'audit');
-        return structuredAttempt('audit', path.join(out, 'results.json'), `node scripts/ui-audit/audit.mjs ${only ? `--only ${q(only)}` : ''} --out ${q(out)}`, { env: SANDBOX_GUARD });
+        return structuredAttempt('audit', path.join(out, 'results.json'), `node scripts/ui-audit/audit.mjs --no-build ${only ? `--only ${q(only)}` : ''} --out ${q(out)}`, { env: SANDBOX_GUARD });
     }
 });
 
@@ -673,8 +679,8 @@ if (full) {
         components.push(buildBundlesComponent, scenarioComponent(`scenarios: ${rule.run.join(', ')}`, rule.run));
     }
     if (plan.steps.size > 0) {
-        // No `buildBundles()` here: the audit runs its own (identical, content-hashed) `buildAll`
-        // unless told `--no-build`, and it is not told that.
+        if (!components.includes(buildBundlesComponent)) components.push(buildBundlesComponent);
+        // The audit consumes the same forced build receipt as the scenario lane.
         components.push(
             auditComponent('scoped audit', [...plan.steps].join(','))
         );
@@ -684,7 +690,30 @@ if (full) {
     }
 }
 
-const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}) })) };
+// Vitest collection freezes full test names before execution, including dynamically expanded tests.
+for (const component of components.filter(c => c.kind === 'vitest')) {
+    const collectionPath = artifact(`${component.label}-selection`);
+    const fileListPath = artifact(`${component.label}-selected-files`);
+    const { command, filters, cwd } = component.collection;
+    const collectCommand = `${command.replace(/(?: run| test)$/, ' list')} ${filters.map(q).join(' ')} --maxWorkers=${VITEST_MAX_WORKERS} --json=${q(collectionPath)}`;
+    // Shell package scripts invoke vitest run; call its local vitest binary directly for collection.
+    const actualCommand = command.includes('@kelpi/shell') ? `pnpm --filter @kelpi/shell exec vitest list --maxWorkers=${VITEST_MAX_WORKERS} --json=${q(collectionPath)}` : collectCommand;
+    const fileStatus = spawn(`${actualCommand.replace(`--json=${q(collectionPath)}`, `--json=${q(fileListPath)}`)} --filesOnly`, { cwd });
+    const selectedFiles = readArtifact(fileListPath, acceptanceRun, { startedAt: lastExecution.startedAt, kind: 'test-file-collection' });
+    const fileCollectionReceipt = lastExecution;
+    const status = spawn(actualCommand, { cwd });
+    const collection = readArtifact(collectionPath, acceptanceRun, { startedAt: lastExecution.startedAt, kind: 'test-collection' });
+    const members = new Map();
+    if (Array.isArray(selectedFiles.data)) for (const selected of selectedFiles.data) if (typeof selected?.file === 'string') members.set(selected.file, { id: selected.file, mode: 'assert', requiredAssertions: [], minAssertions: 1 });
+    if (Array.isArray(collection.data)) for (const test of collection.data) {
+        if (typeof test?.file !== 'string' || typeof test?.name !== 'string') continue;
+        if (!members.has(test.file)) members.set(test.file, { id: test.file, mode: 'assert', requiredAssertions: [], minAssertions: 1 });
+        members.get(test.file).requiredAssertions.push(test.name);
+    }
+    component.selection = { kind: 'vitest', ordered: false, complete: status === 0 && fileStatus === 0 && Array.isArray(selectedFiles.data) && Array.isArray(collection.data) && members.size > 0, members: [...members.values()] };
+    component.collectionReceipt = { files: fileCollectionReceipt, tests: lastExecution };
+}
+const executionPlan = { schemaVersion: 1, runId: acceptanceRun.runId, head: acceptanceRun.start.head, reference, args, changed, scenarioRule: rule, components: components.map(({ label, kind, command, reportPath, selection, collectionReceipt }) => ({ label, kind, command, ...(reportPath ? { reportPath } : {}), ...(selection ? { selection } : {}), ...(collectionReceipt ? { collectionReceipt } : {}) })) };
 const planPath = path.join(reportDir, 'verification-plan.json');
 fs.writeFileSync(planPath, `${JSON.stringify(executionPlan, null, 2)}\n`, { flag: 'wx' });
 acceptanceRun.planPath = planPath;

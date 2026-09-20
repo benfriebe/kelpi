@@ -48,7 +48,7 @@ import { cleanupSteps, removeOwnedRemoteStore } from '../ui-audit/lib/incident-d
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { daemonIDFromSandbox, restoreBundledSlots } from '../ui-audit/lib/workbench.mjs';
-import { buildTerminalLab } from '../build-terminal-lab.mjs';
+import { buildBoundTerminalLab } from '../ui-audit/lib/incident-diagnostics-runtime.mjs';
 import { makeSandbox, startDaemon, waitForHealthz, makeCli, PROTOCOL_VERSION } from '../ui-audit/lib/stack.mjs';
 
 export const covers = [
@@ -91,9 +91,9 @@ const LONG_LINE = `${'A'.repeat(38)}-HALF-TWO-${'B'.repeat(26)}-END${'C'.repeat(
 /** The cell the real click in check 5 must land on, one-based, as the process will report it. */
 const TARGET_COL = 5, TARGET_ROW = 3;
 
-export default async function ({ page, cli, sandbox, rec, d, sleep }) {
+export default async function ({ page, cli, sandbox, rec, d, sleep, diagnosticsProvenance }) {
     await page.watchFrames();
-    const packagePath = await buildTerminalLab(repoRoot);
+    const {packagePath,bindExecution} = await buildBoundTerminalLab(repoRoot,{rec,diagnosticsProvenance});
     const originalURL = await page.eval('location.href');
     const originalConfig = fs.readFileSync(sandbox.configPath, 'utf8');
     const json = async (args, target = cli) => JSON.parse(await target.ok(args));
@@ -289,6 +289,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
     try {
         // ── 1. Terminal Lab attached, and this window sizes the process ─────────────
         local = await create(cli, path.join(sandbox.root, 'geometry-fixture'), 'Terminal Geometry');
+        bindExecution('local-plugin-install');
         await cli.ok(['plugin', 'install', packagePath, '--trust']);
         await choose(local.paneID);
         if (!await ready(local.paneID)) throw new Error('Terminal Lab failed to consume its initial replay');
@@ -532,6 +533,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep }) {
         remoteSandbox = await makeSandbox(repoRoot, { label: 'geometry-remote', clientDir: path.join(repoRoot, 'packages/client/dist') });
         remoteDaemon = startDaemon(remoteSandbox, { repoRoot }); await waitForHealthz(remoteSandbox.base);
         const remoteCLI = makeCli(remoteSandbox, { repoRoot });
+        bindExecution('remote-plugin-install');
         await remoteCLI.ok(['plugin', 'install', packagePath, '--trust']);
         const remote = await create(remoteCLI, path.join(remoteSandbox.root, 'geometry-fixture'), 'Remote Geometry');
         const remoteToken = fs.readFileSync(path.join(remoteSandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();

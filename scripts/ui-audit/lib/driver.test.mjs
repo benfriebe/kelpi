@@ -1,22 +1,37 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 const state = vi.hoisted(() => ({}));
+vi.mock('./runtime-capability.mjs', () => ({
+    freezeShellLoadCapability: vi.fn(() => {
+        if (state.capabilityError) throw state.capabilityError;
+        return state.capability;
+    }),
+    assertShellLoadCapability: vi.fn(() => {
+        if (state.capabilityDrift) throw new Error('shell load capability changed after preflight');
+    })
+}));
 vi.mock('./stack.mjs', () => ({
     buildAll: vi.fn(),
     clearBackgroundTaskPolicy: vi.fn(),
     makeCli: () => ({ run: vi.fn() }),
-    makeSandbox: async () => state.sandbox,
+    makeSandbox: vi.fn(async () => state.sandbox),
     restartableDaemon: () => state.daemon,
-    startShell: (_sandbox, options) => {
-        expect(options.extraEnv.KELPI_HARNESS_DEFER_LOAD).toBe('1');
+    startShell: vi.fn((_sandbox, options) => {
+        expect(options.extraEnv.KELPI_HARNESS_DEFER_LOAD).toBe(state.capability.mode === 'deferred' ? '1' : '0');
         return state.startShell?.() ?? state.shell;
-    }
+    })
 }));
 vi.mock('./cdp.mjs', () => ({
     MOD: {}, sleep: async () => {}, listTargets: vi.fn(),
     waitForPageTarget: async (_port, { match }) => {
+        state.targetWaits++;
         state.matchTarget = match;
+        if (state.targetFailure) throw state.targetFailure;
         return { webSocketDebuggerUrl: 'ws://private-test' };
     },
     connect: async () => state.page
@@ -32,16 +47,23 @@ vi.mock('node:net', () => ({ default: { createConnection: () => {
             state.order.push('load');
             state.onLoad?.();
         }
-        queueMicrotask(() => socket.emit('data', JSON.stringify({ id, ok: true,
-            result: op === 'load-client' ? { released: true } : { pid: 1 } }) + '\n'));
+        queueMicrotask(() => socket.emit('data', JSON.stringify({ id, ...(op === 'load-client' ? state.loadReply : { ok: true, result: { pid: 1 } }) }) + '\n'));
     };
     queueMicrotask(() => socket.emit('connect'));
     return socket;
 } } }));
 
-import { boot } from './driver.mjs';
+import { boot, recorder } from './driver.mjs';
+import { buildAll, makeSandbox, startShell } from './stack.mjs';
+import { freezeShellLoadCapability, assertShellLoadCapability } from './runtime-capability.mjs';
+const actualCapability = await vi.importActual('./runtime-capability.mjs');
 
 beforeEach(() => {
+    vi.clearAllMocks();
+    state.capability = Object.freeze({ mode: 'deferred', targetRoot: '/repo' });
+    state.capabilityError = state.capabilityDrift = state.targetFailure = undefined;
+    state.targetWaits = 0;
+    state.loadReply = { ok: true, result: { released: true } };
     state.order = [];
     state.onLoad = undefined;
     state.sandbox = { root: '/tmp/driver-unit', debugPort: 12345, cleanup: vi.fn() };
@@ -222,4 +244,185 @@ it('cleans acquired resources when the client-release boundary rejects after bef
     expect(state.shell.quit).toHaveBeenCalledTimes(1);
     expect(state.daemon.stop).toHaveBeenCalledTimes(1);
     expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
+});
+
+
+describe('source-bound boot compatibility', () => {
+    it('selects legacy before acquisition, watches only after attachment and retains coverage', async () => {
+        state.capability = Object.freeze({ mode: 'legacy-immediate', targetRoot: '/target' });
+        const beforeStart = vi.fn();
+        const instance = await boot({ repoRoot: '/target', build: false, beforeStart });
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-coverage-'));
+        try {
+            expect(freezeShellLoadCapability).toHaveBeenCalledWith('/target');
+            expect(state.matchTarget({ url: 'about:blank' })).toBe(false);
+            expect(state.matchTarget({ url: '' })).toBe(false);
+            expect(state.matchTarget({ url: 'http://client/?shellWindow=1' })).toBe(true);
+            expect(state.order).toEqual(['watch']);
+            expect(beforeStart).toHaveBeenCalledTimes(2);
+            expect(instance.bootCapability).toBe(state.capability);
+            const rec = recorder({ name: 'legacy', outDir: directory });
+            instance.rendererErrors.finish(rec);
+            expect(rec.summary().rendererCoverage[0]).toMatchObject({ scope: 'post-attach', firstDocument: false,
+                bootCapability: state.capability });
+            expect(Date.parse(rec.summary().rendererCoverage[0].enabledAt)).toBeGreaterThanOrEqual(Date.parse(rec.summary().rendererCoverage[0].subscribedAt));
+            state.page.emit('Runtime.exceptionThrown', { exceptionDetails: { text: 'after attach' } });
+            instance.rendererErrors.finish(rec);
+            expect(rec.summary().results[1]).toMatchObject({ ok: false, detail: 'uncaught: after attach' });
+            expect(rec.summary().rendererCoverage.map(coverage => coverage.checkIndex)).toEqual([0, 1]);
+        } finally { await instance.stop(); fs.rmSync(directory, { recursive: true, force: true }); }
+        expect(state.shell.quit).toHaveBeenCalledOnce();
+        expect(state.daemon.stop).toHaveBeenCalledOnce();
+        expect(state.sandbox.cleanup).toHaveBeenCalledOnce();
+    });
+
+    it.each([{ beforeLoad: vi.fn() }, { requirePreNavigation: true }])('rejects legacy pre-navigation demands before build or acquisition: %j', async requirement => {
+        state.capability = { mode: 'legacy-immediate', targetRoot: '/repo' };
+        await expect(boot({ repoRoot: '/repo', ...requirement })).rejects.toThrow('does not support pre-navigation');
+        expect(buildAll).not.toHaveBeenCalled();
+        expect(makeSandbox).not.toHaveBeenCalled();
+        expect(state.daemon.start).not.toHaveBeenCalled();
+        expect(startShell).not.toHaveBeenCalled();
+        expect(state.order).toEqual([]);
+        if (requirement.beforeLoad) expect(requirement.beforeLoad).not.toHaveBeenCalled();
+    });
+
+    it('refuses unestablished capability before build or acquisition', async () => {
+        state.capabilityError = new Error('unsupported or ambiguous shell load capability');
+        await expect(boot({ repoRoot: '/repo' })).rejects.toThrow('unsupported or ambiguous');
+        expect(buildAll).not.toHaveBeenCalled();
+        expect(makeSandbox).not.toHaveBeenCalled();
+        expect(startShell).not.toHaveBeenCalled();
+    });
+
+    it('keeps pre-first-load coverage for a capable target requesting the guarantee', async () => {
+        const instance = await boot({ repoRoot: '/repo', build: false, requirePreNavigation: true });
+        try {
+            expect(instance.rendererErrors.coverage).toMatchObject({ scope: 'pre-first-load', firstDocument: true, bootCapability: state.capability });
+            expect(state.order).toEqual(['watch', 'load']);
+            expect(assertShellLoadCapability).toHaveBeenCalledTimes(4);
+        } finally { await instance.stop(); }
+    });
+
+    it.each([
+        { ok: false, error: 'unknown op load-client' },
+        { ok: true, result: { released: false } },
+        { ok: true, result: null }
+    ])('never falls back after deferred release refusal: %j', async reply => {
+        state.loadReply = reply;
+        await expect(boot({ repoRoot: '/repo', build: false })).rejects.toThrow(/load-client|did not hold/);
+        expect(state.targetWaits).toBe(1);
+        expect(startShell).toHaveBeenCalledOnce();
+        expect(state.order).toEqual(['watch', 'load']);
+        expect(state.page.close).toHaveBeenCalledOnce();
+        expect(state.shell.quit).toHaveBeenCalledOnce();
+        expect(state.daemon.stop).toHaveBeenCalledOnce();
+        expect(state.sandbox.cleanup).toHaveBeenCalledOnce();
+    });
+
+    it('never falls back after a missing deferred target and retains the first failure on unsafe cleanup', async () => {
+        state.targetFailure = new Error('blank target timed out');
+        state.shell.quit.mockRejectedValue(new Error('shell still live'));
+        const error = await boot({ repoRoot: '/repo', build: false }).catch(error => error);
+        expect(error.message).toBe('blank target timed out');
+        expect(error.cleanupError).toContain('shell still live');
+        expect(error.cleanup.completed).toBe(false);
+        expect(state.targetWaits).toBe(1);
+        expect(startShell).toHaveBeenCalledOnce();
+        expect(state.daemon.stop).toHaveBeenCalledOnce();
+        expect(state.sandbox.cleanup).not.toHaveBeenCalled();
+    });
+
+    it('cleans a failed legacy watcher without inventing pre-load coverage or releasing a client', async () => {
+        state.capability = { mode: 'legacy-immediate', targetRoot: '/repo' };
+        state.page.send.mockRejectedValue(new Error('legacy session refused'));
+        await expect(boot({ repoRoot: '/repo', build: false })).rejects.toThrow('legacy session refused');
+        expect(state.order).not.toContain('load');
+        expect(state.targetWaits).toBe(1);
+        expect(state.page.close).toHaveBeenCalledOnce();
+        expect(state.sandbox.cleanup).toHaveBeenCalledOnce();
+    });
+
+    it.each(['deferred', 'legacy-immediate'])('rejects %s source drift across the daemon/shell boundary', async mode => {
+        state.capability = { mode, targetRoot: '/repo' };
+        state.daemon.start.mockImplementation(async () => { state.capabilityDrift = true; });
+        await expect(boot({ repoRoot: '/repo', build: false })).rejects.toThrow('changed after preflight');
+        expect(startShell).not.toHaveBeenCalled();
+        expect(state.daemon.stop).toHaveBeenCalledOnce();
+        expect(state.sandbox.cleanup).toHaveBeenCalledOnce();
+    });
+});
+
+const capabilityRoot = path.resolve(import.meta.dirname, '../../..');
+const capabilityFiles = ['main.ts', 'harness.ts', 'harness-protocol.ts'].map(name => `packages/shell/src/${name}`);
+const legacyInputs = [
+    '8e3e9f8eee00da502ac51bb93d4e435945fa5473cdfc795c604981878a51eed5',
+    '3c52919f04fe3b18f64774b7a270c15a6abdac2ca3ba05fa859f2d7651e0a74a',
+    'a3d97fdcbf052abb521183c9bccc0dbef35cb485ae1a8d2276b3ed26d7cc42be'
+].map((sha256, index) => ({ path: capabilityFiles[index], sha256 }));
+const hash = value => createHash('sha256').update(value).digest('hex');
+
+describe('reviewed shell source contracts', () => {
+    afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+    it('recognizes only the complete reviewed legacy triple, independent of input order', () => {
+        expect(actualCapability.selectShellLoadCapability(legacyInputs)).toBe('legacy-immediate');
+        expect(actualCapability.selectShellLoadCapability([...legacyInputs].reverse())).toBe('legacy-immediate');
+    });
+
+    it.each([
+        null, [], legacyInputs.slice(1), [...legacyInputs, legacyInputs[0]],
+        [legacyInputs[0], legacyInputs[0], legacyInputs[2]],
+        [{ path: capabilityFiles[0], sha256: 'marker missing' }, ...legacyInputs.slice(1)],
+        [{ ...legacyInputs[0], path: '../main.ts' }, ...legacyInputs.slice(1)]
+    ])('refuses malformed or incomplete source identity: %j', inputs => {
+        expect(() => actualCapability.selectShellLoadCapability(inputs)).toThrow('malformed');
+    });
+
+    it('freezes current target source bytes and rejects mixed/unknown contracts', () => {
+        const capability = actualCapability.freezeShellLoadCapability(capabilityRoot);
+        expect(capability.mode).toBe('deferred');
+        expect(capability.targetRoot).toBe(fs.realpathSync(capabilityRoot));
+        expect(Object.isFrozen(capability)).toBe(true);
+        expect(Object.isFrozen(capability.sources)).toBe(true);
+        expect(Object.isFrozen(capability.sources[0])).toBe(true);
+        expect(() => actualCapability.assertShellLoadCapability(capability)).not.toThrow();
+        expect(() => actualCapability.selectShellLoadCapability([capability.sources[0], ...legacyInputs.slice(1)])).toThrow('unsupported or ambiguous');
+        expect(() => actualCapability.selectShellLoadCapability(legacyInputs.map(input => ({ ...input, sha256: 'a'.repeat(64) })))).toThrow('unsupported or ambiguous');
+        expect(() => actualCapability.assertShellLoadCapability({ ...capability, mode: 'legacy-immediate' })).toThrow('changed after preflight');
+    });
+
+    it('binds the capability to the pinned target context and refuses mismatched/missing/duplicate inputs', () => {
+        const capability = actualCapability.freezeShellLoadCapability(capabilityRoot);
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'capability-context-'));
+        const file = path.join(directory, 'context.json');
+        const base = { schemaVersion: 1, target: { root: capability.targetRoot, expectedHead: capability.targetHead,
+            source: { inputs: capability.sources } }, harness: { root: capability.targetRoot } };
+        const install = context => {
+            const bytes = JSON.stringify(context); fs.writeFileSync(file, bytes);
+            vi.stubEnv('KELPI_ACCEPTANCE_CONTEXT', file); vi.stubEnv('KELPI_ACCEPTANCE_CONTEXT_SHA256', hash(bytes));
+        };
+        try {
+            install(base);
+            expect(actualCapability.freezeShellLoadCapability(capabilityRoot)).toMatchObject({ contextSha256: hash(JSON.stringify(base)), mode: 'deferred' });
+            for (const inputs of [[], [...capability.sources, capability.sources[0]], legacyInputs]) {
+                install({ ...base, target: { ...base.target, source: { inputs } } });
+                expect(() => actualCapability.freezeShellLoadCapability(capabilityRoot)).toThrow('differs from pinned target');
+            }
+            install({ ...base, target: { ...base.target, expectedHead: '0'.repeat(40) } });
+            expect(() => actualCapability.freezeShellLoadCapability(capabilityRoot)).toThrow('head differs');
+            install(base); vi.stubEnv('KELPI_ACCEPTANCE_CONTEXT_SHA256', '0'.repeat(64));
+            expect(() => actualCapability.freezeShellLoadCapability(capabilityRoot)).toThrow('context digest differs');
+        } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+    });
+
+    it('does not classify edited source bytes as a known contract', () => {
+        const read = fs.readFileSync;
+        vi.spyOn(fs, 'readFileSync').mockImplementation((file, ...args) => {
+            const bytes = read(file, ...args);
+            return file === path.join(fs.realpathSync(capabilityRoot), capabilityFiles[0])
+                ? Buffer.concat([bytes, Buffer.from('\n// unreviewed source change')]) : bytes;
+        });
+        expect(() => actualCapability.freezeShellLoadCapability(capabilityRoot)).toThrow('unsupported or ambiguous');
+    });
 });

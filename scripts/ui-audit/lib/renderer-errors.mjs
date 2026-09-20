@@ -14,7 +14,9 @@
  * arrived. Per scenario rather than per run for exactly that reason - a shared sandbox runs many,
  * and an error belongs to the one that caused it.
  *
- * ARMED BEFORE THE FIRST CLIENT LOAD by driver.boot, not per scenario. `Runtime.enable`
+ * ARMED BEFORE THE FIRST CLIENT LOAD by driver.boot on a reviewed deferred-capable shell.
+ * Legacy shells and attached sessions have post-attach coverage only; coverage records the
+ * actual subscription/enable times and the frozen boot contract when one exists. `Runtime.enable`
  * does not replay what was reported before it
  * (unlike `Log.enable`, which buffers), so a watcher armed inside the loop cannot see a React root
  * that died while mounting, a failed first render, or anything thrown between two scenarios. That
@@ -26,7 +28,9 @@
  * `Runtime.enable` is idempotent, and a session that refuses it is reported as itself rather than
  * quietly watching nothing: "no errors seen" and "nobody looked" must not read the same.
  */
-export async function watchRendererErrors(page, { timeoutMs = 60_000 } = {}) {
+export async function watchRendererErrors(page, { timeoutMs = 60_000, scope = 'post-attach', bootCapability } = {}) {
+    if (!['pre-first-load', 'post-attach'].includes(scope)) throw new Error('unknown renderer watcher scope');
+    const subscribedAt = new Date().toISOString();
     const seen = [];
     let enableError = null;
     // Subscribe before enable: events may arrive before its acknowledgement.
@@ -43,7 +47,11 @@ export async function watchRendererErrors(page, { timeoutMs = 60_000 } = {}) {
     } catch (error) {
         enableError = error instanceof Error ? error.message : String(error);
     }
+    const coverage = Object.freeze({ scope, firstDocument: scope === 'pre-first-load' && enableError === null,
+        subscribedAt, enabledAt: enableError === null ? new Date().toISOString() : null,
+        ...(bootCapability ? { bootCapability } : {}) });
     return {
+        coverage,
         // A setup failure is not evidence that client code ran and failed. Boot must reject
         // it before navigation; attached instances still report it through the named check.
         enableError,
@@ -55,6 +63,7 @@ export async function watchRendererErrors(page, { timeoutMs = 60_000 } = {}) {
          * outlives the scenario and the next one wants the same watch without a gap.
          */
         finish(rec) {
+            rec.recordRendererCoverage?.(coverage);
             if (enableError !== null) {
                 rec.check('the renderer was watched for errors', false, `Runtime.enable: ${enableError}`);
                 return;

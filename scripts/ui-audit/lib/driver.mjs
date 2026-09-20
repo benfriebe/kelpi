@@ -48,6 +48,7 @@ import path from 'node:path';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './cdp.mjs';
 import { cleanupSteps } from './incident-diagnostics.mjs';
 import { watchRendererErrors } from './renderer-errors.mjs';
+import { freezeShellLoadCapability, assertShellLoadCapability } from './runtime-capability.mjs';
 import {
     buildAll,
     clearBackgroundTaskPolicy,
@@ -542,11 +543,13 @@ export function recorder({ name, outDir, placement, windowRuntime, observeWindow
     };
     let shots = 0;
     let firstFailure = null;
+    const rendererCoverage = [];
     const failureListeners = new Set(), pendingEvidence = [];
     return {
         name,
         outDir,
         results,
+        recordRendererCoverage(coverage) { rendererCoverage.push({ ...coverage, checkIndex: results.length }); },
         onFirstFailure(listener) {
             failureListeners.add(listener);
             return () => failureListeners.delete(listener);
@@ -605,6 +608,7 @@ export function recorder({ name, outDir, placement, windowRuntime, observeWindow
                 failed: results.filter((r) => !r.ok).length,
                 results,
                 firstFailure,
+                ...(rendererCoverage.length ? { rendererCoverage: [...rendererCoverage] } : {}),
                 screenshots,
                 visuals,
                 notes
@@ -684,11 +688,15 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * dev Electron shell and a CDP connection to the client window. The shell carries
  * KELPI_HARNESS (it quits if this process dies) and KELPI_HARNESS_SOCKET (the channel).
  *
- * The shell holds its first client navigation behind KELPI_HARNESS_DEFER_LOAD plus the harness
- * socket gate. Boot attaches to an inert about:blank document, subscribes to renderer errors,
+ * A source-bound deferred-capable shell holds its first client navigation behind
+ * KELPI_HARNESS_DEFER_LOAD plus the harness socket gate. Boot attaches to an inert about:blank
+ * document, subscribes to renderer errors,
  * then releases that navigation. `rendererErrors.finish(rec)` drains the verdict into a recorder;
  * a failed first mount returns with its errors even if the app root never appeared. `beforeLoad`
  * optionally receives the watched CDP page for setup such as new-document scripts.
+ * An explicitly reviewed legacy shell loads normally and is watched only after attachment.
+ * beforeLoad or requirePreNavigation rejects that contract before build/sandbox acquisition.
+ * Unknown/partial source contracts fail closed; a deferred failure never retries as legacy.
  *
  * `window` is the harness functional lane (#65), and it is what lets more than one scenario run
  * on one machine at a time. Unset is the shipped window, exactly as before the lane existed:
@@ -715,13 +723,22 @@ export const SHIPPED_WINDOW_PLACEMENT = 'default';
  * lane mean "make the page believe it is focused / unfocused" rather than "make the OS window
  * key". `setPageFocusEmulation` above has the measurement.
  */
-export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad, beforeStart } = {}) {
+export async function boot({ repoRoot, label = 'scenario', build = true, log = () => {}, timeoutMs = 60_000, window, beforeLoad, beforeStart, requirePreNavigation = false } = {}) {
     assertTargetExecution(repoRoot);
     assertDesktopActive();
     if (window !== undefined && !WINDOW_PLACEMENTS.includes(window)) {
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
     }
+    if (typeof requirePreNavigation !== 'boolean' || (beforeLoad !== undefined && typeof beforeLoad !== 'function')) {
+        throw new Error('invalid pre-navigation boot requirement');
+    }
+    const bootCapability = freezeShellLoadCapability(repoRoot);
+    const deferred = bootCapability.mode === 'deferred';
+    if (!deferred && (beforeLoad !== undefined || requirePreNavigation)) {
+        throw new Error('target does not support pre-navigation renderer coverage or beforeLoad');
+    }
     if (build) await buildAll(repoRoot, { log });
+    assertShellLoadCapability(bootCapability);
     // clientDir is what makes the daemon serve the app rather than its placeholder (#37).
     const sandbox = await makeSandbox(repoRoot, {
         label,
@@ -766,13 +783,15 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         // The sandbox is asynchronous, so bind the daemon's inputs only once it exists and
         // immediately before the daemon acquisition itself.
         await beforeStart?.();
+        assertShellLoadCapability(bootCapability);
         await daemon.start();
         // The daemon start is asynchronous and may itself update the bound shell output. Check
         // again at the actual shell-acquisition boundary rather than trusting the earlier check.
         await beforeStart?.();
+        assertShellLoadCapability(bootCapability);
         shell = startShell(sandbox, { repoRoot, extraEnv: {
             KELPI_HARNESS_SOCKET: harnessSocket,
-            KELPI_HARNESS_DEFER_LOAD: '1'
+            KELPI_HARNESS_DEFER_LOAD: deferred ? '1' : '0'
         } });
         clearBackgroundTaskPolicy(shell.child?.pid);
         // Before CDP, because a `hidden` window that did not actually go hidden is a run that has
@@ -786,12 +805,14 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             throw new Error(`the shell placed its window elsewhere: ${windowLogLine}`);
         }
         // An empty URL belongs to a never-navigated window with no running renderer. Wait for
-        // the shell's inert blank document so Runtime.enable can acknowledge before client load.
+        // a capable shell's inert blank document so Runtime.enable acknowledges before load.
+        // The reviewed legacy contract loads immediately: its client target is already live.
         const target = await waitForPageTarget(sandbox.debugPort, {
-            timeoutMs, match: (target) => target.url === 'about:blank'
+            timeoutMs, match: deferred ? (target) => target.url === 'about:blank' : isClientWindow
         });
         page = await connect(target.webSocketDebuggerUrl, { repoRoot });
-        const rendererErrors = await watchRendererErrors(page, { timeoutMs });
+        const rendererErrors = await watchRendererErrors(page, { timeoutMs,
+            scope: deferred ? 'pre-first-load' : 'post-attach', bootCapability });
         if (rendererErrors.enableError !== null) {
             throw new Error(`the renderer could not be watched: Runtime.enable: ${rendererErrors.enableError}`);
         }
@@ -837,13 +858,14 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             }
         }, { ceilingMs: timeoutMs, intervalMs: 200 });
         if (!harnessReady) throw new Error('the shell harness did not become ready');
-        // Test setup (e.g. new-document scripts) runs under the already armed watcher.
-        await beforeLoad?.(page);
-        // beforeLoad is asynchronous and can change the held client output; bind it immediately
-        // before releasing the first client navigation.
-        await beforeStart?.();
-        const loaded = await rawHarness.loadClient();
-        if (loaded.released !== true) throw new Error('the shell did not hold the initial client load');
+        if (deferred) {
+            // Setup runs under the armed watcher; rebind inputs immediately before release.
+            await beforeLoad?.(page);
+            await beforeStart?.();
+            assertShellLoadCapability(bootCapability);
+            const loaded = await rawHarness.loadClient();
+            if (loaded?.released !== true) throw new Error('the shell did not hold the initial client load');
+        }
         // A broken first mount must reach the scenario recorder with its original error, instead
         // of timing out here on the absent root and losing the evidence with the boot failure.
         const clientReady = await settle(async () => {
@@ -878,6 +900,7 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
             shell,
             page,
             rendererErrors,
+            bootCapability,
             harness,
             cli,
             /** The placement this instance is actually running at, proven by the shell's own log line. */

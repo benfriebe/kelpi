@@ -17,6 +17,31 @@ const recorder = () => ({ results: [], check(...args) { this.results.push(args);
 const exception = (description) => ({ exceptionDetails: { exception: { description } } });
 
 describe('renderer error ownership', () => {
+    it('defaults attached sessions to post-attach coverage and retains it on every finish', async () => {
+        const page = new EventEmitter(); page.send = async () => {};
+        const watcher = await watchRendererErrors(page);
+        const coverages = [];
+        const rec = { ...recorder(), recordRendererCoverage: coverage => coverages.push(coverage) };
+        watcher.finish(rec); watcher.finish(rec);
+        expect(watcher.coverage).toMatchObject({ scope: 'post-attach', firstDocument: false });
+        expect(coverages).toEqual([watcher.coverage, watcher.coverage]);
+        expect(Object.isFrozen(watcher.coverage)).toBe(true);
+    });
+
+    it('records refused enable as uncovered even when setup requested pre-first-load', async () => {
+        const page = new EventEmitter(); page.send = async () => { throw Error('enable denied'); };
+        const watcher = await watchRendererErrors(page, { scope: 'pre-first-load' });
+        expect(watcher.coverage).toMatchObject({ scope: 'pre-first-load', firstDocument: false, enabledAt: null });
+        const rec = recorder(); watcher.finish(rec);
+        expect(rec.results[0][1]).toBe(false);
+    });
+
+    it('rejects unknown watcher scope before subscribing', async () => {
+        const page = new EventEmitter(); page.send = async () => {};
+        await expect(watchRendererErrors(page, { scope: 'full native proof' })).rejects.toThrow('unknown renderer watcher scope');
+        expect(page.eventNames()).toEqual([]);
+    });
+
     it('subscribes before Runtime.enable acknowledges and drains each interval once', async () => {
         const page = new EventEmitter();
         page.send = async (method) => {

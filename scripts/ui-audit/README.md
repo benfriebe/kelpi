@@ -56,7 +56,13 @@ export default async function ({ page, harness, cli, sandbox, shell, daemon, rec
 
 Rules that keep scenarios honest: wait on a condition (`settle`, `settleDom`, `page.waitFor`), not on a sleep, except where the wait IS the assertion (a negative check needs a dwell). Prefer `data-testid` anchors; add one to the client rather than matching on text or CSS. A scenario that fails should say what it saw: pass the detail to `rec.check`.
 
-Every instance returned by `d.boot()` carries `rendererErrors`. Boot sets
+Every instance returned by `d.boot()` carries `rendererErrors` and a frozen `bootCapability`.
+Before build or sandbox acquisition, `lib/runtime-capability.mjs` matches the exact target
+`main.ts`, `harness.ts` and `harness-protocol.ts` SHA-256 triple against reviewed contracts,
+binds it to the target root/head and (in strict runs) its digest-pinned execution context,
+and rechecks that identity at runtime acquisition boundaries. Unknown, missing, mixed or
+changed contracts fail closed; adding support requires source review, not marker detection.
+For the deferred-capable contract, boot sets
 `KELPI_HARNESS_DEFER_LOAD=1` alongside the private harness socket: the shell loads an inert
 `about:blank` document, giving CDP a running renderer while holding the first client document.
 The driver waits for that blank target and subscribes to `Runtime.exceptionThrown` and
@@ -66,7 +72,23 @@ rejects boot and tears down the private instance; it cannot substitute for app r
 A failed first mount therefore reaches the first scenario's named renderer check even when no
 app root appears. `beforeLoad(page)` is an optional boot hook for CDP setup after the watcher is
 armed and before navigation; `renderer-errors-at-boot` uses it to inject a failing first document.
-Failed boots close their partial private instances.
+Failed boots close their partial private instances. A failed deferred boot never retries through
+the legacy path, including a missing blank target, watcher failure or refused `load-client`.
+
+The reviewed immediate-load contract (established at issue237 head
+`7ee1f09ace56bffba94ed32b43b431367b4aea24`, shared by the eight pre-issue239 targets)
+starts normally with deferral disabled, selects the `shellWindow=` client target, and arms the
+watcher after attaching. It cannot establish first-document coverage or recover earlier errors.
+`beforeLoad` and `requirePreNavigation: true` reject this target before build/sandbox acquisition.
+The two deferred targets and H share the contract established at issue239 head
+`3ef30317b2889712ed9529a9476f00707e5893e9`; the complete triples live in the capability helper.
+Each recorder summary retains a `rendererCoverage` array, binding each renderer check index
+to its actual `scope`, `firstDocument`, subscription/enable timestamps and frozen boot capability.
+Multiple watcher drains retain every coverage receipt. Attached sessions default to
+`post-attach`; a failed enable is never recorded as first-document coverage. The named renderer
+assertion, every scenario assertion path and all visual obligations remain required. Target
+catalog selection still excludes `renderer-errors-at-boot` when T does not provide it. Neither
+mode proves native input, a physical device or any unobserved environment.
 
 The runner calls `instance.rendererErrors.finish(rec)` after each scenario, consuming that
 instance's accumulated lines once. Dedicated placement instances get their own watcher from

@@ -1188,11 +1188,31 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
         if (daemon === null) rec.note('LIMIT: no sandbox daemon handle (--attach), so the disconnect check was skipped');
         else {
             const pidBefore = daemon.pid, generationBefore = daemon.generation;
-            await daemon.restart();
-            const offline = await d.settleDom(page, `!document.querySelector('[data-testid="pane-chrome-presenter"]')`, { ceilingMs: 20_000 });
+            const transitionBegan = Date.now();
+            let stoppedAt = null, offlineAt = null, offline = false, offlineState = null;
+            let startBegan = null, healthyAt = null;
+            try {
+                await daemon.stop();
+                stoppedAt = Date.now();
+                // Keep the replacement DOWN until the client has actually shown the fallback.
+                // `restart()` waits for the replacement's healthz before it returns, which made
+                // this observation race a daemon that was already back.
+                offline = await d.settleDom(page, `!document.querySelector('[data-testid="pane-chrome-presenter"]')`, { ceilingMs: 20_000 });
+                offlineAt = Date.now();
+                offlineState = await page.eval(`JSON.stringify({
+                    connection: document.querySelector('[data-connection]')?.getAttribute('data-connection') ?? null,
+                    presenter: document.querySelector('[data-testid="pane-chrome-presenter"]')?.getAttribute('data-pane-chrome-presenter') ?? null
+                })`);
+            } finally {
+                // A failed/throwing observation must not strand the shared scenario daemon down.
+                startBegan = Date.now();
+                await daemon.start();
+                healthyAt = Date.now();
+            }
             // `data-connection` is on the app root rather than on `documentElement`, and it is the
             // only authority on the CLIENT having reconnected (`ui-audit/lib/stack.mjs` says so).
             const reconnected = await d.settleDom(page, `document.querySelector('[data-connection]')?.getAttribute('data-connection') === 'connected'`, { ceilingMs: 30_000 });
+            const reconnectedAt = Date.now();
             const back = reconnected && await attached(30_000) && await ready(20_000);
             // Opened first: the row is a Settings control, and reading one with the dialog closed
             // answers `''` whatever the truth is.
@@ -1204,7 +1224,7 @@ export default async function ({ page, cli, sandbox, rec, d, sleep, daemon }) {
                 offline && reconnected && back && !latched && stillSelected === labView
                 && daemon.pid !== pidBefore && daemon.generation === generationBefore + 1,
                 `pid ${String(pidBefore)} -> ${String(daemon.pid)} · offline ${String(offline)} · back ${String(back)} · latched ${String(latched)} · selection ${String(stillSelected)} · ${await labState()}`);
-            rec.note(`the daemon was replaced (stop ${String(daemon.lastStopMs)} ms, start to healthz ${String(daemon.lastStartMs)} ms)`);
+            rec.note(`the daemon was replaced (stop ${String(daemon.lastStopMs)} ms, fallback observed +${String(offlineAt === null ? null : offlineAt - transitionBegan)} ms as ${String(offlineState)}, start to healthz ${String(daemon.lastStartMs)} ms, client reconnect ${String(startBegan === null ? null : reconnectedAt - startBegan)} ms after start; stop settled +${String(stoppedAt === null ? null : stoppedAt - transitionBegan)} ms, healthz +${String(healthyAt === null ? null : healthyAt - transitionBegan)} ms)`);
         }
 
         /*

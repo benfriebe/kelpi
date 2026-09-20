@@ -27192,6 +27192,7 @@ function buildFlows(ctx) {
                                     open: true,
                                     agents: el.getAttribute('data-active-agents'),
                                     text: (el.innerText ?? '').split('\\n').join(' | '),
+                                    warning: el.querySelector('[data-testid="confirm-active-agents"]')?.innerText ?? null,
                                     suppress: el.querySelector('[data-testid="confirm-suppress"]') !== null
                                 });
                             })()`
@@ -27207,7 +27208,8 @@ function buildFlows(ctx) {
                 );
                 recorder.check(
                     'the warning names the count and what will happen to it',
-                    /1 active agent/.test(String(gate.text)) && /terminate/.test(String(gate.text)),
+                    gate.warning === 'This workspace has 1 active agent. Deleting it will terminate it.' ||
+                        gate.warning === 'This workspace has 1 running agent. Deleting it will close it.',
                     String(gate.text)
                 );
                 recorder.check(

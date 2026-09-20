@@ -10,7 +10,7 @@ vi.mock('./stack.mjs', () => ({
     restartableDaemon: () => state.daemon,
     startShell: (_sandbox, options) => {
         expect(options.extraEnv.KELPI_HARNESS_DEFER_LOAD).toBe('1');
-        return state.shell;
+        return state.startShell?.() ?? state.shell;
     }
 }));
 vi.mock('./cdp.mjs', () => ({
@@ -47,6 +47,7 @@ beforeEach(() => {
     state.sandbox = { root: '/tmp/driver-unit', debugPort: 12345, cleanup: vi.fn() };
     state.daemon = { start: vi.fn(), stop: vi.fn() };
     state.shell = { quit: vi.fn(), waitForLine: async () => 'harness-window: placement=hidden' };
+    state.startShell = undefined;
     state.page = new EventEmitter();
     state.page.send = vi.fn(async (method) => {
         if (method === 'Runtime.enable') state.order.push('watch');
@@ -161,4 +162,48 @@ it('checks build identity before starting any daemon or shell and leaves no acqu
     const beforeStart=vi.fn(()=>{throw Error('build identity differs');});
     await expect(boot({repoRoot:'/repo',build:false,beforeStart})).rejects.toThrow('build identity differs');
     expect(beforeStart).toHaveBeenCalledOnce();expect(state.daemon.start).not.toHaveBeenCalled();expect(state.order).toEqual([]);
+    expect(state.daemon.stop).toHaveBeenCalledTimes(1);expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('checks provenance again immediately before shell acquisition and cleans a rejected boundary',async()=>{
+    state.daemon.start=vi.fn(async()=>state.order.push('daemon-start'));
+    state.startShell=vi.fn(()=>state.shell);
+    let calls=0;
+    const beforeStart=vi.fn(()=>{
+        state.order.push('boundary');
+        if(++calls===2) throw Error('shell output differs');
+    });
+    await expect(boot({repoRoot:'/repo',build:false,beforeStart})).rejects.toThrow('shell output differs');
+    expect(state.order).toEqual(['boundary','daemon-start','boundary']);
+    expect(beforeStart).toHaveBeenCalledTimes(2);
+    expect(state.startShell).not.toHaveBeenCalled();
+    expect(state.shell.quit).not.toHaveBeenCalled();
+    expect(state.daemon.stop).toHaveBeenCalledTimes(1);
+    expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('checks every actual acquisition boundary in order before releasing the client',async()=>{
+    state.daemon.start=vi.fn(async()=>state.order.push('daemon-start'));
+    const beforeStart=vi.fn(()=>state.order.push(`boundary-${beforeStart.mock.calls.length}`));
+    const instance=await boot({repoRoot:'/repo',build:false,beforeStart,beforeLoad:async()=>state.order.push('before-load')});
+    try {
+        expect(state.order).toEqual(['boundary-1','daemon-start','boundary-2','watch','before-load','boundary-3','load']);
+        expect(beforeStart).toHaveBeenCalledTimes(3);
+    } finally { await instance.stop(); }
+});
+
+it('cleans acquired resources when the client-release boundary rejects after beforeLoad',async()=>{
+    state.startShell=vi.fn(()=>state.shell);
+    let calls=0;
+    const beforeStart=vi.fn(()=>{ if(++calls===3) throw Error('client output differs'); });
+    const beforeLoad=vi.fn(async()=>state.order.push('before-load'));
+    await expect(boot({repoRoot:'/repo',build:false,beforeStart,beforeLoad})).rejects.toThrow('client output differs');
+    expect(beforeStart).toHaveBeenCalledTimes(3);
+    expect(beforeLoad).toHaveBeenCalledOnce();
+    expect(state.order).toEqual(['watch','before-load']);
+    expect(state.startShell).toHaveBeenCalledOnce();
+    expect(state.page.close).toHaveBeenCalledTimes(1);
+    expect(state.shell.quit).toHaveBeenCalledTimes(1);
+    expect(state.daemon.stop).toHaveBeenCalledTimes(1);
+    expect(state.sandbox.cleanup).toHaveBeenCalledTimes(1);
 });

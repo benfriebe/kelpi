@@ -127,8 +127,29 @@ export function installRendererRecorder({ key, allowed, capacity, ownerId }) {
 export async function armIncidentDiagnostics({ page, harness, rec, allowed = [], capacity = 1024 }) {
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 1024) throw new Error('invalid diagnostic capacity');
     const key = '__kelpiIncidentRecorder', ownerId = randomUUID();
-    const targets = [], restores = [], events = [];
-    let sequence = 0, frozen = false, first, closed = false, navigationScript, hostGeneration = 1;
+    const targets = [], restores = [], events = [], reportingErrors = [];
+    let sequence = 0, frozen = false, first, closed = false, closing, navigationScript, hostGeneration = 1, failureObserverActive = true, cleanupAttempts = 0, surfacedReporting = 0;
+    const combineErrors = (message, errors) => {
+        const retained = [...new Set(errors.flatMap(error => error instanceof AggregateError ? error.errors : [error]).filter(Boolean))];
+        if (retained.length === 0) return undefined;
+        if (retained.length === 1) return retained[0];
+        return new AggregateError(retained, String(retained[0]?.message ?? message));
+    };
+    // Reporting is diagnostic too. It must never decide whether the owned resources are released.
+    const report = (...args) => {
+        try { rec.check(...args); }
+        catch (error) { reportingErrors.push(error); return error; }
+        return undefined;
+    };
+    const reportNote = message => {
+        try { rec.note(message); }
+        catch (error) {
+            reportingErrors.push(error);
+            report('incident evidence note retained', false, String(error), 'harness');
+            return error;
+        }
+        return undefined;
+    };
     const record = (kind, detail = {}) => {
         if (frozen) return;
         events.push({ sequence: ++sequence, monotonicMs: performance.now(), kind, ...detail });
@@ -164,10 +185,10 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
                 return result;
             } catch (error) { rejected(error); throw error; }
         };
-        restores.push([`wrapper ${name}`, () => {
+        restores.push({ name: `wrapper ${name}`, restored: false, restore: () => {
             if (object[name] !== wrapper) return;
             if (descriptor) Object.defineProperty(object, name, descriptor); else delete object[name];
-        }]);
+        }});
         object[name] = wrapper;
         if (object[name] !== wrapper) throw new Error(`cannot instrument ${name}`);
     };
@@ -188,11 +209,14 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
             const targetAvailable = renderers.length > 0 && renderers.every(renderer => renderer.state && !renderer.unavailable);
             const historyRetained = dropped === 0 && renderers.every(renderer => renderer.historyRetained === true);
             const complete = targetAvailable && historyRetained && !renderers.some(renderer => renderer.incomplete) && !events.some(event => event.kind === 'diagnostic-error');
-            rec.check('incident diagnostics complete without observer errors', complete, complete ? 'all required renderer states and preceding history retained' : 'missing renderer capture, preceding history, or observer errors retained in incident evidence', 'harness');
             const file = path.join(rec.outDir, `${rec.name}-first-incident.json`);
             fs.writeFileSync(file, JSON.stringify({ reason, ownerId, complete, targetAvailable, historyRetained, capacity, events: events.slice(), dropped, renderers,
                 limitations: ['Instrumentation adds timing overhead; passing does not prove a prior failure cause.', 'Monotonic sequences are per process/renderer; clocks do not establish cross-process total order.', 'Only exact allowlisted synthetic strings are retained; arbitrary contents are redacted.', 'Clipboard evidence is observed operation results, not an extra read or retry.', 'Buffer loss or unretained document generations make required preceding history incomplete.', 'No native-menu dispatch, bridge request/response, or PTY-input ordering instrumentation.'] }, null, 2) + '\n', { flag: 'wx' });
-            rec.note(`incident evidence: ${file}`);
+            const reportingStart = reportingErrors.length;
+            report('incident diagnostics complete without observer errors', complete, complete ? 'all required renderer states and preceding history retained' : 'missing renderer capture, preceding history, or observer errors retained in incident evidence', 'harness');
+            reportNote(`incident evidence: ${file}`);
+            const reportingError = combineErrors('incident evidence reporting failed', reportingErrors.slice(reportingStart));
+            if (reportingError) throw reportingError;
             return file;
         });
         return first;
@@ -225,11 +249,12 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
     const retireRenderer = async name => {
         const target = targets.find(target => target.name === name);
         if (!target || target.retired) return;
-        await rec.flushFirstFailure();
+        const reportingStart = reportingErrors.length;
+        try { await rec.flushFirstFailure(); } catch (error) { reportingErrors.push(error); }
         target.retired = { ...await snapshot(target), retiredBeforeLaterOperations:true, retiredAt:performance.now() };
         if (target.retired.incomplete || !target.retired.state) {
-            rec.check(`incident capture: ${name}`, false, 'renderer history incomplete before retirement', 'harness');
-            await rec.flushFirstFailure();
+            report(`incident capture: ${name}`, false, 'renderer history incomplete before retirement', 'harness');
+            try { await rec.flushFirstFailure(); } catch (error) { reportingErrors.push(error); }
         }
         // Cleanup failures are independent: a failed navigation undo cannot skip the renderer.
         const errors = await cleanupSteps([
@@ -238,30 +263,52 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
                 await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript}); navigationScript = undefined;
             }],
             [name, async () => { await restoreTarget(target); target.restored = true; }]
-        ], (label, detail) => rec.check(`diagnostic cleanup: ${label}`, false, detail, 'cleanup'));
-        if (errors.length) throw new Error(errors.join('; '));
+        ], (label, detail) => report(`diagnostic cleanup: ${label}`, false, detail, 'cleanup'));
+        const failure = combineErrors('incident renderer retirement failed', [
+            ...(errors.length ? [new Error(errors.join('; '))] : []), ...reportingErrors.slice(reportingStart)
+        ]);
+        if (failure) throw failure;
     };
     const off = rec.onFirstFailure(({ label }) => freeze(label));
     const close = async () => {
-        if (closed) return; closed = true;
-        try { await freeze(); } catch (error) { rec.check('incident evidence retained', false, String(error), 'harness'); }
-        const cleanup = [];
-        const attempt = async (name, action) => {
-            try { cleanup.push({name,...await action()}); }
-            catch (error) { cleanup.push({name,...error.cleanup,error:String(error)}); rec.check(`diagnostic cleanup: ${name}`, false, String(error), 'cleanup'); }
-        };
-        await attempt('failure observer', () => { off(); return {restored:true}; });
-        for (const [name, restore] of restores.reverse()) await attempt(name, () => {restore();return {restored:true};});
-        if (navigationScript) await attempt('navigation script', async () => {
-            await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript}); return {restored:true};
-        });
-        for (const target of targets) await attempt(target.name, async () => {
-            if (target.restored) return {restoredBeforeUnmount:true};
-            if (target.isPresent && !await target.isPresent()) return {contextAbsentFromCurrentDocument:true};
-            return restoreTarget(target);
-        });
-        try { fs.writeFileSync(path.join(rec.outDir, `${rec.name}-incident-cleanup.json`), JSON.stringify(cleanup, null, 2) + '\n', { flag:'wx' }); }
-        catch (error) { rec.check('diagnostic cleanup evidence retained', false, String(error), 'cleanup'); }
+        if (closed) return;
+        if (closing) return closing;
+        closing = (async () => {
+            const errors = [], cleanup = [], reportingStart = surfacedReporting;
+            try { await freeze(); }
+            catch (error) {
+                errors.push(error);
+                report('incident evidence retained', false, String(error), 'harness');
+            }
+            const attempt = async (name, action) => {
+                try { cleanup.push({name,...await action()}); }
+                catch (error) {
+                    errors.push(error);
+                    cleanup.push({name,...error.cleanup,error:String(error)});
+                    report(`diagnostic cleanup: ${name}`, false, String(error), 'cleanup');
+                }
+            };
+            if (failureObserverActive) await attempt('failure observer', () => { off(); failureObserverActive = false; return {restored:true}; });
+            for (const entry of restores) if (!entry.restored) await attempt(entry.name, () => { entry.restore(); entry.restored = true; return {restored:true}; });
+            if (navigationScript) await attempt('navigation script', async () => {
+                await page.send('Page.removeScriptToEvaluateOnNewDocument', {identifier:navigationScript}); navigationScript = undefined; return {restored:true};
+            });
+            for (const target of targets) await attempt(target.name, async () => {
+                if (target.restored) return {restoredBeforeUnmount:true};
+                if (target.isPresent && !await target.isPresent()) { target.restored = true; return {contextAbsentFromCurrentDocument:true}; }
+                const result = await restoreTarget(target); target.restored = true; return result;
+            });
+            const cleanupFile = path.join(rec.outDir, cleanupAttempts++ === 0 ? `${rec.name}-incident-cleanup.json` : `${rec.name}-incident-cleanup-attempt-${cleanupAttempts}.json`);
+            try { fs.writeFileSync(cleanupFile, JSON.stringify(cleanup, null, 2) + '\n', { flag:'wx' }); }
+            catch (error) { errors.push(error); report('diagnostic cleanup evidence retained', false, String(error), 'cleanup'); }
+            const unresolved = failureObserverActive || navigationScript !== undefined || restores.some(entry => !entry.restored) || targets.some(target => !target.restored);
+            // A close that leaves an owned resource behind remains retryable; it is never a no-op.
+            closed = !unresolved;
+            const failure = combineErrors('incident diagnostics cleanup/reporting failed', [...errors, ...reportingErrors.slice(reportingStart)]);
+            surfacedReporting = reportingErrors.length;
+            if (failure) throw failure;
+        })();
+        try { return await closing; } finally { closing = undefined; }
     };
     try {
         // Acquire the current document first. A duplicate arm cannot install a navigation hook.
@@ -275,8 +322,11 @@ export async function armIncidentDiagnostics({ page, harness, rec, allowed = [],
         for (const name of ['clipboardRead', 'clipboardWrite']) wrap(harness, name, args => name === 'clipboardWrite' ? {value:safe(args[0])} : {});
         return {addRenderer,ensureHost,retireRenderer,freeze,close};
     } catch (error) {
-        rec.check('incident instrumentation armed before input', false, error?.message ?? error, 'harness');
-        await close(); throw error;
+        report('incident instrumentation armed before input', false, error?.message ?? error, 'harness');
+        let cleanupError;
+        try { await close(); } catch (closeFailure) { cleanupError = closeFailure; }
+        const failure = combineErrors('incident diagnostics acquisition failed', [error, cleanupError, ...reportingErrors]);
+        throw failure ?? error;
     }
 }
 

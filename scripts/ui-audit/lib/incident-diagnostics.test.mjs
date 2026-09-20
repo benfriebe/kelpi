@@ -344,3 +344,65 @@ it('retains navigation loss and bounded history loss separately from current tar
         expect(rec.summary().failed).toBe(1);
     } finally {fs.rmSync(outDir,{recursive:true,force:true});}
 });
+
+it('cleans every acquired resource and retains the acquisition failure when reporting throws', async () => {
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-reporting-acquire-'));
+    try {
+        const host=renderer(), document=host.context.document, add=document.addEventListener;
+        document.addEventListener=(type,listener)=>{ add(type,listener); if(type==='copy') throw Error('ACQUISITION_FAILURE'); };
+        const rec=recorder({name:'report-acquire',outDir}), check=rec.check, reporting=Error('REPORTING_FAILURE');
+        rec.check=(...args)=>{ const result=check(...args); if(args[0]==='incident instrumentation armed before input') throw reporting; return result; };
+        let failure;
+        try { await armIncidentDiagnostics({page:{eval:host.eval},rec}); } catch(error) { failure=error; }
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect(failure.errors).toContain(reporting);
+        expect(failure.errors.some(error=>String(error).includes('ACQUISITION_FAILURE'))).toBe(true);
+        expect(host.listeners.size).toBe(0);
+        expect(await host.eval('Boolean(globalThis.__kelpiIncidentRecorder)')).toBe(false);
+        expect(fs.existsSync(path.join(outDir,'report-acquire-incident-cleanup.json'))).toBe(true);
+    } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+});
+
+it('freezes immutable evidence and still releases renderers when evidence reporting throws', async () => {
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-reporting-evidence-'));
+    try {
+        const host=renderer(), rec=recorder({name:'report-evidence',outDir}), check=rec.check, reporting=Error('REPORTING_FAILURE');
+        const incident=await armIncidentDiagnostics({page:{eval:host.eval},rec});
+        rec.check=(...args)=>{ const result=check(...args); if(args[0]==='incident diagnostics complete without observer errors') throw reporting; return result; };
+        await expect(incident.close()).rejects.toBe(reporting);
+        const first=path.join(outDir,'report-evidence-first-incident.json');
+        expect(fs.existsSync(first)).toBe(true);
+        expect(host.listeners.size).toBe(0);
+        expect(await host.eval('Boolean(globalThis.__kelpiIncidentRecorder)')).toBe(false);
+        expect(fs.existsSync(path.join(outDir,'report-evidence-incident-cleanup.json'))).toBe(true);
+        const frozen=fs.readFileSync(first,'utf8'); await incident.close();
+        expect(fs.readFileSync(first,'utf8')).toBe(frozen);
+    } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+});
+
+it('attempts remaining cleanup again after cleanup reporting and navigation undo throw', async () => {
+    const outDir=fs.mkdtempSync(path.join(os.tmpdir(),'incident-reporting-cleanup-'));
+    try {
+        const host=renderer(), rec=recorder({name:'report-cleanup',outDir}), check=rec.check, reporting=Error('REPORTING_FAILURE');
+        let removeAttempts=0, navigation='private-script';
+        const page={eval:host.eval,send:async(method)=>{
+            if(method==='Page.enable') return {};
+            if(method==='Page.addScriptToEvaluateOnNewDocument') return {identifier:navigation};
+            if(method==='Page.removeScriptToEvaluateOnNewDocument' && (++removeAttempts)===1) throw Error('NAVIGATION_UNDO_FAILURE');
+            navigation=undefined; return {};
+        }};
+        const incident=await armIncidentDiagnostics({page,rec});
+        rec.check=(...args)=>{ const result=check(...args); if(args[0]==='diagnostic cleanup: navigation script') throw reporting; return result; };
+        let firstFailure;
+        try { await incident.close(); } catch(error) { firstFailure=error; }
+        expect(firstFailure).toBeInstanceOf(AggregateError);
+        expect(firstFailure.errors).toContain(reporting);
+        expect(firstFailure.errors.some(error=>String(error).includes('NAVIGATION_UNDO_FAILURE'))).toBe(true);
+        expect(host.listeners.size).toBe(0);
+        expect(navigation).toBe('private-script');
+        await incident.close();
+        expect(removeAttempts).toBe(2);
+        expect(navigation).toBeUndefined();
+        expect(fs.existsSync(path.join(outDir,'report-cleanup-incident-cleanup-attempt-2.json'))).toBe(true);
+    } finally { fs.rmSync(outDir,{recursive:true,force:true}); }
+});

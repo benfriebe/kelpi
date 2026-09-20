@@ -717,7 +717,6 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         throw new Error(`unknown window placement: ${String(window)} (want ${WINDOW_PLACEMENTS.join(' | ')})`);
     }
     if (build) await buildAll(repoRoot, { log });
-    await beforeStart?.();
     // clientDir is what makes the daemon serve the app rather than its placeholder (#37).
     const sandbox = await makeSandbox(repoRoot, {
         label,
@@ -750,7 +749,13 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         if (!cleanup.completed) throw new Error(`sandbox cleanup failed: ${cleanup.errors.join('; ')}`);
     } });
     try {
+        // The sandbox is asynchronous, so bind the daemon's inputs only once it exists and
+        // immediately before the daemon acquisition itself.
+        await beforeStart?.();
         await daemon.start();
+        // The daemon start is asynchronous and may itself update the bound shell output. Check
+        // again at the actual shell-acquisition boundary rather than trusting the earlier check.
+        await beforeStart?.();
         shell = startShell(sandbox, { repoRoot, extraEnv: {
             KELPI_HARNESS_SOCKET: harnessSocket,
             KELPI_HARNESS_DEFER_LOAD: '1'
@@ -820,6 +825,9 @@ export async function boot({ repoRoot, label = 'scenario', build = true, log = (
         if (!harnessReady) throw new Error('the shell harness did not become ready');
         // Test setup (e.g. new-document scripts) runs under the already armed watcher.
         await beforeLoad?.(page);
+        // beforeLoad is asynchronous and can change the held client output; bind it immediately
+        // before releasing the first client navigation.
+        await beforeStart?.();
         const loaded = await rawHarness.loadClient();
         if (loaded.released !== true) throw new Error('the shell did not hold the initial client load');
         // A broken first mount must reach the scenario recorder with its original error, instead

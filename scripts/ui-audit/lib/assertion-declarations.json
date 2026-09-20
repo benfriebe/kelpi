@@ -3882,14 +3882,14 @@
             "tapping Show still puts the caret back on the engine, which is the only way up",
             "and the key still reads Show, because the tap asked for a keyboard that no desktop Chromium can produce",
             "and it turns into Hide when that keyboard arrives, over the caret the tap put back",
+            "the window the next step inherits is the one this step was handed",
             "the phone lane’s clause: the roster the spine reads is untouched",
-            "and NOT on desktop: closing Settings hands the caret back to the focused pane’s surface, as it always has",
-            "the window the next step inherits is the one this step was handed"
+            "and NOT on desktop: closing Settings hands the caret back to the focused pane’s surface, as it always has"
           ]
         }
       ],
       "requiredVisuals": [],
-      "review": "Retain the complete direct assertion path and add the awaited final checkPhoneHandback receipt. The helper checks original inner/outer dimensions, DPR, desktop/coarse mode, unshadowed viewport, and absence of phone controls; it is mandatory cleanup, not a dispensable callback."
+      "review": "Retain all 22 receipts in source execution order: checkPhoneHandback is awaited in finally before the post-finally roster and desktop Settings caret checks. The helper checks original inner/outer dimensions, DPR, desktop/coarse mode, unshadowed viewport, and absence of phone controls; it is mandatory cleanup, not a dispensable callback."
     },
     {
       "kind": "audit",

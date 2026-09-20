@@ -25,7 +25,13 @@ export function acceptanceVerdict(run, { components = [], end, manifest, policyR
     if (!bound(run.planPath) || ![1,2].includes(plan?.schemaVersion) || plan.schemaVersion !== run.schemaVersion || JSON.stringify(plan.executionContext) !== JSON.stringify(run.executionContext) || plan.runId !== run.runId || plan.head !== run.start?.head || plan.reference !== run.reference || !Array.isArray(plan?.components) || plan.components.length === 0) missing('bound execution plan is absent or does not match this run');
     const expected = list(plan?.components);
     const buildReceipt = bound(run.buildReceiptPath) ? parse(run.buildReceiptPath) : null;
-    if (JSON.stringify(buildReceipt?.executionContext) !== JSON.stringify(run.executionContext)) missing('build receipt harness/target context differs from frozen run');
+    // A scoped test-only plan does not acquire a runtime or produce a build receipt.
+    // Planned runtime work and any explicitly declared receipt still require bound identity.
+    const requiresBuild = expected.some(component => ['build', 'audit', 'scenario', 'smoke'].includes(component?.kind));
+    if (requiresBuild || run.buildReceiptPath != null) {
+        if (!buildReceipt) missing('required or declared build receipt is absent or invalid');
+        else if (JSON.stringify(buildReceipt.executionContext) !== JSON.stringify(run.executionContext)) missing('build receipt harness/target context differs from frozen run');
+    }
     if (!list(components).length) missing('no checks executed');
     if (new Set(expected.map(c => c?.label)).size !== expected.length) missing('duplicate planned component identity');
     for (const component of expected) if (list(components).filter(c => c?.label === component?.label).length !== 1) missing(`planned component missing or duplicated: ${component?.label}`);

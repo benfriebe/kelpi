@@ -214,3 +214,61 @@ describe('explicit full popup path segments',()=>{
         member.pathSegments[1].alternatives.push(['omitted cleanup']);expect(f.read().complete).toBe(false);
     });
 });
+
+
+describe('phone caret source assertion order', () => {
+    // audit.mjs awaits checkPhoneHandback in finally before the roster and desktop checks.
+    const labels = [
+        "a keyboard taking viewport space turns the key into Hide (C8: the label names the keyboard, not the caret)",
+        "the keyboard key puts the keyboard away: the caret leaves the engine",
+        "and once the keyboard has actually left, the key reads Show with the caret still away: the state every tap below is about",
+        "the platform's focus move onto the esc key is reproduced (Android does this; CDP's touch does not)",
+        "tapping esc with the keyboard down does not summon it back",
+        "the platform's focus move onto the home key is reproduced (Android does this; CDP's touch does not)",
+        "tapping home with the keyboard down does not summon it back",
+        "the platform's focus move onto the end key is reproduced (Android does this; CDP's touch does not)",
+        "tapping end with the keyboard down does not summon it back",
+        "the platform's focus move onto the left key is reproduced (Android does this; CDP's touch does not)",
+        "tapping left with the keyboard down does not summon it back",
+        "the platform's focus move onto the ctrl key is reproduced (Android does this; CDP's touch does not)",
+        "tapping ctrl with the keyboard down does not summon it back",
+        "the platform's focus move onto the ctrl key is reproduced (Android does this; CDP's touch does not)",
+        "tapping ctrl with the keyboard down does not summon it back",
+        "closing the Settings sheet does not summon the keyboard either",
+        "tapping Show still puts the caret back on the engine, which is the only way up",
+        "and the key still reads Show, because the tap asked for a keyboard that no desktop Chromium can produce",
+        "and it turns into Hide when that keyboard arrives, over the caret the tap put back",
+        "the window the next step inherits is the one this step was handed",
+        "the phone lane’s clause: the roster the spine reads is untouched",
+        "and NOT on desktop: closing Settings hands the caret back to the focused pane’s surface, as it always has",
+    ];
+    const selection = auditPlan(repo, ['phone-caret-owner']);
+    const report = entries => ({steps:[{id:'phone-caret-owner',assertions:entries.map(name=>({name,ok:true}))}]});
+    it('requires all 22 source-ordered receipts, with handback before post-finally checks', () => {
+        const member = selection.members[0];
+        expect(selection.complete).toBe(true);
+        expect(member.minAssertions).toBe(22);
+        expect(member.assertionPaths).toEqual([assertionIdentities(labels)]);
+        expect(inspectSelection('audit', report(labels), selection)).toEqual([]);
+    });
+    it('rejects missing receipts, including handback and either repeated ctrl occurrence', () => {
+        for (let index=0; index<labels.length; index++) {
+            const partial = labels.filter((_,i)=>i!==index);
+            expect(inspectSelection('audit', report(partial), selection).length, `missing receipt ${index+1}`).toBeGreaterThan(0);
+        }
+    });
+    it('rejects the erroneous final-handback order, permutations, duplicates and extra receipts', () => {
+        const invalid = [
+            [...labels.slice(0,19), labels[20], labels[21], labels[19]],
+            [...labels, labels[19]], [...labels, 'unexpected receipt'],
+            labels.map((label,index)=>index===19 ? 'unproven replacement cleanup' : label),
+            labels.filter((_,index)=>index!==13 && index!==14)
+        ];
+        for (let index=0; index<labels.length-1; index++) {
+            const reordered = [...labels];
+            [reordered[index],reordered[index+1]] = [reordered[index+1],reordered[index]];
+            invalid.push(reordered);
+        }
+        for (const entries of invalid) expect(inspectSelection('audit', report(entries), selection).length).toBeGreaterThan(0);
+    });
+});

@@ -1,3 +1,4 @@
+import { acceptanceVerdict } from './acceptance-verdict.mjs';
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -115,5 +116,62 @@ describe('separate pinned target and executing harness',()=>{
         expect(report.reasons.join(' ')).toContain('target exact expected head differs');
         expect(report.components).toEqual([]);expect(report.buildReceiptPath).toBeUndefined();
         expect(fs.existsSync(path.join(target,'packages/client/dist'))).toBe(false);
+    });
+});
+
+async function unitOnlyExternalRun() {
+    const { base, api, context } = await fixture();
+    const artifacts = [];
+    const retain = (name, data) => {
+        const file = path.join(base, name);
+        fs.writeFileSync(file, JSON.stringify(data));
+        artifacts.push({ path: file, sha256: digest(fs.readFileSync(file)) });
+        return file;
+    };
+    const now = Date.now(), runId = 'unit-only-external';
+    const selection = { kind: 'vitest', ordered: false, complete: true, members: [{ id: '/test.mjs', mode: 'assert', requiredAssertions: ['scoped assertion'], minAssertions: 1 }] };
+    const raw = { startTime: now, success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, testResults: [{ name: '/test.mjs', status: 'passed', assertionResults: [{ fullName: 'scoped assertion', status: 'passed' }] }] };
+    const reportPath = retain('unit-results.json', raw);
+    const execution = { command: 'vitest scoped', exitStatus: 0, startedAt: now, finishedAt: now };
+    const executionPath = retain('execution.json', execution);
+    const component = { label: 'scoped tests', kind: 'vitest', command: execution.command, reportPath,
+        firstAttempt: { ok: true, verdict: 'verified', execution: { ...execution, path: executionPath }, evidence: { ...execution, kind: 'vitest', path: reportPath } } };
+    const plan = { schemaVersion: 2, runId, head: context.target.expectedHead, reference: 'b'.repeat(40), executionContext: context, components: [{ label: component.label, kind: component.kind, command: component.command, reportPath, selection }] };
+    const run = { schemaVersion: 2, scope: 'commit', runId, startedAt: new Date(now - 1000).toISOString(), start: context.target.state, end: context.target.state, reference: plan.reference,
+        executionContext: context, executionContextPath: retain('context.json', context), executionEnd: api.observeExecutionRoots(context), planPath: retain('plan.json', plan), artifacts, components: [component] };
+    return { run, plan, retain };
+}
+
+describe('external build receipts follow the frozen execution plan', () => {
+    it('verifies a complete scoped test component without inventing a build requirement', async () => {
+        const { run } = await unitOnlyExternalRun();
+        const result = acceptanceVerdict(run, run);
+        expect(result.assessments[0].verdict).toBe('verified');
+        // The fixture supplies no incident reproduction. That separate requirement remains.
+        expect(result.reasons).toEqual(['incident manifest with concrete reproduction evidence is required']);
+    });
+    it.each(['build', 'audit', 'scenario', 'smoke'])('still requires a retained build receipt for a planned %s component', async kind => {
+        const { run, plan, retain } = await unitOnlyExternalRun();
+        plan.components.push({ label: 'runtime', kind, command: 'run runtime' });
+        run.planPath = retain('runtime-plan.json', plan);
+        const result = acceptanceVerdict(run, run);
+        expect(result.verdict).toBe('unverified');
+        expect(result.reasons).toContain('required or declared build receipt is absent or invalid');
+    });
+    it('rejects a supplied build receipt from another context even for a unit-only plan', async () => {
+        const { run, retain } = await unitOnlyExternalRun();
+        const foreign = structuredClone(run.executionContext);
+        foreign.harness.expectedHead = 'c'.repeat(40);
+        run.buildReceiptPath = retain('foreign-build.json', { executionContext: foreign });
+        const result = acceptanceVerdict(run, run);
+        expect(result.verdict).toBe('unverified');
+        expect(result.reasons).toContain('build receipt harness/target context differs from frozen run');
+    });
+    it('does not ignore an explicitly declared but unbound build receipt', async () => {
+        const { run } = await unitOnlyExternalRun();
+        run.buildReceiptPath = '/missing-build-receipt.json';
+        const result = acceptanceVerdict(run, run);
+        expect(result.verdict).toBe('unverified');
+        expect(result.reasons).toContain('required or declared build receipt is absent or invalid');
     });
 });
